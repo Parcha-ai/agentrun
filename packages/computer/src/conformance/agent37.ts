@@ -1,6 +1,6 @@
 // Agent37 for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider agent37`.
 // It makes real instances, which bill per minute until deleted, so it runs only with AGENTRUN_COMPUTER_LIVE_AGENT37=1
-// and a key the lead has OKed, under COMPUTER_AGENT37_API_KEY, beside COMPUTER_AGENT37_SSH_KEY, the private half (its
+// and a key for an account you can bill, under COMPUTER_AGENT37_API_KEY, beside COMPUTER_AGENT37_SSH_KEY, the private half (its
 // contents) of an SSH key registered on the same workspace. The provider reads no environment: this module reads its
 // own COMPUTER_AGENT37_* names (never AGENT37_API_KEY, which may hold another team's key) and passes each to create()
 // as its option. The live switch is checked first, before any other setting is read. The live sweep (sweep.ts,
@@ -110,7 +110,7 @@ export interface Agent37ModuleOptions extends Pick<Agent37Options, "ssh2" | "fet
 
 function live(env: Record<string, string | undefined>): void {
 	if (env[AGENT37_ENV.live] !== "1") {
-		throw new Error(`the Agent37 conformance module makes real instances, which bill until deleted: set ${AGENT37_ENV.live}=1, with a key the lead has OKed, to run it`);
+		throw new Error(`the Agent37 conformance module makes real instances, which bill until deleted: set ${AGENT37_ENV.live}=1, with a key for an account you can bill, to run it`);
 	}
 }
 

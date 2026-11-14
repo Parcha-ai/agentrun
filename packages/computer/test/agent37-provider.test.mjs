@@ -1,6 +1,6 @@
 // Agent37Provider's host on a fake Agent37 (fake-agent37.mjs): the REST API as a fetch, and an instance's SSH as
 // ssh2's own Server on loopback, reached through a fake WebSocket. What Agent37's host decides is tested here: the
-// create's body, get, list and delete, the status and network read-back, extend's GET then whole PATCH, the error
+// create's body, get, list and delete, the status read-back, extend's GET then whole PATCH of the deadline label, the error
 // codes, check()'s shapes and cap, and an exec's stdin, stdout, stderr, exit code and kill. The adapter's lifecycle is
 // tested once, against its fake host (hosted-provider.test.mjs); Agent37's own is proven live.
 import assert from "node:assert/strict";
@@ -36,7 +36,7 @@ function restOnly(options = {}) {
 	return { rest, provider, host: provider.host };
 }
 
-const request = (labels = {}) => ({ name: "computer-0123456789ab", image: "agent37-base", labels: { [COMPUTER]: "1", "agentrun.computer.name": "computer-0123456789ab", "agentrun.computer.image": "agent37-base", ...labels }, network: "none" });
+const request = (labels = {}) => ({ name: "computer-0123456789ab", image: "agent37-base", labels: { [COMPUTER]: "1", "agentrun.computer.name": "computer-0123456789ab", "agentrun.computer.image": "agent37-base", ...labels }, lifetimeMs: 600_000, egress: false });
 
 /** Runs argv to its end: its exit code, stdout and stderr. */
 async function run(host, id, argv, input) {
@@ -163,7 +163,7 @@ test("create posts the template, type, region, name, labels as metadata, deny-al
 		auto_sleep: false,
 		public_ports: [],
 	});
-	await host.create({ ...request(), network: "open" }, CTX);
+	await host.create({ ...request(), egress: true }, CTX);
 	assert.equal(rest.calls[1].body.network, "allow-all", "an Archil computer's root is open");
 	assert.equal(rest.calls[1].body.resources, undefined, "no size asked, none sent");
 });
@@ -235,8 +235,9 @@ test("the status mapping: every Agent37 status is one of the adapter's states, a
 	assert.equal((await host.get(value.id, CTX)).why, "the VM did not boot");
 });
 
-test("extend reads the instance, then PATCHes the whole metadata with the deadline label moved, since a PATCH replaces it", async () => {
+test("extend, the janitor's: reads the instance, then PATCHes the whole metadata with the deadline label moved, since a PATCH replaces it", async () => {
 	const { rest, host } = restOnly();
+	assert.equal(host.setLabels, undefined, "no setLabels: extend is the one deadline member");
 	const value = await host.create(request({ keep: "me" }), CTX);
 	rest.calls.length = 0;
 	assert.equal(await host.extend(value.id, new Date("2026-11-13T08:00:00.000Z"), CTX), undefined);

@@ -329,8 +329,9 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
     return settle(given);
   }
   if (!(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
-  // A call its run's pin marks destructive takes a second, explicit confirm to allow: nothing is written without it.
-  if (decision === "allow" && !confirmed && moment.destructiveIds?.has(id)) throw invalid([{ field: "confirm_destructive", reason: "missing", message: `The tool call ${id} is one its MCP server marks destructive: an allow of it is sent with confirm_destructive true, after a second confirm.` }]);
+  // A call its run's pin marks destructive takes a second, explicit confirm to allow: nothing is written without it. The
+  // issue carries its own example, so the 422's telling (explain.ts) adds none to a sentence that already says what to send.
+  if (decision === "allow" && !confirmed && moment.destructiveIds?.has(id)) throw invalid([{ field: "confirm_destructive", reason: "missing", message: `The tool call ${id} is one its MCP server marks destructive. To allow it, confirm a second time and send the allow again with confirm_destructive: true.`, example: true }]);
   const ending = await endBefore(store, moment.id);
   if (ending) throw alreadyAnswered(id, ending.decision);
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };

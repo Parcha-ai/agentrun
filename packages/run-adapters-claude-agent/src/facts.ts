@@ -11,7 +11,8 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   wire: "anthropic-messages",
   // A message that comes mid-turn waits for the turn's end.
   steer: false,
-  // A call that started is never run again (the CLI answers it "[Tool call interrupted]"); only the model calls again.
+  // A call that started is never run again (one cut off the CLI answers "[Tool call interrupted]"; one that ended gets its
+  // recorded result); only the model calls again.
   rerunsStarted: false,
   // Its own tool search defers an MCP server's tools (ENABLE_TOOL_SEARCH, on under the kernel's defersCatalog), so the host offers no tools_search or tools_call beside it.
   ownToolSearch: true,
@@ -32,6 +33,8 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   // the pinned CLI), without a word.
   // The CLI's own tools, each the host's table tool it is.
   nativeTools: Object.freeze({ WebSearch: "web_search", WebFetch: "web_fetch", Bash: "bash", Read: "read", Write: "write", Edit: "edit" }),
+  // The SDK's in-process server serves every host tool as `mcp__hands__<host tool>`.
+  hostName: (given: string) => given.replace(/^mcp__hands__/, ""),
   schemaProblems: (tool: string, schema: Record<string, unknown>) => [...toolSchemaProblems(tool, schema), ...["anyOf", "allOf", "oneOf"].filter((key) => key in schema).map((key) => `/${key}: the Claude Agent CLI drops a tool whose root has ${key}`)],
   policy: (options) => anthropicPolicy({ model: options.model, tools: options.tools, ...(options.auth ? { auth: options.auth } : {}), ...(options.webSearch === true ? { webSearch: true, ...(options.webSearchAllowance ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}), ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
 });

@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type GateCall, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { type BinaryProbe, checkedOnce, checkedOnceAsync, hostHeaderProblems, type ModelProxyOptions, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { anthropicPolicy, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
@@ -300,20 +300,11 @@ class CallsInFlight {
   }
 }
 
-/** The kernel's tool for a host tool. The host hears of the call (`tool_start`) once its intent is in the session's
- *  records, and of its end only once the outcome is (the live `tool_end` the tool bridge sends after the effect). */
-function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls: CallsInFlight): KernelTool {
-  return {
-    name: tool.name,
-    description: tool.description,
-    inputSchema: tool.inputSchema,
-    replay: tool.replay,
-    ...(tool.nests ? { nests: true as const } : {}),
-    async execute(input, effect) {
-      // The effect's step is `tool:<the CLI's tool_use id>#<attempt>`: the host sees the CLI's call id.
-      const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
-      // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
-      const attempt = Number(/#(\d+)$/.exec(effect.stepId ?? "")?.[1] ?? 0);
+/** The bridge's tool for a host tool (bridgeTool). The host hears of the call (`tool_start`) once its intent is in the
+ *  session's records, and of its end only once the outcome is (the live `tool_end` the tool bridge sends after the effect). */
+function claudeTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls: CallsInFlight): KernelTool {
+  return bridgeTool(tool, {
+    start: ({ callId, args }) => {
       // In flight, and past the pause's check, before the host hears of it: a pause the host starts on this tool_start
       // waits for this call rather than refusing it.
       // A tool that nests calls has no intent of its own to wait for (each of its calls begins here as its own): a pause
@@ -321,19 +312,10 @@ function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls:
       if (!tool.nests) calls.begin(callId);
       // A guard: a call begun during a pause is not run; the bridge's per-drive mutex keeps it unreachable while calls are serial, and its test lands with the fan-out PR.
       if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
-      io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
-      // A tool that nests calls (tools_call, codemode) gets the session's tools as its nested calls, through the bridge.
-      const result = await tool.call(input, { callId, signal: effect.signal, attempt, ...(effect.nested ? { nested: effect.nested } : {}) });
-      if (result.isError) throw new Error(result.text);
-      // Its value, recorded with the outcome: a script's nested call is answered it (meta-tools.ts), as Codex's adapter keeps it.
-      const structured = result.structured !== undefined ? { structured: result.structured } : {};
-      if (!result.images?.length) return result.structured === undefined ? result.text : { text: result.text, ...structured };
-      // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
-      const wrong = toolImageProblems(tool.name, result.images, maxImageBytes);
-      if (wrong) throw new Error(wrong);
-      return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })), ...structured };
+      io.onEvent({ type: "tool_start", callId, name: tool.name, args });
     },
-  };
+    imageProblems: (images) => toolImageProblems(tool.name, images, maxImageBytes),
+  });
 }
 
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
@@ -432,7 +414,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           // No command of its own: the CLI reaches nothing but its model proxy (a web search, when on, is the provider's).
           network: "deny-all",
         },
-        tools: tools.map((tool) => kernelTool(tool, io, maxImageBytes, calls)),
+        tools: tools.map((tool) => claudeTool(tool, io, maxImageBytes, calls)),
         ...(spec.deferCatalog === undefined ? {} : { deferCatalog: spec.deferCatalog }),
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list

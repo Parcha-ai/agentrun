@@ -2068,6 +2068,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           granted: async (name) => !settingOf || (await settingOf(mcp?.catalogOf(name) ?? name).catch(() => "deny" as const)) !== "deny",
           codemode: facts?.ownCodemode !== true && (await allowed(CODEMODE)),
           discovery: { search: offered, call: offered },
+          ...(facts?.hostName ? { hostName: facts.hostName } : {}),
         }).filter((meta) => ![...own, ...native].some((one) => one.name === meta.name));
         const tools: HostTool[] = [...own.map((one): HostTool => (offered && isCatalogName(one.name) ? { ...one, deferred: true } : one)), ...metas.map(hosted)];
         // An MCP tool of the run by its catalog name, as wrapped above: what a learned workflow's MCP node calls.
