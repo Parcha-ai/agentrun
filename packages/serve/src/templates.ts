@@ -12,9 +12,9 @@ import { type InputIssue, invalid } from "./errors.js";
 import type { GitHubConnectionView } from "./github-connection.js";
 import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
-import { MCP_SERVER_NAME } from "./mcp-probe.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
-import { mcpToolName, type PinScalar, type PinValue } from "./tool-gate.js";
+import type { PinScalar, PinValue } from "./tool-gate.js";
+import { isMcpName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName } from "./tool-names.js";
 import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { BOUND_TOOLS, toolOf } from "./tools.js";
@@ -47,8 +47,6 @@ const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PARAMETER = /^[a-z][a-z0-9_]{0,63}$/;
 /** The keys a package may need: those Settings saves (a tool's or a model provider's), each one a run is handed. */
 export const PACKAGE_SECRETS: readonly string[] = [...new Set([...TOOL_KEY_ROWS.flatMap((row) => row.fields as readonly string[]), ...MODEL_KEYS.map((row) => row.field)])];
-/** An MCP tool's name: one tool, never the server's wildcard `*`. */
-const MCP_TOOL = /^[A-Za-z0-9_.-]{1,128}$/;
 /** A package's bounds: each file, all its files together (POST /agents' own body limit), and how many it holds. */
 export const MAX_FILE_BYTES = 256 << 10;
 export const MAX_PACKAGE_BYTES = 1 << 20;
@@ -306,16 +304,16 @@ export function readPackage(dir: string): Package {
   if (f.model !== undefined && !(isObject(f.model) && !unknownFields(f.model, ["tier", "prefer", ...MODEL_TIER_NAMES]).length && typeof f.model.tier === "string" && Object.hasOwn(MODEL_TIERS, f.model.tier) && ref(f.model.prefer) && MODEL_TIER_NAMES.every((tier) => ref((f.model as Record<string, unknown>)[tier])))) bad(MANIFEST, `model is {tier: ${Object.keys(MODEL_TIERS).join(" | ")}, prefer?: "provider/model-id", ${MODEL_TIER_NAMES.map((tier) => `${tier}?: "provider/model-id"`).join(", ")}}`);
   if (f.effort !== undefined && !(THINKING_LEVELS as readonly unknown[]).includes(f.effort)) bad(MANIFEST, `effort is one of ${THINKING_LEVELS.join(", ")}`);
   const tools = f.tools === undefined ? undefined : list(f.tools, "tools");
-  if (tools?.some((tool) => tool.startsWith("mcp:"))) bad(MANIFEST, "tools grants no MCP tool: mcp lists them, by server");
-  for (const tool of tools?.filter((tool) => !tool.startsWith("mcp:") && !BOUND_TOOLS.includes(tool)) ?? []) bad(MANIFEST, `tools: ${tool} is not a tool this server binds (${BOUND_TOOLS.join(", ")})`);
+  if (tools?.some(isMcpName)) bad(MANIFEST, "tools grants no MCP tool: mcp lists them, by server");
+  for (const tool of tools?.filter((tool) => !isMcpName(tool) && !BOUND_TOOLS.includes(tool)) ?? []) bad(MANIFEST, `tools: ${tool} is not a tool this server binds (${BOUND_TOOLS.join(", ")})`);
   const mcp: McpNeed[] = [];
   for (const [i, need] of (f.mcp === undefined ? [] : Array.isArray(f.mcp) ? f.mcp : (bad(MANIFEST, "mcp is a list of {server, tools, required?}"), [])).entries()) {
     const names = isObject(need) && Array.isArray(need.tools) ? need.tools : [];
     const allow = isObject(need) && need.allow !== undefined ? need.allow : [];
     const pin = isObject(need) && need.pin !== undefined ? need.pin : {};
-    const ok = isObject(need) && !unknownFields(need, ["server", "tools", "required", "allow", "pin"]).length && typeof need.server === "string" && MCP_SERVER_NAME.test(need.server) && names.length > 0 && names.every((tool) => typeof tool === "string" && MCP_TOOL.test(tool)) && new Set(names).size === names.length && (need.required === undefined || typeof need.required === "boolean")
+    const ok = isObject(need) && !unknownFields(need, ["server", "tools", "required", "allow", "pin"]).length && typeof need.server === "string" && MCP_SERVER_NAME.test(need.server) && names.length > 0 && names.every((tool) => typeof tool === "string" && MCP_TOOL_NAME.test(tool)) && new Set(names).size === names.length && (need.required === undefined || typeof need.required === "boolean")
       && Array.isArray(allow) && allow.every((tool) => names.includes(tool)) && new Set(allow).size === allow.length;
-    if (!ok) bad(MANIFEST, `mcp[${i}] is {server: an MCP server's name (${MCP_SERVER_NAME.source}), tools: its tool names (${MCP_TOOL.source}), none twice, required?: true or false, allow?: the tools of its tools it asks the owner to allow, pin?: {<tool>: {<argument>: <value>}}}`);
+    if (!ok) bad(MANIFEST, `mcp[${i}] is {server: an MCP server's name (${MCP_SERVER_NAME.source}), tools: its tool names (${MCP_TOOL_NAME.source}), none twice, required?: true or false, allow?: the tools of its tools it asks the owner to allow, pin?: {<tool>: {<argument>: <value>}}}`);
     else if (mcp.some((m) => m.server === need.server)) bad(MANIFEST, `mcp[${i}]: the server ${need.server as string} is listed twice`);
     else {
       const pinned = pinOf(pin, need.server as string, names as string[], `mcp[${i}].pin`, (message) => bad(MANIFEST, message));

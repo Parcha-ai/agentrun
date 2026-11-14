@@ -79,7 +79,7 @@ final class SchemaTests: XCTestCase {
 		let rect = Rect(1, 2, 3, 4)
 		let stat = FileStat(type: .symlink, size: 5, mode: 0o644, mtimeMs: 1, uid: 501, gid: 20, target: "/tmp/x")
 		return [
-			Case(method: "hello", params: [HelloParams(client: "computerd 0.2.0")], results: [
+			Case(method: "hello", params: [["client": "computerd 0.2.0"]], results: [
 				HelloResult(os: "macos", osVersion: "26.1", kind: "desktop", arch: "arm64", groups: Driver.groups, screen: ScreenInfo(width: 1512, height: 982, scale: 2), features: ["ui.tree": .on, "ui.image": .on, "ui.nav": .off("no")], device: Device(maker: "Apple", model: "MacBook Pro")),
 				HelloResult(os: "macos", osVersion: nil, kind: "desktop", arch: "arm64", groups: [], screen: nil, features: nil, device: nil),
 			]),

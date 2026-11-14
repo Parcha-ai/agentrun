@@ -5,14 +5,15 @@ import { test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultPermission, isCatalogTool, isMcpTool, mcpToolName, permissionFrom, permissionKeys, permissionOf, runGate } from "../dist/tool-gate.js";
+import { defaultPermission, isCatalogTool, mcpToolName, permissionFrom, permissionKeys, permissionOf, runGate } from "../dist/tool-gate.js";
 
 test("an MCP tool's name is mcp:<server>/<tool>, a catalog tool, asked by default; a built-in tool is allowed by default", () => {
   assert.equal(mcpToolName("srv", "echo"), "mcp:srv/echo");
-  assert.ok(isMcpTool("mcp:srv/echo") && !isMcpTool("mcp:srv") && !isMcpTool("web_fetch"));
-  assert.ok(isCatalogTool("mcp:srv/echo") && isCatalogTool("monid.run") && !isCatalogTool("bash"));
+  // Any name in MCP's namespace is a catalog tool, one that does not parse too: its default is ask, never a built-in's allow.
+  assert.ok(isCatalogTool("mcp:srv/echo") && isCatalogTool("mcp:srv/a.b") && isCatalogTool("monid.run") && !isCatalogTool("bash"));
   assert.deepEqual(["mcp:srv/echo", "monid.run", "web_fetch", "write"].map(defaultPermission), ["ask", "ask", "allow", "allow"]);
-  assert.deepEqual(permissionKeys("mcp:srv/a/b"), ["mcp:srv/a/b", "mcp:srv/*"]);
+  assert.deepEqual(permissionKeys("mcp:srv/echo"), ["mcp:srv/echo", "mcp:srv/*"]);
+  assert.deepEqual(defaultPermission("mcp:srv/a.b"), "ask");
   assert.deepEqual(permissionKeys("web_fetch"), ["web_fetch"]);
 });
 
