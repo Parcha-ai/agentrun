@@ -229,8 +229,10 @@ npm run verify:packages
 npm run export:source
 ```
 
-Build the computer daemon before package verification: `build:daemon` needs Go on PATH and writes the daemon binaries
-`@parcha/agentrun-computer` publishes, and verification stops when its archive lacks them.
+Build the computer daemon before package verification: `build:daemon` writes the daemon binaries
+`@parcha/agentrun-computer` publishes, and verification stops when its archive lacks them. It builds them with Go when
+Go is on PATH; without Go it takes them from the same version on npm, when that version was built from the same daemon
+source.
 
 The test suite checks structure, composition, decision handling, verification, effects, cancellation, SDK contracts, and retained candidates. Package verification installs tarballs into an empty consumer. Scripted model responses prove execution behavior, not model quality.
 
