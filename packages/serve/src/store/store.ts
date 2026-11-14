@@ -1283,10 +1283,11 @@ export interface Store {
    *  stay in the store. Undefined when the row is untaken, refused, taken with no answer, already read, or not the run's. */
   answerOf(runId: string, commandId: number): Promise<{ readonly value: unknown } | undefined>;
   /** Tells `listener` when a command of a run in this store is written ("written", after command() commits) or taken,
-   *  refused or answered ("answered": a take, a run update that takes, a journal commit that takes or ends the run).
+   *  refused or answered ("answered": a take, a run update that takes, a journal commit that takes or ends the run), and
+   *  when a run is queued ("queued": runs.create, runs.createInline or a trigger's fire committed it, claimable now).
    *  A hint to read now, for handles in this process only: a row another process writes wakes nothing here, the reader's
    *  poll finds it. Called after the commit, asynchronously; a listener's throw is swallowed. Answers the unsubscribe. */
-  watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" }) => void): () => void;
+  watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" | "queued" }) => void): () => void;
   /** Counts a failed resume on the untaken command that woke the run, under the claim, and answers its tries; the command
    *  stays untaken. Fenced on a stale claim; StoreConstraint when the command is taken or not the run's. */
   retry(claim: Claim, commandId: number): Promise<number>;

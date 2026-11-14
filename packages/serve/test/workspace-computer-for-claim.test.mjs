@@ -52,6 +52,7 @@ function fakeProvider(root, record, groups, machine = "linux") {
     prepareImage: async () => ({ ok: true, value: "agentrun/computer:prepared" }),
     // The run's computers it holds already: an earlier claim's, by its labels.
     async list(labels) {
+      (record.listed ??= []).push(labels);
       const held = (record.existing ?? []).filter((one) => Object.entries(labels).every(([name, value]) => one.labels[name] === value));
       return { ok: true, value: held.map((one) => ({ ref: one.ref, labels: one.labels, deadline: one.deadline, state: "running", network: "none" })) };
     },
@@ -99,7 +100,7 @@ function views(refusal) {
   return { open, opened, closed, holds };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, epoch = 3 } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
@@ -108,7 +109,7 @@ async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", 
   const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
-  const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode, kinds, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}) });
+  const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { mode, kinds, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}) });
   return { root, record, run };
 }
 
@@ -246,6 +247,21 @@ test("the run's computer of an earlier claim is released before this claim's is 
   assert.deepEqual(record.released, [["old", "delete"]], "epoch 2's released first");
   assert.equal(record.created.length, 1);
   await answer.release();
+});
+
+// A run's first claim is epoch 1 (a queued run is epoch 0, and every claim and release moves it up by one): no claim came
+// before it, so no computer of the run can be there to release. The vendor's list, a round trip before its create on a
+// desktop run, is not asked; a later claim still asks it.
+test("a run's first claim (epoch 1) makes its computer without asking the provider for older ones; a later claim asks", async () => {
+  const first = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "e2b-key" }, groups: ["screen", "input.pointer"], epoch: 1 });
+  const made = await first.run();
+  assert.equal(first.record.listed, undefined, "no list before the first claim's create");
+  assert.deepEqual(first.record.created.map((spec) => spec.labels), [{ "agentrun.run": "run-1", "agentrun.epoch": "1" }]);
+  await made.release();
+  const later = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "e2b-key" }, groups: ["screen", "input.pointer"], epoch: 2 });
+  const remade = await later.run();
+  assert.deepEqual(later.record.listed, [{ "agentrun.run": "run-1" }], "the run's computers listed once, by its label, before the create");
+  await remade.release();
 });
 
 async function refusal(setting, options) {
