@@ -24,8 +24,10 @@ export const ENTRY = {
 } as const;
 
 /** Who made a call: the bench reading the task's preconditions (apps, capability probes), setting up, the agent, the
- *  bench's frame after an act, the bench's ping after the agent's turn, a check, teardown, or the oracle. */
-export type Phase = "precondition" | "setup" | "agent" | "frame" | "ping" | "check" | "observe" | "teardown" | "oracle";
+ *  bench's frame after an act, the bench's ping after the agent's turn, a check, teardown, or the oracle. "tool" is no
+ *  computer call: a tool call of the agent's that made none (a search, a shell on the runner), recorded as one of its
+ *  turns, never counted as a step. */
+export type Phase = "precondition" | "setup" | "agent" | "tool" | "frame" | "ping" | "check" | "observe" | "teardown" | "oracle";
 
 /** One protocol call, as the record keeps it. */
 export interface Step {
@@ -57,6 +59,10 @@ export interface Step {
 	stale?: number;
 	/** A short text of the answer, for the grader and a reader (an exec's output, an observe's outline). */
 	note?: string;
+	/** An agent step: the model's tool call that made it, numbered from 1 in the run (a script's calls share one), and
+	 *  that tool's name where the backend knows it (serve's Timeline: "codemode", "computer_act"). */
+	turn?: number;
+	tool?: string;
 }
 
 /** The computer, as the run record names it. */
@@ -72,6 +78,10 @@ export interface RunHeader {
 	bench: { version: string; run: string };
 	task: { id: string; version: number; sha256: string; split: string; seed: number; nonce: string; params: Record<string, Json>; instruction: string; source?: string };
 	arm: { id: string; harness: string; surface: string; model: string; effort?: string };
+	/** What the agent was given: its surface (code: scripts; tools: one method per tool call), whether it may run
+	 *  programs (exec deny: no exec or processes group, no shell), the computer's groups it may use, and on serve the
+	 *  agent that ran (its id names the surface, and ends -ui where exec is denied). */
+	agent: { surface: "code" | "tools"; exec: "allow" | "deny"; groups: string[]; id?: string };
 	attempt: number;
 	budget: { steps: number; usd: number; wall_s: number };
 	/** sha256 of what the agent was given: its tool schemas, its system prompt, the kind skill. */
