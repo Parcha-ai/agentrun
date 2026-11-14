@@ -118,6 +118,22 @@ test("while held, a look (observe, a screenshot, the app list) waits and then ru
   assert.equal((await hands.exec("true", { timeoutS: 1 })).exitCode, 0, "exec passes through, held or not");
 });
 
+test("on a computer with no ui group, a look that names an app opens it, so while held it waits and then is not done, as an app opening; one that names none is a look", async () => {
+  const calls = [];
+  const hold = computerHold();
+  const hands = heldHands({ computer: { groups: ["screen", "input.pointer", "input.keys", "apps"], call: async (op) => (calls.push(op), { value: null, text: op, images: [] }) } }, hold);
+  hold.take();
+  const opening = hands.computer.call("observe", { app: "org.xfce.mousepad" });
+  const look = hands.computer.call("observe", {});
+  for (const call of [opening, look]) assert.equal(await settled(call), false, "both wait while the person holds it");
+  hold.give();
+  assert.equal((await look).text, "observe", "the look runs after the hand-back");
+  const [refused] = await Promise.allSettled([opening]);
+  assert.deepEqual([refused.status, refused.reason?.kind, refused.reason?.message], ["rejected", TAKEN_OVER, personHadWords("app opening")]);
+  assert.deepEqual(calls, ["observe"], "the app was never opened on the screen the person left");
+  assert.equal((await heldHands({ computer: { groups: ["ui", "apps"], call: async (op) => ({ value: null, text: op, images: [] }) } }, hold).computer.call("observe", { app: "x" })).text, "observe", "with a ui group, naming an app only looks");
+});
+
 test("the shell's and the files' ops through the computer are not the person's: they pass through while held", async () => {
   const { calls, hands: own } = ports();
   const hold = computerHold();

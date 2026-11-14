@@ -16,7 +16,7 @@ import type { GitHubConnectionView } from "./github-connection.js";
 import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
-import type { PinScalar, PinValue } from "./tool-gate.js";
+import { isPinKeys, type PinKeys, type PinScalar, type PinValue } from "./tool-gate.js";
 import { formatToolName, isMcpName, isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName, MONID_NAME_WORDS, parseToolName } from "./tool-names.js";
 import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
@@ -256,7 +256,7 @@ const triggerFilled = (trigger: Json, given: Record<string, unknown>): Json => {
  *  other placeholders). Each problem is told through `bad`; a tool whose pin reads is kept. */
 function pinOf(pin: unknown, server: string, tools: readonly string[], at: string, bad: (message: string) => void): Record<string, Record<string, PinValue>> {
   const out: Record<string, Record<string, PinValue>> = {};
-  if (!isObject(pin)) return bad(`${at} is {<tool>: {<argument>: <value or \${parameters.<name>}, or a list of them>}}, by the entry's tools`), out;
+  if (!isObject(pin)) return bad(`${at} is {<tool>: {<argument>: <value or \${parameters.<name>}, a list of them, or {keys: [<key or \${parameters.<name>}>]}>}}, by the entry's tools`), out;
   for (const [tool, args] of Object.entries(pin)) {
     if (!tools.includes(tool)) {
       bad(`${at}.${tool}: ${tool} is not one of this entry's tools (${tools.join(", ")}): a pin fixes the arguments of a tool the package lists`);
@@ -278,9 +278,22 @@ function scalarFilled(value: PinScalar, given: Record<string, unknown>): { value
   const one = typedFilled(value, given);
   return { value: !empty.length && (typeof one === "string" || typeof one === "number" || typeof one === "boolean") ? one : (filled(value, given) as string), empty };
 }
-/** A pin's value filled (scalarFilled), each of a one-of list's in its order. One placeholder alone of a list parameter
- *  pins the list as a one-of: any of the values the owner gave. */
+/** A keys pin's keys filled as text (scalarFilled), in their order; a key that is one placeholder alone of a list
+ *  parameter adds each of its items: any of the fields the owner named. */
+function keysFilled(keys: readonly string[], given: Record<string, unknown>): { value: PinKeys; empty: string[] } {
+  const each = keys.map((key) => {
+    const whole = WHOLE.exec(key);
+    const list = whole ? givenOf(given, whole[1]!) : undefined;
+    if (Array.isArray(list) && list.length) return { value: list.map(asText), empty: [] };
+    const one = scalarFilled(key, given);
+    return { value: [asText(one.value)], empty: one.empty };
+  });
+  return { value: { keys: each.flatMap((one) => one.value) }, empty: each.flatMap((one) => one.empty) };
+}
+/** A pin's value filled (scalarFilled), each of a one-of list's in its order, a keys pin's keys (keysFilled). One
+ *  placeholder alone of a list parameter pins the list as a one-of: any of the values the owner gave. */
 function pinFilled(value: PinValue, given: Record<string, unknown>): { value: PinValue; empty: string[] } {
+  if (isPinKeys(value)) return keysFilled(value.keys, given);
   const list = typeof value === "string" ? typedFilled(value, given) : undefined;
   if (Array.isArray(list) && list.length) return { value: list as PinValue, empty: [] };
   if (!Array.isArray(value)) return scalarFilled(value as PinScalar, given);

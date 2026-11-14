@@ -161,21 +161,30 @@ export function issuesFor(fields: Record<string, string>, prefix: string, shown:
   return { byTool, rest };
 }
 
-type PinScalar = Exclude<ToolPin[string], unknown[]>;
+type PinScalar = Exclude<ToolPin[string], object>;
+/** A keys pin (tool-gate.ts PinKeys): the keys an object argument may hold, any values. */
+type PinKeys = Exclude<ToolPin[string], PinScalar | unknown[]>;
+const isKeys = (value: ToolPin[string]): value is PinKeys => typeof value === "object" && value !== null && !Array.isArray(value);
 /** A one-of list in the gate's one form (tool-gate.ts canonicalChoices): each value once, null first, then by JSON text. */
-const choicesOf = (value: ToolPin[string]): PinScalar[] => {
-  if (!Array.isArray(value)) return [value];
+const choicesOf = (value: Exclude<ToolPin[string], PinKeys>): PinScalar[] => {
+  if (!Array.isArray(value)) return [value as PinScalar];
   const texts = [...new Set(value.filter((one) => one !== null).map((one) => JSON.stringify(one)))].sort();
   return [...(value.includes(null) ? [null] : []), ...texts.map((text) => JSON.parse(text) as PinScalar)];
 };
 /** A pinned value in words: text as it is, any other as JSON (tool-gate.ts scalarWords; null is said by pinLine). */
 const valueWords = (one: PinScalar): string => (typeof one === "string" ? one : JSON.stringify(one));
 
-/** A pin in words, in the gate's order (tool-gate.ts pinWords: arguments sorted, each list in its one form), so the screen
- *  and a refusal read alike: "event must be left out or COMMENT; method must be one of create, delete_pending". */
+/** A pin in words, in the gate's order (tool-gate.ts pinWords: arguments sorted, each list in its one form, a keys pin's
+ *  keys sorted), so the screen and a refusal read alike: "event must be left out or COMMENT; method must be one of create,
+ *  delete_pending"; "properties may hold only the key hs_lead_score (any value)". */
 export function pinLine(pin: ToolPin): string {
   return Object.keys(pin).sort().map((arg) => {
-    const values = choicesOf(pin[arg]!);
+    const value = pin[arg]!;
+    if (isKeys(value)) {
+      const keys = [...new Set(value.keys)].sort();
+      return keys.length === 1 ? `${arg} may hold only the key ${keys[0]} (any value)` : `${arg} may hold only the keys ${keys.join(", ")} (any values)`;
+    }
+    const values = choicesOf(value);
     const nullable = values[0] === null;
     const rest = (nullable ? values.slice(1) : values).map((one) => valueWords(one));
     if (!rest.length) return `${arg} must be left out`;

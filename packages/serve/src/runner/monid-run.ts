@@ -66,12 +66,14 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
 }
 
 /** The claim's MCP with the run's monid endpoints beside it: the one catalog seam the loop reads (AdapterRunSpec.mcp).
- *  Its credentials' hooks are MCP's alone. */
+ *  Its credentials' hooks are MCP's alone, and so is the closure of a pinned tool's arguments (argumentsOf: the gate's
+ *  settings pins are on MCP tools; a monid endpoint's input is held to its pinned schema by the harness). */
 export function withMonid(mcp: ClaimMcp | undefined, monid: ClaimMonid | undefined): ClaimMcp | undefined {
   if (!monid) return mcp;
   return {
     tools: [...(mcp?.tools ?? []), ...monid.tools],
     catalogOf: (tool) => mcp?.catalogOf(tool) ?? monid.catalogOf(tool),
+    argumentsOf: (name) => mcp?.argumentsOf(name),
     priceOf: (name) => mcp?.priceOf(name) ?? monid.priceOf(name),
     fresh: async () => mcp?.fresh(),
     release: () => mcp?.release(),

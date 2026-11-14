@@ -355,6 +355,7 @@ __all__ = [
     "ImportTemplateResponseTemplateComputerHereComputer",
     "ImportTemplateResponseTemplateMcpItem",
     "ImportTemplateResponseTemplateMcpItemToolsItem",
+    "ImportTemplateResponseTemplateMcpItemToolsItemPinValue",
     "ImportTemplateResponseTemplateModel",
     "ImportTemplateResponseTemplateOutput",
     "ImportTemplateResponseTemplateToolPolicy",
@@ -413,6 +414,7 @@ __all__ = [
     "ListLearningPromotionsResponsePromotionsItemRefit",
     "ListLearningPromotionsResponsePromotionsItemRefitGuardsItem",
     "ListLearningPromotionsResponsePromotionsItemReplay",
+    "ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem",
     "ListLearningPromotionsResponseServingItem",
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
@@ -431,6 +433,7 @@ __all__ = [
     "ListTemplatesResponseTemplatesItemComputerHereComputer",
     "ListTemplatesResponseTemplatesItemMcpItem",
     "ListTemplatesResponseTemplatesItemMcpItemToolsItem",
+    "ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue",
     "ListTemplatesResponseTemplatesItemModel",
     "ListTemplatesResponseTemplatesItemOutput",
     "ListTemplatesResponseTemplatesItemToolPolicy",
@@ -1370,6 +1373,13 @@ class ListLearningPromotionsResponsePromotionsItemReplay(_ListLearningPromotions
     of: list[str]
     cost_usd: float | None
     skipped_write: int
+    skipped_tools: list[ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem]
+
+
+class ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem(TypedDict):
+    tool: str
+    inputs: int
+    no_read_only_hint: bool
 
 
 ListLearningPromotionsResponsePromotionsItemRefit = TypedDict("ListLearningPromotionsResponsePromotionsItemRefit", {"from": "str", "guards": "list[ListLearningPromotionsResponsePromotionsItemRefitGuardsItem]"})
@@ -4336,6 +4346,7 @@ class _CapabilitiesToolsItemRequired(TypedDict):
 class CapabilitiesToolsItem(_CapabilitiesToolsItemRequired, total=False):
     blurb: str
     call_only: bool
+    meta: bool
     sandbox_only: bool
     reason: str
     missing: list[str]
@@ -4704,7 +4715,11 @@ class _ImportTemplateResponseTemplateMcpItemToolsItemRequired(TypedDict):
 
 
 class ImportTemplateResponseTemplateMcpItemToolsItem(_ImportTemplateResponseTemplateMcpItemToolsItemRequired, total=False):
-    pin: dict[str, str | float | bool | None | list[str | float | bool | None]]
+    pin: dict[str, str | float | bool | None | list[str | float | bool | None] | ImportTemplateResponseTemplateMcpItemToolsItemPinValue]
+
+
+class ImportTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
+    keys: list[str]
 
 
 class ImportTemplateResponseTemplateBudget(TypedDict):
@@ -4808,7 +4823,11 @@ class _ListTemplatesResponseTemplatesItemMcpItemToolsItemRequired(TypedDict):
 
 
 class ListTemplatesResponseTemplatesItemMcpItemToolsItem(_ListTemplatesResponseTemplatesItemMcpItemToolsItemRequired, total=False):
-    pin: dict[str, str | float | bool | None | list[str | float | bool | None]]
+    pin: dict[str, str | float | bool | None | list[str | float | bool | None] | ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue]
+
+
+class ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue(TypedDict):
+    keys: list[str]
 
 
 class ListTemplatesResponseTemplatesItemBudget(TypedDict):
