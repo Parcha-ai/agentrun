@@ -46,6 +46,11 @@ const { LEARNED_CLIP } = await import("../dist/learned-workflow.js");
 const { COST_WINDOW, costLineOf, workflowCostsOf, fits, workflowDigest, workflowFirstOf, pathMetrics, reviseOf, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
 const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
 const { recordPromotion } = await import("../dist/learn/promote.js");
+const { putSealedKey } = await import("../dist/server-keys.js");
+const { learningCommit } = await import("../dist/learn/commit.js");
+const { mergedNote } = await import("../dist/learn/notes.js");
+const { seedOf } = await import("../dist/learning.js");
+const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { answerAsServed, answerJson, structuredAnswer } = await import("../dist/answer-json.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -92,11 +97,24 @@ const until = async (done, what, ms = 40_000) => {
   }
 };
 
+/** Merges `notes` (`{ file, text }` each, a note's own text) into agent `agentId`'s learning folder under `data`, as a
+ *  run's graded merge lands them. */
+async function landNotes(data, agentId, notes) {
+  await seedOf(data, agentId);
+  const folder = learningWorkspace({ mode: "local", data, agentId });
+  try {
+    const merged = await learningCommit(folder.workspace, { kind: "merge", runId: "run-noted", reason: "noted", graded: {}, files: notes.map(({ file, text }) => ({ path: file, text: mergedNote(text, { origin: "run" }) })) });
+    assert.equal(merged.ok, true, JSON.stringify(merged));
+  } finally {
+    await folder.end();
+  }
+}
+
 /** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back);
  *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
 *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
  *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {} } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, notes = [], saved = {}, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {} } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -115,9 +133,13 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], ...(learned ? { learning: true } : {}), ...(toolSettings ? { toolSettings } : {}), ...(outputSchema ? { outputSchema } : {}) } });
+  // `notes`: active notes merged before the workflows land, `{ file, text }` each.
+  if (learned && notes.length) await landNotes(dir, "agent-1", notes);
   const seed = learned ? await landWorkflows(dir, "agent-1", flows) : undefined;
   // `promotions`: the agent's promotion records before the run (learn/promote.ts), as its replays left them.
   for (const record of promotions) await recordPromotion(server.settings, "agent-1", record, () => true);
+  // `saved`: keys saved on the server after the learning landed (a value in a workflow or a note that became a secret).
+  for (const [name, value] of Object.entries(saved)) await putSealedKey(server, SEAL_KEY, name, value);
   const launch = { input, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...(learned ? { learning: startAt(seed) } : {}), ...(workflowFirst === false ? { workflowFirst: false } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
@@ -442,6 +464,38 @@ test("held: a compile of it since the hold, past the last 4 runs, asks no revisi
   assert.ok(!asksRevision(since.gateway), "asked once already, 6 runs ago: never again for this hold");
   const before = await piRun(t, { promotions: [held], past, keptBefore: compiledAt(Date.parse(at) - 60_000) });
   assert.ok(asksRevision(before.gateway), "a compile before the hold was not this hold's ask");
+});
+
+// #2641 review (P1 security): every text the compile turn's facts gather passes the check the run's start makes
+// (learning.ts holdsSecret, as chooseWorkflows reads a workflow). A held workflow whose text holds a value saved as a
+// secret after it landed is never sent to the model: the start left it out, and so does its compile turn. A note holding
+// one is left out whole, never sent cut. Each is logged by name and count only.
+test("held: a workflow or a note holding a secret saved after it landed is left out of the compile turn, by name in the log, never its value", async (t) => {
+  const secret = `planted${"q8".repeat(12)}`;
+  const at = new Date().toISOString();
+  const holdOf = (flow) => ({ workflow: "answer", digest: workflowDigest({ workflow: JSON.stringify(flow) }), at, decided: "hold", source: "graded", reason: "20 graded runs it served were right 70.0% of the time" });
+  const sent = (gateway) => gateway.requests.filter((request) => JSON.stringify(request.body).includes(secret));
+  const revising = (gateway) => gateway.requests.find((request) => /One more turn: revise your learned workflow `answer`/.test(textOf(request.body)));
+  // The held workflow holds the value: the run is the agent's (its start left the workflow out), and no compile is asked.
+  const holding = { ...answerFlow, root: { ...answerFlow.root, steps: [{ ...answerFlow.root.steps[0], instructions: `Answer the question; send ${secret} with it.` }, answerFlow.root.steps[1]] } };
+  const flow = await piRun(t, { flows: [{ ...FLOWS[0], workflow: holding }], promotions: [holdOf(holding)], saved: { MONID_API_KEY: secret } });
+  assert.equal(flow.row.metrics?.path, "agent", JSON.stringify(flow.row.metrics));
+  assert.deepEqual(sent(flow.gateway).map((request) => textOf(request.body).slice(-400)), [], "the saved value reached no model request");
+  assert.equal(revising(flow.gateway), undefined, "no revision asked of a workflow holding a secret");
+  assert.ok(flow.logs.some((line) => /compile turn left out what holds a secret: workflow `answer`/.test(line)), JSON.stringify(flow.logs));
+  assert.ok(!flow.logs.some((line) => line.includes(secret)), "never the value in a log");
+  // A clean held workflow, a note holding the value: the revision is asked, the note left out whole (not sent cut).
+  const notes = [
+    { file: "key-rule.md", text: `---\nname: Key rule\ndescription: Which key a call sends\ntype: reference\n---\nSend ${secret} with each call.\n` },
+    { file: "retry-slowly.md", text: "---\nname: Retry slowly\ndescription: Back off between retries\ntype: reference\n---\nWait a little longer after each failed call.\n" },
+  ];
+  const noted = await piRun(t, { notes, promotions: [holdOf(answerFlow)], saved: { MONID_API_KEY: secret } });
+  const ask = revising(noted.gateway);
+  assert.ok(ask, "the clean held workflow's revision is asked");
+  assert.equal(sent(noted.gateway).length, 0, "the saved value reached no model request");
+  assert.match(textOf(ask.body), /retry-slowly\.md/);
+  assert.doesNotMatch(textOf(ask.body), /key-rule\.md/, "the note holding the secret is left out whole");
+  assert.ok(noted.logs.some((line) => /compile turn left out what holds a secret: 1 note/.test(line)), JSON.stringify(noted.logs));
 });
 
 test("money rule, all-in: a workflow whose runs are cheap but whose grades push its all-in over the agent's by hand stops running first", async (t) => {
