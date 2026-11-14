@@ -1,3 +1,4 @@
+import { OBSERVATION_PATHS } from './observation/schema.js';
 import { SDK_BINDING, SDK_PATHS, SDK_RUN } from "./sdk/schema.js";
 import { NATIVE_BINDING, NATIVE_RUN, NATIVE_PATHS } from "./native/schema.js";
 // The OpenAPI document this server serves at GET /v2/openapi.json: the agentrun.v2/0 contract as vendored in
@@ -3403,8 +3404,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   if (adapters !== TRIGGER_ADAPTERS) withAdapters(doc, adapters);
   // Every server-wide pushed source's own hook, the registry's as a test's: this server's own, and listed so.
   const hooks = serverHooks(adapters);
-  Object.assign(doc.paths, hooks, NATIVE_PATHS, SDK_PATHS);
-  ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.entries({...NATIVE_PATHS,...SDK_PATHS}).flatMap(([path,item])=>Object.keys(item).map(method=>`${method.toUpperCase()} ${path}`)));
+  Object.assign(doc.paths, hooks, NATIVE_PATHS, SDK_PATHS, OBSERVATION_PATHS);
+  ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.entries({...NATIVE_PATHS,...SDK_PATHS,...OBSERVATION_PATHS}).flatMap(([path,item])=>Object.keys(item).map(method=>`${method.toUpperCase()} ${path}`)));
   ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.keys(hooks).map((path) => `POST ${path}`));
   return doc;
 }
