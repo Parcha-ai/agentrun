@@ -649,12 +649,39 @@ export function journalOf(data, runId) {
   }
 }
 
+/** The run's one ledger for its paid tool calls (the kernel cap's RunTools on its TOOL_SESSION, paid-calls.ts
+ *  Ledger.paid) over a fresh memory store, as a claim opens it: under `cap` (USD, or a function read at each check;
+ *  undefined: no cap). Its `spend(usd)` books a step already settled at `usd` (owed: never refused), what the run spent
+ *  before; `records()`, its runner records as written; `modelRequest(inputTokens)`, the run's one rule asked for a model
+ *  request beside its paid calls (`model`'s, the kernel's CapModel): its verdict, `refuse` when it does not fit. */
+export async function toolLedger(cap, { model } = {}) {
+  const [{ memorySessionStore }, kernelCap] = await Promise.all([import("@parcha/agentrun-kernel/testing"), import("@parcha/agentrun-kernel/kernel/cap")]);
+  const store = memorySessionStore();
+  const writer = await store.open(kernelCap.TOOL_SESSION);
+  const run = kernelCap.runCap({ sessions: store, capUsd: typeof cap === "function" ? cap : () => cap, modelOf: (id) => (id === model?.id ? model : undefined) });
+  const paid = await run.tools(writer);
+  let turns = 0;
+  const modelRequest = (inputTokensMax) => run.before({ key: "run:test", label: "run:test", model: model?.id, turn: (turns += 1), maxTurns: null, spentUsd: 0, inputTokensMax });
+  let spends = 0;
+  const spend = async (usd) => {
+    const id = `spent-before#${(spends += 1)}`;
+    await paid.admit({ id, name: "what the run spent before", holdUsd: usd, basis: "the test's", owed: true });
+    await paid.settle(id, usd);
+  };
+  return Object.assign(paid, { store, spend, records: () => writer.read(), modelRequest });
+}
+
 /** Run `runId`'s paid tool calls as its runner books them on the run's one ledger (the paid-tools session's runner.request
  *  and runner.turn records, run-cap.ts paidCalls), in the words main's records used: each request's hold as an
  *  `agentrun.tool_started` mark (`tool`, `charged_by`, `call`, `heldUsd`) and its settle as an `agentrun.tool_cost` charge
  *  (`usd`; none when unknown). A hold given back unused (nothing sent) has no charge. */
 export function paidCallsOf(data, runId) {
-  const entries = journalOf(data, runId);
+  return paidBookings(journalOf(data, runId));
+}
+
+/** `entries`' paid tool calls (runner.request and runner.turn records of the paid-tools session: a run's journal, or a
+ *  toolLedger's `records()`), as paidCallsOf reads them. */
+export function paidBookings(entries) {
   const requests = new Map();
   const out = [];
   for (const entry of entries) {

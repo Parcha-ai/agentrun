@@ -25,7 +25,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import * as pages from "../dist/web-fetch-direct.js";
 import * as hosts from "../dist/host-tools.js";
+import { hostToolNames } from "../dist/tool-list.js";
 import { CLIP, monidRegistration, monidText } from "../dist/monid.js";
+import { asked, askPerson } from "../dist/tools.js";
 import { HOST_TOOL_OUTPUT } from "../dist/runner/adapters/pi.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { bashTool, fileTools, piEnv } from "../dist/workspace/pi-env.js";
@@ -37,8 +39,8 @@ import * as search from "../dist/web-search.js";
 const PUBLIC = "http://public.example/";
 /** The background tools: the computer's, run by the kernel's registry (workspace/run-tools.ts), not by a host tool here. */
 const BACKGROUND = ["bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"];
-/** Every tool a host runs here (host-tools.ts REPLAY) but the background tools. */
-const HOSTED = Object.keys(hosts.REPLAY).filter((name) => !BACKGROUND.includes(name));
+/** Every tool a host runs here (tool-list.ts replay) but the background tools. */
+const HOSTED = hostToolNames().filter((name) => !BACKGROUND.includes(name));
 const signal = new AbortController().signal;
 
 test("every host tool's largest result is within the host's result bound, which each CLI is told to pass whole", async (t) => {
@@ -86,6 +88,9 @@ test("every host tool's largest result is within the host's result bound, which 
   assert.ok(monid.every((text) => text.includes("the whole answer is in the run's files at evidence/monid/")), "filed through the run's Workspace");
   for (const name of ["monid.discover", "monid.inspect", "monid.run"]) keep(name, ...monid);
 
+  // ask_person: a question far past the 500 characters its answer keeps, in quotes and in three-byte text.
+  keep("ask_person", asked('"'.repeat(20_000)), asked(wide.repeat(20_000)));
+
   // learned_workflow: a workflow's output far past LEARNED_CLIP, as JSON (quotes escaped), and in three-byte text.
   keep("learned_workflow", learnedText(JSON.stringify({ out: '"'.repeat(3 * LEARNED_CLIP) })), learnedText(JSON.stringify({ out: wide.repeat(3 * LEARNED_CLIP) })));
 
@@ -132,7 +137,7 @@ test("every host tool's largest result is within the host's result bound, which 
   // client), carries the bound as its result size; the CLI takes one up to 500,000.
   // learned_workflow is the run's own tool, given beside the table's when its pin names a learned workflow.
   const learned = learnedWorkflowTool({ workflows: [{ name: "answer", description: "Answers a question", workflow: "{}" }], granted: [], env: {}, work, models: { getModel: () => undefined, getModels: () => [], completeSimple: async () => ({}) }, policy: () => "allow", denyFrom: () => "default" });
-  const registrations = [...fileTools(), bashTool(), web.webFetchTool(process.env), search.webSearchTool(process.env), ...["discover", "inspect", "run"].map((kind) => monidRegistration(kind, {}, () => ws)), learned];
+  const registrations = [...fileTools(), bashTool(), web.webFetchTool(process.env), search.webSearchTool(process.env), ...["discover", "inspect", "run"].map((kind) => monidRegistration(kind, {}, () => ws)), learned, askPerson];
   const all = hostToolsOf(run, HOSTED, ctx, new Map(), registrations);
   assert.deepEqual(all.map((tool) => tool.name).sort(), HOSTED.map((name) => name.replace(".", "_")).sort(), "every host tool, under its wire name");
   const server = await claude.toolServer("hands", all.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })), async () => ({ content: [] }));

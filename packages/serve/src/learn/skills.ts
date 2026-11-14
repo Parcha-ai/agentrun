@@ -1,6 +1,7 @@
 // What a run may propose beside its notes: one skill, `skills/<name>/SKILL.md`, and workflow drafts,
 // `workflows/<name>/workflow.json` with its `README.md`. Their places in the learning folder and the shape each file must
 // have. check.ts checks them; nothing here reads a file, runs a draft or calls a model.
+import { mcpNameOf } from "../tool-names.js";
 import type { assertWorkflowCapabilities, desugarWorkflow, dryRunWorkflow, inspectWorkflow, resolveSchemaForWorkflow, validateWorkflow, Workflow } from "@parcha/agentrun-dsl";
 
 /** Where a skill and a workflow draft live in the folder. */
@@ -752,17 +753,12 @@ const gatedNodes = (dsl: DraftReader, doc: unknown, gated: Readonly<Record<strin
     return [{ rule: "workflow" as const, detail: `${words} (the call node at ${node.path})` }];
   });
 
-/** An MCP tool a learned workflow's call node may run, by its address (`via: "tool"`, `tool: "mcp:<server>/<tool>"`,
- *  LS-07): its server's name as a server is named (mcp-probe.ts MCP_SERVER_NAME) and one tool's name in MCP's own
- *  charset, never a wildcard. The one rule for it: the tools a draft may name (tools.ts learnedWorkflowTools), the
- *  end-of-run prompt that prints them (reflect.ts), and what the grader is told of a draft (grade.ts). */
-export const LEARNED_MCP_TOOL = /^mcp:[a-z][a-z0-9-]{0,31}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
-
 /** The MCP tools a draft's call nodes run, each once, in the order they come (LS-07): every call node in `doc`, nested
- *  ones too, whose tool is an MCP tool's address. Read from the JSON as it is, for the grader's words; never a check. */
+ *  ones too, whose tool is one MCP tool's name (`via: "tool"`, `tool: "mcp:<server>/<tool>"`, tool-names.ts mcpNameOf),
+ *  never a wildcard. Read from the JSON as it is, for the grader's words; never a check. */
 export function draftMcpTools(doc: unknown): string[] {
   const found = new Set<string>();
-  for (const node of callNodes(doc)) if (node.via === "tool" && typeof node.tool === "string" && LEARNED_MCP_TOOL.test(node.tool)) found.add(node.tool);
+  for (const node of callNodes(doc)) if (node.via === "tool" && typeof node.tool === "string" && mcpNameOf(node.tool)) found.add(node.tool);
   return [...found];
 }
 
@@ -795,14 +791,14 @@ function callNodes(doc: unknown): Record<string, unknown>[] {
 export type UnpricedCall = { readonly label: string; readonly tool: string; readonly server: string };
 
 /** The call nodes of a learned workflow (`doc`, its parsed workflow.json, nested ones too) whose tool is an MCP tool
- *  (LEARNED_MCP_TOOL) that `priceOf` gives no price for (mcp-probe.ts McpPrices: none declared). Such a tool runs "not
+ *  (tool-names.ts mcpNameOf) that `priceOf` gives no price for (mcp-probe.ts McpPrices: none declared). Such a tool runs "not
  *  metered", outside the run's cost and cap (mcp-gateway.ts), so a learned workflow that calls one unattended waits for
  *  its owner's OK whatever the grade (LS-07): a structural fact, held in code. Each step once, in order. */
 export function unpricedCalls(doc: unknown, priceOf: (tool: string) => number | undefined): UnpricedCall[] {
   return callNodes(doc).flatMap((node): UnpricedCall[] => {
-    if (node.via !== "tool" || typeof node.tool !== "string" || !LEARNED_MCP_TOOL.test(node.tool) || priceOf(node.tool) !== undefined) return [];
-    const [server, tool] = node.tool.slice("mcp:".length).split("/") as [string, string];
-    return [{ label: typeof node.label === "string" ? node.label : "(unnamed)", tool, server }];
+    const named = node.via === "tool" && typeof node.tool === "string" ? mcpNameOf(node.tool) : undefined;
+    if (!named || priceOf(node.tool as string) !== undefined) return [];
+    return [{ label: typeof node.label === "string" ? node.label : "(unnamed)", tool: named.tool, server: named.server }];
   });
 }
 
@@ -865,7 +861,8 @@ const unrunnableNodes = (dsl: DraftReader, doc: unknown, decisions?: DraftDecisi
   // With the run's decision providers, a decision node is runnable when its provider is one of them and answers what it
   // asks (the DSL's checkDecisionProviders): the same registry the call's judge is built on.
   const judging = decisions ? { runJudge: async () => ({}), decisionProviders: { providers: decisions.providers, default: decisions.default } } : {};
-  const runner = { runNode: async () => ({}), runEffect: async () => ({}), ...judging };
+  // A step guard is asked by the learned runner's own guardStep (runner/step-guard.ts) on every run.
+  const runner = { runNode: async () => ({}), runEffect: async () => ({}), guardStep: async () => ({ p: 1 }), ...judging };
   try {
     dsl.assertWorkflowCapabilities(workflow.root, runner as never, workflow);
     return [];

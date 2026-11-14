@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import { Duplex } from "node:stream";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
+import { WINDOW_MANAGER } from "./desktop.js";
 import { DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { bounded } from "./hosted/process.js";
@@ -378,7 +379,7 @@ class Agent37Host implements MachineHost {
 		return { ...tunnelOf(ws, host), host };
 	}
 
-	/** argv as root over SSH (hosted/ssh.ts), through the instance's tunnel. */
+	/** argv as root over SSH (hosted/ssh.ts): one connection per instance through its tunnel, shared by its execs. */
 	exec(id: string, argv: readonly string[], opts: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
 		return this.#ssh.exec(id, argv, opts, ctx);
 	}
@@ -490,13 +491,17 @@ class Agent37Host implements MachineHost {
 		return ok(machines);
 	}
 
-	/** DELETE /v1/instances/{id}, never signalled; a repeat answers 404, read as done (docs: instances/delete). */
+	/**
+	 * DELETE /v1/instances/{id}, never signalled; a repeat answers 404, read as done (docs: instances/delete). Once taken,
+	 * this host's SSH connections to the instance are ended, channels and all.
+	 */
 	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
 		try {
 			await this.#rest("DELETE", this.#path(id), undefined, { timeoutMs: ctx.timeoutMs });
 		} catch (error) {
 			if (codeOf(error) !== "not_found") throw error;
 		}
+		this.#ssh.closeAll(id);
 		return ok(undefined);
 	}
 
@@ -585,7 +590,9 @@ export class Agent37Provider extends HostedProvider {
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);
 		if (region !== "us" && type !== "vm") throw new Error(`Agent37 runs type default in us alone: ${region} takes type vm`);
 		const host = new Agent37Host({ apiKey, sshKey: privateKey, ssh2, fetch: fetcher, WebSocket, apiUrl: api.href.replace(/\/+$/, ""), proxyDomain, type, region });
-		super(host, { ...rest, label: "Agent37", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
+		// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
+		const desktop = { windowManager: WINDOW_MANAGER, ...rest.desktop };
+		super(host, { ...rest, desktop, label: "Agent37", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
 	}
 }
 

@@ -1,11 +1,11 @@
 // The Daytona host: Daytona sandboxes over Daytona's v0 REST API with fetch (no SDK). Daytona's toolbox daemon is the
 // sandbox's first process, so computerd is a child: its upload goes through the toolbox's file API, and every command
-// (install, init's start, the stdio bridge, an Archil computer's root steps) is a session command, its output read from
-// the command's log stream and its stdin sent as the command's input. The rest of the computer is the shared
-// machine-host adapter's (./hosted/provider.ts). Every Daytona fact used here is cited in the README's Daytona section.
+// (install, init's start, the stdio bridge) is a session command, its output read from the command's log stream and its
+// stdin sent as the command's input. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts).
+// Every Daytona fact used here is cited in the README's Daytona section.
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./descriptors/daytona.js";
+import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, DAYTONA_NO_ARCHIL, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./descriptors/daytona.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, ours } from "./hosted/provider.js";
@@ -34,7 +34,7 @@ export type WebSocketFactory = (url: string, init: { headers: Record<string, str
 export type DaytonaTimeouts = HostedTimeouts & { retryMs: number };
 
 /** The Daytona provider's options: the key and Daytona's own settings, then the shared adapter's (HostedOptions). */
-export interface DaytonaProviderOptions extends Omit<HostedOptions, "label" | "kind" | "desktop" | "maxLifetimeMs" | "timeouts"> {
+export interface DaytonaProviderOptions extends Omit<HostedOptions, "label" | "kind" | "desktop" | "maxLifetimeMs" | "timeouts" | "archilEgress"> {
 	/** The Daytona API key. The caller passes it; this provider never reads the environment and never puts it in a computer. */
 	apiKey: string;
 	/** Default https://app.daytona.io/api. */
@@ -126,8 +126,8 @@ interface CallInit {
 }
 
 /**
- * The mount kinds a Daytona computer takes: an Archil mount of the run's folder (mount-archil.ts), made as root through
- * the toolbox, from a snapshot of box/Dockerfile, with the daemon user agentrun-tool (daemonUser "2510:2510").
+ * The mount kinds a Daytona computer takes: none. Archil's client hangs on Daytona's sandboxes, so an Archil mount is
+ * refused in the descriptor's words (DAYTONA_NO_ARCHIL) before any request.
  */
 export const MOUNT: readonly MountKind[] = DAYTONA.mounts;
 
@@ -485,6 +485,7 @@ class DaytonaHost implements MachineHost {
 			gpuReadBack: true,
 			network: [...DAYTONA.network],
 			mounts: [...MOUNT],
+			unmounted: { ...DAYTONA.unmounted },
 			release: ["stop", "delete"],
 			// autoDeleteInterval 0: Daytona deletes a sandbox as soon as it stops, so a stop keeps no computer.
 			stopDeletes: options.autoDelete === 0,
@@ -549,7 +550,7 @@ class DaytonaHost implements MachineHost {
 
 	/**
 	 * POST /sandbox: its native name and labels, the lifetime as a TTL in whole minutes, the idle stop and auto-delete,
-	 * no public port, and network none (block-all) unless the adapter asks open (an Archil computer's root). A GPU
+	 * no public port, and network none (block-all), the one network check() takes. A GPU
 	 * computer is made from the GPU snapshot in region earth, ephemeral (its stop deletes it). Never cancelled: the adapter
 	 * races it, and deletes by name one whose answer never comes. A name Daytona already holds (409) made nothing: exists.
 	 */
@@ -965,6 +966,7 @@ export class DaytonaProvider extends HostedProvider {
 			...rest
 		} = options ?? ({} as DaytonaProviderOptions);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("a Daytona API key is required");
+		if ((rest as { archilEgress?: unknown }).archilEgress !== undefined) throw new Error(`${DAYTONA_NO_ARCHIL}, so it takes no archilEgress`);
 		const base = new URL(apiUrl);
 		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);
 		if (arch !== "amd64" && arch !== "arm64") throw new Error(`options.arch is amd64 or arm64, not ${String(arch)}`);

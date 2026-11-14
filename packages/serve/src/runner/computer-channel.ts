@@ -61,6 +61,7 @@ const words = (error: unknown): string => (error instanceof Error ? error.messag
  */
 export async function runChannelCall(computer: LoopComputer, call: ComputerCall, signal: AbortSignal, now: () => number = Date.now): Promise<ChannelAnswer> {
   const started = performance.now();
+  const startedAt = now();
   let answer: ComputerAnswer;
   let leave: (() => void) | undefined;
   try {
@@ -76,5 +77,5 @@ export async function runChannelCall(computer: LoopComputer, call: ComputerCall,
   } finally {
     leave?.();
   }
-  return { answer, record: callRecordOf(call.method, call.params, answer, performance.now() - started), at: now() };
+  return { answer, record: callRecordOf(call.method, call.params, answer, performance.now() - started, startedAt), at: now() };
 }

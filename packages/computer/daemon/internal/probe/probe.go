@@ -88,10 +88,14 @@ type Result struct {
 	Raised     []string `json:"raised"`
 	// Sockets, when asked for (probe --sockets): the unix sockets with a path the probe could connect to
 	// (ConnectableSockets), each by its real path and type, and the roots it could not search whole; absent when not asked.
-	Sockets  *SocketSearch `json:"sockets,omitempty"`
-	Reached  []string      `json:"reached"`
-	Accepted []string      `json:"accepted"`
-	Results  []Target      `json:"results"`
+	Sockets *SocketSearch `json:"sockets,omitempty"`
+	// Listeners, when asked for (probe --sockets): the TCP and UDP sockets that listen in the probe's own network
+	// namespace (Listeners), each with its owner where /proc shows it, and the tables it could not read; absent when not
+	// asked.
+	Listeners *ListenerSearch `json:"listeners,omitempty"`
+	Reached   []string        `json:"reached"`
+	Accepted  []string        `json:"accepted"`
+	Results   []Target        `json:"results"`
 }
 
 // ProtocolOf is the request a target gets: a UDP target dns (a DNS query, the request a UDP server most commonly

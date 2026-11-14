@@ -40,12 +40,15 @@ import { proposeRun } from "../propose.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
 import { type McpServerRow, type Store } from "../store/store.js";
+import { getMcpServer, listMcpServers } from "../mcp-store.js";
 import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
+import { reviseOf, servedOf } from "./workflow-first.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectDeps, type ReflectTurn } from "./reflect-hook.js";
 import { runnerSecrets } from "./redact.js";
+import { isMcpWildcard, mcpNameOf } from "../tool-names.js";
 
 /** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
  *  the agent's learning folder (where the run's place keeps it), the runner's environment (the host's secrets a
@@ -105,7 +108,16 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       const draftFor = start.notesOnly ? [] : await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []);
       // With a draft asked for, what each tool its call nodes may run takes and gives, in the server's own words.
       const described = draftFor.length ? await describedOf(tools, deps.store) : [];
-      return { active: start.seedNotes ?? start.given.length, tools, draftFor, described, ...(decisions ? { decisions } : {}), ...(start.notesOnly ? { workflows: false as const } : {}) };
+      // A run its learned workflow handed back (workflow-first.ts): the prompt asks for that workflow's next revision, by
+      // its name alone. A deopt is the signal the next revision learns from, never a failure that keeps it from learning.
+      // A run whose learned workflow the money rule stopped from running first: the prompt asks for its revision, with the
+      // two numbers that stopped it.
+      const entries = start.notesOnly ? [] : await runEntries(deps.store, runId, BACKGROUND_CONTEXT).catch(() => []);
+      const served = servedOf(entries);
+      const handedBack = served?.outcome === "handed_back" ? served.workflow : undefined;
+      const stopped = reviseOf(entries);
+      const revise = stopped ? { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } : undefined;
+      return { active: start.seedNotes ?? start.given.length, tools, draftFor, described, ...(decisions ? { decisions } : {}), ...(start.notesOnly ? { workflows: false as const } : {}), ...(handedBack ? { handedBack } : {}), ...(revise ? { revise } : {}) };
     },
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
@@ -255,8 +267,8 @@ async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Rec
     // Every MCP tool its call nodes run, as the workflow's own read reads them (draftMcpTools over the parsed JSON: an
     // escaped "\/" is a slash there), its price read first (unpricedCalls asks synchronously).
     for (const name of draftMcpTools(doc)) {
-      const [server, tool] = name.slice("mcp:".length).split("/") as [string, string];
-      if (!rows.has(server)) rows.set(server, store.mcp.server(server).catch(() => undefined));
+      const { server, tool } = mcpNameOf(name)!;
+      if (!rows.has(server)) rows.set(server, getMcpServer(store, server).catch(() => undefined));
       const price = ((await rows.get(server))?.prices as Record<string, unknown> | undefined)?.[tool];
       priced.set(name, typeof price === "number" && Number.isFinite(price) ? price : undefined);
     }
@@ -269,7 +281,7 @@ async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Rec
 /** The tools each saved MCP server lists now, by the server's name (none for one not saved, or a store that can't be
  *  read): what a wildcard grant names (tools.ts mcpGrantsListed). */
 async function mcpListedOf(store: Pick<Store, "mcp">): Promise<(server: string) => readonly string[]> {
-  const rows = await store.mcp.servers().catch(() => [] as McpServerRow[]);
+  const rows = await listMcpServers(store).catch(() => [] as McpServerRow[]);
   const byName = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
   return (server) => byName.get(server) ?? [];
 }
@@ -283,15 +295,14 @@ async function describedOf(tools: readonly string[], store: Pick<Store, "mcp">):
   const listed = new Map<string, Promise<McpServerRow | undefined>>();
   const out: { name: string; does: string }[] = [];
   for (const name of tools) {
-    const mcp = /^mcp:([^/]+)\/(.+)$/.exec(name);
+    const mcp = mcpNameOf(name);
     if (!mcp) {
       const does = toolOf(name)?.summary;
       if (does) out.push({ name, does });
       continue;
     }
-    const server = mcp[1]!;
-    const tool = mcp[2]!;
-    if (!listed.has(server)) listed.set(server, store.mcp.server(server).catch(() => undefined));
+    const { server, tool } = mcp;
+    if (!listed.has(server)) listed.set(server, getMcpServer(store, server).catch(() => undefined));
     const row = await listed.get(server)!;
     const entry = ((row?.tools ?? []) as { name?: unknown; title?: unknown; description?: unknown; input_schema?: unknown; output_schema?: unknown }[]).find((one) => one?.name === tool);
     if (!entry) continue;
@@ -362,7 +373,7 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
   const agent = (body.toolSettings ?? {}) as never;
   const approvals = body.approvals === "never" ? "never" : "ask";
   // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
-  const granted = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? mcpGrantsListed(body.tools ?? [], await mcpListedOf(deps.store)) : (body.tools ?? []);
+  const granted = (body.tools ?? []).some(isMcpWildcard) ? mcpGrantsListed(body.tools ?? [], await mcpListedOf(deps.store)) : (body.tools ?? []);
   // `deniedBy`: where each deny was set (the agent's tool settings, the server's, a default), which a left-out draft's
   // words name.
   const { tools, gated, deniedBy, asked } = learnedDraftTools(granted, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(deps.store.settings) });

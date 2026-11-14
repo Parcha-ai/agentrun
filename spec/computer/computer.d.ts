@@ -295,6 +295,13 @@ interface Computer {
     /** Run a command: a string runs in sh -c, a list is the program and its arguments. */
     run(command: string | string[], options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> }): Promise<RunResult>;
   };
+  /** @group processes */
+  readonly processes: {
+    /** Start a program that runs on after the call (an app on the desktop, a server), the way shell.run can't: it ends
+     *  everything its command started. Answers once it started; it and what it starts run until they exit or the
+     *  computer ends. A string runs in sh -c, a list is the program and its arguments. */
+    start(command: string | string[], options?: { cwd?: string; env?: Record<string, string> }): Promise<{ pid: number }>;
+  };
   /** @group files */
   readonly files: {
     /** A file's text (UTF-8), or with base64 its bytes. */

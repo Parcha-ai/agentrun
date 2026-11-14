@@ -378,7 +378,7 @@ test("R11: a command row handed to a running loop makes its MCP credentials fres
   const hostTools = { wait: { name: "wait", replaySafe: false, run: async () => (events.push("tool"), toolRuns(), await waiting, "waited") } };
   const script = [{ call: "wait", args: {} }, { say: "done" }];
   const running = mcpRun(t, {
-    script, grants: ["mcp:fake/add"], hostTools, events, network, auth: "oauth",
+    script, grants: ["mcp:fake/add"], hostTools, settings: { wait: { permission: "allow" } }, events, network, auth: "oauth",
     seal: (url) => sealedOAuth(url, oauthSet(`not-a-secret-${"valid-access"}`, Date.now() + 3_600_000)),
     onCommand: (command) => command.kind === "steer" && steerTaken(),
     before: async (opened) => void ((server = opened.server), (fakeUrl = opened.fake.url)),

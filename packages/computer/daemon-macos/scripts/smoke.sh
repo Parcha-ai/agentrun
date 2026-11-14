@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# CI: starts Computerd.app the way its LaunchAgent does (launchd, in the runner's Aqua session), headless, and runs
-# smoke.py against it through the app's own computerd command, then the protocol's ui conformance cases
-# (ui-conformance.sh) when packages/computer is built.
+# CI: starts Computerd.app the way its LaunchAgent does (launchd, in the runner's Aqua session), headless, checks that
+# its socket refuses a client not signed as Computerd, then runs the protocol's conformance cases (ui-conformance.mjs)
+# against it through the app's own computerd command; a missing build fails the run.
 #
 #   scripts/smoke.sh PATH/TO/Computerd.app
 set -euo pipefail
@@ -53,16 +53,27 @@ else
 	direct=$!
 fi
 
-smoke=0
-python3 -I "$here/smoke.py" "$app/Contents/Helpers/computerd" "$home" || smoke=$?
+# The socket's peer check: a client that is not Computerd's own command is refused, in words.
+for _ in $(seq 100); do [[ -S "$home/computerd.sock" ]] && break; sleep 0.1; done
+peer=0
+reply="$(printf '{"jsonrpc":"2.0","id":1,"method":"ping"}\n' | nc -U -w 5 "$home/computerd.sock" 2>&1 || true)"
+if [[ "$reply" == *"refused this client"* ]]; then echo "PASS the socket refuses a client not signed as Computerd"; else echo "FAIL the socket answered an unsigned client: $reply"; peer=1; fi
 
-# The protocol's ui conformance cases, on the same running app, when packages/computer is built.
+# A system alert sits over every window: the ui fixture could not come in front of macOS 26's screen capture alert
+# (ui.fixture-shape), and every demo's movie had it painted over. seed-tcc.sh marks that one answered; one screen shot
+# here shows whether any alert comes up all the same, and it is answered (and named in the log) before the cases.
+python3 -I "$here/mini-demos.py" "$app/Contents/Helpers/computerd" "$home" "$home/demos" --answer-alerts || echo "the system alerts were not answered: see above"
+
+# The protocol's conformance cases, on the same running app (a missing build fails the run).
 conformance=0
 if [[ -f "$here/../../dist/conformance/cli.js" ]]; then
-	"$here/ui-conformance.sh" "$app/Contents/Helpers/computerd" "$home" || conformance=$?
+	node "$here/ui-conformance.mjs" "$app/Contents/Helpers/computerd" "$home" || conformance=$?
 else
-	echo "packages/computer is not built (npm run build -w @parcha/agentrun-computer): the ui conformance cases do not run"
+	echo "packages/computer is not built (npm run build -w @parcha/agentrun-computer): the conformance cases cannot run"
+	conformance=1
 fi
+# The cases leave the ui fixture's window open mid-screen, in front of every demo's window: it goes before the demos.
+killall UIFixture 2>/dev/null || true
 
 # The Mac mini's demo tasks (mini-demos.py), recorded (each frame cut to the task's window): reported, and not yet a
 # verdict here, since a runner's apps are fresh each time (first-run sheets, no account). Safari's page body is blank
@@ -71,9 +82,17 @@ fi
 # tiles are never drawn. Only Safari's own chrome and the page's background colour show; every capture (screen.shot,
 # the window's own image, screencapture) agrees. A Mac with its GPU draws them.
 python3 -I "$here/mini-demos.py" "$app/Contents/Helpers/computerd" "$home" "$home/demos" --movie || echo "the demo tasks failed: see above"
+# Then an agent does them, from the task in plain words, on agentrun-serve started here (packages/serve's build): Sonnet
+# 5.5 with Anthropic's key in the environment, GPT-6.1 Terra beside it with OpenRouter's; with neither, the scripted
+# model (agent-faux.mjs), which proves the path for the TextEdit task. Reported, not a verdict, as the scripted ones.
+agents=()
+if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then agents+=(--agent=anthropic/claude-sonnet-5-5); fi
+if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then agents+=(--agent=openrouter/openai/gpt-6.1-terra); fi
+if [[ ${#agents[@]} -eq 0 ]]; then echo "no model key in the environment: the agent demos run the scripted model"; agents=(--agent=faux); fi
+python3 -I "$here/mini-demos.py" "$app/Contents/Helpers/computerd" "$home" "$home/demos/agent" --movie "${agents[@]}" || echo "the agent's demo tasks failed: see above"
 # The grants asked of TCC while the tests and demos ran, counted by service: a grant the sandbox's AppleScript needs
 # and seed-tcc.sh does not seed shows up here.
 echo "TCC requests in the last 15 minutes, by service:"
 log show --last 15m --style compact --predicate 'subsystem == "com.apple.TCC" AND eventMessage BEGINSWITH "AUTHREQ_CTX"' 2>&1 \
 	| grep -oE 'service=kTCCService[A-Za-z]+' | sort | uniq -c || true
-exit $((smoke || conformance))
+exit $((peer || conformance))

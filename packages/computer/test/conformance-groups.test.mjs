@@ -373,6 +373,18 @@ test("apps.launch-terminate needs apps alone: a phone with no ui group and no fi
 	assert.match(reasons(hidden)["apps.launch-terminate"], /^com\.android\.settings shown after apps\.launch: a screenshot other than the one before it/);
 });
 
+test("apps.launch-terminate on a Linux desktop drives a stock editor or terminal any vendor's desktop lists, and skips in words when it lists none", async () => {
+	const groups = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"];
+	const seen = await run(fakeDevices({ groups, stockApps: ["firefox-esr", "org.xfce.mousepad"] }).provider, ["apps.launch-terminate"]);
+	assert.deepEqual(statuses(seen), { "apps.launch-terminate": "pass" }, reasons(seen)["apps.launch-terminate"]);
+	const kept = await run(fakeDevices({ groups, stockApps: ["org.xfce.mousepad"], broken: "terminate-stays" }).provider, ["apps.launch-terminate"]);
+	assert.deepEqual(statuses(kept), { "apps.launch-terminate": "fail" });
+	assert.match(reasons(kept)["apps.launch-terminate"], /org\.xfce\.mousepad no longer in front after apps\.terminate/);
+	const none = await run(fakeDevices({ groups, stockApps: ["firefox-esr"] }).provider, ["apps.launch-terminate"]);
+	assert.deepEqual(statuses(none), { "apps.launch-terminate": "skip" });
+	assert.match(reasons(none)["apps.launch-terminate"], /this desktop lists none of the stock apps the case knows \(org\.xfce\.mousepad, mousepad, xfce4-terminal, org\.xfce\.terminal, xterm\)/);
+});
+
 /** The lifetimes provider.deadline asked for, in order: the run's shared computer is not the case's. */
 const deadlineLifetimes = (made) => made.filter(({ spec }) => spec.labels?.["agentrun.conformance.case"] === "deadline").map(({ spec }) => spec.lifetimeMs);
 

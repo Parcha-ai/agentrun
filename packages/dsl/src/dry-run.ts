@@ -306,6 +306,8 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
         return { answers, model: "synthetic", usage: null, cost_usd: null, request_sha256: "",
           ...(evidence === "required" ? { evidence: [{ url: "https://example.invalid/dry-run", title: null, excerpts: [], scope: "dry_run" }] } : {}) };
       },
+      // A guard never hands back on synthetic values: the dry run proves the path, not the step's answer.
+      guardStep: async () => ({ p: 1 }),
       syntheticEffects: true,
       decisionProviders: syntheticProviders(workflow),
       runEffect: async ({ node, schema }) => { await step(); return node.via === "shell"

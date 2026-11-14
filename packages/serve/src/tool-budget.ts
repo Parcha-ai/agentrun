@@ -19,6 +19,8 @@
 // own: a request still out counts at its hold and bound, one a lost claim cut the same), so a restart or a moved claim
 // reads the same figure, and a raise of the cap ends the wrap-up from its next call.
 import { AssistantEntry, defineDoc, type EntryRecord } from "@earendil-works/pi-durable";
+import { KINDS } from "./runner/journal-kinds.js";
+import { WORKFLOW_FIRST_CALL } from "./runner/workflow-first.js";
 
 /** A conversation's own budget, narrower than the run's (a subagent call's `max_tool_calls`, runner/subagent.ts): written
  *  in the commit that makes the conversation, so a restart reads the same one, and held by the gate with the run's. */
@@ -34,9 +36,16 @@ export const TOOL_BUDGET_TEXT = "Tool budget spent: this conversation has made e
 type Part = { readonly type?: unknown; readonly id?: unknown };
 
 /** The tool calls before `callId` once one more page of a conversation's entries (`entries`, oldest first) is read, from
- *  `count`, the earlier pages': `done` once the call is reached or the count is `upTo`, where a reader stops. */
+ *  `count`, the earlier pages': `done` once the call is reached or the count is `upTo`, where a reader stops. The run's
+ *  learned workflow, run first (runner/workflow-first.ts), is one of them: its call is the loop's, kept as a call start
+ *  of its own on the root (no model content), before the agent's first turn, and counts as any call the model made. */
 export function countCalls(entries: readonly EntryRecord[], callId: string, upTo: number, count = 0): { count: number; done: boolean } {
   for (const entry of entries) {
+    if (entry.kind === KINDS.callStart && (entry.data as { callId?: unknown } | undefined)?.callId === WORKFLOW_FIRST_CALL) {
+      if (callId === WORKFLOW_FIRST_CALL || count >= upTo) return { count, done: true };
+      count++;
+      continue;
+    }
     if (!AssistantEntry.is(entry)) continue;
     const content = (entry.model?.[0] as { content?: unknown } | undefined)?.content;
     if (!Array.isArray(content)) continue;
