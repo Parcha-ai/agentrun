@@ -17,7 +17,7 @@ import { withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { HostTool } from "@parcha/agentrun-kernel";
-import { hostToolNames, replayOf } from "./tool-list.js";
+import { replayOf } from "./tool-list.js";
 import { realOf, workspaceRelative } from "./workspace-paths.js";
 import { bounded, imagesOf, textOf } from "./workspace/executors.js";
 
@@ -25,9 +25,6 @@ export { workspaceRelative } from "./workspace-paths.js";
 
 // Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again, is its
 // row's `replay` (tool-list.ts). `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL) is never run again.
-/** The rows' replay classes as one record, for tools.ts, which another open change holds: it reads this until it can read
- *  tool-list.ts directly. Built from the rows, never kept by hand. */
-export const REPLAY: Readonly<Record<string, "safe" | "never">> = Object.fromEntries(hostToolNames().map((name) => [name, replayOf(name)!]));
 
 // pi's limits on a tool's output, and how a call's output is held within them, are the executors' (workspace/executors.ts).
 export { cutUtf8, MAX_BYTES, MAX_LINES } from "./workspace/executors.js";

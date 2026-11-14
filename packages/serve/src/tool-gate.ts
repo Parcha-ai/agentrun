@@ -32,8 +32,8 @@ import type { Workspace } from "./workspace/workspace.js";
 import { builtinHarness } from "./harness-table.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { SHELL_TOOLS } from "./background.js";
-import { DECISION_PROVIDER_KEYS, SERVE_OWN_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
-import { isTableTool, tableTools } from "./tool-list.js";
+import { DECISION_PROVIDER_KEYS, KIND_KEYS, SERVE_OWN_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
+import { isTableTool, isToolRow, tableTools } from "./tool-list.js";
 import { deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
@@ -57,11 +57,14 @@ export const isCatalogTool = (name: string): boolean => name.startsWith("monid."
  *  settings page, capabilities), which reads the computer's defaults. */
 export type ShellWhere = { readonly computer?: boolean };
 
-/** The owner's defaults (11-01): a built-in kernel tool allow; a third-party catalog tool ask. On a run with no computer,
+const isBuiltin = (name: string): boolean => isToolRow(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name);
+
+/** The owner's defaults: a built-in of this server (a row of the tool list, its own tools, a computer kind's key, a
+ *  decision provider's) allows; anything else asks, so a new source never defaults to allow. On a run with no computer,
  *  the kernel's ruled rule (defaultPermissionOf): bash asks first, and the background tools, which need a computer, are
  *  refused. */
 export const defaultPermission = (name: string, where: ShellWhere = {}): Permission => {
-  if (isCatalogTool(name)) return "ask";
+  if (isCatalogTool(name) || !isBuiltin(name)) return "ask";
   return where.computer === false ? defaultPermissionOf(name, { computer: false }) : "allow";
 };
 

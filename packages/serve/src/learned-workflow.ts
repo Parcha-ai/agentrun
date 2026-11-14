@@ -285,7 +285,7 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
   return defineTool({
     name: LEARNED_WORKFLOW_TOOL,
     description: learnedWorkflowDescription(run.workflows),
-    // Never run again after a crash (pi-durable's "unsafe"; a HostTool's "never": host-tools.ts REPLAY).
+    // Never run again after a crash (pi-durable's "unsafe"; a HostTool's "never": tool-list.ts `replay`).
     replay: "unsafe",
     parameters: {
       type: "object",
