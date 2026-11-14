@@ -69,13 +69,19 @@ const until = async (done, what, ms = 60_000) => {
 };
 
 /** An agent that learned `answer`, a runner claiming every run from its stored launch. The node answers 41 to the
- *  questions in `wrong`, else 42, sure either way; the agent answers AGENT_SAYS. */
-async function world(t, { wrong = new Set() } = {}) {
+ *  questions in `wrong`, else 42, sure either way; the agent answers AGENT_SAYS, after calling learned_workflow `answer`
+ *  itself first on the questions in `calls`. */
+async function world(t, { wrong = new Set(), calls = new Set() } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-feedback-rounds-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  const question = (body) => Number(/Question (\d+)/.exec(JSON.stringify(body))?.[1]);
   const gw = await startFauxGateway({
-    call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: wrong.has(Number(/Question (\d+)/.exec(JSON.stringify(body))?.[1])) ? 41 : 42, sure: true } } } : undefined),
+    call: ({ body }) => {
+      if (offers(body, "submit") && !hasResult(body)) return { name: "submit", input: { value: { answer: wrong.has(question(body)) ? 41 : 42, sure: true } } };
+      if (offers(body, "learned_workflow") && !hasResult(body) && calls.has(question(body))) return { name: "learned_workflow", input: { name: "answer", input: { question: `Question ${question(body)}: what is six times seven?` } } };
+      return undefined;
+    },
     text: ({ body }) => (offers(body, "submit") ? "submitted" : AGENT_SAYS),
   });
   let runner;
@@ -97,8 +103,10 @@ async function world(t, { wrong = new Set() } = {}) {
     const row = await server.runs.get(id);
     return ["ended", "failed", "stopped"].includes(row?.state) && row.runner === null && (row.endedAt ?? 0) > after && row;
   }, `run ${id} ended`);
-  const start = async (id, n, { byHand = false } = {}) => {
-    await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: `Question ${n}: what is six times seven?`, question: `Question ${n}: what is six times seven?` }, title: `q${n}`, place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, learning: startAt(seed), ...(byHand ? { workflow_first: false } : {}) } });
+  // `offered`: the launch names the learned workflows its learned_workflow tool offers, as the server's does
+  // (chooseWorkflows): a run whose agent calls the tool itself is classified by its timeline only then.
+  const start = async (id, n, { byHand = false, offered = false } = {}) => {
+    await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: `Question ${n}: what is six times seven?`, question: `Question ${n}: what is six times seven?` }, title: `q${n}`, place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, learning: { ...startAt(seed), ...(offered ? { workflows: ["answer"] } : {}) }, ...(byHand ? { workflow_first: false } : {}) } });
     return ended(id);
   };
   /** The grade route's work (server.ts gradeRun): the grade with the path its record says, then its feedback round; a round
@@ -240,6 +248,24 @@ test("a run with rounds: its impact and its cost per run read the same split: th
   assert.equal(impact.job_cost_usd, 0.6, "the job is round 1's");
   assert.equal(impact.look_back_usd, 0.4, "the follow-up turn is learning, as the cost per run counts it");
   assert.equal(impact.grade_usd, 0.02);
+});
+
+test("a run whose agent called learned_workflow itself, graded wrong: its feedback round's words are no message of the job's, so the path stays workflow and the round is learning (#2648 review)", { timeout: 120_000 }, async (t) => {
+  const { server, gw, start, grade } = await world(t, { wrong: new Set([5]), calls: new Set([5]) });
+  const first = await start("run-called", 5, { byHand: true, offered: true });
+  assert.ok(gw.requests.some((request) => (request.body?.messages ?? []).some((message) => Array.isArray(message.content) && message.content.some((block) => block?.type === "tool_use" && block.name === "learned_workflow"))), "the agent called the workflow itself");
+  assert.deepEqual([first.metrics?.path, first.metrics?.workflow], ["workflow", "answer"], `the job did only that: ${JSON.stringify(first.metrics)}`);
+  const { round, row } = await grade(first, false, LABEL(5));
+  assert.equal(round, "revise", "a wrong answer of the workflow's asks for its revision");
+  assert.deepEqual([row.metrics?.path, row.metrics?.workflow], ["workflow", "answer"], `the round's words are not the agent answering the job again: ${JSON.stringify(row.metrics)}`);
+  const [one, two] = [await server.learning.proposal("run-called", 1), await server.learning.proposal("run-called", 2)];
+  assert.ok(two?.proposal?.look_back_usd > 0, `the round was paid: ${JSON.stringify(two?.proposal)}`);
+  const { runs } = await agentCostOverStore(server, "agent-1");
+  const cost = runs.find((run) => run.run_id === "run-called");
+  assert.equal(cost.path, "workflow", JSON.stringify(cost));
+  near(cost.cost_usd, one.proposal.job_cost_usd, "the job is its first round's");
+  near(cost.learning_usd, cost.total_usd - one.proposal.job_cost_usd, "every turn after the job is learning");
+  assert.ok(cost.learning_usd >= two.proposal.look_back_usd - 1e-9, `the round's look-back is in its learning: ${JSON.stringify([cost, two.proposal])}`);
 });
 
 test("a grade of an archived run, or of a run of an archived agent, is kept and opens no round: closed history starts no paid learning (#2648 review)", { timeout: 120_000 }, async (t) => {
