@@ -4,13 +4,16 @@
 // stdin sent as the command's input. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts).
 // Every Daytona fact used here is cited in the README's Daytona section.
 import { randomBytes } from "node:crypto";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, DAYTONA_NO_ARCHIL, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./descriptors/daytona.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, ours } from "./hosted/provider.js";
+import { boundOf, pause as sleep } from "./hosted/process.js";
 import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
+import { dateOf, driftOf, isWhole, show, sizeOf } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
@@ -163,20 +166,7 @@ const ERR = Buffer.from([2, 2, 2]);
 /** A line the client wrote, echoed back: a request or a notification is never a daemon's reply. */
 const ECHO = /^\{"jsonrpc":"2\.0",("id":\d+,)?"method":/;
 
-const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const decoder = new TextDecoder();
-const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
-const sleep = (ms: number, signal?: AbortSignal) =>
-	new Promise<void>((done) => {
-		const timer = setTimeout(finish, ms);
-		function finish() {
-			clearTimeout(timer);
-			signal?.removeEventListener("abort", finish);
-			done();
-		}
-		if (signal?.aborted) finish();
-		else signal?.addEventListener("abort", finish, { once: true });
-	});
 
 /** The entries of a comma-separated list Daytona keeps, trimmed; none when it is unset; undefined for a shape it never sends. */
 function entriesOf(list: unknown): string[] | undefined {
@@ -283,8 +273,7 @@ interface SandboxExpected {
  * not read itself (it reads labels, the network and the state). Pure: no call.
  */
 function sandboxDrift(sb: Sandbox, expected: SandboxExpected): string[] {
-	const found: string[] = [];
-	const mismatch = (field: string, declared: unknown, actual: unknown) => found.push(`${field}: declared ${show(declared)}, read back ${show(actual)}`);
+	const { found, mismatch } = driftOf();
 	const labels = sb.labels ?? {};
 	// A GPU computer is made from the provider's GPU snapshot, whatever image named it. Daytona's default snapshot is
 	// whichever it names: a computer made from it is not held to a name.
@@ -312,42 +301,10 @@ function sandboxDrift(sb: Sandbox, expected: SandboxExpected): string[] {
 	return found;
 }
 
-/** A stream fed as the log stream delivers, read as an async iterable until it ends or fails. */
-function feed(): { push(bytes: Uint8Array): void; end(error?: Error): void; iterable: AsyncIterable<Uint8Array> } {
-	const queue: Uint8Array[] = [];
-	let ended = false;
-	let failure: Error | undefined;
-	let wake: (() => void) | undefined;
-	const nudge = () => {
-		const waiting = wake;
-		wake = undefined;
-		waiting?.();
-	};
-	return {
-		push(bytes) {
-			if (ended) return;
-			queue.push(bytes);
-			nudge();
-		},
-		end(error) {
-			if (ended) return;
-			ended = true;
-			failure = error;
-			nudge();
-		},
-		iterable: {
-			async *[Symbol.asyncIterator]() {
-				for (;;) {
-					const next = queue.shift();
-					if (next !== undefined) yield next;
-					else if (failure !== undefined) throw failure;
-					else if (ended) return;
-					else await new Promise<void>((done) => (wake = done));
-				}
-			},
-		},
-	};
-}
+/** The log stream's output for one channel: a failure ends the stream with it, and one nobody reads is not an uncaught error. */
+const channel = () => new PassThrough().on("error", () => {});
+const push = (stream: PassThrough, bytes: Uint8Array) => void (stream.writableEnded || stream.destroyed || stream.write(bytes));
+const finish = (stream: PassThrough, error?: Error) => void (error ? stream.destroy(error) : stream.end());
 
 /** Daytona's sandboxes as a MachineHost (../host.ts). */
 class DaytonaHost implements MachineHost {
@@ -403,13 +360,6 @@ class DaytonaHost implements MachineHost {
 		};
 	}
 
-	errorCode(error: unknown): ComputerErrorCode {
-		const name = (error as { name?: unknown } | null)?.name;
-		if (name === "AbortError") return "aborted";
-		if (name === "TimeoutError") return "timeout";
-		return "vendor";
-	}
-
 	/**
 	 * A snapshot name has no control characters; a GPU computer is made from the provider's GPU snapshot, which a spec
 	 * names, or Daytona's default, never another. No call.
@@ -440,18 +390,19 @@ class DaytonaHost implements MachineHost {
 		// A sandbox this host made is held to what it asked; another (attach) to the GPU it reports.
 		const gpu = this.#made.get(sb.id) ?? (isWhole(sb.gpu) && sb.gpu > 0);
 		const drift = sandboxDrift(sb, { sandboxClass: this.#class, autoStopInterval: this.#autoStop, autoDeleteInterval: this.#autoDeleteFor(gpu), gpu: gpu ? this.#gpu : undefined });
-		const ends = typeof sb.autoDestroyAt === "string" ? Date.parse(sb.autoDestroyAt) : Number.NaN;
-		const made = typeof sb.createdAt === "string" ? Date.parse(sb.createdAt) : Number.NaN;
+		const endsAt = dateOf(sb.autoDestroyAt);
+		const made = dateOf(sb.createdAt);
+		const size = sizeOf(sb.cpu, sb.memory);
 		return {
 			id: sb.id,
 			labels: { ...(sb.labels ?? {}) },
 			state: stateOf(sb),
 			network: networkOf(sb),
 			...(typeof sb.snapshot === "string" ? { image: { resolved: sb.snapshot } } : {}),
-			...(Number.isNaN(made) ? {} : { createdAt: new Date(made) }),
-			...(Number.isNaN(ends) ? {} : { endsAt: new Date(ends) }),
+			...(made ? { createdAt: made } : {}),
+			...(endsAt ? { endsAt } : {}),
 			...(drift.length > 0 ? { drift } : {}),
-			...(isWhole(sb.cpu) || isWhole(sb.memory) ? { size: { ...(isWhole(sb.cpu) ? { cpus: sb.cpu } : {}), ...(isWhole(sb.memory) ? { memoryMb: sb.memory * 1024 } : {}) } } : {}),
+			...(size ? { size } : {}),
 			...(isWhole(sb.gpu) && sb.gpu > 0 ? { gpu: { type: String(sb.gpuType), count: sb.gpu } } : {}),
 			...(typeof sb.errorReason === "string" && sb.errorReason !== "" ? { why: sb.errorReason } : {}),
 		};
@@ -644,8 +595,8 @@ class DaytonaHost implements MachineHost {
 			await removeSession();
 			return vendorFail("daytona", `opening the log stream: ${(error as Error).message}`);
 		}
-		const out = feed();
-		const err = feed();
+		const out = channel();
+		const err = channel();
 		let rest: Buffer = Buffer.alloc(0);
 		const lines = (bytes: Buffer, last: boolean) => {
 			rest = rest.length === 0 ? bytes : Buffer.concat([rest, bytes]);
@@ -654,16 +605,16 @@ class DaytonaHost implements MachineHost {
 				const end = at >= 0 ? at + 1 : rest.length;
 				const line = rest.subarray(0, end);
 				rest = rest.subarray(end);
-				if (line.subarray(0, 3).equals(ERR)) err.push(new Uint8Array(line.subarray(3)));
+				if (line.subarray(0, 3).equals(ERR)) push(err, line.subarray(3));
 				else {
 					const text = line.subarray(0, 3).equals(OUT) ? line.subarray(3) : line;
-					if (!ECHO.test(text.subarray(0, 64).toString("utf8"))) out.push(new Uint8Array(text));
+					if (!ECHO.test(text.subarray(0, 64).toString("utf8"))) push(out, text);
 				}
 			}
 			if (rest.length > MAX_LINE_BYTES + 8) {
 				const over = new Error("the process sent a line over the 1 MiB limit");
-				out.end(over);
-				err.end(over);
+				finish(out, over);
+				finish(err, over);
 				socket.close(1000);
 			}
 		};
@@ -681,32 +632,28 @@ class DaytonaHost implements MachineHost {
 		socket.addEventListener("error", (event) => {
 			opened(vendorFail("daytona", `the log stream failed: ${event.message ?? "no reason given"}`));
 			const failed = new Error(`the log stream failed${event.message ? `: ${event.message}` : ""}`);
-			out.end(failed);
-			err.end(failed);
+			finish(out, failed);
+			finish(err, failed);
 			closed();
 		});
 		socket.addEventListener("close", ({ code }) => {
 			opened(vendorFail("daytona", `the log stream closed before it opened (code ${code ?? "none"})`));
 			lines(Buffer.alloc(0), true);
-			out.end();
-			err.end();
+			finish(out);
+			finish(err);
 			closed();
 		});
 		// The stream opens within the call's bound, or the command is let go of: its output would be lost.
-		const bound = AbortSignal.timeout(ctx.timeoutMs);
-		const either = ctx.signal ? AbortSignal.any([ctx.signal, bound]) : bound;
-		let onAbort: () => void = () => {};
-		const aborted = new Promise<Result<void>>((done) => {
-			onAbort = () => done(ctx.signal?.aborted ? fail("aborted", "opening the log stream was aborted") : fail("timeout", `the log stream did not open within ${ctx.timeoutMs / 1000} s`));
-			if (either.aborted) onAbort();
-			else either.addEventListener("abort", onAbort, { once: true });
-		});
-		const started = await Promise.race([open, aborted]);
-		either.removeEventListener("abort", onAbort);
+		const bound = boundOf(ctx.timeoutMs, ctx.signal, "opening the log stream");
+		const started = await Promise.race([open, bound.promise]).then(
+			(opened) => opened,
+			(error: Error) => fail(error.name === "AbortError" ? "aborted" : "timeout", error.message),
+		);
+		bound.clear();
 		const kill = async () => {
 			socket.close(1000);
-			out.end();
-			err.end();
+			finish(out);
+			finish(err);
 			await removeSession();
 		};
 		if (!started.ok) {
@@ -747,8 +694,8 @@ class DaytonaHost implements MachineHost {
 			}
 		};
 		return ok({
-			stdout: out.iterable,
-			stderr: err.iterable,
+			stdout: out,
+			stderr: err,
 			write: (bytes) => {
 				queued += utf8.decode(bytes, { stream: true });
 				const at = queued.lastIndexOf("\n");

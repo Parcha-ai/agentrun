@@ -1,4 +1,4 @@
-import { callWords, keptChord, type ComputerStepRow } from "./computer.js";
+import { callWords, stepOf, type ComputerStepRow } from "./computer.js";
 import { cut, firstLine, json, list, obj, scrubUrls, str, where, type Obj } from "./util.js";
 
 /** A tool result as a label sees it: its text blocks joined, its `details`, its error flag. */
@@ -225,17 +225,10 @@ function actLines(text: string | undefined): Map<number, ActLine> {
   return lines;
 }
 
-/** The step kinds a computer_act step may name (the protocol's UiStep keys). */
-const STEP_KINDS = ["press", "set", "perform", "click", "type", "key", "nav", "scroll", "drag"] as const;
-
-/** A step the model asked for as serve's record keeps it (computer-calls.ts): its kind, the element its answer's line
- *  names, a key step's chord as kept (keptChord: never a lone character), a nav step's place, and whether it was refused.
- *  Its words are then the record's own (stepWords), so the row reads as the step's expanded call and a movie's caption. */
+/** A step the model asked for as serve's record keeps it (stepOf, the element its answer's line names), and whether it
+ *  was refused. Its words are then the record's own, so the row reads as the step's expanded call and a movie's caption. */
 function stepRow(step: Obj, line: ActLine | undefined): ComputerStepRow {
-  const kind = STEP_KINDS.find((name) => name in step) ?? "step";
-  const keys = kind === "key" ? keptChord(step.key) : undefined;
-  const nav = kind === "nav" ? str(step.nav) : undefined;
-  return { do: kind, ...(line?.on ? { on: line.on } : {}), ...(keys ? { keys } : {}), ...(nav ? { nav } : {}), ...(line?.refused !== undefined ? { error: "refused" } : {}) };
+  return { ...stepOf(step, () => line?.on), ...(line?.refused !== undefined ? { error: "refused" } : {}) };
 }
 
 registerLabel(

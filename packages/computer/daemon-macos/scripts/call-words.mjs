@@ -1,24 +1,24 @@
-// mini-demos.py's movie captions for computer calls, in the one voice the console's run page reads them in: each call as
-// serve's record keeps it (a tool_result row's computer_calls, or a scripted demo's own call in that shape) through serve's
-// own words for it (packages/serve/src/timeline/computer.ts callWords). A key step's chord is kept as the record keeps it
-// (keptChord: a lone character is typing, never said). Reads one call as JSON a line on stdin and writes its words as a
-// JSON string a line on stdout, flushed per line, so one process serves a whole run.
+// mini-demos.py's movie captions for computer calls, in the one voice the console's run page reads them in: serve's own
+// words (packages/serve/src/timeline/computer.ts callWords) for serve's record of each call. A scripted demo's call comes
+// raw, `{method, params, answer}` (answer `{ok, value}` or `{ok: false, error}`), and is recorded here as serve records
+// an agent's (computer-calls.ts callRecordOf), each step's ref by the name the run's earlier looks gave it (RefNames); an
+// agent's call comes as serve's record already (a tool_result row's computer_calls). Reads one call as JSON a line on
+// stdin and writes its words as a JSON string a line on stdout, flushed per line, so one process serves a whole run.
 //
-//   printf '%s\n' '{"method":"apps.launch","app":"com.apple.TextEdit","ok":true}' | node call-words.mjs
+//   printf '%s\n' '{"method":"apps.launch","params":{"id":"com.apple.TextEdit"},"answer":{"ok":true}}' | node call-words.mjs
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const built = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "serve", "dist", "timeline", "computer.js");
-const { callWords, keptChord } = await import(pathToFileURL(built).href);
+const built = (name) => pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "serve", "dist", name)).href;
+const { callWords } = await import(built("timeline/computer.js"));
+const { callRecordOf, RefNames } = await import(built("computer-calls.js"));
 
-/** A call with each key step's chord as the record keeps it. */
-const kept = (call) => ({
-  ...call,
-  ...(Array.isArray(call.steps) ? { steps: call.steps.map(({ keys, ...step }) => ({ ...step, ...(keptChord(keys) ? { keys } : {}) })) } : {}),
-});
-
+const names = new RefNames();
 for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
   if (!line.trim()) continue;
-  process.stdout.write(`${JSON.stringify(callWords(kept(JSON.parse(line))))}\n`);
+  const call = JSON.parse(line);
+  if ("answer" in call && call.method === "ui.observe") names.learn(call.answer);
+  const record = "answer" in call ? callRecordOf(call.method, call.params, call.answer, 0, 0, names.of) : call;
+  process.stdout.write(`${JSON.stringify(callWords(record))}\n`);
 }

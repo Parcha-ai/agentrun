@@ -10,7 +10,7 @@ mcp:
     tools: [get_contact, update_contact]
     pin: { update_contact: { id: "7" } }
 parameters:
-  team: { type: string, required: true, description: "the team the agent answers for" }
+  team: { type: string, description: "the team the agent answers for" }
 learning: true
 output: { schema: answer.schema.json }
 ---
