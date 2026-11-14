@@ -463,12 +463,16 @@ describe("App, the agents' names", () => {
 
   it("names an agent made here, not by its id, on its run's page and in Runs, with no reload", async () => {
     server();
-    const { host, until, button, type, rows } = await open("#/agents/new");
-    // Create it from the editor, as a person does: its name and instructions, then Create.
-    await until(() => !!host.querySelector('input[placeholder="e.g., Invoice checker"]'));
-    await type(host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]')!, made.definition.name!);
-    await type(host.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Describe what the agent does"]')!, made.definition.instructions!);
-    await act(async () => { button(/^Create$/)!.click(); });
+    const { host, until, button, type, rows } = await open("#/playground?operation=create-agent");
+    // The blank request is the manual creation path linked from the coding-agent handoff.
+    await until(() => !!host.querySelector('[aria-label="Name"]'));
+    await type(host.querySelector<HTMLInputElement>('[aria-label="Name"]')!, made.definition.name!);
+    await type(host.querySelector<HTMLTextAreaElement>('[aria-label="Instructions"]')!, made.definition.instructions!);
+    await act(async () => { button(/^Send request$/)!.click(); });
+    const link = () => [...host.querySelectorAll("a")].find((a) => a.textContent === "Open agent");
+    await until(() => !!link());
+    await act(async () => { link()!.click(); });
+    await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}`);
     // Its page, then a run of it from the run bar: the run's page opens.
     await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}` && !!host.querySelector('section[aria-label="Start a run"] textarea'));
     await type(host.querySelector<HTMLTextAreaElement>('section[aria-label="Start a run"] textarea')!, "Check the 2.3.0 entry.");
@@ -485,11 +489,15 @@ describe("App, the agents' names", () => {
 
   it("names an agent made here, not by its id, on its first run in the Playground", async () => {
     server();
-    const { host, until, button, type } = await open("#/agents/new");
-    await until(() => !!host.querySelector('input[placeholder="e.g., Invoice checker"]'));
-    await type(host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]')!, made.definition.name!);
-    await type(host.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Describe what the agent does"]')!, made.definition.instructions!);
-    await act(async () => { button(/^Create$/)!.click(); });
+    const { host, until, button, type } = await open("#/playground?operation=create-agent");
+    // The blank request is the manual creation path linked from the coding-agent handoff.
+    await until(() => !!host.querySelector('[aria-label="Name"]'));
+    await type(host.querySelector<HTMLInputElement>('[aria-label="Name"]')!, made.definition.name!);
+    await type(host.querySelector<HTMLTextAreaElement>('[aria-label="Instructions"]')!, made.definition.instructions!);
+    await act(async () => { button(/^Send request$/)!.click(); });
+    const link = () => [...host.querySelectorAll("a")].find((a) => a.textContent === "Open agent");
+    await until(() => !!link());
+    await act(async () => { link()!.click(); });
     await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}`);
     // Straight to the Playground, as a person tries a new agent: it is offered there, picked, and run.
     await act(async () => { location.hash = "#/playground"; });

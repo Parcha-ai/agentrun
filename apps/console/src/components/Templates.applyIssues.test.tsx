@@ -35,7 +35,7 @@ async function open(apply: () => Promise<unknown>) {
   const v2 = { listTemplates: async () => ({ templates: [KYB] }), listMcpServers: async () => ({ servers: [] }), applyTemplate: async () => apply() };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  await act(async () => { root!.render(createElement(TemplatesPage, { v2: v2 as never, name: "kyb", go: () => {} })); });
+  await act(async () => { root!.render(createElement(TemplatesPage, { v2: v2 as never, name: "kyb", playground: true, go: () => {} })); });
   const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const apply_ = async () => { await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Apply")!.click(); }); await settle(); };

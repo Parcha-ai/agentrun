@@ -96,6 +96,17 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
 }
 
 describe("AgentPage", () => {
+  it("offers the coding-agent run handoff and the manual run form without starting a run", async () => {
+    const agent = agentFixture("invoice-checker");
+    const page = await open(agent);
+    const menu = page.host.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Run agent"]');
+    expect(menu).toBeTruthy();
+    expect(page.bar()).toBeTruthy();
+    await act(async () => menu!.click());
+    const playground = document.querySelector<HTMLAnchorElement>('[role="menuitem"][href*="playground"]');
+    expect(playground?.getAttribute("href")).toBe(`#/playground?agent=${encodeURIComponent(agent.agent_id)}`);
+    expect(page.starts).toEqual([]);
+  });
   it("a held sign-in's poll never lands over a newer read: a slow answer that began first is dropped", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
