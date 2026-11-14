@@ -138,7 +138,7 @@ test("a phone with the ui group: observe is the outline of its window, act its s
   assert.equal(seen.images, undefined, "no image unless asked");
   assert.equal(seen.structured.id, "s1");
   const acted = await call(tools, "computer_act", { steps: [{ set: "@e2", value: "Groceries" }, { press: "@e3" }] });
-  assert.deepEqual(acted.text.split("\n"), ["1. set: semantic, verified", "2. press: semantic, verified", "changed · state s2"]);
+  assert.deepEqual(acted.text.split("\n"), ['1. set @e2 textbox "Title": semantic, verified', '2. press @e3 button "Save": semantic, verified', "changed · state s2"]);
   await call(tools, "computer_act", { steps: [{ click: [320, 260] }] });
   assert.deepEqual(phone.calls.filter(([method]) => method === "ui.act").map(([, params]) => params), [
     { steps: [{ set: "@e2", value: "Groceries" }, { press: "@e3" }] },

@@ -12,7 +12,8 @@ const TEXT_CHARS = 80;
 const MAX_INDENT = 8;
 
 const clip = (text: string) => (text.length > TEXT_CHARS ? `${text.slice(0, TEXT_CHARS - 1)}…` : text);
-const quoted = (text: string) => JSON.stringify(clip(text.replace(/\s+/g, " ").trim()));
+/** A name or value as the outline shows it: on one line, cut, in JSON's quotes. */
+export const quoted = (text: string) => JSON.stringify(clip(text.replace(/\s+/g, " ").trim()));
 
 /** One element's line: `@e4 button "Save" = "value" ("what else it says") [focused]`. */
 export function lineOf(node: UiNode): string {
