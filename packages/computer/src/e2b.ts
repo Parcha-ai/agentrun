@@ -7,12 +7,11 @@
 import type { Sandbox, SandboxInfo, SandboxOpts } from "e2b";
 import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
+import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, timeoutsOf } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
-import { dateOf, driftOf, isWhole, show } from "./hosted/values.js";
+import { show } from "./drift.js";
+import { dateOf, DOMAIN, driftOf, isWhole } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
-import type { KindCapabilities } from "./kinds.js";
-import type { MountKind } from "./mount.js";
 import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
 
@@ -57,7 +56,7 @@ interface ProcessRpc {
 }
 
 /** The E2B provider's options: the key and the SDK, then the shared adapter's (HostedOptions). */
-export interface E2BProviderOptions extends Omit<HostedOptions, "label" | "maxLifetimeMs"> {
+export interface E2BProviderOptions extends Omit<HostedOptions, "maxLifetimeMs"> {
 	/** The E2B API key. The caller passes it; this provider never reads it from the environment or puts it in a computer. */
 	apiKey: string;
 	/** The SDK's Sandbox class: the host's `e2b` package's. */
@@ -83,7 +82,6 @@ export interface E2BOptions extends Omit<E2BProviderOptions, "Sandbox"> {
 /** Not a literal, so no type checker or bundler resolves the SDK from this package. */
 const E2B_PACKAGE: string = "e2b";
 const DEFAULT_DOMAIN = "e2b.app";
-const DOMAIN = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 /** The connection options every SDK call is given. Exported for the test that hands them to the real SDK. */
 export function connectionOptions({ apiKey, domain }: { apiKey: string; domain: string }): E2BConnectionOptions {
@@ -110,12 +108,9 @@ function ambientProblem(): string | undefined {
  * never echoing the key.
  */
 export async function create(options: E2BOptions): Promise<E2BProvider> {
-	const { apiKey, Sandbox: given, ...rest } = options ?? ({} as E2BOptions);
-	if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the E2B API key, is required: the provider reads no environment, so the caller passes it");
-	const ambient = ambientProblem();
-	if (ambient) throw new Error(ambient);
+	const { Sandbox: given, ...rest } = options ?? ({} as E2BOptions);
 	const Sandbox = given ?? ((await import(E2B_PACKAGE)) as { Sandbox: E2BSandboxClass }).Sandbox;
-	return new E2BProvider({ ...rest, apiKey, Sandbox });
+	return new E2BProvider({ ...rest, Sandbox });
 }
 
 /** The conformance CLI's module for E2B: its live switch, the run's 30-minute cap, its template and the drifted twin. */
@@ -132,7 +127,6 @@ const MAX_PAGES = 100;
 const PAGE = 100;
 /** E2B's end, read back, is its start plus the timeout create gave it, to the second it rounds to (index.mjs:502-504). */
 const END_SLACK_MS = 2_000;
-const DEFAULT_REQUEST_MS = 30_000;
 const PUBLIC =
 	"publicStream is no longer an option: an E2B computer never takes public traffic, which would open every port in it to anyone with its address, and its screen is streamed through agentrun, never a vendor URL";
 /** envd's port in the sandbox (e2b@2.63.0 dist/index.mjs:1213, ConnectionConfig.envdPort). */
@@ -145,11 +139,6 @@ const KEEPALIVE_S = "50";
 /** The Connect codes envd's process calls answer (connectrpc Code), as this provider's codes. */
 const CONNECT_CODES: Record<number, ComputerErrorCode> = { 1: "aborted", 3: "invalid", 4: "timeout", 5: "not_found", 7: "denied", 8: "limit", 16: "denied" };
 
-/** The mount kinds an E2B computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
-export const MOUNT: readonly MountKind[] = E2B.mounts;
-/** The machine kind and groups of each configuration: kind linux (the plain template), and kind desktop (the default). */
-export const CAPABILITIES: readonly KindCapabilities[] = E2B.capabilities;
-
 
 /** The SDK names its errors (index.mjs:86-360); Connect's carry a code. */
 function codeOf(error: unknown): ComputerErrorCode {
@@ -158,7 +147,7 @@ function codeOf(error: unknown): ComputerErrorCode {
 	if (name === "AuthenticationError") return "denied";
 	if (name === "InvalidArgumentError" || name === "TemplateError") return "invalid";
 	if (name === "RateLimitError" || name === "NotEnoughSpaceError") return "limit";
-	if (name === "TimeoutError" || name === "SandboxUnreachableError") return "timeout";
+	if (name === "SandboxUnreachableError") return "timeout";
 	// envd's process stream, called through the SDK's Connect client (exec), throws Connect's own errors.
 	if (name === "ConnectError") return CONNECT_CODES[(error as { code?: unknown }).code as number] ?? "vendor";
 	return "vendor";
@@ -242,7 +231,7 @@ const push = (stream: PassThrough, data: Uint8Array) => void (stream.writableEnd
 
 /** E2B's sandboxes as a MachineHost (../host.ts). */
 class E2BHost implements MachineHost {
-	readonly id = "e2b";
+	readonly descriptor = E2B;
 	readonly facts: HostFacts = {
 		daemon: "child",
 		isolation: "microvm",
@@ -253,8 +242,6 @@ class E2BHost implements MachineHost {
 		// E2B Desktop's template has xfwm4, which its own desktop runs: the apps an agent opens are framed and focused.
 		windowManager: true,
 		networkReadBack: true,
-		network: [...E2B.network],
-		mounts: [...MOUNT],
 		release: ["delete"],
 	};
 	readonly #Sandbox: SdkSandboxClass;
@@ -440,13 +427,15 @@ class E2BHost implements MachineHost {
 
 	/**
 	 * Moves E2B's timer (setTimeout, index.mjs:5529-5541) in the whole seconds E2B takes: up to clear create's end, so
-	 * the end reads as moved (deadlineOf), and down at the most the computer may live, so E2B's timer never passes it by
-	 * this machine's clock. A timer that would end before the deadline held now, or within create's rounding, is refused
-	 * as limit, and nothing moves.
+	 * the end reads as moved (deadlineOf), and down at the most the computer may live (its max-deadline label), so E2B's
+	 * timer never passes it by this machine's clock. A timer that would end before the deadline held now, or within
+	 * create's rounding, is refused as limit, and nothing moves.
 	 */
-	async setTimer(id: string, { end, most }: { end: Date; most: Date }, ctx: HostCall): Promise<Result<void>> {
+	async extend(id: string, end: Date, ctx: HostCall): Promise<Result<void>> {
 		const info = await this.#Sandbox.getInfo(id, this.#api(ctx.timeoutMs, ctx.signal));
 		const machine = machineOf(info);
+		const most = new Date(machine.labels[MAX_LABEL] ?? Number.NaN);
+		if (Number.isNaN(most.getTime())) return fail("refused", `${id}'s label ${MAX_LABEL} reads ${show(machine.labels[MAX_LABEL])}, so the most it may live is unknown; nothing moved`);
 		const now = Date.now();
 		const target = end.getTime();
 		const created = createdEnd(info);
@@ -476,16 +465,12 @@ export class E2BProvider extends HostedProvider {
 		// A caller who still names the option is told it is gone, whatever its value: it once let public traffic in.
 		if (typeof options === "object" && options !== null && Object.hasOwn(options, "publicStream")) throw new Error(PUBLIC);
 		const { apiKey, Sandbox, domain = DEFAULT_DOMAIN, kind = "desktop", maxLifetimeMs = HOBBY_MAX_MS, ...rest } = options;
-		if (typeof apiKey !== "string" || apiKey === "") throw new Error("an E2B API key is required");
+		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the E2B API key, is required: the provider reads no environment, so the caller passes it");
 		const lacks = ["create", "connect", "getInfo", "setTimeout", "kill", "list"].filter((name) => typeof (Sandbox as unknown as Record<string, unknown>)?.[name] !== "function");
 		if (lacks.length > 0) throw new Error(`options.Sandbox must be the e2b SDK's Sandbox class; it lacks ${lacks.join(", ")}`);
 		const ambient = ambientProblem();
 		if (ambient) throw new Error(ambient);
 		if (typeof domain !== "string" || !DOMAIN.test(domain)) throw new Error(`the E2B domain must be a host name such as ${DEFAULT_DOMAIN}, not ${JSON.stringify(domain)}`);
-		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > PRO_MAX_MS) {
-			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 h (${PRO_MAX_MS} ms), E2B Pro's longest sandbox; Hobby's is 1 h`);
-		}
-		const requestMs = rest.timeouts?.requestMs ?? DEFAULT_REQUEST_MS;
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, label: "E2B", kind, maxLifetimeMs });
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), timeoutsOf(rest.timeouts).requestMs), { ...rest, kind, maxLifetimeMs });
 	}
 }

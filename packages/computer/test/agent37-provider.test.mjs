@@ -1,6 +1,6 @@
 // Agent37Provider's host on a fake Agent37 (fake-agent37.mjs): the REST API as a fetch, and an instance's SSH as
 // ssh2's own Server on loopback, reached through a fake WebSocket. What Agent37's host decides is tested here: the
-// create's body, get, list and delete, the status and network read-back, setLabels' GET then whole PATCH, the error
+// create's body, get, list and delete, the status and network read-back, extend's GET then whole PATCH, the error
 // codes, check()'s shapes and cap, and an exec's stdin, stdout, stderr, exit code and kill. The adapter's lifecycle is
 // tested once, against its fake host (hosted-provider.test.mjs); Agent37's own is proven live.
 import assert from "node:assert/strict";
@@ -185,16 +185,19 @@ test("get reads an instance back as a machine; an unknown id is none; list answe
 	assert.equal(machine.drift, undefined);
 	assert.equal(machine.labels["agentrun.conformance"], "run-1");
 	// get no longer catches 404: the adapter reads not_found as none (hosted-provider.test.mjs).
-	assert.equal(host.errorCode(await host.get("zzzzzzzzzz", CTX).catch((thrown) => thrown)), "not_found");
-	assert.equal(host.errorCode(await host.get("not an id", CTX).catch((thrown) => thrown)), "not_found", "an id that is not Agent37's is not found, never a URL");
+	assert.equal((await host.get("zzzzzzzzzz", CTX)).error.code, "not_found");
+	assert.equal((await host.get("not an id", CTX)).error.code, "not_found", "an id that is not Agent37's is not found, never a URL");
+	assert.equal((await host.delete("not an id", CTX)).error.code, "not_found", "nor is it deleted");
+	assert.equal((await host.extend("not an id", new Date(), CTX)).error.code, "not_found", "nor extended");
+	assert.equal((await host.exec("not an id", ["true"], { stdin: false }, CTX)).error.code, "not_found", "nor reached over SSH, never a host name");
 	// Agent37 filters nothing: its listing is the whole workspace, and the adapter keeps the machines that carry the labels.
 	assert.equal((await host.list({ "agentrun.conformance": "run-1" }, CTX)).value.length, 2);
 	assert.deepEqual((await provider.list({ "agentrun.conformance": "run-1" })).value.map((info) => info.ref.id), [value.id]);
 	assert.ok((await host.delete(value.id, CTX)).ok);
-	assert.equal(host.errorCode(await host.delete(value.id, CTX).catch((thrown) => thrown)), "not_found", "a repeat's 404 is not_found, which the adapter's delete reads as done");
+	assert.equal((await host.delete(value.id, CTX)).error.code, "not_found", "a repeat's 404 is not_found, which the adapter's delete reads as done");
 	assert.equal(rest.instances.has(value.id), false);
 	rest.fail("GET", /^\/v1\/instances$/, new Response(JSON.stringify({ data: [], has_more: true }), { status: 200 }));
-	await assert.rejects(host.list({}, CTX), /would miss machines/);
+	assert.match((await host.list({}, CTX)).error.message, /would miss machines/);
 });
 
 test("the status mapping: every Agent37 status is one of the adapter's states, and one it does not know is failed with why", async () => {
@@ -247,11 +250,11 @@ test("network read-back: deny-all is none, allow-all open, an allow list or any 
 	for (const field of ["template", "type", "region", "auto_sleep"]) assert.ok(drift.some((one) => one.startsWith(`${field}:`)), field);
 });
 
-test("setLabels reads the instance, then PATCHes the whole metadata, since a PATCH replaces it", async () => {
+test("extend reads the instance, then PATCHes the whole metadata with the deadline label moved, since a PATCH replaces it", async () => {
 	const { rest, host } = restOnly();
 	const { value } = await host.create(request({ keep: "me" }), CTX);
 	rest.calls.length = 0;
-	assert.ok((await host.setLabels(value.id, { "agentrun.computer.deadline": "2026-11-13T08:00:00.000Z" }, CTX)).ok);
+	assert.ok((await host.extend(value.id, new Date("2026-11-13T08:00:00.000Z"), CTX)).ok);
 	assert.deepEqual(rest.calls.map((one) => [one.method, one.path]), [
 		["GET", `/v1/instances/${value.id}`],
 		["PATCH", `/v1/instances/${value.id}`],
@@ -278,16 +281,13 @@ test("the error codes: Agent37's envelope codes, then the status, flat transport
 	];
 	for (const [status, body, code] of cases) {
 		rest.fail("POST", /^\/v1\/instances$/, new Response(body === null ? "oops" : JSON.stringify(body), { status }));
-		const error = await host.create(request(), CTX).then(
-			() => assert.fail("created"),
-			(thrown) => thrown,
-		);
-		assert.equal(host.errorCode(error), code, `${status} ${JSON.stringify(body)}`);
+		const { error } = await host.create(request(), CTX);
+		assert.equal(error.code, code, `${status} ${JSON.stringify(body)}`);
 		assert.match(error.message, new RegExp(`answered ${status}`));
 	}
 	const wrong = new Agent37Provider({ apiKey: BARE, sshKey: SSH_KEY, ssh2: { Client: class {} }, fetch: rest.fetch, apiUrl: API_URL });
-	const refused = await wrong.host.list({}, CTX).catch((error) => error);
-	assert.equal(wrong.host.errorCode(refused), "denied");
+	const { error: refused } = await wrong.host.list({}, CTX);
+	assert.equal(refused.code, "denied");
 	assert.doesNotMatch(refused.message, new RegExp(BARE));
 	const timeout = Object.assign(new Error("slow"), { name: "TimeoutError" });
 	assert.equal(codeOfError(host, timeout), "timeout");
@@ -608,7 +608,7 @@ test("the conformance module reads COMPUTER_AGENT37_* alone, needs its live swit
 	const desktop = await conformanceModule.createProvider({ env: { ...env, [ENV.live]: "1", [ENV.kind]: "desktop" }, ...doubles });
 	assert.equal(desktop.capabilities().kind, "desktop");
 	const host = await conformanceModule.createHost({ env, ...doubles });
-	assert.equal(host.id, "agent37");
+	assert.equal(host.descriptor.id, "agent37");
 	assert.equal(sweepScope({ env }), workspaceOf(KEY));
 	assert.doesNotMatch(sweepScope({ env }), new RegExp(KEY));
 	assert.notEqual(sweepScope({ env: { ...env, [ENV.key]: BARE } }), sweepScope({ env }), "another key is another workspace");

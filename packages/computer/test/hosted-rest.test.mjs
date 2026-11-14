@@ -90,7 +90,7 @@ test("allPages reads every page, refuses a repeated cursor, and refuses a listin
 	const loop = await allPages(async () => ({ ok: true, value: { items: [1], next: "same" } }), 5, { vendor: "acme", what: "GET /things" });
 	assert.deepEqual(loop.error, { code: "vendor", vendor: "acme", message: "GET /things's cursor same came back twice" });
 	let n = 0;
-	const long = await allPages(async () => ({ ok: true, value: { items: [1], next: true } }), 3, { vendor: "acme", what: "list" });
+	const long = await allPages(async (cursor) => ({ ok: true, value: { items: [1], next: `${cursor ?? ""}x` } }), 3, { vendor: "acme", what: "list" });
 	assert.equal(long.error.message, "list ran past 3 pages");
 	const cut = await allPages(async () => (n++ === 0 ? { ok: true, value: { items: [1], next: "x" } } : { ok: false, error: { code: "timeout", message: "slow" } }), 5, { vendor: "acme", what: "list" });
 	assert.equal(cut.error.message, "slow");

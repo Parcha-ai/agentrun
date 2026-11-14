@@ -70,7 +70,8 @@ const START = Date.now();
 
 /**
  * A fake host. Options:
- *  - facts: over the defaults (child daemon, vendor lifetime, network read back, archil mounts);
+ *  - facts: over the defaults (child daemon, vendor lifetime, network read back); its descriptor takes network none
+ *    and an archil mount;
  *  - create: "ok", "fail" (refused: nothing made), "hold" (answers once fake.release() is called), "lost" (makes the
  *    machine, then throws Late: its id never comes back), "broken" (makes it, then throws a plain error);
  *  - starting: how many reads a new machine answers starting before it runs;
@@ -86,6 +87,8 @@ const START = Date.now();
  *    "manager dies" (it ends at once); drift: the vendor's own drift words a read gives;
  *  - network: the vendor's network read back, over what create asked ("none"/"open"/{ other });
  *  - lingers: { reads, lists } after a delete; fileApi: false for a host with no upload;
+ *  - timer: "ok" (extend moves the end: the vendor's timer, or with lifetime janitor the deadline label, rounded up to a
+ *    whole second), "limit" (extend refuses, nothing moves), or "none" (a host with no extend);
  *  - onStep(step, machine): at the start of every host call and daemon request, so a test can abort a signal there;
  *  - hang: a script's kind ("install", ...) whose process never ends; killHangs: a process's kill that never settles;
  *  - archil: root verbs' answers, as fake-archil.mjs's;
@@ -439,7 +442,7 @@ export function fakeHost({
 	const chunks = (proc) => (proc.chunks.length === 0 ? undefined : Buffer.concat(proc.chunks).toString("utf8"));
 
 	const host = {
-		id: "fakehost",
+		descriptor: { id: "fakehost", label: "Fakehost", network: ["none"], mounts: ["archil"] },
 		facts: {
 			daemon: "child",
 			isolation: "microvm",
@@ -449,8 +452,6 @@ export function fakeHost({
 			vendorAgentPorts: [7777],
 			networkReadBack: true,
 			gpuReadBack: true,
-			network: ["none"],
-			mounts: ["archil"],
 			release: ["delete"],
 			...facts,
 		},
@@ -544,15 +545,21 @@ export function fakeHost({
 					},
 				}
 			: {}),
-		async setTimer(id, { end, most }, ctx) {
-			const m = machines.get(id);
-			await step("setTimer", ctx, m);
-			if (gone(m)) throw new NotFound(`machine ${id} not found`);
-			if (timer === "limit") return { ok: false, error: { code: "limit", message: "no whole number of seconds reaches it; nothing moved" } };
-			m.endsAt = new Date(Math.min(end.getTime(), most.getTime()));
-			m.timerMoved = true;
-			return { ok: true, value: undefined };
-		},
+		...(timer === "none"
+			? {}
+			: {
+					// The vendor's timer, or the janitor's deadline label, which this fake rounds up to a whole second.
+					async extend(id, end, ctx) {
+						const m = machines.get(id);
+						await step("extend", ctx, m);
+						if (gone(m)) throw new NotFound(`machine ${id} not found`);
+						if (timer === "limit") return { ok: false, error: { code: "limit", message: "no whole number of seconds reaches it; nothing moved" } };
+						const most = Date.parse(m.labels["agentrun.computer.max-deadline"]);
+						if (host.facts.lifetime === "janitor") m.labels["agentrun.computer.deadline"] = new Date(Math.min(Math.ceil(end.getTime() / 1000) * 1000, most)).toISOString();
+						else [m.endsAt, m.timerMoved] = [new Date(Math.min(end.getTime(), most)), true];
+						return { ok: true, value: undefined };
+					},
+				}),
 	};
 
 	fake.host = host;

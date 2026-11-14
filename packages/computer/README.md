@@ -21,8 +21,8 @@ option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
 vendor's SDK is the host's: Modal's `modal` package is imported only when the Modal provider is built, and the package
-depends on nothing. A provider's mount kinds are its file's `MOUNT`, read with `(await providerModule(id)).MOUNT`,
-which loads that one provider's file and the protocol modules it uses, and no other provider.
+depends on nothing. A provider's mount kinds are its descriptor's `mounts`, read with `descriptorOf(id).mounts`,
+which loads no provider file at all.
 
 Every install carries all of `dist/`, whatever the host's architecture and whichever provider it uses: both daemons
 (a Docker host on either architecture and every remote provider use one of them, and the archive does not know which),
@@ -448,9 +448,8 @@ in the kernel's tool registry, keyed by these groups.
   | kernel | Kernel | browser | `KERNEL_API_KEY` | none | yes |
   | local | Local Chrome | browser | none | none | no |
 
-- Each provider module exports `CAPABILITIES` beside `MOUNT` (the registry's contract, `ProviderModule`). A unit test
-  holds every registry provider's `CAPABILITIES` and `MOUNT` to its entry, and each provider built from the test fakes,
-  in each configuration, to its entry's capabilities. browserbase and kernel are data until their provider file joins
+- A provider's capabilities and mounts are its descriptor's, and nowhere else. A unit test holds each provider built
+  from the test fakes, in each configuration, to its entry's capabilities and mounts. browserbase and kernel are data until their provider file joins
   the registry; that test then holds each to its file.
 - `testConnection()` (optional on `ComputerProvider`) is Settings' test of a provider's keys: ONE account-level read
   that never creates a computer, so it never spends. Docker (one `docker ps`), Daytona and E2B (one listing page) count
@@ -891,9 +890,9 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
 - `ComputerSpec.mount` is `{ kind: "bind", path }`, a folder on the provider's host bound in (the local Docker
   computer), or `{ kind: "archil", disk, region, folder, token }`, the run's folder (such as
   `agents/<a>/runs/<r>/work`) inside an Archil disk in its region, mounted in a remote computer.
-  `capabilities().mount` lists the kinds a provider takes; absent, it takes none. Each provider file also exports
-  `MOUNT` beside its `create`, the same kinds (Docker `["bind"]`; Modal and Daytona `[]` for now), so a caller tells which
-  provider binds a local folder from the registry (`providerModule(id)`) without building one.
+  `capabilities().mount` lists the kinds a provider takes; absent, it takes none. Each provider's descriptor declares
+  the same kinds as `mounts` (Docker `["bind"]`; Modal and E2B `["archil"]`; Daytona `[]` for now), so a caller tells
+  which provider binds a local folder from its descriptor (`descriptorOf(id)`) without building one.
 - `checkMount(mount, declared)` (`src/mount.ts`) is the one rule every provider's `check` runs, with no vendor call: a
   kind the provider does not declare is refused in words (`this provider does not take a mount of kind archil; it takes
   bind`); a bind's `path` is absolute, canonical (its own realpath, so what is read back is what is bound: Docker
@@ -1281,8 +1280,8 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
   `--own-network`, makes its programs' network namespace inside a user namespace (the daemon's fallback, any vendor).
   Declared: `gpu.fence: "userns-netns"`; read back: hello's `fence`, and create notes it. Proven in Docker
   (`test/docker/pid1-commands.docker.test.mjs` and `loopback-block.docker.test.mjs`), not yet live on Modal.
-- **Settings' test** reads the app with `createIfMissing: false`, which makes nothing; an app not made yet is a
-  connection all the same.
+- **The app.** `list` (and so Settings' test, one listing) reads the app with `createIfMissing: false`, which makes
+  nothing: an app not made yet lists no sandboxes and is a connection all the same. Only `create` makes the app.
 
 ### What every Modal fact rests on
 
@@ -2005,7 +2004,7 @@ names the API key by its sha256 prefix alone.
 | `get` | `GET /v1/instances/{id}`; 404 is none |
 | `list` | `GET /v1/instances`, the whole workspace in one answer (`{ data }`, no paging keys, seen live), matched on the labels here. An answer that says it has more is refused, never read as all |
 | `delete` | `DELETE /v1/instances/{id}`, never signalled; a repeat's 404 is done |
-| `setLabels` | `GET`, then `PATCH` of the whole `metadata`, which a PATCH replaces |
+| `extend` | `GET`, then `PATCH` of the whole `metadata` with the new deadline label, since a PATCH replaces it |
 | `exec` | SSH as root over a binary WebSocket to `wss://{id}-22022.agent37.app/`, one channel per process on the instance's shared connection (below) |
 | `errorCode` | the envelope's `error.code` (or a flat `error` string), then the HTTP status; ssh2's `client-authentication` is `denied` |
 | `check` | a template name with an optional `@version`; one of Agent37's four shapes; at most 4 CPUs; metadata within 4096 bytes with the provider's own labels |
@@ -2237,7 +2236,7 @@ and are never in a ref, a list, an error's words or a report. `client` stays a `
 | a computer is | a session (`POST /v1/sessions`, `keepAlive: true`) | a browser (`POST /browsers`) |
 | labels ride | the session's `userMetadata`, each key's dots written as `_` (Browserbase refuses a dot in a metadata key), so a label key is letters, digits and dots | the browser's `tags` |
 | lifetime | the session's `timeout`, 60 s to 6 h, wall clock | `timeout_seconds`, 10 s to 72 h, an idle timeout: no wall clock, so list reads no deadline |
-| groups (`CAPABILITIES`) | `cdp`, `stream` | `cdp`, `stream` |
+| groups (the descriptor's `capabilities`) | `cdp`, `stream` | `cdp`, `stream` |
 | test connection | one `GET /v1/sessions?status=RUNNING` | one `GET /browsers?status=active` page |
 | release | `REQUEST_RELEASE`, then read back until it is no longer `RUNNING` or `PENDING` | `DELETE`, then read back until 404 or `deleted_at` |
 | options | `apiKey`, `projectId`, `apiUrl`, `fetch` | `apiKey`, `apiUrl`, `fetch` |
@@ -2759,7 +2758,6 @@ refuses an id it does not hold, naming the ones it does. The provider file, `src
 `ProviderModule` is:
 
 - the provider class, which implements `ComputerProvider` and reports the registry id as its `id`;
-- `MOUNT`, the mount kinds its computers take;
 - `create(options)`, the provider built from its options alone, its key included, and refused in words when one is
   missing or wrong, never echoing a key. It reads no environment (see [Settings](#settings)), and exports no names of
   variables;

@@ -52,8 +52,8 @@ function staticImports(path) {
 }
 
 /**
- * Every provider file under src/: one that declares a class implementing ComputerProvider, or a MachineHost (a vendor on
- * the shared adapter, src/host.ts), with the id it reports.
+ * Every provider file under src/: one that declares a class implementing ComputerProvider, with the id it reports, or a
+ * MachineHost (a vendor on the shared adapter, src/host.ts), with its descriptor's id.
  */
 function providerFiles() {
 	const found = [];
@@ -61,10 +61,18 @@ function providerFiles() {
 		if (!name.endsWith(".ts")) continue;
 		const source = readFileSync(new URL(name, SRC), "utf8");
 		if (!/\bclass\s+\w+\s+implements\s+(ComputerProvider|MachineHost)\b/.test(source)) continue;
-		const id = /\breadonly id = "([^"]+)"/.exec(source)?.[1];
+		const id = /\breadonly id = "([^"]+)"/.exec(source)?.[1] ?? descriptorIdOf(source);
 		found.push({ file: name.replace(/\.ts$/, ""), id });
 	}
 	return found;
+}
+
+/** A MachineHost's id: its descriptor's (readonly descriptor = E2B, imported from ./descriptors/<file>.js). */
+function descriptorIdOf(source) {
+	const name = /\breadonly descriptor = (\w+);/.exec(source)?.[1];
+	const from = name && new RegExp(`import \\{[^}]*\\b${name}\\b[^}]*\\} from "\\./descriptors/([a-z0-9-]+)\\.js"`).exec(source)?.[1];
+	if (!from) return undefined;
+	return new RegExp(`export const ${name} = defineProvider\\(\\{\\s*id: "([^"]+)"`).exec(readFileSync(new URL(`descriptors/${from}.ts`, SRC), "utf8"))?.[1];
 }
 
 /**
@@ -100,7 +108,7 @@ test("every provider file under src/ has its descriptor, under the id its provid
 	const files = providerFiles();
 	assert.ok(files.length >= 3, `found ${files.map((f) => f.file).join(", ")}`);
 	for (const { file, id } of files) {
-		assert.ok(id, `${file}.ts declares its provider's id as readonly id = "..."`);
+		assert.ok(id, `${file}.ts declares its provider's id as readonly id = "...", or its host's descriptor as readonly descriptor = <its descriptor>`);
 		assert.ok(providerIds.includes(id), `src/${file}.ts implements ComputerProvider: it needs a descriptor in src/descriptors/ with id ${id}`);
 		const loaded = loadedFile(id);
 		// Another configuration's file is the provider module's to import: the descriptor still loads one module.
@@ -111,14 +119,13 @@ test("every provider file under src/ has its descriptor, under the id its provid
 });
 
 /**
- * The shared checks every provider module meets, whatever it is: create(options) and MOUNT, no ENV or fromEnv, and an
+ * The shared checks every provider module meets, whatever it is: create(options), no ENV or fromEnv, and an
  * optional conformance module. A conformance module that reads the environment (settingsFromEnv) lists what it reads in
  * its ENV, each name COMPUTER_<ID>_* or its live switch; one without conformance() has nothing more to meet. Nothing
  * here names a provider, so a new one is its file and its registry line, with no edit to this test.
  */
 async function checkProviderModule(id, module) {
 	assert.equal(typeof module.create, "function", `${id} exports create(options)`);
-	assert.ok(Array.isArray(module.MOUNT), `${id} exports MOUNT, an array`);
 	assert.equal(module.ENV, undefined, `${id} exports no ENV: the library names no environment variable`);
 	assert.equal(module.fromEnv, undefined, `${id} exports no fromEnv: every setting is an option`);
 	if (module.conformance === undefined) return;
@@ -166,17 +173,15 @@ test("each in-tree conformance module's ENV is the names its settingsFromEnv rea
 	}
 });
 
-test("every registry module exports MOUNT beside create: the mount kinds its computers take, known without building a provider", async () => {
+test("every provider's descriptor declares its mounts: the mount kinds its computers take, known without loading its module", () => {
 	for (const id of providerIds) {
-		const module = await providerModule(id);
-		assert.ok(Array.isArray(module.MOUNT), `${id} exports MOUNT, an array`);
-		for (const kind of module.MOUNT) assert.ok(index.MOUNT_KINDS.includes(kind), `${id}'s MOUNT holds ${JSON.stringify(kind)}, which is not a mount kind`);
-		assert.equal(new Set(module.MOUNT).size, module.MOUNT.length, `${id}'s MOUNT names each kind once`);
+		const { mounts } = index.descriptorOf(id);
+		assert.ok(Array.isArray(mounts), `${id}'s descriptor declares mounts, an array`);
+		for (const kind of mounts) assert.ok(index.MOUNT_KINDS.includes(kind), `${id}'s mounts hold ${JSON.stringify(kind)}, which is not a mount kind`);
+		assert.equal(new Set(mounts).size, mounts.length, `${id}'s mounts name each kind once`);
 	}
-	// Which provider binds a local folder, read from the registry alone: Docker; Modal and Daytona take none until D6.
-	const binds = [];
-	for (const id of providerIds) if ((await providerModule(id)).MOUNT.includes("bind")) binds.push(id);
-	assert.deepEqual(binds, ["docker"]);
+	// Which provider binds a local folder, read from the descriptors alone: Docker.
+	assert.deepEqual(providerIds.filter((id) => index.descriptorOf(id).mounts.includes("bind")), ["docker"]);
 });
 
 test("every provider's descriptor declares network beside mounts: the network forms its computers make, known without building a provider", () => {

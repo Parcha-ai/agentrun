@@ -288,8 +288,6 @@ test("a relative root is made absolute once, so the profile Chrome is given and 
 
 test("the registry builds it from its options alone; an id that is not one is refused", async () => {
 	const module = await providerModule("local-chrome");
-	assert.deepEqual(module.MOUNT, []);
-	assert.deepEqual(module.CAPABILITIES, [{ kind: "browser", groups: ["cdp"] }]);
 	const built = await module.create({ executablePath: CHROME, root: join(scratch, "registry") });
 	assert.equal(built.id, "local-chrome");
 	assert.ok(create() instanceof LocalBrowserProvider);
