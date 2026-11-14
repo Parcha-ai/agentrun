@@ -37,6 +37,9 @@ const SOURCES = {
 const toGateway = (url) => (target, init) => fetch(`${url}${new URL(String(target)).pathname}`, init);
 /** The tool names a request body offers, on its path's API. */
 const toolsOf = (request) => (request.body?.tools ?? []).map((tool) => tool.name ?? tool.function?.name).sort();
+/** The session's tool and the host's search, call-by-name and script tools offered beside it, sorted. */
+const { TOOLS_SEARCH, TOOLS_CALL, CODEMODE } = await import("../dist/meta-tool-names.js");
+const OFFERED = ["note", TOOLS_SEARCH, TOOLS_CALL, CODEMODE].sort();
 /** What the run booked: each runner.turn record of its sessions, read under a reader's claim. */
 async function bookedUsd(store) {
   const row = await store.runs.get("run-1");
@@ -77,7 +80,7 @@ test("acceptance: an openai-responses pi run through serve's gateway, end to end
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.deepEqual(calls, ["note"], "the model's call ran the host's tool");
   assert.deepEqual(gateway.requests.map((request) => [request.path, request.headers.authorization]), [["/v1/responses", `Bearer ${KEY}`], ["/v1/responses", `Bearer ${KEY}`]], "both requests on the gateway's Responses route, under its key");
-  assert.deepEqual(toolsOf(gateway.requests[0]), ["note"], "the session's tool is offered");
+  assert.deepEqual(toolsOf(gateway.requests[0]), OFFERED, "the session's tool is offered");
   assert.ok(gateway.requests[1].body.input.some((item) => item.type === "function_call_output"), "the tool's answer went back as its call's output");
   // The run's one ledger: 12 tokens at $1 a million each request (AGENT_MODEL_PRICE), the second asked with the first's.
   assert.equal(asked.length, 2);
@@ -101,7 +104,7 @@ test("every source main's pi takes opens on the runner on its wire, offers the s
       const { row, store } = await capRun(t, { specOf: () => specOn(route, toGateway(gateway.url)), runCap: { capUsd: () => undefined, modelOf: () => undefined } });
       assert.equal(row.state, "ended", JSON.stringify(row));
       assert.ok(gateway.requests.length >= 1 && gateway.requests.every((request) => request.path.endsWith(source.path)), JSON.stringify(gateway.requests.map((request) => request.path)));
-      assert.deepEqual(toolsOf(gateway.requests[0]), ["note"], "the session's tool is offered");
+      assert.deepEqual(toolsOf(gateway.requests[0]), OFFERED, "the session's tool is offered");
       assert.ok((await bookedUsd(store)) > 0, "booked on the run's ledger");
     });
   }

@@ -38,7 +38,7 @@ for (const harness of HARNESSES) {
     assert.equal(done.last.status, "completed", JSON.stringify(done.last));
     assert.equal(callsOf(fake, "add").length, 1, "the ticked tool ran once, with no one asked");
     assert.match((await api("GET", `/runs/${ran.body.run_id}`)).body.result?.final_answer ?? "", /5/);
-    if (harness !== "codex") assert.ok(offered().some((tools) => tools.includes(wire("add"))), "the ticked tool was offered");
+    if (harness !== "codex") assert.ok(offered().some((tools) => tools.includes(wire("add"))), `the ticked tool was offered: ${JSON.stringify(offered())}`);
     // At the source: the apply never granted it.
     assert.ok(!agent.definition.tools.includes(UNTICKED), `the unticked tool is not the agent's: ${JSON.stringify(agent.definition.tools)}`);
   });

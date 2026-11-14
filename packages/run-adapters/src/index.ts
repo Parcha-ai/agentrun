@@ -10,6 +10,6 @@ export { CONTENT_FILTERED, HOST_RESULT_MAX_CHARS, hostedTool } from "./types.js"
 export { bookRequest, isConnectCode, isGatewayTimeout, rejectionCode } from "./booking.js";
 export type { Booked, Ended, Priced } from "./booking.js";
 export type {
-  AdapterEvent, AdapterSession, AgentAdapter, AdapterFacts, GateAnswer, GateCall, SessionPort, Wire, HarnessEvent, HostTool, McpCallResult, McpTool, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage, NoteRequest,
+  AdapterEvent, AdapterSession, AgentAdapter, AdapterFacts, GateAnswer, GateCall, SessionPort, Wire, HarnessEvent, HostTool, McpCallResult, McpTool, NestedCalls, NestedResult, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage, NoteRequest,
   NodeRequest, SessionIO, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, ToolPermission, TurnStatus,
 } from "./types.js";

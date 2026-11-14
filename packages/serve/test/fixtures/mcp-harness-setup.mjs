@@ -8,6 +8,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { copyStandIn } from "../../../run-adapters-codex/test/stand-in.mjs";
+import { withToolSearch } from "./claude-tool-search.mjs";
 import { startFakeMcp } from "./fake-mcp-server.mjs";
 import { OFFERED_ENV } from "./faux-mcp-offered.mjs";
 import { scratch, serve, withEnv } from "../support.mjs";
@@ -53,13 +54,17 @@ export async function harnessSetup(t, harness, templates, { tools = {} } = {}) {
     offered = () => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
   }
   if (harness === "claude-agent") {
-    // The model calls the tool the prompt names whether or not it is offered, then answers with what came back.
+    // The model calls the tool the prompt names whether or not it is offered, then answers with what came back. The MCP
+    // tools are deferred behind the CLI's ToolSearch, so it searches first (withToolSearch), as a real model does.
+    const answer = withToolSearch((request) => {
+      if (Object.keys(request.results).length) return { text: `The tool said: ${Object.values(request.results)[0]}` };
+      const asked = /CALL (\w+) (\{.*\})/.exec(request.text);
+      return asked ? { tool: { name: `mcp__hands__mcp__fake__${asked[1]}`, input: JSON.parse(asked[2]) } } : { text: "Noted." };
+    });
     const anthropic = await fakeAnthropic({
       reply: (request) => {
         offeredLists.push(request.tools);
-        if (Object.keys(request.results).length) return { text: `The tool said: ${Object.values(request.results)[0]}` };
-        const asked = /CALL (\w+) (\{.*\})/.exec(request.text);
-        return asked ? { tool: { name: `mcp__hands__mcp__fake__${asked[1]}`, input: JSON.parse(asked[2]) } } : { text: "Noted." };
+        return answer(request);
       },
     });
     t.after(() => anthropic.close());

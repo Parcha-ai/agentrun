@@ -19,6 +19,7 @@ import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
 import { agent, clientOwnerSession, follow, retried, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { storeOn as newStore } from "./store-helpers.mjs";
+import { withToolSearch } from "./fixtures/claude-tool-search.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
@@ -649,7 +650,8 @@ test("the default network dials the address it is given, whatever the name: a na
 async function harnessServe(t, harness) {
   if (harness === "pi") return { server: await serve(t, { faux: FAUX_MCP }), extra: {}, content: 'Call mcp__docs__add with {"a":2,"b":3}' };
   if (harness === "claude-agent") {
-    const anthropic = await fakeAnthropic({ reply: (request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__hands__mcp__docs__add") ? { tool: { name: "mcp__hands__mcp__docs__add", input: { a: 2, b: 3 } } } : { text: "Noted." }) });
+    // The MCP tool is deferred behind the CLI's ToolSearch: the model finds it first (withToolSearch).
+    const anthropic = await fakeAnthropic({ reply: withToolSearch((request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__hands__mcp__docs__add") ? { tool: { name: "mcp__hands__mcp__docs__add", input: { a: 2, b: 3 } } } : { text: "Noted." })) });
     t.after(() => anthropic.close());
     withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL"]);
     return { server: await serve(t, { faux: undefined }), extra: { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }, content: "Add 2 and 3 with the add tool." };

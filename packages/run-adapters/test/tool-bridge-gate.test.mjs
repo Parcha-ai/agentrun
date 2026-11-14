@@ -40,7 +40,8 @@ test("a deny answers the model in the host's words and writes and runs nothing",
   const log = [];
   const bridge = toolBridge(drive, [payTool(log)], { gate: async () => ({ deny: 'Permission denied: pay is set to deny.' }), beforeNever: async () => { log.push(['flush']); } });
   const result = await bridge.call('pay', {}, 'c2');
-  assert.deepEqual(result, { text: 'Permission denied: pay is set to deny.', isError: true });
+  // Marked refused: a nested call (a script's, tools_call's) tells a refusal from a tool's own error by it.
+  assert.deepEqual(result, { text: 'Permission denied: pay is set to deny.', isError: true, refused: true });
   assert.deepEqual(log, [], 'no flush, no call');
   assert.deepEqual(await starts(records), [], 'no intent');
 });

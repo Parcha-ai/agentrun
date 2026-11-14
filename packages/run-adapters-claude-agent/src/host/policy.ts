@@ -45,6 +45,15 @@ export const CLAUDE_BETAS: ReadonlySet<string> = new Set([
   "thinking-token-count-2026-05-13",
 ]);
 
+/** The beta the pinned CLI (2.1.286) adds with its own tool search on (ENABLE_TOOL_SEARCH, `toolSearch`): its tools sent
+ *  with `defer_loading`, and its ToolSearch's answer as `tool_reference` blocks naming them. Admitted only then. */
+export const CLAUDE_TOOL_SEARCH_BETA = "advanced-tool-use-2025-11-20";
+/** The CLI's own tools its tool search adds (recorded behind a local server, CLI 2.1.286): ToolSearch, which runs in the
+ *  CLI and answers with the deferred tools it found, and a deferred placeholder it never calls. */
+export const CLAUDE_TOOL_SEARCH_TOOLS: readonly string[] = Object.freeze(["ToolSearch", "DeferredToolPlaceholder"]);
+/** The keys of a `tool_reference` block, as the CLI's ToolSearch answers. */
+const TOOL_REFERENCE_KEYS: ReadonlySet<string> = new Set(["type", "tool_name"]);
+
 /** The keys a Messages request may carry, and a token count's. */
 const MESSAGES_KEYS = new Set(["model", "messages", "system", "max_tokens", "metadata", "stop_sequences", "stream", "temperature", "top_k", "top_p", "tools", "tool_choice", "thinking", "context_management", "output_config"]);
 const COUNT_TOKENS_KEYS = new Set(["model", "messages", "system", "tools", "tool_choice", "thinking", "context_management", "output_config"]);
@@ -83,6 +92,10 @@ export interface AnthropicPolicyOptions {
    *  pages each search feeds the model, billed as input), added to that request's input bound. Absent, such a request
    *  has no input bound, so a cap that holds each request's worst case refuses it. */
   webSearchAllowance?: number;
+  /** The CLI's own tool search is on (its MCP tools deferred until it finds them): its beta, its two tools
+   *  (CLAUDE_TOOL_SEARCH_TOOLS) and, inside a tool result, a `tool_reference` block naming one of the session's own tools
+   *  pass. A reference names a tool the request offers; the provider resolves it to nothing else. Default off. */
+  toolSearch?: boolean;
   /** How the provider takes its credential. Default `x-api-key` (Anthropic's API). */
   auth?: "x-api-key" | "bearer";
   /** Told when a request on the session's main model carries no thinking and no effort: the model would answer without
@@ -113,18 +126,23 @@ const LOCAL_IMAGE_NOTE = /^\[Image: source: [^\]\n]+\]$/;
 /** A content list (a message's, the system prompt's, a tool result's): only the block types this session sends. An
  *  image only as a host tool answered it: inside its result, inline, of a type the API takes (never one the provider
  *  would fetch). */
-function blocks(content: unknown, where: string, inResult = false): void {
+function blocks(content: unknown, where: string, inResult = false, references?: ReadonlySet<string>): void {
   if (content === undefined || typeof content === "string") return;
   if (!Array.isArray(content)) refuse(400, `${where} must be a string or a list of blocks`);
   for (const block of content as unknown[]) {
     if (!isPlain(block) || typeof block.type !== "string") return refuse(400, `a block in ${where} must be an object with a type`);
+    // With the CLI's tool search on: its ToolSearch's answer, a reference to one of the session's own tools, nothing else.
+    if (inResult && references && block.type === "tool_reference") {
+      if (!Object.keys(block).every((key) => TOOL_REFERENCE_KEYS.has(key)) || typeof block.tool_name !== "string" || !references.has(block.tool_name)) refuse(403, `${where} holds a tool reference to a tool this session does not have`);
+      continue;
+    }
     if (inResult && block.type === "image") {
       const source = block.source;
       if (!isPlain(source) || source.type !== "base64" || typeof source.media_type !== "string" || !IMAGE_TYPES.has(source.media_type) || typeof source.data !== "string") refuse(403, `${where} holds a block of a type this session does not send`);
       continue;
     }
     if (!CLAUDE_BLOCKS.has(block.type)) refuse(403, `${where} holds a block of a type this session does not send`);
-    if (block.type === "tool_result") blocks(block.content, "a tool result's content", true);
+    if (block.type === "tool_result") blocks(block.content, "a tool result's content", true, references);
   }
 }
 
@@ -266,13 +284,17 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
   const count = route.path === "/v1/messages/count_tokens";
   onlyKeys(body, count ? COUNT_TOKENS_KEYS : MESSAGES_KEYS, count ? "count_tokens" : "messages");
   outputConfig(body.output_config);
+  const own = options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`);
+  const search = options.toolSearch === true && context.host === undefined;
+  // The tools a tool search's answer may name: the session's own (a reference names no built-in).
+  const references = search ? new Set(own) : undefined;
   if (!Array.isArray(body.messages)) refuse(400, "messages must be a list");
   for (const message of body.messages as unknown[]) {
     if (!isPlain(message)) refuse(400, "a message must be an object");
-    blocks((message as Record<string, unknown>).content, "a message's content");
+    blocks((message as Record<string, unknown>).content, "a message's content", false, references);
   }
   blocks(body.system, "system");
-  const allowed = context.host !== undefined ? new Set(clientToolNames(body.tools)) : new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? [])]);
+  const allowed = context.host !== undefined ? new Set(clientToolNames(body.tools)) : new Set([...own, ...(options.builtins ?? []), ...(search ? CLAUDE_TOOL_SEARCH_TOOLS : [])]);
   const tools = ownTools(body.tools, allowed, options.webSearch);
   const choice = body.tool_choice;
   const chosen = isPlain(choice) && typeof choice.name === "string" && (allowed.has(choice.name) || (options.webSearch === true && choice.name === "web_search"));
@@ -459,7 +481,7 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     authHeaders: (credential): Record<string, string> => (options.auth === "bearer" ? { authorization: `Bearer ${credential}` } : { "x-api-key": credential }),
     header: (name, value) => {
       if (name !== "anthropic-beta") return value;
-      const unknown = value.split(",").map((v) => v.trim()).filter((v) => v && !CLAUDE_BETAS.has(v));
+      const unknown = value.split(",").map((v) => v.trim()).filter((v) => v && !CLAUDE_BETAS.has(v) && !(options.toolSearch === true && v === CLAUDE_TOOL_SEARCH_BETA));
       if (unknown.length) refuse(403, "an anthropic-beta value is not one the pinned CLI sends");
       return value;
     },

@@ -74,12 +74,16 @@ function kernelTool(tool: HostTool): KernelTool {
     description: tool.description,
     inputSchema: tool.inputSchema,
     replay: tool.replay,
+    ...(tool.nests ? { nests: true as const } : {}),
     async execute(input, io) {
       // The effect's step is `tool:<the model's call id>#<attempt>`: the host sees the model's call id.
       const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
-      const result = await tool.call(input, { callId, signal: io.signal });
+      // A tool that nests calls (tools_call, codemode) gets the session's tools as its nested calls, through the bridge.
+      const result = await tool.call(input, { callId, signal: io.signal, ...(io.nested ? { nested: io.nested } : {}) });
       if (result.isError) throw new Error(result.text);
-      return result.images?.length ? { text: result.text, images: result.images } : result.text;
+      // Its value, recorded with the outcome: a script's nested call is answered it (meta-tools.ts).
+      const structured = result.structured !== undefined ? { structured: result.structured } : {};
+      return result.images?.length ? { text: result.text, images: result.images, ...structured } : result.structured === undefined ? result.text : { text: result.text, ...structured };
     },
   };
 }

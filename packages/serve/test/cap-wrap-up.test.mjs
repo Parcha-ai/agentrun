@@ -115,7 +115,7 @@ async function wrapRun(t, { capUsd, hold, billed, fetch, tools, onLedger, model,
     adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch, price: price ?? (() => billed), extensions: [delegate] }),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
-    runCap: { capUsd: () => capUsd, modelOf: () => model ?? priced(hold), judged: (request, answer) => void judged.push(answer) },
+    runCap: { capUsd: () => (typeof capUsd === "function" ? capUsd() : capUsd), modelOf: () => model ?? priced(hold), judged: (request, answer) => void judged.push(answer) },
     hooks: quiet,
     gate: () => "allow",
   }), { restartLimit: MAX_RESTARTS });
@@ -265,6 +265,28 @@ test("a $1 run on Sonnet asking 64,000 output tokens a request still calls its t
   assert.ok(judged[0] && judged[0].holdUsd > 0.4, `its requests are held at their large worst case: ${JSON.stringify(judged[0])}`);
   assert.equal(ran.read, 10, "every read ran");
   assert.equal(resultsIn(requests).filter((result) => result.text === WRAP_UP_TEXT).length, 0, "no call refused");
+});
+
+test("a call a running script makes is never refused by the wrap-up (the tool in flight is not cut short); the model's next call is", async (t) => {
+  // Held at $0.004 a request ($0.001 at its least). The first answer (the script) is billed $0.002 under no cap yet; the
+  // script's first call lowers the cap to $0.0045, so the run wraps up ($0.002 spent + $0.002 typical + $0.001 least) while
+  // its second call is asked. That call runs; the model's own read next is refused in the wrap-up's words.
+  const HOLD = 0.004;
+  let capNow = 1_000;
+  const { tools, ran } = suiteTools();
+  let lowered = 0;
+  const lower = { name: "lower", replaySafe: true, run: async () => ((capNow = 0.0045), (lowered += 1), "lowered") };
+  const requests = [];
+  const origin = scriptedOrigin([{ call: "codemode", args: { script: "await tools.lower({}); await tools.read({}); return 'both ran';" } }, { call: "read" }, { say: "answered" }], requests);
+  const [first, rest] = [billedAt(origin, 0.002, HOLD), billedAt(origin, 0.001, HOLD)];
+  const fetch = (url, init) => ((JSON.parse(String(init.body)).messages ?? []).some((message) => message.role === "assistant") ? rest : first)(url, init);
+  await wrapRun(t, { capUsd: () => capNow, hold: HOLD, fetch, tools: { ...tools, lower }, price: (_model, usage) => (usage.output * HOLD) / OUTPUT });
+  assert.equal(lowered, 1);
+  assert.equal(ran.read, 1, "the script's read ran under the wrap-up; the model's own did not");
+  const results = resultsIn(requests);
+  assert.equal(results[0]?.isError, false, JSON.stringify(results));
+  assert.match(results[0].text, /both ran/);
+  assert.deepEqual(results[1], { text: WRAP_UP_TEXT, isError: true }, JSON.stringify(results));
 });
 
 test("a run with no cap is unchanged: every child runs its whole script and every spawn is made", async (t) => {

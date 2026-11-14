@@ -343,6 +343,19 @@ export const CLAUDE_BUILTINS = ['Bash', 'Read', 'Edit', 'Write', 'NotebookEdit',
 /** Built-ins that only read: "safe to repeat" after a crash, and no flush before their outcome. Everything else: "may have taken effect". */
 export const CLAUDE_SAFE_BUILTINS = ['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch', 'ToolSearch', 'Skill'];
 
+/**
+ * ENABLE_TOOL_SEARCH for a session whose tools are `toolNames` (the host's names): with an MCP server's tools among them
+ * (`mcp__<server>__<tool>`), `true`: the CLI's own tool search is on, its ToolSearch among its tools, and those tools are
+ * deferred (served through `hands`, the rest of the session's tools listed to load always: tool-server.ts listedTools),
+ * each sent to the model once ToolSearch finds it. Without, `false`. The pinned CLI (2.1.286) leaves it off behind a
+ * proxy unless told, and its `auto` defers only past a tenth of the model's context (on a 1M-token model, never in
+ * practice); set either way, so a CLI that changes that default changes nothing here. The session's proxy admits what the
+ * CLI sends with it on (anthropicPolicy `toolSearch`).
+ */
+export const claudeToolSearch = (toolNames: readonly string[]): 'true' | 'false' => (toolNames.some((name) => name.startsWith('mcp__')) ? 'true' : 'false');
+/** The CLI's own tool that finds a deferred tool: it only reads the CLI's list of the session's tools. */
+export const CLAUDE_TOOL_SEARCH = 'ToolSearch';
+
 /** The default `builtinReplay`. */
 export const claudeBuiltinReplay = replayBy(CLAUDE_SAFE_BUILTINS);
 
@@ -426,8 +439,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
   const replay = typeof options.builtinReplay === 'function' ? options.builtinReplay : options.builtinReplay ? (name: string) => (options.builtinReplay as Record<string, ReplayPolicy>)[name] ?? claudeBuiltinReplay(name) : claudeBuiltinReplay;
   const providerTools = options.providerTools ?? [];
   const webSearch = providerTools.includes('web_search');
-  // A run's remote MCP tools (`mcp__<server>__<tool>`), host tools like any other, served with them.
-  const remoteMcp = tools.some((tool) => tool.name.startsWith('mcp__'));
+  /** The CLI's own tool search is on: a run's MCP servers' tools deferred behind its ToolSearch (claudeToolSearch). */
+  const toolSearch = claudeToolSearch(tools.map((tool) => tool.name)) === 'true';
   const log = options.log ?? (() => {});
   let sdk: Promise<ClaudeAgentSdk> | undefined;
   const loadSdk = (): Promise<ClaudeAgentSdk> => {
@@ -534,14 +547,17 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         // The host's gate before the intent, so a refused or parked call leaves nothing of its own written. The assistant
         // line that made the call is in the log before the gate is asked: a park ends the claim, and the resume finds the
         // call it held dangling in the transcript, under the same id (resumeDanglingCalls, resumeDanglingSearches).
-        const gated = gate ? async (call: GateCall) => (await store.barrier(call.callId, barrierMs), gate(call)) : undefined;
+        // A call a tool makes inside its own (tools_call, codemode) has the id `<tool_use id>/<key>`: no line of the
+        // transcript names it, so it waits on the line that made the call it runs inside.
+        const logged = (callId: string) => store.barrier(callId.split('/')[0]!, barrierMs);
+        const gated = gate ? async (call: GateCall) => (await logged(call.callId), gate(call)) : undefined;
         /** The WebSearch calls the gate held and a person let run that no search has taken up yet (releasedSearches, read
          *  from the transcript at the resume): the model's next search with one's input is put to the gate under its id. */
         const released: { callId: string; key: string }[] = [];
         const bridge = toolBridge(ctx, tools, {
           ...(gated ? { gate: gated } : {}),
           // A `never` tool runs only once the assistant entry that asked for it is in the log.
-          beforeNever: ({ callId }) => store.barrier(callId, barrierMs),
+          beforeNever: ({ callId }) => logged(callId),
         });
         // The built-ins: each call an intent before it runs, its outcome after (the hooks below).
         const builtins = new BuiltinCalls(ctx, { replay, beforeNever: ({ callId }) => store.barrier(callId, barrierMs), live: true });
@@ -613,8 +629,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
                       if (name === undefined) return deny(`Not run: ${JSON.stringify(String(asked).slice(0, 80))} is not one of this session's skills.`);
                       return name === asked ? allow() : allow({ ...input, skill: name });
                     }
-                    // WebSearch, when on, takes the built-ins' path below: its intent recorded before it runs.
-                    if (!builtinsOn && !(webSearch && hook.tool_name === 'WebSearch')) return deny("Not run: this session's only tools are its own.");
+                    // WebSearch, when on, takes the built-ins' path below: its intent recorded before it runs. So does
+                    // ToolSearch with the tool search on: it reads only the CLI's list of the session's own tools.
+                    if (!builtinsOn && !(webSearch && hook.tool_name === 'WebSearch') && !(toolSearch && hook.tool_name === CLAUDE_TOOL_SEARCH)) return deny("Not run: this session's only tools are its own.");
                     if (ctx.signal.aborted) return deny('the session stopped');
                     // The host's gate decides every native search, as it does a host tool's call, before anything of it
                     // is written: a deny refuses it in the gate's words, an ask holds it until the person answers (the
@@ -712,8 +729,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // A host tool's result within the host's bound reaches the model whole (each tool is listed with it, too).
           mcpOutputTokens: MCP_OUTPUT_TOKENS,
         });
-        // A run's MCP tools are offered whole, never deferred behind the CLI's tool search, which the session's proxy does not carry.
-        if (remoteMcp) vmEnv.ENABLE_TOOL_SEARCH = 'false';
+        // The CLI's own tool search: on with MCP servers among the session's tools, off without (claudeToolSearch).
+        vmEnv.ENABLE_TOOL_SEARCH = toolSearch ? 'true' : 'false';
         const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
         const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])].filter((name) => !(skills && name === 'Skill'));
         const sessionId = uuidFrom(ctx.runId);
@@ -748,7 +765,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // Built-ins on: the allowed ones (less those whose state the log does not carry), each let through by
           // the PreToolUse hook once its intent is in the log. Off: the bridged tools are the only ones. Either
           // way nothing is asked of a user, and nothing else is permitted.
-          ...(allowed !== undefined ? { tools: [...allowed, ...(skills ? ['Skill'] : []), ...(webSearch && !allowed.includes('WebSearch') ? ['WebSearch'] : [])] } : {}),
+          ...(allowed !== undefined ? { tools: [...allowed, ...(skills ? ['Skill'] : []), ...(webSearch && !allowed.includes('WebSearch') ? ['WebSearch'] : []), ...(toolSearch && !allowed.includes(CLAUDE_TOOL_SEARCH) ? [CLAUDE_TOOL_SEARCH] : [])] } : {}),
           // The session's skills, from its own plugin: listed to the model and loadable, and no other.
           ...(skills ? { plugins: [{ type: 'local' as const, path: skills.plugin }], skills: [...skills.names] } : {}),
           disallowedTools: disallowed,

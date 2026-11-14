@@ -12,6 +12,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
+import { withToolSearch } from "./fixtures/claude-tool-search.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, asOwner, follow, retried, runDir, runRecordOf, scratch, serve as serveOf, startInProcessRunner, storeBytes, withEnv } from "./support.mjs";
 import { openSqliteStore, sealMcpCredential } from "../dist/store/index.js";
@@ -269,8 +270,9 @@ test("pi: a server whose address changed after the run started answers the run's
 
 test("claude-agent: the Claude CLI calls mcp:fake/add as a host tool; the fake saw the bearer, the CLI never held it", { timeout: 180_000, skip: process.platform !== "linux" ? "the CLI process's exit is read from /proc: Linux only" : !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const anthropic = await fakeAnthropic({
-    // The CLI's own background requests offer no tools: they get a plain answer.
-    reply: (request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__hands__mcp__fake__add") ? { tool: { name: "mcp__hands__mcp__fake__add", input: { a: 2, b: 3 } } } : { text: "Noted." }),
+    // The CLI's own background requests offer no tools: they get a plain answer. The MCP tool is deferred behind the CLI's
+    // ToolSearch: the model finds it first (withToolSearch).
+    reply: withToolSearch((request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__hands__mcp__fake__add") ? { tool: { name: "mcp__hands__mcp__fake__add", input: { a: 2, b: 3 } } } : { text: "Noted." })),
   });
   t.after(() => anthropic.close());
   const saved = { ...process.env };
@@ -330,12 +332,12 @@ test("claude-agent: a run killed mid-call resumes with the call reported interru
   // The model asks for the call once; every later answer says what it was told of it.
   let asked = false;
   const anthropic = await fakeAnthropic({
-    reply: (request) => {
+    reply: withToolSearch((request) => {
       if (!request.tools.includes("mcp__hands__mcp__fake__slow_write")) return { text: "Noted." };
       if (asked) return { text: "Done after the cut." };
       asked = true;
       return { tool: { name: "mcp__hands__mcp__fake__slow_write", input: { line: "once", seconds: 60 } } };
-    },
+    }),
   });
   t.after(() => anthropic.close());
   const saved = { ...process.env };

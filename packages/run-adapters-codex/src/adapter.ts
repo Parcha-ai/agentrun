@@ -103,12 +103,15 @@ export function kernelTool(tool: HostTool): KernelTool {
     description: describedDescription(tool.description, tool.inputSchema),
     inputSchema: tool.inputSchema,
     replay: tool.replay,
+    ...(tool.nests ? { nests: true as const } : {}),
     async execute(input, io) {
       // The effect's step is `tool:<Codex call id>#<attempt>`: the host sees Codex's call id.
       const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
       // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
       const attempt = Number(/#(\d+)$/.exec(io.stepId ?? "")?.[1] ?? 0);
-      const result = await tool.call(input, { callId, signal: io.signal, attempt });
+      // A tool that nests calls (tools_call) names them by the host's names: the bridge holds them by Codex's.
+      const nested = io.nested && { call: (name: string, args: Record<string, unknown>, key: string) => io.nested!.call(codexToolName(name), args, key), memo: io.nested.memo };
+      const result = await tool.call(input, { callId, signal: io.signal, attempt, ...(nested ? { nested } : {}) });
       // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
       if (result.parked) await markParked(io.ctx, callId);
       if (result.isError) throw new Error(result.text);

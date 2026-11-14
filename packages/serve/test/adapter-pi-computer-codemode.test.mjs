@@ -67,7 +67,7 @@ async function desktop({ ui = false } = {}) {
 async function codemodeRun(t, script, computer, gate = () => "allow", restartAt = undefined) {
   const { server, runners: stores_ } = await stores({ runners: 2 });
   await queue(server, "run-1");
-  const { tools } = suiteTools();
+  const { tools, ran } = suiteTools();
   const requests = [];
   const loop = createAdapterLoop(async (_claim, run) => ({
     adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0, extensions: [computerCodemode(computer)] }),
@@ -90,7 +90,7 @@ async function codemodeRun(t, script, computer, gate = () => "allow", restartAt 
     const now = await server.runs.get("run-1");
     return now.state === "ended" && now.runner === null && now;
   }, "the run ended", 30_000);
-  return { requests, server };
+  return { requests, server, ran };
 }
 
 /** The text of the newest tool result the provider got. */
@@ -159,6 +159,21 @@ test("code mode is held to the computer kind's setting: a deny on desktop refuse
   assert.equal(result.isError, true);
   assert.equal(result.text, deniedText(PI_CODEMODE_TOOL), "refused in the gate's words, before the script ran");
   assert.equal(computer.calls.length, before, "nothing reached the computer");
+});
+
+test("pi's code mode under max_tool_calls 2: a script of five reads runs one (the codemode call and its first read are the 2), the rest are refused unsent in the budget's words", async (t) => {
+  const { TOOL_BUDGET_TEXT } = await import("../dist/tool-budget.js");
+  const { script } = await desktop();
+  const code = "for (let i = 0; i < 5; i++) await tools.read({});\nreturn 'all five';";
+  const budgeted = Object.assign(() => "allow", { toolCalls: 2 });
+  const { requests, server, ran } = await codemodeRun(t, [{ call: PI_CODEMODE_TOOL, args: { code } }, { say: "done" }], script, budgeted);
+  assert.equal(ran.read, 1, "one nested read ran: no call past the budget was sent");
+  const result = lastResult(requests);
+  assert.ok(result.text.includes(TOOL_BUDGET_TEXT), `the script read the budget's words: ${result.text}`);
+  assert.doesNotMatch(result.text, /all five/);
+  const rows = await runTimeline(server, "run-1", BACKGROUND_CONTEXT);
+  const row = rows.find((one) => one.kind === "tool_result" && one.tool_name === PI_CODEMODE_TOOL);
+  assert.ok(row?.tool_result_preview?.includes(TOOL_BUDGET_TEXT), `the codemode row says why: ${JSON.stringify(row)}`);
 });
 
 test("a code-mode script replayed after a restart: a replayed call is not made again nor recorded twice; the row holds the calls the rerun made (the shutdown sealed the journal before the cut attempt's record)", async (t) => {
