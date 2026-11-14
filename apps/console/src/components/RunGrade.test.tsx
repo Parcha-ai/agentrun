@@ -145,7 +145,7 @@ describe("a run's page, the Grade control", () => {
     expect(open1.button("Grade again")).toBeUndefined();
     act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
 
-    const t = await open(run(), { graded });
+    const t = await open(run({ ended_at: ENDED_AGAIN }), { graded });
     text = t.section()!.textContent ?? "";
     expect(text).toContain("Graded wrong");
     expect(text).not.toContain("Reviewing");
