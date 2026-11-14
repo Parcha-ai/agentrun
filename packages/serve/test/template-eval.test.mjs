@@ -195,6 +195,11 @@ test("a background shell call keeps its own name in the grading record, as the g
   const record = { answer: "", calls: callsOf(rows, "pi", ["crm"]), mcpCalls: [], files: [] };
   assert.equal(gradeDeterministic({ file: "bg.md", type: "tool_used", tools: ["bash_background"], expect: "called" }, record, []).pass, true);
   assert.equal(gradeDeterministic({ file: "sh.md", type: "tool_used", tools: ["bash"], count: 1 }, record, []).pass, true, "bash counts its own call alone");
+  // A need an owner's saved server filled under another name (my-crm for crm): its calls are graded by the package's name.
+  const owned = [{ kind: "tool_use", tool_use_id: "5", tool_name: "mcp__my-crm__get_contact", tool_input_preview: "{}" }];
+  const renamed = { answer: "", calls: callsOf(owned, "claude-agent", ["my-crm"], { "my-crm": "crm" }), mcpCalls: [], files: [] };
+  assert.deepEqual(renamed.calls.map((c) => c.tool), ["mcp:crm/get_contact"]);
+  assert.equal(gradeDeterministic({ file: "got.md", type: "tool_used", tools: ["mcp:crm/get_contact"], expect: "called" }, renamed, []).pass, true);
 });
 
 test("the eval's exit code is 1 when any case failed, however many passed beside it, and 0 only when every case passed", () => {
