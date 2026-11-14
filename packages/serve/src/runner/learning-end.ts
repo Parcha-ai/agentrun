@@ -43,7 +43,7 @@ import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
-import type { McpServerRow, Store } from "../store/store.js";
+import type { LearningProposal, McpServerRow, Store } from "../store/store.js";
 import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
@@ -326,10 +326,17 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const done = earlier.filter(completedRun);
   let compiledLately = false;
   const dueWith = (notes: number, workflows: number) => compileDue({ completed: input.outcome === "completed", notes, runs: Math.min(done.length, COMPILE_AFTER_RUNS) + (input.outcome === "completed" ? 1 : 0), workflows, compiledLately });
-  const lately = revising ? [] : await Promise.all(earlier.slice(0, COMPILE_QUIET_RUNS).map((run) => deps.store.learning.proposal(run.id).catch(() => undefined)));
-  const compiledOf = (kept: (typeof lately)[number]) => (kept?.proposal as { compiled?: { workflow?: unknown } } | null | undefined)?.compiled;
+  const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown } } | null | undefined)?.compiled;
+  // Every learning round a run kept: its newest, and each before it (a follow-up opened the run again after it).
+  const roundsOf = async (runId: string): Promise<(LearningProposal | undefined)[]> => {
+    const newest = await deps.store.learning.proposal(runId).catch(() => undefined);
+    if (!newest) return [];
+    return [newest, ...(await Promise.all(Array.from({ length: Math.max(0, newest.round - 1) }, (_, i) => deps.store.learning.proposal(runId, i + 1).catch(() => undefined))))];
+  };
   if (!revising) {
-    // A compile in the agent's last runs (a draft still waiting for its grade, or one that failed) asks none now.
+    // A compile in any learning round of the agent's last runs (a draft still waiting for its grade, or one that failed)
+    // asks none now: a follow-up's round keeps no compile of its own, so a run's earlier rounds are read too.
+    const lately = (await Promise.all(earlier.slice(0, COMPILE_QUIET_RUNS).map((run) => roundsOf(run.id)))).flat();
     compiledLately = lately.some((kept) => compiledOf(kept) !== undefined);
     // First by what the run started from (its seed's notes and the workflows it was offered): a run not due by them
     // opens no folder, unless one of its workflows is held. Main is read below for the turn itself, and decides again.
