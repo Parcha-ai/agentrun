@@ -79,6 +79,17 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
 }) {
   // The destructive tool whose allow waits on its second click.
   const [confirming, setConfirming] = useState<string | null>(null);
+  // The tool whose permission picker gets the keyboard back once its confirm closes: at once on Keep or Esc, and after an
+  // allow once its save lands (the pickers are disabled while one is out). Found by its label, so a picker needs no ref.
+  const returnTo = useRef<string | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (confirming !== null || busy || returnTo.current === null) return;
+    const label = `${returnTo.current} permission`;
+    returnTo.current = null;
+    [...(box.current?.querySelectorAll<HTMLButtonElement>("button[aria-label]") ?? [])].find((b) => b.getAttribute("aria-label") === label)?.focus();
+  }, [confirming, busy]);
+  const closeConfirm = (name: string) => { returnTo.current = name; setConfirming(null); };
   const providers = rows.some((r) => r.choice);
   const permissions = rows.some((r) => r.gate);
   const askOff = rows.some((r) => r.gate?.ask_needs === "password");
@@ -90,7 +101,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
   return (
     <>
       {askOff && <p className="mb-2 text-small text-warning-text">{ASK_OFF}</p>}
-      <div className="relative overflow-x-auto">
+      <div ref={box} className="relative overflow-x-auto">
         <table aria-label={label} className="w-full border text-left">
           <thead><tr className="border-b">{heads.map((c) => <th key={c} className="caps px-3 py-2 text-label font-semibold text-muted-foreground">{c}</th>)}<th><span className="sr-only">Reset</span></th></tr></thead>
           <tbody>
@@ -145,7 +156,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                     </td>
                   </tr>
                   {confirming === name && <tr><td colSpan={heads.length + 1} className="px-3 pb-2.5">
-                    <ConfirmAllow name={name} keep={permission === "ask" ? "Keep asking" : "Cancel"} onAllow={() => { setConfirming(null); setPermission("allow"); }} onKeep={() => setConfirming(null)} />
+                    <ConfirmAllow name={name} keep={permission === "ask" ? "Keep asking" : "Cancel"} busy={busy} onAllow={() => { if (busy) return; closeConfirm(name); setPermission("allow"); }} onKeep={() => closeConfirm(name)} />
                   </td></tr>}
                   {noteOf?.(name) ? <tr data-note={name}><td colSpan={heads.length + 1} className="px-3 pb-2.5">{noteOf(name)}</td></tr> : null}
                   {issues[name]?.length ? (
@@ -162,8 +173,9 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
 }
 
 /** The second click setting a destructive tool to allow takes, asked in place: what it lets through, then Keep (where the
- *  keyboard starts) and "Allow without asking". Esc keeps it as it was. */
-function ConfirmAllow({ name, keep, onAllow, onKeep }: { name: string; keep: string; onAllow: () => void; onKeep: () => void }) {
+ *  keyboard starts) and "Allow without asking". Esc keeps it as it was. The allow waits while a save is out (`busy`): each
+ *  save writes the whole map, so one started beside it could undo the other. */
+function ConfirmAllow({ name, keep, busy, onAllow, onKeep }: { name: string; keep: string; busy: boolean; onAllow: () => void; onKeep: () => void }) {
   const back = useRef<HTMLButtonElement>(null);
   useEffect(() => { back.current?.focus(); }, []);
   return (
@@ -171,7 +183,7 @@ function ConfirmAllow({ name, keep, onAllow, onKeep }: { name: string; keep: str
       className="flex flex-wrap items-center gap-3 border border-destructive/50 bg-card px-3 py-2.5">
       <p className="min-w-0 flex-1 text-body"><span className="font-semibold">Allow a destructive tool?</span> Its server marks <span className="break-all font-mono">{name}</span> as one that may delete or overwrite: every call would run with no one asked.</p>
       <Button ref={back} type="button" size="sm" variant="ghost" onClick={onKeep}>{keep}</Button>
-      <Button type="button" size="sm" variant="destructive" onClick={onAllow}>Allow without asking</Button>
+      <Button type="button" size="sm" variant="destructive" disabled={busy} onClick={onAllow}>Allow without asking</Button>
     </div>
   );
 }

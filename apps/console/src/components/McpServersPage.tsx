@@ -67,14 +67,20 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
   useEffect(() => { v2.toolSettings().then(setSettings, () => setSettings(null)); }, [v2]);
   // A change of one server's settings, saved as the Tools page saves: the map read as it is now, the change made to it,
   // and every other key and field written back as it was (a PUT replaces the whole map). The servers are read again
-  // after it: each tool's permission in force is the server's word.
+  // after it: each tool's permission in force is the server's word. One at a time: a second save started while one is out
+  // could write back the map as it was before the first, and undo it. Held outside React's state, so two changes in the
+  // same tick are one save; every control that saves is disabled while one is out.
+  const saving = useRef(false);
   const saveSettings = async (server: string, edit: (current: ToolSettings) => ToolSettings) => {
+    if (saving.current) return;
+    saving.current = true;
     setSettingsBusy(true); setSettingsProblem(null);
     try {
       const now = await v2.toolSettings();
       setSettings(await v2.saveToolSettings(edit(ownSettings(now, choices))));
       load();
     } catch (e) { setSettingsProblem({ server, problem: mcpProblem(e) }); }
+    saving.current = false;
     setSettingsBusy(false);
   };
   // A template's setup link fills a name no saved server has: its own, else the first free `<name>-<n>`, so saving never

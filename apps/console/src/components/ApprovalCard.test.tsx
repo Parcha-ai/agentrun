@@ -121,6 +121,20 @@ describe("ApprovalCard", () => {
     expect(page.host.textContent).toContain("Allowed. The run goes on.");
   });
 
+  it("closing a destructive call's second question gives the keyboard back to Allow once: Back and Esc each return focus to it", async () => {
+    const page = mount({ pending: { ...PENDING, tool: "mcp:fake/delete_thing", destructive: true } as PendingApproval });
+    await act(async () => { page.button("Allow once").click(); });
+    expect(document.activeElement).toBe(page.button("Back"));
+    await act(async () => { page.button("Back").click(); });
+    expect(page.host.querySelector("[role='alertdialog']")).toBeNull();
+    expect(document.activeElement).toBe(page.button("Allow once"));
+    await act(async () => { page.button("Allow once").click(); });
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(page.host.querySelector("[role='alertdialog']")).toBeNull();
+    expect(document.activeElement).toBe(page.button("Allow once"));
+    expect(page.answers).toEqual([]);
+  });
+
   it("a destructive call's Deny is one click, and a call not marked destructive is allowed in one, unconfirmed", async () => {
     const page = mount({ pending: { ...PENDING, destructive: true } as PendingApproval });
     await act(async () => { page.button("Deny").click(); });

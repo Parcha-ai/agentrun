@@ -802,7 +802,7 @@ describe("Settings → MCP servers, a server's tool settings", () => {
   /** A server whose tool settings are `settings`, kept as each PUT replaces them. Its read of gh marks each read-only
    *  tool `fallback_allow_reads` while gh's wildcard carries it, and `allow_reads` (its permission allow) where no setting
    *  of its own decides it, as the server does (`marks: false`: a read that marks none). */
-  function withSettings(settings: Record<string, unknown>, { marks = true } = {}) {
+  function withSettings(settings: Record<string, unknown>, { marks = true, held }: { marks?: boolean; held?: { on: boolean; release: () => void } } = {}) {
     let now = settings;
     const s = server([[saved({ name: "gh", tools: MARKED })]], (c) => {
       if (c.method === "GET" && c.path === "/v2/settings/mcp-servers") {
@@ -816,7 +816,9 @@ describe("Settings → MCP servers, a server's tool settings", () => {
       }
       if (c.path !== "/v2/settings/tools") return undefined;
       if (c.method === "PUT") now = c.body as Record<string, unknown>;
-      return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" }, browser: { provider: "kernel" }, ...now });
+      const answer = () => json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" }, browser: { provider: "kernel" }, ...now });
+      // A held PUT answers when the test releases it: a save still out.
+      return c.method === "PUT" && held?.on ? new Promise<Response>((r) => { held.release = () => r(answer()); }) : answer();
     });
     return { ...s, settings: () => now };
   }
@@ -901,5 +903,64 @@ describe("Settings → MCP servers, a server's tool settings", () => {
     await pick(permission(p, "open_issue"), "allow");
     await p.settle();
     expect(s.writes()).toHaveLength(2);
+  });
+
+  it("a destructive tool's allow waits while a save is out (each save writes the whole map): confirmed once it lands, both changes are kept", async () => {
+    const held = { on: false, release: () => {} };
+    const s = withSettings({}, { held });
+    const p = await open(s.v2, { choices: CHOICES });
+    await pick(permission(p, "delete_repo"), "allow");
+    await p.settle();
+    held.on = true;
+    await act(async () => { p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!.click(); });
+    await p.settle();
+    expect(s.writes()).toHaveLength(1);
+    const allow = () => p.button(/^Allow without asking$/, p.row("gh").querySelector("[role='alertdialog']")!)!;
+    expect(allow().disabled).toBe(true);
+    await act(async () => { allow().click(); });
+    await p.settle();
+    expect(s.writes()).toHaveLength(1);
+    held.on = false;
+    await act(async () => { held.release(); });
+    await p.settle();
+    expect(allow().disabled).toBe(false);
+    await p.click(/^Allow without asking$/, p.row("gh").querySelector("[role='alertdialog']")!);
+    expect(s.writes()).toHaveLength(2);
+    expect(s.settings()).toEqual({ "mcp:gh/*": { allow_reads: true }, "mcp:gh/delete_repo": { permission: "allow" } });
+  });
+
+  it("two changes in the same moment start one save, never two that write the whole map over each other", async () => {
+    const held = { on: true, release: () => {} };
+    const s = withSettings({}, { held });
+    const p = await open(s.v2, { choices: CHOICES });
+    const toggle = p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!;
+    await act(async () => { toggle.click(); toggle.click(); });
+    await p.settle();
+    held.on = false;
+    await act(async () => { held.release(); });
+    await p.settle();
+    expect(s.writes()).toHaveLength(1);
+  });
+
+  it("closing a destructive tool's confirm gives the keyboard back to its permission: Keep asking and Esc at once, an allow once its save lands", async () => {
+    const s = withSettings({});
+    const p = await open(s.v2, { choices: CHOICES });
+    const confirm = () => p.row("gh").querySelector<HTMLElement>("[role='alertdialog']")!;
+    await pick(permission(p, "delete_repo"), "allow");
+    await p.settle();
+    expect(document.activeElement?.textContent).toBe("Keep asking");
+    await p.click(/^Keep asking$/, confirm());
+    expect(document.activeElement).toBe(permission(p, "delete_repo"));
+    await pick(permission(p, "delete_repo"), "allow");
+    await p.settle();
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await p.settle();
+    expect(p.row("gh").querySelector("[role='alertdialog']")).toBeNull();
+    expect(document.activeElement).toBe(permission(p, "delete_repo"));
+    await pick(permission(p, "delete_repo"), "allow");
+    await p.settle();
+    await p.click(/^Allow without asking$/, confirm());
+    expect(s.writes()).toHaveLength(1);
+    expect(document.activeElement).toBe(permission(p, "delete_repo"));
   });
 });

@@ -25,7 +25,8 @@ const NOTE_MAX = 2000;
  *  further than the server cut them, never wider than the page), what a call costs, a note the agent reads with a
  *  Deny, and Allow and Deny. An answer is one POST: the first click disables both buttons before anything else can land.
  *  A call its MCP server marks destructive says so, and its Allow takes a second click: Allow once asks again in place,
- *  naming the call, the keyboard on Back; only "Allow this destructive call" sends the allow. Its Deny stays one click. */
+ *  naming the call, the keyboard on Back; only "Allow this destructive call" sends the allow, and Back or Esc puts the
+ *  keyboard on Allow once again. Its Deny stays one click. */
 export function ApprovalCard({ pending, onAnswer, compact = false, heading }: ApprovalCardProps) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -35,6 +36,14 @@ export function ApprovalCard({ pending, onAnswer, compact = false, heading }: Ap
   const destructive = pending.destructive === true;
   // Held outside React's state, so two clicks in the same tick are still one answer.
   const sending = useRef(false);
+  // Back from the second question: Allow once gets the keyboard again, once the question is gone and it is enabled.
+  const opener = useRef<HTMLButtonElement>(null);
+  const backToOpener = useRef(false);
+  useEffect(() => {
+    if (confirming || !backToOpener.current) return;
+    backToOpener.current = false;
+    opener.current?.focus();
+  }, [confirming]);
   const price = priceLine(pending.price);
   const answer = async (decision: "allow" | "deny", confirmed?: true) => {
     if (sending.current) return;
@@ -63,11 +72,11 @@ export function ApprovalCard({ pending, onAnswer, compact = false, heading }: Ap
               className="mt-1 block resize-y py-2 font-sans text-lead" />
           </label>
           <div className="flex flex-wrap items-center gap-2">
-            <Button type="button" variant="solid" size="sm" disabled={busy || confirming} onClick={() => (destructive ? setConfirming(true) : void answer("allow"))}>Allow once</Button>
+            <Button ref={opener} type="button" variant="solid" size="sm" disabled={busy || confirming} onClick={() => (destructive ? setConfirming(true) : void answer("allow"))}>Allow once</Button>
             <Button type="button" size="sm" disabled={busy} onClick={() => void answer("deny")}>Deny</Button>
             {busy && <span className="font-mono text-small text-muted-foreground">Sending…</span>}
           </div>
-          {confirming && <ConfirmDestructive tool={pending.tool} onAllow={() => void answer("allow", true)} onBack={() => setConfirming(false)} />}
+          {confirming && <ConfirmDestructive tool={pending.tool} onAllow={() => void answer("allow", true)} onBack={() => { backToOpener.current = true; setConfirming(false); }} />}
           {!compact && <p className="text-small text-muted-foreground">or type what to do instead; sending it declines this call</p>}
           {problem && <p className="font-mono text-small text-destructive-text" role="alert">{problem}</p>}
         </div>
