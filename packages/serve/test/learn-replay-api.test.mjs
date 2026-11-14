@@ -76,7 +76,7 @@ test("an owner replays a held revision on the inputs its hold was decided on: 20
   // Held on a replay of four of the five graded runs (its record names them, and the commit its text is at).
   const held = runs.slice(0, 4);
   await store.settings.put("learning.promotions.source", { v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "hold", source: "replay", reason: "replayed on 4 graded inputs: more than 2 pts under the agent",
-    replay: { n: 4, agree: 0, agent_acc: 1, wf_acc: 0.75, delta: -0.25, handed_back: 0, alone: 4, of: held, cost_usd: 0.01, skipped_write: 0, skipped_tools: [] }, commit: main }] });
+    replay: { n: 4, agree: 0, agent_acc: 1, wf_acc: 0.75, delta: -0.25, handed_back: 0, of: held, cost_usd: 0.01, skipped_write: 0, skipped_tools: [] }, commit: main }] });
   const meets = (path, method, status, value) => assert.deepEqual(schemaProblems(doc, doc.paths[path][method].responses[status].content["application/json"].schema, value), [], `${path}: ${JSON.stringify(value)}`);
 
   const started = await replay();
@@ -108,7 +108,8 @@ test("an owner replays a held revision on the inputs its hold was decided on: 20
   assert.equal(view.answered + view.handed_back + view.failed + view.skipped_write, 4, `every input is counted once: ${JSON.stringify(view)}`);
   assert.equal(view.answered, 4, `each replay run ran the revision at its learning commit, the workflow alone: ${JSON.stringify(view)}`);
   assert.equal(view.score.n, view.answered + view.handed_back, "scored: the inputs it answered or handed back");
-  assert.equal(view.alone, view.score.alone);
+  assert.equal(view.alone, view.score.n - view.score.handed_back, "alone is derived: n - handed_back, never a stored field");
+  assert.equal("alone" in view.score, false);
   // The record it decided is a replay's, as a claim's is: the Learning tab and the gate read it unchanged.
   const records = (await api("GET", "/agents/source/learning/promotions")).body.promotions;
   const mine = records.filter((one) => one.replay_id === started.json.replay);
