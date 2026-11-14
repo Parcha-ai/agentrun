@@ -198,6 +198,10 @@ func (d *Display) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 		}
 		cursor, changed, err := d.look(ctx, w, region)
 		if err != nil {
+			if damage {
+				// Not read (a cancel while input held the display, or the display went): the next look reads it.
+				w.damaged(region)
+			}
 			return nil, err
 		}
 		if changed || w.cursor == nil || *w.cursor != cursor {

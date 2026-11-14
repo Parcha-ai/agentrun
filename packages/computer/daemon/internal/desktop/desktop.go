@@ -51,11 +51,12 @@ type Display struct {
 
 	shots atomic.Int64
 
-	// dmu guards damage, the watches' view of where the screen changed (damage.go), and noDamageUntil, before which a
-	// display that had no DAMAGE is not asked again.
-	dmu           sync.Mutex
-	damage        *damages
-	noDamageUntil time.Time
+	// dmu guards damage, the watches' view of where the screen changed (damage.go), damageStarting, while a watch
+	// starts it, and noDamageUntil, before which a display that had no DAMAGE is not asked again.
+	dmu            sync.Mutex
+	damage         *damages
+	damageStarting bool
+	noDamageUntil  time.Time
 }
 
 // New is the display DISPLAY named when computerd started; "" is none.

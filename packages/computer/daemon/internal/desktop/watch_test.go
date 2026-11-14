@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"image/jpeg"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -57,6 +58,13 @@ func shaded(t *testing.T) (*client, *atomic.Int32) {
 // damaged is shaded on a fake with DAMAGE: the screen is read only where f.Damaged says it changed.
 func damaged(t *testing.T) (*client, *atomic.Int32, *x11fake.Server) {
 	t.Helper()
+	d, shade, f := damagedDisplay(t)
+	return serve(t, d), shade, f
+}
+
+// damagedDisplay is damaged's display, for a test that serves it more than one connection.
+func damagedDisplay(t *testing.T) (*desktop.Display, *atomic.Int32, *x11fake.Server) {
+	t.Helper()
 	t.Setenv("XAUTHORITY", "")
 	shade := &atomic.Int32{}
 	shade.Store(0x80)
@@ -74,7 +82,7 @@ func damaged(t *testing.T) (*client, *atomic.Int32, *x11fake.Server) {
 	})
 	d := desktop.New(name)
 	t.Cleanup(d.Close)
-	return serve(t, d), shade, f
+	return d, shade, f
 }
 
 // reads is every GetImage the fake answered, as [x, y, width, height].
@@ -135,6 +143,117 @@ func TestOnTheFakeWithDamageOnlyTheRectangleThatChangedIsRead(t *testing.T) {
 	if out, _, _, _ := img.At(200, 200).RGBA(); out>>8 < 0x60 {
 		t.Fatalf("outside the damaged rectangle the frame is %#x; want the screen as it was last read", out>>8)
 	}
+}
+
+// A watch whose read of a damaged rectangle failed (or that was cancelled before it read it) has taken the damage but
+// not read it: the next watch still reads it.
+func TestOnTheFakeWithDamageARectangleAWatchFailedToReadIsReadByTheNext(t *testing.T) {
+	t.Setenv("XAUTHORITY", "")
+	shade := &atomic.Int32{}
+	shade.Store(0x80)
+	var fail atomic.Bool
+	f, name := x11fake.Listen(t, func(f *x11fake.Server) {
+		f.Damage = true
+		f.Image = func(x, y, w, h int) []byte {
+			out := make([]byte, w*h*4)
+			v := byte(shade.Load())
+			for i := range out {
+				out[i] = v
+			}
+			return out
+		}
+		f.Pointer = [2]int{12, 34}
+		f.ErrorFor = func(r x11fake.Request) (byte, bool) {
+			return 8, r.Opcode == 73 && fail.CompareAndSwap(true, false) // one GetImage answered BadMatch
+		}
+	})
+	d := desktop.New(name)
+	t.Cleanup(d.Close)
+	c := serve(t, d)
+	var first watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &first)
+	fail.Store(true)
+	shade.Store(0x10)
+	f.Damaged(40, 32, 64, 48)
+	if r := c.wait(c.send("screen.watch", map[string]any{"after": first.Seq, "waitMs": 2000})); r.Error == nil {
+		t.Fatalf("the watch whose read failed: %s; want its error", r.Result)
+	}
+	var next watchResult
+	c.ok("screen.watch", map[string]any{"after": first.Seq, "waitMs": 1000}, &next)
+	if !next.Changed {
+		t.Fatalf("the watch after the failed read: %+v; want the frame of the damage the failed one never read", next)
+	}
+	if got := reads(f); len(got) != 3 || got[1] != [4]int{40, 32, 64, 48} || got[2] != got[1] {
+		t.Fatalf("reads %v; want the whole screen, then the damaged rectangle twice: failed, then read", got)
+	}
+}
+
+// The last watch to go ends the display's damage, so the X server stops sending what it draws; the next watch starts it
+// again and reads the whole screen.
+func TestOnTheFakeWithDamageTheLastWatchToGoEndsTheDamageAndTheNextStartsIt(t *testing.T) {
+	d, _, f := damagedDisplay(t)
+	c := serve(t, d)
+	var first watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &first)
+	if n := f.DamageClients(); n != 1 {
+		t.Fatalf("%d connections hold a DAMAGE object while one watch watches; want 1", n)
+	}
+	_ = c.w.Close() // the watch's connection ends
+	deadline := time.Now().Add(5 * time.Second)
+	for f.DamageClients() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d connections still hold a DAMAGE object after the last watch went; want 0", f.DamageClients())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	again := serve(t, d)
+	var next watchResult
+	again.ok("screen.watch", map[string]any{"after": 0}, &next)
+	if !next.Changed || f.DamageClients() != 1 {
+		t.Fatalf("the next watch: %+v, %d DAMAGE connections; want a frame and 1", next, f.DamageClients())
+	}
+}
+
+// Close does not wait for a watch starting the damage on an X server that stopped answering.
+func TestOnTheFakeWithDamageCloseDoesNotWaitForADamageThatIsStarting(t *testing.T) {
+	t.Setenv("XAUTHORITY", "")
+	release := make(chan struct{})
+	var once sync.Once
+	f, name := x11fake.Listen(t, func(f *x11fake.Server) {
+		f.Damage = true
+		f.Image = func(x, y, w, h int) []byte { return make([]byte, w*h*4) }
+		f.Hold = func(r x11fake.Request) {
+			if r.Opcode == x11fake.DamageMajor && r.Data == 0 { // DAMAGE's QueryVersion: no answer until the test ends
+				<-release
+			}
+		}
+	})
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	d := desktop.New(name)
+	c := serve(t, d)
+	c.send("screen.watch", map[string]any{"after": 0, "waitMs": 1000})
+	deadline := time.Now().Add(5 * time.Second)
+	for !asked(f, x11fake.DamageMajor) {
+		if time.Now().After(deadline) {
+			t.Fatal("the watch never asked for DAMAGE")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	start := time.Now()
+	d.Close()
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("Close took %v while a watch started the damage; want it at once", took)
+	}
+}
+
+// asked says whether the fake got a request of the major opcode.
+func asked(f *x11fake.Server, major byte) bool {
+	for _, r := range f.Got() {
+		if r.Opcode == major {
+			return true
+		}
+	}
+	return false
 }
 
 // A screen damaged all the time (a video, a scroll) gives frames at the cap, 15 a second: well past the old 5, never

@@ -24,7 +24,8 @@ const retryDamage = 10 * time.Second
 
 // damageFor subscribes w to the display's damage, starting it on the first watch or after it ended, and says whether
 // w has it. A display with no DAMAGE extension (or none that answers) is polled: false, and it is asked again only
-// after retryDamage.
+// after retryDamage. The start talks to the X server outside dmu, so Close never waits for it; a watch that asks
+// while another starts it is polled until it has started.
 func (d *Display) damageFor(w *watching) bool {
 	d.dmu.Lock()
 	defer d.dmu.Unlock()
@@ -32,12 +33,24 @@ func (d *Display) damageFor(w *watching) bool {
 		return true
 	}
 	if d.damage == nil || d.damage.isEnded() {
-		if time.Now().Before(d.noDamageUntil) {
+		if d.damageStarting || time.Now().Before(d.noDamageUntil) {
 			return false
 		}
+		d.damageStarting = true
+		d.dmu.Unlock()
 		m, err := d.startDamage()
+		d.dmu.Lock()
+		d.damageStarting = false
 		if err != nil {
 			d.noDamageUntil = time.Now().Add(retryDamage)
+			return false
+		}
+		d.mu.Lock()
+		closed := d.closed
+		d.mu.Unlock()
+		if closed {
+			// Close ran while the damage started: it is not kept.
+			m.close()
 			return false
 		}
 		d.damage = m
@@ -116,10 +129,16 @@ func (m *damages) isEnded() bool {
 	return m.ended
 }
 
+// unsubscribe ends w's subscription. The last watch to leave ends the damage, so the X server stops sending what it
+// draws while nobody watches; the next watch starts it again.
 func (m *damages) unsubscribe(w *watching) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.subs, w)
+	if len(m.subs) == 0 && !m.ended {
+		m.ended = true
+		_ = m.conn.Close()
+	}
 }
 
 func (m *damages) close() {

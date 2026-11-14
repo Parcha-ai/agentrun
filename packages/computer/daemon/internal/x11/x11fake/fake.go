@@ -144,12 +144,29 @@ type Server struct {
 }
 
 // session is one connection the fake serves: its writes, one at a time, the sequence number of its last request, and
-// the damage object it made, if any.
+// the damage object it made, if any, and whether the client hung up.
 type session struct {
 	mu     sync.Mutex
 	conn   net.Conn
 	seq    uint16
 	damage uint32
+	gone   bool
+}
+
+// DamageClients is how many connections, still open, hold a damage object.
+func (f *Server) DamageClients() int {
+	f.mu.Lock()
+	sessions := append([]*session(nil), f.sessions...)
+	f.mu.Unlock()
+	n := 0
+	for _, s := range sessions {
+		s.mu.Lock()
+		if s.damage != 0 && !s.gone {
+			n++
+		}
+		s.mu.Unlock()
+	}
+	return n
 }
 
 func (s *session) write(out []byte) error {
@@ -375,6 +392,11 @@ func (f *Server) serve(conn net.Conn) {
 	if err != nil {
 		return
 	}
+	defer func() {
+		s.mu.Lock()
+		s.gone = true
+		s.mu.Unlock()
+	}()
 	var seq uint16
 	for {
 		h := make([]byte, 4)
