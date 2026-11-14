@@ -838,7 +838,7 @@ test("pid1: the machine's command is the entrypoint; the daemon goes in beside i
 	assert.equal(provider.capabilities().daemon, "pid1");
 });
 
-test("a desktop's window manager starts once the display answers, with DISPLAY, where the host's facts say so; one that ends at once fails create, and nothing is left", async () => {
+test("a desktop's window manager starts once the display answers, with DISPLAY, where the host's facts say so; one that cannot start or ends at once fails create, and nothing is left", async () => {
 	const starts = (fake, id) => fake.requests.filter(({ machine, method }) => machine === id && method === "process.start").map(({ params }) => params);
 	const managed = setup({ kind: "desktop" }, { facts: { windowManager: true } });
 	made(await create(managed.provider));
@@ -854,6 +854,12 @@ test("a desktop's window manager starts once the display answers, with DISPLAY, 
 	const bare = setup({ kind: "desktop" });
 	made(await create(bare.provider));
 	assert.deepEqual(starts(bare.fake, only(bare.fake).id).map(({ argv }) => argv[0]), ["Xvfb"], "no window manager unless the host's facts say so");
+
+	const missing = setup({ kind: "desktop" }, { facts: { windowManager: true }, display: "manager missing", lingers: { reads: 1, lists: 1 } });
+	const failed = await create(missing.provider);
+	assert.equal(failed.error?.code, "not_found");
+	assert.match(failed.error.message, /the window manager \(dbus-run-session .*xfwm4.*\) did not start on :0: dbus-run-session: executable file not found/);
+	await nothingLeft(missing.fake, "a window manager that cannot start");
 
 	const ends = setup({ kind: "desktop" }, { facts: { windowManager: true }, display: "manager dies", lingers: { reads: 1, lists: 1 } });
 	const ended = await create(ends.provider);

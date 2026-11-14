@@ -82,8 +82,8 @@ const START = Date.now();
  *  - sha: "ok" or "lie"; install: the install's exit code; initFails: words init writes before it exits;
  *  - notListening: how many bridges find no daemon before one does;
  *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
- *  - display: "ok", "never", "dies", or "manager dies" (the window manager ends at once); drift: the vendor's own drift
- *    words a read gives;
+ *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager does not start) or
+ *    "manager dies" (it ends at once); drift: the vendor's own drift words a read gives;
  *  - network: the vendor's network read back, over what create asked ("none"/"open"/{ other });
  *  - lingers: { reads, lists } after a delete; fileApi: false for a host with no upload;
  *  - onStep(step, machine): at the start of every host call and daemon request, so a test can abort a signal there;
@@ -187,7 +187,7 @@ export function fakeHost({
 		const displayUp = m.init?.display && m.displayUp;
 		if (method === "hello") {
 			const groups = displayUp ? [...DESKTOP_GROUPS] : [...LINUX_GROUPS];
-			if (m.xvfb && (display === "ok" || display === "manager dies")) m.displayUp = true;
+			if (m.xvfb && (display === "ok" || display.startsWith("manager "))) m.displayUp = true;
 			return result({ ...m.box.hello, groups, kind: displayUp ? "desktop" : "linux", ...(m.box.helloPatch ?? {}) });
 		}
 		if (method === "files.read" && params.path === "/proc/self/mounts") return result({ data: Buffer.from(mountsOf(m.box)).toString("base64"), size: 0, eof: true });
@@ -222,6 +222,7 @@ export function fakeHost({
 			return result({ exitCode: 0, stdout: Buffer.from(`${argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 		}
 		if (method === "process.start") {
+			if (params.argv[0] === "dbus-run-session" && display === "manager missing") return error("not_found", "dbus-run-session: executable file not found in $PATH");
 			const entry = { id: `p${m.processes.length + 1}`, pid: 100 + m.processes.length, argv: params.argv, running: true, exitCode: null, signal: null, stderr: "" };
 			if (params.argv[0] === "Xvfb") {
 				m.xvfb = entry;
