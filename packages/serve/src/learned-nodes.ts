@@ -24,8 +24,10 @@ export type LearnedNode = { readonly label: string; readonly kind: string; reado
  *  guard's signal and threshold, the signals it read (raw probabilities: its own confidence `self`, Jev's yes `jev`),
  *  `p` (through the guard's fit when it has one; null when a signal it reads was missing, so it handed back) and whether
  *  it handed the job back. A run's rows are its metrics' `guards` (runner/workflow-first.ts pathMetrics), each naming
- *  the workflow whose call made it (`workflow`: a run can call more than one, the next after the first hands back). */
-export type GuardRow = { readonly node: string; readonly signal: "self" | "jev" | "both"; readonly self?: number; readonly jev?: number; readonly p: number | null; readonly threshold: number; readonly escalated: boolean; readonly workflow?: string };
+ *  the workflow whose call made it (`workflow`: a run can call more than one, the next after the first hands back).
+ *  `escalate`: no guard but an escalate node a replay recorded instead of obeying (learn/promote.ts softEscalatesOf), on
+ *  its label: p 0 when it fired, else 1, at SOFT_ESCALATE_THRESHOLD, never `escalated` (the run went on past it). */
+export type GuardRow = { readonly node: string; readonly signal: "self" | "jev" | "both" | "escalate"; readonly self?: number; readonly jev?: number; readonly p: number | null; readonly threshold: number; readonly escalated: boolean; readonly workflow?: string };
 
 /** A run's guard rows, from its root entries: every guard check of every learned_workflow call (LEARNED_NODES `guards`,
  *  never the capped trace's), in order, each with its call's workflow. What its metrics keep as `guards`. */

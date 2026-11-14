@@ -47,7 +47,8 @@ export interface Grade {
 /** What a replay says, the shape the promotion record keeps (SPEC: replay {n, agree, agent_acc, wf_acc, delta}):
  *  `n` inputs; `agree`, how many the workflow answered alone with the agent's recorded answer; `agent_acc`, the agent's
  *  recorded answers' accuracy; `wf_acc`, the workflow's, a hand-back counting as the agent's answer; `delta` = wf_acc -
- *  agent_acc; `handed_back`, how many it handed back. Accuracies to 1e-4. */
+ *  agent_acc; `handed_back`, how many it handed back; `alone`, how many it answered alone (n - handed_back). Accuracies
+ *  to 1e-4. */
 export interface ReplayScore {
   readonly n: number;
   readonly agree: number;
@@ -55,6 +56,7 @@ export interface ReplayScore {
   readonly wf_acc: number;
   readonly delta: number;
   readonly handed_back: number;
+  readonly alone: number;
 }
 
 /** A learned workflow's promotion record at one digest. `decided`: `promote` (it serves first), `hold` (it does not: the
@@ -111,12 +113,15 @@ export function skippedToolsOf(rows: readonly ReplayRow[]): SkippedTool[] {
     .sort((a, b) => b.inputs - a.inputs || (a.tool < b.tool ? -1 : a.tool > b.tool ? 1 : 0));
 }
 
-/** One guard a refit changed: its step, its threshold before and after, and its new fit when one was fit. */
+/** One switch a refit changed: a guard's step, its threshold before and after (`threshold` null: the guard switched off,
+ *  gone from the revision), and its new fit when one was fit; or an escalate node a replay recorded (softEscalatesOf),
+ *  switched off (`escalate`: gone from the revision; `was` and `threshold` null, it had none). */
 export interface RefitGuard {
   readonly node: string;
-  readonly was: number;
-  readonly threshold: number;
+  readonly was: number | null;
+  readonly threshold: number | null;
   readonly fit?: { readonly w: readonly number[]; readonly b: number; readonly n: number; readonly fitted_at: string };
+  readonly escalate?: true;
 }
 
 export const gradesKey = (agentId: string): string => `learning.grades.${agentId}`;
@@ -352,11 +357,34 @@ export function thresholdsOf(workflowText: string): Map<string, number> {
  *  guard rows (scopeDepsToChild), so a nested guard's serving threshold and its refit read the rows it made. Only the
  *  workflow's node positions (workflow-nodes.ts): a call's args or a schema shaped like `{label, guard}` is data, never
  *  a guard, so a replay or a refit never changes it. */
-export function walkGuards(doc: unknown, visit: (label: string, guard: Record<string, unknown>) => void): void {
+export function walkGuards(doc: unknown, visit: (label: string, guard: Record<string, unknown>, node: Record<string, unknown>) => void): void {
   for (const { node, prefix } of workflowNodes(doc)) {
     const guard = node.guard;
-    if (typeof node.label === "string" && guard && typeof guard === "object" && !Array.isArray(guard)) visit(`${prefix}${node.label}`, guard as Record<string, unknown>);
+    if (typeof node.label === "string" && guard && typeof guard === "object" && !Array.isArray(guard)) visit(`${prefix}${node.label}`, guard as Record<string, unknown>, node);
   }
+}
+
+/** The threshold a soft escalate's row (GuardRow signal `escalate`) is read at: its p is 0 when it fired, else 1, so it
+ *  hands back at its serving setting exactly when it fired. */
+export const SOFT_ESCALATE_THRESHOLD = 0.5;
+
+/** The escalate nodes of a workflow document a replay records instead of obeying, by label as the DSL names its step (a
+ *  child's `parent/child`): each whose `when` (or its `not`'s `of`) reads a field of a judge node's output in the same
+ *  workflow (its path's head is the judge's `as`). A judge's field is one model's opinion of a draft the workflow already
+ *  wrote: the replay goes on to that draft and records whether the escalate fired (WorkflowDeps.softEscalate), so a refit
+ *  can weigh the check against the drafts it stopped (learn/refit.ts). Every other escalate (on a call's result, a
+ *  route's, the input) stays hard in a replay: it stops the run, as serving does. */
+export function softEscalatesOf(doc: unknown): Set<string> {
+  const nodes = workflowNodes(doc);
+  const judged = new Set(nodes.flatMap(({ node, prefix }) => (node.node === "judge" && typeof node.as === "string" ? [`${prefix}${node.as}`] : [])));
+  const out = new Set<string>();
+  for (const { node, prefix } of nodes) {
+    if (node.node !== "escalate" || typeof node.label !== "string") continue;
+    let when = node.when as { predicate?: unknown; of?: unknown; path?: unknown } | undefined;
+    if (when?.predicate === "not") when = when.of as typeof when;
+    if (typeof when?.path === "string" && judged.has(`${prefix}${when.path.split(".")[0]}`)) out.add(`${prefix}${node.label}`);
+  }
+  return out;
 }
 
 /** The threshold a replay's guards read at: the least the DSL takes (a threshold is in (0, 1), exclusive), so a guard
@@ -382,7 +410,8 @@ export function recordOnly(workflowText: string): string {
 }
 
 /** Whether a replayed input would have been handed back serving at `thresholds` (by step; a step not named keeps its
- *  row's): it did not answer alone, or one of its guards read no p, or a p under its step's threshold. */
+ *  row's): it did not answer alone, or one of its guards read no p, or a p under its step's threshold (a soft escalate
+ *  that fired among them: its row's p 0). */
 export function escalates(row: Pick<ReplayRow, "outcome" | "guards">, thresholds: ReadonlyMap<string, number>): boolean {
   if (row.outcome !== "answered") return true;
   return row.guards.some((guard) => guard.p === null || guard.p < (thresholds.get(guard.node) ?? guard.threshold));
@@ -411,11 +440,12 @@ export function replayScore(all: readonly ReplayRow[], thresholds: ReadonlyMap<s
   }
   const n = rows.length;
   const [agent_acc, wf_acc] = n ? [round(agentRight / n), round(wfRight / n)] : [0, 0];
-  return { n, agree, agent_acc, wf_acc, delta: round(wf_acc - agent_acc), handed_back: handed };
+  return { n, agree, agent_acc, wf_acc, delta: round(wf_acc - agent_acc), handed_back: handed, alone: n - handed };
 }
 
-/** Whether a score clears the bar: the workflow's accuracy at most PROMOTE_BAR under the agent path's. */
-export const clears = (score: Pick<ReplayScore, "delta">): boolean => score.delta >= -PROMOTE_BAR - 1e-9;
+/** Whether a score clears the bar: the workflow's accuracy at most PROMOTE_BAR under the agent path's, and it answered
+ *  alone on at least one input (one that hands back every input scores the agent's own accuracy, and would never serve). */
+export const clears = (score: Pick<ReplayScore, "delta" | "n" | "handed_back">): boolean => score.delta >= -PROMOTE_BAR - 1e-9 && score.handed_back < score.n;
 
 /** A grade as the API answers it (PUT /runs/{id}/grade). */
 export const gradeView = (grade: Grade) => ({

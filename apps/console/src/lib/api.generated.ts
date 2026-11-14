@@ -2964,6 +2964,7 @@ export interface operations {
           wf_acc: number;
           delta: number;
           handed_back: number;
+          alone: number;
           of?: string[];
           cost_usd?: number | null;
           skipped_write?: number;
@@ -2979,9 +2980,10 @@ export interface operations {
           from: string;
           guards: {
             node: string;
-            was: number;
-            threshold: number;
+            was: number | null;
+            threshold: number | null;
             fit?: Record<string, unknown>;
+            escalate?: true;
           }[];
         };
         checked?: number;

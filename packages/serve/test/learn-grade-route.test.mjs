@@ -51,3 +51,25 @@ test("the promotions list cuts a known secret from every text of a record: its w
   assert.deepEqual([read.body.promotions[0].workflow, read.body.serving[0].workflow], ["[redacted]", "[redacted]"]);
   assert.equal(read.body.promotions[0].refit.guards[0].threshold, 0.3, "numbers are kept");
 });
+
+// A refit that switched an escalate and a guard off, and a hold for never answering alone, as the route answers them: the
+// closed schema takes `alone` (required on a replay) and a refit guard with no threshold, and an escalate's.
+test("the promotions list answers a record's `alone` and a refit's switched-off escalate and guard in its closed schema", async (t) => {
+  const { api, store, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const schema = doc.paths["/agents/{agent_id}/learning/promotions"].get.responses["200"].content["application/json"].schema;
+  assert.equal((await api("POST", "/agents", agent("switched"))).status, 201);
+  const replay = { n: 6, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 6, alone: 0, of: ["g-0"] };
+  const held = { workflow: "answer", digest: "d1", at: "2026-11-14T00:00:00.000Z", decided: "hold", source: "replay", reason: "it handed back every one of its 6 replayed inputs: it would never answer alone", replay };
+  const refit = { workflow: "answer", digest: "d2", at: "2026-11-14T00:00:01.000Z", decided: "promote", source: "refit", reason: "refit answer's guards: unsupported escalate off, read guard off", replay: { ...replay, handed_back: 0, alone: 6 }, refit: { from: "d1", guards: [{ node: "read", was: 0.7, threshold: null }, { node: "unsupported", was: null, threshold: null, escalate: true }] } };
+  await store.settings.put("learning.promotions.switched", { v: 1, items: [held, refit] });
+  const read = await api("GET", "/agents/switched/learning/promotions");
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.deepEqual(schemaProblems(doc, schema, read.body), [], JSON.stringify(read.body));
+  assert.deepEqual(read.body.promotions.map((one) => one.replay.alone), [0, 6]);
+  assert.deepEqual(read.body.promotions[1].refit.guards, refit.refit.guards);
+  // `alone` is required: a replay without it is no record the route answers.
+  const missing = structuredClone(read.body);
+  delete missing.promotions[0].replay.alone;
+  assert.notDeepEqual(schemaProblems(doc, schema, missing), []);
+});
