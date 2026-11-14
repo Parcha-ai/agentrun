@@ -126,6 +126,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun login`: Check a server's token, read from stdin, and keep it with the server's address in the config file
 - `agentrun logout`: Remove the config file login wrote, its address and token
 - `agentrun mcp-servers`: delete, get, list, oauth-client, private-hosts, refresh
+- `agentrun Observations`: get-observations
 - `agentrun revisions`: list, set-current
 - `agentrun runs`: archive, cancel, computer-call, computer-release, create-inline-run, files, get, grade-run, graph, hand-back-run-computer, learning, learning-diff, list, message, pause, raise-cap, read-file, resume, start, start-held, stop, take-over-run-computer, timeline, unarchive, wait
 - `agentrun sdk-runs`: complete, events, get, start
