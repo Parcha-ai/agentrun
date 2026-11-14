@@ -155,6 +155,10 @@ class Cropper:
         reply = self.ask({"op": "where", "window": str(window)})
         return reply if reply.get("bounds") else None
 
+    def park(self):
+        """The real pointer to the display's corner, out of the movie (a demo machine's pointer is no one's)."""
+        self.ask({"op": "park"})
+
     def crop(self, data, place, path):
         return self.ask({"op": "crop", "jpeg": base64.b64encode(data).decode(), "bounds": place["bounds"], "above": place["above"], "out": path, "quality": 70})
 
@@ -246,11 +250,17 @@ class Recorder(threading.Thread):
         finally:
             c.close()
 
-    def finish(self):
+    def finish(self, title="", span=(None, None)):
+        """The timeline frames-to-movie.swift reads: the movie's title, its span (the task, without its setup and
+        teardown), each frame and caption by time, the end."""
         self.halt.set()
         self.join(timeout=5)
-        end = self.clock()
+        end = span[1] if span[1] is not None else self.clock()
         with open(os.path.join(self.folder, "timeline.txt"), "w") as f:
+            if title:
+                f.write(f"title {' '.join(title.split())}\n")
+            if span[0] is not None:
+                f.write(f"start {span[0]:.3f}\n")
             for at, path in self.frames:
                 f.write(f"frame {at:.3f} {path}\n")
             for at, text in self.captions:
@@ -611,6 +621,8 @@ class Task:
         self.inspector = False
         self.folder = os.path.join(out, tid)
         self.t0 = time.monotonic()
+        # The movie's start and end on the recorder's clock: the task itself, without its setup and teardown.
+        self.span = [None, None]
         aim = lambda: self.window or self.shown  # noqa: E731
         self.rec = Recorder(os.path.join(self.folder, "frames"), lambda: time.monotonic() - self.t0, aim, cropper) if cropper else None
 
@@ -1123,6 +1135,14 @@ TASKS = [
     ("mac.textedit.edit-number", "com.apple.TextEdit", None, textedit_edit_number),
     ("mac.calendar.new-event", "com.apple.iCal", calendar_prepare, calendar_new_event),
 ]
+# Each movie's title, in plain words.
+TITLES = {
+    "mac.notes.new-note": "Notes: write a new note, its title and a line, in a folder of its own",
+    "mac.safari.follow-link": "Safari: follow a link by its name, then go back",
+    "mac.finder.rename-file": "Finder: rename draft.txt to final.txt",
+    "mac.textedit.edit-number": "TextEdit: change Pears from 41 to 42, and save the file",
+    "mac.calendar.new-event": "Calendar: make an event in a calendar of its own",
+}
 
 
 def close_inspector(c, t):
@@ -1264,6 +1284,37 @@ def lock():
     return f
 
 
+ALERT_BUTTONS = ("OK", "Close", "Don't Allow", "Deny", "Cancel", "Not Now", "Later", "Ignore", "Dismiss")
+
+
+def clear_alerts(c):
+    """CI only, on a throwaway runner: a system alert (UserNotificationCenter's) sits mid-screen in front of every
+    demo's window. Its words are printed and it is answered by its dismissing button, so no movie shows it. On a
+    person's Mac an alert is theirs to answer, and nothing here runs."""
+    for _ in range(3):
+        if "com.apple.UserNotificationCenter" not in running_ids(["com.apple.UserNotificationCenter"]):
+            return
+        r = c.call("ui.observe", {"target": {"app": "com.apple.UserNotificationCenter"}})
+        if "error" in r:
+            print(f"  (the system alert could not be read: {r['error'].get('message')})", flush=True)
+            return
+        nodes = r["result"].get("nodes", [])
+        words = [n.get("name") or n.get("value") for n in nodes if n.get("role") in ("text", "statictext", "heading") and (n.get("name") or n.get("value"))]
+        print(f"  a system alert is on screen: {' / '.join(words)[:400]}", flush=True)
+        button = next((n for name in ALERT_BUTTONS for n in nodes if n.get("role") == "button" and n.get("name") == name), None)
+        if button is None:
+            print(f"  (no button to dismiss it among: {[n.get('name') for n in nodes if n.get('role') == 'button']})", flush=True)
+            return
+        reply = c.call("ui.act", {"target": {"app": "com.apple.UserNotificationCenter"}, "steps": [{"press": button["ref"]}]})
+        print(f"  answered it {button['name']!r}: {json.dumps(reply.get('error') or (reply.get('result') or {}).get('steps'))}", flush=True)
+        time.sleep(1)
+
+
+def running_ids(ids):
+    done = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", RUNNING_JS, *ids], capture_output=True, text=True, timeout=30)
+    return set(json.loads(done.stdout or "[]")) if done.returncode == 0 else set()
+
+
 def main():
     for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(s, stop)
@@ -1272,6 +1323,8 @@ def main():
     hello = c.call("hello", {"client": "mini-demos"}).get("result") or {}
     print(f"Computerd on {hello.get('device', {}).get('model')}, macOS {hello.get('osVersion')}, features {json.dumps(hello.get('features'))}", flush=True)
     print(f"run {RUN}: sandboxes named {NAME!r}", flush=True)
+    if CI:
+        clear_alerts(c)
     # The apps not running before the run are the run's own: started for the grants and the sweep, quit after it, started
     # again by their own task and quit at the end of its teardown, so no window of theirs sits in front of a later task.
     # An app that was running before the run (a person's) is left as it is.
@@ -1311,6 +1364,7 @@ def main():
             os.makedirs(t.folder, exist_ok=True)
             print(f"{tid} ({APPS[app]})", flush=True)
             if t.rec:
+                cropper.park()
                 t.rec.start()
                 time.sleep(0.5)
             error, left = None, []
@@ -1323,8 +1377,11 @@ def main():
                 if isinstance(e, KeyboardInterrupt):
                     interrupted = e
             if before is not None:
+                # The movie runs from here to the task's end: the setup before and the teardown after are not the task.
+                t.span[0] = t.rec.clock() if t.rec else None
                 try:
                     drive(t)
+                    t.say("done")
                 except Failed as e:
                     error = str(e)
                 except BaseException as e:
@@ -1333,6 +1390,11 @@ def main():
                         interrupted = e
                 finally:
                     shield["on"] = True
+                    if t.rec:
+                        if error is not None:
+                            t.say(f"failed: {error}"[:160])
+                        t.span[1] = t.rec.clock() + 1.5  # the end, held a moment
+                        time.sleep(1.5)
                     try:
                         if error is not None and not interrupted:
                             print(f"  {error}")
@@ -1365,7 +1427,7 @@ def main():
             if t.rec:
                 t.say("passed" if error is None else "failed")
                 time.sleep(1)
-                timeline = t.rec.finish()
+                timeline = t.rec.finish(TITLES.get(tid, ""), t.span)
                 frames = len(t.rec.frames)
                 t.movie = encode(timeline, os.path.join(out, f"{tid}.mp4")) if frames else "not made: no frame of the task's window"
             else:

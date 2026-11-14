@@ -521,6 +521,7 @@ public actor UIEngine {
 			throw RPCError(.refused, "\(into) is not a text field: nothing was typed")
 		}
 		if let point = step.point { try await bind(point, view: view, state: state, held: held) }
+		mark(step, element: element, target: target)
 
 		let attempts: [Attempt]
 		switch step {
@@ -760,6 +761,26 @@ public actor UIEngine {
 		if let seen = view.node(handle) { return (seen, handle) }
 		if view.truncated, ax.exists(handle), let seen = store.lastSeen(ref) { return (seen, handle) }
 		throw RPCError.stale("\(ref) is gone: its element is no longer in the window. Observe again for fresh refs")
+	}
+
+	/// Marks the step's place for the live view (Marks): its element, else its point, else (a key or text to the window's
+	/// focus) where the last step was.
+	func mark(_ step: Step, element: ElementHandle?, target: ResolvedTarget) {
+		let frame = element.flatMap { ax.frame($0) }.flatMap { $0.area > 0 ? $0 : nil }
+		let marks = platform.marks
+		let kind: Marks.Kind
+		switch step {
+		case .press, .click, .perform: kind = .press
+		case .type, .set: kind = frame == nil ? .point : .type
+		case .key, .scroll, .drag, .nav: kind = .point
+		}
+		if let frame {
+			marks.mark(kind, at: frame.center, box: kind == .type ? frame : nil, now: clock.now())
+		} else if let point = step.point {
+			marks.mark(kind, at: target.toScreen(point), now: clock.now())
+		} else if let last = marks.lastPoint {
+			marks.mark(.point, at: last, now: clock.now())
+		}
 	}
 
 	/// The middle of an element on screen, scrolled into its window's view when it is outside it.

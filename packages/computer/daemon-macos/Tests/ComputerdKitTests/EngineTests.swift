@@ -170,6 +170,30 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(os.entries, ["ax.AXPress 3"])
 	}
 
+	/// A step by the semantic or background route moves no real pointer: the live view's marks show where it acted.
+	func testEachStepMarksItsPlaceForTheLiveView() async throws {
+		let platform = os.platform()
+		let engine = UIEngine(platform: platform, policy: Policy())
+		let r = try await engine.observe(UiObserveParams())
+		XCTAssertNil(platform.marks.scene(now: os.with { $0.now }), "no step, no mark")
+		_ = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		var scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(160, 85), "a press marks its element's middle, in screen points")
+		XCTAssertNotNil(scene.ring, "a press rings")
+		_ = try await engine.act(UiActParams(steps: [.type("Milk", into: ref(r, "Title"))]))
+		scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(270, 135), "typing into an element marks it")
+		XCTAssertEqual(scene.box, Rect(120, 120, 300, 30), "and boxes it")
+		XCTAssertNil(scene.ring)
+		_ = try await engine.act(UiActParams(steps: [.key("super+s")]))
+		scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(270, 135), "a key to the focus leaves the pointer where it was")
+		_ = try await engine.act(UiActParams(state: r.state, steps: [.click(.point(Point(10, 20)), button: nil, count: nil)]))
+		scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(110, 70), "a click at a window point marks it on screen")
+		XCTAssertNil(platform.marks.scene(now: os.with { $0.now } + Marks.pointerMs + Marks.fadeMs), "the pointer fades")
+	}
+
 	func testPressWithoutAnActionClicksInTheBackground() async throws {
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())

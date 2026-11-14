@@ -67,6 +67,8 @@ else
 	echo "packages/computer is not built (npm run build -w @parcha/agentrun-computer): the conformance cases cannot run"
 	conformance=1
 fi
+# The cases leave the ui fixture's window open mid-screen, in front of every demo's window: it goes before the demos.
+killall UIFixture 2>/dev/null || true
 
 # The Mac mini's demo tasks (mini-demos.py), recorded (each frame cut to the task's window): reported, and not yet a
 # verdict here, since a runner's apps are fresh each time (first-run sheets, no account). Safari's page body is blank
