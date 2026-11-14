@@ -33,7 +33,9 @@ const ARRIVAL_MS = 60_000;
 export function outboxOf(dir) {
   const file = join(dir, "store.sqlite");
   if (!existsSync(file)) return { messages: [], attempts: [], notices: {} };
-  const db = new DatabaseSync(file, { readOnly: true, timeout: 5_000 });
+  // Observation must never busy-wait on the JS thread the writer needs to finish its transaction.
+  // onDisk retries a refused snapshot within its existing arrival deadline.
+  const db = new DatabaseSync(file, { readOnly: true, timeout: 0 });
   try {
     const messages = db.prepare("SELECT id, moment, body, attempts, next_at, state, reason FROM channel_posts WHERE channel = ? ORDER BY created_at, id").all(CHANNEL)
       .map((m) => ({ id: m.id, type: m.moment, body: m.body, attempts: Number(m.attempts), next_at: Number(m.next_at), status: STATUS[m.state], reason: m.reason }));

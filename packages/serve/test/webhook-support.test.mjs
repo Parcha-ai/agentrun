@@ -2,9 +2,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { scratch } from "./support.mjs";
-import { outboxOf, receiver, settled, webhookOn } from "./webhook-support.mjs";
+import { onDisk, outboxOf, receiver, settled, webhookOn } from "./webhook-support.mjs";
 
 test("settled observes the committed webhook delivery when its only filesystem event preceded the commit", async t => {
   const response = Promise.withResolvers();
@@ -33,4 +35,27 @@ test("settled observes the committed webhook delivery when its only filesystem e
   assert.equal(completed, true, `the store's committed delivery must settle without a second notification: ${JSON.stringify(outboxOf(dir).messages.map(m => m.status))}`);
   assert.deepEqual(outboxOf(dir).messages.map(m => m.status), ["delivered"]);
   assert.ok(closed > 0, "the completed waiter closes its watcher");
+});
+
+test("a locked webhook snapshot does not block the writer's event loop, and is read after the lock is released", async t => {
+  const dir = await scratch(t);
+  const writer = new DatabaseSync(join(dir, "store.sqlite"));
+  t.after(() => writer.close());
+  writer.exec(`
+    CREATE TABLE channel_posts (channel, id, moment, body, attempts, next_at, state, reason, created_at);
+    CREATE TABLE channel_attempts (seq, channel, post_id, moment, status_code, error, redelivery);
+    CREATE TABLE channel_told (channel, run_id, marker, at);
+    BEGIN EXCLUSIVE;
+  `);
+  const began = performance.now();
+  const waiting = onDisk(dir, () => outboxOf(dir));
+  try {
+    // Distinguish an immediate refused read from SQLite's old five-second busy wait.
+    assert.ok(performance.now() - began < 1_000, "observing a lock must not block the JS turn that releases it");
+    writer.exec("COMMIT");
+    assert.deepEqual(await waiting, { messages: [], attempts: [], notices: {} });
+  } finally {
+    if (writer.isTransaction) writer.exec("ROLLBACK");
+    await waiting;
+  }
 });
