@@ -1542,19 +1542,19 @@ the TTL.
   Attach holds the daemon to the provider's, when the computer is started. It returns `spec`: `image`, the image
   create was asked for (`"default"` stays `"default"`), from its label; the daemon's user, the network, `/work`, the
   deadline and, with one, the GPU.
-- `list(labels)` asks Daytona for `agentrun.computer=1` alone, every page, and filters the other labels itself, with
-  no read per sandbox. A sandbox that is `destroying`, `destroyed`, `error` or `build_failed`, or whose desired state
-  is `destroyed`, is gone and left out. `started` is `running`; the states on the way to it are starting, and left
-  out; every other state (`stopping`, `pausing`, `stopped`, `archived`, `paused`) is `stopped`.
+- `list(labels)` asks Daytona for `agentrun.computer=1` alone, every page, for the ids; the adapter keeps those whose
+  `GET /sandbox/{id}` carries the other labels. A sandbox that is `destroyed`, `error` or `build_failed` is gone and
+  left out. `started` is `running`; the states on the way to it are starting, and left out; one Daytona is destroying,
+  or was asked to destroy, is `stopped` until it reads `destroyed`, as is every other state (`stopping`, `pausing`,
+  `stopped`, `archived`, `paused`).
 - `network(ref)` is the adapter's probe from inside; `network(ref, policy)` refuses any policy but the one the
   computer has, with `refused` and no request.
 - `release(ref, "delete")` deletes: retried on a 5xx, checked against the sandbox, with a forced stop before the last
   attempt. It is idempotent, and refuses a sandbox that is not this provider's. `release(ref, "stop")` is refused as
   `unsupported`, with no request: a Daytona computer is deleted, never stopped and kept.
 - Daytona is asynchronous: it answers a delete by setting the sandbox's desired state to `destroyed`, and the sandbox
-  gets there later, through `destroying`. Its listing trails it. So release waits until Daytona reads the computer
-  gone, twice running, by `GET /sandbox/{id}` and by the label listing alike: a 404 (or `destroyed`) and no listed
-  computer. It polls with pauses that double from `pollMs` up to 5 s, bounded by the `goneMs` timeout (120 s unset)
+  gets there later, through `destroying`. Its listing trails it. So release waits until `GET /sandbox/{id}` reads the
+  computer gone, twice running: a 404 or `destroyed`, never a desired state alone. It polls with pauses that double from `pollMs` up to 5 s, bounded by the `goneMs` timeout (120 s unset)
   and by the signal `release(ref, how, { signal })` takes. When the bound runs out, release fails in words naming the
   last state Daytona read: it never reports a release it has not seen done. A create that deletes the sandbox it made
   (a failure, an abort) waits the same way before it returns.
