@@ -48,6 +48,26 @@ test("the tools route lists a toolkit's actions and says whether it needs no sig
   holdsNoKey(s, res.body, none.body);
 });
 
+test("a request on the fakes' ports that the server never sent is not one of its Composio or MCP calls", async (t) => {
+  // A loopback port takes requests from more than the server under test: a port prober on the host GETs / on each new
+  // listener within seconds, and another test process's client may still call a port it freed, which a fake then took.
+  // Neither carries the key; counted as the server's, they read as the server sending a call without it.
+  const s = await setup(t);
+  const stray = async (url) => (await fetch(url)).arrayBuffer();
+  const origin = new URL(s.composio.baseUrl).origin;
+  await stray(`${origin}/`);
+  await stray(`${origin}/api/v3/tools?toolkit_slug=github`);
+  const res = await s.api("POST", "/settings/mcp-servers/composio/tools", { api_key: s.composio.apiKey, toolkit: "github" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.ok(s.composio.calls.length > 0 && s.composio.calls.every((call) => call.keyOk), "every Composio call sent the key as x-api-key");
+  assert.equal(s.composio.strays.length, 2, "the two requests it never sent are kept apart");
+
+  const saved = await s.api("PUT", "/settings/mcp-servers/hn/composio", { api_key: s.composio.apiKey, toolkit: "hackernews", tools: ["add"] });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  await stray(`${new URL((await s.api("GET", "/settings/mcp-servers/hn")).body.url).origin}/`);
+  assert.equal(sentTo(s).pathname, `/v3/mcp/${s.composio.mcpId}/mcp`, "the MCP endpoint's last call is the server's, not the stray");
+});
+
 test("a no-auth toolkit saves as an MCP server: no auth config, the URL ends in /mcp with no helper tools, the key sealed, the tools listed", async (t) => {
   const s = await setup(t);
   const res = await s.api("PUT", "/settings/mcp-servers/hn/composio", { api_key: s.composio.apiKey, toolkit: "hackernews", tools: ["add", "GITHUB_STAR_REPO"] });
