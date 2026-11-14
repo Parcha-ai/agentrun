@@ -366,7 +366,7 @@ type Laid = { readonly skills: readonly string[]; readonly workflows: readonly s
 /** What every claim of a run laid, from its learningLaid entries, each name once: a resumed claim finds an earlier
  *  claim's skill folders there already and lays none of them again, though the run still has them. None laid when it has
  *  no entry. */
-export function laidOf(entries: readonly EntryLike[]): Laid {
+export function laidOf(entries: readonly Pick<EntryLike, "kind" | "data">[]): Laid {
   const names = (list: unknown) => (Array.isArray(list) ? list.filter((name): name is string => typeof name === "string") : []);
   const skills = new Set<string>();
   const workflows = new Set<string>();
