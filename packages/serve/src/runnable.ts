@@ -18,9 +18,8 @@ import { denyPlace, permissionFrom, permissionOf } from "./tool-gate.js";
 import { approvalsOf } from "./approvals.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
-import { wireName } from "./catalog.js";
 import { mcpHeaderProblem } from "./mcp-gateway.js";
-import { isMcpName, mcpNameOf } from "./tool-names.js";
+import { isMcpName, mcpDroppedWords, MCP_HANDS_WORDS, mcpNameOf, mcpWireProblem } from "./tool-names.js";
 import type { McpTool } from "@parcha/agentrun-kernel";
 import type { ShellPlace } from "@parcha/agentrun-kernel/kernel";
 
@@ -148,7 +147,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     const dropped = schema && named && schemaProblems ? schemaProblems(`mcp__${named.server}__${named.tool}`, schema)[0] : undefined;
     if (!named) return { field, reason: "not_an_option", message: `${tool} is not an MCP tool's name: mcp:<server>/<tool>, the server's name in lowercase letters, digits and -, the tool's in letters, digits, _ and -, at most 64.`, host: false, tool };
     // claude-agent's own tools are its MCP server `hands`: a remote server of that name could never be called there.
-    if (named.server === "hands") return { field, reason: "not_an_option", message: `${tool} names the MCP server hands, a name the harnesses keep for their own tools: save the server under another name.`, host: false, tool };
+    if (named.server === "hands") return { field, reason: "not_an_option", message: `${tool} ${MCP_HANDS_WORDS}`, host: false, tool };
     // A meta tool runs other actions by name: a grant of it could not name the action (mcp-meta.ts). Refused before
     // the harness's check, since no host setup makes it grantable.
     if (listedTool?.grantable === false) return { field, reason: "not_an_option", message: `${tool} can't be granted: ${listedTool.reason}`, host: false, notGrantable: { tool, reason: listedTool.reason! } };
@@ -156,9 +155,10 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (revision.kind === "workflow") return { field, reason: "not_an_option", message: `${tool}: a workflow's nodes don't bind MCP tools here yet; grant it to an agentic agent.`, host: false, tool };
     if (!listed) return { field, reason: "not_an_option", message: `No MCP server ${named.server} is saved on this server: add it in Settings → MCP servers first.`, host: false, tool };
     if (!listed.includes(named.tool)) return { field, reason: "not_an_option", message: `The MCP server ${named.server} has no tool ${named.tool}; its tools are ${listed.join(", ") || "none"}.`, host: false, tool };
-    if (dropped) return { field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} cannot be offered on ${harness}: ${dropped.replace(/^mcp__\S+: /, "")}.`, host: false, tool };
+    if (dropped) return { field, reason: "not_an_option", message: mcpDroppedWords(named.server, named.tool, harness, dropped), host: false, tool };
     if (declared) return { field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} declares a header it cannot send: ${declared}.`, host: false, tool };
-    if (wireName(tool) !== `mcp__${named.server}__${named.tool}`) return { field, reason: "not_an_option", message: `${tool} is too long: mcp__${named.server}__${named.tool} must be at most 52 characters, the budget every harness's tool names share.`, host: false, tool };
+    const wire = mcpWireProblem(named.server, named.tool);
+    if (wire) return { field, reason: "not_an_option", message: `${tool} ${wire}`, host: false, tool };
     return undefined;
   };
   if (revision.kind === "agentic") {
