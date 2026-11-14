@@ -40,7 +40,7 @@ test("a restart mid-request reads the request at its start mark's held figure wi
   const marks = memoryMarks();
   const previous = { model: SONNET.id, cachedTokens: 90_000, inputTokens: 10_000, boundTokens: 100_000, endedAt: T0 - 1_000 };
   const cap = createCap({ capUsd: () => 10, now: () => T0, marks });
-  const admitted = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { previous }));
+  const admitted = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { recent: [previous] }));
   const reopened = await openCap({ capUsd: () => 10, now: () => T0, marks });
   near(reopened.spentUsd(), admitted.heldUsd, "the expected figure it was held at");
   assert.ok(admitted.heldUsd < admitted.worstUsd);
