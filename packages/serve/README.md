@@ -1446,17 +1446,15 @@ agent was saved is refused by monid unrun and uncharged, never booked past its h
 price is read again from monid (an inspect, which monid does not charge). One monid has moved to usage pricing since
 the save is still held and sent at its pinned price, so monid runs it only at an estimate within it; its charge can
 pass it (below). A call of an endpoint pinned as priced by usage is held at monid's estimate for the call's own input
-instead: the call is first
-sent with `maxCost` 0, which monid refuses unrun and uncharged, naming its estimate; that estimate is the hold, and the
-call is sent with it as `maxCost`. That read is itself a paid step of the call, marked at $0 on the run's ledger before
-it is sent (a crash while monid holds it leaves its charge unknown, as any cut call's) and given back when monid refused
-it unrun; with no run's ledger it is never sent. Its approval card reads "Priced by usage, about $X (monid's estimate), can cost
-more" (`pending.price` `{estimate_usd}`), read once, when the card is first made: an answer given after the run
-parked reads nothing again, and a stop or a lost claim cuts the read off. Its charge can pass the estimate: then it is booked as charged, and the run
-stops at once, failed, in the words "monid charged $X, more than the $Y held; the run stopped". A run's spend cap is a
-hard stop for everything but that one charge. A call monid estimates at $0 is a free run, which `maxCost` 0 lets
-through: the estimate's read runs it (on its card, before the person answers), held at $0, and its charge is booked
-there; a charge above $0 stops the run as above, and the call is refused in those words, never asked. A mark a crash left unsettled leaves the run's cost unknown, as a
+instead. Its approval card reads "Priced by usage: monid estimates the cost when the call runs, and can charge more."
+(`pending.price` `"priced by usage"`), and monid is sent nothing while the call waits. Once the call may run (after
+the person's allow, or at once when it needs no ask), the call is first sent with `maxCost` 0, which monid refuses unrun
+and uncharged, naming its estimate; that estimate is the hold, and the call is sent with it as `maxCost`. That read is
+itself a paid step of the call, marked at $0 on the run's ledger before it is sent (a crash while monid holds it leaves
+its charge unknown, as any cut call's) and given back when monid refused it unrun; a read monid ran (an estimate of $0,
+which `maxCost` 0 lets through) is the call, settled at its charge. Its charge can pass the estimate: then it is booked
+as charged, and the run stops at once, failed, in the words "monid charged $X, more than the $Y held; the run stopped".
+A run's spend cap is a hard stop for everything but that one charge. A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
 never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as
