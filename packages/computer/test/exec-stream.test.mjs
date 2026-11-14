@@ -93,9 +93,8 @@ test("large stopped by the caller during a write its deadline bounds says it was
 	let largeWrites = 0;
 	host.exec = async (...args) => {
 		const answer = await exec(...args);
-		if (!answer.ok) return answer;
-		const write = answer.value.write.bind(answer.value);
-		answer.value.write = (bytes) => {
+		const write = answer.write.bind(answer);
+		answer.write = (bytes) => {
 			// The second 256 KiB chunk starts 400 ms in, so what is left of the 1 s deadline bounds it, not the step.
 			if (bytes.length === 256 * 1024 && ++largeWrites === 2) stop.abort();
 			return write(bytes);
@@ -145,10 +144,15 @@ test("a kill() that lets go of the streams and leaves the process running fails 
 	assert.match(byId.kill.words, /still runs in the machine/);
 });
 
-test("an exec that refuses fails every check with its own words, and one that throws is read the same", async () => {
-	const refusing = { id: "refusing", exec: async () => ({ ok: false, error: { code: "vendor", message: "no such machine" } }) };
+test("an exec that rejects fails every check with its own words, and one that throws at once is read the same", async () => {
+	const refusing = {
+		id: "refusing",
+		exec: async () => {
+			throw new Error("no such machine");
+		},
+	};
 	const refused = await checkExecStream(refusing, "m", QUICK);
-	assert.ok(refused.checks.every((check) => check.status === "fail" && /failed: no such machine/.test(check.words)));
+	assert.ok(refused.checks.every((check) => check.status === "fail" && /failed: no such machine/.test(check.words)), JSON.stringify(refused.checks.map((check) => check.words)));
 	const throwing = {
 		id: "throwing",
 		exec: () => {

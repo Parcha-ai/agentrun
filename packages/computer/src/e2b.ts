@@ -6,18 +6,16 @@
 // used here is cited in the README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
 import type { Sandbox, SandboxInfo, SandboxOpts } from "e2b";
 import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
-import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
+import { DEADLINE_LABEL } from "./drift.js";
+import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
+import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
-import { dateOf, driftOf, isWhole, show } from "./hosted/values.js";
+import { dateOf, isWhole } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
-import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";
-import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
-
-/** This module's failures: one with code vendor names E2B. */
-const fail = failFor("e2b");
+import type { ComputerSpec, Refusal } from "./provider.js";
+import type { ComputerErrorCode } from "./result.js";
 
 /**
  * What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152).
@@ -175,67 +173,23 @@ function createdEnd({ metadata, startedAt }: { metadata: Record<string, string>;
 const clearOf = (created: number) => created + END_SLACK_MS + 1_000;
 
 /**
- * A sandbox's network as E2B reports it. None is no internet access (E2B: the same as denyOut 0.0.0.0/0,
- * index.d.mts:10179) with no allow list and no public traffic in; open is internet access with none of those either.
- * Anything else is another network in words, never one it might widen to.
+ * A sandbox as the adapter reads a machine, from getInfo or the listing alike: E2B's state (a paused one is stopped), its
+ * start, its end. E2B keeps no metadata change, so once an extend moved its timer clear of create's end (setTimer), the
+ * deadline label reads that end, up to the most the computer may live: a restarted provider reads the extend all the same.
  */
-function networkOf(info: SandboxInfo): NetworkPolicy {
-	const network = info.network ?? {};
-	if (network.egressProxy !== undefined && network.egressProxy !== null) return { other: "an egress proxy is set on it" };
-	if (Array.isArray(network.allowOut) && network.allowOut.length > 0) return { other: `an allowOut list (${network.allowOut.length} entries), which this provider never makes` };
-	if (network.rules !== undefined && network.rules !== null && Object.keys(network.rules as object).length > 0) return { other: "transform rules, which this provider never makes" };
-	const denied = Array.isArray(network.denyOut) ? network.denyOut : [];
-	const blocked = info.allowInternetAccess === false || denied.includes("0.0.0.0/0");
-	if (!blocked && denied.length > 0) return { other: `a denyOut list short of all traffic (${denied.join(", ")})` };
-	if (network.allowPublicTraffic !== false) {
-		return { other: network.allowPublicTraffic === true ? "public traffic is let in" : "E2B did not report allowPublicTraffic false: public traffic may be let in" };
-	}
-	return blocked ? "none" : "open";
-}
-
-
-/** A sandbox as the adapter reads a machine: E2B's states, its network, its template, its timer, and its create's drift. */
 function machineOf(info: SandboxInfo): Machine {
-	const metadata = { ...(info.metadata ?? {}) };
-	const end = info.endAt instanceof Date ? info.endAt.getTime() : Number.NaN;
-	const created = createdEnd({ metadata, startedAt: info.startedAt });
-	const { found: drift, mismatch } = driftOf();
-	const started = dateOf(info.startedAt);
-	// E2B reports the template's id, and its alias when it has one (index.mjs:5435-5437): a template asked for by an
-	// alias E2B does not report back cannot be held to it, and its label records what was asked.
-	const asked = metadata[IMAGE_LABEL];
-	const alias = info.name;
-	if (asked !== undefined && info.templateId !== asked && alias !== undefined && alias !== asked && !alias.startsWith(`${asked}:`)) {
-		drift.push(`template: declared ${show(asked)}, read back ${show(info.templateId)} (${alias})`);
+	const labels = { ...(info.metadata ?? {}) };
+	const end = dateOf(info.endAt);
+	const created = createdEnd({ metadata: labels, startedAt: info.startedAt });
+	// An end within END_SLACK_MS of create's is create's own, rounded: a moved timer never leaves E2B's end there (clearOf).
+	if (end !== undefined && created !== undefined && end.getTime() > created + END_SLACK_MS && isoOf(labels[DEADLINE_LABEL]) !== undefined) {
+		const most = isoOf(labels[MAX_LABEL])?.getTime() ?? Number.POSITIVE_INFINITY;
+		labels[DEADLINE_LABEL] = new Date(Math.min(end.getTime(), most)).toISOString();
 	}
-	if (info.lifecycle?.onTimeout !== undefined && info.lifecycle.onTimeout !== "kill") mismatch("lifecycle onTimeout", "kill", info.lifecycle.onTimeout);
-	if (info.lifecycle?.autoResume === true) mismatch("lifecycle autoResume", false, true);
-	// An end later than create's is a moved timer (timerMoved: an extend's, or one create refuses on a machine it just
-	// made); only an end it cannot read, or one earlier than create gave, is drift, at create and at attach alike.
-	if (Number.isNaN(end) || created === undefined) drift.push(`endAt: E2B reported ${show(info.endAt)} from a start of ${show(info.startedAt)}, so it might not end the computer`);
-	else if (end < created - END_SLACK_MS) drift.push(`endAt: ${info.endAt.toISOString()} is earlier than E2B's start plus the ${metadata[TIMEOUT_LABEL]} ms timeout create gave`);
-	return {
-		id: info.sandboxId,
-		labels: metadata,
-		state: stateOf(info.state),
-		network: networkOf(info),
-		image: { resolved: info.templateId },
-		...(started ? { createdAt: started } : {}),
-		...(Number.isNaN(end) ? {} : { endsAt: new Date(end) }),
-		// An end within END_SLACK_MS of create's is create's own, rounded: a moved timer never leaves E2B's end there (clearOf).
-		timerMoved: !Number.isNaN(end) && created !== undefined && end > created + END_SLACK_MS,
-		...(drift.length > 0 ? { drift } : {}),
-	};
+	const started = dateOf(info.startedAt);
+	const state = info.state === "running" ? "running" : info.state === "paused" ? "stopped" : "gone";
+	return { id: info.sandboxId, labels, state, ...(started ? { createdAt: started } : {}), ...(end ? { endsAt: end } : {}) };
 }
-
-/** E2B's state as the adapter's: a paused sandbox is stopped. */
-const stateOf = (state: string): Machine["state"] => (state === "running" ? "running" : state === "paused" ? "stopped" : "going");
-
-/** A sandbox as E2B's listing reads it: no network, which the adapter reads back by get. */
-const listedOf = (sb: SandboxInfo): Machine => {
-	const started = dateOf(sb.startedAt);
-	return { id: sb.sandboxId, labels: { ...(sb.metadata ?? {}) }, state: stateOf(sb.state), ...(started ? { createdAt: started } : {}) };
-};
 
 /** One chunk of the SDK's output into a stream, unless the stream has ended. */
 const push = (stream: PassThrough, data: Uint8Array) => void (stream.writableEnded || stream.write(data));
@@ -252,10 +206,8 @@ class E2BHost implements MachineHost {
 		vendorAgentPorts: [ENVD_PORT],
 		// E2B Desktop's template has xfwm4, which its own desktop runs: the apps an agent opens are framed and focused.
 		windowManager: true,
-		networkReadBack: true,
 		network: [...E2B.network],
 		mounts: [...MOUNT],
-		release: ["delete"],
 	};
 	readonly #Sandbox: SdkSandboxClass;
 	readonly #connection: E2BConnectionOptions;
@@ -292,7 +244,7 @@ class E2BHost implements MachineHost {
 	 * public traffic (a project's default may let it in: E2B docs, network/restrict-public-access), and kill at the
 	 * timeout, never a pause that keeps the computer (index.mjs:5674-5699).
 	 */
-	async create(req: MachineRequest, ctx: HostCall): Promise<Result<{ id: string }>> {
+	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		const timeoutMs = Math.ceil((req.lifetimeMs ?? 0) / 1000) * 1000;
 		const options: SandboxOpts = {
 			...this.#api(ctx.timeoutMs),
@@ -305,37 +257,36 @@ class E2BHost implements MachineHost {
 		};
 		const sandbox = await this.#Sandbox.create(req.image, options);
 		this.#sandboxes.set(sandbox.sandboxId, sandbox);
-		return ok({ id: sandbox.sandboxId });
+		return { id: sandbox.sandboxId };
 	}
 
 	/** getInfo; a sandbox E2B does not have (SandboxNotFoundError, index.mjs:5431) is not_found, which the adapter reads as none. */
-	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
-		return ok(machineOf(await this.#Sandbox.getInfo(id, this.#api(ctx.timeoutMs, ctx.signal))));
+	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
+		return machineOf(await this.#Sandbox.getInfo(id, this.#api(ctx.timeoutMs, ctx.signal)));
 	}
 
 	/**
 	 * Every sandbox E2B lists with these metadata pairs (running and paused, index.d.mts:10289), all pages within
-	 * ctx.timeoutMs, as the listing reads them: a listing does not carry the network, which the adapter reads by get.
+	 * ctx.timeoutMs, each as getInfo reads it (the listing carries its end too).
 	 */
-	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
+	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
 		const until = Date.now() + ctx.timeoutMs;
 		const left = () => Math.max(1, Math.min(this.#requestMs, until - Date.now()));
 		const paginator = this.#Sandbox.list({ ...this.#connection, requestTimeoutMs: this.#requestMs, query: { metadata: labels }, limit: PAGE });
 		const found = new Map<string, SandboxInfo>();
 		for (let page = 0; paginator.hasNext; page++) {
-			if (page >= MAX_PAGES) return fail("vendor", `Sandbox.list ran past ${MAX_PAGES} pages`);
+			if (page >= MAX_PAGES) throw new Error(`Sandbox.list ran past ${MAX_PAGES} pages`);
 			const items = await paginator.nextItems({ requestTimeoutMs: left(), ...(ctx.signal ? { signal: ctx.signal } : {}) });
-			if (!Array.isArray(items)) return fail("vendor", "Sandbox.list: a page that is not a list of sandboxes");
+			if (!Array.isArray(items)) throw new Error("Sandbox.list: a page that is not a list of sandboxes");
 			for (const sb of items) if (typeof sb?.sandboxId === "string") found.set(sb.sandboxId, sb);
 		}
-		return ok([...found.values()].map(listedOf));
+		return [...found.values()].map(machineOf);
 	}
 
 	/** Sandbox.kill, never signalled: a kill that cleans up after an abort must outlive it. */
-	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
+	async delete(id: string, ctx: HostCall): Promise<void> {
 		this.#sandboxes.delete(id);
 		await this.#Sandbox.kill(id, this.#api(ctx.timeoutMs));
-		return ok(undefined);
 	}
 
 	/**
@@ -355,11 +306,10 @@ class E2BHost implements MachineHost {
 	}
 
 	/** files.write as root (index.mjs:2332-2435). */
-	async upload(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<Result<void>> {
+	async upload(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void> {
 		const sandbox = await this.#sandbox(id, ctx);
 		const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 		await sandbox.files.write(path, buffer, { user: "root", requestTimeoutMs: ctx.timeoutMs, ...(ctx.signal ? { signal: ctx.signal } : {}) });
-		return ok(undefined);
 	}
 
 	/**
@@ -370,14 +320,14 @@ class E2BHost implements MachineHost {
 	 * connect-web connect-transport.js:145-150), so envd never ends it (start.go:39-44); the start alone is bounded by
 	 * ctx. Writes go one sendStdin at a time, in order; end is closeStdin; kill SIGKILLs it and lets go of its stream.
 	 */
-	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
+	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		const sandbox = await this.#sandbox(id, ctx);
 		const out = new PassThrough();
 		const err = new PassThrough();
 		const requestTimeoutMs = this.#requestMs;
 		const stream = new AbortController();
 		const events = (sandbox.commands as unknown as { rpc: ProcessRpc }).rpc.start(
-			{ process: { cmd: "/bin/bash", args: ["-l", "-c", shellLine(argv)], envs: {} }, stdin },
+			{ process: { cmd: "/bin/bash", args: ["-l", "-c", shellLine(argv)], envs: {} }, stdin: true },
 			{ headers: { Authorization: ROOT, [KEEPALIVE_HEADER]: KEEPALIVE_S }, signal: stream.signal, timeoutMs: 0 },
 		)[Symbol.asyncIterator]();
 		// The start, within ctx: a stream that gives no start event in time, or the caller's abort, is let go of.
@@ -423,7 +373,7 @@ class E2BHost implements MachineHost {
 			stream.abort();
 			return code;
 		})();
-		return ok({
+		return {
 			stdout: out,
 			stderr: err,
 			write: (bytes) => sandbox.commands.sendStdin(pid, bytes, { requestTimeoutMs }),
@@ -435,7 +385,7 @@ class E2BHost implements MachineHost {
 				out.end();
 				err.end();
 			},
-		});
+		};
 	}
 
 	/**
@@ -444,7 +394,7 @@ class E2BHost implements MachineHost {
 	 * this machine's clock. A timer that would end before the deadline held now, or within create's rounding, is refused
 	 * as limit, and nothing moves.
 	 */
-	async setTimer(id: string, { end, most }: { end: Date; most: Date }, ctx: HostCall): Promise<Result<void>> {
+	async setTimer(id: string, { end, most }: { end: Date; most: Date }, ctx: HostCall): Promise<void> {
 		const info = await this.#Sandbox.getInfo(id, this.#api(ctx.timeoutMs, ctx.signal));
 		const machine = machineOf(info);
 		const now = Date.now();
@@ -457,13 +407,12 @@ class E2BHost implements MachineHost {
 		const held = Number.isNaN(vendorEnd) ? current : Math.max(current, vendorEnd);
 		const name = info.metadata?.["agentrun.computer.name"] ?? id;
 		if (now + timerMs < held) {
-			return fail("limit", `no whole number of seconds E2B takes moves ${name}'s end from ${new Date(held).toISOString()} to ${end.toISOString()} without passing ${most.toISOString()}, the most this computer may live; nothing moved`);
+			throw new HostError("limit", `no whole number of seconds E2B takes moves ${name}'s end from ${new Date(held).toISOString()} to ${end.toISOString()} without passing ${most.toISOString()}, the most this computer may live; nothing moved`);
 		}
 		if (created !== undefined && now + timerMs < clearOf(created)) {
-			return fail("limit", `${end.toISOString()} is within E2B's rounding of the end create gave ${name}, and moving E2B's end clear of it would pass ${most.toISOString()}, the most this computer may live`);
+			throw new HostError("limit", `${end.toISOString()} is within E2B's rounding of the end create gave ${name}, and moving E2B's end clear of it would pass ${most.toISOString()}, the most this computer may live`);
 		}
 		await this.#Sandbox.setTimeout(id, timerMs, this.#api(ctx.timeoutMs, ctx.signal));
-		return ok(undefined);
 	}
 }
 

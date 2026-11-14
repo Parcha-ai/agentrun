@@ -5,6 +5,8 @@
 // as the real one does), an Archil computer's root steps by verb, and a pid1 machine's entrypoint. Nothing reaches the
 // network, and no vendor SDK is loaded.
 import { createHash } from "node:crypto";
+import { DEADLINE_LABEL } from "../dist/drift.js";
+import { HostError } from "../dist/host.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { GOOD_PREFLIGHT, mountsOf, rootVerb } from "./fake-archil.mjs";
 import { scriptOfWords } from "./fake-shell.mjs";
@@ -69,22 +71,23 @@ let counter = 0;
 const START = Date.now();
 
 /**
- * A fake host. Options:
- *  - facts: over the defaults (child daemon, vendor lifetime, network read back, archil mounts);
+ * A fake host. Its calls answer plain values or throw, as src/host.ts says. Options:
+ *  - facts: over the defaults (child daemon, vendor lifetime, archil mounts);
  *  - create: "ok", "fail" (refused: nothing made), "hold" (answers once fake.release() is called), "lost" (makes the
  *    machine, then throws Late: its id never comes back), "broken" (makes it, then throws a plain error);
  *  - starting: how many reads a new machine answers starting before it runs;
+ *  - failed: words a new machine reads gone in, as the vendor's why, once it is done starting;
  *  - unlisted: how many listings a new machine is left out of;
  *  - flaps: for a new machine, whether each listing after its create shows it (true) or leaves it out (false), in turn,
  *    until they run out; then every listing shows it;
  *  - born(n): the creation time of the n-th machine made (1, 2, ...), or undefined for none; default the order made;
- *  - size: the size every machine reads back; a machine reads back the GPUs its create asked for;
+ *    a machine reads back the GPUs its create asked for;
  *  - sha: "ok" or "lie"; install: the install's exit code; initFails: words init writes before it exits;
  *  - notListening: how many bridges find no daemon before one does;
  *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
  *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager does not start) or
- *    "manager dies" (it ends at once); drift: the vendor's own drift words a read gives;
- *  - network: the vendor's network read back, over what create asked ("none"/"open"/{ other });
+ *    "manager dies" (it ends at once);
+ *  - timer: "ok" or "limit" (setTimer throws a HostError limit); setTimer moves the end and the deadline label;
  *  - lingers: { reads, lists } after a delete; fileApi: false for a host with no upload;
  *  - onStep(step, machine): at the start of every host call and daemon request, so a test can abort a signal there;
  *  - hang: a script's kind ("install", ...) whose process never ends; killHangs: a process's kill that never settles;
@@ -97,18 +100,16 @@ export function fakeHost({
 	facts = {},
 	create = "ok",
 	starting = 0,
+	failed,
 	unlisted = 0,
 	flaps = [],
 	born,
-	size,
 	sha = "ok",
 	install = 0,
 	initFails,
 	notListening = 0,
 	box: boxPatch = {},
 	display = "ok",
-	drift,
-	network: networkPatch,
 	lingers,
 	fileApi = true,
 	onStep = () => {},
@@ -143,7 +144,6 @@ export function fakeHost({
 			state,
 			startingReads,
 			endsAt: new Date(Date.now() + lifetimeMs),
-			timerMoved: false,
 			files: new Map(),
 			processes: [],
 			deleted: false,
@@ -165,19 +165,15 @@ export function fakeHost({
 		return machine;
 	};
 
-	/** The machine as get reads it. */
+	/** The machine as get and list read it. */
 	const view = (m) => ({
 		id: m.id,
 		labels: { ...m.labels },
-		state: m.deleted ? "going" : m.state,
-		...(networkPatch !== undefined ? { network: networkPatch } : { network: m.network }),
-		image: { resolved: `${m.image}-id` },
+		state: m.deleted || m.why !== undefined ? "gone" : m.state,
 		...(m.createdAt === undefined ? {} : { createdAt: new Date(m.createdAt) }),
-		...(size === undefined ? {} : { size: { ...size } }),
 		...(m.request?.gpu === undefined ? {} : { gpu: { ...m.request.gpu } }),
 		endsAt: new Date(m.endsAt),
-		timerMoved: m.timerMoved,
-		...(drift ? { drift: [...drift] } : {}),
+		...(m.why === undefined ? {} : { why: m.why }),
 	});
 
 	/** What the daemon in m answers to one request. */
@@ -447,11 +443,9 @@ export function fakeHost({
 			maxLifetimeMs: 24 * 3_600_000,
 			arch: "amd64",
 			vendorAgentPorts: [7777],
-			networkReadBack: true,
 			gpuReadBack: true,
 			network: ["none"],
 			mounts: ["archil"],
-			release: ["delete"],
 			...facts,
 		},
 		errorCode(error) {
@@ -494,18 +488,19 @@ export function fakeHost({
 				await wait.promise;
 			}
 			void ctx;
-			return { ok: true, value: { id: make().id } };
+			return { id: make().id };
 		},
 		async get(id, ctx) {
 			const m = machines.get(id);
 			await step("get", ctx, m);
 			if (m?.deleted && m.lingering?.reads > 0) {
 				m.lingering.reads--;
-				return { ok: true, value: { ...view(m), state: "running" } };
+				return { ...view(m), state: "running" };
 			}
-			if (gone(m)) return { ok: true, value: undefined };
+			if (gone(m)) return undefined;
 			if (m.startingReads > 0 && --m.startingReads === 0) m.state = "running";
-			return { ok: true, value: view(m) };
+			if (m.state === "running" && failed !== undefined && m.request !== undefined) m.why = failed;
+			return view(m);
 		},
 		async list(labels, ctx) {
 			await step("list", ctx);
@@ -514,23 +509,21 @@ export function fakeHost({
 			const listed = matched.filter((m) => (!m.deleted || m.lingering?.lists > 0) && !(m.hidden > 0) && !flapped.has(m));
 			for (const m of matched) if (m.hidden > 0) m.hidden--;
 			for (const m of listed) if (m.deleted && m.lingering?.lists > 0) m.lingering.lists--;
-			return { ok: true, value: listed.map(view) };
+			return listed.map(view);
 		},
 		async delete(id, ctx) {
 			const m = machines.get(id);
 			await step("delete", ctx, m);
-			if (gone(m) || m.deleted) return { ok: true, value: undefined };
+			if (gone(m) || m.deleted) return;
 			m.deleted = true;
 			fake.events.push({ machine: id, what: "delete" });
 			if (lingers) m.lingering = { reads: lingers.reads ?? 0, lists: lingers.lists ?? 0 };
-			return { ok: true, value: undefined };
 		},
-		async exec(id, argv, opts, ctx) {
+		async exec(id, argv, ctx) {
 			const m = machines.get(id);
 			await step(`exec ${scriptOfWords(argv)?.kind ?? rootVerb(argv) ?? "other"}`, ctx, m);
 			if (gone(m)) throw new NotFound(`machine ${id} not found`);
-			void opts;
-			return { ok: true, value: run(m, argv).api };
+			return run(m, argv).api;
 		},
 		...(fileApi
 			? {
@@ -540,7 +533,6 @@ export function fakeHost({
 						if (gone(m)) throw new NotFound(`machine ${id} not found`);
 						m.files.set(path, Buffer.from(bytes));
 						fake.uploads.push({ machine: id, path, through: "upload" });
-						return { ok: true, value: undefined };
 					},
 				}
 			: {}),
@@ -548,10 +540,10 @@ export function fakeHost({
 			const m = machines.get(id);
 			await step("setTimer", ctx, m);
 			if (gone(m)) throw new NotFound(`machine ${id} not found`);
-			if (timer === "limit") return { ok: false, error: { code: "limit", message: "no whole number of seconds reaches it; nothing moved" } };
+			if (timer === "limit") throw new HostError("limit", "no whole number of seconds reaches it; nothing moved");
 			m.endsAt = new Date(Math.min(end.getTime(), most.getTime()));
-			m.timerMoved = true;
-			return { ok: true, value: undefined };
+			// A vendor that keeps no label change reads its moved end as the deadline label (src/host.ts, setTimer).
+			m.labels[DEADLINE_LABEL] = m.endsAt.toISOString();
 		},
 	};
 
