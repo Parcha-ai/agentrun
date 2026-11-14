@@ -53,6 +53,15 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
     v2.listMcpServers().then((r) => { if (n === asked.current) { setServers(r.servers); setLoadError(null); } }, (e) => { if (n === asked.current) setLoadError(mcpProblem(e)); });
   };
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A template's setup link fills a name no saved server has: its own, else the first free `<name>-<n>`, so saving never
+  // replaces a server of that name (an older one that matches no need, say). Chosen once the list is read, and kept for
+  // that link: the server it saves is never counted against it.
+  const named = useRef<{ key: string; name: string } | null>(null);
+  if (add && servers && named.current?.key !== addKey) named.current = { key: addKey, name: freeName(add.name, servers) };
+  // The need's toolkit stays the link's own (a url need's is its name) when the name moves to a free one.
+  const filled = (a: Add): Add => (named.current?.key === JSON.stringify(a) && named.current.name !== a.name ? { ...a, toolkit: a.toolkit ?? a.name, name: named.current.name } : a);
+  // A form a link filled waits for the list (or its failure), so the name it shows is the one it saves.
+  const listed = servers !== null || loadError !== null;
   // The outcome is said once: a reload of the page does not say it again.
   useEffect(() => { if (signIn && location.hash.includes("sign_in=")) history.replaceState(null, "", "#/settings/mcp"); }, [signIn]);
   const startSignIn = async (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => open((await v2.startMcpSignIn(name, body)).authorization_url);
@@ -84,8 +93,8 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
           </Banner>
         )}
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
-        {form && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}`} v2={v2} saved={form.saved} add={form.add} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
-        {composio && <ComposioForm key={typeof composio === "object" ? addKey : "new"} v2={v2} add={typeof composio === "object" ? composio : undefined} onClose={() => setComposio(false)} onSaved={load} />}
+        {form && (!form.add || listed) && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}`} v2={v2} saved={form.saved} add={form.add && filled(form.add)} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
+        {composio && (typeof composio !== "object" || listed) && <ComposioForm key={typeof composio === "object" ? addKey : "new"} v2={v2} add={typeof composio === "object" ? filled(composio) : undefined} onClose={() => setComposio(false)} onSaved={load} />}
         {servers && (servers.length
           ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
@@ -198,6 +207,13 @@ function PrivateHosts({ v2 }: { v2: Client }) {
   );
 }
 
+/** `name` if no server of `servers` has it, else the first `<name>-<n>` none has (n from 2). */
+export function freeName(name: string, servers: readonly Pick<McpServer, "name">[]): string {
+  const taken = new Set(servers.map((s) => s.name));
+  if (!taken.has(name)) return name;
+  for (let n = 2; ; n++) if (!taken.has(`${name}-${n}`)) return `${name}-${n}`;
+}
+
 /** Settings → MCP servers → Add from Composio: Composio is an MCP server like any other. The key and a toolkit load that
  *  toolkit's actions, the ones ticked are what the saved server grants, and the server saves it as an MCP server with the
  *  key sealed. A toolkit that needs your account answers a link to Composio's page to connect it. The key is an
@@ -294,7 +310,7 @@ function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved
   // composio, else url. The toolkit is the owner's to set; a server a template's url need sent the person here for starts
   // with that toolkit.
   const shownSource: McpSource = type === "github_app" ? "github" : saved?.source === "composio" ? "composio" : "url";
-  const [toolkit, setToolkit] = useState(saved?.toolkit ?? (add && !add.auth ? add.name : ""));
+  const [toolkit, setToolkit] = useState(saved?.toolkit ?? (add && !add.auth ? add.toolkit ?? add.name : ""));
   const shownToolkit = shownSource === "github" ? "github" : toolkit.trim();
   // What a save sends of it: only a toolkit that differs from the saved server's (a new one: only one said); one on the
   // GitHub App's tokens sends none.

@@ -752,8 +752,10 @@ describe("Settings → MCP servers, the Composio preset", () => {
     const older = [saved({ name: "slack" }), saved({ name: "slack-2" }), saved({ name: "hubspot" })];
     const s = server([older], answer);
     const p = await open(s.v2, { add: { name: "slack", preset: "composio", toolkit: "slack", tools: ["SLACK_SEND_MESSAGE"] } });
-    expect(p.input("composio-name").value).toBe("slack-3");
     expect(p.input("composio-toolkit").value).toBe("slack");
+    await p.type("composio-key", KEY);
+    await p.click(/^Load actions$/);
+    expect(p.input("composio-name").value).toBe("slack-3");
     act(() => root?.unmount()); document.body.innerHTML = "";
     const u = await open(server([older]).v2, { add: { name: "hubspot" } });
     expect(u.input("mcp-name").value).toBe("hubspot-2");
