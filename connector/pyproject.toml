@@ -6,7 +6,7 @@ backend-path = ["build_support"]
 [project]
 name = "agentrun-cli"
 version = "0.1.11.dev0"
-description = "Explicit metadata observation for existing coding-agent sessions"
+description = "Explicit coding-agent observation and opt-in remote native execution"
 requires-python = ">=3.12"
 dependencies = ["pydantic>=2.12,<3", "websockets>=15,<17", "prompt-toolkit>=3.0.52,<4"]
 

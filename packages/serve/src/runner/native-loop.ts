@@ -1,3 +1,4 @@
+import { RemoteConnectors, checkedPrepared, openRemoteSession, remoteResult } from '../native/remote.js';
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { nativeEnvironment } from "../native/environment.js";
@@ -26,6 +27,7 @@ import { learningLoopFactory } from './learning-factory.js';
 import { pathMetrics } from './workflow-first.js';
 import { reflectRequestId } from './end-of-run.js';
 import { journalEntries } from './journal-reader.js';
+import { HOST_PHASE } from '../timeline/index.js';
 import { KINDS } from './journal-kinds.js';
 import { bookedSpend, cliRunMetrics } from './metrics.js';
 import { stopEnd, type AlsoRow, type Claim, type LoopFactory, type StopReason } from './loop-contract.js';
@@ -43,7 +45,7 @@ class NativeProjectBusy extends Error {}
 /** One source directory at a time, across this runner's claims and other local runner processes. A stale process's
  * lock is not stolen: uncertain native side effects require the owner to inspect the source project first. */
 async function lockProject(data:string,target:NativeBinding,runId:string):Promise<()=>Promise<void>>{
- const key=createHash('sha256').update(target.project).digest('hex');
+ const key=createHash('sha256').update(target.remote ? `${target.remote.connector_id}:${target.machine_id}:${target.project}` : target.project).digest('hex');
  if(pendingProjects.has(key))throw new NativeProjectBusy('Another native run is using this project.');
  pendingProjects.add(key);
  const root=join(data,'native-locks');const path=join(root,key);
@@ -56,13 +58,22 @@ async function lockProject(data:string,target:NativeBinding,runId:string):Promis
  return async()=>{pendingProjects.delete(key);await rm(path,{recursive:true,force:true});};
 }
 
-async function contextFor(data:string,agentId:string,runId:string,launch:RunLaunch,refuse:readonly string[],nativeSkills:readonly string[]):Promise<{text?:string;skills:string[];remoteSkills?:readonly {name:string;files?:Record<string,string>}[]}>{
+async function contextFor(data:string,agentId:string,runId:string,launch:RunLaunch,refuse:readonly string[],nativeSkills:readonly string[]):Promise<{text?:string;skills:string[];remoteSkills?:readonly {name:string;files?:Record<string,string>}[];left?:readonly string[]}>{
  if(!launch.learning)return {skills:[]};
  const folder=learningFolderOf(data,agentId);
  try{
  const seed=await seedFrom(launch.learning.seed,readerOf(folder.workspace));
  // Use the same budgets/checks as the managed seed. Reads only; no files in the source project are laid or replaced.
  const selected=await chooseSkills(folder.workspace,{...seed,skills:seed.skills?.filter(skill=>!nativeSkills.includes(skill.name))},[],secretsShown(refuse,{local:true}));
+ if(launch.native?.remote){
+  const taken:typeof selected.taken=[],left:string[]=[];
+  for(const skill of selected.taken){
+   if(Object.keys(skill.files??{}).length>128){left.push(`${skill.name} (more than 128 remote skill files)`);continue;}
+   if(taken.length>=64){left.push(`${skill.name} (64 remote skills already selected)`);continue;}
+   taken.push(skill);
+  }
+  return {text:launch.learning.section,skills:taken.map(skill=>skill.name),remoteSkills:taken,left};
+ }
  const skills=selected.taken.map(s=>s.name);
  const offered=await nativeSkillContext(join(data,'native-context',runId,'skills'),selected.taken);
  return {text:[launch.learning.section,offered].filter(Boolean).join('\n\n'),skills};
@@ -161,24 +172,27 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
     // Recheck current binding to make disconnect win over queued starts and to reject another machine's claims.
     const current=await host.store.agents.revision((await host.store.agents.get(agentId))?.currentRevision??'');
     const binding=nativeOf(current?.body);if(!binding)throw new Error('The native binding was removed.');
-    const target=await launchNative(binding);
+    const broker=binding.remote?new RemoteConnectors(host.store):undefined;
+    const prepared=broker?checkedPrepared(binding,await broker.request(binding,'prepare',{}, {signal,timeoutMs:30_000})):undefined;
+    const target=prepared?.target??await launchNative(binding);
     if(target.state!=='ready'||!target.capabilities.launch)throw new Error(target.issues.join(' ')||'The remote native sign-in is not ready.');
     unlock=await lockProject(host.data,target,claim.runId);
     signal.throwIfAborted();
     const refuse=runnerSecrets(process.env,await storeSecrets(host.store,host.sealKey,host.data));
     openedSecrets=refuse;held.hold(refuse);
-    const instructions=withSavedNativeInstructions(await snapshotNativeInstructions(target,secretRedactor(refuse)),savedInstructions,redact);
+    const instructions=withSavedNativeInstructions(prepared?.instructions??await snapshotNativeInstructions(target,secretRedactor(refuse)),savedInstructions,redact);
     await append(`${MARK}.instructions`,instructions);
     // A reclaimed claim before the durable dispatch marker can safely replace only its own additive files.
     await rm(join(host.data,'native-context',claim.runId),{recursive:true,force:true});
     const learned=await contextFor(host.data,agentId,claim.runId,launch,refuse,target.skills);
+    if(learned.left?.length)await append(HOST_PHASE,{summary:redact(`Learned skills left out of this remote run: ${learned.left.join('; ')}.`)});
     await append(`${MARK}.configuration`,{...target,learning_revision:launch.learning?.seed??null});
     if(launch.learning)await append(KINDS.learningLaid,{skills:learned.skills,workflows:[]});
     const content=inputMessage(launch.input);
     await append(KINDS.message,{role:'person',text:content,at:Date.now(),...(launch.inputOrigin?{origin:launch.inputOrigin}:{})});
     await append(`${MARK}.sending`,{phase:'task'});await deps.flush();
     const context=[savedInstructions,learned.text,outputContract(outputSchema)].filter(Boolean).join('\n\n');
-    session=await openNativeSession({target,context:context||undefined,signal,onEvent,env:nativeEnvironment()});
+    session=broker?await openRemoteSession(broker,target,{context:context||undefined,skills:learned.remoteSkills,runId:claim.runId,signal,onEvent}):await openNativeSession({target,context:context||undefined,signal,onEvent,env:nativeEnvironment()});
     const task=async(prompt:string)=>{
      const result=await send(prompt,'task');
      await append(KINDS.message,{role:'model',text:redact(result.answer),at:Date.now()});
@@ -245,6 +259,10 @@ function nativeMetrics(launch:RunLaunch,entries:readonly {kind:string;data?:unkn
  * A separate empty directory prevents the source project's answer-format instructions from becoming grader policy. */
 export function nativeLearningLoop(host:AdapterSpecDeps,target:NativeBinding):LoopFactory{
  return learningLoopFactory({store:host.store,data:host.data,sourceInstructions:runId=>nativeSourceInstructions(host.store,runId),ask:async(request,signal)=>{
+  if(target.remote){
+   const result=remoteResult(await new RemoteConnectors(host.store).request(target,'grade',{prompt:request.prompt,timeout_ms:180_000},{signal,timeoutMs:185_000}));
+   const u=result.usage;return {text:result.answer,usd:u.cost_usd,tokens:u.input_tokens===null||u.output_tokens===null||u.cache_read_tokens===null||u.cache_write_tokens===null?null:{input:nativeInput(u,target.runtime)!,output:u.output_tokens,cache_read:u.cache_read_tokens,cache_write:u.cache_write_tokens}};
+  }
   const dir=join(host.data,'native-grader');await mkdir(dir,{recursive:true});await promisify(execFile)('git',['init','--quiet',dir],{timeout:10_000});
   const graderTarget=(await discoverNative({project:dir,runtime:target.runtime,env:nativeEnvironment()})).targets.find(value=>value.selector.kind==='project');
   if(!graderTarget)throw new Error('The native grading runtime is unavailable.');
