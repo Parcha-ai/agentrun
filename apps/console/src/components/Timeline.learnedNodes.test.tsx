@@ -61,7 +61,7 @@ describe("Timeline, a learned workflow's call", () => {
     expect(t.host.textContent).toContain("learned_workflow check-refunds failed");
   });
   it("an MCP harness's learned_workflow call shows its nodes the same way", () => {
-    expect(show(call(NODES, "mcp__hands__learned_workflow")).toggle()).not.toBeNull();
+    expect(show(call(NODES, "learned_workflow")).toggle()).not.toBeNull();
   });
   it("only a call with learned_nodes gets the toggle: one without them, or with none, beside it reads as it did", () => {
     for (const nodes of [undefined, []]) {

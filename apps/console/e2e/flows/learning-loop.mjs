@@ -35,7 +35,7 @@ const PROMOTIONS = [
   { workflow: WF, digest: D0, at: later(14, 10), decided: "hold", source: "replay", reason: "Held: it did worse than the agent on its graded inputs.", replay: REPLAY(20, 0.85, 0.94, 3) },
   { workflow: WF, digest: D1, at: later(18, 10), decided: "replaying", source: "replay", reason: "A new revision replays on the last 20 graded inputs.", runs: [] },
   { workflow: WF, digest: D1, at: later(21, 10), decided: "promote", source: "replay", reason: "As good as the agent on its graded inputs.", replay: REPLAY(20, 0.95, 0.94, 2) },
-  { workflow: WF, digest: D2, at: later(51, 10), decided: "promote", source: "refit", reason: "Refit: the cheapest thresholds within 2 pts.", replay: REPLAY(40, 0.95, 0.94, 3), refit: { from: D1, guards: [{ node: "classify", was: 0.7, threshold: 0.78 }] } },
+  { workflow: WF, digest: D2, at: later(51, 10), decided: "promote", source: "refit", reason: "refit sort-invoice's guards over its graded runs (40 rows): classify 0.7 -> 0.78", replay: REPLAY(40, 0.95, 0.94, 3), refit: { from: D1, guards: [{ node: "classify", was: 0.7, threshold: 0.78 }] } },
 ];
 // Each guarded step's runs: p from a fixed walk (no randomness), right or wrong where the workflow answered alone.
 const points = (from, to, threshold, low) => SAMPLE.runs.filter((r) => r.n >= from && r.n <= to && r.path !== "agent").map((r, i) => {
@@ -127,16 +127,18 @@ export default {
 
         // The workflow card: the newest revision serves; each guard on its step's card; where it is unsure.
         const card = page.getByRole("region", { name: "Learned workflow" });
-        check(/^Serving · refit on 40 rows · 37 aloneRefit on 40 graded inputs: workflow 95% vs agent 94% \(\+1 pts\), 3 handed back$/.test((await card.getByTestId("standing").textContent()) ?? ""), `${at}: the standing says ${await card.getByTestId("standing").textContent()}`);
+        // The chip's leading word only: its wording is asserted in learningLoop.test.ts and WorkflowReplay.test.tsx.
+        const word = async () => ((await card.getByTestId("standing").locator("span").first().textContent()) ?? "").split(" · ")[0];
+        check((await word()) === "Serving", `${at}: the standing says ${await word()}`);
         const verdicts = await card.locator("svg .verdict").allTextContents();
         check(verdicts.join() === "jev ≥0.78,self+jev ≥0.60", `${at}: the guards on the graph are ${verdicts.join()}`);
         check((await card.getByTestId("guard-row").count()) === 2 && (await card.getByTestId("guard-histogram").count()) === 2, `${at}: the unsure list is not two steps with their p`);
         await shoot(card, `loop-workflow-${theme}-${width}.png`);
         // Scrubbed back one: the refit's source, replaced in place.
         await card.getByRole("button", { name: "Previous revision" }).click();
-        check(/^RefitIts thresholds were refit: revision 1a48d30 serves in its place\.$/.test((await card.getByTestId("standing").textContent()) ?? ""), `${at}: revision 2 says ${await card.getByTestId("standing").textContent()}`);
+        check((await word()) === "Refit", `${at}: revision 2 says ${await word()}`);
         await card.getByRole("button", { name: "Previous revision" }).click();
-        check(/^Held · replayed 20 · 17 aloneReplay on 20 graded inputs: workflow 85% vs agent 94% \(-9 pts\), 3 handed back$/.test((await card.getByTestId("standing").textContent()) ?? ""), `${at}: revision 1 says ${await card.getByTestId("standing").textContent()}`);
+        check((await word()) === "Held", `${at}: revision 1 says ${await word()}`);
 
         // The feed: the refused draft in the checks' words; a note says what it went into.
         const feed = page.getByTestId("loop-feed");

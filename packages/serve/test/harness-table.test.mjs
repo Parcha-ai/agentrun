@@ -52,10 +52,10 @@ test("production code never builds a stand-in harness: serve/src imports no @par
 
 test("each adapter package exports its facts, and the table's entry for each id reads them: wire, steer, memory, thinking, search, own model, tool alias", async () => {
   const [{ facts: claude }, { facts: codex }, { facts: opencode }, { builtinHarness }] = await Promise.all([import("@parcha/agentrun-harness-claude/facts"), import("@parcha/agentrun-harness-codex/facts"), import("../dist/harness-opencode/facts.js"), import("../dist/harness-table.js")]);
-  const shape = (f) => ({ id: f.id, wire: f.wire, steer: f.steer, runMib: f.runMib, thinking: [...f.thinking], webSearch: f.webSearch, ownModel: f.ownModel, alias: Boolean(f.toolAlias), schema: typeof f.schemaProblems });
-  assert.deepEqual(shape(claude), { id: "claude-agent", wire: "anthropic-messages", steer: false, runMib: 288, thinking: ["low", "medium", "high", "xhigh", "max"], webSearch: "native", ownModel: true, alias: false, schema: "function" });
-  assert.deepEqual(shape(codex), { id: "codex", wire: "openai-responses", steer: false, runMib: 192, thinking: ["low", "medium", "high", "xhigh"], webSearch: "live", ownModel: false, alias: false, schema: "function" });
-  assert.deepEqual(shape(opencode), { id: "opencode", wire: "openai-responses", steer: false, runMib: 704, thinking: ["low", "medium", "high", "xhigh"], webSearch: undefined, ownModel: false, alias: true, schema: "undefined" });
+  const shape = (f) => ({ id: f.id, wire: f.wire, steer: f.steer, runMib: f.runMib, thinking: [...f.thinking], webSearch: f.webSearch, ownModel: f.ownModel, hostName: f.hostName?.(f.id === "claude-agent" ? "mcp__hands__x" : f.id === "codex" ? "mcp_s__x" : "hands_x"), schema: typeof f.schemaProblems });
+  assert.deepEqual(shape(claude), { id: "claude-agent", wire: "anthropic-messages", steer: false, runMib: 288, thinking: ["low", "medium", "high", "xhigh", "max"], webSearch: "native", ownModel: true, hostName: "x", schema: "function" });
+  assert.deepEqual(shape(codex), { id: "codex", wire: "openai-responses", steer: false, runMib: 192, thinking: ["low", "medium", "high", "xhigh"], webSearch: "live", ownModel: false, hostName: "mcp__s__x", schema: "function" });
+  assert.deepEqual(shape(opencode), { id: "opencode", wire: "openai-responses", steer: false, runMib: 704, thinking: ["low", "medium", "high", "xhigh"], webSearch: undefined, ownModel: false, hostName: "x", schema: "undefined" });
   for (const facts of [claude, codex, opencode]) {
     const entry = builtinHarness(facts.id);
     assert.equal(entry.facts, facts, `${facts.id}'s entry holds its package's facts`);
@@ -74,7 +74,6 @@ test("facts decide, not names: thinking clamps at a harness's highest level, nat
   assert.deepEqual(["claude-agent", "codex", "opencode"].map((id) => thinkingFor(facts(id), "low")), ["low", "low", "low"], "a level a harness takes is kept");
   const native = { AGENTRUN_SERVE_TOOL_PLANE: JSON.stringify({ web_search: "native" }) };
   assert.deepEqual(["claude-agent", "codex", "opencode"].map((id) => nativeOptions(facts(id), native)), [{ webSearch: true, webSearchAllowance: 200_000 }, { webSearch: "live" }, {}]);
-  assert.deepEqual(["claude-agent", "codex", "opencode"].map((id) => settingsKeyOf(id, "srv_lookup", ["srv"])), [undefined, undefined, "mcp:srv/lookup"], "only a harness whose facts name an alias maps `<server>_<tool>`");
   assert.deepEqual(["pi", "claude-agent", "codex", "opencode"].map(runMibOf), [128, 288, 192, 704]);
   const tiny = (SERVER_MIB + 100) * 2 ** 20;
   assert.deepEqual(["pi", "codex"].map((id) => runsThatFit(id, tiny)), [1, 0], "one pi run always fits (its entry's oneAlwaysFits); no codex run does");

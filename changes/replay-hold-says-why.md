@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: fix
----
-A learned workflow held because its replay could not run an MCP tool now says which tools and why. Replay runs an MCP tool live only when its server marks it `readOnlyHint: true`; a tool listed with no annotations was treated as a write the graded run's recording lacked, so every input was skipped and the hold read like a data problem ("needs a write the recording doesn't have"). The hold now names those tools: "nothing was replayed on its 20 graded inputs: browse, fetch_page and 2 more have no readOnlyHint, so replay can't run them: if they only read, mark them read-only in the MCP server". A destructive tool or a built-in write keeps the old words. A promotion record's `replay.skipped_tools` lists each tool that stopped an input, how many it stopped, and `no_read_only_hint`. The console's Learning tab says what a promoted workflow was decided on beside its standing ("Serving · replayed 18/20", "Serving · not replayed" for a dry-run promote, which is no longer shown green, "Held · 0 replays answered"), and a replay line names the tools with no readOnlyHint.

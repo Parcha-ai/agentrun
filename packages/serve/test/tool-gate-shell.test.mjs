@@ -24,11 +24,10 @@ async function onPi(settings, name, { overrides = {}, approvers = true } = {}) {
   return { decided: await runGate.decide(name, { command: "sleep 1" }), askedAs: runGate.askedAs(name) };
 }
 
-test("each background tool is held to bash's settings key, on every harness and as claude-agent's mcp__hands__ host tool, and is no settings key of its own", () => {
+test("each background tool is held to bash's settings key, on every harness, and is no settings key of its own", () => {
   assert.equal(BACKGROUND_TOOLS.length, 5);
   for (const name of BACKGROUND_TOOLS) {
     for (const harness of ["pi", "claude-agent", "codex", "opencode"]) assert.equal(settingsKeyOf(harness, name), "bash", `${harness} ${name}`);
-    assert.equal(settingsKeyOf("claude-agent", `mcp__hands__${name}`), "bash", `mcp__hands__${name}`);
     assert.deepEqual(settingsIssues({ [name]: { permission: "deny" } }).map((issue) => [issue.field, issue.reason]), [[name, "not_allowed"]], `${name} is set by bash`);
   }
 });
@@ -165,12 +164,12 @@ test("the stand-in for a value not offered survives a save of the whole map, an 
   assert.equal((await stored())?.bash?.permission, "deny");
 });
 
-test("no setting of a watcher's own lifts bash's deny or ask: a run's gate reads bash's key for each, under claude-agent's mcp__hands__ names too", () => {
+test("no setting of a watcher's own lifts bash's deny or ask: a run's gate reads bash's key for each, under claude-agent too", () => {
   const lifted = runnerGate({ settings: { bash: { permission: "deny" }, bash_output: { permission: "allow" } }, overrides: { bash_output: { permission: "allow" }, bash_signal: { permission: "allow" } } });
   for (const name of [...WATCHERS, ...STARTERS]) assert.equal(lifted.policy(name), "deny", name);
   const claude = runnerGate({ harness: "claude-agent", settings: { bash: { permission: "ask" } }, overrides: { bash_background: { permission: "allow" } } });
-  for (const name of WATCHERS) assert.equal(claude.policy(`mcp__hands__${name}`), "allow", name);
-  for (const name of STARTERS) assert.equal(claude.policy(`mcp__hands__${name}`), "ask", name);
+  for (const name of WATCHERS) assert.equal(claude.policy(name), "allow", name);
+  for (const name of STARTERS) assert.equal(claude.policy(name), "ask", name);
   assert.equal(claude.policy("Bash"), "ask");
 });
 
