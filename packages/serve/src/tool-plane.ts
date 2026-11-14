@@ -19,7 +19,7 @@
 // harness's own search (inside its CLI, where no call can wait for a person) gives way to the kernel's. A run is never
 // told a deny: its Plane resolves a denied capability as under ask, and the gate, which reads the permission at each
 // call, is the one place that refuses it, so a deny lifted mid-run is lifted at the next call.
-import { blurbOf } from "./tool-blurbs.js";
+import { blurbOf, isAskable, isTableTool, tableTools } from "./tool-list.js";
 import { PROVIDERS as COMPUTER_PROVIDERS } from "@parcha/agentrun-computer";
 import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
@@ -54,14 +54,10 @@ export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch",
 export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel", "off"] as const, web_fetch: ["kernel", "parallel"] as const, browser: Object.freeze(["auto", ...browserProviderIds(), "chrome"]) });
 export type Pickable = keyof typeof PROVIDERS;
 export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
-/** Every tool of serve's table (tools.ts), by name, so this module needs no import of it: a test holds the two as one. */
-export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "browser", "subagent", "pdf_pages", "llm"];
-/** The tools whose approved call the kernel runs itself, outside the model's turn (host-tools.ts's REPLAY): ask is
- *  offered for these and for catalog tools. Any other (browser, ask_person, the call-only ones) is allow or deny. The
- *  run's learned_workflow is one (tool-gate.ts runs an approved call of it on the run's own tools). */
-export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "web_fetch", "web_search", "learned_workflow"];
-/** The permissions `name` may be set to. */
-export const permissionsOf = (name: string): readonly Permission[] => (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name ? permissionsOf(SHELL_FAMILY[name]!) : ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
+/** The permissions `name` may be set to: ask is offered for the tools whose approved call the kernel runs itself, outside
+ *  the model's turn (tool-list.ts `askable`) and for catalog tools. Any other (browser, ask_person, the call-only ones) is
+ *  allow or deny. */
+export const permissionsOf = (name: string): readonly Permission[] => (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name ? permissionsOf(SHELL_FAMILY[name]!) : isAskable(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
 /** A tool's permission as this server applies it to an agent that sets none, as capabilities and an MCP server's read
  *  give it: the one in force under the server's settings (`permission`), the owner's default (`default_permission`) and
  *  those it may be set to. An agent's read gives the same, the agent's own layer over it (agentTools). */
@@ -82,7 +78,7 @@ export const DECISION_PROVIDER_KEYS: readonly string[] = ["jev", "parallel", "op
  *  decision provider's (DECISION_PROVIDER_KEYS), a
  *  catalog tool (`monid.<tool>`, `mcp:<server>/<tool>`), or an MCP server's wildcard (`mcp:<server>/*`), which sets each
  *  of its tools. */
-const isSettingsKey = (name: string): boolean => parseToolName(name) !== undefined && (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name) || isCatalogTool(name));
+const isSettingsKey = (name: string): boolean => parseToolName(name) !== undefined && (isTableTool(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name) || isCatalogTool(name));
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
 export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** bash's policy, an agent's own only (bash-read-only.ts). */ policy?: BashPolicy; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
@@ -416,7 +412,7 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
   if (!isPlain(value)) return [{ field: at || "body", reason: "wrong_type", message: `${at || "the body"} is an object of tools to their settings` }];
   return Object.entries(value).flatMap(([name, setting]): InputIssue[] => {
     const pickable = Object.hasOwn(PROVIDERS, name);
-    if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...TABLE_TOOLS, ...SERVE_OWN_TOOLS, ...KIND_KEYS, ...DECISION_PROVIDER_KEYS].join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
+    if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...tableTools(), ...SERVE_OWN_TOOLS, ...KIND_KEYS, ...DECISION_PROVIDER_KEYS].join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
     if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpName(name) ? ", pin" : ""}${layer === "agent" && name === "bash" ? ", policy" : ""}}` }];
     return Object.entries(setting).flatMap(([key, given]): InputIssue[] => {
       if (key === "pin") return pinIssues(given, field(name, key), name);
@@ -581,7 +577,7 @@ export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, ag
   return [...new Set(agent.tools)].sort((a, b) => rank(a) - rank(b)).map((name) => {
     const { permission, from } = permissionFrom(name, settings as never, (agent.overrides ?? {}) as never, agent.approvals ?? "ask");
     const gate = { permission, permission_from: from, default_permission: permissionOf(name, settings as never), permissions: [...permissionsOf(name)] };
-    // One short line for people (tool-blurbs.ts), as capabilities serves it.
+    // One short line for people (tool-list.ts), as capabilities serves it.
     const blurb = blurbOf(name);
     const shown = { name, ...(blurb ? { blurb } : {}) };
     // A tool of bash's family the agent's computer gives no shell for: unavailable, in the words its run's call gets.
