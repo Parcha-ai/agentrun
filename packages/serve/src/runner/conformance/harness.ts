@@ -25,6 +25,7 @@ import type { EndOfRunAnswer, EndOfRunTurn, LoopDeps, LoopFactory } from "../loo
 import { timelineReducer, type TimelineEvent } from "../../timeline/index.js";
 import { emptyState, translate } from "../../live/translate.js";
 import { servedTimelineRows } from "../../run-timeline-served.js";
+import { STOPPED_WHILE_WAITING } from "../../refusal-words.js";
 
 /** The one row a person's stop gives on the live timeline (live/translate.ts STOPPED_BY_YOU), the same on every harness. */
 const STOPPED_BY_YOU = "Stopped by you";
@@ -1155,6 +1156,21 @@ const CASES: readonly Case[] = [
     },
   },
   {
+    id: "meta-codemode-stop",
+    title: "a person's stop while a codemode script's call waits for its approval: the call reads that it was not run, never interrupted",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      const script = "const a = await tools.read({});\nconst b = await tools.asked({});\nreturn [a, b];";
+      await w.start("runner-a", { script: [{ call: "codemode", args: { script } }, { sayLastResult: true }], tools, hooks: quiet });
+      await w.ended("parked");
+      await sendCommand(w.server, RUN, { kind: "stop" });
+      await w.ended("stopped");
+      assert.equal(ran.asked, 0, "stopped while it waited, the asked call never ran");
+      await nestedRowsShown(w, "codemode", [{ tool: "read", result: /^read$/ }, { tool: "asked", result: new RegExp(`^${STOPPED_WHILE_WAITING}`) }]);
+    },
+  },
+  {
     id: "meta-codemode-crash",
     title: "a crash after a codemode script's call's intent: the script runs again, the call is told interrupted, never run twice, and the script ends there",
     async body(subject, t) {
@@ -1209,7 +1225,7 @@ export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record
       : {}),
     ...(facts.recoversCutAnswers === 0 ? { "length-mid-run": `a cut ends ${facts.id}'s turn, as pi's does (its adapter's facts: recoversCutAnswers 0)` } : {}),
     ...(facts.ownToolSearch ? { "meta-search": OWN_TOOL_SEARCH(facts.id), "meta-call-park": OWN_TOOL_SEARCH(facts.id), "meta-call-deny": OWN_TOOL_SEARCH(facts.id) } : {}),
-    ...(facts.ownCodemode ? { "meta-codemode-park": OWN_CODEMODE(facts.id), "meta-codemode-crash": OWN_CODEMODE(facts.id) } : {}),
+    ...(facts.ownCodemode ? { "meta-codemode-park": OWN_CODEMODE(facts.id), "meta-codemode-stop": OWN_CODEMODE(facts.id), "meta-codemode-crash": OWN_CODEMODE(facts.id) } : {}),
   };
 }
 
@@ -1218,7 +1234,7 @@ const OWN_TOOL_SEARCH = (id: string) => `${id} defers a run's MCP tools behind a
 /** Why a harness that runs scripts itself has no case of the host's codemode. */
 const OWN_CODEMODE = (id: string) => `${id} runs the model's scripts in its own code mode (its adapter's facts: ownCodemode), so the host offers no codemode beside it`;
 /** The cases of the host's tools over a session's tools (runner/meta-tools.ts), which only the adapter loop gives. */
-const META_CASES: ReadonlySet<ConformanceCase> = new Set(["meta-search", "meta-call-park", "meta-call-deny", "meta-codemode-park", "meta-codemode-crash"]);
+const META_CASES: ReadonlySet<ConformanceCase> = new Set(["meta-search", "meta-call-park", "meta-call-deny", "meta-codemode-park", "meta-codemode-stop", "meta-codemode-crash"]);
 
 /** What a run whose answer was cut at the model's output limit says (loop-contract.ts cutAtLimit). */
 const CUT_AT_LIMIT = /^the model stopped at its output limit( \(\d+ tokens\))? before finishing its answer$/;
