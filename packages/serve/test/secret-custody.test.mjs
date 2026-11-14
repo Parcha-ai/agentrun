@@ -36,9 +36,9 @@ const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pat
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const CONFINED = existsSync("/usr/bin/setpriv");
-/** The server's own: its tokens (the token and the next one), the seal key its tool keys are kept under, and the boxes' keys, which only its box
+/** The server's own: its tokens (the token and the token list), the seal key its tool keys are kept under, and the boxes' keys, which only its box
  *  providers read (boxes.ts). */
-const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_TOKEN_NEXT", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS];
+const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS];
 /** Every secret serve and a run's process read: each must be on the launcher's list. */
 /** The decision keys: held by the server like the rest, and handed to a workflow run's process only on its decision
  *  descriptor, for its decision provider (decisions.ts), never with the run's secrets. */
@@ -142,7 +142,7 @@ function canaries() {
   // The seal key's must be a key the server takes (43 base64url characters: it never starts on a bad one), and is still a
   // canary: the canary is base64url, padded to a key's length.
   const sealKey = (value) => (assert.ok(value.length <= 43, value), value.padEnd(43, "k"));
-  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKEN_NEXT" ? `${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : `${canary}-${i}`])) };
+  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : name === "AGENTRUN_TOKENS" ? `rotation:${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : `${canary}-${i}`])) };
 }
 
 /** The server, started by its launcher in a session of its own, with `env` (its secrets among it) in its environment.

@@ -1,6 +1,6 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
@@ -44,7 +44,8 @@ import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPl
 import { boxAllowOf, boxAllowSetIn } from "./box-settings.js";
 import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { answerPage, byOwnerSession, ConsoleSessions, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
+import { acceptedTokens, type ApiToken, bearerCheck, tokenProblem } from "./api-token.js";
+import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
@@ -218,8 +219,13 @@ export type ServeOptions = {
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
    *  the only lock: put TLS in front of it. */
   host?: string;
-  /** The token to require in place of the one `DIR/.token` keeps: 32 characters or more, no whitespace. */
+  /** The token to require in place of the one `DIR/.token` keeps: 32 characters or more, no whitespace. Its id is
+   *  `default` (api-token.ts). */
   token?: string;
+  /** More API tokens (AGENTRUN_TOKENS, api-token.ts parseTokens), each with an id: every one opens every route the
+   *  token opens. Given these and no `token`, `DIR/.token` is neither read nor made, and the first is the server's
+   *  token. Each id names its token in the request log; no line holds a secret. */
+  tokens?: readonly ApiToken[];
   /** Default 7340; 0 is any free port. */
   port?: number;
   /** When the port is taken at the listen, the next one that is not, of the 100 from it: the port is found by listening,
@@ -371,7 +377,9 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
 /** `boxesLine`: what the start's banner says of the boxes, in words (place.ts boxesLine). */
 /** `launchCode`: with no accounts, the code of the console's link this start prints (`/?launch=<code>`), which gives the
  *  browser that opens it a console session (page.ts ConsoleSessions). */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; launchCode?: string; boxesLine: string; close(): Promise<void>;
+/** `token` is the first of `tokenIds` (the console's session stands for it); `tokenIds` are the ids of every token the
+ *  server takes, in order (api-token.ts), never their secrets. */
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenIds: readonly string[]; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; launchCode?: string; boxesLine: string; close(): Promise<void>;
   /** The live sockets of the computers paired with this server (computer-attach.ts): a runner beside the server in this
    *  process takes it (runner/beside.ts), so its runs can use them. */
   attachHub: AttachHub;
@@ -397,7 +405,6 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
   return { token, made: true };
 }
 
-const digest = (text: string) => createHash("sha256").update(text).digest();
 
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
@@ -811,7 +818,14 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a computer's mount source below it must then be its own canonical path, through no link.
   const data = await realpath(resolve(options.data));
-  if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
+  const tokenRefused = options.token === undefined ? undefined : tokenProblem(options.token);
+  if (tokenRefused) throw new Error(tokenRefused);
+  for (const entry of options.tokens ?? []) {
+    const refused = tokenProblem(entry.token, `the API token ${entry.id}`);
+    if (refused) throw new Error(refused);
+  }
+  // Ids each once, secrets each once (api-token.ts), checked before any lock is taken.
+  if (options.token !== undefined || (options.tokens?.length ?? 0) > 0) acceptedTokens(options.token, options.tokens);
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   enabledBoxes(process.env);
   // A Docker computer's size an operator sets (workspace/computer-deps.ts): a value the Docker provider refuses stops the
@@ -932,13 +946,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const dataLock = await whileReplaced(() => takeServerLock(data), (error) => error instanceof ServerLockHeldError, Math.max(replacedUntil, Date.now() + START_WAIT_MARGIN_MS), waitingForReplaced);
   stops.push(async () => dataLock.release());
   // The token, once both locks are held: a start the locks refuse reads, makes and removes nothing in the data root.
-  const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
-  const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
-  const token = options.token ?? stored!.token;
-  // Given a token (AGENTRUN_TOKEN), a .token an earlier start made holds one this server refuses: it goes, so nothing
+  // Given a token list (AGENTRUN_TOKENS), DIR/.token is no token of this server's, as with AGENTRUN_TOKEN.
+  const given = options.token !== undefined || (options.tokens?.length ?? 0) > 0;
+  const tokenFile = given ? null : join(data, TOKEN_FILE);
+  const stored = given ? undefined : await tokenIn(tokenFile!);
+  // Every token this server takes, by id (api-token.ts): AGENTRUN_TOKEN's (or DIR/.token's) as `default`, then the list's.
+  const tokens = acceptedTokens(options.token ?? stored?.token, options.tokens);
+  const token = tokens[0]!.token;
+  // Given a token (AGENTRUN_TOKEN or AGENTRUN_TOKENS), a .token an earlier start made holds one this server refuses: it goes, so nothing
   // (a person told the token is there, a CLI that reads it) takes a dead token from it. A later start without one makes a
   // new file and token.
-  if (options.token !== undefined) await rm(join(data, TOKEN_FILE), { force: true });
+  if (given) await rm(join(data, TOKEN_FILE), { force: true });
   // No start without a seal key (seal-key.ts), checked against the store before anything reads it: the one handed over,
   // else the one in the data directory beside the store, made at the first start with only its path printed. A store whose
   // secrets another key sealed is refused, in words, and no key is made over them. Every secret here is kept under it;
@@ -1212,7 +1230,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     close: () => store.close(),
   };
   ({ secrets: secretStores, settings: triggerSettings } = await openServerSecretsOverStore(store, data, env, adapters, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
-  secretStores.add("server", () => [token]);
+  secretStores.add("server", () => tokens.map((entry) => entry.token));
   // Each agent's saved sign-ins, over the one store (module A, sign-ins-store): the vendor's calls on the server's keys
   // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
   // (a live run's sign_in_handed) and who was handed it, so this takes no `holds`/`handedTo` callback — one store, one lock.
@@ -1442,7 +1460,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
   };
   const targets = triggerTargets(store, triggerDeps);
-  const expected = digest(`Bearer ${token}`);
+  // Every presented token is checked here, against every token the server takes, in constant time (api-token.ts). The id
+  // of the one that opened a request is kept with it for its log line (tokenUsed), never the secret.
+  const bearerOf = bearerCheck(tokens);
+  const tokenUsed = new WeakMap<IncomingMessage, string>();
+  const bearer = (header: string | undefined, req?: IncomingMessage): boolean => {
+    const id = bearerOf(header);
+    if (id !== undefined && req) tokenUsed.set(req, id);
+    return id !== undefined;
+  };
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
@@ -2488,7 +2514,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     switch (path) {
       case "/setup": {
         const byToken = req.headers.authorization !== undefined;
-        if (byToken && !timingSafeEqual(digest(String(req.headers.authorization)), expected)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
+        if (byToken && !bearer(req.headers.authorization, req)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
         if (!byToken) fromPage(req);
         const { password, body } = await passwordIn(req, ["password", "code", "import"]);
         if (body.import !== undefined && typeof body.import !== "boolean") throw invalid([{ field: "import", reason: "wrong_type", message: "import is true or false" }]);
@@ -2498,7 +2524,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const along = body.import === true ? { keep: () => writeDurable(importAsked, ""), drop: () => rm(importAsked, { force: true }) } : undefined;
         // The server's API token stands in for the code in the code field too (on Render it is in the Environment tab, the
         // code only in the log), compared as the header is, in constant time; a wrong one counts as a wrong code.
-        const tokenAsCode = typeof body.code === "string" && body.code !== "" && timingSafeEqual(digest(`Bearer ${body.code}`), expected);
+        const tokenAsCode = typeof body.code === "string" && body.code !== "" && bearer(`Bearer ${body.code}`, req);
         const made = await me.setFirst(password, body.code, byToken || tokenAsCode, along);
         if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
         if (made === "missing") throw new ApiError("forbidden", "this server's setup takes the setup code in its log: send it as code");
@@ -2767,7 +2793,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       secretSeen = checked.seen;
     }
-    if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
+    if (!bearer(req.headers.authorization, req)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
       throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
     }
@@ -3520,7 +3546,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   // The MCP endpoint's tools are the routes above, called in process with the caller's token (mcp.ts).
-  const mcp = mcpEndpoint({ route, authorized: (header) => timingSafeEqual(digest(header), expected), authFailed, version: VERSION });
+  const mcp = mcpEndpoint({ route, authorized: (header, req) => bearer(header, req), authFailed, version: VERSION });
 
   function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
     const text = JSON.stringify(body);
@@ -3564,7 +3590,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const started = performance.now();
       const method = req.method ?? "GET";
       const path = (req.url ?? "/").split("?")[0]!;
-      res.once("finish", () => log(logLine("request", { method, path, status: res.statusCode, ms: Math.round(performance.now() - started) })));
+      // Who the request was answered for: the owner's or the console's session, or the id of the API token it carried
+      // (api-token.ts), never a secret. A request opened by neither has no such field.
+      res.once("finish", () => {
+        const by: Record<string, string> = byOwnerSession(req) ? { session: "owner" } : byConsoleSession(req) ? { session: "console" } : tokenUsed.has(req) ? { token: tokenUsed.get(req)! } : {};
+        log(logLine("request", { method, path, status: res.statusCode, ms: Math.round(performance.now() - started), ...by }));
+      });
     }
     const fail = (error: unknown) => {
       if (res.headersSent) return void res.end();
@@ -3948,6 +3979,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     baseUrl: `${url}/v2`,
     port: address.port,
     token,
+    tokenIds: tokens.map((entry) => entry.id),
     tokenFile,
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl, setupOpen: openSetup } : {}),

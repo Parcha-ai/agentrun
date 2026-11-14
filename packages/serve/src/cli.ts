@@ -15,6 +15,7 @@ import { REPEAT_MS, stopOnSignals } from "./stop-signals.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
+import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
 import { besideRunnerOptions, besideStopping, runnerBeside } from "./runner/beside.js";
@@ -76,7 +77,10 @@ Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it 
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
 keys from the environment, or, with AGENT_MODEL_BASE_URL, by that one OpenAI Responses gateway (AGENT_MODEL_API_KEY when
 it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's (a DIR/.token from an earlier start is removed), and is never printed; DIR/.token's is
-printed only by the start that made it. AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
+printed only by the start that made it. AGENTRUN_TOKENS, when set, holds more tokens as id:secret entries separated by
+commas or whitespace (each secret 32 characters or more): every one opens what the token opens, AGENTRUN_TOKEN's id is
+"default", and the request lines name the id of the token used, never a secret. Set alone, it takes DIR/.token's place.
+AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
 published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is. stdout gets one line per request, per run start and
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
@@ -303,6 +307,15 @@ if (budget !== undefined && !/^\d+$/.test(budget)) {
 }
 const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
+// More tokens, each with an id (api-token.ts), for a rotation with no caller refused; never printed. A list that cannot
+// be read stops here, in words that hold no secret.
+let givenList: ApiToken[] | undefined;
+try {
+  givenList = parseTokens(secret("AGENTRUN_TOKENS"));
+} catch (error) {
+  console.error(`${(error as Error).message}\n\n${USAGE}`);
+  process.exit(2);
+}
 // The stop is listened for before anything starts: a SIGTERM or SIGINT during the start (a platform's redeploy, the
 // moment the banner shows) is kept, never the default end by signal that cuts what the start began. Once the start has
 // what a stop closes, the stop below takes over (stopOnSignals), and a stop asked meanwhile runs it, through the same
@@ -338,7 +351,7 @@ try {
       console.error(`agentrun-serve: ${error.message}`);
       process.exit(1);
     },
-    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
+    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
@@ -380,8 +393,8 @@ if (!values["no-runner"] && askedAt === undefined) {
   }
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
-const source = given ? "env" : serve.tokenMade ? "made" : "file";
-for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, ...(apiOnly ? { apiOnly } : {}), ...(serve.launchCode ? { launchCode: serve.launchCode } : {}), boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
+const source = given ? "env" : givenList ? "list" : serve.tokenMade ? "made" : "file";
+for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, tokenIds: serve.tokenIds, accounts, ...(apiOnly ? { apiOnly } : {}), ...(serve.launchCode ? { launchCode: serve.launchCode } : {}), boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
 // Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
 // setup link with its code as the code was made (owner.ts).
 if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);

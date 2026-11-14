@@ -41,7 +41,7 @@ What each takes, from its environment alone:
 | `AGENTRUN_DRAIN_TIMEOUT` | | optional | A runner's `--drain-timeout` when not given (`8s`, `500ms`, `1m`); unset, `6s`. Keep it plus 25 s below the grace a SIGKILL waits for. |
 | `AGENTRUN_RUNNER_NAME` | | optional | The runner's name when `--name` gives none: in the runs it claims, its log lines and its heartbeat. Give each runner its own. |
 | `AGENTRUN_TOKEN` | optional | | The API token. Unset, the server makes one in `/data/.token` and prints it once. |
-| `AGENTRUN_TOKEN_NEXT` | optional | | A second API token, taken beside the token while callers move to it ([Rotating the API token](#rotating-the-api-token)). 32 characters or more, no whitespace. A secret, like the token. |
+| `AGENTRUN_TOKENS` | optional | | More API tokens, as `id:secret` entries separated by commas ([Rotating the API token](#rotating-the-api-token)). Any of them opens what the token opens; the log names the id used. A secret, like the token. |
 | Model keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AGENT_MODEL`, ...) | yes | yes | The runner makes a run's model requests; the server checks a run's model can run before it starts it. |
 | `AGENTRUN_API_ONLY` | optional | | `1` serves the run routes alone, for a server behind its caller's backend: the console, sign-in, setup, settings, MCP, triggers and hooks are `404`, and there are no accounts ([API only](../packages/serve/README.md#api-only)). Unset or `0`, the whole server. |
 
@@ -138,22 +138,31 @@ value set on each worker.
 
 ## Rotating the API token
 
-The server takes two tokens at once: `AGENTRUN_TOKEN` (or `/data/.token` when that is unset) and
-`AGENTRUN_TOKEN_NEXT`. Either opens every route the token opens, and each is compared in constant time. Runners hold no
-API token, so a rotation touches the server alone.
+The server takes a list of API tokens, each with an id. `AGENTRUN_TOKENS` holds the list as `id:secret` entries,
+separated by commas or newlines; `AGENTRUN_TOKEN` (or `/data/.token` when neither is set) is the entry with the id
+`default`. Any token on the list opens every route the token opens. Each presented token is compared against every
+entry in constant time. Each request line in the log names the id of the token it used (`token=ci-2026-11`), never the
+secret. Runners hold no API token, so a rotation touches the server alone.
 
-1. Make the new token (`openssl rand -hex 32`), set it as `AGENTRUN_TOKEN_NEXT`, and restart the server. Check that
-   its banner says `The next token ($AGENTRUN_TOKEN_NEXT) is taken beside it` before you go on: an empty
-   `AGENTRUN_TOKEN_NEXT` counts as unset, as an empty `AGENTRUN_TOKEN` does, and the banner then has no such line. Both
-   tokens work now.
-2. Move every caller (your backend, scripts, `AGENTRUN_API_KEY` for the CLI) to the new token. Each request with either
-   token is answered, so callers can move one at a time.
-3. Set `AGENTRUN_TOKEN` to the new token, unset `AGENTRUN_TOKEN_NEXT`, and restart the server. The old token is refused
-   from now on (`401`, logged as `wrong_token`).
+| Setting | Format | Notes |
+| --- | --- | --- |
+| `AGENTRUN_TOKEN` | the secret | Id `default`. A server with only this setting has a one-entry list, as before. |
+| `AGENTRUN_TOKENS` | `id:secret[,id:secret...]` | An id is a letter or digit, then up to 31 letters, digits, `.`, `_` or `-`. Each secret is 32 characters or more, with no whitespace or comma. An id or a secret given twice stops the start. |
+
+To rotate with no downtime:
+
+1. Add the new token. Make it (`openssl rand -hex 32`), add it as an entry (`AGENTRUN_TOKENS=ci-2026-11:<new>`, beside
+   `AGENTRUN_TOKEN`), and restart the server. Check that its banner lists both ids (`API tokens taken (ids): default,
+   ci-2026-11`) before you go on. Both tokens work now.
+2. Move every caller (your backend, scripts, `AGENTRUN_API_KEY` for the CLI) to the new token, one at a time. Watch the
+   request lines: when no line names the old id (`token=default`) any more, every caller has moved.
+3. Remove the old token. Unset `AGENTRUN_TOKEN` (or drop its entry from `AGENTRUN_TOKENS`) and restart the server. The old
+   token is refused from now on (`401`, logged as `wrong_token`).
 
 No caller is refused at any step. Each step is a server restart, which drains as any stop does (`--drain-timeout`);
-callers ride it out as they would any restart. With accounts off, a browser holding the console's cookie opens the new
-`Open` link after step 3: the cookie is made from the token.
+callers ride it out as they would any restart. A server whose token is in `/data/.token` rotates the same way: put that
+token in the list as an entry (`old:<its secret>`) at step 1, since a server given `AGENTRUN_TOKENS` no longer reads the
+file.
 
 ## Upgrading from an earlier server
 
