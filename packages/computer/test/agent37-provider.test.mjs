@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import * as registry from "../dist/providers.js";
-import { API_URL, fakeAgent37, fakeRest, KEY, keyPair, PROXY } from "./fake-agent37.mjs";
+import { API_URL, fakeAgent37, fakeRest, KEY, keyPair, MAX_SESSIONS, PROXY } from "./fake-agent37.mjs";
 
 const agent37 = await import("../dist/agent37.js");
 const { Agent37Provider, create, workspaceOf } = agent37;
@@ -474,17 +474,37 @@ test("two execs on one instance share one WebSocket and one SSH handshake, toget
 	assert.equal(fake.ws.opened[1].url, `wss://${other.id}-22022.${PROXY}/`);
 });
 
-test("past 8 channels at once a second connection opens, so no connection asks the sshd for more sessions than OpenSSH's MaxSessions", async (t) => {
+test("past 10 channels at once (OpenSSH's MaxSessions) a second connection opens, and kills of 10 execs at once each get a channel", async (t) => {
 	const { fake, host } = await setup(t);
 	const { value } = await host.create(request(), CTX);
-	const procs = await Promise.all(Array.from({ length: 9 }, () => started(host, value.id, ["cat"], true)));
+	const procs = await Promise.all(Array.from({ length: MAX_SESSIONS + 1 }, () => started(host, value.id, ["cat"], true)));
 	assert.equal(fake.ws.opened.length, 2);
 	assert.equal(fake.sshd.state.logins, 2);
-	assert.equal(fake.sshd.state.sessions, 9);
+	assert.equal(fake.sshd.state.sessions, MAX_SESSIONS + 1);
 	for (const { proc } of procs) await proc.end();
-	assert.deepEqual(await Promise.all(procs.map(({ proc }) => proc.wait())), Array(9).fill(0));
+	assert.deepEqual(await Promise.all(procs.map(({ proc }) => proc.wait())), Array(MAX_SESSIONS + 1).fill(0));
 	assert.equal((await run(host, value.id, ["true"])).code, 0);
 	assert.equal(fake.ws.opened.length, 2, "the next exec takes one of the two");
+	// A full connection's execs, all killed at once: their kills go on a connection with room, never refused.
+	const other = (await host.create(request(), CTX)).value;
+	const sleeps = await Promise.all(Array.from({ length: MAX_SESSIONS }, () => started(host, other.id, ["sh", "-c", "sleep 300 & echo $!; wait"], false)));
+	assert.ok(await until(() => sleeps.every(({ seen }) => seen.text.includes("\n"))));
+	const pids = sleeps.map(({ seen }) => Number(seen.text.trim()));
+	await Promise.all(sleeps.map(({ proc }) => proc.kill()));
+	assert.deepEqual(await Promise.all(sleeps.map(({ proc }) => proc.wait())), Array(MAX_SESSIONS).fill(-1));
+	assert.ok(await until(() => !pids.some(alive)), "every killed group is gone");
+});
+
+test("an exec that joins another's handshake keeps its own bound: when the shared one runs out of the first call's time, it opens its own", async (t) => {
+	const { fake, host } = await setup(t);
+	const { value } = await host.create(request(), CTX);
+	fake.ws.hangNext(1);
+	const short = host.exec(value.id, ["true"], { stdin: false }, { timeoutMs: 600 }).catch((thrown) => thrown);
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	const long = run(host, value.id, ["echo", "mine"]);
+	assert.equal(host.errorCode(await short), "timeout");
+	assert.equal((await long).stdout, "mine\n");
+	assert.equal(fake.ws.opened.length, 2, "the hung one, then the late call's own");
 });
 
 test("kill closes its own channel and leaves another exec on the same connection running", async (t) => {
@@ -533,10 +553,14 @@ test("a connection with no channel left waits a moment for the next exec, then e
 	assert.ok(await until(() => fake.sshd.state.live === 0, 5_000), "then ended");
 	const long = await started(host, value.id, ["sh", "-c", "sleep 300 & wait"], false);
 	assert.equal(fake.sshd.state.live, 1);
+	// A refused channel retires the long one's connection, which the long one still holds; delete ends it all the same.
+	fake.sshd.refuseSessions(1);
+	const next = await started(host, value.id, ["sh", "-c", "sleep 301 & wait"], false);
+	assert.equal(fake.sshd.state.live, 2);
 	assert.ok((await host.delete(value.id, CTX)).ok);
-	assert.equal(await long.proc.wait(), -1, "the channel closed with the connection");
+	assert.deepEqual(await Promise.all([long.proc.wait(), next.proc.wait()]), [-1, -1], "the channels closed with their connections");
 	assert.ok(await until(() => fake.sshd.state.live === 0, 1_000), "ended at once");
-	assert.equal(fake.ws.opened.length, 2);
+	assert.equal(fake.ws.opened.length, 3);
 });
 
 // --- the registry and the conformance module ---

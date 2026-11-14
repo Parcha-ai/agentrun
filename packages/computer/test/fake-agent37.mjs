@@ -13,6 +13,9 @@ export const PROXY = "agent37.test";
 
 const { Server, utils } = ssh2;
 
+/** OpenSSH's MaxSessions default: the sessions one connection takes at once (sshd_config(5)). */
+export const MAX_SESSIONS = 10;
+
 /**
  * A key pair in OpenSSH form, as `agent37 ssh-keys add` registers one. ssh2's generator writes a private key its own
  * parser refuses ("Malformed OpenSSH private key") about once in 250 ed25519 pairs, so a pair it can't read back is made again.
@@ -104,9 +107,10 @@ export function fakeRest({ key = KEY } = {}) {
  * An instance's sshd: ssh2's Server on 127.0.0.1, taking the one public key given, as root. Each exec runs under
  * `bash -c` (root's login shell on Agent37's base template), detached so it leads its own session as sshd's does, and
  * its exit-status, or exit-signal, is sent as OpenSSH sends them. commands lists each command line; state.logins counts
- * the handshakes that ended in a login, state.live the connections open now, state.sessions the sessions open now.
- * refuseSessions(n) refuses the next n session channels (as an sshd past MaxSessions does), dropAll() cuts every
- * connection from the server's side, and close() ends them all, then the server.
+ * the handshakes that ended in a login, state.live the connections open now, state.sessions the sessions open now. A
+ * connection takes MAX_SESSIONS sessions at once and refuses the next, as OpenSSH's sshd does by default (MaxSessions).
+ * refuseSessions(n) refuses the next n session channels besides, dropAll() cuts every connection from the server's
+ * side, and close() ends them all, then the server.
  */
 export async function fakeSshd({ publicKey }) {
 	const host = keyPair();
@@ -132,14 +136,19 @@ export async function fakeSshd({ publicKey }) {
 		});
 		client.on("ready", () => {
 			state.logins++;
+			let open = 0;
 			client.on("session", (accept, reject) => {
-				if (state.refusing > 0) {
-					state.refusing--;
+				if (state.refusing > 0 || open >= MAX_SESSIONS) {
+					if (open < MAX_SESSIONS) state.refusing--;
 					return reject();
 				}
 				const session = accept();
+				open++;
 				state.sessions++;
-				session.on("close", () => state.sessions--);
+				session.on("close", () => {
+					open--;
+					state.sessions--;
+				});
 				session.on("exec", (acceptExec, _reject, { command }) => {
 					commands.push(command);
 					const stream = acceptExec();

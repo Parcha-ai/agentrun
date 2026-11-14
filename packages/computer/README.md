@@ -2016,19 +2016,20 @@ stdin, end of file is sent at once. `wait()` answers at the channel's close with
 signal or none; its listeners go on inside ssh2's callback, since one read off the tunnel can hold the open, the exit
 and the close together (seen live: a listener added after an `await` missed the exit). `kill()` runs a second command
 on the same connection that kills the pid's process group (the sshd starts each command as a session and group leader,
-seen live), then closes its own channel, never the connection. An SSH signal request is not used: ssh2 sends one only
+seen live), then closes the exec's channel, never a connection. An SSH signal request is not used: ssh2 sends one only
 while stdin is open (`ssh2@1.17.0` `lib/Channel.js:237-246`), and it reaches one process, not its children.
 
 Every exec on an instance is a channel on one SSH connection that the provider shares: the daemon's upload, its install,
 init's start, the stdio bridge and the live view's watch take one WebSocket and one handshake between them (a tunnel and
-its handshake take about 0.35 s over Agent37's edge, seen live). Execs that start together wait for one handshake. The
-connection opens at the first exec (the four tries above), and a connection that closed or failed is never handed out
-again; a channel that fails to open (the connection died under it, or its sshd took no more sessions) is opened once more
-on a fresh connection. One connection carries at most 8 execs at once, and the next opens a second: OpenSSH's sshd takes
-10 sessions on a connection (`MaxSessions`), and a kill's channel goes on its exec's connection. With no channel left, a
-connection waits 2 s for the next exec, then ends: an open one keeps the process alive (ssh2's keepalive timer and the
-WebSocket's socket), so a process done with its computers exits at most that late. `delete` ends the instance's
-connections at once.
+its handshake take about 0.35 s over Agent37's edge, seen live). Execs that start together wait for one handshake, each
+within its own bound: one with time left when a shared handshake runs out of its opener's opens its own. The connection
+opens at the first exec (the four tries below), and a connection that closed or failed is never handed out again; a
+channel that fails to open (the connection died under it, or its sshd took no more sessions) is opened once more on a
+fresh connection. One connection carries at most 10 channels at once, execs and kills alike, and the next opens a second:
+OpenSSH's sshd takes 10 sessions on a connection (`MaxSessions`). A kill's channel goes on any connection with room, since
+the pid file is the instance's. With no channel left, a connection waits 2 s for the next exec, then ends: an open one
+keeps the process alive (ssh2's keepalive timer and the WebSocket's socket), so a process done with its computers exits
+at most that late. `delete` ends every connection to the instance at once, a retired one still carrying channels too.
 
 ### Capabilities
 

@@ -187,11 +187,12 @@ const KEEPALIVE_MS = 30_000;
  */
 const KILL_GRACE_MS = 2_000;
 /**
- * How many execs one SSH connection carries at once; the next opens a second connection. OpenSSH's sshd takes
- * MaxSessions (default 10) sessions on one connection and refuses the next, and a kill opens a channel on its exec's
- * connection, so two are left for kills. Agent37 does not say which sshd it runs: OpenSSH's default is the one held to.
+ * How many channels (execs and kills) one SSH connection carries at once; the next opens a second connection. OpenSSH's
+ * sshd takes MaxSessions (default 10) sessions on one connection and refuses the next. Agent37 does not say which sshd
+ * it runs, so OpenSSH's default is held to; an sshd that takes fewer refuses a channel, which is opened once more on a
+ * fresh connection.
  */
-const CHANNELS_PER_CONNECTION = 8;
+const CHANNELS_PER_CONNECTION = 10;
 /**
  * How long a connection with no channel stays open for the next exec. The adapter's steps (the upload, the install,
  * init's start, the bridge, connect after create) come one after another, each an exec, and the live view's watch
@@ -474,7 +475,10 @@ class Agent37Host implements MachineHost {
 	readonly #apiUrl: string;
 	readonly #proxyDomain: string;
 	readonly #declared: Declared;
-	/** The SSH connections open or opening to each instance: one, and a second past CHANNELS_PER_CONNECTION channels. */
+	/**
+	 * The SSH connections to each instance, opening, open, or done and still held, until each ends: one, and a second
+	 * past CHANNELS_PER_CONNECTION channels. A done one takes no new channel; delete ends them all.
+	 */
 	readonly #links = new Map<string, Link[]>();
 
 	constructor(options: { apiKey: string; sshKey: string; ssh2: Ssh2Module; fetch: typeof fetch; WebSocket: WebSocketClass; apiUrl: string; proxyDomain: string; type: Agent37Type; region: Agent37Region }) {
@@ -624,10 +628,7 @@ class Agent37Host implements MachineHost {
 		} catch (error) {
 			if (codeOf(error) !== "not_found") throw error;
 		}
-		for (const link of [...(this.#links.get(id) ?? [])]) {
-			this.#retire(link);
-			this.#end(link);
-		}
+		for (const link of [...(this.#links.get(id) ?? [])]) this.#end(link);
 		return ok(undefined);
 	}
 
@@ -722,19 +723,25 @@ class Agent37Host implements MachineHost {
 	 */
 	async #lease(id: string, ctx: HostCall): Promise<{ link: Link; client: Ssh2Client }> {
 		const bound = deadline(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
+		const end = Date.now() + ctx.timeoutMs;
 		try {
 			for (;;) {
-				const link = this.#links.get(id)?.find((one) => !one.done && one.holders < CHANNELS_PER_CONNECTION) ?? this.#open(id, ctx.timeoutMs);
+				const link = this.#links.get(id)?.find((one) => !one.done && one.holders < CHANNELS_PER_CONNECTION) ?? this.#open(id, end - Date.now());
 				this.#hold(link);
-				let client: Ssh2Client;
+				let got: { client: Ssh2Client } | { error: unknown };
 				try {
-					client = await Promise.race([link.ready, bound.promise]);
+					got = await Promise.race([link.ready.then((client) => ({ client }), (error: unknown) => ({ error })), bound.promise]);
 				} catch (error) {
 					this.#letGo(link);
 					throw error;
 				}
-				if (!link.done) return { link, client };
+				if (!("error" in got) && !link.done) return { link, client: got.client };
 				this.#letGo(link);
+				if ("error" in got) {
+					// A shared handshake is bound by the call that opened it: a call with time of its own left opens another.
+					if ((got.error as { name?: unknown } | null)?.name === "TimeoutError" && end - Date.now() > TUNNEL_RETRY_MS) continue;
+					throw got.error;
+				}
 			}
 		} finally {
 			bound.clear();
@@ -790,21 +797,24 @@ class Agent37Host implements MachineHost {
 		link.idle.unref();
 	}
 
-	/** link takes no more execs: it leaves the instance's list, and ends at once if none holds it, else when the last lets go. */
+	/** link takes no new channel; it ends at once if none holds it, else when the last lets go (or delete ends it). */
 	#retire(link: Link): void {
+		link.done = true;
+		clearTimeout(link.idle);
+		if (link.holders <= 0) this.#end(link);
+	}
+
+	/**
+	 * Ends link, whoever holds it, and drops it from the instance's list: its handshake given up, its client ended (ssh2
+	 * closes every channel on it), and the tunnel dropped if the connection has not closed within KILL_GRACE_MS. Neither
+	 * timer keeps the process alive.
+	 */
+	#end(link: Link): void {
 		link.done = true;
 		clearTimeout(link.idle);
 		const left = (this.#links.get(link.id) ?? []).filter((one) => one !== link);
 		if (left.length > 0) this.#links.set(link.id, left);
 		else this.#links.delete(link.id);
-		if (link.holders <= 0) this.#end(link);
-	}
-
-	/**
-	 * Ends link, whoever holds it: its handshake given up, its client ended (ssh2 closes every channel on it), and the
-	 * tunnel dropped if the connection has not closed within KILL_GRACE_MS. Neither timer keeps the process alive.
-	 */
-	#end(link: Link): void {
 		link.stop.abort();
 		const { client } = link;
 		if (client === undefined || link.ended) return;
@@ -852,33 +862,35 @@ class Agent37Host implements MachineHost {
 	}
 
 	/**
-	 * argv as root over SSH, under WRAPPER, as one channel on the instance's shared connection (#lease). A channel that
-	 * fails to open (the connection died under it, or its sshd took no more sessions) retires that connection and is
-	 * opened once more on a fresh one. stdout and stderr are the channel's, piped; with no stdin, end of file is sent at
-	 * once, and end sends it later. wait answers once the channel closes, with the exit-status, or -1 for an exit by
-	 * signal or none. kill ends the process group over a second channel of the same connection, then closes its own
-	 * channel, never the connection; if the close does not come, wait answers -1 and the connection takes no more execs.
+	 * command as one channel on a connection to id with room (#lease), within ctx; the channel holds its connection until
+	 * the caller lets go. A channel that fails to open (the connection died under it, or its sshd took no more sessions)
+	 * retires that connection and is opened once more on a fresh one.
 	 */
-	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
-		const pidFile = `/tmp/.agentrun-exec-${randomBytes(8).toString("hex")}`;
-		const command = shellLine(["sh", "-c", WRAPPER, pidFile, ...argv]);
-		let link: Link | undefined;
-		let opened: { channel: Ssh2Channel; closed: Promise<number> } | undefined;
-		for (let attempt = 1; opened === undefined; attempt++) {
-			const lease = await this.#lease(id, ctx);
-			link = lease.link;
+	async #start(id: string, command: string, ctx: HostCall, what: string): Promise<{ link: Link; channel: Ssh2Channel; closed: Promise<number> }> {
+		for (let attempt = 1; ; attempt++) {
+			const { link, client } = await this.#lease(id, ctx);
 			try {
-				opened = await this.#channel(lease.client, command, ctx.timeoutMs, ctx.signal, `the exec in ${id}`);
+				return { link, ...(await this.#channel(client, command, ctx.timeoutMs, ctx.signal, what)) };
 			} catch (error) {
-				// A channel open that timed out leaves a connection that may be stuck: the next exec opens another.
-				if ((error as { name?: unknown }).name !== "AbortError") this.#retire(link);
+				// A channel open that timed out leaves a connection that may be stuck: the next channel takes another.
+				if ((error as { name?: unknown } | null)?.name !== "AbortError") this.#retire(link);
 				this.#letGo(link);
 				if (isBound(error) || attempt >= 2) throw error;
 			}
 		}
-		const held = link as Link;
-		const client = held.client as Ssh2Client;
-		const { channel } = opened;
+	}
+
+	/**
+	 * argv as root over SSH, under WRAPPER, as one channel on the instance's shared connection (#start). stdout and
+	 * stderr are the channel's, piped; with no stdin, end of file is sent at once, and end sends it later. wait answers
+	 * once the channel closes, with the exit-status, or -1 for an exit by signal or none. kill ends the process group
+	 * over a channel of its own (on a connection with room), then closes the exec's channel, never a connection; if the
+	 * close does not come, wait answers -1 and the connection takes no new channel.
+	 */
+	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
+		const pidFile = `/tmp/.agentrun-exec-${randomBytes(8).toString("hex")}`;
+		const opened = await this.#start(id, shellLine(["sh", "-c", WRAPPER, pidFile, ...argv]), ctx, `the exec in ${id}`);
+		const { link: held, channel } = opened;
 		const stdout = new PassThrough();
 		const stderr = new PassThrough();
 		channel.pipe(stdout);
@@ -913,19 +925,27 @@ class Agent37Host implements MachineHost {
 			wait: () => exited,
 			kill: async () => {
 				if (closed) return;
-				// The kill's channel holds the connection too, past CHANNELS_PER_CONNECTION: the cap leaves room for it.
-				this.#hold(held);
+				// The pid file is the instance's, so the kill's channel goes on any connection with room, counted like an exec's.
 				try {
-					const killer = await this.#channel(client, shellLine(["sh", "-c", KILL_SCRIPT, pidFile]), KILL_GRACE_MS, undefined, `the kill in ${id}`);
+					const killer = await this.#start(id, shellLine(["sh", "-c", KILL_SCRIPT, pidFile]), { timeoutMs: KILL_GRACE_MS }, `the kill in ${id}`);
 					killer.channel.resume();
 					killer.channel.stderr.resume();
 					killer.channel.eof();
 					const grace = deadline(KILL_GRACE_MS, undefined, `the kill in ${id}`);
-					await Promise.race([killer.closed, grace.promise]).finally(grace.clear);
+					try {
+						await Promise.race([killer.closed, grace.promise]);
+					} catch {
+						try {
+							killer.channel.close();
+						} catch {
+							// Closed already.
+						}
+					} finally {
+						grace.clear();
+						this.#letGo(killer.link);
+					}
 				} catch {
-					// The connection is gone, or the kill did not answer in time: closing the channel below is what is left.
-				} finally {
-					this.#letGo(held);
+					// No connection took the kill in time: closing the channel below is what is left.
 				}
 				try {
 					channel.close();
