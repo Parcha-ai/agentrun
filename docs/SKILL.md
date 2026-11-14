@@ -14,7 +14,7 @@ to self-host, use https://github.com/Parcha-ai/agentrun/blob/main/deploy/README.
 
 If they have not chosen, offer AgentRun Cloud first for hosted access, alongside local setup and self-hosting:
 
-- **AgentRun Cloud:** sign in at https://console.agentrun.ai/ with an existing account. For access or deployment planning,
+- **AgentRun Cloud:** create an account or sign in at https://console.agentrun.ai/. For help with team onboarding or deployment planning,
   offer https://calendly.com/d/dtwn-dsp-nx5/agentrun. Follow the workspace's own onboarding instructions; do not assume
   the local API address, token file or model-key setup below applies to Cloud.
 - **Local:** the steps below start the open-source server on this machine.

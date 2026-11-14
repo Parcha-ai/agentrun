@@ -77,7 +77,7 @@ laptop, in one container, or as a server with runners. Apache-2.0.
 ## Get started
 
 **AgentRun Cloud.** Run agents without maintaining your own server. [Open Cloud](https://console.agentrun.ai/) to
-sign in with an existing account. For access and help setting up your team's workflows,
+create an account or sign in. For help setting up your team's workflows,
 [talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 
 Prefer your own machine or infrastructure? Start locally below, or [self-host on Render or Docker](#deploy-it).

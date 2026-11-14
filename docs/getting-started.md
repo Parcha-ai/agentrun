@@ -4,16 +4,16 @@ Choose where your agents run:
 
 | Option | Start here | Who operates the server |
 | --- | --- | --- |
-| **AgentRun Cloud** | [Open Cloud](https://console.agentrun.ai/) with an existing account, or [talk to us about access](https://calendly.com/d/dtwn-dsp-nx5/agentrun) | The Grep team |
+| **AgentRun Cloud** | [Create an account or sign in](https://console.agentrun.ai/) | The Grep team |
 | **Local** | [Run AgentRun on your computer](../README.md#run-locally-in-three-steps) | You |
 | **Self-hosted** | [Deploy on Render or Docker](../README.md#deploy-it) | You, on your infrastructure |
 
 ## AgentRun Cloud
 
-Use Cloud to run agents without setting up and maintaining your own server. If you already have an account,
-[sign in to AgentRun Cloud](https://console.agentrun.ai/).
+Use Cloud to run agents without setting up and maintaining your own server.
+[Open AgentRun Cloud](https://console.agentrun.ai/) to create an account or sign in.
 
-For access, team onboarding or deployment requirements, [talk to the team](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
+For help with team onboarding or deployment requirements, [talk to the team](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 Bring a workflow you want to run and the tools it needs. The team can discuss infrastructure, access and support
 requirements with you. Use the setup instructions provided for your workspace.
 
