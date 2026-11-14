@@ -178,6 +178,8 @@ class Recorder(threading.Thread):
         # window in front came or went, the window list changed and changed back between the two reads, or the cut
         # failed.
         self.dropped = {}
+        # The windows painted over in kept frames, by owner, layer and size, and how many frames each was in.
+        self.painted = {}
         self.halt = threading.Event()
         os.makedirs(folder, exist_ok=True)
 
@@ -232,6 +234,8 @@ class Recorder(threading.Thread):
                     try:
                         self.cropper.crop(data, before, path)
                         self.frames.append((at, path))
+                        for who in before.get("who", []):
+                            self.painted[who] = self.painted.get(who, 0) + 1
                     except RuntimeError as e:  # a window off the main display, say: that frame is not kept
                         why = "cut failed"
                         self.errors.append(str(e))
@@ -1376,6 +1380,7 @@ def main():
             }
             if t.rec:
                 entry["framesDropped"] = t.rec.dropped
+                entry["paintedOver"] = t.rec.painted
                 if t.rec.errors:
                     entry["recorderErrors"] = t.rec.errors[:5]
             report.append(entry)
@@ -1383,6 +1388,8 @@ def main():
             print(f"{'PASS' if error is None else 'FAIL'} {tid}: {took} ms, {entry['acts']} acts, {entry['steps']} steps, {frames} frames{dropped}, movie {t.movie}" + (f"\n  {error}" if error else ""), flush=True)
             if t.rec and t.rec.errors:
                 print(f"  recorder: {'; '.join(t.rec.errors[:3])}", flush=True)
+            if t.rec and t.rec.painted:
+                print(f"  painted over: {json.dumps(t.rec.painted)}", flush=True)
             print(f"  left: {json.dumps(left)}", flush=True)
             if interrupted:
                 break

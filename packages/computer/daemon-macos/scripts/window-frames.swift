@@ -44,6 +44,7 @@ func locate(_ id: Int) -> [String: Any] {
 	else { return ["bounds": NSNull()] }
 	let owner = number(windows[index], kCGWindowOwnerPID)
 	var above: [[Double]] = []
+	var who: [String] = []
 	for info in windows[..<index] {
 		// A window drawn with nothing (alpha 0) hides nothing.
 		if let alpha = info[kCGWindowAlpha as String] as? NSNumber, alpha.doubleValue == 0 { continue }
@@ -56,9 +57,11 @@ func locate(_ id: Int) -> [String: Any] {
 		let overlap = r.intersection(bounds)
 		if !overlap.isNull && overlap.width > 0 && overlap.height > 0 {
 			above.append(list(overlap))
+			let name = info[kCGWindowOwnerName as String] as? String ?? "?"
+			who.append("\(name) layer \(number(info, kCGWindowLayer) ?? 0) \(Int(r.width))x\(Int(r.height))")
 		}
 	}
-	return ["bounds": list(bounds), "above": above]
+	return ["bounds": list(bounds), "above": above, "who": who]
 }
 
 func crop(_ request: [String: Any]) throws -> [String: Any] {

@@ -75,6 +75,18 @@ jobs:
       - name: Peer check and the conformance cases
         if: ${{ !cancelled() }}
         run: scripts/smoke.sh build/Computerd.app
+      - name: Probe (temporary) model keys by name, and the windows on screen
+        if: ${{ !cancelled() }}
+        env:
+          K_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          K_CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY != '' }}
+          K_AGENTRUN_ANTHROPIC_API_KEY: ${{ secrets.AGENTRUN_ANTHROPIC_API_KEY != '' }}
+          K_OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY != '' }}
+          K_RENDER_AGENTRUN_OR_API_KEY: ${{ secrets.RENDER_AGENTRUN_OR_API_KEY != '' }}
+          K_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+        run: |
+          env | grep '^K_' | sort
+          osascript -l JavaScript -e 'ObjC.import("CoreGraphics"); const l = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0))); l.map(w => [w.kCGWindowOwnerName, w.kCGWindowName || "", w.kCGWindowLayer, w.kCGWindowAlpha, JSON.stringify(w.kCGWindowBounds)].join(" | ")).join("\n")'
       - name: Logs
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
