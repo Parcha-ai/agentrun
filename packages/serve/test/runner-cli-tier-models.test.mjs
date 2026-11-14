@@ -74,6 +74,15 @@ const flowOf = (tier) => ({
   root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer", ...(tier ? { tier } : {}) }] },
 });
 
+/** A learned workflow of two model nodes: one of `tier`, then one of no tier that reads its answer (the #2408 walk's). */
+const tierThenUntiered = (tier) => ({
+  ...flowOf(tier),
+  root: { node: "chain", steps: [
+    { node: "extract", label: "quick", tier, instructions: "Answer the question as a number.", out: "Answer", as: "quick" },
+    { node: "extract", label: "answer", instructions: "Give the number in `quick` again.", out: "Answer", as: "answer" },
+  ] },
+});
+
 /** The node's submit, when a request offers the node's submit tool and carries no tool result yet. */
 const submitsAnswer = ({ body }) => {
   const offers = (body?.tools ?? []).some((tool) => tool?.name === "submit");
@@ -94,7 +103,7 @@ const until = async (done, what, ms = 40_000) => {
 /** A capped CLI run of `harness` (the faux harness on that harness's wire) whose learned workflow's node names `tier`, on a
  *  gateway serving the run's model and `tierEnv`'s: its end, its booked requests (each with its turn's cost) and what the
  *  gateway was asked for. */
-async function tieredRun(t, harness, tier, tiers) {
+async function tieredRun(t, harness, tier, tiers, flow = flowOf(tier)) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-cli-tiers-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -111,7 +120,7 @@ async function tieredRun(t, harness, tier, tiers) {
   });
   // The faux harness reads the turn from the system prompt: the instruction names the learned workflow to run.
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Use the learned workflow answer on What is six times seven.", harness, tools: ["read"], learning: true } });
-  const seed = await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: flowOf(tier) }]);
+  const seed = await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: flow }]);
   // Capped: every request is admitted under the run's one cap, held at its model's price before it leaves.
   const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness, model: MODELS[harness].launch, max_cost_usd: 50, learning: startAt(seed) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
@@ -135,7 +144,7 @@ async function tieredRun(t, harness, tier, tiers) {
   const all = [];
   for (const key of await sessions.keys()) for (const record of await sessions.read(key)) all.push(record);
   const turns = all.filter((record) => record.kind === "runner.turn").map((record) => record.data);
-  const booked = all.filter((record) => record.kind === "runner.request").map(({ data }) => ({ host: data.host, held: data.heldUsd, usd: turns.find((turn) => turn.turn === data.turn)?.usd }));
+  const booked = all.filter((record) => record.kind === "runner.request").map(({ data }) => ({ host: data.host, model: data.model, held: data.heldUsd, usd: turns.find((turn) => turn.turn === data.turn)?.usd }));
   const sent = gw.requests.map((request) => ({ model: request.body?.model, node: (request.body?.tools ?? []).some((tool) => tool?.name === "submit"), asked: request.body?.max_tokens ?? request.body?.max_output_tokens }));
   return { row, booked, sent, own: await pricedOf(models, "default"), tierPriced: await pricedOf(models, tier) };
 }
@@ -179,6 +188,23 @@ for (const harness of ["claude-agent", "codex"]) {
       assert.ok(own.length >= 1 && own.every((one) => one.held < node[0].held / 5), `the harness's own held at the run's price: ${JSON.stringify(own)} vs the node's ${node[0].held}`);
     });
   }
+
+  // The #2408 walk's shape: a fast node, then a node of no tier. The one of no tier runs on the session's model (the run's,
+  // the harness's own: claude-agent's is Anthropic's), never the fast tier's; each node's request booked on its own model.
+  test(`a ${harness} run's learned workflow of a fast node then a node of no tier: the fast one on the host's fast model, the other on the run's own`, { timeout: 60_000 }, async (t) => {
+    const { row, booked, sent, own, tierPriced } = await tieredRun(t, harness, "fast", ["fast"], tierThenUntiered("fast"));
+    assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+    assert.notEqual(tierPriced.model, own.model);
+    const nodeSent = sent.filter((one) => one.node).map((one) => String(one.model));
+    assert.equal(nodeSent.length, 2, `two node requests: ${JSON.stringify(sent)}`);
+    assert.equal(nodeSent[0], tierPriced.model, `the fast node asks for ${tierPriced.model}: ${JSON.stringify(sent)}`);
+    assert.ok(nodeSent[1].endsWith(own.model), `the node of no tier asks for the run's model ${own.model}: ${JSON.stringify(sent)}`);
+    const node = booked.filter((one) => one.host === LEARNED_WORKFLOW_TOOL);
+    assert.equal(node.length, 2, JSON.stringify(booked));
+    assert.ok(String(node[0].model).endsWith(tierPriced.model) && String(node[1].model).endsWith(own.model), `booked under each node's model: ${JSON.stringify(node)}`);
+    assert.ok(near(node[0].usd, tierPriced.usd), `the fast node booked at ${tierPriced.model}'s price: ${node[0].usd} vs ${tierPriced.usd}`);
+    assert.ok(near(node[1].usd, own.usd), `the node of no tier booked at ${own.model}'s price: ${node[1].usd} vs ${own.usd}`);
+  });
 
   test(`a ${harness} run's learned fast node, where the host has no fast model, runs on the session's model at its price`, { timeout: 60_000 }, async (t) => {
     const { row, booked, sent, own } = await tieredRun(t, harness, "fast", []);
