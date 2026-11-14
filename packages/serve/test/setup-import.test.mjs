@@ -12,7 +12,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { MessageChannel } from "node:worker_threads";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { startServe } from "../dist/index.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { listRuns } from "../dist/store-reads/runs.js";
 import { answerStoreCall, importStoreProxy } from "../dist/import-proxy.js";
@@ -20,7 +19,7 @@ import { StoreBusy, StoreConstraint } from "../dist/store/index.js";
 import { launchBody } from "../dist/run-launch.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession } from "./fixtures/import-sessions.mjs";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
-import { call, client, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
+import { call, client, cookieOf, FAUX, scratch, serve, startServe, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const json = { "content-type": "application/json" };
@@ -302,7 +301,7 @@ test("a server that fails to listen takes up no import and starts no count: it h
   assert.ok(existsSync(join(data, ".import-at-setup")), "the yes is kept for a start that listens");
 });
 
-// SKIP (follow-up #2078): under its launcher setup writes a line to stderr (a refused worker or node:sqlite warning)
+// SKIP (follow-up #2432): under its launcher setup writes a line to stderr (a refused worker or node:sqlite warning)
 test.skip("under its launcher (node started from a string), setup counts this machine's sessions and imports them, and the worker prints nothing", { timeout: 90_000 }, async (t) => {
   const root = await scratch(t);
   const home = join(root, "home");
@@ -485,11 +484,12 @@ test("a server stopped while setup still lists a home's session files exits at o
   assert.doesNotMatch(err, /the count of this machine's sessions failed/, "an ended count is no failed one");
 });
 
-// SKIP (follow-up #2078): the store now opens Postgres from AGENTRUN_STORE_URL, so the value the test plants for it as a launcher secret is refused at start
-test.skip("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
+test("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
   // A value of its own for every name the launcher protects (its SECRETS line), each handed over its pipe: no environment
-  // of the server's has one. The seal key is one a server takes: 32 bytes in base64.
-  const names = /^SECRETS='([A-Z0-9_ ]+)'$/m.exec(readFileSync(LAUNCHER, "utf8"))[1].split(" ").filter(Boolean);
+  // of the server's has one. The seal key is one a server takes: 32 bytes in base64. All but the store's URL, which the
+  // server opens its store from (a value that is no store is refused at start): its password's custody is
+  // secret-custody.test.mjs's.
+  const names = /^SECRETS='([A-Z0-9_ ]+)'$/m.exec(readFileSync(LAUNCHER, "utf8"))[1].split(" ").filter((name) => name && name !== "AGENTRUN_STORE_URL");
   const keys = Object.fromEntries(names.map((name) => [name, name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : `not-a-secret-${name.toLowerCase()}-${randomBytes(8).toString("hex")}`]));
   const KEY = Object.values(keys).join(" ");
   const root = await scratch(t);
@@ -535,7 +535,7 @@ test("setup's import cuts the secrets this server made and keeps, pasted into a 
   let firstOpen = true;
   t.after(() => firstOpen && first.close());
   const api = client(first.baseUrl, first.token);
-  const set = await api("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" });
+  const set = await api("PUT", "/settings/webhook", { url: "https://hooks.example/hook" });
   assert.equal(set.status, 201, JSON.stringify(set.body));
   await first.close();
   firstOpen = false;

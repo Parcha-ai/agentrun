@@ -2,7 +2,7 @@ import { observerSnapshot } from "./observer-snapshot.js";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
-import { DECISION_NODE_FIELDS, DECISION_TIMEOUT_MAX_MS, WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, FIELD_TYPES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
+import { DECISION_NODE_FIELDS, DECISION_TIMEOUT_MAX_MS, GUARD_FIELDS, GUARD_SIGNALS, GUARDED_NODE_KINDS, SELF_CONFIDENCE_KINDS, type GuardSignal, WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, FIELD_TYPES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, refusedQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { chargedCost, DecisionProviderError, type CostBasis, type DecisionEvidence, type DecisionProvider } from "./decision-provider.js";
 import { DECISION_ERROR_MAX, DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, DECISION_STATE_MAX_BYTES, type DecisionImageDigest, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
@@ -46,17 +46,32 @@ export type WorkflowThinking = "low" | "medium" | "high";
  *  document and never reads it; it never reaches state, events, prompts or effect identities. */
 export type NodeMetadata = { [key: string]: unknown };
 
+/** A step guard as a document holds it (StepGuard once validateWorkflow accepted it): an object the validator reads field
+ *  by field, so a wrong signal or threshold is refused in words an author can act on, never a schema union's. */
+export type NodeGuard = { [key: string]: unknown };
+/** A logistic fitted on the job's graded runs: p = 1 / (1 + e^-(b + w·x)), x the guard's signals in order ([self], [jev] or
+ *  [self, jev]); `n` the graded runs it was fitted on, `fitted_at` when (ISO 8601). */
+export type GuardFit = { w: number[]; b: number; n: number; fitted_at: string };
+/** The longest question a guard asks Jev, in characters. */
+export const GUARD_QUESTION_MAX = 2_000;
+/** A step guard: after the step ran, the probability it is right (`p`, from its signal, through `fit` when one is stored);
+ *  below `threshold` the run hands the job back (escalates, kind `guard`). `self` reads the step's own confidence (agent,
+ *  decide, judge, pick, sift); `jev` one Jev question over the step's input and output (`question`, or the host's default);
+ *  `both` a fitted logistic over [self, jev], or with no fit the lower of the two. The engine reads its shape and the
+ *  step's own confidence; the host's `guardStep` computes p (it asks Jev). */
+export type StepGuard = { signal: GuardSignal; threshold: number; question?: string; fit?: GuardFit };
+
 export type WorkflowNode =
   | { node: "chain"; steps: WorkflowNode[]; metadata?: NodeMetadata }
-  | { node: "code"; label: string; code: string; as?: string; metadata?: NodeMetadata }
+  | { node: "code"; label: string; code: string; as?: string; guard?: NodeGuard; metadata?: NodeMetadata }
   | { node: "agent"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier;
       /** The most the node asks to spend, in dollars. @exclusiveMinimum 0 */
       budget_usd?: number;
       /** The most turns the node asks its host for, per attempt. The host applies it within its own cap; the engine
        *  enforces nothing. @minimum 1 @TJS-type integer */
-      max_turns?: number; context?: AgentContext; metadata?: NodeMetadata }
-  | { node: "decide"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
-  | { node: "extract"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
+      max_turns?: number; context?: AgentContext; guard?: NodeGuard; metadata?: NodeMetadata }
+  | { node: "decide"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; guard?: NodeGuard; metadata?: NodeMetadata }
+  | { node: "extract"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; guard?: NodeGuard; metadata?: NodeMetadata }
   | { node: "report"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; metadata?: NodeMetadata }
   | ArtifactNode
   | { node: "map"; label: string; itemsPath: string; body: WorkflowNode; as: string; resultPath?: string; maxConcurrency?: number;
@@ -80,17 +95,17 @@ export type WorkflowNode =
  *  workflow state (a whole-string placeholder keeps its type); `out` is a flat schema of enums,
  *  booleans and level-integers — the question set. The schema-valid value lands at `as`, the raw
  *  answers with their confidences at `<as>$answers`. No tools, no turns, one request. */
-export type JudgeNode = { node: "judge"; label: string; state: Record<string, unknown>; out: string; as: string; requires?: string[]; provider?: string; model?: string; evidence?: DecisionEvidenceMode; timeoutMs?: number; images?: DecisionImages; metadata?: NodeMetadata };
+export type JudgeNode = { node: "judge"; label: string; state: Record<string, unknown>; out: string; as: string; requires?: string[]; provider?: string; model?: string; evidence?: DecisionEvidenceMode; timeoutMs?: number; images?: DecisionImages; guard?: NodeGuard; metadata?: NodeMetadata };
 /** One choice whose options are the items of a list. `describe` renders each item as its option
  *  text (`{item.field}`); `allowNone` adds a none-of-these option. The result at `as` is
  *  {index, item, none, option}; confidence is `<as>$answers.confidence.pick` and the
  *  distribution is `<as>$answers.answers.pick.probabilities`. */
-export type PickNode = { node: "pick"; label: string; itemsPath: string; describe: string; instructions: string; state?: Record<string, unknown>; allowNone?: boolean; as: string; requires?: string[]; provider?: string; model?: string; evidence?: DecisionEvidenceMode; timeoutMs?: number; images?: DecisionImages; metadata?: NodeMetadata };
+export type PickNode = { node: "pick"; label: string; itemsPath: string; describe: string; instructions: string; state?: Record<string, unknown>; allowNone?: boolean; as: string; requires?: string[]; provider?: string; model?: string; evidence?: DecisionEvidenceMode; timeoutMs?: number; images?: DecisionImages; guard?: NodeGuard; metadata?: NodeMetadata };
 /** The same question set (`out`, a judge schema) asked of every item of a list in ONE request: item i's
  *  questions are prefixed `i.`; every answer lands in `as.answers[i]` and `as.values[i]`. `keep`
  *  filters: items whose answer at `keep.path` (a question id, or `<id>.confidence`) is at least
  *  `keep.gte` (a boolean question keeps on yes) land in `as.items`, in the original order. */
-export type SiftNode = { node: "sift"; label: string; itemsPath: string; describe?: string; state?: Record<string, unknown>; out: string; as: string; keep?: { path: string; gte?: number }; requires?: string[]; provider?: string; model?: string; evidence?: DecisionEvidenceMode; timeoutMs?: number; images?: DecisionImages; metadata?: NodeMetadata };
+export type SiftNode = { node: "sift"; label: string; itemsPath: string; describe?: string; state?: Record<string, unknown>; out: string; as: string; keep?: { path: string; gte?: number }; requires?: string[]; provider?: string; model?: string; evidence?: DecisionEvidenceMode; timeoutMs?: number; images?: DecisionImages; guard?: NodeGuard; metadata?: NodeMetadata };
 /** Run one of several named branches. Jev chooses it from `instructions` and `state`, or the workflow
  *  already holds the choice as a string at `valuePath` and no model is asked. */
 export type RouteNode = RouteByJudgmentNode | RouteByValueNode;
@@ -109,7 +124,7 @@ export const routesByValue = (node: RouteNode): node is RouteByValueNode => type
  *  state (no parent state leaks in); the child's validated output is checked against the parent's
  *  `out` schema and lands at `as`. The parent owns the terminal: a child never renders a report or
  *  delivers an artifact. Children may otherwise compose all workflow primitives. */
-export type WorkflowInvocation = { node: "workflow"; label: string; workflow: Workflow; input: Record<string, unknown>; out: string; as: string; metadata?: NodeMetadata };
+export type WorkflowInvocation = { node: "workflow"; label: string; workflow: Workflow; input: Record<string, unknown>; out: string; as: string; guard?: NodeGuard; metadata?: NodeMetadata };
 
 /** `exit` is a shell command that ended with a non-zero status: retried only when the author
  *  declared retry, since re-running a command is the author's call. */
@@ -161,13 +176,6 @@ export function desugarWorkflow(workflow: Workflow): Workflow {
   return { ...workflow, root: visit(workflow.root) };
 }
 
-export function terminalArtifactType(workflow: Workflow): string | null {
-  const steps = workflow?.root?.node === "chain" ? (workflow.root as Extract<WorkflowNode, { node: "chain" }>).steps || [] : [workflow?.root];
-  const last = steps[steps.length - 1] as WorkflowNode | undefined;
-  if (!last || last.node !== "artifact") return null;
-  return last.type;
-}
-
 /** A predicate a `call` evaluates against ITS OWN RESULT: paths are result-relative. */
 export type CallPredicate = MechanicalPredicate;
 export type PollClause = { until: CallPredicate; fail_when?: CallPredicate; interval_s: number; deadline_s: number };
@@ -206,6 +214,8 @@ export type CallNode = {
   /** Repeat the call until its result settles (a queued job, an eventually consistent read). */
   poll?: PollClause;
   requires?: string[];
+  /** A step guard (StepGuard): its signal can only be `jev`, a call reports no confidence. */
+  guard?: NodeGuard;
   metadata?: NodeMetadata;
 };
 
@@ -380,6 +390,13 @@ export type WorkflowDeps = {
     /** The images the request carried, by digest (never the bytes), as the host loaded them. */
     images?: DecisionImageDigest[];
   }>;
+  /** The host's step guards (StepGuard), asked after each guarded step ran and before its state is committed: what the
+   *  step saw (`input`), what it wrote (`output`), and its own confidence (`self`: an agent or decide node's submitted
+   *  one, a judge, pick or sift node's weakest answer's; null when the guard reads none or the step reported none). It
+   *  answers the probability the step is right (`p`); below the guard's threshold, or with no p, the run hands the job
+   *  back: it escalates (kind `guard`, stage the step's label) with the step's state. A workflow that holds a guard is
+   *  refused before any node runs on a host without it. */
+  guardStep?: (params: GuardStepParams) => Promise<GuardVerdict>;
   /** Records one typed-question request and what its answers decide. It is awaited before the answers
    *  reach state, an event or a branch, so a durable recorder holds every decision the run acted on; a
    *  rejection fails the node. A request the judge could not answer, or one cancelled in flight, is
@@ -419,6 +436,9 @@ export type WorkflowDeps = {
   sop?: string;
   skill?: string;
   signal?: AbortSignal;
+  /** Called at each node's visit, before it runs (a loop's body each iteration, a map's body for each item): a host that
+   *  bounds the work a run does (a dry run's steps and deadline) counts it here, and throws to stop the run. */
+  onVisit?: (node: WorkflowNode) => void;
   /** Best-effort observation only: thrown errors and rejected promises are ignored.
    * Observers are never awaited. Use required checkpoints for durable lifecycle gates. */
   onEvent?: (event: WorkflowEvent) => void;
@@ -429,6 +449,39 @@ export type WorkflowDeps = {
 };
 
 export type WorkflowEvent = { type: string; label: string; detail?: unknown; executionPath?: string };
+
+/** What a host's `guardStep` is asked with (WorkflowDeps.guardStep). */
+export type GuardStepParams = {
+  label: string;
+  kind: WorkflowNode["node"];
+  guard: StepGuard;
+  /** What the step was asked to do (guardAskOf): without it two steps over the same input that ask for different things
+   *  read the same to Jev. */
+  task: GuardTask;
+  /** What the step saw: its interpolated `state` (or a call's `args`, an executor's `input`, a child's `input`), else the
+   *  workflow's state before it. */
+  input: unknown;
+  /** What the step wrote: the value under its `as` (or its label), or the keys it changed. */
+  output: unknown;
+  /** The step's own confidence in [0, 1], for a guard that reads it; null otherwise or when it reported none. */
+  self: number | null;
+  executionPath: string;
+  item?: MapItem;
+  signal?: AbortSignal;
+};
+/** What a guarded step was asked to do, as its guard is asked about it, its instructions first: an agent, decide, extract
+ *  or pick node's `instructions` (a pick's with whether none may fit); a judge or sift's questions (its `out` compiled,
+ *  each question's type and words, as its judge was asked them); the schema its value meets (an agent, decide or extract
+ *  node's `out`, a call's or a child workflow's); a code node's or an executor's code, a tool call's tool, a shell's
+ *  command, a child's workflow name. */
+export type GuardTask = {
+  instructions?: string; allow_none?: boolean; questions?: Record<string, unknown>; schema?: unknown;
+  code?: string; tool?: string; command?: string; workflow?: string;
+};
+/** A host's guard verdict: `p`, the probability the step is right. */
+export type GuardVerdict = { p: number;
+  /** Jev's answer, for a guard that asked it: what the run record keeps beside p. */
+  jev?: number | null };
 
 type JudgeRequest = Parameters<NonNullable<WorkflowDeps["runJudge"]>>[0];
 type JudgeResult = Awaited<ReturnType<NonNullable<WorkflowDeps["runJudge"]>>>;
@@ -590,45 +643,6 @@ function resultPathMissing(shape: unknown, dotted: string): boolean {
     cursor = cursor[segment];
   }
   return false;
-}
-
-export function parseCsvRows(text: string): string[][] {
-  const rows: string[][] = [];
-  let field = "", row: string[] = [], inQuotes = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (inQuotes) {
-      if (ch === '"' && text[i + 1] === '"') { field += '"'; i += 1; }
-      else if (ch === '"') inQuotes = false;
-      else field += ch;
-    } else if (ch === '"') inQuotes = true;
-    else if (ch === ",") { row.push(field); field = ""; }
-    else if (ch === "\n" || ch === "\r") {
-      if (ch === "\r" && text[i + 1] === "\n") i += 1;
-      row.push(field); field = "";
-      if (row.some((c) => c.trim() !== "")) rows.push(row);
-      row = [];
-    } else field += ch;
-  }
-  if (field !== "" || row.length) { row.push(field); if (row.some((c) => c.trim() !== "")) rows.push(row); }
-  return rows;
-}
-
-export function buildReferenceContext(files: Record<string, string>): { references: Record<string, string>; references_parsed: Record<string, { header: string[]; rows: string[][] }> } {
-  // Null prototypes: reference filenames are external data. On a plain object a name like
-  // "__proto__" hits the prototype SETTER on assignment — the file silently vanishes from
-  // the map (and worse shapes pollute it). A null-prototype object stores it as an ordinary
-  // own key, so every filename round-trips.
-  const references: Record<string, string> = Object.create(null);
-  const referencesParsed: Record<string, { header: string[]; rows: string[][] }> = Object.create(null);
-  for (const [name, body] of Object.entries(files)) {
-    references[name] = body;
-    if (name.toLowerCase().endsWith(".csv")) {
-      const rows = parseCsvRows(body);
-      if (rows.length) referencesParsed[name] = { header: rows[0], rows: rows.slice(1) };
-    }
-  }
-  return { references, references_parsed: referencesParsed };
 }
 
 /** Whether a field's schema lists the value itself: its own `const`, or a member of its own `enum`, or the same in the
@@ -1073,14 +1087,55 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
     if (name === "not") return checkPredicate((pred as { of: unknown }).of, label, path, `${field}.of`, "not");
     return true;
   };
+  /** A node's step guard (StepGuard), field by field, in words an author can act on: where it may sit, its signal (and
+   *  whether the node reports the confidence `self` reads), its threshold, its question and its fit. */
+  const checkGuard = (node: any, path: string): void => {
+    if (node.guard === undefined) return;
+    const at = `${path} (${node.label || node.node}): guard`;
+    const bad = (message: string) => fail("NODE_FIELD_INVALID", ptrOf(path), `${at}${message}`);
+    if (!(GUARDED_NODE_KINDS as readonly string[]).includes(node.node)) {
+      fail("NODE_KEY_UNKNOWN", ptrOf(path), `${at}: a guard sits on a step that writes a value (${GUARDED_NODE_KINDS.join(", ")}); a ${node.node} node takes none`);
+      return;
+    }
+    const guard = node.guard;
+    if (!guard || typeof guard !== "object" || Array.isArray(guard)) { bad(` must be an object: {"signal": "self" | "jev" | "both", "threshold": a number between 0 and 1, "question"?: text, "fit"?: {...}}`); return; }
+    const extra = Object.keys(guard).filter((key) => !(GUARD_FIELDS as readonly string[]).includes(key));
+    if (extra.length) bad(`: unknown key(s) ${extra.join(", ")}; a guard takes ${GUARD_FIELDS.join(", ")}`);
+    const signal = guard.signal;
+    const known = (GUARD_SIGNALS as readonly unknown[]).includes(signal);
+    if (!known) bad(`.signal must be "self", "jev" or "both" (got ${JSON.stringify(signal) ?? "none"})`);
+    else if (signal !== "jev" && !(SELF_CONFIDENCE_KINDS as readonly string[]).includes(node.node)) bad(`.signal "${signal}" reads the step's own confidence, which a ${node.node} node does not report (only ${SELF_CONFIDENCE_KINDS.join(", ")} nodes do); use "jev"`);
+    else if (signal !== "jev" && (node.node === "agent" || node.node === "decide") && typeof node.out === "string" && Object.hasOwn(workflow.schemas ?? {}, node.out)) {
+      const out = resolveSchemaForWorkflow(workflow, workflow.schemas[node.out]);
+      if (!confidenceChannelOf(out)) bad(`.signal "${signal}" has the node submit its confidence beside its record, so its out schema "${node.out}" must be an object schema`);
+    }
+    const threshold = guard.threshold;
+    if (!(typeof threshold === "number" && Number.isFinite(threshold) && threshold > 0 && threshold < 1)) bad(`.threshold must be a number between 0 and 1, exclusive: the chance the step is right below which the run hands the job back (got ${JSON.stringify(threshold) ?? "none"})`);
+    if (guard.question !== undefined) {
+      if (typeof guard.question !== "string" || !guard.question.trim()) bad(`.question must be non-empty text: the yes/no question Jev is asked about the step's input and output`);
+      else if (signal === "self") bad(`.question is Jev's; a "self" guard asks Jev nothing. Use "jev" or "both", or leave question out`);
+      else if (guard.question.length > GUARD_QUESTION_MAX) bad(`.question is ${guard.question.length} characters; at most ${GUARD_QUESTION_MAX}`);
+    }
+    if (guard.fit !== undefined) {
+      const fit = guard.fit;
+      const width = signal === "both" ? 2 : 1;
+      const finite = (n: unknown) => typeof n === "number" && Number.isFinite(n);
+      const ok = fit && typeof fit === "object" && !Array.isArray(fit) && Array.isArray(fit.w) && fit.w.length === width && fit.w.every(finite) && finite(fit.b)
+        && Number.isSafeInteger(fit.n) && fit.n >= 1 && typeof fit.fitted_at === "string" && !Number.isNaN(Date.parse(fit.fitted_at))
+        && Object.keys(fit).every((key) => ["w", "b", "n", "fitted_at"].includes(key));
+      if (!ok) bad(`.fit must be {"w": [${known ? (width === 2 ? "w_self, w_jev" : `w_${signal}`) : "one weight per signal"}], "b": a number, "n": the graded runs it was fitted on (an integer of at least 1), "fitted_at": an ISO 8601 time}`);
+    }
+  };
   const walk = (node: WorkflowNode, path: string, ptr: string): void => {
     // A node that is missing (a map or loop without a body) is reported on the node that should hold it.
     pointers.set(path, node === undefined ? ptr.slice(0, ptr.lastIndexOf("/")) : ptr);
     if (!node || typeof node !== "object" || !KINDS.has((node as any).node)) { fail("NODE_KIND_UNKNOWN", ptrOf(path), `${path}: unknown node kind "${(node as any)?.node}"`); return; }
     {
       const allowed = KIND_KEYS[(node as any).node];
-      const extraneous = Object.keys(node).filter((key) => !allowed.has(key));
+      // A guard is checked on its own (checkGuard), with its own words where it may not sit.
+      const extraneous = Object.keys(node).filter((key) => !allowed.has(key) && key !== "guard");
       if (extraneous.length) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): unknown key(s) for a ${(node as any).node} node: ${extraneous.join(", ")}`);
+      checkGuard(node, path);
       // State keys that hold a `$` are engine-owned (`$host`, and a typed question's `<as>$answers` and `<as>$verify`): no node
       // may write one, wherever the `$` is. A label is the state key whenever `as` is omitted, so labels are held to the same rule.
       if (typeof (node as any).as === "string" && holdsDollar((node as any).as)) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): "as" must not name an engine-owned "$" state key ("${(node as any).as}")`);
@@ -2364,6 +2419,16 @@ async function runJudgeNode(node: JudgeNode, state: Record<string, unknown>, wor
   return { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar };
 }
 
+/** What a pick's judge is asked about `items`: each candidate described (`item_<i>`), beside its interpolated `state` (else
+ *  the workflow's state as context). Its guard is asked about the same (guardInputOf). */
+function pickAskOf(node: PickNode, state: Record<string, unknown>, items: readonly unknown[], workflow?: Workflow): { options: Record<string, string>; asked: Record<string, unknown> } {
+  const options: Record<string, string> = Object.fromEntries(items.map((item, i) => [`item_${i}`, describeItem(node.describe, state, item, i) || `item ${i}`]));
+  return { options, asked: { ...(node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : { context: promptStateOf(state, workflow) }), candidates: options } };
+}
+/** The items a sift's judge is asked about, by id (`item_<i>`), each with its description when the sift has one. */
+const siftItemsOf = (node: SiftNode, state: Record<string, unknown>, items: readonly unknown[]) =>
+  items.map((item, i) => ({ id: `item_${i}`, ...(node.describe ? { summary: describeItem(node.describe, state, item, i) } : {}), item }));
+
 async function runPickNode(node: PickNode, state: Record<string, unknown>, deps: WorkflowDeps, workflow?: Workflow): Promise<Record<string, unknown>> {
   assertNodeInputs(node, state);
   const items = getPath(state, node.itemsPath);
@@ -2377,9 +2442,8 @@ async function runPickNode(node: PickNode, state: Record<string, unknown>, deps:
   }
   const capacity = SYSTEM_ONE_LIMITS.maxChoiceOptions - (node.allowNone ? 1 : 0);
   if (items.length > capacity) throw new Error(`pick node "${node.label}": ${items.length} items exceed the ${capacity} a choice can hold — sift first`);
-  const options: Record<string, string> = Object.fromEntries(items.map((item, i) => [`item_${i}`, describeItem(node.describe, state, item, i) || `item ${i}`]));
+  const { options, asked } = pickAskOf(node, state, items, workflow);
   const criteria: Record<string, string | null> = node.allowNone ? { ...options, [NONE]: "none of the items fits" } : options;
-  const asked = { ...(node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : { context: promptStateOf(state, workflow) }), candidates: options };
   const decided = await decide(deps, { workflowState: state, decision: decisionOf(node), images: resolveImages(node.images, state, node.label), nodeKind: "pick", kind: "pick", judgeKind: "pick", label: node.label, state: asked, questions: { pick: { type: "choice", instructions: node.instructions, criteria } } }, (answers) => {
     const a = answers.pick;
     if (!a || a.type !== "choice") throw new Error(`pick node "${node.label}": no choice came back`);
@@ -2407,7 +2471,7 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
   if (items.length) {
     const base = node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : {};
     const images = resolveImages(node.images, state, node.label);
-    const named = items.map((item, i) => ({ id: `item_${i}`, ...(node.describe ? { summary: describeItem(node.describe, state, item, i) } : {}), item }));
+    const named = siftItemsOf(node, state, items);
     const chunks = siftChunks(deps, node.label, ids.length, base, named);
     const measure = keepTail === "confidence" ? "confidence" as const : "value" as const;
     // The keep rule, as applied and as a receipt states it: the author's threshold, else 0.5 for a yes/no
@@ -2606,6 +2670,7 @@ function scopeDepsToChild(deps: WorkflowDeps, invocation: WorkflowInvocation): W
     ...(deps.runNode ? { runNode: params => deps.runNode!({ ...params, label: `${prefix}/${params.label}` }) } : {}),
     ...(deps.runEffect ? { runEffect: params => deps.runEffect!({ ...params, node: relabel(params.node) }) } : {}),
     ...(deps.runJudge ? { runJudge: params => deps.runJudge!({ ...params, label: `${prefix}/${params.label}` }) } : {}),
+    ...(deps.guardStep ? { guardStep: params => deps.guardStep!({ ...params, label: `${prefix}/${params.label}` }) } : {}),
     ...(deps.recordDecision ? { recordDecision: (receipt, exchange) => deps.recordDecision!({ ...receipt, node: `${prefix}/${receipt.node}` }, { ...exchange, request: { ...exchange.request, label: `${prefix}/${exchange.request.label}` } }) } : {}),
     ...(deps.runCode ? { runCode: (node, state, ctx) => deps.runCode!(relabel(node), state, { ...ctx, label: `${prefix}/${ctx.label}` }) } : {}),
     ...(recovery ? { recovery: {
@@ -2624,6 +2689,165 @@ function scopeDepsToChild(deps: WorkflowDeps, invocation: WorkflowInvocation): W
 }
 
 const STEP_KINDS: ReadonlySet<string> = new Set(["agent", "decide", "extract", "report", "code", "call", "artifact", "workflow", "judge", "pick", "sift"]);
+
+/** A node's step guard, as the document holds it (validateWorkflow refused any other shape). */
+export function stepGuardOf(node: WorkflowNode): StepGuard | undefined {
+  const guard = (node as { guard?: unknown }).guard;
+  return guard && typeof guard === "object" && !Array.isArray(guard) ? guard as StepGuard : undefined;
+}
+/** Whether a guard reads the step's own confidence. */
+const readsSelf = (guard: StepGuard): boolean => guard.signal === "self" || guard.signal === "both";
+/** The field an agent or decide node whose guard reads `self` submits its confidence in, beside its record. */
+export const SELF_CONFIDENCE_FIELD = "confidence";
+/** What the model is told the field holds. */
+const SELF_CONFIDENCE_WORDS = "How sure you are that this submission is right for this input, from 0 (a guess) to 1 (certain): the probability it is correct.";
+/** The engine-owned state key an agent or decide node's own confidence lands under, beside its value: `<key>$confidence`. */
+export const confidenceKey = (key: string): string => `${key}$confidence`;
+/** The state key a step writes its value under: its `as`, or an unaliased agent, decide, extract or code node's label. */
+const writeKeyOf = (node: WorkflowNode): string | undefined => {
+  const { as, label } = node as { as?: unknown; label?: unknown };
+  if (typeof as === "string" && as) return as;
+  return ["agent", "decide", "extract", "code"].includes(node.node) && typeof label === "string" ? label : undefined;
+};
+/** An object out schema the confidence field can sit beside, widened with it (required), or as it is when it declares the
+ *  field itself (then the node's own field is its confidence, kept in its value); undefined for a schema that is no object. */
+function confidenceChannelOf(schema: Record<string, unknown>): { schema: Record<string, unknown>; declared: boolean } | undefined {
+  const properties = schema.properties;
+  if (schema.type !== "object" && (!properties || typeof properties !== "object")) return undefined;
+  if (declaresConfidence(schema)) return { schema, declared: true };
+  const field = { type: "number", minimum: 0, maximum: 1, description: SELF_CONFIDENCE_WORDS };
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  const widened = withConfidenceInMembers(schema, field);
+  return {
+    schema: { ...widened, properties: { ...(properties as Record<string, unknown> ?? {}), [SELF_CONFIDENCE_FIELD]: field }, required: [...required, SELF_CONFIDENCE_FIELD] },
+    declared: false,
+  };
+}
+const COMPOSED = ["allOf", "anyOf", "oneOf"] as const;
+const membersOf = (schema: Record<string, unknown>): Record<string, unknown>[] =>
+  COMPOSED.flatMap((key) => (Array.isArray(schema[key]) ? (schema[key] as unknown[]) : [])).filter((m): m is Record<string, unknown> => Boolean(m) && typeof m === "object" && !Array.isArray(m));
+/** Whether the schema, or a member of its allOf / anyOf / oneOf (at any depth), declares the confidence field itself. */
+function declaresConfidence(schema: Record<string, unknown>): boolean {
+  const properties = schema.properties;
+  if (properties && typeof properties === "object" && Object.hasOwn(properties, SELF_CONFIDENCE_FIELD)) return true;
+  return membersOf(schema).some(declaresConfidence);
+}
+/** The schema with the confidence field allowed in every allOf / anyOf / oneOf member (at any depth): a member that is
+ *  closed (`additionalProperties` or `unevaluatedProperties` other than true) would otherwise refuse the field the root
+ *  requires, and every submission with it. The field is never required in a member; the root requires it. */
+function withConfidenceInMembers(schema: Record<string, unknown>, field: Record<string, unknown>): Record<string, unknown> {
+  let out = schema;
+  for (const key of COMPOSED) {
+    const members = schema[key];
+    if (!Array.isArray(members)) continue;
+    out = { ...out, [key]: members.map((member) => {
+      if (!member || typeof member !== "object" || Array.isArray(member)) return member;
+      const inner = withConfidenceInMembers(member as Record<string, unknown>, field);
+      const own = inner.properties && typeof inner.properties === "object" ? inner.properties as Record<string, unknown> : {};
+      return { ...inner, properties: { ...own, [SELF_CONFIDENCE_FIELD]: field } };
+    }) };
+  }
+  return out;
+}
+/** A confidence as a guard reads it: a number in [0, 1], else none. */
+const confidenceOf = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null);
+/** The step's own confidence from its state once it ran: an agent or decide node's `<key>$confidence`, a judge or pick
+ *  node's weakest answer's (`<as>$answers.min_confidence`), a sift's weakest over every item's answers (`<as>.answers[i]`,
+ *  none when it was asked about no item, or one item's is missing). */
+function selfConfidenceOf(node: WorkflowNode, out: Record<string, unknown>): number | null {
+  const key = writeKeyOf(node);
+  if (!key) return null;
+  if (node.node === "agent" || node.node === "decide") return confidenceOf(out[confidenceKey(key)]);
+  if (node.node === "sift") {
+    const answers = (out[key] as { answers?: unknown } | undefined)?.answers;
+    if (!Array.isArray(answers) || !answers.length) return null;
+    // A loop, not Math.min(...each): a sift may hold more items than a call takes arguments.
+    let weakest = 1;
+    for (const sidecar of answers) {
+      const confidence = confidenceOf((sidecar as { min_confidence?: unknown } | null)?.min_confidence);
+      if (confidence === null) return null;
+      if (confidence < weakest) weakest = confidence;
+    }
+    return weakest;
+  }
+  return confidenceOf((out[`${key}$answers`] as { min_confidence?: unknown } | undefined)?.min_confidence);
+}
+/** What a guarded step is asked about, for every node kind in one place: what it was asked to do (guardTaskOf), what it
+ *  saw (guardInputOf) and what it wrote (guardOutputOf). */
+function guardAskOf(node: WorkflowNode, before: Record<string, unknown>, after: Record<string, unknown>, workflow: Workflow): Pick<GuardStepParams, "task" | "input" | "output"> {
+  return { task: guardTaskOf(node, workflow), input: guardInputOf(node, before, workflow), output: guardOutputOf(node, before, after) };
+}
+/** What a step was asked to do (GuardTask). The step ran, so its schemas resolve and its questions compile; should one
+ *  not, the schema as the document holds it stands in. */
+function guardTaskOf(node: WorkflowNode, workflow: Workflow): GuardTask {
+  const schemaOf = (id: unknown): { schema?: unknown } => {
+    if (typeof id !== "string" || !Object.hasOwn(workflow.schemas, id)) return {};
+    try { return { schema: resolveSchemaForWorkflow(workflow, workflow.schemas[id]) }; } catch { return { schema: workflow.schemas[id] }; }
+  };
+  switch (node.node) {
+    case "agent": case "decide": case "extract": return { instructions: node.instructions, ...schemaOf(node.out) };
+    case "pick": return { instructions: node.instructions, allow_none: node.allowNone === true };
+    case "judge": case "sift":
+      try { return { questions: questionSetOf(workflow, node).questions }; } catch { return schemaOf(node.out); }
+    case "code": return { code: node.code };
+    case "call": {
+      const what = node.via === "tool" ? { tool: node.tool } : node.via === "executor" ? { code: node.code } : { command: node.command };
+      return { ...what, ...(node.via === "shell" ? {} : schemaOf(node.out)) };
+    }
+    case "workflow": return { workflow: node.workflow?.name, ...schemaOf(node.out) };
+    default: return {};
+  }
+}
+/** What a step saw, as its guard is asked about it: its interpolated `state`, a call's `args` (or an executor's `input`, a
+ *  shell's `env`), a child's `input`; a pick's, what its judge chose among (its state, the candidates); a sift's, its
+ *  state and the items its judge was asked about; else the workflow's state before it, as a generative node with no
+ *  `state` sees it. */
+function guardInputOf(node: WorkflowNode, state: Record<string, unknown>, workflow: Workflow): unknown {
+  try {
+    if (node.node === "call") return interpolateValue(node.via === "tool" ? node.args ?? {} : node.via === "executor" ? node.input ?? {} : node.env ?? {}, state, node.label);
+    if (node.node === "workflow") return interpolateValue(node.input, state, node.label);
+    if (node.node === "pick" || node.node === "sift") {
+      const items = getPath(state, node.itemsPath);
+      const list = Array.isArray(items) ? items : [];
+      if (node.node === "pick") return pickAskOf(node, state, list, workflow).asked;
+      return { ...(node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : {}), items: siftItemsOf(node, state, list) };
+    }
+    const own = (node as { state?: unknown }).state;
+    if (own && typeof own === "object") return interpolateValue(own, state, (node as { label: string }).label);
+  } catch { /* The step ran on it, so it resolves; should it not, the state it ran on stands in. */ }
+  return promptStateOf(state, workflow);
+}
+/** What a code node returned, by the state it produced: a code node with no `as` merges an object it returns, so its
+ *  write key alone cannot say what it wrote. */
+const codeWrote = new WeakMap<Record<string, unknown>, { value: unknown }>();
+/** What a step wrote, even when it equals what was there before: what a code node returned, else the value under its
+ *  write key, else the keys it changed (none engine-owned). */
+function guardOutputOf(node: WorkflowNode, before: Record<string, unknown>, after: Record<string, unknown>): unknown {
+  const returned = node.node === "code" ? codeWrote.get(after) : undefined;
+  if (returned) return returned.value;
+  const key = writeKeyOf(node);
+  if (key && Object.hasOwn(after, key)) return after[key];
+  return Object.fromEntries(Object.entries(after).filter(([name, value]) => !holdsDollar(name) && before[name] !== value));
+}
+/** A guarded step's check, once it ran: the host's guardStep gives p, and p below the guard's threshold (or no p at all)
+ *  hands the job back, an escalation of kind `guard` at the step, with the state it reached. Every check is an event
+ *  (`guard.evaluated`: signal, threshold, p, self, jev, escalated). */
+async function checkStepGuard(node: WorkflowNode, guard: StepGuard, before: Record<string, unknown>, after: Record<string, unknown>, workflow: Workflow, deps: WorkflowDeps): Promise<void> {
+  const label = (node as { label: string }).label;
+  if (!deps.guardStep) throw new Error(`${node.node} node "${label}" requires guardStep`);
+  const self = readsSelf(guard) ? selfConfidenceOf(node, after) : null;
+  const item = (deps as LocatedDeps)[MAP_ITEM];
+  const verdict = await deps.guardStep({ label, kind: node.node, guard, ...guardAskOf(node, before, after, workflow), self, executionPath: executionPath(deps), ...(item ? { item } : {}), ...(deps.signal ? { signal: deps.signal } : {}) });
+  const p = typeof verdict?.p === "number" && Number.isFinite(verdict.p) ? Math.min(1, Math.max(0, verdict.p)) : null;
+  const jev = typeof verdict?.jev === "number" && Number.isFinite(verdict.jev) ? verdict.jev : null;
+  // No p is no evidence the step is right: it hands back, never passes.
+  const escalated = p === null || p < guard.threshold;
+  deps.onEvent?.({ type: "guard.evaluated", label, detail: { kind: node.node, signal: guard.signal, threshold: guard.threshold, p, self, jev, escalated } });
+  if (!escalated) return;
+  const said = (n: number | null) => (n === null ? "none" : n.toFixed(2));
+  const why = guard.signal === "self" ? `its own confidence ${said(self)}` : guard.signal === "jev" ? `Jev's ${said(jev)}` : `its own confidence ${said(self)} and Jev's ${said(jev)}`;
+  throw new EscalationSignal({ kind: "guard", stage: label, summary: `its guard put the chance this step is right at ${said(p)} (${why}), under its threshold ${guard.threshold}`, state: after, label, executionPath: executionPath(deps) });
+}
 const CHECKPOINTED_STRUCTURE_KINDS: ReadonlySet<string> = new Set(["map", "parallel", "loop", "route"]);
 
 const guardedObservers = new WeakSet<NonNullable<WorkflowDeps["onEvent"]>>();
@@ -2635,6 +2859,7 @@ function forwardObserver(observer: NonNullable<WorkflowDeps["onEvent"]>, transfo
 }
 
 async function runNodeOnState(node: WorkflowNode, state: Record<string, unknown>, workflow: Workflow, deps: WorkflowDeps): Promise<Record<string, unknown>> {
+  deps.onVisit?.(node);
   deps = withExecutionLocation(deps);
   const observer = deps.onEvent;
   if (observer && !guardedObservers.has(observer)) {
@@ -2670,6 +2895,9 @@ async function runNodeOnState(node: WorkflowNode, state: Record<string, unknown>
     if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
     let out = await runNodeBody(node, state, workflow, deps);
     if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
+    // A guarded step's check, before anything of it is committed: one that hands back is never resumed as done.
+    const guard = isStep ? stepGuardOf(node) : undefined;
+    if (guard) await checkStepGuard(node, guard, state, out, workflow, deps);
     // Host policy enrichment lands before commit and checkpoint: a resumed run sees exactly what ran.
     if (isStep && deps.hostPolicy?.afterNode) {
       const patch = deps.hostPolicy.afterNode({ ...hostContext(workflow, node, deps), state: out });
@@ -2742,7 +2970,9 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       const patch = node.as ? { [node.as]: out } : (out && typeof out === "object" && !Array.isArray(out) ? out as Record<string, unknown> : { [node.label]: out });
       if (Object.prototype.hasOwnProperty.call(patch, HOST_STATE_KEY)) throw new WorkflowStateError(`code node "${node.label}" wrote the reserved "${HOST_STATE_KEY}" state key`, node.label, HOST_STATE_KEY, "reserved_state_key");
       deps.onEvent?.({ type: "code.patch", label: node.label, detail: patch });
-      return { ...state, ...patch };
+      const next = { ...state, ...patch };
+      codeWrote.set(next, { value: out });
+      return next;
     }
     case "agent":
     case "decide":
@@ -2760,13 +2990,27 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       // channels); the decoded domain value is what the stage schema, the verifier and the state see.
       const policy = deps.hostPolicy;
       const context = policy ? hostContext(workflow, node, deps) : null;
-      const transportSchema = policy?.submissionSchema && context ? policy.submissionSchema(schema, context) : schema;
+      const hostSchema = policy?.submissionSchema && context ? policy.submissionSchema(schema, context) : schema;
+      // A guard that reads the node's own confidence (agent, decide): the node submits it beside its record, in the field
+      // SELF_CONFIDENCE_FIELD, split off before the stage schema sees the value (unless the stage schema declares it), and
+      // kept at `<key>$confidence`.
+      const guard = node.node === "agent" || node.node === "decide" ? stepGuardOf(node) : undefined;
+      const channel = guard && readsSelf(guard) ? confidenceChannelOf(hostSchema) : undefined;
+      const transportSchema = channel ? channel.schema : hostSchema;
       const transportValidator = transportSchema === schema ? validator : Compile(transportSchema as never);
       const stageName = node.node === "report" ? "report" : node.out;
+      let confidence: number | null = null;
       const decode = (raw: unknown): { value: unknown; host?: Record<string, unknown> } => {
         normalizeStringNullsForSchema(raw, transportSchema as Record<string, unknown>);
         if (!transportValidator.Check(raw)) {
           throw new WorkflowOutputInvalidError(`${node.node} node "${node.label}" submission does not satisfy schema "${stageName}"`, schemaProblems(transportValidator, raw), node.label);
+        }
+        if (channel && raw && typeof raw === "object" && !Array.isArray(raw)) {
+          confidence = confidenceOf((raw as Record<string, unknown>)[SELF_CONFIDENCE_FIELD]);
+          if (!channel.declared) {
+            const { [SELF_CONFIDENCE_FIELD]: _confidence, ...rest } = raw as Record<string, unknown>;
+            raw = rest;
+          }
         }
         const decoded = policy?.decodeSubmission && context ? policy.decodeSubmission(raw, { ...context, host: hostStateOf(state) }) : { value: raw };
         if (decoded !== null && typeof decoded === "object" && decoded.value !== raw) normalizeStringNullsForSchema(decoded.value, schema as Record<string, unknown>);
@@ -2810,6 +3054,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       const verified = verifier ? await verifier.finish(result) : null;
       let merged = mergeStageDelta(state, node, verified ? verified.submission : result, stageSchema);
       if (verified) merged = { ...merged, [`${("as" in node && node.as) || node.label}$verify`]: verified.record };
+      if (channel) merged = { ...merged, [confidenceKey(writeKeyOf(node)!)]: confidence };
       const hostState = decoded.host && typeof decoded.host === "object" && !Array.isArray(decoded.host) ? decoded.host : null;
       if (hostState && Object.keys(hostState).length) {
         deps.onEvent?.({ type: "host.decoded", label: node.label, detail: { keys: Object.keys(hostState) } });
@@ -3131,6 +3376,8 @@ function checkDecisionProviders(node: WorkflowNode, deps: WorkflowDeps, workflow
   if (node.node === "sift") asked.push({ choice: node, types: questionsOf(node.out), count: null, what: `sift node "${label}"` });
   if (node.node === "pick") asked.push({ choice: node, types: ["choice"], count: 1, what: `pick node "${label}"` });
   if (node.node === "route" && !routesByValue(node)) asked.push({ choice: node as RouteByJudgmentNode, types: ["choice"], count: 1, what: `route node "${label}"` });
+  // A node's `verify` is asked of the host's default decision provider (no provider of its own): a host without it refuses the node.
+  if ("verify" in node && node.verify) { const types = questionsOf(node.verify.out); asked.push({ choice: {} as DecisionChoice, types, count: types.length, what: `${node.node} node "${label}" (verify)` }); }
   for (const pred of [node.node === "loop" ? node.until : undefined, node.node === "escalate" ? node.when : undefined]) {
     if ((pred as AskPredicate | undefined)?.predicate === "ask") asked.push({ choice: pred as AskPredicate, types: ["noul"], count: 1, what: `${node.node} node "${label}" (ask predicate)` });
   }
@@ -3170,6 +3417,7 @@ export function assertWorkflowCapabilities(node: WorkflowNode, deps: WorkflowDep
   if ((["judge", "pick", "sift"].includes(node.node) || node.node === "route" && !routesByValue(node) || "verify" in node && node.verify ||
       node.node === "loop" && (node.until as AskPredicate)?.predicate === "ask" ||
       node.node === "escalate" && (node.when as AskPredicate)?.predicate === "ask") && !deps.runJudge) missing("runJudge");
+  if (stepGuardOf(node) && !deps.guardStep) missing("guardStep");
   checkDecisionProviders(node, deps, workflow);
   // A store that cannot commit an item's failure would run the item again in the next process.
   if (node.node === "map" && node.onItemFailure === "collect" && deps.recovery && !(deps.recovery.failItem && deps.recovery.itemFailure)) missing("recovery.failItem and recovery.itemFailure");

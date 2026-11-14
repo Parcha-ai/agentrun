@@ -16,7 +16,7 @@ import * as faux from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import fakeVendors, { calls as vendorCalls } from "./fixtures/faux-vendor-api.mjs";
 import { storeOn } from "./store-helpers.mjs";
-import { withEnv } from "./support.mjs";
+import { toolLedger, withEnv } from "./support.mjs";
 
 const signIns = await import("../dist/sign-ins-store.js");
 const tools = await import("../dist/tools.js");
@@ -52,7 +52,7 @@ async function runner(t) {
     const root = join(s.dir, "runs", run);
     mkdirSync(join(root, "work"), { recursive: true });
     const env = { [FAUX_ENV]: "faux", [tools.FAUX_BROWSER_ENV]: FAUX_BROWSER, [tools.FAUX_VENDOR_API_ENV]: FAUX_VENDORS, [TOOL_PLANE_ENV]: JSON.stringify({ browser: vendor }), ...keysOf(run) };
-    return { where: { root, work: join(root, "work"), ref: { id: run } }, env, install() {}, onConversation() {}, beforeResume() {}, beforeRelease() {}, handoverInJournal: true, store: s.store, claim: claims[run], sealKey: KEY, ...more };
+    return { where: { root, work: join(root, "work"), ref: { id: run } }, env, install() {}, onConversation() {}, beforeResume() {}, beforeRelease() {}, store: s.store, claim: claims[run], sealKey: KEY, ...more };
   };
   const saved = async (agent, vendor) => {
     const row = await s.store.signIns.get(`agent-${agent}`, vendor);
@@ -223,7 +223,8 @@ test("the made sign-in's sessions open on its profile with save on, and their re
   const r = await runner(t);
   const lifecycle = hostLifecycle();
   const registry = createRegistry();
-  const host = r.hostOf("run-c", "browserbase", { install: (extension) => registry.install(extension), ...lifecycle.register });
+  // On the run's one ledger (host.ledger, as the runner hands it): a browser call with none is refused unsent.
+  const host = r.hostOf("run-c", "browserbase", { install: (extension) => registry.install(extension), ...lifecycle.register, ledger: { paid: await toolLedger() } });
   const binding = await tools.TOOLS.browser.bind(host);
   const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
   model.setResponses(Array.from({ length: 4 }, () => (context) => (context.messages.some((m) => m.role === "toolResult") ? faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" }) : faux.fauxAssistantMessage([faux.fauxToolCall("snapshot", {})], { stopReason: "toolUse" }))));
@@ -234,7 +235,8 @@ test("the made sign-in's sessions open on its profile with save on, and their re
   const conversation = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, tools: binding.tools }, init: async (tx, id) => { for (const write of lifecycle.onConversation) await write(tx, Number(id)); } });
   for (const settle of lifecycle.beforeResume) await settle(harness);
   await (await conversation.submit({ type: "input", content: "Browse." }, ctx)).wait(ctx);
-  assert.deepEqual(r.lines("profile").map(({ name, save }) => ({ name, save })), [{ name: "default", save: true }], "its session opened on the profile, saving");
+  const [handed] = r.lines("sign-in");
+  assert.deepEqual(r.lines("profile").map(({ pointer, save }) => ({ pointer, save })), [{ pointer: handed.ref, save: true }], "its session opened on the agent's sign-in, saving");
   for (const stop of lifecycle.beforeRelease) await stop(harness);
   assert.ok((await signIns.signInViews(r.store, KEY, "agent-c"))[0]?.verified_at, "its release verified the sign-in");
 });

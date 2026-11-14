@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AgentEditor, type EditorCaps, type Revision } from "@/components/AgentEditor";
 import { agentHash } from "@/components/AgentPage";
 import { AgentsList } from "@/components/AgentsList";
+import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
 import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
@@ -26,6 +27,7 @@ export function AgentsPage({ v2, archived, go }: { v2: Client; archived: boolean
   useEffect(load, [v2, archived]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <AgentsList agents={agents} archived={archived} onArchivedChange={(on) => go(on ? "#/agents?archived=true" : "#/agents")} error={error}
+      handoff={<CodingAgentHandoff context={{ kind: "create" }} label="Build with your coding agent" size="lg" iconOnPhone className="max-sm:w-11" />}
       actions={{
         onOpen: (id) => go(agentHash(id)),
         onEdit: (id) => go(agentHash(id, "edit")),
@@ -48,6 +50,10 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
   const [version, setVersion] = useState(0);
   // The revision the form was loaded from: an action that finds another current revision reloads the form with it.
   const [formRevision, setFormRevision] = useState<string | null>(null);
+  // Whether this page is still shown: a save's answer that lands after the person left it moves nowhere.
+  const shown = useRef(true);
+  // Set in the setup too: StrictMode (main.tsx) sets an effect up, cleans it up and sets it up again.
+  useEffect(() => { shown.current = true; return () => { shown.current = false; }; }, []);
   const revisionsOf = (id: string) => allPages((cursor) => v2.listRevisions(id, cursor), (p) => p.revisions);
   const load = async () => {
     if (!agentId) return;
@@ -85,8 +91,7 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
     if (!caps.mcp) return;
     const n = ++mcpAsked.current;
     setMcpServers(null);
-    // A list that says its file can't be read is a failed read, never an empty one: its grants are not "deleted".
-    v2.listMcpServers().then((r) => { if (n === mcpAsked.current) setMcpServers(r.file_unreadable ? "failed" : r.servers); }, () => { if (n === mcpAsked.current) setMcpServers("failed"); });
+    v2.listMcpServers().then((r) => { if (n === mcpAsked.current) setMcpServers(r.servers); }, () => { if (n === mcpAsked.current) setMcpServers("failed"); });
   };
   useEffect(loadMcp, [v2, caps.mcp]); // eslint-disable-line react-hooks/exhaustive-deps
   // An action (archive, make current): its write and the page's refresh after it fail apart, so a committed write never
@@ -107,10 +112,10 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
       } else setNotice(null);
     } catch (e) { setNotice(`${what} done. The page could not be refreshed: ${problemOf(e).message}. Reload to see the current state.`); }
   };
-  if (agentId && loadError && !agent) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">{loadError}</p>;
-  if (agentId && !agent) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the agent...</p>;
+  if (agentId && loadError && !agent) return <p className="m-8 border p-4 font-mono text-body text-destructive-text" role="alert">{loadError}</p>;
+  if (agentId && !agent) return <p className="p-8 text-center font-mono text-body text-muted-foreground">Loading the agent...</p>;
   return (
-    // Keyed on loads only: a save updates the agent in place, so the editor keeps its form and says "Saved".
+    // Keyed on loads only: a save updates the agent in place, so the editor keeps its form, and its Save reads "Saved".
     <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={{ ...caps, computers }} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} serverToolSettings={serverTools} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => { void load(); loadMcp(); }}
       onSave={async (fields, note) => {
         let saved;
@@ -118,6 +123,8 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
           if (!agent) {
             const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], approvals: fields.approvals, tool_settings: fields.tool_settings, thinking: fields.thinking, model: fields.model, computer: fields.computer, learning: fields.learning, max_cost_usd: fields.max_cost_usd, decisionProvider: caps.decisionProvider }));
             // A new agent lands on its own page; a workflow agent (Decision, Workflow) on its Workflow tab.
+            // Only while this page is still the one shown: a Create that answers after the person left moves nowhere.
+            if (!shown.current) return null;
             go(agentHash(made.agent_id, made.kind === "workflow" ? "workflow" : undefined));
             return null;
           }

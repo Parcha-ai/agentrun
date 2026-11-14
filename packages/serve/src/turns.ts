@@ -6,7 +6,7 @@
 //   codex          as it is sent (or dropped by a stop), and TURN_END, in the commit of the turn's last entries.
 // A message is open from the moment the run took it until its turn's end closes it, so a follow-up queued behind a turn
 // keeps the run open whatever the door says meanwhile.
-import { newestSettledInput } from "@parcha/pi-durable-disk/internals";
+import { KINDS } from "./runner/journal-kinds.js";
 import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
 
 /** How a message's turn ended. `answer`: the entry of its answer, null when the turn showed no text. `asked`: a pi turn
@@ -54,7 +54,9 @@ export class Turns {
       const fresh = id === undefined || id > this.#seen;
       if (id !== undefined && fresh) {
         this.#seen = id;
-        if (this.open > 0) this.#progress = now;
+        // A CLI record's entry says when it was written (`at`): that is the progress, since a CLI run's live tick moves only
+        // with the tool it holds, never with each entry. Any other entry's is the read's `now`.
+        if (this.open > 0) this.#progress = isObject(value.data) && typeof value.data.at === "number" ? value.data.at : now;
       }
       const data = isObject(value.data) ? value.data : undefined;
       const first = Array.isArray(value.model) && isObject(value.model[0]) ? value.model[0] : undefined;
@@ -67,6 +69,15 @@ export class Turns {
         if (text && fresh && first.api === ADAPTER_API) this.#since = id;
       } else if (value.kind === "pi.assistant" && first?.api === ADAPTER_API && first.stopReason === "error" && typeof first.errorMessage === "string") {
         if (fresh) this.#sinceError = first.errorMessage;
+      } else if (value.kind === KINDS.turnStart && id !== undefined) {
+        // A CLI run's turn, open from the commit of the message that starts it until its turn end (adapter-loop.ts CliRecord).
+        this.#take(`c:${id}`, typeof data?.at === "number" ? data.at : now, id);
+      } else if (value.kind === KINDS.turnEnd && data) {
+        // Turns are taken one at a time, so the end closes the oldest turn still open.
+        const message = [...this.#messages.values()].find((one) => one.key.startsWith("c:") && !one.end);
+        if (!message) continue;
+        const status = data.status === "completed" ? "answered" : data.status === "interrupted" ? "interrupted" : "failed";
+        message.end = { status, answer: null, ...(typeof data.error === "string" ? { error: data.error } : {}) };
       } else if (value.kind === MESSAGE && typeof data?.id === "string") {
         this.#take(`m:${data.id}`, now, id ?? this.#seen);
       } else if (value.kind === MESSAGE_END && typeof data?.id === "string") {
@@ -98,22 +109,6 @@ export class Turns {
       }
     }
     for (const value of submissions) this.#settle(value, skip, now);
-  }
-
-  /** A reconnect's snapshot (the door's `inputs`): the run's inputs from the newest settled one on, and every earlier one
-   *  not settled yet. It is the whole state, where an event batch carries only changes: a message this ledger holds
-   *  open that is missing from it, from before its newest settled input, settled while the stream was down. That one
-   *  is closed, its own end unread and never the run's (the settled one after it is newer). One still queued, a
-   *  follow-up a steer settled ahead of, is in the snapshot and stays open. */
-  snapshot(inputs: readonly unknown[], skip?: (id: number) => boolean, now = Date.now()): void {
-    this.note([], inputs, skip, now);
-    const records = inputs.filter((value): value is Obj & { id: number; status: string } => isObject(value) && value.type === "input" && typeof value.id === "number" && typeof value.status === "string");
-    const held = new Set(records.map((value) => `s:${value.id}`));
-    // The newest settled input as the door's snapshot chose it, by the same rule: the run's own, never the end-of-run turn's.
-    const newest = newestSettledInput(records, REFLECT_REQUEST);
-    if (newest < 0) return;
-    const through = records[newest]!.id;
-    for (const message of this.#messages.values()) if (message.key.startsWith("s:") && !message.end && message.order < through && !held.has(message.key)) message.end = { status: "answered", answer: null };
   }
 
   /** One input submission: a message taken while queued or placed, closed once it is settled. */

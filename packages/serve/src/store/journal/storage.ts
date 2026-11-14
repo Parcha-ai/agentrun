@@ -6,7 +6,8 @@
 // commit error is final). A patch of the run row (state, cost, metrics, ended_at) staged before a commit lands in that
 // same transaction, so a run's end and its last journal commit are one commit; a command it takes lands with its effect
 // (taken_at, exactly once). `close` leaves the store's connection open: the store owns it.
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { apply } from "@earendil-works/chord/delta";
 import {
   type CommitResult,
@@ -25,7 +26,6 @@ import {
   type Id,
   type Page,
   type Seq,
-  type Storage,
   StorageRequestError,
   type StorageWrite,
   type StoredDocument,
@@ -36,8 +36,9 @@ import {
   type TaskQuery,
   type TaskRecord,
 } from "@earendil-works/pi-durable";
+import { wakeCommands } from "../command-wake.js";
 import { PI_TABLE as T } from "../schema.js";
-import { type Dialect, SQLITE } from "../dialect.js";
+import { type Dialect, settledBody, SQLITE } from "../dialect.js";
 import type { StoreConnection } from "../sqlite/connection.js";
 import { claimFence, storeNow } from "../fence.js";
 import { applyRunPatch, refuseLeftovers } from "../sqlite/run-patch.js";
@@ -201,7 +202,9 @@ export class RunStorage implements Journal {
   #opening: Promise<void> | undefined;
   #staged: Staged | undefined;
   /** Commands staged to be taken, each with the record of its effect: taken only by the commit that stores that record. */
-  readonly #takes = new Map<number, number>();
+  readonly #takes = new Map<number, { readonly effect: number; readonly answer: string | null }>();
+  /** The store's identity (Store.where): where a commit that answers a command wakes the readers in this process. */
+  readonly #where: string | undefined;
   /** Ids this journal minted and has not yet written: the only ones a staged take may name as its effect. */
   readonly #minted = new Set<number>();
   #closed = false;
@@ -213,8 +216,9 @@ export class RunStorage implements Journal {
 
   /** The journal of `claim`'s run on `db` (the store's connection, its schema in place). Its id namespace is read, and made
    *  on first use, by its first commit or mintId. `now`: the store's clock (epoch ms). */
-  constructor(db: JournalConnection, claim: JournalClaim, now: () => number = Date.now, onClose?: () => void) {
+  constructor(db: JournalConnection, claim: JournalClaim, now: () => number = Date.now, onClose?: () => void, where?: string) {
     this.#db = db;
+    this.#where = where;
     this.#dialect = db.dialect ?? SQLITE;
     this.#read = readsOf(db);
     this.#runId = claim.runId;
@@ -292,7 +296,7 @@ export class RunStorage implements Journal {
         throw new Error(`run ${this.#runId}: command ${take.command}'s take names effect ${String(take.effect)}, which is no id this journal minted and has not yet written (an effect that updates a record takes its command through a marker entry minted for it)`);
       }
     }
-    for (const take of staged.take ?? []) this.#takes.set(take.command, Number(take.effect));
+    for (const take of staged.take ?? []) this.#takes.set(take.command, { effect: Number(take.effect), answer: take.answer === undefined ? null : JSON.stringify(take.answer) });
     // A stage that names a run patch or rows replaces the ones staged before; one that only takes leaves them.
     if (staged.run !== undefined || staged.also !== undefined) this.#staged = { ...(staged.run !== undefined ? { run: staged.run } : {}), ...(staged.also !== undefined ? { also: staged.also } : {}), effect: Number(staged.effect) };
   }
@@ -370,7 +374,7 @@ export class RunStorage implements Journal {
         seqs.push(seq);
         candidateNextId = Math.max(candidateNextId, this.#candidateNextId(writes));
         // A take whose effect this stored batch newly writes is this commit's, and so is the staged patch.
-        for (const [command, effect] of this.#takes) if (fresh.has(effect) && !taking.includes(command)) taking.push(command);
+        for (const [command, { effect }] of this.#takes) if (fresh.has(effect) && !taking.includes(command)) taking.push(command);
         if (staged?.effect !== undefined && fresh.has(staged.effect)) patching = true;
       }
       if (seqs.length > 0) {
@@ -385,12 +389,13 @@ export class RunStorage implements Journal {
           await applyRunPatch(tx, { runId: this.#runId, epoch: this.#epoch }, staged?.run ?? {}, staged?.also ?? [], now, this.#dialect);
         }
         for (const commandId of taking) {
-          if ((await tx.runCounted("UPDATE commands SET taken_at = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", now, commandId, this.#runId)) === 0) {
+          if ((await tx.runCounted(`UPDATE commands SET taken_at = ?, answer = ?, ${settledBody(this.#dialect)} WHERE id = ? AND run_id = ? AND taken_at IS NULL`, now, this.#takes.get(commandId)?.answer ?? null, commandId, this.#runId)) === 0) {
             throw new CommandTaken(this.#runId, commandId);
           }
         }
         // A run patch that made the run final: its other untaken rows are refused in this commit, after its own takes.
-        if (patching) await refuseLeftovers(tx, this.#runId, staged?.run?.state, now);
+        // A person's message that came while it was ending opens a completed run again instead (refuseLeftovers).
+        if (patching) await refuseLeftovers(tx, this.#runId, staged?.run?.state, now, this.#dialect);
       }
     });
     this.#nextId = Math.max(this.#nextId, candidateNextId);
@@ -406,6 +411,10 @@ export class RunStorage implements Journal {
     if (patching && this.#staged === staged) this.#staged = undefined;
     // Taken with their effects, now durable: no longer waiting.
     for (const command of taking) this.#takes.delete(command);
+    // A command taken, or a run gone final (its leftover rows refused): the readers of those answers in this process wake.
+    if (this.#where !== undefined && (taking.length > 0 || (patching && ["ended", "stopped", "failed"].includes(staged?.run?.state ?? "")))) {
+      wakeCommands(this.#where, { runId: this.#runId, what: "answered" });
+    }
     // COMMIT returned: the stored batches are durable (to the store's synchronous level; flush makes them so on disk).
     for (const [index, seq] of seqs.entries()) receive(index, seq);
     return refused === undefined ? { stored: seqs.length } : { stored: seqs.length, refused: refused.error };

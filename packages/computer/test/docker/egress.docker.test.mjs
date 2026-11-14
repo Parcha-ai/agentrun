@@ -16,7 +16,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { DockerProvider, EGRESS_IMAGE, sweep } from "../../dist/index.js";
+import { DockerProvider } from "../../dist/docker.js";
+import { newRequest } from "./request.mjs";
+import { EGRESS_IMAGE, sweep } from "../../dist/index.js";
 import { createForDeadline } from "./deadline.mjs";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
@@ -71,7 +73,7 @@ describe("a Docker computer whose network is an allowlist", { skip: LIVE ? false
 	};
 	const through = async (mode, target) => (await inComputer(connection, ["node", "-e", CLIENT, mode, target])).out;
 	const create = async (extra = {}) => {
-		const created = await provider.create({ image: EGRESS_IMAGE, lifetimeMs: 10 * 60_000, network: { allow: ALLOW }, labels: { [RUN_LABEL]: run }, ...extra });
+		const created = await provider.create({ image: EGRESS_IMAGE, lifetimeMs: 10 * 60_000, network: { allow: ALLOW }, labels: { [RUN_LABEL]: run }, ...extra }, newRequest("egress"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		made.add(created.value.name);
 		return created.value;
@@ -215,7 +217,7 @@ describe("a Docker computer whose network is an allowlist", { skip: LIVE ? false
 
 	it("the proxy ends itself at the computer's deadline, and the janitor's sweep then removes the computer, its proxy and its volume", async (t) => {
 		// 15 s, counted before the proxy starts, or longer on a host slow to start the two (createForDeadline).
-		const got = await createForDeadline(t, (lifetimeMs) => provider.create({ image: EGRESS_IMAGE, lifetimeMs, network: { allow: ALLOW }, labels: { [RUN_LABEL]: run } }), {
+		const got = await createForDeadline(t, (lifetimeMs) => provider.create({ image: EGRESS_IMAGE, lifetimeMs, network: { allow: ALLOW }, labels: { [RUN_LABEL]: run } }, newRequest("egress-deadline")), {
 			lifetimeMs: 15_000,
 			keep: (name) => made.add(name),
 		});

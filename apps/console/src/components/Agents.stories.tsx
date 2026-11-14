@@ -1,7 +1,8 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { AgentEditor } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
 import { AgentsList } from "@/components/AgentsList";
+import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
 import { Shell } from "@/components/Shell";
 import { agentFixture, agentsList, archivedAgents, editorCaps, recorded, revisionsOf, runFixture, runNames } from "@/fixtures";
 import { saveError } from "@/lib/agentForm";
@@ -38,7 +39,8 @@ const agentPage = (slug: string, { runs = true, tab }: { runs?: boolean; tab?: "
   return page(<AgentPage v2={v2 as never} agentId={slug} efforts={efforts} go={noop} tab={tab} />);
 };
 
-export const List: Story = { render: () => page(<AgentsList agents={agentsList()} actions={{ onOpen: noop, onEdit: noop, onNew: noop, onRuns: noop, onArchive: noop }} />) };
+export const List: Story = { render: () => page(<AgentsList agents={agentsList()} actions={{ onOpen: noop, onEdit: noop, onNew: noop, onRuns: noop, onArchive: noop }}
+  handoff={<CodingAgentHandoff context={{ kind: "create" }} label="Build with your coding agent" size="lg" iconOnPhone className="max-sm:w-11" serverUrl="http://127.0.0.1:7340/v2" />} />) };
 export const ListArchived: Story = { render: () => page(<AgentsList agents={archivedAgents()} archived actions={{ onOpen: noop, onEdit: noop, onArchive: noop }} />) };
 export const ListEmpty: Story = { render: () => page(<AgentsList agents={[]} actions={{ onNew: noop }} />) };
 export const ListLoading: Story = { render: () => page(<AgentsList agents={null} />) };
@@ -56,5 +58,5 @@ export const EditConflict: Story = { render: () => editor("invoice-checker", { p
 export const EditInvalidHarness: Story = { render: () => editor("invoice-checker", { step: "settings", problem: asProblem("write.definition-invalid-harness") }) };
 export const EditWorkflow: Story = { render: () => editor("support-triage") };
 // A save the server took that this host can't run yet: what its answer's warnings said, above the form and at the field.
-export const SavedWithWarnings: Story = { render: () => page(<AgentEditor agent={{ ...agentFixture("invoice-checker"), warnings: [{ field: "definition.model", reason: "not_set_up_here", message: "No OpenAI key here for openai/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts." }] }} revisions={revisionsOf("invoice-checker")} caps={editorCaps} step="settings" onSave={async () => null} onBack={noop} />) };
+export const SavedWithWarnings: Story = { render: () => page(<AgentEditor agent={{ ...agentFixture("invoice-checker"), warnings: [{ field: "definition.model", reason: "not_set_up_here", message: "No OpenAI key here for openai/gpt-6.1-sol: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts." }] }} revisions={revisionsOf("invoice-checker")} caps={editorCaps} step="settings" onSave={async () => null} onBack={noop} />) };
 export const Phone: Story = { render: () => editor("invoice-checker", { step: "settings" }), globals: { viewport: { value: "mobile1" } } };

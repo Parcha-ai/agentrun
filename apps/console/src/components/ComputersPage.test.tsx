@@ -1,38 +1,54 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComputersPage } from "./ComputersPage";
 import { SETTINGS_PAGES } from "./Settings";
 import { SIGN_IN_TO_CHANGE } from "@/lib/secrets";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
-import type { ComputerKindView, ComputerProvider, Computers, ComputerSecret } from "@/lib/v2";
+import type { ComputerChoices, ComputerKindView, ComputerProvider, Computers, ComputerSecret, PairedComputer } from "@/lib/v2";
 
-// Settings → Computers over GET /v2/computers, PUT /v2/computers/{provider}/keys and POST /v2/computers/{provider}/test:
+// Settings → Computers over GET /v2/computers, PUT /v2/computers/{provider}/keys, POST /v2/computers/{provider}/test and
+// GET /v2/computers/{provider}/choices (a picked key, Orgo's workspace, picked by name):
 // a section per kind with the server's why when it isn't offered, each provider under every kind it serves with its keys
 // as SecretRows by their KEY (never a value), required or Optional, with where each is set and when, and its why; the
 // metered line on a metered provider of a kind that bills by the minute; Paste or Replace of one key sends only that KEY and leaves no value in the
 // page, a removal sends null, a key the environment holds is greyed with nothing to paste, a refusal is said in the
 // server's words, and a test says the server's passed or failed.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+// The workspace picker's positioning watches its field's size; jsdom has no ResizeObserver.
+globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
 
 /** Obvious fakes: none of these is a key anywhere. */
 const FAKE = "not-a-real-key-0123456789";
 
-const E2B_WHY = "E2B needs E2B_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/e2b/keys)";
+const E2B_WHY = "E2B needs E2B_API_KEY saved: save it in Settings → Computers";
 const PHONE_WHY = "no provider serves a phone computer";
 const CHANGED = "2026-11-09T01:00:00.000Z";
 const METERED = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
 /** A provider's secret as served: its full name "computer:<provider>:<KEY>". */
 const secret = (provider: string, key: string, set: boolean, source: ComputerSecret["source"] = set ? "console" : null): ComputerSecret => ({ name: `computer:${provider}:${key}`, set, source, changed_at: source === "console" ? CHANGED : null });
-const docker: ComputerProvider = { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true };
-const e2b = (saved = false): ComputerProvider => ({ id: "e2b", name: "E2B", metered: true, secrets: [secret("e2b", "E2B_API_KEY", saved)], required: ["computer:e2b:E2B_API_KEY"], ready: saved, ...(saved ? {} : { why: E2B_WHY }) });
-const orgo: ComputerProvider = { id: "orgo", name: "Orgo", metered: true, secrets: [secret("orgo", "ORGO_API_KEY", true)], required: ["computer:orgo:ORGO_API_KEY"], ready: true };
-const kernel: ComputerProvider = { id: "kernel", name: "Kernel", metered: true, secrets: [secret("kernel", "KERNEL_API_KEY", false), secret("kernel", "KERNEL_REGION", false)], required: ["computer:kernel:KERNEL_API_KEY"], ready: false, why: "Kernel needs KERNEL_API_KEY saved" };
+/** Where a choice's runs have their shell, as the server serves it: a computer that mounts the run's folder gives every
+ *  host tool; one that doesn't, the file tools only. */
+const MOUNTS = { shell: "computer" as const, host_tools: ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"] };
+const NO_SHELL = { shell: "none" as const, host_tools: ["read", "write", "edit"], shell_note: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands." };
+const docker: ComputerProvider = { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, ...MOUNTS };
+const e2b = (saved = false): ComputerProvider => ({ id: "e2b", name: "E2B", metered: true, secrets: [secret("e2b", "E2B_API_KEY", saved)], required: ["computer:e2b:E2B_API_KEY"], ready: saved, ...(saved ? {} : { why: E2B_WHY }), ...NO_SHELL });
+const orgo: ComputerProvider = { id: "orgo", name: "Orgo", metered: true, secrets: [secret("orgo", "ORGO_API_KEY", true)], required: ["computer:orgo:ORGO_API_KEY"], ready: true, ...NO_SHELL };
+const kernel: ComputerProvider = { id: "kernel", name: "Kernel", metered: true, secrets: [secret("kernel", "KERNEL_API_KEY", false), secret("kernel", "KERNEL_REGION", false)], required: ["computer:kernel:KERNEL_API_KEY"], ready: false, why: "Kernel needs KERNEL_API_KEY saved", ...NO_SHELL };
 /** Daytona's key is in the server's environment: it wins, greyed, with nothing to paste over it. */
-const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: true, secrets: [secret("daytona", "DAYTONA_API_KEY", true, "env")], required: ["computer:daytona:DAYTONA_API_KEY"], ready: true };
+const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: true, secrets: [secret("daytona", "DAYTONA_API_KEY", true, "env")], required: ["computer:daytona:DAYTONA_API_KEY"], ready: true, ...NO_SHELL };
+/** A person's own Mac, paired and attached; it is also a provider of the desktop kind. */
+/** A paired computer of no OS the page knows: it is shown by what its hello says. */
+const DESK: PairedComputer = {
+  id: "cmp-abc", name: "desk-1", kind: "desktop", serves: ["desktop"], unserved: null, os: "windows", os_version: "11", device: { maker: "Acme", model: "Book 14" }, arch: "x86_64",
+  screen: { width: 1920, height: 1080, scale: 1 }, groups: ["screen", "input.pointer", "input.keys"], features: { "ui.tree": { off: "no accessibility grant" } },
+  driver: "0.2.0", online: true, held_by_run: null, held_until: null, pairing: "pairing-mine", created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z",
+};
+const DESK_PROVIDER: ComputerProvider = { id: "cmp-abc", name: "desk-1 (windows)", metered: false, secrets: [], required: [], ready: true, ...NO_SHELL };
 const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], providers, ...extra });
 const view = (saved = false): Computers => ({
+  paired: [],
   kinds: [
     kind("none", []),
     kind("sandbox", [docker, e2b(saved), daytona]),
@@ -44,13 +60,16 @@ const view = (saved = false): Computers => ({
 
 type Call = { method: string; path: string; type: string | null; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-/** A server that answers GET with `views` in turn (the last one again after), and PUT and POST with `write`. */
-function server(views: (Computers | Response)[], write: (call: Call) => Response | Promise<Response> = () => json(200, {})) {
+/** A server that answers GET with `views` in turn (the last one again after), a provider's choices GET with `choices`
+ *  in turn, and PUT and POST with `write`. */
+function server(views: (Computers | Response)[], write: (call: Call) => Response | Promise<Response> = () => json(200, {}), choices: (ComputerChoices | Response)[] = [{ choices: [] }]) {
   const calls: Call[] = [];
   let read = 0;
+  let chose = 0;
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: String(url), type: new Headers(init?.headers).get("content-type"), body: init?.body ? JSON.parse(String(init.body)) : undefined };
     calls.push(call);
+    if (call.method === "GET" && call.path.endsWith("/choices")) { const c = choices[Math.min(chose++, choices.length - 1)]!; return c instanceof Response ? c : json(200, c); }
     if (call.method === "GET") { const v = views[Math.min(read++, views.length - 1)]!; return v instanceof Response ? v : json(200, v); }
     return write(call);
   }) as typeof globalThis.fetch;
@@ -91,7 +110,7 @@ describe("Settings → Computers", () => {
   it("shows a section per kind: the server's why for a kind it doesn't offer, and nothing to set up for none", async () => {
     const { v2 } = server([view()]);
     const { host, section } = await open(v2);
-    expect([...host.querySelectorAll("section[aria-label]")].map((s) => s.getAttribute("aria-label"))).toEqual(["None", "Sandbox", "Desktop", "Phone", "Browser"]);
+    expect([...host.querySelectorAll("section[aria-label]")].map((s) => s.getAttribute("aria-label"))).toEqual(["Your computers", "None", "Sandbox", "Desktop", "Phone", "Browser"]);
     expect(section("None").textContent).toContain("Nothing to set up");
     expect(section("None").querySelectorAll("li")).toHaveLength(0);
     expect(section("Phone").textContent).toContain(PHONE_WHY);
@@ -217,6 +236,69 @@ describe("Settings → Computers", () => {
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
   });
 
+  it("offers a picked key (Orgo's workspace) by name from the server's choices once the key is saved, never as a paste, and saves the one picked", async () => {
+    const WS = "computer:orgo:ORGO_WORKSPACE_ID";
+    const picking = (saved: boolean): ComputerProvider => ({ ...orgo, secrets: [secret("orgo", "ORGO_API_KEY", true), secret("orgo", "ORGO_WORKSPACE_ID", saved)], picked: [WS] });
+    const withOrgo = (p: ComputerProvider): Computers => ({ paired: [], kinds: [kind("desktop", [p])] });
+    const options = [{ value: "ws-a", label: "Alpha team" }, { value: "ws-b", label: "Beta team" }];
+    const { v2, calls } = server([withOrgo(picking(false)), withOrgo(picking(true))], () => json(200, picking(true)),
+      [{ choices: [{ key: "ORGO_WORKSPACE_ID", options }] }, { choices: [{ key: "ORGO_WORKSPACE_ID", options, saved: "ws-b" }] }]);
+    const { host, row, key, button, settle } = await open(v2);
+    const orgoRow = () => row("Desktop", "Orgo");
+    expect(button(key(orgoRow(), "ORGO_WORKSPACE_ID"), /^(Paste|Replace)$/), "a picked key is never pasted").toBeUndefined();
+    expect(calls.filter((c) => c.path.endsWith("/choices")).map((c) => c.path)).toEqual(["/v2/computers/orgo/choices"]);
+    const field = orgoRow().querySelector<HTMLButtonElement>('[data-choices="ORGO_WORKSPACE_ID"] button[aria-haspopup="listbox"]')!;
+    expect(field.textContent).toContain("Pick one");
+    expect(orgoRow().querySelector("[data-choice-note]")?.textContent).toBe("2 to pick from. Pick the one this server's computers use.");
+    await act(async () => { field.click(); });
+    await settle();
+    const listed = [...document.querySelectorAll('[role="listbox"] [role="option"]')];
+    expect(listed.map((o) => o.textContent), "names, never ids").toEqual(["Alpha team", "Beta team"]);
+    await act(async () => { (listed[1] as HTMLElement).click(); });
+    await settle();
+    expect(calls.filter((c) => c.method === "PUT")).toEqual([{ method: "PUT", path: "/v2/computers/orgo/keys", type: "application/json", body: { ORGO_WORKSPACE_ID: "ws-b" } }]);
+    // The page reads everything again: the key now set, and the choices with the saved one marked.
+    expect(orgoRow().querySelector<HTMLButtonElement>('[data-choices="ORGO_WORKSPACE_ID"] button[aria-haspopup="listbox"]')!.textContent).toContain("Beta team");
+    expect(orgoRow().querySelector("[data-choice-note]")?.textContent).toBe("Picked and saved on this server.");
+    expect(host.textContent).not.toContain("ws-b");
+  });
+
+  it("says why there is no workspace to pick, and that the only one is used while none is picked", async () => {
+    const WS = "computer:orgo:ORGO_WORKSPACE_ID";
+    const picking: ComputerProvider = { ...orgo, secrets: [secret("orgo", "ORGO_API_KEY", true), secret("orgo", "ORGO_WORKSPACE_ID", false)], picked: [WS] };
+    const none = server([{ paired: [], kinds: [kind("desktop", [picking])] }], undefined, [{ choices: [{ key: "ORGO_WORKSPACE_ID", why: "this Orgo key's account has no workspace: make one at orgo.ai" }] }]);
+    const first = await open(none.v2);
+    expect(first.row("Desktop", "Orgo").querySelector("[data-why]")?.textContent).toBe("this Orgo key's account has no workspace: make one at orgo.ai");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const one = server([{ paired: [], kinds: [kind("desktop", [picking])] }], undefined, [{ choices: [{ key: "ORGO_WORKSPACE_ID", options: [{ value: "ws-a", label: "Alpha team" }] }] }]);
+    const second = await open(one.v2);
+    expect(second.row("Desktop", "Orgo").querySelector("[data-choice-note]")?.textContent).toBe("The only one, Alpha team, is used while none is picked.");
+    // No key saved: no choices are read.
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const unsaved = server([{ paired: [], kinds: [kind("desktop", [{ ...picking, secrets: [secret("orgo", "ORGO_API_KEY", false), secret("orgo", "ORGO_WORKSPACE_ID", false)] }])] }]);
+    const third = await open(unsaved.v2);
+    expect(third.row("Desktop", "Orgo").querySelector("[data-choices]")).toBeNull();
+    expect(unsaved.calls.some((c) => c.path.endsWith("/choices"))).toBe(false);
+  });
+
+  it("a picked key set in the environment: the picker is off and says that one is used; a saved one no longer offered: says so", async () => {
+    const WS = "computer:orgo:ORGO_WORKSPACE_ID";
+    const options = [{ value: "ws-a", label: "Alpha team" }, { value: "ws-b", label: "Beta team" }];
+    const fromEnv: ComputerProvider = { ...orgo, secrets: [secret("orgo", "ORGO_API_KEY", true), secret("orgo", "ORGO_WORKSPACE_ID", true, "env")], picked: [WS] };
+    const env = server([{ paired: [], kinds: [kind("desktop", [fromEnv])] }], undefined, [{ choices: [{ key: "ORGO_WORKSPACE_ID", options, saved: "ws-a" }] }]);
+    const first = await open(env.v2);
+    const envRow = first.row("Desktop", "Orgo");
+    expect(envRow.querySelector<HTMLButtonElement>('[data-choices="ORGO_WORKSPACE_ID"] button[aria-haspopup="listbox"]')!.disabled).toBe(true);
+    expect(envRow.querySelector("[data-choice-note]")?.textContent).toBe("Set in the environment where AgentRun starts, and that one is used: change ORGO_WORKSPACE_ID there.");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const gone: ComputerProvider = { ...fromEnv, secrets: [secret("orgo", "ORGO_API_KEY", true), secret("orgo", "ORGO_WORKSPACE_ID", true)] };
+    const stale = server([{ paired: [], kinds: [kind("desktop", [gone])] }], undefined, [{ choices: [{ key: "ORGO_WORKSPACE_ID", options }] }]);
+    const second = await open(stale.v2);
+    const staleRow = second.row("Desktop", "Orgo");
+    expect(staleRow.querySelector<HTMLButtonElement>('[data-choices="ORGO_WORKSPACE_ID"] button[aria-haspopup="listbox"]')!.disabled).toBe(false);
+    expect(staleRow.querySelector("[data-choice-note]")?.textContent).toBe("The ORGO_WORKSPACE_ID saved on this server is not one of these any more, and runs still ask for it: pick one.");
+  });
+
   it("tests a provider: the server's passed with its detail, or failed with its why, wherever the provider shows", async () => {
     const { v2, calls } = server([view()], (c) => json(200, c.path.endsWith("/orgo/test") ? { ok: true, detail: "Orgo answered: 3 computers on this account" } : { ok: false, why: E2B_WHY }));
     const { row, click } = await open(v2);
@@ -243,6 +325,90 @@ describe("Settings → Computers", () => {
     const { v2 } = server([view()]);
     const { host } = await open(v2);
     expect(host.textContent).not.toContain(SIGN_IN_TO_CHANGE);
+  });
+
+  it("pairs a computer: shows the code, this server's address and the countdown, reads the computers again while it is up, names the computer that used it, and lists it once, in its own section, as its hello says", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: Date.parse("2026-11-12T10:00:00.000Z") });
+    try {
+      const withDesk: Computers = { ...view(), paired: [DESK], kinds: view().kinds.map((k) => (k.kind === "desktop" ? { ...k, providers: [...k.providers, DESK_PROVIDER] } : k)) };
+      const { v2, calls } = server([view(), view(), withDesk], () => json(201, { id: "pairing-mine", code: "K7PD-W3QX", expires_at: "2026-11-12T10:10:00.000Z" }));
+      const { section, click, settle } = await open(v2);
+      const mine = section("Your computers");
+      expect(mine.textContent).toContain("None paired yet");
+      await click(mine, /^Pair a computer$/);
+      expect(calls.at(-1)).toMatchObject({ method: "POST", path: "/v2/computers/pairings" });
+      expect(mine.querySelector("[data-code]")?.textContent).toBe("K7PD-W3QX");
+      expect(mine.querySelector("[data-address]")?.textContent).toBe(window.location.origin);
+      expect(mine.querySelector("[data-countdown]")?.textContent).toBe("10:00");
+      const tick = async (ms: number) => { await act(async () => { vi.advanceTimersByTime(ms); }); await settle(); };
+      await tick(2_000);
+      expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
+      expect(mine.querySelector("[data-countdown]")?.textContent).toBe("9:58");
+      await tick(2_000);
+      expect(mine.querySelector("[data-code]")).toBeNull();
+      expect(mine.querySelector("[role=status]")?.textContent).toBe("Paired desk-1.");
+      const row = mine.querySelector('[data-paired="cmp-abc"]')!;
+      expect(row.textContent).toContain("Online");
+      expect(row.querySelector("[data-machine]")?.textContent).toBe("Desktop · Acme Book 14 · windows 11 · x86_64 · screen 1920×1080 at 1x");
+      expect(row.querySelector("[data-offers]")?.textContent).toBe("Offers screen, input.pointer, input.keys · ui.tree off: no accessibility grant");
+      expect(row.querySelector("[data-held-until]")).toBeNull();
+      expect([...section("Desktop").querySelectorAll("[data-provider]")].map((el) => el.textContent)).toEqual(["E2B", "Orgo"]);
+      expect(section("Desktop").textContent).toContain("Also served by your computers: desk-1 (windows).");
+      await tick(10_000);
+      expect(calls.filter((c) => c.method === "GET"), "no reads once the code is used").toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps its own code up when a second tab's pairing adds a computer, and names only the computer its own code made", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: Date.parse("2026-11-12T10:00:00.000Z") });
+    try {
+      const other: PairedComputer = { ...DESK, id: "cmp-other", name: "other-tab-pc", pairing: "pairing-other" };
+      const withOther: Computers = { ...view(), paired: [other] };
+      const withBoth: Computers = { ...view(), paired: [other, DESK] };
+      const { v2 } = server([view(), withOther, withBoth], () => json(201, { id: "pairing-mine", code: "K7PD-W3QX", expires_at: "2026-11-12T10:10:00.000Z" }));
+      const { section, click, settle } = await open(v2);
+      const mine = section("Your computers");
+      await click(mine, /^Pair a computer$/);
+      const tick = async (ms: number) => { await act(async () => { vi.advanceTimersByTime(ms); }); await settle(); };
+      await tick(2_000);
+      expect(mine.querySelector('[data-paired="cmp-other"]'), "the other tab's computer is listed").not.toBeNull();
+      expect(mine.querySelector("[data-code]")?.textContent, "this tab's code is still up").toBe("K7PD-W3QX");
+      expect(mine.textContent).not.toContain("Paired other-tab-pc.");
+      await tick(2_000);
+      expect(mine.querySelector("[data-code]")).toBeNull();
+      expect(mine.querySelector("[role=status]")?.textContent).toBe("Paired desk-1.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says a paired computer offline and how to bring it back, the run that holds one and the deadline its hold ends by, and removes one after asking", async () => {
+    const held = { ...DESK, held_by_run: "0190f0aa-0000-7000-8000-00000000beef", held_until: "2026-11-12T11:00:00.000Z" };
+    // A feature value of a shape the page does not know (an older server, a driver's malformed hello) is skipped, never a crash.
+    // One whose driver serves no kind says so in the server's words.
+    const UNSERVED = "old-desk's driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on old-desk";
+    const away: PairedComputer = { ...DESK, id: "cmp-old", name: "old-desk", serves: [], unserved: UNSERVED, online: false, seen_at: null, features: { ...DESK.features, broken: null } as unknown as PairedComputer["features"] };
+    const { v2, calls } = server([{ ...view(), paired: [held, away] }, { ...view(), paired: [held] }], () => new Response(null, { status: 204 }));
+    const { section, click } = await open(v2);
+    const mine = section("Your computers");
+    const row = (id: string) => mine.querySelector(`[data-paired="${id}"]`);
+    expect(row("cmp-abc")!.textContent).toContain("In use by run 0000beef");
+    expect(row("cmp-abc")!.querySelector("[data-held-until]")?.textContent).toMatch(/^The run's hold ends by .+, released or not\.$/);
+    expect(row("cmp-old")!.textContent).toContain("Offline");
+    expect(row("cmp-old")!.querySelector("[data-offers]")?.textContent).toBe("Offers screen, input.pointer, input.keys · ui.tree off: no accessibility grant");
+    expect(row("cmp-old")!.textContent).toContain("Open its driver on that computer: it dials this server.");
+    expect(row("cmp-abc")!.querySelector("[data-unserved]")).toBeNull();
+    expect(row("cmp-old")!.textContent).toContain("No agent can use it");
+    expect(row("cmp-old")!.querySelector("[data-unserved]")?.textContent).toBe(UNSERVED);
+    await click(row("cmp-old")!, /^Remove$/);
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+    expect(row("cmp-old")!.querySelector("[data-confirm]")?.textContent).toContain("Remove old-desk?");
+    await click(row("cmp-old")!.querySelector("[data-confirm]")!, /^Remove$/);
+    expect(calls.filter((c) => c.method === "DELETE")).toMatchObject([{ path: "/v2/computers/cmp-old", body: undefined }]);
+    expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
+    expect(row("cmp-old")).toBeNull();
   });
 
   it("says a failed read in the server's words, and reads again on Try again", async () => {

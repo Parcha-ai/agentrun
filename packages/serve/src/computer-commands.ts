@@ -18,7 +18,7 @@
 // each writer writes, then re-reads the run's journal (a hand-back the runner already applied, or an end the run's own
 // hold wrote: the viewer's hand-back, idle, away, released), then the rows (the lowest-id row is the one the runner
 // applies), so each caller is told the truth.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { settingOfDefinition } from "./computer-setting.js";
@@ -46,6 +46,8 @@ export const holdWords = (computer: ViewedKind) => ({
     away: `The ${computer} went back to the agent: the live view was closed`,
     released: `The ${computer}'s session ended while you had it`,
   } as Record<Exclude<HoldEnd, "answered">, string>,
+  /** The agent is done while the person holds the computer: the run's end waits for the hand-back (#2134). */
+  ending: `The agent is done. The run ends when you hand the ${computer} back, or after ${HOLD_IDLE_MS / 60_000} minutes with no input from you`,
   waiting: (instruction: string) => `Waiting for you: ${instruction}`,
   answered: {
     done: "Done: the owner answered the agent's request.",

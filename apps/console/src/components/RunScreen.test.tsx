@@ -2,12 +2,14 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunDetail } from "./RunDetail";
+import { useRunScreen, type ScreenView } from "./RunScreen";
 import { messageFeatures, runFixture } from "@/fixtures";
 import { ClientError } from "@/lib/client";
 import type { Run, RunComputer } from "@/lib/v2";
 
 // The run page's Screen tab, over GET /v2/runs/{id}/computer (owner session only, no-store): `off` (no browser, or it
-// resolves unavailable) hides it; `none` (one, with no session open yet or any more) waits; `live` embeds the session's
+// resolves unavailable) hides it; `none` (one, with no session open) waits only while its session is opening, and says
+// plainly when the run hasn't opened one or the one it opened closed; `live` embeds the session's
 // viewer. The viewer is a same-origin path whose token is in its fragment: it is the iframe's src and nothing else, never
 // in the address bar, the history, storage, the console or an error.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -57,12 +59,12 @@ function nowhereBut(frame: HTMLIFrameElement | null, ...secrets: string[]) {
 
 const MESSAGES = { steer: false, answer: true, follow_up: true, steer_workflow_runs: false };
 describe("the run page reads the run's screen, whatever its capabilities list", () => {
-  const base = { sha: null, updated_at: "2026-11-05T09:00:00Z", poll_after_ms: 0, run_id: RUN, agent_id: "browsing", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Look", created_at: "2026-11-05T09:00:00Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null } as Run;
+  const base = { sha: null, updated_at: "2026-11-05T09:00:00Z", poll_after_ms: 0, run_id: RUN, place: { mode: "runner" }, agent_id: "browsing", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Look", created_at: "2026-11-05T09:00:00Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null } as Run;
   async function live(caps: unknown) {
     const reads: string[] = [];
     const v2 = {
       getRun: async () => base, listFiles: async () => ({ run_id: RUN, files: [], complete: true, truncated: false }),
-      getTimeline: async () => ({ run_id: RUN, status: "working", state: "working", rows: [], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 0 }),
+      getTimeline: async () => ({ run_id: RUN, place: { mode: "runner" }, status: "working", state: "working", rows: [], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 0 }),
       listRevisions: async () => ({ revisions: [], next_cursor: null }),
       runComputer: async (id: string) => { reads.push(id); return { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }; },
     };
@@ -113,12 +115,76 @@ describe("the run page's Screen tab, for a browser", () => {
     expect(p.tabButton()?.textContent).toBe("Screen");
   });
 
-  it("waits for the browser when the run has one and no page is open yet", async () => {
-    const p = await page(async () => ({ state: "none", kind: "browser", hold: "agent" }));
+  it("waits for the browser while the run opens one and no page is open yet", async () => {
+    const p = await page(async () => ({ state: "none", kind: "browser", hold: "agent", session: "opening" }));
     expect(p.tabButton()!.textContent).toBe("Screen");
     await p.open();
     expect(p.host.textContent).toContain("Waiting for the browser");
     expect(p.frame()).toBeNull();
+  });
+
+  it("a run waiting for its person that never opened its browser says so plainly, never 'Waiting for the browser'", async () => {
+    let reads = 0;
+    const waitingOnYou = { ...working, status: "input_required", state: "waiting" } as Run;
+    const p = await page(async () => { reads++; return { state: "none", kind: "browser", hold: "agent", session: "unopened" }; }, waitingOnYou, "screen");
+    await settle(100);
+    const text = p.host.querySelector('section[aria-label="Screen"]')?.textContent ?? "";
+    expect(text).toContain("This run hasn't opened its browser. The agent's page shows here if it opens one.");
+    expect(text).not.toContain("Waiting for the browser");
+    expect(p.frame()).toBeNull();
+    // Still read, so the page shows once the agent opens one.
+    expect(reads).toBeGreaterThan(1);
+  });
+
+  it("a working run that hasn't opened its browser says so too, and waits once the agent's step opens one", async () => {
+    let session: "unopened" | "opening" = "unopened";
+    const p = await page(async () => ({ state: "none", kind: "browser", hold: "agent", session }), working, "screen");
+    const section = () => p.host.querySelector('section[aria-label="Screen"]')?.textContent ?? "";
+    expect(section()).toContain("This run hasn't opened its browser.");
+    session = "opening";
+    await settle(100);
+    expect(section()).toContain("Waiting for the browser");
+    expect(section()).not.toContain("hasn't opened");
+  });
+
+  it("a going run whose browser closed says it isn't open now, never that it waits", async () => {
+    const p = await page(async () => ({ state: "none", kind: "browser", hold: "agent", session: "closed" }), working, "screen");
+    const text = p.host.querySelector('section[aria-label="Screen"]')?.textContent ?? "";
+    expect(text).toContain("The run's browser isn't open now. The agent's page shows here if it opens one again.");
+    expect(text).not.toContain("Waiting for the browser");
+  });
+
+  it("an ended run that never opened its browser says it didn't, never that its browser closed", async () => {
+    const done = { ...working, status: "completed", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
+    const p = await page(async () => ({ state: "none", kind: "browser", hold: "agent", session: "unopened" }), done, "screen");
+    const text = p.host.querySelector('section[aria-label="Screen"]')?.textContent ?? "";
+    expect(text).toContain("This run didn't open its browser. A follow-up opens one if the agent needs it.");
+    expect(text).not.toContain("closed when the run ended");
+  });
+
+  it("a run that ends with its last read unopened reads once more: a browser opened since reads closed, never 'didn't open'", async () => {
+    let opened = false;
+    const p = await moving(async () => ({ state: "none", kind: "browser", hold: "agent", session: opened ? "closed" : "unopened" }));
+    expect(p.section()).toContain("This run hasn't opened its browser.");
+    // The browser opens and closes between two reads, and the run ends before the next one.
+    opened = true;
+    const before = p.reads();
+    await p.show(ended);
+    await settle(150);
+    const atEnd = p.reads();
+    expect(atEnd, "read again at the end").toBeGreaterThan(before);
+    expect(p.section()).toContain("The browser closed when the run ended.");
+    expect(p.section()).not.toContain("didn't open");
+    await settle(150);
+    expect(p.reads(), "and nothing more").toBe(atEnd);
+  });
+
+  it("a desktop the run hasn't opened says so in a desktop's words", async () => {
+    const desktop = { ...working, status: "input_required", state: "waiting", computer: { kind: "desktop", provider: "e2b", state: "ready" } } as Run;
+    const p = await page(async () => ({ state: "none", kind: "desktop", hold: "agent", session: "unopened" }), desktop, "screen");
+    const text = p.host.querySelector('section[aria-label="Screen"]')?.textContent ?? "";
+    expect(text).toContain("This run hasn't opened its desktop. Its screen shows here if the agent opens one.");
+    expect(text).not.toContain("Waiting for the desktop");
   });
 
   it("embeds the live session's viewer under Screen: the iframe's src is the viewer on this origin, and the viewer is nowhere else", async () => {
@@ -137,7 +203,7 @@ describe("the run page's Screen tab, for a browser", () => {
   });
 
   it("follows the session: live, then none at release, then live again with the new viewer, never the old one", async () => {
-    const answers: RunComputer[] = [{ state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }, { state: "none", kind: "browser", hold: "agent" }, { state: "live", kind: "browser", viewer: VIEWER2, hold: "agent" }];
+    const answers: RunComputer[] = [{ state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }, { state: "none", kind: "browser", hold: "agent", session: "closed" }, { state: "live", kind: "browser", viewer: VIEWER2, hold: "agent" }];
     let i = 0;
     const p = await page(async () => answers[Math.min(i++, answers.length - 1)], working, "screen");
     for (let n = 0; n < 20 && i < answers.length; n++) await settle(30);
@@ -171,7 +237,7 @@ describe("the run page's Screen tab, for a browser", () => {
   it("on an ended run, none reads that the browser closed, never that it waits; nothing more is read", async () => {
     let reads = 0;
     const done = { ...working, status: "completed", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
-    const p = await page(async () => { reads++; return { state: "none", kind: "browser", hold: "agent" }; }, done, "screen");
+    const p = await page(async () => { reads++; return { state: "none", kind: "browser", hold: "agent", session: "closed" }; }, done, "screen");
     await settle(150);
     const text = p.host.querySelector('section[aria-label="Screen"]')?.textContent ?? "";
     expect(text).toContain("The browser closed when the run ended.");
@@ -181,11 +247,11 @@ describe("the run page's Screen tab, for a browser", () => {
 
   it("a follow-up's line shows only where the run takes one: a completed run does, a cancelled one does not", async () => {
     const completed = { ...working, status: "completed", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
-    const p = await page(async () => ({ state: "none", kind: "browser", hold: "agent" }), completed, "screen");
+    const p = await page(async () => ({ state: "none", kind: "browser", hold: "agent", session: "closed" }), completed, "screen");
     expect(p.host.textContent).toContain("A follow-up opens a new one if the agent needs it.");
     act(() => root?.unmount()); document.body.innerHTML = "";
     const cancelled = { ...working, status: "cancelled", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
-    const q = await page(async () => ({ state: "none", kind: "browser", hold: "agent" }), cancelled, "screen");
+    const q = await page(async () => ({ state: "none", kind: "browser", hold: "agent", session: "closed" }), cancelled, "screen");
     expect(q.host.textContent).toContain("The browser closed when the run ended.");
     expect(q.host.textContent).not.toContain("A follow-up opens");
   });
@@ -193,7 +259,7 @@ describe("the run page's Screen tab, for a browser", () => {
   it("while the run waits on its question with its session held, it still reads and still waits for the browser", async () => {
     let reads = 0;
     const asking = { ...working, status: "input_required", state: "waiting" } as Run;
-    const p = await page(async () => { reads++; return { state: "none", kind: "browser", hold: "agent" }; }, asking, "screen");
+    const p = await page(async () => { reads++; return { state: "none", kind: "browser", hold: "agent", session: "opening" }; }, asking, "screen");
     await settle(150);
     expect(p.host.textContent).toContain("Waiting for the browser");
     expect(reads).toBeGreaterThan(1);
@@ -247,10 +313,28 @@ describe("the run page's Screen tab, for a browser", () => {
 
   it("a paused workflow with no page open waits for the browser, never says it closed with the run", async () => {
     const paused = { ...working, kind: "workflow", status: "paused", state: "idle" } as Run;
-    const p = await moving(async () => ({ state: "none", kind: "browser", hold: "agent" }), paused);
+    const p = await moving(async () => ({ state: "none", kind: "browser", hold: "agent", session: "opening" }), paused);
     await settle(80);
     expect(p.section()).toContain("Waiting for the browser");
     expect(p.section()).not.toContain("closed when the run ended");
+  });
+
+  it("a browser let go while the run waits for its person says so, with when, and stays so: never 'Waiting for the browser'", async () => {
+    const waitingOnYou = { ...working, status: "input_required", state: "waiting" } as Run;
+    const ended = { at: "2026-11-11T14:26:00.000Z", why: "The browser was released after 15 min waiting for you" };
+    let released = false;
+    const p = await moving(async () => (released ? { state: "none", kind: "browser", hold: "agent", session: "closed", ended } : { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }), waitingOnYou);
+    await settle(80);
+    expect(p.frame()).not.toBeNull();
+    released = true;
+    await settle(80);
+    expect(p.frame()).toBeNull();
+    expect(p.section()).toContain("The browser was released after 15 min waiting for you");
+    expect(p.section()).toContain("A new browser opens when the run goes on.");
+    expect(p.section()).not.toContain("Waiting for the browser");
+    // Read on and on: it stays.
+    await settle(150);
+    expect(p.section()).toContain("The browser was released after 15 min waiting for you");
   });
 
   it("an ended run that answered off is read again once a follow-up makes it go: its new browser shows under Screen", async () => {
@@ -322,7 +406,8 @@ describe("the run page's Screen tab, for a browser", () => {
     const panel = p.host.querySelector('section[aria-label="Screen"]') as HTMLElement;
     expect(panel).toBeTruthy();
     expect(panel.querySelector("[data-browser-actions]")).toBeNull();
-    expect(panel.querySelector("button")).toBeNull();
+    // No Take over or Hand back of its own: its only button sizes the view (fill the window).
+    expect([...panel.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Fill the window"]);
     // The served hold doesn't follow a take in the browser's viewer: the header doesn't say who drives.
     expect(panel.querySelector("header")!.textContent).not.toMatch(/drives|You drive/);
     expect(panel.querySelector("header")!.textContent).toContain("take over in the view below");
@@ -376,13 +461,112 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
     let takes = 0;
     let hold: "agent" | "pending" = "agent";
     const p = await screen(async () => DESKTOP_LIVE(hold), desktop, { tab: "screen", onTakeOver: async () => { takes += 1; hold = "pending"; return { hold: "pending" }; } });
-    expect(p.panel()!.querySelector("iframe")!.getAttribute("src")).toBe(FRAMED(VIEWER));
+    // The viewer is told the page has Take over and Hand back (hands=page), so its own bar shows no second one.
+    expect(p.panel()!.querySelector("iframe")!.getAttribute("src")).toBe(`${FRAMED(VIEWER)}&hands=page`);
     expect(p.panel()!.textContent).toContain("The agent drives · desktop");
     await p.click("Take over");
     expect(takes).toBe(1);
     expect(p.panel()!.textContent).toContain("Yours after the agent's step");
     expect(p.button("Taking over")!.disabled).toBe(true);
     nowhereBut(p.panel()!.querySelector("iframe"), VIEWER);
+  });
+
+  it("a desktop that was live reads released when it goes at the run's end, never 'waiting', and closed once the run ends", async () => {
+    // The order at a run's end: the desktop is let go, its viewer goes, and the read answers none, opening (the run still
+    // working: a desktop is held from the run's start to its end) before the run read turns completed.
+    let gone = false;
+    const p = await screen(async () => (gone ? { state: "none", kind: "desktop", hold: "agent", session: "opening" } : DESKTOP_LIVE()), desktop, { tab: "screen" });
+    expect(p.panel()!.querySelector("iframe")).not.toBeNull();
+    gone = true;
+    await settle(100);
+    expect(p.panel()!.querySelector("iframe")).toBeNull();
+    expect(p.panel()!.textContent).toContain("This desktop has been released.");
+    expect(p.panel()!.textContent).not.toContain("Waiting for the desktop");
+    // Read on, it stays released.
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("This desktop has been released.");
+    await p.show({ ...desktop, status: "completed", state: "idle", ended_at: "2026-11-05T09:12:00Z", computer: { kind: "desktop", provider: "e2b", state: "ended" } } as Run);
+    await settle(60);
+    expect(p.panel()!.textContent).toContain("The desktop closed when the run ended.");
+    // A follow-up's turn opens a new desktop: that one is waited for.
+    await p.show(desktop);
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("Waiting for the desktop. Its screen shows here once it is up.");
+  });
+
+  it("a stopped run's desktop never reads as waited for; the follow-up's new desktop, booting while the run is queued, is waited for", async () => {
+    let gone = false;
+    const p = await screen(async () => (gone ? { state: "none", kind: "desktop", hold: "agent", session: "opening" } : DESKTOP_LIVE()), desktop, { tab: "screen" });
+    expect(p.panel()!.querySelector("iframe")).not.toBeNull();
+    // Stopped: the turn ends and its desktop is let go; the run stays open (input required, idle), so it is still read.
+    gone = true;
+    await p.show({ ...desktop, status: "input_required", state: "idle" } as Run);
+    await settle(100);
+    expect(p.panel()!.textContent).not.toContain("Waiting for the desktop");
+    // A follow-up: the run is queued while its claim starts a new desktop.
+    await p.show({ ...desktop, status: "queued", state: "working", computer: { kind: "desktop", provider: "e2b", state: "starting" } } as Run);
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("Waiting for the desktop. Its screen shows here once it is up.");
+    expect(p.panel()!.textContent).not.toContain("released");
+  });
+
+  it("a phone opening at the run's start (never live on this page) still waits for it", async () => {
+    const phone = { ...working, status: "queued", computer: { kind: "phone", provider: "phone-harness", state: "starting" } } as Run;
+    const p = await screen(async () => ({ state: "none", kind: "phone", hold: "agent", session: "opening" }), phone, { tab: "screen" });
+    expect(p.panel()!.textContent).toContain("Waiting for the phone. Its screen shows here once it is up.");
+    // The run's badge says the phone is starting, never that the run is queued.
+    const badge = p.host.querySelector("header")!.textContent ?? "";
+    expect(badge).toContain("Starting");
+    expect(badge).not.toContain("Queued");
+  });
+
+  it("a live phone's frame fits the page's visible height below it, so the whole phone shows without scrolling; on a short page it keeps a usable size", async () => {
+    // jsdom lays nothing out: the pane's and the frame's boxes are given. The pane shows 600 px from y 200; the frame
+    // starts 150 px into it; the pane keeps 32 px of padding below its content.
+    let paneHeight = 600;
+    const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top, toJSON() {} }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.tagName === "IFRAME") return rect(350, 0);
+      if (this.hasAttribute("data-scroll-pane")) return rect(200, paneHeight);
+      return rect(0, 0);
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) { return this.hasAttribute("data-scroll-pane") ? paneHeight : 0; });
+    const phone = { ...working, computer: { kind: "phone", provider: "phone-harness", state: "ready" } } as Run;
+    const p = await screen(async () => ({ state: "live", kind: "phone", viewer: VIEWER, hold: "agent" }), phone, { tab: "screen" });
+    const frame = () => p.panel()!.querySelector("iframe") as HTMLIFrameElement;
+    expect(frame().style.height).toBe(`${600 - 150 - 32}px`);
+    paneHeight = 300;
+    await act(async () => { window.dispatchEvent(new Event("resize")); });
+    expect(frame().style.height, "past the smallest usable phone, the page scrolls").toBe("360px");
+  });
+
+  it("a card that comes or goes above a live phone moves it, and its frame fits again", async () => {
+    // A card above the screen (the agent's ask) changes the page's content, not the pane's height: the frame refits when
+    // the content does. jsdom has no ResizeObserver: this one calls back for whatever is observed when told to.
+    const observed: { target: Element; fit: () => void }[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(private readonly fit: () => void) {}
+      observe(target: Element) { observed.push({ target, fit: this.fit }); }
+      disconnect() { observed.splice(0, observed.length); }
+    });
+    let frameTop = 350;
+    const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top, toJSON() {} }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.tagName === "IFRAME") return rect(frameTop, 0);
+      if (this.hasAttribute("data-scroll-pane")) return rect(200, 700);
+      return rect(0, 0);
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) { return this.hasAttribute("data-scroll-pane") ? 700 : 0; });
+    const phone = { ...working, computer: { kind: "phone", provider: "phone-harness", state: "ready" } } as Run;
+    const p = await screen(async () => ({ state: "live", kind: "phone", viewer: VIEWER, hold: "agent" }), phone, { tab: "screen" });
+    const frame = () => p.panel()!.querySelector("iframe") as HTMLIFrameElement;
+    expect(frame().style.height).toBe(`${700 - 150 - 32}px`);
+    // A 100 px card comes above it: the pane's content grows, the pane stays as it was.
+    frameTop = 450;
+    const content = frame().closest("[data-scroll-pane]")!.firstElementChild!;
+    await act(async () => { for (const { target, fit } of observed) if (target === content) fit(); });
+    expect(frame().style.height).toBe(`${700 - 250 - 32}px`);
+    vi.unstubAllGlobals();
   });
 
   it("held by the person, it offers Hand back, which hands it back with no outcome", async () => {
@@ -454,6 +638,11 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
       await act(async () => { release(); });
       await settle();
       expect(outcomes).toEqual(["done"]);
+      // Taken: the card's answers stay off until the run's next read takes the ask away (the answer comes back before it).
+      expect(done.disabled).toBe(true);
+      await act(async () => { done.click(); });
+      await settle();
+      expect(outcomes).toEqual(["done"]);
     });
   }
 
@@ -479,5 +668,195 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
     expect(p.selected()).toBe("Timeline");
     await p.click("Open the screen");
     expect(p.selected()).toBe("Screen");
+  });
+});
+
+// Fill the window: a live screen of any kind grows to the whole window and back. The viewer inside draws the page as
+// large as it fits at its own shape and maps each click through the canvas it drew (pi-browser's live-view test checks
+// that a click lands exactly after the window grows), so here: the same iframe (never reloaded, so the session goes on),
+// its frame filling the window, and Esc, from this page or from inside the viewer, or the same button, putting it back.
+describe("the live view fills the window", () => {
+  const LIVE: RunComputer = { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" };
+  const fillButton = (host: HTMLElement) => host.querySelector('button[aria-label="Fill the window"]') as HTMLButtonElement | null;
+  const exitButton = (host: HTMLElement) => host.querySelector('button[aria-label="Exit full window (Esc)"]') as HTMLButtonElement | null;
+  const frameBox = (host: HTMLElement) => host.querySelector('[data-testid="screen-frame"]') as HTMLElement | null;
+  const filling = (host: HTMLElement) => /\bfixed\b/.test(frameBox(host)?.className ?? "") && /\binset-0\b/.test(frameBox(host)?.className ?? "");
+
+  it("the button fills the window with the same viewer, and the same button puts it back", async () => {
+    const p = await page(async () => LIVE, working, "screen");
+    const before = p.frame();
+    expect(before, "the viewer").not.toBeNull();
+    expect(filling(p.host)).toBe(false);
+    await act(async () => { fillButton(p.host)!.click(); });
+    expect(filling(p.host), "the frame fills the window").toBe(true);
+    expect(frameBox(p.host)!.getAttribute("role")).toBe("dialog");
+    expect(p.frame(), "the same iframe: the viewer isn't reloaded").toBe(before);
+    expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER));
+    expect(p.frame()!.className).toMatch(/\bflex-1\b/);
+    expect(p.frame()!.className, "no fixed shape: the viewer letterboxes the page itself").not.toMatch(/aspect-/);
+    await act(async () => { exitButton(p.host)!.click(); });
+    expect(filling(p.host)).toBe(false);
+    expect(p.frame()).toBe(before);
+    nowhereBut(p.frame(), VIEWER);
+  });
+
+  it("Esc puts it back, whether this page or the viewer inside has the keyboard", async () => {
+    const p = await page(async () => LIVE, working, "screen");
+    await act(async () => { fillButton(p.host)!.click(); });
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(filling(p.host), "Esc on the page").toBe(false);
+    await act(async () => { fillButton(p.host)!.click(); });
+    expect(filling(p.host)).toBe(true);
+    const inner = p.frame()!.contentWindow! as Window & typeof globalThis;
+    await act(async () => { inner.dispatchEvent(new inner.KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(filling(p.host), "Esc inside the viewer").toBe(false);
+    await act(async () => { fillButton(p.host)!.click(); });
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })); });
+    expect(filling(p.host), "another key leaves it filling the window").toBe(true);
+  });
+
+  it("a desktop's Take over is on the full-window bar too, and the view leaves full window when the screen closes", async () => {
+    let takes = 0;
+    let up = true;
+    const desktop = { ...working, computer: { kind: "desktop", provider: "e2b", state: "ready" } } as Run;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(RunDetail, { run: desktop, agentName: "using", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, readComputer: async () => (up ? { state: "live", kind: "desktop", viewer: VIEWER, hold: "agent" } : { state: "none", kind: "desktop", hold: "agent", session: "closed" }), computerEvery: 20, tab: "screen", onTakeOver: async () => { takes += 1; return { hold: "pending" }; } } as never)); });
+    await settle();
+    await act(async () => { fillButton(host)!.click(); });
+    expect(filling(host)).toBe(true);
+    const take = [...frameBox(host)!.querySelectorAll("button")].find((b) => b.textContent === "Take over");
+    expect(take, "Take over on the full-window bar").toBeTruthy();
+    expect([...host.querySelectorAll("button")].filter((b) => b.textContent === "Take over")).toHaveLength(1);
+    await act(async () => { take!.click(); });
+    await settle();
+    expect(takes).toBe(1);
+    up = false;
+    await settle(100);
+    expect(host.querySelector("iframe"), "the screen closed").toBeNull();
+    expect(frameBox(host), "no full-window frame left over").toBeNull();
+    expect(fillButton(host), "nothing to fill the window with").toBeNull();
+  });
+
+  it("there is no button while there is no live screen", async () => {
+    const p = await page(async () => ({ state: "none", kind: "browser", hold: "agent", session: "opening" }), working, "screen");
+    expect(p.frame()).toBeNull();
+    expect(fillButton(p.host)).toBeNull();
+  });
+
+  it("Esc inside the viewer still puts it back after a new session replaces the viewer while it fills the window", async () => {
+    let newer = false;
+    const p = await page(async () => ({ state: "live", kind: "browser", viewer: newer ? VIEWER2 : VIEWER, hold: "agent" }), working, "screen");
+    await act(async () => { fillButton(p.host)!.click(); });
+    const first = p.frame();
+    newer = true;
+    await settle(100);
+    expect(p.frame(), "a new session is a new iframe").not.toBe(first);
+    expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER2));
+    expect(filling(p.host), "still filling the window").toBe(true);
+    const inner = p.frame()!.contentWindow! as Window & typeof globalThis;
+    await act(async () => { inner.dispatchEvent(new inner.KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(filling(p.host), "Esc inside the new viewer").toBe(false);
+  });
+
+  it("a refused Take over is said inside the full-window frame, where the person is looking", async () => {
+    const desktop = { ...working, computer: { kind: "desktop", provider: "e2b", state: "ready" } } as Run;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(RunDetail, { run: desktop, agentName: "using", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, readComputer: async () => ({ state: "live", kind: "desktop", viewer: VIEWER, hold: "agent" }), computerEvery: 20, tab: "screen", onTakeOver: async () => { throw new ClientError(409, "computer_not_live", "this run's desktop is not up now, so there is nothing to take over", false); } } as never)); });
+    await settle();
+    await act(async () => { fillButton(host)!.click(); });
+    const take = [...frameBox(host)!.querySelectorAll("button")].find((b) => b.textContent === "Take over")!;
+    await act(async () => { take.click(); });
+    await settle();
+    expect(frameBox(host)!.querySelector('[role="alert"]')?.textContent).toBe("this run's desktop is not up now, so there is nothing to take over");
+    expect(host.querySelectorAll('[role="alert"]'), "said once").toHaveLength(1);
+  });
+
+  it("as a dialog it holds the focus: it moves into its bar, Tab stays inside, and closing gives it back to the button", async () => {
+    const p = await page(async () => LIVE, working, "screen");
+    const opened = fillButton(p.host)!;
+    opened.focus();
+    await act(async () => { opened.click(); });
+    const box = frameBox(p.host)!;
+    expect(box.contains(document.activeElement), "focus moved into the frame").toBe(true);
+    expect(document.activeElement).toBe(exitButton(p.host));
+    // Tab from the last stop (the viewer) wraps to the first; Shift+Tab from the first wraps to the last.
+    p.frame()!.focus();
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })); });
+    expect(document.activeElement, "Tab from the viewer wraps to the bar").toBe(exitButton(p.host));
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true })); });
+    expect(document.activeElement, "Shift+Tab from the bar wraps to the viewer").toBe(p.frame());
+    // Focus outside the frame is pulled back in on Tab.
+    document.body.appendChild(document.createElement("button")).focus();
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })); });
+    expect(box.contains(document.activeElement), "Tab from outside lands inside").toBe(true);
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(filling(p.host)).toBe(false);
+    expect(document.activeElement, "focus back on Fill the window").toBe(fillButton(p.host));
+  });
+});
+
+// The reads come every `every` ms while nothing is changing, and `soon` while a change is on its way: the screen opening
+// (none, opening), a take-over waiting for the agent's step (pending), and a moment after the page's own take-over or
+// hand-back, whose answer the next reads catch up with. So the first frame and who drives show when they happen, not
+// up to a whole `every` later.
+describe("the screen is read again soon while a change is on its way", () => {
+  const OPENING: RunComputer = { state: "none", kind: "desktop", hold: "agent", session: "opening" } as RunComputer;
+  const LIVE = (hold: "agent" | "pending" | "person"): RunComputer => ({ state: "live", kind: "desktop", viewer: VIEWER, hold });
+  async function hook(read: () => Promise<RunComputer>) {
+    const seen: { view: ScreenView | null; held: (hold: "agent" | "pending" | "person") => void }[] = [];
+    function Probe() {
+      const got = useRunScreen(read, true, 5_000, 20);
+      seen.push(got);
+      return null;
+    }
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(Probe)); });
+    return () => seen[seen.length - 1]!;
+  }
+
+  it("a screen being opened is read soon, so it shows once it is up", async () => {
+    let reads = 0;
+    const now = await hook(async () => (++reads >= 3 ? LIVE("agent") : OPENING));
+    await settle(150);
+    expect(now().view?.state).toBe("live");
+  });
+
+  it("a pending take-over is read soon, so 'You drive' follows the agent's step", async () => {
+    let reads = 0;
+    const now = await hook(async () => LIVE(++reads >= 3 ? "person" : "pending"));
+    await settle(150);
+    expect(now().view?.state === "live" && now().view).toMatchObject({ hold: "person" });
+  });
+
+  it("a failed read while a take-over is pending keeps the reads soon", async () => {
+    let reads = 0;
+    // pending, then one read that fails (a blip), then the person has it.
+    const now = await hook(async () => { reads += 1; if (reads === 2) throw new Error("a blip"); return LIVE(reads >= 3 ? "person" : "pending"); });
+    await settle(150);
+    expect(now().view?.state === "live" && now().view).toMatchObject({ hold: "person" });
+  });
+
+  it("after the page's hand-back, the reads catch up soon though its answer still said the person's", async () => {
+    let hold: "agent" | "person" = "person";
+    let reads = 0;
+    const now = await hook(async () => { reads += 1; return LIVE(hold); });
+    await settle(60);
+    const before = reads;
+    // The hand-back's answer, read right after its row was written: the runner hasn't applied it yet.
+    await act(async () => { now().held("person"); });
+    hold = "agent";
+    await settle(150);
+    expect(reads - before).toBeGreaterThan(1);
+    expect(now().view).toMatchObject({ hold: "agent" });
+  });
+
+  it("nothing on its way: the reads keep to every", async () => {
+    let reads = 0;
+    await hook(async () => { reads += 1; return LIVE("agent"); });
+    await settle(200);
+    expect(reads).toBe(1);
   });
 });

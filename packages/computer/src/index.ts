@@ -1,8 +1,10 @@
 export * from "./protocol.js";
 export * from "./result.js";
 export * from "./provider.js";
+export * from "./ui-engine.js";
+export * from "./attach.js";
 export * from "./mount.js";
-export { type CallOptions, DaemonClient, type DaemonStream } from "./client.js";
+export { type CallOptions, DaemonClient, type DaemonStream, findNodes, refusedStep, type UiActOptions, type UiQuery, UiSession } from "./client.js";
 export { type ActionFailure, type CheckActionsOptions, checkActions, isKey } from "./actions.js";
 export { pullTar, pullTarStream, pushTar, readFile, writeFile, type PulledTar } from "./files.js";
 export { listProcesses, readAll, type ReadAllResult } from "./processes.js";
@@ -23,7 +25,12 @@ export {
 	type WatchOptions,
 	watchScreen,
 } from "./screen-watch.js";
-export { type DockerDesktopOptions, type DockerEgressOptions, DockerProvider, type DockerProviderOptions } from "./docker.js";
+// The shared machine-host adapter: a vendor writes a MachineHost (src/host.ts), and hostedProvider makes it a provider.
+export type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
+export { HostedProvider, type HostedOptions, type HostedTimeouts, hostedProvider } from "./hosted/provider.js";
+// The provider classes and their option types are not here: each provider loads by its id through the registry
+// (providerFor), or from its own subpath (@parcha/agentrun-computer/docker, /daytona, /modal, /e2b, /agent37, /orgo,
+// /phone-harness, /browserbase, /kernel, /local: each the provider file's name).
 export { type DockerVolume, VOLUME_SUBPATH_ENGINE } from "./docker/volume.js";
 export {
 	DEFAULT_DOCKER_IMAGE,
@@ -42,19 +49,6 @@ export {
 	recipeTag,
 } from "./docker/image.js";
 export { EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
-export { DAYTONA_DEFAULT_SNAPSHOT, DaytonaProvider, type DaytonaProviderOptions, type DaytonaTimeouts, type WebSocketFactory, type WebSocketLike } from "./daytona.js";
-export {
-	ModalProvider,
-	type ModalApp,
-	type ModalByteSink,
-	type ModalCreateParams,
-	type ModalImage,
-	type ModalProcess,
-	type ModalProviderOptions,
-	type ModalSandbox,
-	type ModalSdk,
-	type ModalTimeouts,
-} from "./modal.js";
 export {
 	ARCHIL_HELPER,
 	ARCHIL_MOUNT_LABEL,
@@ -63,9 +57,11 @@ export {
 	ARCHIL_TOOL_USER,
 	ARCHIL_VERSION,
 	type ArchilMount,
+	type ArchilEgress,
 	type ArchilMountOptions,
 	type ArchilRoot,
 	type ProviderNote,
+	archilEgressOf,
 	archilLabels,
 	archilMount,
 	archilReadBack,
@@ -82,8 +78,13 @@ export {
 	syncingClient,
 } from "./mount-archil.js";
 export {
-	BROWSER_IMAGE,
+	type BrowserComputerProvider,
+	type BrowserDownloads,
+	type BrowserFile,
+	type BrowserProfiles,
+	browserSpecRefusals,
 	type BrowserStream,
+	isBrowserProvider,
 	BrowserVendorError,
 	CREATE_LABEL,
 	causeOf,
@@ -93,24 +94,18 @@ export {
 	type RestReply,
 	type UrlStore,
 } from "./browser.js";
-export {
-	BROWSERBASE_API_URL,
-	BROWSERBASE_MAX_LIFETIME_MS,
-	type BrowserbaseApi,
-	type BrowserbaseDebug,
-	BrowserbaseProvider,
-	type BrowserbaseProviderOptions,
-	type BrowserbaseSession,
-	type BrowserbaseSessionSettings,
-	browserbaseRest,
-} from "./browserbase.js";
-export { KERNEL_API_URL, KERNEL_MAX_LIFETIME_MS, type KernelBrowserSettings, KernelProvider, type KernelProviderOptions, type KernelRequest, kernelRest } from "./kernel.js";
-export { DAEMON_IN_COMPUTER, drift, helloDrift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected, type HelloExpected } from "./drift.js";
+// Local Chrome's provider class is on its provider id's subpath (@parcha/agentrun-computer/local-chrome), as every
+// provider's is; the Chrome helpers it runs on are not a provider and stay here.
+export { CHROME_ENV, CHROME_FLAGS, checkChrome, chromeFence, findChrome, killTree, NO_CHROME } from "./chrome.js";
+export { DAEMON_IN_COMPUTER, helloDrift, type HelloExpected } from "./drift.js";
+export { drift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected } from "./docker/inspect.js";
 export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept } from "./janitor.js";
-export { EPOCH_LABEL, epochOf, epochProblem, RUN_LABEL, runLabels, runProblem } from "./labels.js";
+export { EPOCH_LABEL, epochOf, epochProblem, IDLE_TTL_LABEL, OWNER_LABEL, OWNER_SERVER_LABEL, ownerFilter, ownerLabels, ownerOf, RUN_HASH_LABEL, RUN_LABEL, runHash, runLabels, runProblem } from "./labels.js";
 export { waitUntil, type WaitOptions } from "./wait.js";
 export {
+	type BuiltinProviderId,
 	type ConformanceModule,
+	descriptorOf,
 	isProviderId,
 	type ProviderEnv,
 	providerFor,
@@ -121,14 +116,45 @@ export {
 	type ProviderOptions,
 	providers,
 } from "./providers.js";
+export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type HostCommand, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
+export {
+	AGENT37,
+	AGENT37_BASE_TEMPLATE,
+	AGENT37_BOX_TEMPLATE,
+	BROWSER_IMAGE,
+	BROWSERBASE,
+	DAYTONA,
+	DAYTONA_DEFAULT_SNAPSHOT,
+	DAYTONA_GPU_SNAPSHOT,
+	type DaytonaGpuSnapshot,
+	DESCRIPTORS,
+	daytonaGpu,
+	daytonaGpuSnapshot,
+	DOCKER,
+	E2B,
+	E2B_BASE_TEMPLATE,
+	E2B_DESKTOP_TEMPLATE,
+	KERNEL,
+	LOCAL,
+	MODAL,
+	MODAL_DEFAULT_IMAGE,
+	ORGO,
+	ORGO_BASE_IMAGE,
+	PHONE_GROUPS,
+	PHONE_HARNESS,
+	PHONE_IMAGE,
+} from "./descriptors/index.js";
 // Types only: the phone ledger serve backs with its store. The provider itself loads through the registry.
 export type { PhoneLedger, PhoneLedgerEntry } from "./phone-harness.js";
 export {
 	type ComputerSettingKind,
+	configurationOf,
+	entryOf,
+	imagesOf,
 	type KindCapabilities,
 	kindOf,
+	kindServed,
 	type ProviderEntry,
-	type ProviderKey,
 	PROVIDERS,
 	SETTING_KIND_NAMES,
 	SETTING_KINDS,

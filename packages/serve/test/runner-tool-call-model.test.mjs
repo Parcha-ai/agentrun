@@ -10,7 +10,7 @@
 // store, the run's Workspace its Mode 1 folder; the model is the shared scripted origin, its route carrying the catalog's
 // facts for the model (`like`).
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -69,7 +69,7 @@ async function piRun(t, { tools, like, script, files = {}, during, computer }) {
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Do it, then say done.", tools } });
-  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } } });
   const folder = runFolder(dir, "agent-1", "run-1");
   mkdirSync(folder, { recursive: true });
   for (const [name, bytes] of Object.entries(files)) writeFileSync(join(folder, name), bytes);
@@ -119,7 +119,7 @@ test("a route carries what its catalog model takes as input, on every wire: a te
   assert.equal(responses.provider.api, "openai-responses");
   assert.deepEqual(responses.like?.input, ["text"], `the Responses route says text alone: ${JSON.stringify(responses.like)}`);
   // An Anthropic model, on Anthropic's own route, takes images.
-  const anthropic = await routeOf("anthropic/claude-sonnet-4-5", key);
+  const anthropic = await routeOf("anthropic/claude-sonnet-5-5", key);
   assert.ok(anthropic.like?.input?.includes("image"), `the Anthropic route says it takes images: ${JSON.stringify(anthropic.like)}`);
 });
 

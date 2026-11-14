@@ -5,15 +5,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { DaytonaProvider, ModalProvider } from "../dist/index.js";
+import { DaytonaProvider } from "../dist/daytona.js";
+import { ModalProvider } from "../dist/modal.js";
 import * as daytona from "../dist/daytona.js";
 import * as docker from "../dist/docker.js";
 import * as e2b from "../dist/e2b.js";
 import * as modal from "../dist/modal.js";
-import { API, fakeDaytona, KEY } from "./fake-daytona.mjs";
 import { fakeDocker } from "./fake-docker.mjs";
-import { fakeE2B, KEY as E2B_KEY } from "./fake-e2b.mjs";
-import { DAEMON_IMAGE, fakeModal } from "./fake-modal.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "computer-provider-mount-"));
 const DAEMON = join(dir, "computerd");
@@ -28,21 +26,27 @@ test("Docker: MOUNT is [\"bind\"], what its provider declares", () => {
 	assert.deepEqual([...docker.MOUNT], declared(fakeDocker({ desktop: {} }).provider), "a desktop takes the same mount");
 });
 
+/** The Modal SDK's slice, never called: these build a provider only to read what it declares. */
+const MODAL_SDK = {
+	apps: { fromName: () => assert.fail("apps.fromName was called") },
+	images: { fromRegistry: () => assert.fail("images.fromRegistry was called") },
+	sandboxes: Object.fromEntries(["create", "fromId", "list"].map((name) => [name, () => assert.fail(`sandboxes.${name} was called`)])),
+};
+
 test("Modal: MOUNT is [\"archil\"], what its provider declares", () => {
-	const provider = new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: DAEMON_IMAGE });
+	const provider = new ModalProvider({ sdk: MODAL_SDK, app: "computers" });
 	assert.deepEqual([...modal.MOUNT], ["archil"]);
 	assert.deepEqual([...modal.MOUNT], declared(provider));
 });
 
-test("Daytona: MOUNT is [\"archil\"], what its provider declares", () => {
-	const fake = fakeDaytona();
-	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: fake.fetch, webSocket: fake.webSocket });
-	assert.deepEqual([...daytona.MOUNT], ["archil"]);
+test("Daytona: MOUNT is [], what its provider declares: Archil's client hangs on its sandboxes", () => {
+	const provider = new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: DAEMON, fetch: async () => assert.fail("no request") });
+	assert.deepEqual([...daytona.MOUNT], []);
 	assert.deepEqual([...daytona.MOUNT], declared(provider));
 });
 
 test("E2B: MOUNT is [\"archil\"], what its provider declares", () => {
-	const provider = new e2b.E2BProvider({ apiKey: E2B_KEY, Sandbox: fakeE2B().Sandbox, daemonPath: DAEMON });
+	const provider = new e2b.E2BProvider({ apiKey: "fake-test-key", Sandbox: Object.fromEntries(["create", "connect", "getInfo", "setTimeout", "kill", "list"].map((name) => [name, () => assert.fail(`Sandbox.${name} was called`)])), daemonPath: DAEMON });
 	assert.deepEqual([...e2b.MOUNT], ["archil"]);
 	assert.deepEqual([...e2b.MOUNT], declared(provider));
 });

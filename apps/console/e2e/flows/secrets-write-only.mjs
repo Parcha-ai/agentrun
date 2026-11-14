@@ -13,7 +13,7 @@ export default {
   name: "secrets-write-only",
   signedIn: true,
   server: { env: { PARALLEL_API_KEY: FROM_ENV } },
-  async run({ page, origin, api, errors }) {
+  async run({ page, origin, api, errors, icons }) {
     await page.goto(`${origin}/#/settings/keys`);
 
     // Set in the environment: greyed, said so, and no Paste, Replace or Remove.
@@ -42,5 +42,12 @@ export default {
     check(refused.status === 403, `the token's paste answered ${refused.status}`);
     check(JSON.stringify(refused.body).includes("the API token can't write secrets"), `the token's refusal said ${JSON.stringify(refused.body)}`);
     check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
+
+    // A provider's icon is the one thing the page asks outside its origin (the harness answers it): by the provider's
+    // public site alone, with no referrer, so the asked service learns nothing of this server. The CSP lets it show.
+    await page.waitForFunction(() => { const i = [...document.querySelectorAll("img[data-provider-icon]")]; return i.length > 0 && i.every((x) => x.complete && x.naturalWidth > 0); });
+    check(icons.length > 0, "no provider icon was asked for");
+    check(icons.every((i) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(i.site ?? "")), `an icon was asked by something other than a site: ${JSON.stringify(icons)}`);
+    check(icons.every((i) => i.referer === null), `an icon request carried a referrer: ${JSON.stringify(icons)}`);
   },
 };

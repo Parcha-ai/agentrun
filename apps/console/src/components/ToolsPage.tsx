@@ -1,9 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
 import { PerHarness, PinNote, ToolTable, toolRows } from "@/components/ToolSettings";
+import { Banner } from "@/components/ui/banner";
+import { Button } from "@/components/ui/button";
 import { type Client, ClientError } from "@/lib/client";
+import { grantOf, mcpGrant, type McpServer } from "@/lib/mcp";
 import { issuesFor, ownSettings, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import type { ApiError, ToolSettings } from "@/lib/v2";
+
+/** Each saved MCP server's tools as rows of this server's table (`mcp:<server>/<tool>`), with the permissions its read
+ *  gives each (what this server applies to an agent that sets none, its default, those offered). A tool the read gives
+ *  none of (a meta tool, never granted) has no row: the server says what may be set, the console keeps no rule of its own.
+ *  Ask is offered as the server's own rows offer it (`askNeeds`: accounts off). */
+export const mcpGates = (servers: readonly McpServer[], askNeeds: boolean): ToolGate[] => servers.flatMap((server) => server.tools.flatMap((tool): ToolGate[] => (tool.permissions?.length && tool.default_permission
+  ? [{ name: mcpGrant(server.name, tool.name), permission: tool.permission ?? tool.default_permission, default_permission: tool.default_permission, permissions: tool.permissions, ...(askNeeds && tool.permissions.includes("ask") ? { ask_needs: "password" as const } : {}) }]
+  : [])));
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 
@@ -12,9 +23,17 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
  *  `onSaved` reads the capabilities again: what each capability resolves to is the server's to say. `onOpen` reads them as
  *  the page opens, since the settings it reads may be newer than capabilities read earlier (another tab's change); until
  *  capabilities name the provider a row shows, its resolution reads "reading…", and a read that failed says so with
- *  Retry (`onOpen` answers whether its read landed). */
-export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Client; choices: ToolChoice[]; gates?: ToolGate[]; onSaved: () => void; onOpen?: () => Promise<boolean> | void }) {
+ *  Retry (`onOpen` answers whether its read landed). `harnesses` (capabilities') greys out a harness this server can't run.
+ *  `mcp`: this server has an MCP client, so each saved MCP server's tools are rows too (mcpGates), read as the page opens. */
+export function ToolsPage({ v2, choices, gates = [], harnesses, mcp = false, onSaved, onOpen }: { v2: Client; choices: ToolChoice[]; gates?: ToolGate[]; harnesses?: readonly { id: string; available: boolean; reason?: string }[]; mcp?: boolean; onSaved: () => void; onOpen?: () => Promise<boolean> | void }) {
   const [answer, setAnswer] = useState<ToolSettings | null>(null);
+  const [servers, setServers] = useState<McpServer[] | "failed" | null>(null);
+  const loadServers = () => {
+    if (!mcp) return;
+    setServers(null);
+    v2.listMcpServers().then((r) => setServers(r.servers), () => setServers("failed"));
+  };
+  useEffect(loadServers, [v2, mcp]); // eslint-disable-line react-hooks/exhaustive-deps
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [problem, setProblem] = useState<{ fields: Record<string, string>; error: ApiError | null; unread?: true } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -35,16 +54,18 @@ export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Cl
   useEffect(readCaps, []); // eslint-disable-line react-hooks/exhaustive-deps
   if (!answer) return loadError
     ? (
-      <div className="m-8 border p-4" role="alert">
-        <p className="font-mono text-[13px] text-destructive-text">The tool settings could not be read: {loadError.code}: {loadError.message}</p>
-        <button type="button" onClick={load} className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>
-      </div>
+      <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}>
+        <p className="font-mono">The tool settings could not be read: {loadError.code}: {loadError.message}</p>
+      </Banner>
     )
-    : <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
+    : <p className="p-8 text-center font-mono text-body text-muted-foreground">Loading...</p>;
   const read = ownSettings(answer, choices);
   // What the table shows: the settings read, with a change not saved yet on top.
   const own = unsaved ? unsaved(read) : read;
-  const rows = toolRows(choices, gates);
+  const rows = toolRows(choices, [...gates, ...(Array.isArray(servers) ? mcpGates(servers, gates.some((g) => g.ask_needs === "password")) : [])]);
+  // An MCP tool's default here: its server's wildcard (`mcp:<server>/*`) where this server sets one, as the gate applies
+  // it before the built-in default.
+  const wildcardOf = (name: string) => { const grant = grantOf(name); return grant ? own[`mcp:${grant.server}/*`]?.permission : undefined; };
   // The tools this server pins (an MCP tool's pin bounds its calls), or whose pin doesn't read, by settings key.
   const pinned = Object.entries(own).filter(([, s]) => s?.pin || s?.pin_broken);
   // Capabilities' word on what a tool resolves to holds only for the permission they were read with: one changed since
@@ -85,45 +106,49 @@ export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Cl
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
         <div>
-          <p className="caps text-[11px] text-muted-foreground">Settings</p>
+          <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Tools</h1>
-          <p className="mt-2 text-[14px] text-muted-foreground">This server's provider for each tool that has a choice, and what it resolves to on each harness. A change is saved at once and applies to every run launched from then on. An agent with a provider of its own keeps it.</p>
-          {gates.length > 0 && <p className="mt-2 text-[14px] text-muted-foreground">Each tool's permission: <span className="font-mono text-[13px]">allow</span> runs it, <span className="font-mono text-[13px]">ask</span> makes the run wait for your approval at each call, <span className="font-mono text-[13px]">deny</span> refuses it and tells the agent why. A permission applies at the next call, in runs already going too. An agent's own allow or ask takes the place of this server's; deny here refuses it for every agent.</p>}
+          <p className="mt-2 text-lead text-muted-foreground">This server's provider for each tool that has a choice, and what it resolves to on each harness. A change is saved at once and applies to every run launched from then on. An agent with a provider of its own keeps it.</p>
+          {gates.length > 0 && <p className="mt-2 text-lead text-muted-foreground">Each tool's permission: <span className="font-mono text-body">allow</span> runs it, <span className="font-mono text-body">ask</span> makes the run wait for your approval at each call, <span className="font-mono text-body">deny</span> refuses it and tells the agent why. A permission applies at the next call, in runs already going too. An agent's own allow or ask takes the place of this server's; deny here refuses it for every agent.</p>}
         </div>
         <section aria-label="This server's providers">
           {rows.length ? (
             <ToolTable label="This server's tool settings" rows={rows} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onEdit={(edit) => void save(edit)}
+              permissionFallbackOf={(g) => wildcardOf(g.name) ?? g.default_permission}
               refused={(_, permission) => permission === "deny"}
-              resolvesOf={(t, provider) => (provider === t.provider && readFor(t.name) ? <PerHarness choice={t} />
-                : capsRead === "reading" ? <span className="block font-mono text-[12px] text-muted-foreground">reading…</span>
-                : <span className="block text-[12px] text-muted-foreground">{capsRead === "failed" ? "What it resolves to couldn't be read." : "It changed while this page read it."} <button type="button" onClick={retry} disabled={busy} className="caps ml-1 border px-2 py-0.5 text-[11px] hover:bg-accent disabled:opacity-45">Retry</button></span>)} />
-          ) : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">This server offers no tool with a choice of provider.</p>}
-          {rest.map((m) => <p key={m} className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}
+              resolvesOf={(t, provider) => (provider === t.provider && readFor(t.name) ? <PerHarness choice={t} harnesses={harnesses} />
+                : capsRead === "reading" ? <span className="block font-mono text-small text-muted-foreground">reading…</span>
+                : <span className="block text-small text-muted-foreground">{capsRead === "failed" ? "What it resolves to couldn't be read." : "It changed while this page read it."} <Button type="button" onClick={retry} disabled={busy} size="xs" className="ml-1">Retry</Button></span>)} />
+          ) : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">This server offers no tool with a choice of provider.</p>}
+          {servers === "failed" && (
+            <p className="mt-2 text-small text-muted-foreground" role="alert">The MCP servers' tools could not be read, so they are not listed. <Button type="button" size="xs" className="ml-1" onClick={loadServers} disabled={busy}>Retry</Button></p>
+          )}
+          {rest.map((m) => <p key={m} className="mt-2 font-mono text-small text-destructive-text" role="alert">{m}</p>)}
           {problem?.error && <div className="mt-3 border"><RunError error={problem.error} title="The change was not saved" /></div>}
           {problem?.unread && (
             <div className="mt-3 border p-3" role="alert">
-              <p className="font-mono text-[12px] text-destructive-text">Couldn't read the current settings, so nothing was saved. Try again.</p>
-              <button type="button" onClick={() => void save((current) => current)} disabled={busy} className="caps mt-2 border px-3 py-1.5 text-[11px] hover:bg-accent disabled:opacity-60">Try again</button>
+              <p className="font-mono text-small text-destructive-text">Couldn't read the current settings, so nothing was saved. Try again.</p>
+              <Button type="button" size="xs" className="mt-2" onClick={() => void save((current) => current)} disabled={busy}>Try again</Button>
             </div>
           )}
           {/* A settings read that failed once the page shows settings: the table keeps the last ones read and says so, with
               Try again. A save's answer is newer, so it clears this. */}
           {loadError && (
             <div className="mt-3 border p-3" role="alert">
-              <p className="font-mono text-[12px] text-destructive-text">The tool settings could not be read again: {loadError.code}: {loadError.message}</p>
-              <p className="mt-1 text-[12px] text-muted-foreground">The table shows the last ones read.</p>
-              <button type="button" onClick={retry} disabled={busy} className="caps mt-2 border px-3 py-1.5 text-[11px] hover:bg-accent disabled:opacity-60">Try again</button>
+              <p className="font-mono text-small text-destructive-text">The tool settings could not be read again: {loadError.code}: {loadError.message}</p>
+              <p className="mt-1 text-small text-muted-foreground">The table shows the last ones read.</p>
+              <Button type="button" onClick={retry} disabled={busy} size="xs" className="mt-2">Try again</Button>
             </div>
           )}
         </section>
         {pinned.length > 0 && (
           <section aria-label="Pinned tools">
-            <h2 className="caps text-[12px] font-semibold">Pinned tools</h2>
-            <p className="mt-1 text-[13px] text-muted-foreground">A pin bounds a tool's calls for every agent on this server, its own pin beside it.</p>
+            <h2 className="caps text-small font-semibold">Pinned tools</h2>
+            <p className="mt-1 text-body text-muted-foreground">A pin bounds a tool's calls for every agent on this server, its own pin beside it.</p>
             <ul className="mt-2 border">
               {pinned.map(([name, setting]) => (
                 <li key={name} data-pin={name} className="border-b px-3 py-2.5 last:border-b-0">
-                  <p className="font-mono text-[13px]">{name}</p>
+                  <p className="font-mono text-body">{name}</p>
                   <PinNote setting={setting} />
                 </li>
               ))}

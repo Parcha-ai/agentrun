@@ -9,7 +9,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { DockerProvider } from "../../dist/index.js";
+import { DockerProvider } from "../../dist/docker.js";
+import { newRequest } from "./request.mjs";
 import { createForDeadline } from "./deadline.mjs";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
@@ -53,7 +54,7 @@ describe("a Docker computer's init and its processes", { skip: LIVE ? false : "s
 		const daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
 		provider = new DockerProvider({ daemonPath });
-		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", labels: { "agentrun.test": "processes" } });
+		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", labels: { "agentrun.test": "processes" } }, newRequest("processes"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		ref = created.value;
 		made.push(ref.name);
@@ -103,7 +104,7 @@ describe("a Docker computer's init and its processes", { skip: LIVE ? false : "s
 	it("ends at its deadline with a process that ignores TERM still running: init ends every process and exits 0", async (t) => {
 		// 45 s, with 15 s of it left to connect and start the process, or longer on a host slow to start it
 		// (createForDeadline); the test asserts the end, not its timing.
-		const got = await createForDeadline(t, (lifetimeMs) => provider.create({ image: IMAGE, lifetimeMs, network: "none", labels: { "agentrun.test": "processes" } }), {
+		const got = await createForDeadline(t, (lifetimeMs) => provider.create({ image: IMAGE, lifetimeMs, network: "none", labels: { "agentrun.test": "processes" } }, newRequest("processes-deadline")), {
 			lifetimeMs: 45_000,
 			leftMs: 15_000,
 			keep: (name) => made.push(name),

@@ -4,19 +4,26 @@
 // a workflow's decision rows among them by time, each
 // shown through the same set (decision-rows.ts withDecisions); and each error row read as the run's error is (main's
 // servedError): a refused key in plain words (key-refusal.ts keyRefusal), else the provider's words in the error's one
-// rule (shownOf: no held value, no loopback address). A run whose hand can't be read back here serves no row. A trigger's
-// row names the trigger as it is now (main's servedTriggerRow): its name read by its id from the store at each read,
-// never one the run's launch froze, cut as the row's words are; a trigger gone keeps the id the journal wrote.
-import type { Context } from "@earendil-works/chord";
-import { TRIGGER_LABELS, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+// rule (shownOf: no held value, no loopback address); and its learning row once its learning ended (main's withLearning).
+// A run whose hand can't be read back here serves no row. A trigger's row names the trigger as it is now (main's
+// servedTriggerRow): its name read by its id from the store at each read, never one the run's launch froze, cut as the
+// row's words are; a trigger gone keeps the id the journal wrote.
+import type { Context } from "@earendil-works/chord/context";
+import { TRIGGER_LABELS, type TimelineEvent } from "./timeline/index.js";
 import { withDecisions } from "./decision-rows.js";
+import { currentLearning, holdsForOk, type ItemStatus, type Learning, secretsShown } from "./learning.js";
+import { withLearning } from "./learning-run.js";
+import { runLearningEnd } from "./store-reads/learning.js";
 import { redacted } from "./key-refusal.js";
-import { runCutValues, runErrorWordsOf } from "./run-cut.js";
-import { answersOf, asksOf, type SignInReader, shownOf, withApprovalRows, withAsks } from "./run-view.js";
+import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
+import { answersOf, asksOf, type SignInReader, shownOf, withApprovalRows, withAsks, withBudgetRows, withOverCap } from "./run-view.js";
+import { launchOf } from "./handed-values.js";
+import { capNowOf } from "./runner/journal-kinds.js";
+import { overCapBound } from "./runner/metrics.js";
 import { journalRecords } from "./runner/journal-reader.js";
 import { decisionsOverStore } from "./store-reads/decisions.js";
 import { readRun } from "./store-reads/runs.js";
-import { runTimeline } from "./store-reads/journal.js";
+import { runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { FINAL_STATES, type Store } from "./store/store.js";
 
 export type ServedTimelineDeps = {
@@ -24,43 +31,78 @@ export type ServedTimelineDeps = {
   readonly signIns?: SignInReader;
   /** The environment a run's model key is read from, with the keys a person saved (withSecrets, as main's plainKey). */
   readonly keyEnv: () => NodeJS.ProcessEnv;
+  /** Each learned item's status on an agent's learning folder's main (learning-routes.ts statusesOf): what a run held for
+   *  its owner's OK reads as it stands there. None: as the merge wrote it. */
+  readonly statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>;
 };
 
 /** Run `runId`'s Timeline rows as served: cut by its one cut set, its decision rows among them, its error rows in the
  *  run's error's words; none for a run withheld. */
 export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store, runId: string, context: Context): Promise<TimelineEvent[]> {
-  const cut = await runCutValues(deps, store, runId);
-  if (cut === "unreadable") return [];
-  const { values } = cut;
-  const redact = (text: string) => redacted(text, values);
-  // The rows a person reads: each call that waited for approval in order (held, your approval, what came of it), its
-  // arguments and the person's notes through the cut (run-view.ts withApprovalRows), as main's served Timeline read them.
-  // A call asked before an end in the journal reads withdrawn in that end's words; a stopped or failed run's (states no
-  // reopen leaves) whose journal holds no end, by its row (answersOf `final`).
-  const run = await store.runs.get(runId);
-  const ended = run ? FINAL_STATES.includes(run.state) : false;
-  const records = await journalRecords(store.readJournal(runId), context);
-  const final = run?.state === "stopped" || run?.state === "failed" ? run.state : undefined;
-  // A question the agent asked (ask_person) and waits on: its waiting row after the call's result (run-view.ts withAsks), as
-  // the run's view carries it and main's served Timeline did, so the console's "The agent asks" box reads that question,
-  // never an earlier wait's words.
-  const rows = withApprovalRows(withAsks(await runTimeline(store, runId, context, { redact })), asksOf(records.entries), answersOf(records.entries, { final }), redact);
-  // A workflow's decisions: their rows among the model nodes' by time, each text shown through the cut set, with as many
-  // characters held back from a text stored cut as a held value takes in its widest form (main's decisionShown).
-  const receipts = await decisionsOverStore(store, runId, context).catch(() => null);
-  const decisionShown = { redact: (text: string) => redacted(text, values), hold: 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16 };
-  const own = receipts === null || receipts.length ? withDecisions(rows, receipts, decisionShown, { ended }) : rows;
+  // The run's rows, its decisions, its learning end and the triggers' names, all read in one snapshot of the store (one
+  // moment, whatever the run's runner writes meanwhile): a row from before an answer never sits beside one from after it.
+  // They are rendered under the run's cut, which is read before the snapshot and again after it (underCut): the cut only
+  // grows, so a cut that is the same after holds every value saved before the rows were read.
+  const read = await underCut(() => runCutValues(deps, store, runId), async (cut) => {
+    if (cut === "unreadable") return undefined;
+    const { values } = cut;
+    const redact = (text: string) => redacted(text, values);
+    return { values, redact, ...(await store.snapshot(async (snapshot) => {
+      // The rows a person reads: each call that waited for approval in order (held, your approval, what came of it), its
+      // arguments and the person's notes through the cut (run-view.ts withApprovalRows), as main's served Timeline read them.
+      // A call asked before an end in the journal reads withdrawn in that end's words; a stopped or failed run's (states no
+      // reopen leaves) whose journal holds no end, by its row (answersOf `final`).
+      const run = await snapshot.runs.get(runId);
+      const ended = run ? FINAL_STATES.includes(run.state) : false;
+      const records = await journalRecords(snapshot.readJournal(runId), context);
+      const final = run?.state === "stopped" || run?.state === "failed" ? run.state : undefined;
+      // A question the agent asked (ask_person) and waits on: its waiting row after the call's result (run-view.ts withAsks), as
+      // the run's view carries it and main's served Timeline did, so the console's "The agent asks" box reads that question,
+      // never an earlier wait's words.
+      // Its final answer whole, as the run's view serves it (store-reads/journal.ts wholeAnswers): a row's cut is no answer's.
+      // A run that ended is read settled, as its view reads it: nothing of it is in flight, so a request it left unanswered
+      // is a cost unknown, never one still running; its usage row says its cost, never what it has cost so far.
+      // Over is not final: an agentic run a person stopped is final in the store but reads running in its view (readRun: its
+      // turn is over, the run can go on), and its usage row says what it has cost so far there, so here too.
+      const view = await readRun(snapshot, runId, context);
+      const options = { redact, settled: ended, ended: view ? view.state !== "running" : false };
+      const timeline = await wholeAnswers(snapshot, runId, context, await runTimeline(snapshot, runId, context, options), options, wholeAnswerFor(values));
+      // A run whose booked spend passed its cap says so, by how much, after its usage row (run-view.ts withOverCap, as main's
+      // served Timeline did): at the cap as it stands (a raise taken counts, capNowOf), a cache miss within the bound of the
+      // requests since its spend last fit said as one (overCapBound).
+      const capNow = capNowOf((await launchOf(snapshot, runId))?.maxCostUsd, records.entries);
+      const overCap = capNow === undefined ? timeline : withOverCap(timeline, capNow, overCapBound(records.entries as never, capNow));
+      // Each pause at its cap shown as the server's row, and the one it stands at now as its waiting row (withBudgetRows).
+      const capped = withBudgetRows(overCap, records.entries as never, { ended });
+      const rows = withApprovalRows(withAsks(capped), asksOf(records.entries), answersOf(records.entries, { final }), redact);
+      // A workflow's decisions: their rows among the model nodes' by time, each text shown through the cut set, with as many
+      // characters held back from a text stored cut as a held value takes in its widest form (main's decisionShown).
+      const receipts = await decisionsOverStore(snapshot, runId, context).catch(() => null);
+      const decisionShown = { redact: (text: string) => redacted(text, values), hold: 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16 };
+      const own = receipts === null || receipts.length ? withDecisions(rows, receipts, decisionShown, { ended }) : rows;
+      // The run's learning end, once its learning was proposed, merged or dropped (runLearningEnd).
+      const end = await runLearningEnd(snapshot, runId);
+      // Each trigger the rows name, read once for this read: its name now, or none for one gone.
+      const names = new Map<string, string | undefined>();
+      for (const row of own) if (row.trigger && !names.has(row.trigger.id)) names.set(row.trigger.id, (await snapshot.triggers.get(row.trigger.id))?.name);
+      return { run, own, end, names };
+    })) };
+  });
+  if (!read) return [];
+  const { values, redact, run, own, end, names } = read;
   // An error row reads as the run's error does (run-cut.ts runErrorWordsOf, main's errorWords): a refused key in plain
-  // words, else no held value and no loopback address.
+  // words, else no held value and no loopback address. Read after the snapshot, through the server's own handles (the
+  // agent's sign-ins), which the snapshot's connection would hold up.
   const workflow = (await readRun(store, runId, context))?.kind === "workflow";
   const words = await runErrorWordsOf(deps, store, runId, { workflow });
   if (words === "unreadable") return [];
-  // Each trigger the rows name, read once for this read: its name now, or none for one gone.
-  const names = new Map<string, string | undefined>();
-  for (const row of own) if (row.trigger && !names.has(row.trigger.id)) names.set(row.trigger.id, (await store.triggers.get(row.trigger.id))?.name);
+  // The run's learning row (learning-run.ts withLearning, main's row): what the end held for the owner's OK read as the run's
+  // view reads it (on its agent's folder's main), its words cut by the same set.
+  const learning = end ? (holdsForOk(end as Learning) && run && deps.statuses ? currentLearning(end as Learning, await deps.statuses(run.agentId)) : (end as Learning)) : undefined;
+  const learned = withLearning(own, learning, secretsShown(values));
   // A refused key's plain words are its summary and its text alike; any other error keeps each in the one rule.
   const shown = shownOf(values);
-  return own.map((row) => {
+  return learned.map((row) => {
     if (row.trigger) return named(row, names.get(row.trigger.id), redact);
     if (row.kind !== "error") return row;
     const said = row.text ? words(row.text) : undefined;

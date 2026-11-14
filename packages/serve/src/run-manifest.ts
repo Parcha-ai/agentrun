@@ -9,8 +9,8 @@ import { type Entry, type Workspace, workspaceAt } from "./workspace/index.js";
 /** The most files the line names; the rest are counted. */
 export const MANIFEST_ENTRIES = 20;
 
-/** The most the first message may take, as the JSON string the run's door is sent: pi-durable-disk's door takes a body of
- *  at most 1 MiB (serve.ts), and this leaves room for the request's other fields. */
+/** The most the first message may take, as the JSON string the run's door is sent: a door takes a body of
+ *  at most 1 MiB, and this leaves room for the request's other fields. */
 export const FIRST_MESSAGE_BYTES = (1 << 20) - 4096;
 
 /** `bytes` as a person reads a size: `32 B`, `1.5 KB`, `2.0 MB`. */
@@ -64,6 +64,24 @@ export async function inputFiles(given: Workspace | string): Promise<ManifestFil
   };
   await into(INPUTS_DIR, 1);
   return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
+/** The text a run's input is sent to its model as, on every harness: its `content`, then, after a blank line, its other
+ *  fields (an agent's typed input, definition.input_schema) as one fenced json block under the line `Input:`, so the
+ *  model reads each field by its name and its value as given, never as prose a value could break out of. The fence is
+ *  longer than any run of backticks in the JSON, so no value ends the block. No other field: the content alone. */
+export function inputMessage(input: unknown): string {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return "";
+  const { content, ...fields } = input as Record<string, unknown>;
+  const text = typeof content === "string" ? content : "";
+  if (!Object.keys(fields).length) return text;
+  const json = JSON.stringify(fields, null, 2);
+  // A loop, never a spread into Math.max: a value may hold more runs of backticks than a call takes arguments.
+  let longest = 3;
+  for (const run of json.matchAll(/`+/g)) longest = Math.max(longest, run[0].length + 1);
+  const fence = "`".repeat(longest);
+  const block = `Input:\n${fence}json\n${json}\n${fence}`;
+  return text ? `${text}\n\n${block}` : block;
 }
 
 /** The run's first message: `content`, then, after a blank line, the files given to it, when it has any: as many named

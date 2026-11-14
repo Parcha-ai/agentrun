@@ -49,6 +49,15 @@ describe("the agent page's header on a phone", () => {
     expect(classes(header)).toContain("max-sm:py-3");
   });
 
+  it("Edit with your coding agent sits beside Edit, its icon alone and its words read", async () => {
+    const host = await agentPage();
+    const handoff = [...host.querySelectorAll("header button")].find((b) => b.textContent?.includes("Edit with your coding agent"))!;
+    expect(handoff.closest("[data-phone-row]")).not.toBeNull();
+    expect(handoff.getAttribute("title")).toBe("Edit with your coding agent");
+    expect(classes(handoff)).toEqual(expect.arrayContaining(["max-sm:w-8", "max-sm:px-0"]));
+    expect(classes([...handoff.querySelectorAll("span")].find((s) => s.textContent === "Edit with your coding agent"))).toContain("max-sm:sr-only");
+  });
+
   it("the revision's facts fold into one line that opens them; 640 px and up show the list as before", async () => {
     const host = await agentPage();
     const list = host.querySelector('dl[aria-label="Current revision"]')!;
@@ -113,6 +122,15 @@ describe("the run box on a phone", () => {
     expect(classes([...files.querySelectorAll("span")].find((s) => s.textContent?.startsWith("or drop them here")))).toContain("max-sm:hidden");
   });
 
+  it("Run with your coding agent is beside the files from 640 px up, and not in a phone's one-line run row", () => {
+    const host = bar();
+    const row = host.querySelector('section[aria-label="Start a run"] [data-phone-row]')!;
+    const handoff = [...row.querySelectorAll("button")].find((b) => b.textContent?.includes("Run with your coding agent"))!;
+    expect(handoff).toBeDefined();
+    expect(classes(handoff)).toContain("max-sm:hidden");
+    expect(handoff.parentElement!.contains(row.querySelector('[role="group"][aria-label="Files for the run"]'))).toBe(true);
+  });
+
   it("a workflow's JSON input keeps its height", () => {
     const wf = agentFixture("lead-scorer");
     const host = mount(createElement(RunBar, { agent: wf, efforts: [], v2: {} as never, go: () => {} }));
@@ -133,7 +151,8 @@ describe("the run page's header on a phone", () => {
     const host = mount(createElement(RunHeader, { run, agentName: "Invoice checker", actions: { onArchive: () => {} } }));
     const header = host.querySelector("header")!;
     expect(classes(header)).toContain("max-sm:py-3");
-    expect(classes(header.querySelector("h1"))).toEqual(expect.arrayContaining(["max-sm:text-lg", "max-sm:line-clamp-2"]));
+    // main's title is two lines at every width (line-clamp-2); the phone only shrinks its type.
+    expect(classes(header.querySelector("h1"))).toEqual(expect.arrayContaining(["max-sm:text-lg", "line-clamp-2"]));
     expect(wide(header.querySelector("h1"))).toContain("text-2xl");
     // The title's column and the facts' box step aside below 640: the facts and the actions share one wrapping row.
     const row = header.querySelector("[data-phone-row]")!;

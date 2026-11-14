@@ -13,12 +13,12 @@
 // `max_output_tokens` is clamped. No tool the provider runs on its own passes: web search, which the CLI
 // adds whatever its config says, is dropped, and any other provider-hosted tool is refused. A session with Codex's own web
 // search on (`webSearch: "live"`) is the one exception: the live search tool the pinned CLI sends then passes, exactly as
-// recorded (any other web search tool is refused), and each search the provider ran is booked at its per-call price
-// (`withWebSearches`). A function or custom tool
-// that is not one of the session's names is dropped, so the model is offered exactly the host's tools. A remote MCP
-// server's granted tools come in a namespace of their own (`mcp__<server>`, each tool by its own name), and only those
-// pass. A code-mode
-// model's request carries Codex's own `exec` and `wait` in an `additional_tools` item; those pass, and nothing else in
+// recorded (any other web search tool is refused), while the host's web_search setting allows it at that request
+// (`searchAllowed`, read per request: a deny or ask set mid-run drops it from the next one), and each search the provider
+// ran is booked at its per-call price (`withWebSearches`). A function or custom tool
+// that is not one of the session's names is dropped, so the model is offered exactly the host's tools (a run's remote MCP
+// tools among them: host tools like any other); an MCP server's namespace of Codex's own (`mcp__<server>`) never passes.
+// A code-mode model's request carries Codex's own `exec` and `wait` in an `additional_tools` item; those pass, and nothing else in
 // the item does (the sub-agent and user-input tools it also lists are dropped), so the model is offered exactly the
 // host's tools, called from `exec` as nested ones.
 //
@@ -27,7 +27,7 @@
 // inside `input_tokens`; they are booked apart (as pi-ai books them), and reasoning tokens inside `output_tokens`. The
 // searches a response ran are read from the same event, its `tool_usage.web_search.num_requests`.
 import type { IncomingHttpHeaders } from "node:http";
-import { providerInputOverhead, ProxyRefusal, type ModelProxyOptions, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { NATIVE_SEARCH_USD, providerInputOverhead, ProxyRefusal, responsesImagesIn, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },
@@ -58,12 +58,13 @@ const isLiveSearch = (tool: Record<string, unknown>) => Object.keys(tool).length
 /**
  * OpenAI's price of one web search call by model: "Web search (all models)", $10.00 / 1k calls, with its search content
  * tokens billed at the model's rates in the response's own usage (https://developers.openai.com/api/docs/pricing, Tools).
+ * The GPT-6 family (gpt-6-luna, gpt-6.1-sol, gpt-6.1-terra, ...) is among "all models", as GPT-5 is.
  * gpt-4o-mini and gpt-4.1-mini bill each call's search content as a fixed block of 8,000 input tokens instead, so they are
  * not listed: their searches, like any model's not listed here (a gateway's own id, say), are an unknown cost, never $0.
  */
 const WEB_SEARCH_USD: readonly (readonly [RegExp, number])[] = [
-  [/^(?:gpt-5|o3|o4-mini)(?:[-.][a-z0-9.-]+)?$/, 0.01],
-  [/^gpt-4(?:o|\.1)(?:-\d{4}-\d{2}-\d{2})?$/, 0.01],
+  [/^(?:gpt-6|gpt-5|o3|o4-mini)(?:[-.][a-z0-9.-]+)?$/, NATIVE_SEARCH_USD],
+  [/^gpt-4(?:o|\.1)(?:-\d{4}-\d{2}-\d{2})?$/, NATIVE_SEARCH_USD],
 ];
 
 /** The price of one web search call on `model`, or undefined when it is not known. */
@@ -94,14 +95,16 @@ export interface CodexPolicyOptions {
   model: string;
   /** The session's own tool names: every other tool definition is dropped. */
   tools: readonly string[];
-  /** The granted tools of the session's remote MCP servers, `mcp__<server>__<tool>`: the pinned CLI offers a server's tools
-   *  in a namespace named `mcp__<server>`, each by the server's own name. */
-  mcpTools?: readonly string[];
   /** The most output tokens one request may ask for. Default 32 000. */
   maxOutputTokens?: number;
   /** Codex's own web search, live: the live search tool the pinned CLI sends passes, and a `tool_choice` naming it. Each
    *  response's usage then carries the searches it ran (`webSearches`), which `withWebSearches` prices. Default off. */
   webSearch?: "live";
+  /** With `webSearch`: whether the host lets the session search now (its web_search setting, SessionIO.permission), asked
+   *  before each request that offers the live search. The provider runs a search inside the request, where no gate sees
+   *  it, so a request sent while this is false (or throws) offers no search, as a session without one sends it; a
+   *  `tool_choice` naming the search is then refused. Absent: the live search is offered whenever `webSearch` is on. */
+  searchAllowed?: () => Promise<boolean>;
   /** Told, before Codex has the piece of an answer, what the answer carries: `response()` when an answer starts, and
    *  `exec(callId)` for each code-mode `exec` call it holds. The session ties a script's nested calls to the `exec` of the
    *  latest answer, which is known here before Codex can run anything of it. */
@@ -111,8 +114,8 @@ export interface CodexPolicyOptions {
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** A list of tool definitions with no provider-hosted tool but the live web search when `search` is on, less any not the
- *  session's own: `allowed` by name, `mcp` (`mcp__<server>__<tool>`) in a server's namespace. */
-function ownTools(tools: unknown, allowed: ReadonlySet<string>, search = false, mcp: ReadonlySet<string> = new Set()): unknown[] {
+ *  session's own (`allowed`, by name). */
+function ownTools(tools: unknown, allowed: ReadonlySet<string>, search = false): unknown[] {
   if (!Array.isArray(tools)) throw new ProxyRefusal(400, "tools is not a list");
   const out: unknown[] = [];
   for (const tool of tools) {
@@ -126,9 +129,9 @@ function ownTools(tools: unknown, allowed: ReadonlySet<string>, search = false, 
     }
     if (DROPPED_TOOLS.has(type)) continue;
     if (type === "namespace") {
-      // A namespace holds the tools of a built-in family, or of an MCP server (`mcp__<server>`): only the session's own ones
-      // stay, and an empty one goes.
-      const kept = ownTools(tool.tools, name.startsWith("mcp__") ? new Set([...mcp].flatMap((own) => (own.startsWith(`${name}__`) ? [own.slice(name.length + 2)] : []))) : allowed);
+      // A namespace holds the tools of a built-in family: only the session's own ones stay, and an empty one goes. One of
+      // an MCP server's (`mcp__<server>`) holds none of the session's: Codex binds no MCP server of its own.
+      const kept = ownTools(tool.tools, name.startsWith("mcp__") ? new Set() : allowed);
       if (kept.length) out.push({ ...tool, tools: kept });
       continue;
     }
@@ -387,12 +390,12 @@ function itemsIn(value: unknown, type: string): number {
  * Responses API documents no prompt of its own that it adds on these routes (no hosted tool passes the policy but a
  * session's live web search, below), and the framing it puts around each input item and tool definition is a few tokens
  * each, fewer than the bytes of the JSON keys that item already spends in the body. An image is billed by its area, not
- * its bytes: each adds the most it can be billed as. A file input (a PDF, billed by its pages) has no stated bound, so a
+ * its bytes: each counts at the most it can be billed as, in place of the bytes its data URL takes in the body. A file input (a PDF, billed by its pages) has no stated bound, so a
  * body with one cannot be measured: this throws, and the request's input is unknown.
  */
 export function responsesServerInputOverhead(body: Record<string, unknown>): number {
   if (itemsIn(body.input, "input_file") > 0) throw new Error("a file input's billed size has no stated bound");
-  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: itemsIn(body.input, "input_image") }) as number;
+  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: responsesImagesIn(body.input), ...(typeof body.model === "string" ? { model: body.model } : {}) }) as number;
 }
 
 /** The text of a tool output item: a string, or the text of each of its parts. */
@@ -584,7 +587,6 @@ export function addResponsesNote(body: Record<string, unknown>, text: string): R
 
 export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
   const allowed = new Set(options.tools);
-  const mcp = new Set(options.mcpTools ?? []);
   const maxOutputTokens = options.maxOutputTokens ?? 32_000;
   const search = options.webSearch === "live";
   return {
@@ -597,39 +599,19 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     },
     authHeaders: (credential) => ({ authorization: `Bearer ${credential}` }),
     apply(body, _route, context) {
-      if (!isPlain(body)) throw new ProxyRefusal(400, "the body is not a JSON object");
-      // The host's own request beside Codex's (ProxyRequestContext.host) offers its own client tools (a learned workflow
-      // node's `submit`); every other rule is the session's, a provider-hosted tool refused as ever.
-      const own = context?.host !== undefined ? sideToolNames(body.tools) : allowed;
-      const out: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(body)) {
-        if (DROPPED_KEYS.has(key)) continue;
-        if (!BODY_KEYS.has(key) && !(context?.host !== undefined && SIDE_KEYS.has(key))) throw new ProxyRefusal(400, "the body has a field the Codex policy does not allow");
-        out[key] = value;
-      }
-      if (out.include !== undefined && (!Array.isArray(out.include) || !out.include.every((item) => typeof item === "string" && (INCLUDE.has(item) || (context?.host !== undefined && SIDE_INCLUDE.has(item)))))) {
-        throw new ProxyRefusal(400, "include asks for an item the Codex policy does not allow");
-      }
-      if (out.stream !== undefined && typeof out.stream !== "boolean") throw new ProxyRefusal(400, "stream is not a boolean");
-      if (out.reasoning !== undefined && !isPlain(out.reasoning)) throw new ProxyRefusal(400, "reasoning is not an object");
-      if (out.text !== undefined) out.text = textOptions(out.text);
-      if (out.tools !== undefined) out.tools = ownTools(out.tools, own, search, mcp);
-      if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, own, search);
-      if (Array.isArray(out.input) && out.input.some((item) => isPlain(item) && item.type === "additional_tools")) {
-        // While a script that yielded still runs, the model is offered `wait` and not `exec`: one script is live at a time.
-        const offerExec = !cellRunning(out.input);
-        out.input = out.input.map((item) => codeModeCarrier(item, offerExec));
-        // One `exec` is open at a time (the session's barrier for a code-mode call rests on it): a code-mode request that allows
-        // parallel calls is refused, and one that says nothing is sent with them off. A classic request is as the CLI sent it.
-        if (out.parallel_tool_calls !== undefined && typeof out.parallel_tool_calls !== "boolean") throw new ProxyRefusal(400, "parallel_tool_calls is not a boolean");
-        if (out.parallel_tool_calls === true) throw new ProxyRefusal(400, "parallel tool calls are not allowed in code mode: the model writes one exec at a time");
-        out.parallel_tool_calls = false;
-      }
-      const asked = typeof out.max_output_tokens === "number" && out.max_output_tokens > 0 ? out.max_output_tokens : maxOutputTokens;
-      return { ...out, model: options.model, store: false, max_output_tokens: Math.min(asked, maxOutputTokens) };
+      // The live search, offered by the request, goes only while the host says web_search may run now: read before this
+      // request is shaped, never once for the session. A read that fails offers none.
+      const asking = search && options.searchAllowed && isPlain(body) && Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search");
+      if (!asking) return shaped(body, context, search);
+      return options.searchAllowed!().then((now) => shaped(body, context, now === true), () => shaped(body, context, false));
     },
-    usageOf: search ? (text): CodexUsage | undefined => {
+    usageOf: search ? (text, body): CodexUsage | undefined => {
       const usage = usageOf(text);
+      // A request that offered no search (`body`, the one it was sent with: a host's side request through the session's
+      // port, a learned workflow's node that offers only `submit`) ran none: 0, read from the request, never an unknown
+      // count that would make its whole known cost unknown (withWebSearches). One that offered it reads its answer.
+      const offered = Array.isArray(body?.tools) && (body.tools as unknown[]).some((tool) => typeof tool === "object" && tool !== null && isLiveSearch(tool as Record<string, unknown>));
+      if (usage && body && !offered) return { ...usage, webSearches: 0 };
       return usage && { ...usage, webSearches: webSearchesOf(text) ?? null };
     } : usageOf,
     filtered,
@@ -650,4 +632,39 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       return responsesServerInputOverhead(body);
     } : responsesServerInputOverhead,
   };
+
+  /** The body the provider gets, the live search offered only when `searchNow`. */
+  function shaped(body: unknown, context: ProxyRequestContext | undefined, searchNow: boolean): Record<string, unknown> {
+    if (!isPlain(body)) throw new ProxyRefusal(400, "the body is not a JSON object");
+    // The host's own request beside Codex's (ProxyRequestContext.host) offers its own client tools (a learned workflow
+    // node's `submit`); every other rule is the session's, a provider-hosted tool refused as ever.
+    const own = context?.host !== undefined ? sideToolNames(body.tools) : allowed;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(body)) {
+      if (DROPPED_KEYS.has(key)) continue;
+      if (!BODY_KEYS.has(key) && !(context?.host !== undefined && SIDE_KEYS.has(key))) throw new ProxyRefusal(400, "the body has a field the Codex policy does not allow");
+      out[key] = value;
+    }
+    if (out.include !== undefined && (!Array.isArray(out.include) || !out.include.every((item) => typeof item === "string" && (INCLUDE.has(item) || (context?.host !== undefined && SIDE_INCLUDE.has(item)))))) {
+      throw new ProxyRefusal(400, "include asks for an item the Codex policy does not allow");
+    }
+    if (out.stream !== undefined && typeof out.stream !== "boolean") throw new ProxyRefusal(400, "stream is not a boolean");
+    if (out.reasoning !== undefined && !isPlain(out.reasoning)) throw new ProxyRefusal(400, "reasoning is not an object");
+    if (out.text !== undefined) out.text = textOptions(out.text);
+    // Without the search now, its tool is dropped as a session without one drops it (DROPPED_TOOLS).
+    if (out.tools !== undefined) out.tools = ownTools(out.tools, own, searchNow);
+    if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, own, searchNow);
+    if (Array.isArray(out.input) && out.input.some((item) => isPlain(item) && item.type === "additional_tools")) {
+      // While a script that yielded still runs, the model is offered `wait` and not `exec`: one script is live at a time.
+      const offerExec = !cellRunning(out.input);
+      out.input = out.input.map((item) => codeModeCarrier(item, offerExec));
+      // One `exec` is open at a time (the session's barrier for a code-mode call rests on it): a code-mode request that allows
+      // parallel calls is refused, and one that says nothing is sent with them off. A classic request is as the CLI sent it.
+      if (out.parallel_tool_calls !== undefined && typeof out.parallel_tool_calls !== "boolean") throw new ProxyRefusal(400, "parallel_tool_calls is not a boolean");
+      if (out.parallel_tool_calls === true) throw new ProxyRefusal(400, "parallel tool calls are not allowed in code mode: the model writes one exec at a time");
+      out.parallel_tool_calls = false;
+    }
+    const asked = typeof out.max_output_tokens === "number" && out.max_output_tokens > 0 ? out.max_output_tokens : maxOutputTokens;
+    return { ...out, model: options.model, store: false, max_output_tokens: Math.min(asked, maxOutputTokens) };
+  }
 }

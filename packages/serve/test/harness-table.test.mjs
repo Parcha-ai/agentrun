@@ -50,21 +50,21 @@ test("production code never builds a stand-in harness: serve/src imports no @par
   assert.deepEqual(hits, [], hits.join("\n"));
 });
 
-test("each adapter package exports its facts, and the table's entry for each id reads them: wire, steer, memory, thinking, search, own model, MCP client, tool alias", async () => {
+test("each adapter package exports its facts, and the table's entry for each id reads them: wire, steer, memory, thinking, search, own model, tool alias", async () => {
   const [{ facts: claude }, { facts: codex }, { facts: opencode }, { builtinHarness }] = await Promise.all([import("@parcha/agentrun-harness-claude/facts"), import("@parcha/agentrun-harness-codex/facts"), import("../dist/harness-opencode/facts.js"), import("../dist/harness-table.js")]);
-  const shape = (f) => ({ id: f.id, wire: f.wire, steer: f.steer, runMib: f.runMib, thinking: [...f.thinking], webSearch: f.webSearch, ownModel: f.ownModel, mcp: f.mcp, alias: Boolean(f.toolAlias), schema: typeof f.schemaProblems });
-  assert.deepEqual(shape(claude), { id: "claude-agent", wire: "anthropic-messages", steer: false, runMib: 288, thinking: ["low", "medium", "high", "xhigh", "max"], webSearch: "native", ownModel: true, mcp: true, alias: false, schema: "function" });
-  assert.deepEqual(shape(codex), { id: "codex", wire: "openai-responses", steer: false, runMib: 192, thinking: ["low", "medium", "high", "xhigh"], webSearch: "live", ownModel: false, mcp: true, alias: false, schema: "function" });
-  assert.deepEqual(shape(opencode), { id: "opencode", wire: "openai-responses", steer: false, runMib: 704, thinking: ["low", "medium", "high", "xhigh"], webSearch: undefined, ownModel: false, mcp: false, alias: true, schema: "undefined" });
+  const shape = (f) => ({ id: f.id, wire: f.wire, steer: f.steer, runMib: f.runMib, thinking: [...f.thinking], webSearch: f.webSearch, ownModel: f.ownModel, alias: Boolean(f.toolAlias), schema: typeof f.schemaProblems });
+  assert.deepEqual(shape(claude), { id: "claude-agent", wire: "anthropic-messages", steer: false, runMib: 288, thinking: ["low", "medium", "high", "xhigh", "max"], webSearch: "native", ownModel: true, alias: false, schema: "function" });
+  assert.deepEqual(shape(codex), { id: "codex", wire: "openai-responses", steer: false, runMib: 192, thinking: ["low", "medium", "high", "xhigh"], webSearch: "live", ownModel: false, alias: false, schema: "function" });
+  assert.deepEqual(shape(opencode), { id: "opencode", wire: "openai-responses", steer: false, runMib: 704, thinking: ["low", "medium", "high", "xhigh"], webSearch: undefined, ownModel: false, alias: true, schema: "undefined" });
   for (const facts of [claude, codex, opencode]) {
     const entry = builtinHarness(facts.id);
     assert.equal(entry.facts, facts, `${facts.id}'s entry holds its package's facts`);
-    assert.deepEqual([entry.steer, entry.runMib, entry.mcp], [facts.steer, facts.runMib, facts.mcp], facts.id);
+    assert.deepEqual([entry.steer, entry.runMib], [facts.steer, facts.runMib], facts.id);
     assert.ok(Object.isFrozen(facts), `${facts.id}'s facts are frozen`);
   }
   // pi has no adapter: it takes a message mid-turn, and one of its runs always fits.
   const pi = builtinHarness("pi");
-  assert.deepEqual([pi.facts, pi.steer, pi.runMib, pi.oneAlwaysFits, pi.mcp], [undefined, true, 128, true, true]);
+  assert.deepEqual([pi.facts, pi.steer, pi.runMib, pi.oneAlwaysFits], [undefined, true, 128, true]);
 });
 
 test("facts decide, not names: thinking clamps at a harness's highest level, native options follow its search, the tool alias is OpenCode's alone, memory follows runMib", async () => {
@@ -83,15 +83,15 @@ test("facts decide, not names: thinking clamps at a harness's highest level, nat
 test("providerFor goes by the wire: opencode and codex, both on the Responses API, take one route, key and model; claude-agent's wire never takes the gateway", async () => {
   const [{ providerFor }, { runKeyOf }] = await Promise.all([import("../dist/provider.js"), import("../dist/key-refusal.js")]);
   const view = (p) => ({ origin: p.origin, auth: p.auth, modelId: p.modelId, priceModel: p.priceModel, key: p.credential() });
-  const openai = { provider: "openai", modelId: "gpt-6-sol" };
+  const openai = { provider: "openai", modelId: "gpt-6.1-sol" };
   for (const env of [{ OPENAI_API_KEY: `not-a-secret-${"o"}` }, { OPENROUTER_API_KEY: `not-a-secret-${"r"}` }, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000/v1", AGENT_MODEL_API_KEY: `not-a-secret-${"g"}` }]) {
     assert.deepEqual(view(providerFor("openai-responses", env, openai, "opencode")), view(providerFor("openai-responses", env, openai, "codex")), JSON.stringify(Object.keys(env)));
-    assert.deepEqual(runKeyOf(env, "opencode", "openai/gpt-6-sol"), runKeyOf(env, "codex", "openai/gpt-6-sol"), JSON.stringify(Object.keys(env)));
+    assert.deepEqual(runKeyOf(env, "opencode", "openai/gpt-6.1-sol"), runKeyOf(env, "codex", "openai/gpt-6.1-sol"), JSON.stringify(Object.keys(env)));
   }
   const both = { ANTHROPIC_API_KEY: `not-a-secret-${"a"}`, AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000", AGENT_MODEL_API_KEY: `not-a-secret-${"g"}` };
   assert.equal(providerFor("anthropic-messages", both, { provider: "anthropic", modelId: "claude-sonnet-5.5" }, "claude-agent").origin, "https://api.anthropic.com", "the gateway serves the Responses wire alone");
   assert.equal(runKeyOf(both, "claude-agent", "anthropic/claude-sonnet-5-5").field, "ANTHROPIC_API_KEY");
-  assert.equal(runKeyOf(both, "codex", "openai/gpt-6-sol").field, "AGENT_MODEL_API_KEY");
+  assert.equal(runKeyOf(both, "codex", "openai/gpt-6.1-sol").field, "AGENT_MODEL_API_KEY");
 });
 
 test("a test's table module (HARNESS_TABLE_ENV) merges its entries over the built-ins by id, and the server's own environment never names one", async (t) => {
@@ -102,8 +102,8 @@ test("a test's table module (HARNESS_TABLE_ENV) merges its entries over the buil
   writeFileSync(module, "export const entries = (builtins) => ({ codex: { runs: () => false, refusal: async () => ({ reason: `stood in for ${builtins.codex.facts.label}` }) } });\n");
   // Under a test runner, as a test's server and runs are (harnessTable reads NODE_TEST_CONTEXT).
   const env = { [HARNESS_TABLE_ENV]: module, NODE_TEST_CONTEXT: "child-v8" };
-  assert.equal(harnessRuns(env, "openai/gpt-6-sol", "codex"), false, "the module's entry decides");
-  assert.equal(harnessRuns({}, "openai/gpt-6-sol", "codex"), true, "the built-in one, without it");
+  assert.equal(harnessRuns(env, "openai/gpt-6.1-sol", "codex"), false, "the module's entry decides");
+  assert.equal(harnessRuns({}, "openai/gpt-6.1-sol", "codex"), true, "the built-in one, without it");
   assert.deepEqual(await harnessOf(env, "codex").refusal(env, undefined, { atStart: false }), { reason: "stood in for Codex" });
   assert.equal(harnessOf(env, "codex").facts, harnessOf({}, "codex").facts, "an entry merged over keeps the facts it does not name");
   assert.equal(harnessOf(env, "claude-agent"), harnessOf({}, "claude-agent"), "an id the module names not is the built-in entry");

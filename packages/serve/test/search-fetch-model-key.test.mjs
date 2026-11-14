@@ -12,8 +12,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
-import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
+
+/** A run of web_search, web_fetch and write is not offered the host's search, call-by-name or script tools (offersMetaTools). */
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 const FAUX = { harnessTable: fauxTable(fixture("faux-harness.mjs")), fauxWeb: fixture("faux-web.mjs"), fauxParallel: fixture("faux-parallel.mjs"), fauxUpstream: fixture("faux-upstream.mjs"), fauxExa: fixture("faux-exa.mjs") };
@@ -31,7 +33,7 @@ async function setting(t, extra = {}) {
   const dir = await scratch(t);
   const files = { upstream: join(dir, "upstream.jsonl"), parallel: join(dir, "parallel.jsonl"), exa: join(dir, "exa.jsonl"), opened: join(dir, "opened.jsonl"), web: join(dir, "dialled.txt") };
   withEnv(t, {
-    ANTHROPIC_API_KEY: "not-a-secret", OPENAI_API_KEY: "not-a-secret", AGENT_MODEL: "anthropic/claude-sonnet-4-5",
+    ANTHROPIC_API_KEY: "not-a-secret", OPENAI_API_KEY: "not-a-secret", AGENT_MODEL: "anthropic/claude-sonnet-5-5",
     AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: files.upstream, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: files.parallel, AGENTRUN_TEST_FAUX_EXA_CALLS: files.exa,
     AGENTRUN_TEST_FAUX_HARNESS_OPENED: files.opened, FAUX_WEB_LOG: files.web, ...extra,
   }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM", "AGENTRUN_TEST_FAUX_EXA", "AGENTRUN_TEST_FAUX_PARALLEL_SEARCH", "AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT"]);
@@ -58,7 +60,7 @@ const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a 
 const EXA_FIX = /exa\.ai|Fix:|MCP URL|exaApiKey|free MCP rate limit/;
 const HARNESS_RESEARCH = "Research widgets on the web, read http://public.example/ and write report.md.";
 
-// SKIP (follow-up #2078): web_search on auto does not resolve or book as before on the runner
+// SKIP (follow-up #2360): pi's native web_search has no model to search on, on the runner
 test.skip("with only model keys: native search on pi, claude-agent and codex, and the kernel's fetch, each run's report citing the page; then Parallel picked, the next runs go through Parallel", { timeout: 180_000 }, async (t) => {
   const { seen } = await setting(t, { PARALLEL_API_KEY: PARALLEL_CANARY });
   const { api } = await serve(t, FAUX);
@@ -80,9 +82,9 @@ test.skip("with only model keys: native search on pi, claude-agent and codex, an
   assert.deepEqual([sent[0].body.messages.length, sent[0].body.messages[0].role], [1, "user"], "one user turn");
   assert.match(sent[0].body.messages[0].content[0].text, /^Search the web for: widgets\n\nAnswer briefly .* URL\.$/s);
   assert.equal(sent[0].key, "not-a-secret", "on the run's own model key");
-  // Its 20,000 input and 40 output tokens at Sonnet 4.5's $3 and $15 per million, and one search at $0.01; the faux
+  // Its 20,000 input and 40 output tokens at Sonnet 5.5's $2 and $10 per million, and one search at $0.01; the faux
   // model's turns cost nothing.
-  assert.deepEqual(pi.usage, { usd: 0.0706, requests: 5 }, "four turns and the search's request, its fee booked");
+  assert.deepEqual(pi.usage, { usd: 0.0504, requests: 5 }, "four turns and the search's request, its fee booked");
 
   // pi on OpenAI: the Responses hosted tool, its sources asked for.
   const openai = await research(api, "pi-openai", { model: "openai/gpt-5" });
@@ -122,7 +124,7 @@ test.skip("with only model keys: native search on pi, claude-agent and codex, an
     const run = await research(api, `parallel-${harness}`, { harness, instructions: HARNESS_RESEARCH });
     const opened = (await seen()).opened.slice(before);
     assert.deepEqual(opened.filter((line) => line.harness), [{ harness, options: {} }], `${harness}: its own search off`);
-    assert.deepEqual(opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write"]], `${harness}: web_search a host tool`);
+    assert.deepEqual(opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write", ...(harness === "codex" ? [] : ["codemode"])]], `${harness}: web_search a host tool`);
     assert.match(run.results.web_fetch, /"via":"parallel"/);
   }
   calls = await seen();
@@ -148,8 +150,7 @@ test("a pi run on keyless Exa past its free limit: Exa is asked once more and it
   assert.deepEqual((await seen()).parallel, [], "no Parallel key here, so nothing else is searched");
 });
 
-// SKIP (follow-up #2078): web_search on auto does not resolve or book as before on the runner
-test.skip("with a Parallel key saved on Tool keys, auto is Parallel where there is no native search: a pi run behind a gateway searches through Parallel and is billed its fee, keyless Exa never asked; an agent that picked exa-keyless still searches keyless", { timeout: 90_000 }, async (t) => {
+test("with a Parallel key saved on Tool keys, auto is Parallel where there is no native search: a pi run behind a gateway searches through Parallel and is billed its fee, keyless Exa never asked; an agent that picked exa-keyless still searches keyless", { timeout: 90_000 }, async (t) => {
   const { seen } = await setting(t, { AGENT_MODEL_BASE_URL: "https://gateway.example/v1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { api } = await serve(t, FAUX);
   assert.deepEqual((await resolves(api)).web_search, each("exa-keyless"), "no key yet: keyless Exa");
@@ -168,8 +169,7 @@ test.skip("with a Parallel key saved on Tool keys, auto is Parallel where there 
   assert.deepEqual([calls.parallel.length - checked, calls.exa.filter((call) => call.method === "tools/call").length], [1, 1]);
 });
 
-// SKIP (follow-up #2078): a capped pi run's auto search through Parallel is not refused at the cap as before
-test.skip("a capped pi run whose auto search is Parallel, under a cap just short of one search's price, is refused in the cap's words before anything is sent: no request reaches Parallel, and none goes to keyless Exa in its place", { timeout: 90_000 }, async (t) => {
+test("a capped pi run whose auto search is Parallel, under a cap just short of one search's price, is refused in the cap's words before anything is sent: no request reaches Parallel, and none goes to keyless Exa in its place", { timeout: 90_000 }, async (t) => {
   const { seen } = await setting(t, { AGENT_MODEL_BASE_URL: "https://gateway.example/v1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { api } = await serve(t, FAUX);
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: PARALLEL_CANARY } })).status, 204);
@@ -183,23 +183,20 @@ test.skip("a capped pi run whose auto search is Parallel, under a cap just short
   assert.deepEqual([calls.parallel.slice(checked), calls.exa], [[], []], "nothing sent to Parallel, nor to Exa instead");
 });
 
-// SKIP (follow-up #2078): web_search on auto does not resolve or book as before on the runner
-test.skip("a capped claude-agent run on auto never sends Claude's own search: it resolves to Parallel where the server holds the key, else to keyless Exa, and its adapter is opened with no WebSearch, web_search a host tool", { timeout: 120_000 }, async (t) => {
-  const { seen } = await setting(t, { PARALLEL_API_KEY: PARALLEL_CANARY });
-  const { api, data } = await serve(t, FAUX);
-  const planeOf = async (runId) => JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).tool_plane;
+test("a capped claude-agent run on auto never sends Claude's own search: it resolves to Parallel where the server holds the key, else to keyless Exa, and its adapter is opened with no WebSearch, web_search a host tool", { timeout: 120_000 }, async (t) => {
+  // A server whose environment holds Parallel's key, then one whose holds none (a server reads its environment as it starts).
   for (const [id, keyed] of [["capped-claude-keyed", true], ["capped-claude-keyless", false]]) {
-    if (!keyed) delete process.env.PARALLEL_API_KEY;
-    const before = (await seen()).opened.length;
+    const { seen } = await setting(t, keyed ? { PARALLEL_API_KEY: PARALLEL_CANARY } : {});
+    const { api, store } = await serve(t, FAUX);
     const run = await research(api, id, { harness: "claude-agent", instructions: HARNESS_RESEARCH }, { max_cost_usd: 1 });
-    const opened = (await seen()).opened.slice(before);
-    assert.deepEqual(opened.filter((line) => line.harness), [{ harness: "claude-agent", options: {} }], `${id}: no WebSearch on the adapter`);
-    assert.deepEqual(opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write"]], `${id}: web_search a host tool`);
-    assert.equal((await planeOf(run.runId)).web_search, keyed ? "parallel" : "exa-keyless");
+    const calls = await seen();
+    assert.deepEqual(calls.opened.filter((line) => line.harness), [{ harness: "claude-agent", options: {} }], `${id}: no WebSearch on the adapter`);
+    assert.deepEqual(calls.opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write", "codemode"]], `${id}: web_search a host tool`);
+    // The run's resolved plane, as its start wrote it on the run's launch in the store (the runner reads it at the claim).
+    assert.equal((await store.runs.launch(run.runId))?.body?.plane?.web_search, keyed ? "parallel" : "exa-keyless");
     assert.match(run.results.web_search, keyed ? /^\{"provider":"parallel"/ : /^\{"provider":"exa-keyless"/);
+    assert.deepEqual([calls.parallel.map((call) => call.path), calls.exa.filter((call) => call.method === "tools/call").length, calls.upstream], keyed ? [["/v1/search"], 0, []] : [[], 1, []], `${id}: one search, on its provider; no model provider's search`);
   }
-  const calls = await seen();
-  assert.deepEqual([calls.parallel.map((call) => call.path), calls.exa.filter((call) => call.method === "tools/call").length, calls.upstream], [["/v1/search"], 1, []], "one search each way; no model provider's search");
 });
 
 test("a pi run whose model goes through a gateway searches keyless Exa, as claude-agent on auto does; a pick of Parallel without its key is unavailable, and refused", { timeout: 60_000 }, async (t) => {

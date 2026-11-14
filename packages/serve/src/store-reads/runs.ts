@@ -5,8 +5,8 @@
 // far (read from its journal, the same figure the cap holds it to), since cost_usd is written only at the end; an ended run
 // shows its stored cost. These reads carry no secret text; the server's view layer cuts what it serves (an error, a review,
 // the rows) by the run's handed sign-ins.
-import type { Context } from "@earendil-works/chord";
-import type { ImportedFrom, RunRow, Store } from "../store/store.js";
+import type { Context } from "@earendil-works/chord/context";
+import { type ImportedFrom, type RunRow, type Store, stoppedByPerson } from "../store/store.js";
 import { spentOverStore } from "./cap.js";
 
 /** A revision's kind, as the row names it. */
@@ -32,17 +32,19 @@ export interface RunRowView {
 
 const isoOf = (ms: number): string => new Date(ms).toISOString();
 
-/** A run's v2 state from A's state and an ended run's outcome: an escalation reads 'escalated', a plain completion
- *  'completed'; stopped and failed are their own; queued, running and parked read 'running'. */
-export function runReadState(run: RunRow): RunReadState {
-  return stateOf(run);
+/** A run's v2 state from A's state and its outcome: an escalation reads 'escalated', a plain completion 'completed';
+ *  stopped and failed are their own; queued, running and parked read 'running', and so does an agentic run a person
+ *  stopped (`kind`: its revision's), whose turn ended and never the run, as main's stop leaves one (runs.ts statusOf: a
+ *  stopped run is input_required and idle). A cancel, a workflow's stop and an imported run's read 'stopped'. */
+export function runReadState(run: RunRow, kind: RevisionKind): RunReadState {
+  return stateOf(run, kind);
 }
-function stateOf(run: RunRow): RunReadState {
+function stateOf(run: RunRow, kind: RevisionKind): RunReadState {
   switch (run.state) {
     case "ended":
       return run.outcome === "escalated" ? "escalated" : "completed";
     case "stopped":
-      return "stopped";
+      return stoppedByPerson(run, kind) ? "running" : "stopped";
     case "failed":
       return "failed";
     default:
@@ -54,16 +56,20 @@ function stateOf(run: RunRow): RunReadState {
  *  (the booked-so-far spend for a run not ended, else its stored cost). */
 function viewOf(run: RunRow, agentArchivedAt: number | null, kind: RevisionKind, cost: number | null): RunRowView {
   const archivedAt = run.archivedAt ?? agentArchivedAt;
+  const state = stateOf(run, kind);
+  // A run that reads running has no end to show: a person's stop keeps its time and words in the store, for its reopen
+  // to clear, and the run is not over.
+  const over = state !== "running";
   return {
     id: run.id,
     agent: run.agentId,
     revision: run.revisionId,
     kind,
-    state: stateOf(run),
+    state,
     startedAt: isoOf(run.startedAt),
-    ...(run.endedAt !== null ? { endedAt: isoOf(run.endedAt) } : {}),
+    ...(over && run.endedAt !== null ? { endedAt: isoOf(run.endedAt) } : {}),
     ...(cost !== null ? { costUsd: cost } : {}),
-    ...(run.summary !== null ? { summary: run.summary } : {}),
+    ...(over && run.summary !== null ? { summary: run.summary } : {}),
     ...(archivedAt !== null ? { archivedAt: isoOf(archivedAt) } : {}),
     ...(run.importedFrom !== null ? { importedFrom: { source: run.importedFrom.source, session: run.importedFrom.session } } : {}),
   };
@@ -79,7 +85,7 @@ function joins(store: Store, context: Context) {
       if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, ((await store.agents.revision(run.revisionId))?.kind as RevisionKind) ?? "agentic");
       // A run that has not ended shows the spend booked so far (the cap's own reading over the journal, the figure it holds
       // the run to), since cost_usd is written only at the end; an ended run shows its stored cost.
-      const cost = runReadState(run) === "running" ? await spentOverStore(store, run.id, context) : run.costUsd;
+      const cost = runReadState(run, kinds.get(run.revisionId)!) === "running" ? await spentOverStore(store, run.id, context) : run.costUsd;
       return viewOf(run, agentArchived.get(run.agentId)!, kinds.get(run.revisionId)!, cost);
     },
   };

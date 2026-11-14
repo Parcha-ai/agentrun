@@ -9,7 +9,9 @@ import { test } from "node:test";
 import { inspect } from "node:util";
 import { AgentRun, AgentRunAuthError, AgentRunError, AgentRunRefused, AgentRunTimeout, AgentRunUnreachable, AgentRunUnsupported, AgentRunUsage } from "../dist/index.js";
 import { JSON_HEADERS, listener } from "./helpers.mjs";
+import { pause } from "../dist/http.js";
 import { scrubberOf, secretsOf } from "../dist/scrub.js";
+import { OPERATIONS, resources } from "../dist/operations.generated.js";
 
 const KEY = `test-key-${randomBytes(12).toString("hex")}`;
 const json = (status, value, headers = {}) => [status, { ...JSON_HEADERS, ...headers }, JSON.stringify(value)];
@@ -239,6 +241,34 @@ test("a download comes back byte for byte, as bytes or as the Response", async (
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
 });
 
+test("a streamed download cut midway or stalled rejects with AgentRunUnreachable and a code, never the platform's error, and is sent once", async (t) => {
+  const bytes = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
+  const server = await listener(t, (req, res) => {
+    res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(bytes.length) });
+    res.write(bytes.subarray(0, 100));
+    if (!req.url.endsWith("/stall.bin")) setTimeout(() => res.destroy(), 20);
+  });
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY });
+  const cut = await client.runs.readFile("r1", "cut.bin", undefined, { stream: true });
+  assert.ok(cut instanceof Response, "still a Response");
+  assert.deepEqual([cut.status, cut.headers.get("content-type")], [200, "application/octet-stream"]);
+  const failed = await thrown(cut.arrayBuffer());
+  assert.ok(failed instanceof AgentRunUnreachable, `${failed?.name}: ${failed?.message}`);
+  assert.match(failed.cause, /^[A-Za-z0-9_]+$/);
+  assert.ok(!printed(failed).includes(KEY));
+  const stalled = await client.runs.readFile("r1", "stall.bin", undefined, { stream: true, timeoutMs: 300 });
+  const late = await thrown(stalled.arrayBuffer());
+  assert.ok(late instanceof AgentRunUnreachable, `${late?.name}: ${late?.message}`);
+  assert.equal(late.cause, "timeout");
+  assert.equal(server.requests.length, 2, "each was sent once: what was read is the caller's");
+  const reason = new Error("the caller let go");
+  const controller = new AbortController();
+  const aborted = await client.runs.readFile("r1", "stall.bin", undefined, { stream: true, signal: controller.signal });
+  const reading = thrown(aborted.arrayBuffer());
+  controller.abort(reason);
+  assert.equal(await reading, reason, "the caller's own abort, as it is everywhere");
+});
+
 test("a body cut after a 2xx is tried again for a GET and a download, and a POST's is unreachable with a code", async (t) => {
   const bytes = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
   const cut = (res, type, whole) => {
@@ -265,9 +295,25 @@ test("a body cut after a 2xx is tried again for a GET and a download, and a POST
   assert.ok(!printed(started).includes(KEY));
 });
 
-test("an MCP sign-in has no method: it starts in the owner's browser, whose callback needs the cookie its start sets", () => {
+test("an MCP sign-in has no method: it starts in the owner's browser, whose callback needs the cookie its start sets; nor in any group has any operation only a browser or GitHub calls", () => {
+  // Every method of every group, each called once through a recording call: the operations the client has a method for,
+  // wherever the generator put them, so one that moves to another group or name (startMcpOAuth once came back as
+  // mcpServers.startMcpOauth) is still seen.
+  const sent = [];
+  const methods = Object.values(resources((id) => (sent.push(id), Promise.resolve()))).flatMap((member) => (typeof member === "function" ? [member] : Object.values(member)));
+  for (const method of methods) method("a", "b", "c", "d", "e");
+  assert.ok(methods.length > 50);
+  assert.equal(sent.length, methods.length, "each method sends one operation");
+  // The routes the server's document marks x-agentrun-browser-only: no method, each kept in the table, so a body bound
+  // for a secret one is still cut.
+  for (const id of ["startMcpOAuth", "connectGitHub", "gitHubCallback", "gitHubInstalled"]) {
+    assert.ok(!sent.includes(id), `${id} has a method`);
+    assert.ok(OPERATIONS[id], `${id} stays in the operation table`);
+  }
+  assert.equal(OPERATIONS.startMcpOAuth.secret, true, "the start is a secret route: a body bound for it is cut from the answer");
+  // GitHub's own signed delivery: no method, as no command.
+  assert.ok(!sent.includes("receiveHook_github"));
   const client = new AgentRun({ baseUrl: "https://agentrun.example.com/v2", apiKey: KEY });
-  assert.equal(client.mcpServers.oauthStart, undefined);
   assert.equal(typeof client.mcpServers.oauthClient, "function", "its public client document stays");
 });
 
@@ -313,6 +359,19 @@ test("runs.follow waits out a gateway's Retry-After before it reconnects", async
   for await (const p of client.runs.follow("r1")) pages.push(p);
   assert.deepEqual(pages, [done]);
   assert.ok(at[1] - at[0] >= 1000, `it waited the gateway's second: ${at[1] - at[0]} ms`);
+});
+
+test("a pause waits its whole time by the wall clock, even when its timer fires a millisecond early", async (t) => {
+  // The wall clock as the pause reads it: its start, then a timer that fired 1 ms short, then the time reached.
+  const reads = [10_000, 10_029, 10_030];
+  const seen = [];
+  t.mock.method(Date, "now", () => {
+    const now = reads[Math.min(seen.length, reads.length - 1)];
+    seen.push(now);
+    return now;
+  });
+  await pause(30);
+  assert.deepEqual(seen, reads, "the early timer read 1 ms left and waited it out, then read the time reached");
 });
 
 test("a caller's abort while a refusal's body is still coming is the caller's abort, never a refusal or a bad key", async (t) => {
@@ -381,4 +440,23 @@ test("a runs.wait whose deadline passes while a refusal's body is still coming e
   const late = await thrown(client.runs.wait("r1", { timeoutMs: 300 }));
   assert.ok(late instanceof AgentRunTimeout, `${late?.name}: ${late?.message}`);
   assert.deepEqual([late.runId, late.run], ["r1", { run_id: "r1", status: "working" }]);
+});
+
+test("a wait's deadline is its timer's: a timer that fires before the clock reads the deadline still ends in AgentRunTimeout", async (t) => {
+  const server = await listener(t, (req, res) => {
+    if (req.url === "/v2/runs/r1") return json(200, { run_id: "r1", status: "working" });
+    const body = Buffer.from(JSON.stringify({ error: { code: "not_found", message: "no" } }));
+    res.writeHead(404, { ...JSON_HEADERS, "content-length": String(body.length) });
+    res.write(body.subarray(0, 8));
+  });
+  // The client's clock runs at half the timers' speed, so every timer fires before Date.now() reaches the deadline it
+  // was set for: the race CI met by chance (a 300 ms timer read at 299.8 ms), here on every run.
+  const now = Date.now;
+  const start = now();
+  Date.now = () => start + (now() - start) / 2;
+  t.after(() => { Date.now = now; });
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY, maxRetries: 0 });
+  const late = await thrown(client.runs.wait("r1", { timeoutMs: 300 }));
+  Date.now = now;
+  assert.ok(late instanceof AgentRunTimeout, `${late?.name}: ${late?.message}`);
 });

@@ -8,6 +8,7 @@ export {
   WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError, WorkflowCodeError, WorkflowStateError,
   WorkflowVerificationError, WorkflowDecisionRecordError, EffectFailure, EffectDeadlineExceededError,
   EffectOutcomeUnknownError, EscalationSignal, routesByValue, isItemFailure,
+  stepGuardOf, confidenceKey, SELF_CONFIDENCE_FIELD, GUARD_QUESTION_MAX,
 } from "./workflow.js";
 export { defineJob } from "./job.js";
 export type { Job } from "./job.js";
@@ -19,9 +20,10 @@ export type {
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, RouteByJudgmentNode, RouteByValueNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CodeNode, CallRetryClass, EffectFailureCode, CallPredicate, PollClause,
   ModelTier, AgentContext, WorkflowEffort, WorkflowThinking, VerifyClause,
+  NodeGuard, StepGuard, GuardFit, GuardStepParams, GuardTask, GuardVerdict,
   AskPredicate, DecisionEvidenceMode, DecisionImages, MechanicalPredicate, Predicate, ValidationCode, ValidationIssue, ValidateWorkflowOptions,
 } from "./workflow.js";
-export { dryRunWorkflow, synthesizeInstance } from "./dry-run.js";
+export { dryRunWorkflow, SYNTHESIS_BUDGET, SynthesisTooLarge, synthesizeInstance, type SynthesisBudget } from "./dry-run.js";
 export type { DryRunOptions, DryRunResult } from "./dry-run.js";
 
 export {
@@ -48,9 +50,9 @@ export {
   stageSchemaForNode, submissionSchemaForNode, mergeStageDelta,
   REPORT_SCHEMA, SHELL_RESULT_SCHEMA,
   // Document helpers a host facade needs to speak about a workflow without re-implementing the walk.
-  childSteps, declaredWrites, terminalArtifactType, artifactNodeIsProse, schemaProblems, HOST_STATE_KEY,
-  // Host-side data helpers the interpreter itself uses: the same normalization and reference shaping.
-  buildReferenceContext, normalizeStringNullsForSchema, parseCsvRows,
+  childSteps, declaredWrites, artifactNodeIsProse, schemaProblems, HOST_STATE_KEY,
+  // The host-side normalization the interpreter itself uses.
+  normalizeStringNullsForSchema,
 } from "./workflow.js";
 export { compileTransform, compileTransformSyntax, deniedGlobalReferences } from "./code-exec.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
@@ -59,12 +61,13 @@ export { getPath, predicateMatches } from "./predicates.js";
 export type { StopPredicate, AcceptPredicate } from "./predicates.js";
 
 export {
-  authorContract, renderAuthorContract, renderAuthorHostAddendum, candidatePolicyErrors, applyHostOutputTypes, authorWorkflow,
-  AUTHOR_SKILL_NAME, authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle,
+  authorContract, renderAuthorContract, renderAuthorHostAddendum, applyHostOutputTypes, authorWorkflow,
+  authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle,
 } from "./author.js";
 export type { AuthorHostAddendum, CandidatePolicyOptions, AuthorWorkflowOptions, AuthoredWorkflow, HostOutputTypeOptions } from "./author.js";
 export {
-  WORKFLOW_NODE_KINDS, GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS,
+  GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS,
+  GUARD_SIGNALS, GUARD_FIELDS, GUARDED_NODE_KINDS, SELF_CONFIDENCE_KINDS, type GuardSignal,
   MECHANICAL_PREDICATES, WORKFLOW_PREDICATES, PREDICATE_FIELDS, FIELD_TYPES,
   EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES,
 } from "./vocabulary.js";

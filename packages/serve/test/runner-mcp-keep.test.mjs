@@ -114,7 +114,7 @@ async function setUp(t) {
   return { ...opened, one, two };
 }
 
-const stepOf = (store, claim, extra) => mcpClaim({ store, claim, grants: ["mcp:fake/add"], sealKey: KEY, signal: new AbortController().signal, bounds: { requestMs: 5_000, tries: 1 }, now: () => T0, ...extra });
+const stepOf = (store, claim, extra) => mcpClaim({ loopback: true, store, claim, grants: ["mcp:fake/add"], sealKey: KEY, signal: new AbortController().signal, bounds: { requestMs: 5_000, tries: 1 }, now: () => T0, ...extra });
 const bearer = (step) => step.credentials.fake?.headers?.authorization;
 
 test("a keep held past the old 12 s lease: a claim waiting on the lease never takes it over, and reads the set once it lands", async (t) => {

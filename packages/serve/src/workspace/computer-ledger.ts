@@ -1,14 +1,9 @@
-// The ledger a provider takes when its sessions carry no labels of their own (the phone provider's `ledger` option,
-// PhoneLedger): each session's whole entry, kept by its id in the store's computer ledger, so the provider's list, an
-// attach by labels and the janitor outlive a restart of the server. The labels go in their own column; the rest of the
-// entry (a phone's image and deadline) is kept as the provider gave it. Every read is a fresh copy, as the provider's
-// own in-memory ledger gives.
-import type { ProviderOptions } from "@parcha/agentrun-computer";
+// The ledger a provider takes when its sessions carry no labels of their own (its descriptor's `ledger`: the option its
+// create() takes it as): each session's whole entry, kept by its id in the store's computer ledger, under the provider's
+// id, so the provider's list, an attach by labels and the janitor outlive a restart of the server. The labels go in their
+// own column; the rest of the entry (a phone's image and deadline) is kept as the provider gave it. Every read is a fresh
+// copy, as a provider's own in-memory ledger gives. Which provider takes one is its descriptor's to say, never serve's.
 import type { ComputerLedger, ComputerLedgerRow } from "../store/store.js";
-
-/** The phone provider's `ledger` option, and one entry of it, as the computer package's provider registry types them. */
-export type PhoneLedger = NonNullable<ProviderOptions<"phone-harness">["ledger"]>;
-export type PhoneLedgerEntry = Awaited<ReturnType<PhoneLedger["list"]>>[number];
 
 /** A session's entry as a provider keeps it: its id, our labels, and the provider's own fields. */
 export interface LedgerEntry {
@@ -16,12 +11,16 @@ export interface LedgerEntry {
   labels: Record<string, string>;
 }
 
-/** One provider's ledger, in the shape its `ledger` option takes (the phone provider's PhoneLedger). */
+/** One provider's ledger, in the shape a descriptor's `ledger` option takes: put, claim, get, list, remove and swap of its entries. */
 export interface ProviderLedger<E extends LedgerEntry = LedgerEntry> {
   put(entry: E): Promise<void>;
+  /** entry put only while none is kept under its id, in one statement: whether it was put. */
+  claim(entry: E): Promise<boolean>;
   get(id: string): Promise<E | undefined>;
   list(): Promise<E[]>;
   remove(id: string): Promise<void>;
+  /** entry put in place of `was` only while the kept entry is still `was` as read, in one statement: whether it was put. */
+  swap(was: E, entry: E): Promise<boolean>;
 }
 
 const entryOf = <E extends LedgerEntry>({ sessionId, labels, detail }: ComputerLedgerRow): E => ({ ...detail, id: sessionId, labels: { ...labels } }) as unknown as E;
@@ -33,15 +32,21 @@ export function storeLedger<E extends LedgerEntry = LedgerEntry>(ledger: Compute
       const { id, labels, ...detail } = entry;
       await ledger.put(provider, id, labels, detail);
     },
+    claim: (entry) => {
+      const { id, labels, ...detail } = entry;
+      return ledger.claim(provider, id, labels, detail);
+    },
     get: async (id) => {
       const row = await ledger.get(provider, id);
       return row === undefined ? undefined : entryOf<E>(row);
     },
     list: async () => (await ledger.list(provider)).map((row) => entryOf<E>(row)),
     remove: (id) => ledger.remove(provider, id),
+    swap: async (was, entry) => {
+      const { id: _wasId, labels: wasLabels, ...wasDetail } = was;
+      const { id, labels, ...detail } = entry;
+      if (was.id !== id) return false;
+      return ledger.swap(provider, id, { labels: wasLabels, detail: wasDetail }, labels, detail);
+    },
   };
 }
-
-/** The phone provider's ledger over the store's computer ledger: what its create() takes as `ledger`. Typed by the
- *  provider's own option, so a change to its ledger interface fails this build. */
-export const phoneLedger = (ledger: ComputerLedger): PhoneLedger => storeLedger<PhoneLedgerEntry>(ledger, "phone-harness");

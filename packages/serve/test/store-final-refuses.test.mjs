@@ -9,7 +9,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { queued, storeOn } from "./store-helpers.mjs";
 import { raw } from "./store-target.mjs";
 
-const { endedReason } = await import("../dist/store/index.js");
+const { endedReason, RunFinal } = await import("../dist/store/index.js");
 const commandRow = async (store, id) => (await store.commands("run-1", id - 1)).find((row) => row.id === id);
 
 test("runs.update to a final state refuses the run's other untaken rows with the end's reason, its own take taken", async (t) => {
@@ -27,6 +27,33 @@ test("runs.update to a final state refuses the run's other untaken rows with the
     assert.ok(now.takenAt !== null, `row ${row.id} settled in the same write: ${JSON.stringify(now)}`);
     assert.equal(now.refused, endedReason("stopped"));
   }
+});
+
+test("a normal end that commits with an accepted cancel waiting reads cancelled, the cancel taken, never refused", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const cancel = await store.command("run-1", { kind: "cancel" });
+  const steer = await store.command("run-1", { kind: "steer", body: { text: "and then" } });
+  await store.runs.update(claim, { state: "ended", summary: "done" });
+  const run = await store.runs.get("run-1");
+  assert.deepEqual([run.state, run.outcome], ["stopped", "cancelled"], "the 202 promised a cancelled run, so the end that raced it is the cancel's");
+  const cancelRow = await commandRow(store, cancel.id);
+  assert.ok(cancelRow.takenAt !== null && cancelRow.refused === null, `the cancel taken, not refused: ${JSON.stringify(cancelRow)}`);
+  assert.equal((await commandRow(store, steer.id)).refused, endedReason("stopped"), "a cancel refuses the message waiting behind it");
+});
+
+test("a stop's end (a CLI turn interrupted on its own, or a person's stop) that commits with an accepted cancel waiting reads cancelled, and no message opens it again", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const cancel = await store.command("run-1", { kind: "cancel" });
+  await store.runs.update(claim, { state: "stopped", outcome: "stopped", summary: "the turn was interrupted" });
+  const run = await store.runs.get("run-1");
+  assert.deepEqual([run.state, run.outcome, run.summary], ["stopped", "cancelled", "cancelled"], "the 202 promised a cancelled run, so the stop that raced it is the cancel's");
+  const cancelRow = await commandRow(store, cancel.id);
+  assert.ok(cancelRow.takenAt !== null && cancelRow.refused === null, `the cancel taken, not refused: ${JSON.stringify(cancelRow)}`);
+  await assert.rejects(store.runs.reopen("run-1", { kind: "steer", body: { text: "Go on." } }), (e) => e instanceof RunFinal, "a cancelled run takes no further message");
 });
 
 test("a release never makes a run final: only the end commit does, so no final run is left holding an untaken row", async (t) => {
@@ -73,7 +100,9 @@ test("a journal commit's final run patch and its refusals are one transaction: a
   const { store, file } = await storeOn(t);
   await queued(store);
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
-  const steer = await store.command("run-1", { kind: "steer", body: { text: "too late" } });
+  // A raise, not a person's message: a message waiting at a completed run's end opens the run again instead of being
+  // refused (store-run-reopen.test.mjs), so it would make no refusal here to abort.
+  const steer = await store.command("run-1", { kind: "raise", body: { capUsd: 5 } });
   const journal = store.journal(claim);
   await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], BACKGROUND_CONTEXT);
   await refusalsAbort(file);
@@ -97,7 +126,9 @@ test("a journal commit that lands a final run patch refuses the run's other unta
   const { store } = await storeOn(t);
   await queued(store);
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
-  const steer = await store.command("run-1", { kind: "steer", body: { text: "too late" } });
+  // A raise, not a person's message, as the leftover: a message waiting at a completed run's end opens the run again
+  // (store-run-reopen.test.mjs).
+  const steer = await store.command("run-1", { kind: "raise", body: { capUsd: 5 } });
   const approve = await store.command("run-1", { kind: "approve", body: { approval: "call-1" } });
   const journal = store.journal(claim);
   await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], BACKGROUND_CONTEXT);

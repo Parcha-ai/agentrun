@@ -208,6 +208,25 @@ test("a sign-in body sent slowly holds nothing of the limit: eleven left unfinis
   assert.equal((await signIn(server, PASSWORD)).status, 200, "the unfinished bodies took none of this address's tries");
 });
 
+test("the owner's sign-in with an X-Forwarded-For from an address not trusted as a proxy logs that address once a start; a wrong password logs nothing, nor a trusted peer; and render.yaml trusts none", async (t) => {
+  const tried = async (options) => {
+    const lines = [];
+    const server = await owned(t, { ...options, log: (line) => lines.push(line) });
+    const said = () => lines.filter((line) => / event=forwarded_untrusted /.test(line));
+    for (const client of [CLIENT, OTHER]) await signIn(server, "not the password", { ...page(server), "x-forwarded-for": client });
+    assert.deepEqual(said(), [], "a guess, without the password, can't put its peer in the log");
+    for (const client of [CLIENT, OTHER]) assert.equal((await signIn(server, PASSWORD, { ...page(server), "x-forwarded-for": client })).status, 200);
+    return said();
+  };
+  const none = await tried({});
+  assert.equal(none.length, 1, `once a start, with no proxy trusted: ${none.join("\n")}`);
+  assert.match(none[0], / event=forwarded_untrusted peer=(::ffff:)?127\.0\.0\.1$/); // key-gate: loopback, the test's own connection
+  assert.equal((await tried({ trustedProxies: [`${CLIENT}/32`] })).length, 1, "a proxy trusted that is not the peer: still said");
+  assert.deepEqual(await tried({ trustedProxies: ["loopback"] }), [], "from a trusted proxy: nothing to say");
+  const render = await readFile(new URL("../../../render.yaml", import.meta.url), "utf8");
+  assert.doesNotMatch(render, /key: AGENTRUN_TRUSTED_PROXIES/, "Render publishes no proxy address: render.yaml trusts none");
+});
+
 test("the trusted proxies must parse: a start with one that does not is refused, naming the option", async (t) => {
   await assert.rejects(serve(t, { accounts: true, openSetup: true, trustedProxies: ["not-an-address"] }), /trustedProxies: .*not-an-address/);
 });
@@ -235,7 +254,7 @@ test("signing out signs out this browser only: its session is revoked on the ser
   assert.match(out.headers["set-cookie"][0], /Max-Age=0/, "this browser's cookie is cleared");
   assert.equal((await agents(server, copied)).status, 401, "the copied cookie's session is revoked on the server");
   assert.deepEqual((await call(server.port, { path: "/v2/auth/session", headers: { cookie: copied } })).json, { accounts: true, password_set: true, signed_in: false, secrets_writable: false, secrets_reason: "sign_in" });
-  assert.equal((await call(server.port, { path: "/api/stats", headers: { cookie: copied } })).status, 401, "and the page's data refuses it");
+  assert.equal((await call(server.port, { path: "/v2/stats", headers: { cookie: copied } })).status, 401, "and the page's data refuses it");
   assert.equal((await agents(server, other)).status, 200, "another browser's session stays");
   assert.deepEqual((await call(server.port, { path: "/v2/auth/session", headers: { cookie: other } })).json, { accounts: true, password_set: true, signed_in: true, secrets_writable: true });
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server) }, body: {} })).status, 401, "a browser with no session has none to end");
@@ -310,7 +329,7 @@ test("reset-password clears the password and ends every session; the next visit 
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/reset-password", headers: page(server), body: {} })).status, 404, "never an HTTP route");
 });
 
-test("every route, called with no credential, is a 401 but capabilities, the contract, health, an MCP server's OAuth callback and client document, and GitHub's two browser legs back to Connect (a 302); the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, approving a note, answering a tool call's approval, a run's live computer view or its hand-back, which take the session only, and a webhook trigger's hook, which takes its signature only", async (t) => {
+test("every route, called with no credential, is a 401 but capabilities, the contract, health, an MCP server's OAuth callback and client document, GitHub's two browser legs back to Connect (a 302), and a driver's pair, whose code is its credential; the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, approving a note, answering a tool call's approval, a run's live computer view or its hand-back, which take the session only, and a webhook trigger's hook, which takes its signature only", async (t) => {
   const server = await owned(t);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;
@@ -326,6 +345,9 @@ test("every route, called with no credential, is a 401 but capabilities, the con
     // So is the browser GitHub sends back after it makes the App (the callback) or installs it (installed): its state and
     // the cookie Connect set are the check, and both legs only ever send it on (302), to the console with why on a failure.
     else if (["gitHubCallback", "gitHubInstalled"].includes(route.name)) assert.equal(anonymous.status, 302, `${route.method} ${path}: ${anonymous.status}`);
+    // A driver pairing a computer has no credential of the server's: the pairing code in its body is the credential, so
+    // an empty body is a 422 (computer-attach-e2e.test.mjs pairs one).
+    else if (route.name === "pairComputer") assert.equal(anonymous.status, 422, `${route.method} ${path}: ${anonymous.status} ${anonymous.text}`);
     else assert.equal(anonymous.status, 401, `${route.method} ${path} with no credential: ${anonymous.text}`);
     for (const headers of [{ ...(writes ? page(server) : {}), cookie: server.cookie }, { ...(body ? json : {}), authorization: `Bearer ${server.token}` }]) {
       const res = await call(server.port, { method: route.method, path, headers, body });
@@ -333,11 +355,11 @@ test("every route, called with no credential, is a 401 but capabilities, the con
       // A webhook trigger's request is let in by its signature alone (standard-webhooks.ts): neither the session nor the
       // token stands for it.
       else if (route.name === "receiveHook") assert.equal(res.status, 401, `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
-      // Approving or restoring a note and answering a tool call's approval take the owner's session alone: a token,
-      // whoever holds it, is 403 (learn-pending.test.mjs, learn-restore.test.mjs, tool-gate.test.mjs). So does a run's live
-      // computer view, a full-control credential for its session, and its hand-back (browser-live.test.mjs,
-      // browser-take-over.test.mjs).
-      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
+      // Approving or restoring a note, making a learned workflow an agent, and answering a tool call's approval take the
+      // owner's session alone: a token, whoever holds it, is 403 (learn-pending.test.mjs, learn-restore.test.mjs,
+      // learn-promote.test.mjs, tool-gate.test.mjs). So does a run's live computer view, a full-control credential for its
+      // session, and its hand-back (browser-live.test.mjs, browser-take-over.test.mjs).
+      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "promoteLearnedWorkflow" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
       // A secret write takes the owner's session alone (secret-writes.ts): the token is 403 on it. Which requests are secret
       // writes is the operation's predicate's to say of this body: an MCP server's PUT with no credential in it is not.
       else if (writesSecret(route.name, body) && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
@@ -410,7 +432,7 @@ test("the bin: accounts on with no AGENTRUN_ACCOUNTS, the first-visit line with 
   assert.match(open, /^Set your password: http:\/\/127\.0\.0\.1:\d+\/setup \(/m);
   assert.match(open, /^Open http:\/\/127\.0\.0\.1:\d+\/$/m, "with accounts on, the Open line holds no token");
   assert.match(await bin({ AGENTRUN_PUBLIC_URL: "http://127.0.0.1:8123" }, /Set up this server: .*\n/), /^Set up this server: http:\/\/127\.0\.0\.1:8123\/setup#code=[A-Za-z0-9_-]{22} \(or paste AGENTRUN_TOKEN\)$/m);
-  assert.doesNotMatch(await bin({ AGENTRUN_ACCOUNTS: "0" }, /\?token=.*\n/), /Set your password|Set up this server/);
+  assert.doesNotMatch(await bin({ AGENTRUN_ACCOUNTS: "0" }, /\?launch=.*\n/), /Set your password|Set up this server/);
 });
 
 test("with accounts on, the token link signs no browser in: it sets no cookie, and a cookie made from the token is no credential, before or after signing out everywhere", async (t) => {

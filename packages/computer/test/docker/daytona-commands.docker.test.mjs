@@ -1,5 +1,5 @@
-// The commands the Daytona provider sends into a sandbox, run where Daytona would run them: a root container (Daytona's
-// container class runs code as root), the install piped to a shell's stdin as /process/execute does, init detached, the
+// The shared scripts a child-daemon host sends into a machine (install, init, stdio), run where Daytona would run them: a
+// root container (Daytona's container class runs code as root), the install piped to a shell's stdin, init detached, the
 // bridge on stdin and stdout. On a Debian image (util-linux, coreutils) and an Alpine one (BusyBox only, as in Daytona's
 // default snapshot), so the provider relies on no privilege tool of the image's. AGENTRUN_COMPUTER_LIVE_DOCKER=1 only;
 // needs `npm run build` and `npm run build:daemon`, and debian:bookworm-slim and alpine:3.20 pulled. Each container is
@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
 import { DaemonClient } from "../../dist/index.js";
-import { daytonaCommands } from "../../dist/daytona.js";
+import { childCommands } from "../../dist/hosted/scripts.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
@@ -71,9 +71,9 @@ describe("the Daytona provider's commands in a root container", { skip: LIVE ? f
 	for (const { image, suid, copy } of IMAGES) {
 		it(`${image}: installs the daemon, init drops itself to 1000:1000 with no capabilities and the filter on every thread, and the bridge speaks the protocol`, async () => {
 			const { name, arch, sha } = sandbox(image);
-			const commands = daytonaCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString(), user: "1000:1000" });
+			const commands = childCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString(), user: "1000:1000" });
 			const installed = execFileSync("docker", ["exec", "-i", name, "sh"], { input: commands.install, encoding: "utf8" });
-			assert.equal(installed.trim(), `sha256 ${sha}`, "the install prints the installed binary's sha256");
+			assert.equal(installed.trim(), `installer 0 root\nsha256 ${sha}`, "the install prints who ran it, root, and the installed binary's sha256");
 			assert.equal(docker("exec", name, "stat", "-c", "%u:%g %a", "/opt/agentrun/computerd").trim(), "0:0 755");
 			assert.equal(docker("exec", name, "sh", "-c", `test -e ${STAGING} && echo left || echo gone`).trim(), "gone");
 
@@ -129,12 +129,12 @@ describe("the Daytona provider's commands in a root container", { skip: LIVE ? f
 
 		it(`${image}: the install takes back a daemon directory another user owns, and refuses one under a directory another user can write`, () => {
 			const { name, sha } = sandbox(image);
-			const commands = daytonaCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString() });
+			const commands = childCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString() });
 			// A snapshot may already hold the directory, owned by the computer's user.
 			docker("exec", name, "sh", "-c", "mkdir -p /opt/agentrun && chown 1000:1000 /opt/agentrun && chmod 0755 /opt/agentrun");
 			const installed = shell(name, commands.install, { piped: true });
 			assert.equal(installed.status, 0, installed.stdout + installed.stderr);
-			assert.equal(installed.stdout.trim(), `sha256 ${sha}`);
+			assert.equal(installed.stdout.trim(), `installer 0 root\nsha256 ${sha}`);
 			assert.equal(docker("exec", name, "stat", "-c", "%u:%g %a", "/opt/agentrun", "/opt/agentrun/computerd").trim(), "0:0 755\n0:0 755");
 			const swapped = shell(name, "mv /opt/agentrun/computerd /tmp/computerd", { user: "1000:1000" });
 			assert.notEqual(swapped.status, 0, "the computer's user cannot move the daemon out of its directory");
@@ -151,8 +151,8 @@ describe("the Daytona provider's commands in a root container", { skip: LIVE ? f
 
 		it(`${image}: init and the bridge never run, as root, a daemon another user could have replaced`, () => {
 			const { name, sha } = sandbox(image);
-			const commands = daytonaCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString() });
-			assert.equal(shell(name, commands.install, { piped: true }).stdout.trim(), `sha256 ${sha}`);
+			const commands = childCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString() });
+			assert.equal(shell(name, commands.install, { piped: true }).stdout.trim(), `installer 0 root\nsha256 ${sha}`);
 			// The directory as an older install left it when the snapshot already held it, owned by the computer's user,
 			// who then swaps the binary for one that records who ran it.
 			docker("exec", name, "chown", "1000:1000", "/opt/agentrun");
@@ -175,7 +175,7 @@ describe("the Daytona provider's commands in a root container", { skip: LIVE ? f
 
 		it(`${image}: an install by a user that is not root and has no sudo says why, and installs nothing`, () => {
 			const { name } = sandbox(image);
-			const commands = daytonaCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString() });
+			const commands = childCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString() });
 			let failed;
 			try {
 				execFileSync("docker", ["exec", "-i", "--user", "1000:1000", name, "sh"], { input: commands.install, encoding: "utf8" });

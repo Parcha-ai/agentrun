@@ -45,6 +45,15 @@ test("box_allow round-trips the 'none' sentinel as well as a list", () => {
   assert.equal(read.boxAllow, "none");
 });
 
+test("box_allow_set round-trips the operator's marker, and a launch without it reads as the default's", () => {
+  const set = { input: {}, title: "", place: { mode: "runner" }, boxAllow: ["api.example.com"], boxAllowSet: true };
+  assert.equal(launchBody(set).box_allow_set, true);
+  assert.deepEqual(readLaunchBody(launchBody(set)), set);
+  const unset = readLaunchBody(launchBody({ input: {}, title: "", place: { mode: "runner" }, boxAllow: ["pypi.org"] }));
+  assert.equal(unset.boxAllowSet, undefined);
+  assert.equal(readLaunchBody({ place: { mode: "runner" }, box_allow: ["pypi.org"], box_allow_set: "yes" }).boxAllowSet, undefined, "only true marks it");
+});
+
 test("a built-in learning run's launch body reads without loss", () => {
   // The runner writes this exact body for a learning run; the factory picks by its harness.
   const body = { harness: "learning", input: { runId: "run-1" }, title: "Learn from run-1", place: { mode: "runner" } };
@@ -136,6 +145,14 @@ test("a launch body keeps the run's ready file ids in order, for the runner to c
 test("a launch body with no files reads none, never an empty list", () => {
   const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" } }));
   assert.equal(read.files, undefined);
+});
+
+test("a launch body round-trips the learned skills a run's learning start offered it; none is no field", () => {
+  const learning = { given: [], seed: "seed-abc", section: "", seedNotes: 0, skills: ["weekly-report", "find-policies"] };
+  const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning }));
+  assert.deepEqual(read.learning, learning);
+  const none = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning: { ...learning, skills: [] } }));
+  assert.equal("skills" in none.learning, false, "no skills: no field");
 });
 
 test("a launch body round-trips the run's learning start (given {file,name}, seed sha, # Learned section, seedNotes)", () => {

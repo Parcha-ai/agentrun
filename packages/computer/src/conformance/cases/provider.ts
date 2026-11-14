@@ -2,12 +2,13 @@
 // what they say, the network reads back as asked, a change to a network the provider does not declare is refused
 // (Core) and one it does declare is refused or applied truthfully (Full), a computer does not run past its deadline,
 // the janitor ends only the expired, stopped or running, and a takeover releases the run's lower epochs by label (Full).
+// A create retried with its request id answers the computer the first made, and after release is refused (Full).
 import { randomBytes } from "node:crypto";
 import { releaseOlder, sweep } from "../../janitor.js";
-import { EPOCH_LABEL, RUN_LABEL, runLabels } from "../../labels.js";
-import type { ComputerRef, ComputerSpec, NetworkSpec } from "../../provider.js";
+import { EPOCH_LABEL, OWNER_LABEL, RUN_LABEL, runLabels } from "../../labels.js";
+import { type ComputerRef, type ComputerSpec, computerNameFor, type NetworkSpec, runLifetimeMs } from "../../provider.js";
 import type { Case, CaseContext } from "../types.js";
-import { CASE_LABEL } from "./util.js";
+import { b64, CASE_LABEL, decode } from "./util.js";
 
 /** Labels for one case's computers: the run's, and the case's own. */
 const own = (t: CaseContext, name: string) => ({ ...t.runLabels, [CASE_LABEL]: name });
@@ -136,6 +137,26 @@ export const providerCases: Case[] = [
 			`check of lifetimeMs ${maxLifetimeMs + 1}, past maxLifetimeMs, refuses lifetimeMs in words: ${JSON.stringify(refusals)}`,
 		);
 		await refusedCreate(t, over, "create of a spec past maxLifetimeMs");
+		// GPUs are a capability too: one the provider does not offer is refused with no vendor call, and a provider that
+		// declares no gpu refuses any.
+		const { gpu } = t.provider.capabilities();
+		if (gpu !== undefined) {
+			t.assert(
+				Array.isArray(gpu.types) && gpu.types.length > 0 && gpu.types.every((type) => typeof type === "string" && type !== "") && Number.isSafeInteger(gpu.max) && gpu.max >= 1,
+				`capabilities().gpu is { types: [one or more names], max: a whole number from 1 }, not ${JSON.stringify(gpu)}`,
+			);
+		}
+		const offered = gpu?.types[0] ?? "T4";
+		const outside = gpu === undefined ? [{ type: offered, count: 1 }] : [{ type: `not-${offered}`, count: 1 }, { type: offered, count: 0 }, { type: offered, count: gpu.max + 1 }];
+		for (const asked of outside) {
+			const spec = t.spec({ labels, gpu: asked });
+			const refused = t.provider.check(spec);
+			t.assert(
+				refused.some((r) => r.field === "gpu" && r.message !== ""),
+				`check of gpu ${JSON.stringify(asked)}, which the provider ${gpu === undefined ? "declares no gpu for" : "does not offer"}, refuses gpu in words: ${JSON.stringify(refused)}`,
+			);
+			await refusedCreate(t, spec, `create with gpu ${JSON.stringify(asked)}`);
+		}
 		t.deepEqual(await names(t, labels), [], "the computers the refused creates made");
 	}),
 	provider("create-release", async (t) => {
@@ -151,6 +172,39 @@ export const providerCases: Case[] = [
 		t.deepEqual(await names(t, labels), [], "listed after delete");
 		t.refused(await t.provider.connect(ref), "connect to a deleted computer", ["gone", "not_found"]);
 	}),
+	provider(
+		"create-retried",
+		async (t) => {
+			// A retry of one request, at once and after it is up, answers the computer the first made: never a second.
+			const labels = own(t, "retried");
+			const spec = t.spec({ labels });
+			const requestId = `conformance-retried-${randomBytes(6).toString("hex")}`;
+			const [first, early] = await Promise.all([t.attempt(spec, t.provider, requestId), t.attempt(spec, t.provider, requestId)]);
+			const made = t.ok(first, "create");
+			t.deepEqual(refOf(t.ok(early, "the same create again while the first starts")), refOf(made), "the computer a create retried while it starts answers");
+			t.deepEqual(refOf(t.ok(await t.attempt(spec, t.provider, requestId), "the same create again once it is up")), refOf(made), "the computer a create retried once it is up answers");
+			t.equal(made.name, computerNameFor(requestId), "the computer's name, computer-<12 hex of sha256(request id)>");
+			t.deepEqual(await names(t, labels), [made.name], "the computers three creates of one request made");
+			const other = t.refused(await t.attempt(t.spec({ labels: { ...labels, role: "other" } }), t.provider, requestId), "the same request id with other labels", ["exists"]);
+			t.assert(other.message.includes(made.name), `the refusal names the request's computer ${made.name}: ${other.message}`);
+		},
+		{ level: "full" },
+	),
+	provider(
+		"create-after-release",
+		async (t) => {
+			// A request whose computer has ended is spent: the same id again is refused exists, in words, and makes nothing.
+			const labels = own(t, "after-release");
+			const spec = t.spec({ labels });
+			const requestId = `conformance-after-release-${randomBytes(6).toString("hex")}`;
+			const made = t.ok(await t.attempt(spec, t.provider, requestId), "create");
+			t.ok(await t.provider.release(made, "delete"), "release delete");
+			const again = t.refused(await t.attempt(spec, t.provider, requestId), "the same request id after its computer was released", ["exists"]);
+			t.match(again.message, /was made for this request and has ended: create with a new request id/, "the refusal says what to do");
+			t.deepEqual(await names(t, labels), [], "the computers the refused create made");
+		},
+		{ level: "full" },
+	),
 	provider("attach", async (t) => {
 		const labels = own(t, "attach");
 		const spec = t.spec({ labels: { ...labels, role: "a" } });
@@ -192,7 +246,8 @@ export const providerCases: Case[] = [
 		t.equal(info.state, "running", "its state");
 		t.deepEqual(info.network, spec.network, "its network, read back");
 		const deadline = info.deadline instanceof Date ? info.deadline.getTime() : Number.NaN;
-		t.assert(deadline >= before + spec.lifetimeMs - 1000 && deadline <= after + spec.lifetimeMs + 1000, `its deadline, ${String(info.deadline)}, is lifetimeMs after create`);
+		const lifetimeMs = runLifetimeMs(spec);
+		t.assert(deadline >= before + lifetimeMs - 1000 && deadline <= after + lifetimeMs + 1000, `its deadline, ${String(info.deadline)}, is lifetimeMs after create`);
 		t.deepEqual(await names(t, { ...labels, role: "other" }), [], "list by a label no computer has");
 	}),
 	// Stop is declared or refused: a provider that declares it lists the computer stopped; one that does not refuses it
@@ -233,6 +288,92 @@ export const providerCases: Case[] = [
 		t.ok(await t.provider.release(ref, "delete"), "release delete of a stopped computer");
 		t.deepEqual(await names(t, labels), [], "listed after delete");
 	}),
+	// An agent's computer needs persistence. A provider that declares none refuses spec.owner in check() and create, in
+	// words; one that declares it takes an owner with no lifetime, and refuses an owner with one: an agent's computer has
+	// no run deadline.
+	provider("owner", async (t) => {
+		const labels = own(t, "owner");
+		const owner = { agent: `conformance-${randomBytes(6).toString("hex")}` };
+		const { lifetimeMs: _, ...base } = t.spec({ labels });
+		const owned: ComputerSpec = { ...base, owner };
+		if (t.provider.capabilities().persistence === undefined) {
+			const refusals = t.provider.check(owned);
+			t.assert(refusals.some((r) => r.field === "owner" && r.message !== ""), `check of a spec with an owner, on a provider with no persistence, refuses owner in words: ${JSON.stringify(refusals)}`);
+			await refusedCreate(t, owned, "create of a spec with an owner, on a provider with no persistence");
+			return;
+		}
+		t.deepEqual(t.provider.check(owned), [], "check of an agent's spec with no lifetime");
+		const timed = t.provider.check(t.spec({ labels, owner }));
+		t.assert(timed.some((r) => r.field === "lifetimeMs" && r.message !== ""), `check of an agent's spec with a lifetime refuses lifetimeMs in words: ${JSON.stringify(timed)}`);
+	}),
+	// Detach is an agent's computer's alone: a run's computer refuses it in words and runs on, listed running, never
+	// stopped or deleted behind the caller's back.
+	provider("detach", async (t) => {
+		const labels = own(t, "detach");
+		const ref = await t.create({ labels });
+		const words = "release detach of a run's computer";
+		const error = t.refused(await t.provider.release(ref, "detach"), words);
+		t.assert(error.message !== "", `${words}: the refusal is in words`);
+		t.deepEqual(
+			t.ok(await t.provider.list(labels), "list").map((info) => [info.ref.name, info.state]),
+			[[ref.name, "running"]],
+			`${words}: the computer is still listed, running`,
+		);
+	}),
+	// An agent's computer across two claims (Full, where persistence is declared): made with an owner and no lifetime, a
+	// file written in it, detached (listed stopped, with when), attached by id under a new claim, the file read back (with
+	// resume, the process it ran still running), a claim below that epoch refused as fenced, then deleted.
+	provider(
+		"persistence",
+		async (t) => {
+			const nonce = randomBytes(6).toString("hex");
+			const run = `conformance-${nonce}`;
+			const labels = own(t, "persistence");
+			const owner = { agent: `conformance-${nonce}` };
+			const { lifetimeMs: _, ...base } = t.spec({ labels: { ...labels, ...runLabels(run, 1) } });
+			const made = await t.attempt({ ...base, owner });
+			const ref = refOf(t.ok(made, "create of an agent's computer"));
+			const listed = async (what: string) => t.present(t.ok(await t.provider.list(labels), `list ${what}`).find((info) => info.ref.name === ref.name), `the agent's computer, listed ${what}`);
+			const first = await listed("after create");
+			t.deepEqual([first.labels[OWNER_LABEL], first.state], [`agent:${owner.agent}`, "running"], "after create: its owner label and state");
+
+			const before = await t.connect(ref);
+			const home = /^HOME=(.*)$/m.exec((await t.exec(["env"], {}, before.client)).out)?.[1]?.replace(/\/+$/, "");
+			const path = `${t.present(home, "HOME in the agent's computer")}/agentrun-conformance-persist-${nonce}`;
+			t.ok(await before.client.call("files.write", { path, data: b64(nonce) }), "files.write before the detach");
+			const { resume } = t.present(t.provider.capabilities().persistence, "capabilities().persistence");
+			const resumes = resume && t.provider.capabilities().groups.includes("processes");
+			const started = resumes ? t.ok(await before.client.call("process.start", { argv: ["sleep", "600"] }), "process.start before the detach") : undefined;
+			await before.close();
+
+			t.ok(await t.provider.release(ref, "detach"), "release detach");
+			const detached = await listed("after detach");
+			t.equal(detached.state, "stopped", "after detach: its state");
+			t.assert(detached.detachedAt instanceof Date && !Number.isNaN(detached.detachedAt.getTime()), `after detach: detachedAt is when, not ${String(detached.detachedAt)}`);
+			t.equal(detached.labels[OWNER_LABEL], `agent:${owner.agent}`, "after detach: still the agent's");
+
+			const attached = t.ok(await t.provider.attach({ id: ref.id }, { claim: { run, epoch: 2 }, signal: t.signal }), "attach by id under the claim at epoch 2");
+			t.deepEqual(refOf(attached), ref, "attach under a new claim: the same computer");
+			const back = await listed("after attach");
+			t.deepEqual([back.state, back.labels[RUN_LABEL], back.labels[EPOCH_LABEL], back.detachedAt], ["running", run, "2", undefined], "after attach: its state, the claim's labels, and no detachedAt");
+			const after = await t.connect(ref);
+			const read = t.ok(await after.client.call("files.read", { path }), "files.read after the attach");
+			t.equal(decode(read.data), nonce, "the file written before the detach, read after the attach");
+			if (started !== undefined) {
+				const waited = t.ok(await after.client.call("process.wait", { id: started.id, timeoutMs: 0 }), "process.wait after the attach");
+				t.equal(waited.running, true, "with resume: the process started before the detach, still running");
+			}
+			await after.close();
+
+			const fenced = t.refused(await t.provider.attach({ id: ref.id }, { claim: { run, epoch: 1 }, signal: t.signal }), "attach under the claim at epoch 1, below 2", ["refused"]);
+			t.assert(fenced.message !== "", "a fenced claim: the refusal is in words");
+			t.equal((await listed("after the fenced claim")).labels[EPOCH_LABEL], "2", "after the fenced claim: its epoch");
+
+			t.ok(await t.provider.release(ref, "delete"), "release delete of the agent's computer");
+			t.deepEqual(await names(t, labels), [], "listed after delete");
+		},
+		{ level: "full", needs: ["persistence", "files"] },
+	),
 	provider("network-change", async (t) => {
 		const spec = t.spec({ labels: own(t, "network") });
 		const ref = await t.create(spec);

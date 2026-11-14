@@ -6,7 +6,7 @@
 // collected with the adapter loop's hostLifecycle(), as the runner's ToolHost registers it.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -14,7 +14,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import * as faux from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { storeOn } from "./store-helpers.mjs";
-import { withEnv } from "./support.mjs";
+import { toolLedger, withEnv } from "./support.mjs";
 
 const { saveSignIn, signInViews } = await import("../dist/sign-ins-store.js");
 const { TOOLS, FAUX_BROWSER_ENV } = await import("../dist/tools.js");
@@ -65,7 +65,7 @@ async function bound(t, r, run, vendor, events) {
   };
   const store = { liveViewers: r.store.liveViewers, runs: r.store.runs, signIns };
   const env = { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER, [TOOL_PLANE_ENV]: JSON.stringify({ browser: vendor }) };
-  const host = { where: { root, work: join(root, "work"), ref: { id: run } }, env, install: (extension) => registry.install(extension), ...lifecycle.register, handoverInJournal: true, store, claim: r.claims[run], sealKey: KEY };
+  const host = { where: { root, work: join(root, "work"), ref: { id: run } }, env, install: (extension) => registry.install(extension), ...lifecycle.register, store, claim: r.claims[run], sealKey: KEY, ledger: { paid: await toolLedger() } };
   const binding = await TOOLS.browser.bind(host);
   assert.deepEqual([lifecycle.onConversation.length, lifecycle.beforeResume.length, lifecycle.beforeRelease.length], [1, 1, 1], "the browser registers one of each");
   const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
@@ -107,4 +107,7 @@ test("each bound run's last save, at the release that lets its sessions go, fill
   await b.end();
   assert.deepEqual(events, ["run-a: verified", "run-a: released", "run-b: verified", "run-b: released"]);
   assert.match(String(await verifiedAt(r.store, "agent-b")), /^\d{4}-\d\d-\d\dT/, "agent b verified, by run-b's own claim and sign-in");
+  // A save leaves nothing in either run's folder (its workspace among it), which the agent and the run's file list reach:
+  // its time is the store's alone.
+  for (const run of ["run-a", "run-b"]) assert.deepEqual(readdirSync(join(r.dir, "runs", run), { recursive: true }).filter((name) => /sign-in/.test(String(name))), [], `${run}: no sign-in file`);
 });

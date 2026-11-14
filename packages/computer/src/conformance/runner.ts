@@ -2,7 +2,9 @@
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
+import type { MachineHost } from "../host.js";
 import { sweep } from "../janitor.js";
+import { PROVIDERS } from "../kinds.js";
 import type { MountKind } from "../mount.js";
 import { type ComputerClient, type ExecRunParams, type Group, GROUPS, type HelloResult } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, CreatedComputer } from "../provider.js";
@@ -17,8 +19,10 @@ import {
 	type Clock,
 	type CaseContext,
 	type CaseResult,
+	type ComputerRole,
 	type ConformanceOptions,
 	type ConformanceReport,
+	caseOs,
 	coreGroups,
 	type Ran,
 	type RunFolder,
@@ -95,8 +99,12 @@ function whenAborted(signal: AbortSignal): Promise<never> {
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
 	// Given no cases, the run takes its computer's suite: a browser's own cases, as the CLI does, else the suite's.
-	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
+	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, planted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture, gpu } = options;
 	if (kind !== undefined && only !== undefined) throw new TypeError("a run takes kind and only apart: a kind runs its own cases");
+	// What the provider declares of itself: as given, else the kind registry's entry for its id (health.declared), its
+	// parked configurations with its offered ones: a parked one built for the suite is held to its own declaration.
+	const entry = PROVIDERS.find((one) => one.id === provider.id);
+	const declared = options.declared ?? (entry ? [...entry.capabilities, ...(entry.parked ?? [])] : undefined);
 	const kindProblem = kind === undefined ? undefined : kindRunProblem(kind);
 	if (kindProblem !== undefined) throw new TypeError(kindProblem);
 	const fetcher = options.fetch ?? ((url: string, init?: { signal?: AbortSignal; method?: string }) => fetch(url, init));
@@ -116,7 +124,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		kind: capabilities.kind,
 		daemonMode: capabilities.daemon,
 		image,
-		daemon: null,
+		daemons: [],
 		...(only === undefined ? {} : { only }),
 		...(only === undefined && kind === undefined ? {} : { coreNotRun: cases.filter((c) => c.level === "core" && !selected.includes(c)).map((c) => c.id) }),
 		results: [],
@@ -157,17 +165,24 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			report.cleanup.errors.push(words(error).startsWith(`release ${ref.name}`) ? words(error) : `release ${ref.name} threw: ${words(error)}`);
 		}
 	};
-	/** Records the notes a create returned beside its ref, each naming the computer: never dropped with the ref. */
-	const noteCreated = (created: Result<CreatedComputer>) => {
-		if (!created.ok || !Array.isArray(created.value.notes)) return;
-		for (const note of created.value.notes) (report.computerNotes ??= []).push({ computer: created.value.name, note: String(note) });
+	/** Each computer the run made, by name: its role, "shared" or the id of the case that made it. */
+	const roles = new Map<string, ComputerRole>();
+	/**
+	 * Records the computer's role, and the notes a create returned beside its ref, each naming the computer and its role:
+	 * never dropped with the ref.
+	 */
+	const noteCreated = (created: Result<CreatedComputer>, role: ComputerRole) => {
+		if (!created.ok) return;
+		roles.set(created.value.name, role);
+		if (!Array.isArray(created.value.notes)) return;
+		for (const note of created.value.notes) (report.computerNotes ??= []).push({ computer: created.value.name, role, note: String(note) });
 	};
 	/** Deletes the computer a create gives after nobody waits for it any more, and names it in the report. */
 	const lateCreate = (creating: Promise<Result<CreatedComputer>>, what: string, by: ComputerProvider = provider) =>
 		keep(
 			creating.then(
 				async (created) => {
-					noteCreated(created);
+					noteCreated(created, "shared");
 					if (!created.ok) return;
 					report.cleanup.late.push(created.value.name);
 					await release(created.value, by);
@@ -178,8 +193,10 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		);
 	const createError = (result: Result<unknown>) =>
 		result.ok ? "" : `create ${result.error.code === "refused" ? "was refused" : `failed (${result.error.code})`}: ${result.error.message}`;
-	const sawHello = (hello: HelloResult) => {
-		report.daemon ??= { version: hello.version, os: hello.os, arch: hello.arch };
+	/** Records a computer's first hello, naming the computer and its role: the one it was made for, else the connecting case's. */
+	const sawHello = (computer: string, hello: HelloResult, role: ComputerRole) => {
+		if (report.daemons.some((daemon) => daemon.computer === computer)) return;
+		report.daemons.push({ computer, role: roles.get(computer) ?? role, version: hello.version, os: hello.os, arch: hello.arch, ...(hello.fence === undefined ? {} : { fence: hello.fence }) });
 	};
 
 	/** The run's shared computer, made the first time a case needs it or the daemon's hello. */
@@ -190,7 +207,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			// The run's signal ends the wait at once (Ctrl-C during setup) and reaches the create; a computer that arrives
 			// after it is deleted as it lands (lateCreate).
 			const stop = new AbortController();
-			const creating = provider.create(spec(), { signal: signal ? AbortSignal.any([signal, stop.signal]) : stop.signal });
+			const creating = provider.create(spec(), { signal: signal ? AbortSignal.any([signal, stop.signal]) : stop.signal, requestId: `${run}/shared` });
 			let created: Result<CreatedComputer>;
 			try {
 				created = await within(creating, caseTimeoutMs, "create", signal);
@@ -199,7 +216,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				lateCreate(creating, "create (the run's computer)");
 				return { error: words(error) };
 			}
-			noteCreated(created);
+			noteCreated(created, "shared");
 			if (!created.ok) return { error: createError(created) };
 			sharedRef = created.value;
 			const connecting = provider.connect(created.value);
@@ -215,7 +232,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			}
 			if (!connected.ok) return { error: `connect: ${connected.error.code}: ${connected.error.message}` };
 			await bounded(connected.value.close(), CLOSE_MS);
-			sawHello(connected.value.hello);
+			sawHello(created.value.name, connected.value.hello, "shared");
 			return { ref: created.value, hello: connected.value.hello };
 		})().catch((error: unknown) => ({ error: `the provider threw: ${words(error)}` })));
 
@@ -241,8 +258,14 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				return `the provider does not declare ${need}`;
 			} else if (need === "release:stop" && !(Array.isArray(capabilities.release) && capabilities.release.includes("stop"))) {
 				return `the provider does not declare ${need}`;
+			} else if (need === "persistence" && capabilities.persistence === undefined) {
+				return `the provider does not declare ${need}: it keeps no computer for an agent`;
 			} else if (need === "vendor-agent" && !Array.isArray(capabilities.vendorAgentPorts)) {
 				return `the provider does not declare ${need} (capabilities().vendorAgentPorts): no vendor's agent runs beside its computers' programs`;
+			} else if (need === "secrets" && planted === undefined) {
+				return "the provider takes no secret: its conformance module's ENV names no key, token or secret";
+			} else if (need === "gpu" && capabilities.gpu === undefined) {
+				return "the provider does not declare gpu (capabilities().gpu): it offers no GPU";
 			}
 		}
 		return undefined;
@@ -274,6 +297,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			for (const need of lacking) if (!report.undeclared.includes(need)) report.undeclared.push(need);
 			return { ...result("skip", why), undeclared: lacking };
 		}
+		// A case written for other systems (a POSIX program, /proc) is not this computer's to pass or fail: skipped in words.
+		const systems = caseOs(c);
+		if (systems !== undefined && !systems.includes(capabilities.os)) return { ...result("skip", `the case is written for ${systems.join(" or ")}, and this computer runs ${capabilities.os}`), os: systems };
 		// The shared computer is made, bounded on its own, before the case's time starts.
 		const sharedComputer = (c.computer ?? "shared") === "shared" ? await getShared() : undefined;
 		const timeoutMs = c.timeoutMs ?? caseTimeoutMs;
@@ -310,14 +336,17 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			});
 			keep(connecting, `connect to ${ref.name} (${c.id})`);
 			const once = unwrap(await connecting, `connect to ${ref.name}`);
-			sawHello(once.hello);
+			sawHello(ref.name, once.hello, c.id);
 			return once;
 		};
+		/** Each create of the case is its own request: the run, the case and the create's count. */
+		let creates = 0;
 		/** create through by, kept: what it gives is deleted when the case ends, or as it comes after that. */
-		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider) => {
-			const creating = by.create(whole, { signal: caseSignal }).then((created) => {
-				noteCreated(created);
-				if (created.ok) track(created.value, by);
+		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider, requestId = `${run}/${c.id}/${++creates}`) => {
+			const creating = by.create(whole, { signal: caseSignal, requestId }).then((created) => {
+				noteCreated(created, c.id);
+				// A retry of one request answers the computer the first attempt made: it is tracked once.
+				if (created.ok && !refs.some((one) => one.ref.id === created.value.id)) track(created.value, by);
 				return created;
 			});
 			keep(creating, `create (${c.id})`);
@@ -366,6 +395,12 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				track,
 				connect: (ref) => connect(ref ?? needComputer().ref),
 				async home() {
+					if (capabilities.os === "windows") {
+						// Windows has no HOME: the profile folder is USERPROFILE, read through PowerShell's own environment.
+						const profile = (await t.exec(["powershell.exe", "-NoProfile", "-Command", "[Console]::Out.Write($env:USERPROFILE)"])).out.trim();
+						if (!/^[A-Za-z]:[\\/]/.test(profile)) throw new Error(`USERPROFILE in the computer is ${show(profile)}, not an absolute path`);
+						return profile.replace(/[\\/]+$/, "");
+					}
 					const env = await t.exec(["env"]);
 					const home = /^HOME=(.*)$/m.exec(env.out)?.[1];
 					if (home === undefined || !home.startsWith("/")) throw new Error(`HOME in the computer is ${show(home)}, not an absolute path`);
@@ -377,10 +412,11 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					return path;
 				},
 				fixture() {
-					if (fixture === undefined) {
+					// A Windows desktop's fixture is a PowerShell script this package carries (windows-fixture.ts): no file to name.
+					if (fixture === undefined && !(capabilities.kind === "desktop" && capabilities.os === "windows")) {
 						return t.skip("no fixture was given: --fixture names computerd-fixture for a desktop, or the fixture APK for an Android phone");
 					}
-					started ??= startFixture(t, fixture, (stop) => {
+					started ??= startFixture(t, fixture ?? "", (stop) => {
 						stopFixture = stop;
 					});
 					return started;
@@ -397,6 +433,11 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					if (drifted === undefined) return t.skip("no drifted provider was given: a provider module exports createDriftedProvider() for the drift cases");
 					return await drifted();
 				},
+				declared,
+				async planted() {
+					if (planted === undefined) return t.skip("no provider with planted secrets was given: the provider takes no secret, or its module lists none in ENV");
+					return await planted();
+				},
 				async runFolder(kind) {
 					const none = `the run was given no run folder for mount kind ${kind}`;
 					if (mountFor === undefined) return t.skip(`${none}: a provider's conformance module exports mountFor(kind)`);
@@ -405,6 +446,11 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					if (ended) keep(bounded(folder.close().catch(() => {}), CLOSE_MS), `close of a run folder (${c.id})`);
 					else folders.push(folder);
 					return folder;
+				},
+				gpu() {
+					// A GPU bills by the second: the run names the one it pays for, never a default.
+					if (gpu === undefined) return t.skip("the run named no GPU: give --gpu <type>[:<count>] (or options.gpu), one the provider declares in capabilities().gpu");
+					return { type: gpu.type, count: gpu.count };
 				},
 				async exec(argv: string[], extra: Partial<ExecRunParams> = {}, client: ComputerClient = t.client): Promise<Ran> {
 					const ran = unwrap(await client.call("exec.run", { argv, timeoutMs: patience, ...extra }, { signal: caseSignal }), `exec.run ${show(argv)}`);
@@ -511,8 +557,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		}
 		await cleanup(provider, capabilities.lifetime, runLabels, report, deleted, cleanupTimeoutMs);
 	}
-	// A Core case skipped for an optional group the computer does not declare is not part of Core's verdict.
-	const core = report.results.filter((r) => r.level === "core" && !(r.status === "skip" && r.undeclared !== undefined));
+	// A Core case skipped for an optional group the computer does not declare, or written for another system, is not part
+	// of Core's verdict.
+	const core = report.results.filter((r) => r.level === "core" && !(r.status === "skip" && (r.undeclared !== undefined || r.os !== undefined)));
 	const clean = report.cleanup.left.length === 0 && report.cleanup.errors.length === 0;
 	const corePassed = core.every((r) => r.status === "pass") && clean;
 	if ((report.coreNotRun ?? []).length === 0) report.core = core.length > 0 && corePassed ? "pass" : "fail";
@@ -545,6 +592,20 @@ async function cleanup(
 		const listed = await within(provider.list(labels), ms, `list ${JSON.stringify(labels)}`);
 		if (listed.ok) report.cleanup.left = listed.value.map((info) => info.ref.name).sort();
 		else report.cleanup.errors.push(`list ${JSON.stringify(labels)}: ${listed.error.code}: ${listed.error.message}`);
+		// Nothing left behind, read from the vendor itself: a provider on the shared machine-host adapter is swept by the
+		// run's label through its host, as the live sweep (sweep.ts) does, and every machine it finds must be gone.
+		const host = (provider as { host?: MachineHost }).host;
+		if (host !== undefined && typeof host.list === "function") {
+			const { sweepMachines } = await import("./sweep.js");
+			const said: string[] = [];
+			const swept = await within(sweepMachines(host, { labels, waitMs: ms, onWords: (words) => said.push(words) }), ms * 2, "the sweep of the run's machines");
+			report.cleanup.errors.push(...said.map((words) => `sweep: ${words}`));
+			if (!swept.ok) report.cleanup.errors.push(`sweep: ${swept.error.code}: ${swept.error.message}`);
+			else {
+				report.cleanup.sweep = swept.value;
+				if (swept.value.stillThere.length > 0) report.cleanup.errors.push(`sweep: nothing left behind fails: still there ${swept.value.stillThere.join(", ")}`);
+			}
+		}
 	} catch (error) {
 		report.cleanup.errors.push(words(error));
 	}

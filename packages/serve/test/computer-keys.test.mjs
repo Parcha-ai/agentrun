@@ -4,20 +4,28 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PROVIDERS } from "@parcha/agentrun-computer";
-import { PROVIDER_KEYS, providerOptions, testConnection } from "../dist/computer-keys.js";
-
-// The kind registry's key names per provider (the computer package's PROVIDERS): the map must take exactly these, no
-// more and no fewer, with the same required flags.
-const REGISTRY_KEYS = Object.fromEntries(PROVIDERS.map((one) => [one.id, one.keys.map((key) => [key.name, key.required])]));
+import { KEY_TABLE, keyChoices, keyTableOf, providerOptions, testConnection } from "../dist/computer-keys.js";
 
 const KEY = "fake-test-key-0001";
 const SECRET = "fake-test-key-secret-0002";
 
-test("computer keys: every provider takes exactly the registry's key names, with the same required flags", () => {
-  assert.deepEqual(Object.keys(PROVIDER_KEYS).sort(), Object.keys(REGISTRY_KEYS).sort());
-  for (const [id, keys] of Object.entries(REGISTRY_KEYS)) {
-    assert.deepEqual(PROVIDER_KEYS[id].map((key) => [key.name, key.required]), keys, id);
+test("computer keys: the table is the descriptors': every provider's keys with the option each fills, its label and its settings, none written in serve", () => {
+  assert.deepEqual(Object.keys(KEY_TABLE.keys).sort(), PROVIDERS.map((one) => one.id).sort());
+  for (const entry of PROVIDERS) {
+    assert.deepEqual(KEY_TABLE.keys[entry.id], entry.keys.map(({ name, option, required, picked }) => ({ name, option, required, ...(picked ? { picked } : {}) })), entry.id);
+    assert.equal(KEY_TABLE.labels[entry.id], entry.label, entry.id);
+    assert.deepEqual(KEY_TABLE.settings[entry.id], (entry.settings ?? []).map(({ name, option, default: fallback }) => ({ name, option, ...(fallback === undefined ? {} : { default: fallback }) })), entry.id);
   }
+});
+
+test("computer keys: a provider no serve file names is mapped from its descriptor alone: its keys to its options, its setting to its default or the server's", () => {
+  const table = keyTableOf([
+    { id: "acme-cloud", label: "Acme Cloud", keys: [{ name: "ACME_TOKEN", option: "token", required: true }, { name: "ACME_REGION", option: "region", required: false }], settings: [{ name: "acmePool", option: "pool", default: "shared" }] },
+  ]);
+  assert.deepEqual(providerOptions("acme-cloud", { ACME_TOKEN: KEY }, {}, table), { ok: true, options: { token: KEY, pool: "shared" } });
+  assert.deepEqual(providerOptions("acme-cloud", { ACME_TOKEN: KEY, ACME_REGION: "eu" }, { acmePool: " gold " }, table), { ok: true, options: { token: KEY, region: "eu", pool: "gold" } });
+  const missing = providerOptions("acme-cloud", {}, {}, table);
+  assert.match(missing.error.message, /^Acme Cloud needs ACME_TOKEN saved/);
 });
 
 test("computer keys: the saved keys become each provider's create() options; a name it does not declare is never passed on", () => {
@@ -27,7 +35,7 @@ test("computer keys: the saved keys become each provider's create() options; a n
     ["daytona", { DAYTONA_API_KEY: KEY, DAYTONA_API_URL: "https://daytona.example/api", DAYTONA_TARGET: "eu" }, { apiKey: KEY, apiUrl: "https://daytona.example/api", target: "eu" }],
     ["modal", { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET }, { tokenId: KEY, tokenSecret: SECRET, app: "agentrun" }],
     ["e2b", { E2B_API_KEY: KEY }, { apiKey: KEY }],
-    ["orgo", { ORGO_API_KEY: KEY }, { apiKey: KEY }],
+    ["orgo", { ORGO_API_KEY: KEY, ORGO_WORKSPACE_ID: "ws-1" }, { apiKey: KEY, workspaceId: "ws-1" }],
     ["phone-harness", { PHONE_HARNESS_API_KEY: KEY }, { apiKey: KEY }],
     ["browserbase", { BROWSERBASE_API_KEY: KEY, BROWSERBASE_PROJECT_ID: "proj-1" }, { apiKey: KEY, projectId: "proj-1" }],
     ["kernel", { KERNEL_API_KEY: KEY }, { apiKey: KEY }],
@@ -39,7 +47,7 @@ test("computer keys: the saved keys become each provider's create() options; a n
   assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY, DAYTONA_TARGET: "" }), { ok: true, options: { apiKey: KEY } }, "an empty optional key is left out");
 });
 
-test("computer keys: a required key not saved, or an unknown provider, is refused in words that name what to save", () => {
+test("computer keys: a required key not saved is refused in words that name what to save; an id the table does not list is no provider", () => {
   const modal = providerOptions("modal", { MODAL_TOKEN_ID: KEY });
   assert.equal(modal.ok, false);
   assert.equal(modal.error.code, "missing_key");
@@ -47,9 +55,10 @@ test("computer keys: a required key not saved, or an unknown provider, is refuse
   const bb = providerOptions("browserbase", {});
   assert.match(bb.error.message, /^Browserbase needs BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID saved: save them in Settings → Computers/);
   assert.equal(providerOptions("daytona", { DAYTONA_API_KEY: "  " }).ok, false, "a blank key is no key");
+  // The table is every descriptor's: an id it does not list is refused, naming the ones it does.
   const unknown = providerOptions("vmware", { KEY });
   assert.deepEqual([unknown.ok, unknown.error.code], [false, "unsupported"]);
-  assert.match(unknown.error.message, /vmware is not a computer provider/);
+  assert.match(unknown.error.message, /^vmware is not a computer provider: .*\bdocker\b/);
 });
 
 /** A fake provider module: create(options) records what it was given and answers testConnection with `answer`. */
@@ -87,8 +96,12 @@ test("computer keys: each coded error comes back in plain words naming the provi
     limit: /^E2B says the account is at a limit\. \(/,
     invalid: /^E2B's settings are not valid\. \(/,
     unsupported: /^E2B can't be tested here\. \(/,
-    e2b: /^E2B answered with an error\. \(/,
+    vendor: /^E2B answered with an error\. \(/,
+    // A code with no words of its own (gone, not_found, exists, ...) is a failed test, in general words; so is a
+    // per-vendor code the package no longer makes (e2b): it has no case of its own.
+    e2b: /^The test of E2B failed\. \(/,
     gone: /^The test of E2B failed\. \(/,
+    not_found: /^The test of E2B failed\. \(/,
   };
   for (const [code, pattern] of Object.entries(words)) {
     const module = fakeModule({ ok: false, error: { code, message: `bad key ${KEY}` } });
@@ -106,7 +119,7 @@ test("computer keys: a provider that cannot be made, or that throws, is a failed
   assert.deepEqual([made.ok, made.error.code], [false, "invalid"]);
   assert.match(made.error.message, /^Modal's settings are not valid\. \(the vendor said: the Modal provider refuses \[the key\]\)$/);
   const exploding = fakeModule(() => { throw new Error(`socket closed near ${KEY}`); });
-  const thrown = await testConnection("orgo", { keys: { ORGO_API_KEY: KEY } }, { orgo: exploding.create });
+  const thrown = await testConnection("orgo", { keys: { ORGO_API_KEY: KEY, ORGO_WORKSPACE_ID: "ws-1" } }, { orgo: exploding.create });
   assert.deepEqual([thrown.ok, thrown.error.code], [false, "unreachable"]);
   assert.ok(!thrown.error.message.includes(KEY));
   const leaky = fakeModule({ ok: true, value: { detail: `token ${KEY} works` } });
@@ -127,4 +140,45 @@ test("computer keys: a provider with no module on this server, or keys missing, 
   }
   const noTest = await testConnection("docker", { keys: {} }, { docker: async () => ({}) });
   assert.deepEqual([noTest.ok, noTest.error.code], [false, "unsupported"]);
+});
+
+/** A provider module whose keyChoices answers `answer`, recording what it was made with and asked. */
+function choosingModule(answer) {
+  const made = [];
+  const asked = [];
+  return {
+    made,
+    asked,
+    create: async (options) => {
+      made.push(options);
+      return { keyChoices: async (option, context) => { asked.push([option, context]); return answer; } };
+    },
+  };
+}
+
+test("computer keys: keyChoices asks the provider made from the other saved keys for a picked key's choices, by the option it fills", async () => {
+  const orgo = choosingModule({ ok: true, value: [{ value: "ws-a", label: "alpha" }, { value: "ws-b", label: `beta ${KEY}` }] });
+  const signal = new AbortController().signal;
+  const answer = await keyChoices("orgo", "ORGO_WORKSPACE_ID", { keys: { ORGO_API_KEY: KEY, ORGO_WORKSPACE_ID: "ws-b" }, signal }, { orgo: orgo.create });
+  assert.deepEqual(answer, { ok: true, value: [{ value: "ws-a", label: "alpha" }, { value: "ws-b", label: "beta [the key]" }] });
+  assert.deepEqual(orgo.made, [{ apiKey: KEY }], "the picked key's saved value is left out: the provider reads the vendor's list");
+  assert.deepEqual(orgo.asked, [["workspaceId", { signal }]]);
+});
+
+test("computer keys: keyChoices refuses a key that is not picked, a required key not saved, and a provider with no keyChoices, before asking", async () => {
+  const orgo = choosingModule({ ok: true, value: [] });
+  const notPicked = await keyChoices("orgo", "ORGO_API_KEY", { keys: { ORGO_API_KEY: KEY } }, { orgo: orgo.create });
+  assert.deepEqual(notPicked, { ok: false, error: { code: "unsupported", message: "Orgo offers no choices for ORGO_API_KEY" } });
+  const missing = await keyChoices("orgo", "ORGO_WORKSPACE_ID", { keys: {} }, { orgo: orgo.create });
+  assert.deepEqual([missing.ok, missing.error.code, missing.error.message], [false, "missing_key", "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/orgo/keys)"]);
+  assert.deepEqual(orgo.made, [], "nothing was made");
+  const plain = await keyChoices("orgo", "ORGO_WORKSPACE_ID", { keys: { ORGO_API_KEY: KEY } }, { orgo: async () => ({}) });
+  assert.deepEqual([plain.ok, plain.error.code], [false, "unsupported"]);
+});
+
+test("computer keys: keyChoices' failures: a refused key names the key to check; any other is the provider's own words, code kept, never a key", async () => {
+  const denied = await keyChoices("orgo", "ORGO_WORKSPACE_ID", { keys: { ORGO_API_KEY: KEY } }, { orgo: choosingModule({ ok: false, error: { code: "denied", message: `401 for ${KEY}` } }).create });
+  assert.deepEqual(denied, { ok: false, error: { code: "denied", message: "Orgo refused the saved key: check ORGO_API_KEY in Settings → Computers. (the vendor said: 401 for [the key])" } });
+  const none = await keyChoices("orgo", "ORGO_WORKSPACE_ID", { keys: { ORGO_API_KEY: KEY } }, { orgo: choosingModule({ ok: false, error: { code: "not_found", message: "this Orgo key's account has no workspace: make one at orgo.ai" } }).create });
+  assert.deepEqual(none, { ok: false, error: { code: "not_found", message: "this Orgo key's account has no workspace: make one at orgo.ai" } });
 });

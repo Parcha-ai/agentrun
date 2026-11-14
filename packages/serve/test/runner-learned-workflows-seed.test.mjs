@@ -52,7 +52,8 @@ const learnedOf = (spec) => spec.session.tools.find((tool) => tool.name === LEAR
 function listsAnswerOnly(spec) {
   const tool = learnedOf(spec);
   assert.ok(tool, `the run lists learned_workflow: ${JSON.stringify(spec.session.tools.map(({ name }) => name))}`);
-  assert.match(tool.description, /- answer: Answers a question as a number/, tool.description);
+  // One line a workflow: its name, its input's fields, then what it does (learning.ts workflowLine).
+  assert.match(tool.description, /^- answer \{question\* string\}: Answers a question as a number$/m, tool.description);
   for (const name of ["later", "old-flow", "leaky"]) assert.equal(tool.description.includes(name), false, `${name} is not the run's: ${tool.description}`);
   assert.equal(tool.description.includes(SAVED.value), false, "no saved key in the tool's description");
   assert.deepEqual(tool.inputSchema?.properties?.name?.enum, ["answer"], "the tool runs answer alone");
@@ -90,7 +91,7 @@ async function cliSpec(t, harness, { seed = "landed" } = {}) {
     rmSync(dir, { recursive: true, force: true });
   });
   const sha = seed === "landed" ? await landWorkflows(dir, AGENT, FLOWS) : undefined;
-  const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-4-5" } : { provider: "openai", modelId: "gpt-5" };
+  const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-5-5" } : { provider: "openai", modelId: "gpt-6.1-sol" };
   await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: GRANTED, learning: true } });
   const launch = { input: { content: "Run what you learned." }, title: "t", place: { mode: "runner" }, harness, model, ...(sha !== undefined ? { learning: startAt(sha) } : {}) };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });

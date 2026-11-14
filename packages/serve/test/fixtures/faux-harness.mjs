@@ -62,7 +62,7 @@ export function grown(k, { miss = false } = {}) {
   return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, tokens, usd };
 }
 
-export function script(spec) {
+export function script(spec, session = {}) {
   const text = spec.system.join("\n");
   // The learned_workflow tool as the harness is given it (its description and input schema), when it is.
   const given = spec.tools.find((tool) => tool.name === "learned_workflow");
@@ -79,13 +79,13 @@ export function script(spec) {
   // run's learned_workflow and a write, run in turn, then a closing answer.
   const beside = /Use the learned workflow (\S+) on (.+?), and write note\.md in the same answer\./.exec(text);
   if (beside) return [{ calls: [{ call: "learned_workflow", args: { name: beside[1], input: { question: beside[2] } } }, { call: "write", args: { path: "note.md", content: "noted" } }], usd: 0.001 }, { say: "Ran the learned workflow and wrote note.md.", usd: 0.001 }];
-  // "Use the learned workflow <name> on <question>, its result held until <file>.": the run's learned_workflow, whose
-  // result the harness tells only once <file> exists (as a CLI still recording it would); then an answer; then another.
-  const heldResult = /Use the learned workflow (\S+) on (.+?), its result held until (\S+)\./.exec(text);
-  if (heldResult) return [{ call: "learned_workflow", args: { name: heldResult[1], input: { question: heldResult[2] } }, usd: 0.001, resultWhen: heldResult[3] }, { say: "Answered after the approval.", usd: 0.001 }, { say: "Answered twice.", usd: 0.001 }];
   // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then a closing answer.
   const learned = /Use the learned workflow (\S+) on (.+?)\./.exec(text);
   if (learned) return [{ call: "learned_workflow", args: { name: learned[1], input: { question: learned[2] } }, usd: 0.001 }, { say: "Ran the learned workflow.", usd: 0.001 }];
+  // "Ask the person: <question>": ask_person with the question, then, on the turn the person's answer starts, a closing
+  // answer. A CLI goes on to its next request after the call: that request is the one the run's loop cuts the turn at.
+  const ask = /Ask the person: (.+\?)/.exec(text);
+  if (ask) return [{ call: "ask_person", args: { question: ask[1] }, usd: 0.001 }, { say: "Going with your answer.", usd: 0.001 }];
   // A research turn: the session's web_search when it has one as a tool (its harness's own search is not one), then the
   // page with web_fetch, then report.md citing it.
   const research = /Research (.+?) on the web, read (\S+) and write report\.md\./.exec(text);
@@ -95,6 +95,8 @@ export function script(spec) {
   }
   // As real harnesses do, a request that goes on calls a tool, and the turn's last request is its answer.
   // One answer that asks for two tools, as a model writing two files in one turn does, then the closing answer.
+  // A CLI whose model requests go past the session's model proxy (a route the booking never sees): it answers, booking none.
+  if (/Answer past the proxy\./.test(text)) return [{ unbooked: "Answered past the proxy." }];
   if (/Write two files in one answer\./.test(text)) return [{ calls: [{ call: "write", args: { path: "a.md", content: "alpha" } }, { call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001 }, { say: "Wrote a.md and b.md.", usd: 0.002 }];
   // Codex's shape: a request that only says something (its tool call is the harness's own, which the host never
   // sees), then the host's tool, then the answer.
@@ -105,11 +107,10 @@ export function script(spec) {
   if (/Comment, then write\./.test(text)) return [{ say: "I'll write note.md.", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
   // Reads outside the run: a path up out of its directory, and an absolute one elsewhere, both refused.
   if (/Read outside the run\./.test(text)) return [{ call: "read", args: { path: "../../.token" }, usd: 0.001 }, { call: "read", args: { path: "/etc/hostname" }, usd: 0.001 }, { say: "Read none.", usd: 0.001 }];
-  // As the Claude CLI sends a path: absolute, under its working directory, which is the run's work/ (the run's
-  // process runs with --dir <run dir>); then one outside the run's directory, which the tool refuses.
+  // As the Claude CLI sends a path: absolute, under its working directory (the session's cwd, which the run's file tools
+  // take as its folder); then one outside the run's directory, which the tool refuses.
   if (/Write by the absolute path\./.test(text)) {
-    const runDir = process.argv[process.argv.indexOf("--dir") + 1];
-    return [{ call: "write", args: { path: `${runDir}/work/hello.md`, content: "hello" }, usd: 0.001 }, { call: "write", args: { path: "/elsewhere/away.md", content: "x" }, usd: 0.001 }, { say: "Wrote hello.md.", usd: 0.001 }];
+    return [{ call: "write", args: { path: `${session.cwd}/hello.md`, content: "hello" }, usd: 0.001 }, { call: "write", args: { path: "/elsewhere/away.md", content: "x" }, usd: 0.001 }, { say: "Wrote hello.md.", usd: 0.001 }];
   }
   // The same two calls, each ending before its request is paid, as with Claude Code, whose cost comes in after its
   // response: each result is stored before the answer that holds its call.
@@ -118,10 +119,10 @@ export function script(spec) {
   // request open until `<file>` exists, then answers. A process opened once `<file>` exists answers at once.
   // The wrap-up scripts below that test a note due by the run's measured spend ask few output tokens in their first
   // request, so its step-0 figure (judged on that request itself, as pi's) is not due first: 1,024 on the output-priced
-  // faux model, 512 on Sonnet 4.5's prices, whose 5,000-token input alone is $0.019 at the cache write's price.
+  // faux model, 512 on Sonnet 5.5's prices, whose 5,000-token input alone is $0.0125 at the cache write's price.
   const crashAt = /Wrap up across a crash at (\S+)\./.exec(text)?.[1];
   if (crashAt) return [{ call: "read", args: { path: "a.txt" }, usd: 0.3, outputTokensAsked: 1_024 }, ...(existsSync(crashAt) ? [] : [hangSignalled(`${crashAt}.held`)]), { say: "Done.", usd: 0.01 }];
-  // Claude Code on Sonnet 4.5 (faux-sonnet45.mjs): each request asks the CLI's own max_tokens, 32,000. "at its start": a
+  // Claude Code on Sonnet 5.5 (faux-sonnet55.mjs): each request asks the CLI's own max_tokens, 32,000. "at its start": a
   // 25,000-token first prompt, then one more request. "on a small cap": a 5,000-token prompt, a $0.01 request and one more.
   // "restarts before the note at <file>": a 5,000-token prompt, a $0.04 request, then a hold (writing `<file>.held`) with
   // no request open until `<file>` exists, then one more request.
@@ -156,6 +157,27 @@ export function script(spec) {
   // The wrap-up due after a $0.40 request; the next request, which takes the note, has a side call admitted and answered
   // between that take and its own admission; then one request more.
   if (/Wrap up with a side call in between\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4, outputTokensAsked: 1_024 }, { call: "read", args: { path: "b.txt" }, usd: 0.01, sideAfterNote: { usd: 0.0001 } }, { say: "Done.", usd: 0.01 }];
+  // A job of two requests ($0.001 each), then its end-of-run turn: a request admitted and never answered (`cut`) or one
+  // answered at $0.004 and the turn held after it (`answered`), writing the signal, until <file> exists; then the turn's
+  // answer, at $0.008, saying nothing to keep, and its end ($0.001). A runner killed in the hold leaves the turn sent and
+  // unfinished. Any turn after that one is a look-back asked twice: it says so, at $0.016.
+  const lookBack = /Look back, (cut|answered) and held until (\S+) \(signal (\S+)\)\./.exec(text);
+  if (lookBack) {
+    const [, how, until, signal] = lookBack;
+    // The answered request keeps its place (its faux.request): a later process goes on after it. A cut one has none.
+    const answered = how === "answered" ? [{ say: "Looking back.", usd: 0.004 }] : [];
+    const held = existsSync(until) ? answered : how === "cut" ? [cutSignalled(signal)] : [...answered, hangSignalled(signal)];
+    return [{ say: "Answered.", usd: 0.001 }, { end: true, usd: 0.001 }, ...held, { say: "Nothing new.", usd: 0.008 }, { end: true, usd: 0.001 }, { say: "Asked twice.", usd: 0.016 }];
+  }
+  // A job of two requests ($0.001 each), then a hold (writing the signal) until <file> exists: the end-of-run turn reaches
+  // it (a person stops the run there), and a hold keeps its place, so the follow-up that reopens the run reaches it too
+  // (its runner is lost there). Then the follow-up's answer ($0.002) and end ($0.001), and its round's look-back: an
+  // answer saying nothing to keep ($0.008) and its end ($0.001).
+  const stoppedLooking = /Look back, stopped, then a follow-up held until (\S+) \(signal (\S+)\)\./.exec(text);
+  if (stoppedLooking) {
+    const [, until, signal] = stoppedLooking;
+    return [{ say: "Answered.", usd: 0.001 }, { end: true, usd: 0.001 }, ...(existsSync(until) ? [] : [hangSignalled(signal)]), { say: "Followed.", usd: 0.002 }, { end: true, usd: 0.001 }, { say: "Nothing new.", usd: 0.008 }, { end: true, usd: 0.001 }];
+  }
   // One request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, then the answer.
   if (/Hold the request that carries the note\./.test(text)) return [{ say: "Done.", inputTokensMax: 1_000, usd: 0.01 }];
   // A request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, that the provider does not
@@ -265,6 +287,10 @@ export function script(spec) {
   // A turn that waits as below, then a second turn that answers a chat sent while the first one worked.
   const chat = /Wait for (\S+), then answer the chat\./.exec(text)?.[1];
   if (chat) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, ...(existsSync(chat) ? [] : [{ hang: true }]), { say: "Done after the wait.", usd: 0.004 }, { end: true, usd: 0.001 }, { say: "Answered the chat.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  // One answer whose request is admitted and held in flight until `<file>` exists, in this process (the faux adapter's
+  // `until` polls for it): the run works the while, and ends on its own once the file is there.
+  const answerOnce = /Answer once (\S+) exists\./.exec(text)?.[1];
+  if (answerOnce) return [{ say: "Answered.", usd: 0.002, until: answerOnce }];
   const wait = /Wait for (\S+) before the answer\./.exec(text)?.[1];
   if (wait) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, ...(existsSync(wait) ? [] : [{ hang: true }]), { say: "Done after the wait.", usd: 0.004 }];
   // A run's end read from its turn's end, not from its rows (turn-record.test.mjs).

@@ -13,8 +13,8 @@
 // Harness closed, so nothing moves the call on; the next claim's recovery reruns it from the start, and the gate finds
 // the answer. A lost claim or a shutdown seals the journal and ends the loop interrupted, writing nothing more, so the
 // next claim resumes where the journal stands.
-import type { Context } from "@earendil-works/chord";
-import type { CommitResult, ConversationId, EntryRecord, StorageWrite } from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord/context";
+import { type CommitResult, type ConversationId, type EntryRecord, ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { KINDS } from "./journal-kinds.js";
 import { type Command, cutAtLimit, type HeldState, type Journal, type LoopDeps } from "./loop-contract.js";
@@ -37,15 +37,23 @@ export const quiet: KernelHooks = { beforeIntent: async () => {}, beforeResult: 
 export const CLOSE_MS = 2_000;
 /** How long a person's stop waits for the turn to settle, by default. */
 export const STOP_SETTLE_MS = 30_000;
-/** The most a cut run's end-of-run step (a store read), or the end's patch, may take before the end is written without it. */
+/** The most a cut run's end-of-run step (a store read) may take before the end is written without it. */
 export const CUT_STEP_MS = 2_000;
+/** The most the end's patch (the run's cost and metrics, read from its journal and the store) may take before the end is
+ *  written without them. Those reads queue behind every other run's on a busy store (eight runs ending at once took over
+ *  2 s), and an end written without them leaves the run's cost and path unknown for good: so it waits as long as a
+ *  stalled store, never a busy one, would hold it. Past it, the end says both are unknown (END_PATCH_UNKNOWN). */
+export const END_PATCH_MS = 30_000;
+/** What an end whose patch was late or failed writes: its cost and metrics unknown (null), never left as an earlier end
+ *  of the run stored them, never read as a run that cost $0 by the agent's own path. */
+export const END_PATCH_UNKNOWN = { costUsd: null, metrics: null } as const;
 
 /** Where a commit's batches hold what an expectation waits for: the batch's index and the matched record's id. */
 type Matched = { readonly index: number; readonly id: number };
 /** Finds the record an expectation waits for in a commit's batches. */
 type Match = (batches: readonly (readonly StorageWrite[])[]) => Matched | undefined;
 /** What an expectation stages: the run patch and rows, and the commands it takes (by id; each keyed to the matched record). */
-type Expected = { readonly run?: Staged["run"]; readonly also?: Staged["also"]; readonly take?: readonly number[] };
+type Expected = { readonly run?: Staged["run"]; readonly also?: Staged["also"]; readonly take?: readonly number[]; readonly answer?: { readonly command: number; readonly value: unknown } };
 
 /**
  * The run's journal with the loop's staging matched to commits. stage() replaces what was staged, so the loop never
@@ -120,7 +128,8 @@ function merge(all: readonly { expected: Expected; at: Matched }[]): Staged {
   // call where that record's batch was refused.
   const effect = all.find(({ expected }) => expected.run !== undefined || (expected.also ?? []).length > 0)?.at.id;
   // Each take keyed to the record its expectation matched: the store writes it only with that record's batch.
-  const take = all.flatMap(({ expected, at }) => (expected.take ?? []).map((command) => ({ command, effect: at.id })));
+  // An answer is a value for one of the expectation's own take ids: it rides on that StagedTake.
+  const take = all.flatMap(({ expected, at }) => (expected.take ?? []).map((command) => (expected.answer?.command === command ? { command, effect: at.id, answer: expected.answer.value } : { command, effect: at.id })));
   return { ...(run ? { run } : {}), ...(also.length ? { also } : {}), ...(effect !== undefined && (run || also.length) ? { effect } : {}), ...(take.length ? { take } : {}) };
 }
 
@@ -186,6 +195,17 @@ export function cutLast(entries: readonly EntryRecord[]): string | undefined {
   return message?.stopReason === PI_STOP.length ? cutAtLimit(message.usage?.output) : undefined;
 }
 
+/** The text of the answer the run would end on (cutLast's newest model answer: the root's last pi.assistant, its text
+ *  blocks joined as the Timeline joins them, or a CLI record's last model message), "" when it said none: what the output
+ *  contract's retry checks against the agent's output schema (adapter-loop.ts). */
+export function lastAnswerText(entries: readonly EntryRecord[]): string {
+  const last = [...entries].reverse().find((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
+  if (last?.kind === KINDS.message) return String((last.data as { text?: unknown }).text ?? "");
+  const content = (last as { model?: { content?: unknown }[] } | undefined)?.model?.[0]?.content;
+  if (typeof content === "string") return content;
+  return Array.isArray(content) ? content.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text as string).join("\n") : "";
+}
+
 /** A tool result pi wrote for a call it cut off at its restart limit, as its message, if any. */
 export function restartLimited(entries: readonly EntryRecord[]): string | undefined {
   for (const entry of entries) {
@@ -206,6 +226,22 @@ export async function entriesOf(journal: Journal, conversationId: ConversationId
     if (page.next === undefined) return out;
     cursor = page.next;
   }
+}
+
+/** The entries of the run's agent conversations, in log order: its root's and each one a task of the run owns (a
+ *  subagent's: runner/subagent.ts), never the loop's own session records. What a run's end reads its metrics and cost
+ *  from, so a child's requests count as the run's. */
+export async function agentEntriesOf(journal: Journal, context: Context): Promise<EntryRecord[]> {
+  const ids: ConversationId[] = [];
+  for (let cursor: unknown = undefined; ; ) {
+    const page = await journal.scanConversations({ order: "ascending" } as never, 500, cursor as never, context);
+    for (const record of page.items) if (Number(record.id) === Number(ROOT_CONVERSATION_ID) || record.owner !== undefined) ids.push(record.id);
+    if (page.next === undefined) break;
+    cursor = page.next;
+  }
+  const out: EntryRecord[] = [];
+  for (const id of ids) out.push(...(await entriesOf(journal, id, context)));
+  return out.sort((a, b) => Number(a.id) - Number(b.id));
 }
 
 export function findData<T>(entries: readonly EntryRecord[], kind: string, test: (data: T) => boolean): T | undefined {

@@ -82,6 +82,15 @@ function judge(request: ModelCapRequest | ToolCapRequest, state: JudgeState): Ju
 /** The rule's entry, called through this object by every path. */
 export const capRule = { judge };
 
+/** A main-model request's figures as the cap prices it, for what a run keeps back to answer: its least (an answer at the
+ *  fewest output tokens the cap admits it at), its step-0 typical cost (its input and a WRAP_UP_STEP0_ANSWER_TOKENS answer,
+ *  the wrap-up's own) and its worst (its full asked output, its bound included). Undefined when it cannot be priced. */
+export function requestFigures(request: ModelCapRequest, mode: CapMode, now: number): { leastUsd: number; step0Usd: number; worstUsd: number } | undefined {
+  const p = priced(request, mode, now);
+  if (!p) return undefined;
+  return { leastUsd: p.cost(p.least), step0Usd: p.cost(Math.min(p.asked ?? 0, WRAP_UP_STEP0_ANSWER_TOKENS)), worstUsd: p.worst(p.asked ?? p.least) };
+}
+
 /** What the wrap-up reads: the cap, spend and holds as admission counts them, the run's own priced answers on the
  *  request's model, and whether it was told. */
 export type NoteState = { capUsd: number | undefined; spentUsd: number | null; heldUsd: number; costs: readonly number[]; told: boolean; mode: CapMode; now: number };

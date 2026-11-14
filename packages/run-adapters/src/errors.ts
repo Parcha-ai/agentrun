@@ -41,16 +41,19 @@ export class HarnessRunError extends Error {
     readonly reason: HarnessRunReason,
     readonly turns: number,
     readonly submissions: number,
-    detail: { message?: string; maxTurns?: number | null; lastTool?: string } = {},
+    detail: { message?: string; maxTurns?: number | null; lastTool?: string; refusal?: string } = {},
   ) {
     super(detail.message ?? `harness node stopped: ${reason} after ${turns} turns and ${submissions} submissions`);
     this.name = "HarnessRunError";
     if (detail.maxTurns !== undefined) this.maxTurns = detail.maxTurns;
     if (detail.lastTool !== undefined) this.lastTool = detail.lastTool;
+    if (detail.refusal !== undefined) this.refusal = detail.refusal;
     if (reason === "turn_limit" || reason === "no_progress" || reason === "refused") this.final = true;
   }
   /** The node's turn limit for this attempt, or null when it had none. */
   readonly maxTurns?: number | null;
   /** The name of the last tool the node called, never its arguments. */
   readonly lastTool?: string;
+  /** A `refused` stop's code, when the host that refused gave one (Refusal.code: a spend cap's `spend_cap_reached`). */
+  readonly refusal?: string;
 }

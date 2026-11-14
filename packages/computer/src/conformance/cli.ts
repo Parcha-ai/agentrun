@@ -3,13 +3,18 @@
 // Exits 0 when Core passes, 1 when it fails, 2 on a usage error, and 3 when --only left Core cases out and every case
 // that ran passed: a partial run is never a Core pass, so no script reads its exit code as one. With --kind it exits on
 // the kind's verdict alone: 0 when the provider passes the kind, 1 when it does not.
+// `--exec-stream --machine <id> [--quick]` runs the exec pre-check (./exec-stream.ts) alone, on a machine the vendor made
+// by hand, through the module's createHost(): 0 when exec passes every check, 1 when one fails.
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
 import { type ConformanceModule, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
-import { type ComputerSettingKind, SETTING_KIND_NAMES } from "../kinds.js";
+import { type ComputerSettingKind, type KindCapabilities, SETTING_KIND_NAMES } from "../kinds.js";
+import type { MachineHost } from "../host.js";
 import { browserCases, casesFor, conformanceCases } from "./cases/index.js";
+import { checkExecStream, DEFAULT_LONG_MS, formatExecStream, QUICK_LONG_MS } from "./exec-stream.js";
 import { kindRunProblem } from "./kind.js";
 import type { CdpDialer } from "./cdp.js";
 import { formatReport } from "./report.js";
@@ -44,21 +49,27 @@ export interface CliIo {
 	providerOptions?: { env?: ProviderEnv } & Record<string, unknown>;
 }
 
-const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--json]
+const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--gpu <type>[:<count>]] [--json]
   --provider  a computer in the registry (${providerIds.join(", ")}), or a module path: a provider file that exports
               create(options), or a conformance module that exports createProvider() (and, for the drift case,
               createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
   --image     the image every computer starts from (default the module's conformanceImage(), else debian:bookworm-slim)
   --only      run only these groups (health, exec, files, process, provider, drift, mount, screen, input, touch,
-              apps, lifetime; browser, run alone for a provider of kind browser) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
+              apps, lifetime, gpu; browser, run alone for a provider of kind browser) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
               every case that ran passed
   --kind      run a setting kind's cases (sandbox, desktop, phone, browser) and exit on its verdict: the provider passes the kind only
               when it serves it and every case of each required group passes; not with --only
   --fixture   the fixture the screen, input, touch and apps cases check effects with: computerd-fixture for a
               desktop, the fixture APK for an Android phone
+  --gpu       the GPU the gpu case's one computer asks for, a type the provider declares and a count (default 1), such
+              as T4 or H100:2; it bills by the second, so without it the gpu case skips
   --json      print the report as JSON
+  --exec-stream --machine <id> [--quick]
+              the exec pre-check, alone: the module's createHost() and host.exec, nothing else, on a machine you made
+              by hand. Bytes 0-255 both ways, 8 MiB by sha256, output and stdin while the process runs, stderr apart,
+              the exit code, kill, and a silent process of ${DEFAULT_LONG_MS / 1000} s (--quick: ${QUICK_LONG_MS / 1000} s) that is not cut off
 exit: 0 Core passes, 1 it fails, 2 usage error, 3 partial (--only) and every case that ran passed; with --kind,
-      0 the provider passes the kind, 1 it does not`;
+      0 the provider passes the kind, 1 it does not; with --exec-stream, 0 every check passes, 1 one fails`;
 const PROVIDER_METHODS = ["capabilities", "check", "create", "attach", "list", "network", "connect", "release"] as const;
 
 class Usage extends Error {}
@@ -69,12 +80,25 @@ interface Args {
 	only?: string[];
 	kind?: ComputerSettingKind;
 	fixture?: string;
+	gpu?: { type: string; count: number };
+	/** --exec-stream's machine: the pre-check runs alone on it. */
+	execStream?: { machine: string; quick: boolean };
 	json: boolean;
 	help: boolean;
 }
 
+/** --gpu's value: a type, then :count (default 1), such as T4 or H100:2; whether the provider offers it is check()'s. */
+function gpuOf(text: string): { type: string; count: number } {
+	const match = /^([^:\s]+)(?::([1-9][0-9]*))?$/.exec(text);
+	if (match === null) throw new Usage(`--gpu: ${JSON.stringify(text)} is not <type>[:<count>], such as T4 or H100:2`);
+	return { type: match[1] as string, count: match[2] === undefined ? 1 : Number(match[2]) };
+}
+
 function parse(argv: string[], cases: Case[]): Args {
 	const args: Partial<Args> & { json: boolean; help: boolean } = { json: false, help: false };
+	let execStream = false;
+	let quick = false;
+	let machine: string | undefined;
 	for (let i = 0; i < argv.length; i++) {
 		const [flag = "", inline] = (argv[i] ?? "").split(/=(.*)/s, 2);
 		const value = () => {
@@ -92,12 +116,23 @@ function parse(argv: string[], cases: Case[]): Args {
 			if (problem !== undefined) throw new Usage(`--kind ${kind}: ${problem}`);
 			args.kind = kind as ComputerSettingKind;
 		} else if (flag === "--fixture") args.fixture = value();
+		else if (flag === "--gpu") args.gpu = gpuOf(value());
+		else if (flag === "--exec-stream") execStream = true;
+		else if (flag === "--machine") machine = value();
+		else if (flag === "--quick") quick = true;
 		else if (flag === "--json") args.json = true;
 		else if (flag === "--help" || flag === "-h") args.help = true;
 		else throw new Usage(`unknown option ${flag}`);
 	}
 	if (args.help) return { provider: "", json: false, help: true };
 	if (args.provider === undefined) throw new Usage("--provider is required");
+	if (execStream) {
+		if (machine === undefined) throw new Usage("--exec-stream needs --machine <id>, a machine you made by hand");
+		const others = (["image", "only", "kind", "fixture", "gpu"] as const).filter((name) => args[name] !== undefined);
+		if (others.length > 0) throw new Usage(`--exec-stream runs alone: drop ${others.map((name) => `--${name}`).join(", ")}`);
+		return { provider: args.provider, execStream: { machine, quick }, json: args.json, help: false };
+	}
+	if (machine !== undefined || quick) throw new Usage(`${machine !== undefined ? "--machine" : "--quick"} goes with --exec-stream`);
 	if (args.kind !== undefined && args.only !== undefined) throw new Usage("--kind and --only go apart: a kind runs its own cases");
 	const groups = [...new Set(cases.map((c) => c.group))];
 	for (const name of args.only ?? []) {
@@ -111,6 +146,7 @@ function parse(argv: string[], cases: Case[]): Args {
 		...(args.only ? { only: args.only } : {}),
 		...(args.kind ? { kind: args.kind } : {}),
 		...(args.fixture ? { fixture: args.fixture } : {}),
+		...(args.gpu ? { gpu: args.gpu } : {}),
 		json: args.json,
 		help: false,
 	};
@@ -121,6 +157,10 @@ const DEFAULT_IMAGE = "debian:bookworm-slim";
 interface Target {
 	provider: ComputerProvider;
 	drifted?: () => Promise<ComputerProvider>;
+	/** What the provider declares of itself, for health.declared. */
+	declared?: readonly KindCapabilities[];
+	/** The provider built with planted secrets, for health.no-key-in-errors. */
+	planted?: ConformanceOptions["planted"];
 	/** The module's run folders for the mount cases: mountFor(kind). */
 	mountFor?: ConformanceOptions["mountFor"];
 	/** The module's image for a run that names none. */
@@ -138,7 +178,15 @@ const BARE = /^[A-Za-z][A-Za-z0-9-]*$/;
  * conformance() module is run when it has one, else its create() alone, given the CLI's options but the env (a provider
  * reads no environment), with no drifted twin.
  */
-async function conformanceModule(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule> }> {
+async function conformanceModule(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule>; declared?: readonly KindCapabilities[] }> {
+	const found = await moduleFor(name, cwd);
+	// What the provider file declares of itself (its CAPABILITIES; its descriptor once that lands), kept across the switch
+	// to its conformance module, for health.declared.
+	const declared = found.file.CAPABILITIES;
+	return { label: found.label, module: found.module, ...(Array.isArray(declared) ? { declared: declared as readonly KindCapabilities[] } : {}) };
+}
+
+async function moduleFor(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule>; file: Record<string, unknown> }> {
 	let label = name;
 	let module: Record<string, unknown>;
 	if (isProviderId(name)) {
@@ -153,7 +201,7 @@ async function conformanceModule(name: string, cwd: string): Promise<{ label: st
 			throw new Usage(`cannot load the provider module ${label}: ${(error as Error).message.split("\n")[0]}`);
 		}
 	}
-	if (typeof module.conformance === "function") return { label, module: await module.conformance() };
+	if (typeof module.conformance === "function") return { label, module: await module.conformance(), file: module };
 	if (typeof module.createProvider !== "function" && typeof module.create === "function") {
 		const create = module.create as (options: object) => ComputerProvider | Promise<ComputerProvider>;
 		return {
@@ -164,16 +212,45 @@ async function conformanceModule(name: string, cwd: string): Promise<{ label: st
 					return create(rest);
 				},
 			},
+			file: module,
 		};
 	}
-	return { label, module: module as Partial<ConformanceModule> };
+	return { label, module: module as Partial<ConformanceModule>, file: module };
+}
+
+/** A name of a module's ENV that holds a secret: an API key, a token, a token's secret. */
+const SECRET_NAME = /(^|_)(KEY|TOKEN|SECRET)(_|$)/;
+
+/**
+ * A fresh planted value for each secret name, and the text to hunt for in answers. A `*_SSH_KEY` name takes a throwaway
+ * ed25519 private key (a provider refuses a non-PEM key at build) and its base64 body line is the secret: the armor is
+ * public text that the provider's own errors quote. Every other name takes a random string that is its own secret.
+ */
+export function plantSecrets(names: readonly string[]): { values: string[]; secrets: string[] } {
+	const values: string[] = [];
+	const secrets: string[] = [];
+	for (const name of names) {
+		if (name.endsWith("_SSH_KEY")) {
+			const { privateKey } = generateKeyPairSync("ed25519", {
+				privateKeyEncoding: { type: "pkcs8", format: "pem" },
+				publicKeyEncoding: { type: "spki", format: "pem" },
+			});
+			values.push(privateKey);
+			secrets.push(privateKey.split("\n").filter((line) => line !== "" && !line.startsWith("-----")).join(""));
+		} else {
+			const value = `agentrun-planted-${randomBytes(12).toString("hex")}`;
+			values.push(value);
+			secrets.push(value);
+		}
+	}
+	return { values, secrets };
 }
 
 /**
  * The provider a conformance module makes, its drifted twin and its run folders (mountFor) when it offers them, and what
  * it says of its run: conformanceImage(), the image when --image names none, and conformanceNotes, strings for the report.
  */
-async function load(label: string, module: Partial<ConformanceModule>, options: object): Promise<Target> {
+async function load(label: string, module: Partial<ConformanceModule>, options: object, declared?: readonly KindCapabilities[]): Promise<Target> {
 	const { createProvider, createDriftedProvider, conformanceImage, mountFor } = module;
 	if (typeof createProvider !== "function") throw new Usage(`${label} does not export createProvider() or create()`);
 	const provider = (await createProvider(options)) as ComputerProvider;
@@ -183,6 +260,18 @@ async function load(label: string, module: Partial<ConformanceModule>, options: 
 	}
 	const target: Target = { provider };
 	if (typeof createDriftedProvider === "function") target.drifted = async () => (await createDriftedProvider(options)) as ComputerProvider;
+	// The provider file's own declaration; without it, the runner takes the kind registry's entry for the provider's id.
+	if (declared !== undefined) target.declared = declared;
+	// The same provider built with a planted value in each name of its ENV that holds a secret: a fresh one each time.
+	const secretNames = Object.values(module.ENV ?? {}).filter((name) => typeof name === "string" && SECRET_NAME.test(name));
+	if (secretNames.length > 0) {
+		target.planted = async () => {
+			const { values, secrets } = plantSecrets(secretNames);
+			const given = (options as { env?: ProviderEnv }).env ?? process.env;
+			const env: ProviderEnv = { ...given, ...Object.fromEntries(secretNames.map((name, i) => [name, values[i] as string])) };
+			return { provider: (await createProvider({ ...options, env })) as ComputerProvider, secrets };
+		};
+	}
 	if (typeof mountFor === "function") target.mountFor = (kind) => mountFor(kind, options);
 	if (conformanceImage !== undefined) {
 		const image = typeof conformanceImage === "function" ? await conformanceImage(options) : undefined;
@@ -195,6 +284,38 @@ async function load(label: string, module: Partial<ConformanceModule>, options: 
 		target.notes = notes;
 	}
 	return target;
+}
+
+/**
+ * The exec pre-check: the host the module's createHost() builds (a conformance module's, else the provider file's own),
+ * given the CLI's provider options, and its exec alone on the named machine. Nothing else of the host is called.
+ */
+async function execStreamMain(name: string, { machine, quick }: { machine: string; quick: boolean }, json: boolean, cwd: string, io: CliIo): Promise<number> {
+	const { stdout = process.stdout, stderr = process.stderr, signal, progress = false } = io;
+	let host: MachineHost;
+	try {
+		const found = await moduleFor(name, cwd);
+		const createHost = (found.module as { createHost?: unknown }).createHost ?? found.file.createHost;
+		if (typeof createHost !== "function") {
+			throw new Usage(`${found.label} does not export createHost(options): the exec pre-check builds your MachineHost with it, from your conformance module or your provider file`);
+		}
+		host = (await createHost(io.providerOptions ?? {})) as MachineHost;
+		if (typeof host?.exec !== "function") throw new Error(`${found.label}: createHost() did not return a MachineHost with exec`);
+	} catch (error) {
+		await write(stderr, `${(error as Error).message}\n`);
+		if (error instanceof Usage) {
+			await write(stderr, `${USAGE}\n`);
+			return 2;
+		}
+		return 1;
+	}
+	const report = await checkExecStream(host, machine, {
+		longMs: quick ? QUICK_LONG_MS : DEFAULT_LONG_MS,
+		...(signal ? { signal } : {}),
+		...(progress ? { onCheck: (check) => stderr.write(`${check.status === "pass" ? "✓" : "✗"} ${check.id}\n`) } : {}),
+	});
+	await write(stdout, json ? `${JSON.stringify(report, null, 2)}\n` : formatExecStream(report));
+	return report.pass ? 0 : 1;
 }
 
 export async function main(argv: string[], io: CliIo = {}): Promise<number> {
@@ -212,13 +333,14 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		return 0;
 	}
 	const cwd = io.cwd ?? process.env.INIT_CWD ?? process.cwd();
+	if (args.execStream) return execStreamMain(args.provider, args.execStream, args.json, cwd, io);
 	// What the provider says that is no failure (onNote, as each remote provider takes it) goes in the report.
 	const providerNotes: Array<{ computer: string; note: string }> = [];
 	const options = { ...(io.providerOptions ?? {}), onNote: (note: { computer: string; note: string }) => providerNotes.push({ computer: note.computer, note: note.note }) };
 	let target: Target;
 	try {
-		const { label, module } = await conformanceModule(args.provider, cwd);
-		target = await load(label, module, options);
+		const { label, module, declared } = await conformanceModule(args.provider, cwd);
+		target = await load(label, module, options, declared);
 	} catch (error) {
 		await write(stderr, `${(error as Error).message}\n`);
 		if (error instanceof Usage) {
@@ -236,8 +358,11 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(args.only ? { only: args.only } : {}),
 		...(args.kind ? { kind: args.kind } : {}),
 		...(args.fixture ? { fixture: resolve(cwd, args.fixture) } : {}),
+		...(args.gpu ? { gpu: args.gpu } : {}),
 		...(signal ? { signal } : {}),
 		...(target.drifted ? { drifted: target.drifted } : {}),
+		...(target.declared ? { declared: target.declared } : {}),
+		...(target.planted ? { planted: target.planted } : {}),
 		...(target.mountFor ? { mountFor: target.mountFor } : {}),
 		...(onResult ? { onResult } : {}),
 		...(io.cdp ? { cdp: io.cdp } : {}),

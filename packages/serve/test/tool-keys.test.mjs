@@ -8,13 +8,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
 import { secret, SECRET_NAMES } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, harnessData, client, cookieOf, FAUX, follow, printed, scratch, serve, storeBytes, withEnv } from "./support.mjs";
+import { agent, call, client, cookieOf, FAUX, follow, harnessData, printed, scratch, serve, startServe, storeBytes, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
@@ -55,7 +54,6 @@ const OWN = Object.fromEntries(TOOL_KEYS.filter((row) => row.kind === "model").m
 const fieldsOf = (view) => Object.fromEntries(view.keys.flatMap((key) => key.fields.map(({ name, ...field }) => [name, field])));
 const STORED = { set: true, source: "stored" };
 const UNSET = { set: false, source: null };
-const AGAIN = { set: false, source: null, stored_unreadable: true };
 /** GET's answer meets the schema the served document gives it. */
 async function meetsDocument(api, view) {
   const doc = (await api("GET", "/openapi.json")).body;
@@ -381,14 +379,14 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
   // The plane keeps its own value (a run's meta stores it); only the words a person reads name Settings first.
   const STORED_NO_BROWSER_KEY = "unavailable: no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
   const reason = "it needs a Browserbase key: save one in Settings → Tool keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts), or a Kernel key: save one in Settings → Tool keys (or set KERNEL_API_KEY where the server starts)";
-  const unset = { name: "browser", nodes: true, calls: false, available: false, reason, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: STORED_NO_BROWSER_KEY, key: "browserbase" };
+  const unset = { name: "browser", nodes: false, calls: false, available: false, reason, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: STORED_NO_BROWSER_KEY, key: "browserbase" };
   assert.deepEqual(await browser(), unset);
   assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.key).map((tool) => [tool.name, tool.key]), [["web_fetch", "parallel"], ["web_search", "parallel"], ["browser", "browserbase"], ["monid.discover", "monid"], ["monid.inspect", "monid"], ["monid.run", "monid"]], "only a tool a key unlocks names one");
   assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
   assert.deepEqual(await refused(), [409, "agent_not_runnable", {}]);
 
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values })).status, 204);
-  assert.deepEqual(await browser(), { name: "browser", nodes: true, calls: false, available: true, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: "browserbase", key: "browserbase" }, "no restart");
+  assert.deepEqual(await browser(), { name: "browser", nodes: false, calls: false, available: true, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: "browserbase", key: "browserbase" }, "no restart");
   const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"]);
@@ -555,7 +553,7 @@ test("a key a harness reads, saved later, makes the harness available with no re
   assert.deepEqual([(await claude()).available, (await claude()).reason], [false, "claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY."]);
   saved = ["not-a-secret", "anthropic"].join("-");
   // How many fit at once is this host's memory (admission.test.mjs).
-  const { max_concurrent_runs, ...offer } = await claude();
+  const { max_concurrent_runs, models: _models, ...offer } = await claude();
   assert.deepEqual(offer, { id: "claude-agent", available: true, steer: false, default_model: "anthropic/claude-sonnet-5-5", run_memory_mib: 288 }, "saved: offered, on the key's default model");
   saved = undefined;
   assert.equal((await claude()).available, false, "deleted: not offered");
@@ -608,4 +606,28 @@ test("a tool-settings PUT and a tool key's PUT and DELETE answer without probing
     return probe ? [`probe:${probe[1]}`] : write ? [`${write[1]} ${write[2]}`] : [];
   });
   assert.deepEqual(events, ["probe:start", "PUT /v2/settings/tools", "PUT /v2/settings/tools", "PUT /v2/settings/tool-keys/parallel", "PUT /v2/settings/tool-keys/monid", "DELETE /v2/settings/tool-keys/monid", "DELETE /v2/settings/tool-keys/parallel"]);
+});
+
+test("a model key's row names the harnesses that key runs here, the same before and after another provider's key is saved: with claude-agent on the host's endpoint, OpenRouter's row never names it", async (t) => {
+  const standIn = await codexStandIn(t);
+  for (const [label, vars] of [
+    ["claude-agent on the host's endpoint", { ANTHROPIC_BASE_URL: "https://gateway.invalid" }],
+    ["no endpoint set", {}],
+  ]) {
+    await t.test(label, async (st) => {
+      withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_SERVE_CODEX_STANDIN: standIn, ...vars }, [...KEYS, ...HARNESS_VARS]);
+      withMemory(st, ROOMY_MIB);
+      const { api } = await serve(st, { harnesses: true });
+      const rows = async () => Object.fromEntries((await api("GET", "/settings/tool-keys")).body.keys.filter((key) => key.kind === "model").map((key) => [key.id, key.harnesses]));
+      const before = await rows();
+      assert.equal((await api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: made() } })).status, 204);
+      const offers = (await api("GET", "/capabilities")).body.harnesses;
+      assert.equal(offers.find((offer) => offer.id === "claude-agent").available, true, `Anthropic's key runs claude-agent now: ${JSON.stringify(offers)}`);
+      const after = await rows();
+      assert.deepEqual(after, before, "no row's harnesses change when Anthropic's key is saved");
+      assert.ok(after.anthropic.includes("claude-agent"), "Anthropic's row names claude-agent");
+      if (vars.ANTHROPIC_BASE_URL) assert.ok(!after.openrouter.includes("claude-agent"), `OpenRouter's key never reaches claude-agent on the host's endpoint: ${JSON.stringify(after)}`);
+      else assert.ok(after.openrouter.includes("claude-agent"), "with no endpoint, OpenRouter's key runs claude-agent");
+    });
+  }
 });

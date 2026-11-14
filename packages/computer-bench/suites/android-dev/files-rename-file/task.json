@@ -1,0 +1,62 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.files.rename-file",
+  "version": 1,
+  "title": "Rename a file in the Files app",
+  "split": "dev",
+  "tags": ["files", "rename"],
+  "needs": { "os": "android", "kind": "phone", "apps": [["com.google.android.documentsui", "com.android.documentsui", "com.google.android.apps.nbu.files", "com.sec.android.app.myfiles"]] },
+  "params": {
+    "f": {
+      "pick": [
+        { "old": "draft", "new": "final" },
+        { "old": "scan", "new": "receipt" },
+        { "old": "notes", "new": "minutes" },
+        { "old": "todo", "new": "done" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "A fresh folder for this run in Download, holding only the file to rename.",
+      "params": { "argv": ["sh", "-c", "d=/sdcard/Download/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d && echo 'computer-bench {{nonce}}' > $d/{{f.old}}-{{nonce}}.txt"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open the system file manager (DocumentsUI) on the folder.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.VIEW", "-t", "vnd.android.document/directory", "-d", "content://com.android.externalstorage.documents/document/primary%3ADownload%2Fcomputer-bench-{{nonce}}"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "In the Files app, rename the file {{f.old}}-{{nonce}}.txt in Download/computer-bench-{{nonce}} to {{f.new}}-{{nonce}}.txt.",
+  "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
+  "checks": [
+    {
+      "id": "only-new-name",
+      "kind": "exec",
+      "why": "The folder lists exactly one file, named {{f.new}}-{{nonce}}.txt: the old name is gone and no copy was made. After setup it lists {{f.old}}-{{nonce}}.txt, so an agent that does nothing fails.",
+      "argv": ["ls", "-1", "/sdcard/Download/computer-bench-{{nonce}}"],
+      "stdout": { "equals": "{{f.new}}-{{nonce}}.txt" }
+    },
+    {
+      "id": "same-text",
+      "kind": "exec",
+      "why": "The renamed file holds the text setup wrote, so it is the same file, not a new empty one with the name.",
+      "argv": ["sh", "-c", "cat /sdcard/Download/computer-bench-{{nonce}}/{{f.new}}-{{nonce}}.txt; true"],
+      "stdout": { "equals": "computer-bench {{nonce}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the run's folder and everything in it.",
+      "params": { "argv": ["rm", "-rf", "/sdcard/Download/computer-bench-{{nonce}}"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "params": { "argv": ["mv", "/sdcard/Download/computer-bench-{{nonce}}/{{f.old}}-{{nonce}}.txt", "/sdcard/Download/computer-bench-{{nonce}}/{{f.new}}-{{nonce}}.txt"], "timeoutMs": 20000 }
+    }
+  ]
+}

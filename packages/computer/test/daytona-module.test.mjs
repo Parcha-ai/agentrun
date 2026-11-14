@@ -11,7 +11,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
 import * as daytonaModule from "../dist/conformance/daytona.js";
-import { API, DEFAULT_SNAPSHOT, fakeDaytona, KEY } from "./fake-daytona.mjs";
 
 const { createProvider, DAYTONA_ENV } = daytonaModule;
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -19,6 +18,27 @@ const dir = mkdtempSync(join(tmpdir(), "computer-daytona-module-"));
 const DAEMON = join(dir, "computerd");
 writeFileSync(DAEMON, "a stand-in for computerd\n");
 after(() => rmSync(dir, { recursive: true, force: true }));
+
+const KEY = "fake-key-for-tests";
+const API = "https://api.daytona.test/api";
+const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+/**
+ * A fetch that records every request: the listing is empty, and a create is refused (400), so its body is what the
+ * provider asked for. Nothing is made, and nothing reaches the network.
+ */
+function recorder() {
+	const requests = [];
+	const fetch = async (url, init = {}) => {
+		const at = new URL(url);
+		const headers = Object.fromEntries(Object.entries(init.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
+		requests.push({ method: init.method, host: at.host, path: at.pathname, headers, body: typeof init.body === "string" ? JSON.parse(init.body) : undefined });
+		if (init.method === "GET" && at.pathname === "/api/sandbox") return json(200, { items: [] });
+		if (init.method === "POST" && at.pathname === "/api/sandbox") return json(400, { statusCode: 400, message: "refused by the test" });
+		return json(404, { statusCode: 404, message: "no such route" });
+	};
+	return { requests, fetch };
+}
 
 test("createProvider() names the variable it needs, and makes no request without it", () => {
 	assert.throws(() => createProvider({ env: {} }), /set COMPUTER_DAYTONA_API_KEY to a Daytona API key/);
@@ -35,6 +55,7 @@ test("createProvider() names the variable it needs, and makes no request without
 		sandboxClass: "COMPUTER_DAYTONA_CLASS",
 		user: "COMPUTER_DAYTONA_USER",
 		snapshot: "COMPUTER_DAYTONA_SNAPSHOT",
+		gpuSnapshot: "COMPUTER_DAYTONA_GPU_SNAPSHOT",
 	});
 	for (const name of Object.values(DAYTONA_ENV)) assert.match(name, /^COMPUTER_DAYTONA_/, `${name} is not a bare DAYTONA_ name`);
 });
@@ -44,29 +65,27 @@ const PROD_KEY = "prod-key-must-not-be-used";
 const PROD_API = "https://prod.daytona.test/api";
 
 test("createProvider() never takes DAYTONA_API_KEY or DAYTONA_API_URL: without COMPUTER_DAYTONA_API_KEY it refuses, and makes no request", () => {
-	const fake = fakeDaytona();
+	const fake = recorder();
 	for (const env of [
 		{ DAYTONA_API_KEY: PROD_KEY },
 		{ DAYTONA_API_KEY: PROD_KEY, DAYTONA_API_URL: PROD_API },
 		{ DAYTONA_API_KEY: PROD_KEY, DAYTONA_API_URL: PROD_API, COMPUTER_DAYTONA_API_URL: API },
 		{ DAYTONA_API_KEY: PROD_KEY, COMPUTER_DAYTONA_API_KEY: "" },
 	]) {
-		assert.throws(() => createProvider({ env, fetch: fake.fetch, webSocket: fake.webSocket }), (error) => {
+		assert.throws(() => createProvider({ env, fetch: fake.fetch }), (error) => {
 			assert.match(error.message, /set COMPUTER_DAYTONA_API_KEY to a Daytona API key/, JSON.stringify(Object.keys(env)));
 			assert.doesNotMatch(error.message, new RegExp(PROD_KEY));
 			return true;
 		});
 	}
 	assert.deepEqual(fake.requests, []);
-	assert.deepEqual(fake.sockets, []);
 });
 
 test("with both keys set, Daytona sees only COMPUTER_DAYTONA_API_KEY, at COMPUTER_DAYTONA_API_URL", async () => {
-	const fake = fakeDaytona();
+	const fake = recorder();
 	const provider = createProvider({
 		env: { COMPUTER_DAYTONA_API_KEY: DEV_KEY, COMPUTER_DAYTONA_API_URL: API, DAYTONA_API_KEY: PROD_KEY, DAYTONA_API_URL: PROD_API },
 		fetch: fake.fetch,
-		webSocket: fake.webSocket,
 	});
 	assert.deepEqual(await provider.list({}), { ok: true, value: [] });
 	assert.ok(fake.requests.length > 0);
@@ -78,11 +97,10 @@ test("with both keys set, Daytona sees only COMPUTER_DAYTONA_API_KEY, at COMPUTE
 });
 
 test("createProvider() builds the provider from the settings it is given, and it talks to the given API only", async () => {
-	const fake = fakeDaytona();
+	const fake = recorder();
 	const provider = createProvider({
 		env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.sandboxClass]: "linux-vm", [DAYTONA_ENV.target]: "eu", [DAYTONA_ENV.user]: "2000:2000" },
 		fetch: fake.fetch,
-		webSocket: fake.webSocket,
 	});
 	assert.equal(provider.id, "daytona");
 	assert.equal(provider.capabilities().isolation, "vm");
@@ -101,19 +119,17 @@ test('the run\'s image is COMPUTER_DAYTONA_SNAPSHOT, or "default" (Daytona\'s de
 });
 
 test("createProvider() bounds every sandbox's life besides the TTL: autoStopMinutes 30 and autoDeleteMinutes 0, whatever the environment", async () => {
-	const fake = fakeDaytona();
+	const fake = recorder();
 	const env = { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.daemon]: DAEMON, COMPUTER_DAYTONA_AUTO_STOP: "0", COMPUTER_DAYTONA_AUTO_DELETE: "-1" };
-	const provider = createProvider({ env, fetch: fake.fetch, webSocket: fake.webSocket });
-	const made = await provider.create({ image: daytonaModule.conformanceImage({ env }), lifetimeMs: 600_000, network: "none" });
-	assert.equal(made.ok, true, JSON.stringify(made));
+	const provider = createProvider({ env, fetch: fake.fetch });
+	const made = await provider.create({ image: daytonaModule.conformanceImage({ env }), lifetimeMs: 600_000, network: "none" }, { requestId: "r-bounds" });
+	assert.equal(made.error?.code, "invalid", "the test's Daytona refuses the create: what was asked is in its body");
 	const post = fake.requests.find((r) => r.method === "POST" && r.path === "/api/sandbox");
 	assert.equal(post.body.autoStopInterval, 30);
 	assert.equal(post.body.autoDeleteInterval, 0);
 	assert.equal(post.body.ttlMinutes, 10);
 	assert.equal(Object.hasOwn(post.body, "snapshot"), false, "the default snapshot: no snapshot field");
-	assert.equal(fake.sandboxes.get(made.value.id).snapshot, DEFAULT_SNAPSHOT);
-	assert.deepEqual(await provider.release(made.value, "stop"), { ok: true, value: undefined });
-	assert.equal(fake.sandboxes.size, 0, "a stop deletes it");
+	assert.equal(provider.capabilities().stopDeletes, true, "a stop deletes it, and the provider declares that");
 });
 
 test("the module's note for the run's report says a stop deletes, that the provider declares it, and what each case does with it", () => {
@@ -173,10 +189,10 @@ test("the provider's create() reads no environment: the key, the API URL and the
 	assert.equal(daytona.ENV, undefined, "no ENV of names");
 	assert.equal(daytona.fromEnv, undefined, "no fromEnv");
 	assert.equal(daytona.optionsFromEnv, undefined, "no optionsFromEnv");
-	const fake = fakeDaytona();
+	const fake = recorder();
 	await withProcessEnv(AMBIENT, async () => {
 		for (const options of [{}, { apiKey: "" }]) {
-			assert.throws(() => daytona.create({ ...options, daemonPath: DAEMON, fetch: fake.fetch, webSocket: fake.webSocket }), (error) => {
+			assert.throws(() => daytona.create({ ...options, daemonPath: DAEMON, fetch: fake.fetch }), (error) => {
 				assert.match(error.message, /options\.apiKey/);
 				assert.doesNotMatch(error.message, /DAYTONA_API_KEY/, "the library names its option, never an environment variable");
 				assert.doesNotMatch(error.message, new RegExp(PROD_KEY));
@@ -184,9 +200,9 @@ test("the provider's create() reads no environment: the key, the API URL and the
 			});
 		}
 		assert.deepEqual(fake.requests, []);
-		const provider = daytona.create({ apiKey: KEY, apiUrl: API, target: "eu", daemonPath: DAEMON, fetch: fake.fetch, webSocket: fake.webSocket });
-		const made = await provider.create({ image: "default", lifetimeMs: 600_000, network: "none" });
-		assert.equal(made.ok, true, JSON.stringify(made));
+		const provider = daytona.create({ apiKey: KEY, apiUrl: API, target: "eu", daemonPath: DAEMON, fetch: fake.fetch });
+		const made = await provider.create({ image: "default", lifetimeMs: 600_000, network: "none" }, { requestId: "r-ambient" });
+		assert.equal(made.error?.code, "invalid", JSON.stringify(made));
 		const post = fake.requests.find((r) => r.method === "POST" && r.path === "/api/sandbox");
 		assert.equal(post.body.target, "eu", "options.target, not DAYTONA_TARGET or COMPUTER_DAYTONA_TARGET");
 		assert.equal(post.body.autoStopInterval, 0, "the run's 30-minute bound is the conformance module's, not the provider's");
@@ -203,25 +219,36 @@ test("the provider's create() reads no environment: the key, the API URL and the
 			hosts.push(new URL(url).host);
 			return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
 		};
-		const byDefault = daytona.create({ apiKey: KEY, daemonPath: DAEMON, fetch: answer, webSocket: fake.webSocket });
+		const byDefault = daytona.create({ apiKey: KEY, daemonPath: DAEMON, fetch: answer });
 		assert.deepEqual(await byDefault.list({}), { ok: true, value: [] });
 		assert.deepEqual([...new Set(hosts)], ["app.daytona.io"]);
 	});
 });
 
 test("the conformance module reads COMPUTER_DAYTONA_API_URL and COMPUTER_DAYTONA_TARGET and passes them as options.apiUrl and options.target", async () => {
-	const fake = fakeDaytona();
+	const fake = recorder();
 	await withProcessEnv({ DAYTONA_API_URL: PROD_API, DAYTONA_TARGET: "prod-target" }, async () => {
 		const env = { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.target]: "eu", [DAYTONA_ENV.daemon]: DAEMON, DAYTONA_API_URL: PROD_API, DAYTONA_TARGET: "prod-target" };
 		assert.deepEqual(daytonaModule.settingsFromEnv(env), { apiKey: KEY, apiUrl: API, target: "eu", daemonPath: DAEMON });
-		const provider = createProvider({ env, fetch: fake.fetch, webSocket: fake.webSocket });
-		const made = await provider.create({ image: "default", lifetimeMs: 600_000, network: "none" });
-		assert.equal(made.ok, true, JSON.stringify(made));
+		const provider = createProvider({ env, fetch: fake.fetch });
+		const made = await provider.create({ image: "default", lifetimeMs: 600_000, network: "none" }, { requestId: "r-module-target" });
+		assert.equal(made.error?.code, "invalid", JSON.stringify(made));
 	});
 	const post = fake.requests.find((r) => r.method === "POST" && r.path === "/api/sandbox");
 	assert.equal(post.body.target, "eu");
 	for (const request of fake.requests) assert.match(request.host, /\.daytona\.test$/);
 	assert.deepEqual(daytonaModule.settingsFromEnv({ [DAYTONA_ENV.key]: KEY }), { apiKey: KEY }, "unset names pass nothing: the provider's own defaults hold");
+});
+
+test("createHost(): the live sweep's host, from the same COMPUTER_DAYTONA_* names and no live switch; it calls nothing until the sweep does", async () => {
+	await assert.rejects(daytonaModule.createHost({ env: { DAYTONA_API_KEY: PROD_KEY } }), /set COMPUTER_DAYTONA_API_KEY to a Daytona API key/);
+	const fake = recorder();
+	const host = await daytonaModule.createHost({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, DAYTONA_API_KEY: PROD_KEY }, fetch: fake.fetch });
+	assert.equal(host.id, "daytona");
+	assert.deepEqual(fake.requests, []);
+	assert.deepEqual(await host.list({ "agentrun.computer": "1" }, { timeoutMs: 1_000 }), { ok: true, value: [] });
+	assert.deepEqual(fake.requests.map((r) => `${r.method} ${r.host}${r.path}`), ["GET api.daytona.test/api/sandbox"]);
+	assert.equal(fake.requests[0].headers.authorization, `Bearer ${KEY}`);
 });
 
 /** Runs the live file with an environment of PATH and the given variables alone, and returns its TAP. */

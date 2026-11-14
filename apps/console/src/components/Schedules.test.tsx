@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SchedulesPage, type ScheduleView } from "./Schedules";
 import { createClient } from "@/lib/client";
 import type { Firing, Trigger } from "@/lib/v2";
-import { pick, picker } from "@/test/picker";
+import { pick, picker, valueOf } from "@/test/picker";
 
 // Schedules (serve's trigger/1): the list, the form that makes or edits one with the server's 422 under the field it
 // names, and one schedule's page: pause, resume, edit, delete, run now (once per click), and its firings.
@@ -90,23 +90,28 @@ async function open(v2: ReturnType<typeof createClient>, view: ScheduleView, min
   root = createRoot(host);
   const went: string[] = [];
   const agentName = (id: string) => (id === "triage" ? "Triage" : id);
-  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName, minEvery, now: () => NOW, ...(refreshMs ? { refreshMs } : {}) })));
+  // failuresToPause: the server's threshold for turning a trigger off (capabilities' features.triggers.failures_to_pause).
+  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName, minEvery, failuresToPause: 5, now: () => NOW, ...(refreshMs ? { refreshMs } : {}) })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
   const click = async (label: RegExp) => { await act(async () => { button(label)!.click(); }); await settle(); };
   const field = (name: string) => host.querySelector(`[name="${name}"]`) as HTMLInputElement | HTMLTextAreaElement;
-  // The agent and the every's unit are pickers (picked by their names); every other field is typed into.
-  const PICKERS: Record<string, string> = { agent: "Agent", everyUnit: "Unit" };
+  // The agent, the every's unit and the zone are pickers (picked by their names); a cron line is typed as a custom line
+  // (ScheduleWhen); every other field is typed into.
+  const PICKERS: Record<string, string> = { agent: "Agent", everyUnit: "Unit", timezone: "Time zone" };
   const set = async (name: string, value: string) => {
     if (PICKERS[name]) return pick(picker(host, PICKERS[name])!, value);
-    const el = field(name);
+    if (name === "cron" && !field("cron")) await pick(picker(host, "Runs")!, "custom");
+    await type(field(name), value);
+  };
+  const type = async (el: HTMLInputElement | HTMLTextAreaElement, value: string) => {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
   };
   const choose = async (kind: string) => { await act(async () => { (host.querySelector(`input[name="kind"][value="${kind}"]`) as HTMLInputElement).click(); }); };
   const issue = (field: string) => host.querySelector(`[data-issue="${field}"]`)?.textContent ?? null;
-  return { host, went, button, click, set, choose, issue, settle, text: () => host.textContent ?? "" };
+  return { host, went, button, click, set, type, choose, issue, settle, text: () => host.textContent ?? "" };
 }
 
 describe("the schedules list", () => {
@@ -117,17 +122,24 @@ describe("the schedules list", () => {
     expect(rows.map((r) => r.getAttribute("data-trigger"))).toEqual(["trg_1", "trg_2"]);
     expect(rows[0].textContent).toContain("nightly triage");
     expect(rows[0].textContent).toContain("Triage");
-    expect(rows[0].textContent).toContain("At 01:30 · America/Los_Angeles");
-    expect(rows[0].textContent).toContain("Nov 5, 9:30 AM");
+    expect(rows[0].textContent).toContain("At 9:30 AM your time (01:30 America/Los_Angeles) · next Thu Nov 5, 9:30 AM UTC · Triage");
     expect(rows[0].textContent).toContain("Skipped: The last run is still working.");
     expect(rows[0].querySelector('a[href="#/triggers/trg_1"]')).not.toBeNull();
-    expect(rows[1].textContent).toContain("Every 5 minutes");
+    expect(rows[1].textContent).toContain("Every 5 minutes · no next time");
     expect(rows[1].textContent).toContain("Paused");
     expect(rows[1].textContent).toContain("Not fired yet");
     await t.click(/^New schedule$/);
     expect(t.went).toEqual(["#/triggers/new"]);
   });
   // A schedule fires while its page is open: the page reads again on its own, so a new firing shows with no reload.
+  it("says a schedule that turned itself off, and why, apart from one a person paused", async () => {
+    const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, failures_in_a_row: 5, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } };
+    const t = await open(server({ triggers: [off] }).v2, {});
+    const row = t.host.querySelector("[data-trigger]")!;
+    expect(row.textContent).toContain("Turned off");
+    expect(row.textContent).toContain("Turned off after 5 failures in a row.");
+    expect(row.textContent).not.toContain("Paused");
+  });
   it("reads the schedules again while it is open", async () => {
     const triggers = [NIGHTLY];
     const t = await open(server({ triggers }).v2, {}, undefined, 30);
@@ -148,17 +160,54 @@ describe("the schedules list", () => {
   });
   it("says there are none yet, with the way to make one", async () => {
     const t = await open(server({ triggers: [] }).v2, {});
-    expect(t.text()).toContain("No triggers yet.");
+    expect(t.text()).toContain("No triggers yet");
     expect(t.button(/^New schedule$/)).toBeTruthy();
+    // The three things that can start a run, each with its own way in.
+    const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
+    expect(panel.querySelector("h2")?.textContent).toBe("Start runs without being here");
+    expect([...panel.querySelectorAll("li button")].map((b) => b.textContent)).toEqual(["New schedule", "New webhook", "New GitHub trigger"]);
+    expect(panel.textContent).toContain("At the times you set: every day or week at a time, every few minutes or hours, or once.");
+    expect(panel.textContent).not.toMatch(/cron/i);
+    // Each is on the page once: the header's three show when there is a trigger.
+    for (const name of ["New schedule", "New webhook", "New GitHub trigger"]) expect([...t.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === name).length, name).toBe(1);
   });
 });
 
 describe("a new schedule", () => {
-  it("sends the cron line in its zone, the agent, the input and the cap, then opens the schedule", async () => {
+  it("every field's label names its one control, so a click on the label goes to it", async () => {
+    const t = await open(server().v2, { trigger: null });
+    const named = Object.fromEntries([...t.host.querySelectorAll("label")].filter((l) => l.control).map((l) => [l.textContent, (l.control as HTMLInputElement).name || l.control!.getAttribute("aria-label")]));
+    // The agent's control is the picker's field (a button; its value goes in a hidden input named "agent").
+    // So are the schedule's shape and its zone (ScheduleWhen's and ZonePicker's fields).
+    expect(named).toMatchObject({ Name: "name", Runs: "Runs", "Time zone": "Time zone", Agent: "Agent", "Each run is asked": "content" });
+  });
+  it("says the schedule and its zone in plain words, with no cron or zone-database terms", async () => {
+    const t = await open(server().v2, { trigger: null });
+    expect(t.text()).toContain("The time zone this schedule runs in.");
+    // The custom line's own field too, once picked.
+    await pick(picker(t.host, "Runs")!, "custom");
+    expect(t.host.querySelector('input[aria-label="Custom schedule"]')).toBeTruthy();
+    expect(t.text()).not.toMatch(/cron line|IANA|cron expression|crontab/i);
+  });
+  it("the Every form's amount and unit are two controls with two ids; the label names the amount", async () => {
+    const t = await open(server().v2, { trigger: null });
+    await t.choose("every");
+    const ids = [...t.host.querySelectorAll("[id]")].map((e) => e.id);
+    expect(ids.filter((id, i) => ids.indexOf(id) !== i)).toEqual([]);
+    // "Every" is also the kind's own choice above; the field's label is the one whose control is the amount.
+    const every = [...t.host.querySelectorAll("label")].find((l) => l.textContent === "Every" && (l.control as HTMLInputElement | null)?.name === "every")!;
+    expect(every).toBeTruthy();
+    const unit = t.host.querySelector('button[aria-label="Unit"]')!;
+    expect(unit.id).toBe("schedule-every-unit");
+    expect(unit.id).not.toBe(every.control!.id);
+  });
+  it("sends the schedule picked in words as its cron line in its zone, the agent, the input and the cap, then opens it", async () => {
     const { v2, calls } = server();
     const t = await open(v2, { trigger: null });
     await t.set("name", "nightly triage");
-    await t.set("cron", "30 1 * * *");
+    // No cron line to type: every day, at 01:30.
+    await pick(picker(t.host, "Runs")!, "daily");
+    await t.type(t.host.querySelector<HTMLInputElement>('[data-schedule-when] input[type="time"]')!, "01:30");
     await t.set("timezone", "America/Los_Angeles");
     await t.set("agent", "triage");
     await t.set("content", "Triage last night's issues.");
@@ -233,6 +282,75 @@ describe("a new schedule", () => {
     expect(t.issue("target.max_cost_usd")).toBe("A cost cap is needed: every run a schedule starts is capped.");
     expect(calls.filter((c) => c.method === "POST")).toEqual([]);
   });
+  it("says a one time already passed in words on the time field, and clears it once a time ahead is picked (#2248)", async () => {
+    const message = "Pick a time in the future: 2026-11-09T09:30:00Z has already passed.";
+    const { v2 } = server({ write: () => refuse([{ field: "source.at", reason: "invalid", message }]) });
+    const t = await open(v2, { trigger: null });
+    await t.choose("at");
+    await t.set("at", "2026-11-09T09:30");
+    await t.set("agent", "triage");
+    await t.set("content", "Look.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create schedule$/);
+    // In the person's own time (UTC here), as the schedule line reads: never the API's ISO time.
+    expect(t.issue("source.at")).toBe("Pick a time in the future: Nov 9, 9:30 AM UTC has already passed.");
+    expect(t.text()).not.toContain("2026-11-09T09:30:00Z");
+    expect(t.text()).not.toContain("at is in the past");
+    // Still past (the page's clock is 2026-11-10T00:00Z): the issue stays, naming the time now picked.
+    await t.set("at", "2026-11-09T23:59");
+    expect(t.issue("source.at")).toBe("Pick a time in the future: Nov 9, 11:59 PM UTC has already passed.");
+    await t.set("at", "2026-11-12T09:30");
+    expect(t.issue("source.at")).toBeNull();
+    expect(t.went).toEqual([]);
+  });
+
+  // QA: a 9:00 AM picked in New York on a day whose 9:00 AM has passed read "Pick a time in the future:
+  // 2026-11-11T14:00:00Z has already passed." It reads the time picked, in the person's zone: "9:00 AM today".
+  it("a one time already passed today reads the time picked, in the person's own time, as today: no ISO", async () => {
+    vi.stubEnv("TZ", "America/New_York");
+    // The page's clock, 2026-11-10T00:00Z, is 7:00 PM on Nov 9 in New York; 9:00 AM that day is 14:00Z.
+    const message = "Pick a time in the future: 2026-11-09T14:00:00Z has already passed.";
+    const { v2 } = server({ write: () => refuse([{ field: "source.at", reason: "invalid", message }]) });
+    const t = await open(v2, { trigger: null });
+    await t.choose("at");
+    await t.set("at", "2026-11-09T09:00");
+    await t.set("agent", "triage");
+    await t.set("content", "Look.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create schedule$/);
+    expect(t.issue("source.at")).toBe("Pick a time in the future: 9:00 AM today has already passed.");
+    expect(t.text()).not.toContain("2026-11-09T14:00:00Z");
+  });
+
+  // A browser clock behind the server's: a time a minute ahead of the page's clock (2026-11-10T00:00Z) has already passed
+  // on the server's. Its refusal is read as the past-time one, so the sentence is the person's time, never the ISO.
+  it("a time ahead of the page's clock that the server refuses as passed reads in the person's time: no ISO", async () => {
+    const message = "Pick a time in the future: 2026-11-10T00:01:00Z has already passed.";
+    const { v2 } = server({ write: () => refuse([{ field: "source.at", reason: "invalid", message }]) });
+    const t = await open(v2, { trigger: null });
+    await t.choose("at");
+    await t.set("at", "2026-11-10T00:01");
+    await t.set("agent", "triage");
+    await t.set("content", "Look.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create schedule$/);
+    expect(t.issue("source.at")).toBe("Pick a time in the future: 12:01 AM today has already passed.");
+    expect(t.text()).not.toContain("2026-11-10T00:01:00Z");
+  });
+
+  it("a refusal of a time ahead for any other reason keeps the server's words", async () => {
+    const message = "at is too far ahead";
+    const { v2 } = server({ write: () => refuse([{ field: "source.at", reason: "invalid", message }]) });
+    const t = await open(v2, { trigger: null });
+    await t.choose("at");
+    await t.set("at", "2026-11-12T09:30");
+    await t.set("agent", "triage");
+    await t.set("content", "Look.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create schedule$/);
+    expect(t.issue("source.at")).toBe(message);
+  });
+
   it("shows each issue of the server's 422 under the field it names: an agent with no revision under the agent", async () => {
     const message = "the agent flow has no current revision";
     const { v2 } = server({ write: () => refuse([{ field: "target.agent_id", reason: "invalid", message }, { field: "source.cron", reason: "invalid", message: "cron is five fields" }]) });
@@ -257,7 +375,7 @@ describe("one schedule", () => {
     ] };
     const t = await open(server({ firings }).v2, { trigger: "trg_1" });
     expect(t.text()).toContain("nightly triage");
-    expect(t.text()).toContain("At 01:30 · America/Los_Angeles");
+    expect(t.text()).toContain("At 9:30 AM your time (01:30 America/Los_Angeles) · next Thu Nov 5, 9:30 AM UTC");
     expect(t.text()).toContain("$2.00 a run");
     const rows = [...t.host.querySelectorAll("[data-firing]")];
     expect(rows.map((r) => r.getAttribute("data-firing"))).toEqual(["f3", "f2", "f1"]);
@@ -272,7 +390,9 @@ describe("one schedule", () => {
     vi.stubEnv("TZ", "America/Los_Angeles");
     const firings = { trg_1: [firing({ key: "f1", status: "started", run_id: "r1" })] };
     const t = await open(server({ firings }).v2, { trigger: "trg_1" });
-    expect(t.text()).toContain("next Nov 5, 1:30 AM");
+    // Its own zone is the viewer's: no parentheses, the zone said once, on its next time.
+    expect(t.text()).toContain("At 1:30 AM your time · next Thu Nov 5, 1:30 AM PST");
+    expect(t.text()).not.toContain("America/Los_Angeles");
     expect(t.host.querySelector("[data-firing]")?.textContent).toContain("Nov 4, 1:30 AM");
     expect(t.text()).not.toContain("UTC");
   });
@@ -322,6 +442,45 @@ describe("one schedule", () => {
     expect(t.text()).toContain("This trigger sends its firings to a run: this page doesn't open it yet.");
     expect(t.button(/^Pause$|^Resume$|^Edit$|^Run now$|^Delete$/)).toBeUndefined();
     expect(t.text()).not.toContain("undefined");
+  });
+  it("says why it turned itself off, and Resume turns it on again by enabled alone", async () => {
+    const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, failures_in_a_row: 5, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } };
+    const { v2, calls } = server({ triggers: [off] });
+    const t = await open(v2, { trigger: "trg_1" });
+    expect(t.host.querySelector('[role="status"][data-disabled]')?.textContent).toBe("Turned off after 5 failures in a row. Resume turns it on again.");
+    await t.click(/^Resume$/);
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ enabled: true }]);
+  });
+  it("tells a one-time schedule whose time passed while it was off to edit its time before Resume", async () => {
+    const off: Trigger = { ...NIGHTLY, source: { kind: "schedule", at: "2026-11-05T09:30:00Z" }, enabled: false, next_at: null, last_firing: null, failures_in_a_row: 5, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } };
+    const t = await open(server({ triggers: [off] }).v2, { trigger: "trg_1" });
+    const text = t.host.querySelector('[role="status"][data-disabled]')?.textContent ?? "";
+    expect(text).toContain("edit its time first, then Resume");
+    expect(text).not.toContain("Resume turns it on again");
+  });
+  it("shows a caught-up last firing in the list too", async () => {
+    const late: Trigger = { ...NIGHTLY, last_firing: { ...NIGHTLY.last_firing!, status: "started", reason: null, catch_up: true } };
+    const t = await open(server({ triggers: [late] }).v2, {});
+    expect(t.host.querySelector("[data-trigger]")?.textContent).toContain("Started · caught up late");
+  });
+  it("says a source that can't be read", async () => {
+    const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, disabled: { at: "2026-11-05T09:00:00Z", reason: "source_unreadable", detail: "unknown time zone Mars/Base" } };
+    const t = await open(server({ triggers: [off] }).v2, { trigger: "trg_1" });
+    expect(t.host.querySelector('[role="status"][data-disabled]')?.textContent).toBe("Turned off: its source can't be read (unknown time zone Mars/Base). Edit its when, then Resume.");
+  });
+  it("marks a firing that caught up a time missed while the server was down, whatever came of it", async () => {
+    const firings = { trg_1: [
+      firing({ key: "f4", status: "started", run_id: "r1", catch_up: true }),
+      firing({ key: "f3", status: "skipped", reason: "The last run is still working.", catch_up: true }),
+      firing({ key: "f2", status: "failed", error: { code: "agent_not_runnable", message: "No model." }, catch_up: true }),
+      firing({ key: "f0", status: "started", run_id: "r0" }),
+    ] };
+    const t = await open(server({ firings }).v2, { trigger: "trg_1" });
+    const rows = [...t.host.querySelectorAll("[data-firing]")].map((r) => r.textContent ?? "");
+    expect(rows[0]).toContain("On schedule, caught up late");
+    expect(rows[1]).toContain("Skipped: The last run is still working. · caught up late");
+    expect(rows[2]).toContain("Failed: No model. · caught up late");
+    expect(rows[3]).not.toContain("caught up");
   });
   it("pauses and resumes by enabled alone", async () => {
     const { v2, calls } = server();
@@ -437,7 +596,10 @@ describe("editing a schedule", () => {
   it("opens with its fields, and saves only what changed", async () => {
     const { v2, calls } = server();
     const t = await open(v2, { trigger: "trg_1", edit: true });
-    expect((t.host.querySelector('[name="cron"]') as HTMLInputElement).value).toBe("30 1 * * *");
+    // Its cron line read back in words: every day at 01:30, in its own zone.
+    expect(valueOf(picker(t.host, "Runs")!)).toBe("daily");
+    expect(t.host.querySelector<HTMLInputElement>('[data-schedule-when] input[type="time"]')!.value).toBe("01:30");
+    expect(valueOf(picker(t.host, "Time zone")!)).toBe("America/Los_Angeles");
     expect((t.host.querySelector('[name="maxCost"]') as HTMLInputElement).value).toBe("2");
     await t.set("maxCost", "3");
     await t.click(/^Save changes$/);

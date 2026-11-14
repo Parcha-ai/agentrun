@@ -1,6 +1,6 @@
 // An agent's saved browser sign-ins over the one store (sign-ins-store.ts, the E1 store half): the pointer is sealed at
 // rest, bound to its agent and provider, and opens for that agent alone; the owner's view never holds it; forgetting it
-// moves it to a tombstone (newest 32 kept) and is refused while a running run was handed it; a pointer that does not open
+// moves it to a tombstone (every one kept) and is refused while a running run was handed it; a pointer that does not open
 // is `unreadable`. Ported from serve/test/sign-ins.test.mjs, over the store (the lease and Browserbase-settle rules move to
 // E2's run path). A real store on a temp file.
 import assert from "node:assert/strict";
@@ -173,7 +173,7 @@ test("an unreadable sign-in is refused forget while any running run was handed a
   assert.deepEqual(gone, { pointers: ["ctx-1"], unreadable: false }, "the tombstone keeps the sealed bytes, which open under the right key");
 });
 
-test("the newest 32 forgotten pointers per agent are kept, the oldest dropped first", async (t) => {
+test("every forgotten pointer of an agent is kept, the oldest too", async (t) => {
   const { store } = await storeOn(t);
   await agentWithRevision(store, "alpha", "alpha-rev");
   for (let i = 0; i < 35; i++) {
@@ -182,10 +182,9 @@ test("the newest 32 forgotten pointers per agent are kept, the oldest dropped fi
   }
   const kept = [];
   for (let i = 0; i < 35; i++) kept.push(...(await store.signIns.tombstones("alpha", `p${i}`)));
-  assert.equal(kept.length, 32, "32 kept across providers");
+  assert.equal(kept.length, 35, "all 35 kept across providers");
   const providers = new Set(kept.map((t) => t.provider));
-  assert.ok(!providers.has("p0") && !providers.has("p2"), "the oldest dropped");
-  assert.ok(providers.has("p34"), "the newest kept");
+  assert.ok(providers.has("p0") && providers.has("p34"), "the oldest and the newest kept");
 });
 
 test("a ':' in the agent or the provider is refused", async (t) => {

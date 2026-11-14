@@ -1,3 +1,4 @@
+import { grantOf } from "./mcp";
 import type { AgentTool, Permission, ToolPin, ToolSetting, ToolSettings } from "./v2";
 
 /** The harnesses a capability resolves for, in the order the console shows them. */
@@ -53,7 +54,7 @@ export const SERVER_DENY = "Refused on this server for every agent, whatever the
 /** Said beside a tool whose permission is deny: what deny does not do (its words are tl-tools'). */
 export const DENY_ONLY = "Deny stops this tool only. The agent can still reach the web with other tools it has, such as browser, bash or web_search: deny those too to keep it offline.";
 
-/** An MCP tool as its server's read lists it (GET /v2/mcp/servers/{name}): this server's permission in force for it. */
+/** An MCP tool as its server's read lists it (GET /v2/settings/mcp-servers/{name}): this server's permission in force for it. */
 type McpListed = { name: string; tools: readonly { name: string; permission?: Permission }[] };
 
 /** Whether this server denies `name` for every agent, from the newest word there is on it: the agent's read when it lists
@@ -62,22 +63,16 @@ type McpListed = { name: string; tools: readonly { name: string; permission?: Pe
 export const serverDenies = (name: string, gates: readonly ToolGate[], read?: readonly AgentTool[], mcpServers?: readonly McpListed[]): boolean => {
   const own = read?.find((t) => t.name === name);
   if (own) return own.permission === "deny" && own.permission_from === "server";
-  const grant = /^mcp:([^/]+)\/(.+)$/.exec(name);
-  const listed = grant ? mcpServers?.find((s) => s.name === grant[1])?.tools.find((t) => t.name === grant[2]) : undefined;
+  const grant = grantOf(name);
+  const listed = grant ? mcpServers?.find((s) => s.name === grant.server)?.tools.find((t) => t.name === grant.tool) : undefined;
   if (listed) return listed.permission === "deny";
   return gates.some((g) => g.name === name && g.permission === "deny");
 };
 
-const PERMISSIONS: readonly string[] = ["allow", "ask", "deny"];
-const isPermission = (v: unknown): v is Permission => typeof v === "string" && PERMISSIONS.includes(v);
-
-/** Each tool's permission, in the server's order: `capabilities.tools` entries that carry one. None from an older server. */
+/** Each tool's permission, in the server's order: every `capabilities.tools` entry carries one, the owner's default and
+ *  those offered. None until the capabilities read answers. */
 export function toolGates(raw: unknown): ToolGate[] {
-  return (Array.isArray(raw) ? raw : []).flatMap((t): ToolGate[] => {
-    const e = t as { name?: unknown; permission?: unknown; default_permission?: unknown; permissions?: unknown; ask_needs?: unknown } | null;
-    if (!e || typeof e.name !== "string" || !Array.isArray(e.permissions) || !e.permissions.length || !e.permissions.every(isPermission) || !isPermission(e.default_permission)) return [];
-    return [{ name: e.name, permission: isPermission(e.permission) ? e.permission : e.default_permission, default_permission: e.default_permission, permissions: e.permissions, ...(e.ask_needs === "password" ? { ask_needs: "password" as const } : {}) }];
-  });
+  return ((raw ?? []) as ToolGate[]).map(({ name, permission, default_permission, permissions, ask_needs }) => ({ name, permission, default_permission, permissions, ...(ask_needs === "password" ? { ask_needs } : {}) }));
 }
 
 const PROVIDER: Record<string, string> = { auto: "auto", native: "native", kernel: "kernel fetch", "exa-keyless": "Exa keyless", parallel: "Parallel" };
@@ -102,7 +97,7 @@ const BY_TOOL: Record<string, { label: Record<string, string>; help: Record<stri
 export const providerLabel = (provider: string, tool?: string) => (tool && BY_TOOL[tool]?.label[provider]) ?? PROVIDER[provider] ?? provider;
 
 const HELP: Record<string, string> = {
-  auto: "The harness's own search, or the model provider's hosted one, else keyless Exa.",
+  auto: "The harness's own search, or the model provider's hosted one; else Parallel where this server holds its key; else keyless Exa.",
   native: "The harness's own search, or the model provider's hosted one, never a third party: unavailable where there is none.",
   "exa-keyless": "Exa's keyless search: no key, a third party.",
   parallel: "Parallel: needs the Parallel key.",

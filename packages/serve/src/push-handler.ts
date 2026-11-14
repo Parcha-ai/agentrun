@@ -70,7 +70,7 @@ export type PushDeps = {
   /** A notice about source `adapterId`'s own connection, verified as the source's (PushContext.notice): checked and
    *  answered by the server's code for it, or undefined when it takes none. */
   notice?(adapterId: string, event: string, body: unknown): Promise<{ status: number; body: Record<string, unknown> } | undefined>;
-  /** A source's sealed setting (sealed-settings.ts): its key, for a scope. */
+  /** A source's sealed setting (sealed-settings-store.ts): its key, for a scope. */
   setting(adapterId: string, scope: string, field: string): string | undefined;
   /** A refusal, said: its route and why. */
   refused(route: string, reason: string): void;

@@ -1,4 +1,4 @@
-// A writer for workspace-local.test.mjs's durability tests, run with pi-durable-disk's fsync-snapshot shim preloaded.
+// A writer for workspace-local.test.mjs's durability tests, run with the fsync-snapshot shim (store-fixtures/fsync-snapshot.c) preloaded.
 // It works through LocalWorkspace (`port`), through LocalWorkspace attached to a fake computer that binds the folder
 // and writes it with plain node:fs, never syncing (`attached`), or through plain node:fs (`plain`, the red), prints
 // "returned" once every call returned, and SIGKILLs itself.

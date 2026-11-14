@@ -33,7 +33,7 @@ async function open(agent: Agent) {
   return { dd };
 }
 
-const EMPTY: AgentLearning = { agent: "invoice-checker", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 } };
+const EMPTY: AgentLearning = { agent: "invoice-checker", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null };
 
 describe("AgentPage, the agent's tools", () => {
   it("lists each granted tool with its provider (where it has one) and its permission", async () => {
@@ -43,6 +43,16 @@ describe("AgentPage, the agent's tools", () => {
     expect(items).toEqual(["web_fetch · Parallel · ask", "bash · allow"]);
     // The tool's line for people is its name's title.
     expect([...dd!.querySelectorAll("li")][0]!.querySelector("[title]")!.getAttribute("title")).toBe("Read a public web page");
+  });
+  it("a tool its runs would not get reads unavailable, its server's reason on hover: bash with no computer that gives a shell, a web tool its provider can't serve", async () => {
+    const noShell: AgentTool = { ...BASH, resolved: "unavailable: This agent has no computer, so it has no shell: give it a sandbox computer to run commands." };
+    const noKey: AgentTool = { ...WEB_FETCH, resolved: "unavailable: PARALLEL_API_KEY is not set" };
+    const { dd } = await open({ ...agentFixture("invoice-checker"), tools: [noKey, noShell] });
+    const items = [...dd!.querySelectorAll("li")];
+    expect(items.map((li) => li.textContent)).toEqual(["web_fetch · Parallel · ask · unavailable", "bash · allow · unavailable"]);
+    const marks = items.map((li) => li.querySelector('[data-unavailable]')!);
+    expect(marks.map((m) => m.getAttribute("title"))).toEqual([noKey.resolved, noShell.resolved]);
+    expect(marks.every((m) => m.className.includes("text-warning-text"))).toBe(true);
   });
   it("an agentic agent with none says so", async () => {
     const { dd } = await open({ ...agentFixture("meeting-notes"), tools: [] });

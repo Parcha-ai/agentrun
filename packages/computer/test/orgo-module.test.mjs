@@ -17,15 +17,18 @@ writeFileSync(DRIFT, "a daemon of another version\n");
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 const ENV_OK = { AGENTRUN_COMPUTER_LIVE_ORGO: "1", COMPUTER_ORGO_API_KEY: KEY, COMPUTER_ORGO_WORKSPACE: WORKSPACE };
 
-test("the Orgo module's env names: the live switch, the key, the workspace, the API URL and the run's template, each COMPUTER_ORGO_* but the switch", () => {
+test("the Orgo module's env names: the live switch, the key, the workspace, the API URL, the run's template and the desktop's os, each COMPUTER_ORGO_* but the switch", () => {
 	assert.deepEqual(ENV, {
 		live: "AGENTRUN_COMPUTER_LIVE_ORGO",
 		template: "COMPUTER_ORGO_TEMPLATE",
 		key: "COMPUTER_ORGO_API_KEY",
 		workspace: "COMPUTER_ORGO_WORKSPACE",
 		apiUrl: "COMPUTER_ORGO_API_URL",
+		os: "COMPUTER_ORGO_OS",
 	});
 	assert.deepEqual(settingsFromEnv({ COMPUTER_ORGO_API_KEY: KEY, COMPUTER_ORGO_WORKSPACE: WORKSPACE }), { apiKey: KEY, workspaceId: WORKSPACE });
+	// No workspace named: the provider uses the key's account's one workspace (orgo-workspaces.ts).
+	assert.deepEqual(settingsFromEnv({ COMPUTER_ORGO_API_KEY: KEY }), { apiKey: KEY });
 	assert.deepEqual(settingsFromEnv({ COMPUTER_ORGO_API_KEY: KEY, COMPUTER_ORGO_WORKSPACE: WORKSPACE, COMPUTER_ORGO_API_URL: "https://orgo.example/api" }).apiUrl, "https://orgo.example/api");
 	assert.throws(() => settingsFromEnv({ ORGO_API_KEY: KEY, COMPUTER_ORGO_WORKSPACE: WORKSPACE }), (error) => /COMPUTER_ORGO_API_KEY/.test(error.message) && !error.message.includes(KEY));
 });
@@ -45,11 +48,12 @@ test("the Orgo module makes nothing without its live switch, checked before any 
 	assert.deepEqual(api.requests, [], "building providers calls nothing");
 });
 
-test("the registry holds orgo, and its Settings entry: the desktop kind, the ORGO_API_KEY key, no mount, metered, its module's capabilities", async () => {
+test("the registry holds orgo, and its Settings entry: the desktop kind, the ORGO_API_KEY and ORGO_WORKSPACE_ID keys, no mount, metered, its module's capabilities", async () => {
 	assert.ok(providerIds.includes("orgo"));
 	const entry = PROVIDERS.find((one) => one.id === "orgo");
 	assert.deepEqual(entry.kinds, ["desktop"], "a desktop only: an agent that wants a sandbox gets a cheaper one");
-	assert.deepEqual(entry.keys, [{ name: "ORGO_API_KEY", required: true }]);
+	// The workspace fills workspaceId, which every Orgo provider is built with (Linux and Windows alike).
+	assert.deepEqual(entry.keys, [{ name: "ORGO_API_KEY", option: "apiKey", required: true }, { name: "ORGO_WORKSPACE_ID", option: "workspaceId", required: false, picked: true }]);
 	assert.deepEqual(entry.mounts, []);
 	assert.equal(entry.metered, true);
 	const orgo = await import("../dist/orgo.js");

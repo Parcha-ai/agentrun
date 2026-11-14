@@ -5,18 +5,17 @@
 // echoes it back. One read of the store across all its planes (store.sealedSecrets): tool, model, computer and Archil keys
 // (sealed_keys); MCP credentials, their headers' values and OAuth tokens and client secret (mcp_servers), and a sign-in in
 // flight (mcp_oauth_pending); each trigger source's settings, a webhook trigger's signing secret and the GitHub App's key
-// and webhook secret among them (trigger_settings), but a field its source marks public; browser sign-in pointers, live
-// and forgotten; live viewer tokens; a launch's sealed part. Beside the store, what the data directory keeps sealed where
-// the runner shares it (the server's own list, server-secrets.ts openServerSecrets: the outbound webhook's signing secret,
-// the trigger settings files of a server that keeps them there). Each value in every spelling the server's list has
+// and webhook secret among them, and the outbound webhook's signing secret, each it held before too (trigger_settings),
+// but a field its source marks public; browser sign-in pointers, live and forgotten; live viewer tokens; a launch's sealed
+// part. Beside the store, what the data directory keeps where the runner shares it (server-secrets.ts besideTheStore: the
+// owner's API token and the sign-in session secret). Each value in every spelling the server's list has
 // (standard-webhooks.ts secretForms), a PEM key whole and line by line. A value that does not open under the runner's key
 // is left out: the store never holds one in the clear, and nothing of this runner can be handed it.
-import { unseal } from "@parcha/pi-durable-agent";
-import { openServerSecrets, ServerSecrets } from "../server-secrets.js";
+import { unseal } from "../sealing.js";
+import { besideTheStore, ServerSecrets } from "../server-secrets.js";
 import type { SealedSecretRow, Store } from "../store/index.js";
 import type { TriggerAdapter } from "../trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "../trigger-adapters.js";
-import { SEAL_KEY_ENV } from "../tool-keys.js";
 import type { HeldRedact } from "./redact.js";
 
 /** The store slice the read needs. */
@@ -55,7 +54,21 @@ function jsonSecrets(text: string): string[] {
   return out;
 }
 
-/** A PEM key whole, and each of its base64 lines (the short last one too), as the server lists one (sealed-settings.ts). */
+/** A launch's sealed JSON: its own listed values (jsonSecrets), and each handed MCP credential's headers (store/seal.ts
+ *  sealRunMcpAuth: `{"mcp": {"<server>": {"headers": {...}}}}`), as a saved server's are listed. */
+function launchSecrets(text: string): string[] {
+  const out = jsonSecrets(text);
+  let mcp: unknown;
+  try {
+    mcp = (JSON.parse(text) as { mcp?: unknown } | null)?.mcp;
+  } catch {
+    return out;
+  }
+  if (mcp && typeof mcp === "object") for (const entry of Object.values(mcp)) out.push(...jsonSecrets(JSON.stringify(entry)));
+  return out;
+}
+
+/** A PEM key whole, and each of its base64 lines (the short last one too), as the server lists one (sealed-settings-store.ts). */
 const pemForms = (value: string): string[] => [value, ...value.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("-----"))];
 
 /** What of one opened sealed value is a secret to hold, by its plane: `listed` with the server list's floor and spellings,
@@ -71,16 +84,15 @@ function secretsOf(row: SealedSecretRow, plain: string, adapters: readonly Trigg
     case "mcp_oauth_pending":
       return { listed: jsonSecrets(plain), whole: [] };
     case "run_launch":
-      return { listed: plain.trimStart().startsWith("{") ? jsonSecrets(plain) : [plain], whole: [] };
+      return { listed: plain.trimStart().startsWith("{") ? launchSecrets(plain) : [plain], whole: [] };
     default:
       return { listed: [plain], whole: [] };
   }
 }
 
 /** Every secret the server keeps sealed that `sealKey` opens: the store's (one read across its planes) and, where the runner
- *  shares the server's data directory `data`, what it keeps sealed beside the store. None without a key. */
-export async function storeSecrets(store: StoreSecretsStore, sealKey: Buffer | undefined, data?: string, adapters: readonly TriggerAdapter[] = TRIGGER_ADAPTERS): Promise<string[]> {
-  if (!sealKey) return [];
+ *  shares the server's data directory `data`, what it keeps beside the store. */
+export async function storeSecrets(store: StoreSecretsStore, sealKey: Buffer, data?: string, adapters: readonly TriggerAdapter[] = TRIGGER_ADAPTERS): Promise<string[]> {
   const listed: string[] = [];
   const whole: string[] = [];
   for (const row of await store.sealedSecrets.all()) {
@@ -97,12 +109,12 @@ export async function storeSecrets(store: StoreSecretsStore, sealKey: Buffer | u
   const list = new ServerSecrets();
   list.add("store", () => listed);
   list.add("store-whole", () => whole, { whole: true });
-  const beside = data ? openServerSecrets(data, { [SEAL_KEY_ENV]: sealKey.toString("base64") }, adapters).secrets.values() : [];
+  const beside = data ? besideTheStore(data).values() : [];
   return [...list.values(), ...beside];
 }
 
 /** The server's sealed secrets (storeSecrets) held by `redact`, the run's one redactor, before any of the run's text is
  *  written. */
-export async function holdStored(redact: HeldRedact, store: StoreSecretsStore, sealKey: Buffer | undefined, data?: string): Promise<void> {
+export async function holdStored(redact: HeldRedact, store: StoreSecretsStore, sealKey: Buffer, data?: string): Promise<void> {
   redact.hold(await storeSecrets(store, sealKey, data));
 }

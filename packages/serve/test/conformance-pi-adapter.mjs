@@ -10,7 +10,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
-export const MODEL = "claude-sonnet-4-5";
+export const MODEL = "claude-sonnet-5-5";
 const sse = (events) => new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((part) => (part.type === "text" ? part.text : "")).join(""));
 
@@ -85,10 +85,10 @@ export function scriptedOrigin(script, requests = []) {
 export function hostTools(tools) {
   return Object.values(tools).map((tool) => ({
     name: tool.name,
-    description: `The suite's ${tool.name} tool.`,
+    description: tool.description ?? `The suite's ${tool.name} tool.`,
     inputSchema: { type: "object", properties: {} },
     replay: tool.replaySafe ? "safe" : "never",
-    call: async (args, context) => ({ text: String(await tool.run(args ?? {}, context.signal)), ...(tool.images ? { images: tool.images } : {}) }),
+    call: async (args, context) => ({ text: String(await tool.run(args ?? {}, context.signal)), ...(tool.images ? { images: tool.images } : {}), ...(tool.structured !== undefined ? { structured: tool.structured } : {}) }),
   }));
 }
 
@@ -119,11 +119,12 @@ function tracked(adapter) {
 /** The adapter loop for the suite's setup: pi through the adapter, its model through the session proxy to the script. */
 export function piAdapterSpec(setup, options = {}) {
   strictOptions("piAdapterSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
-  strictOptions("piAdapterSpec", options, ["fetch", "requests", "price", "system"]);
+  // `native`: pi-native tools beside the session's (PiAdapterOptions.tools, as the subagent tool is).
+  strictOptions("piAdapterSpec", options, ["fetch", "requests", "price", "system", "native"]);
   const { script, tools, hooks, agentId } = setup;
   return (_claim, run) => ({
     ...(agentId ? { agentId } : {}),
-    adapter: tracked(piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: options.fetch ?? scriptedOrigin(script, options.requests), price: options.price ?? (() => 0) })),
+    adapter: tracked(piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: options.fetch ?? scriptedOrigin(script, options.requests), price: options.price ?? (() => 0), ...(options.native ? { tools: options.native } : {}) })),
     session: { key: "root", label: "root", system: options.system ?? ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
     // The run's one cap, uncapped: every paid request still books through it (the adapter loop's only booking path).

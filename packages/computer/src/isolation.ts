@@ -8,7 +8,7 @@
 // all such a computer takes until a proxy carries open and allowlists out of that namespace.
 import { DAEMON_IN_COMPUTER } from "./drift.js";
 import type { ComputerClient } from "./protocol.js";
-import { fail, ok, type Result } from "./result.js";
+import { fail, failAs, ok, type Result } from "./result.js";
 
 /** The uid:gid the programs of a remote computer run as by default: the box image's agentrun-tool, no sudo. */
 export const TOOL_USER = "2510:2510";
@@ -16,20 +16,6 @@ export const TOOL_USER = "2510:2510";
 /** Why a remote provider refuses network open or an allowlist, in words. */
 export const OWN_NETWORK_ONLY =
 	'a remote computer takes network "none" only: its programs run in a network of their own, their loopback alone, so the vendor\'s agent in it (which runs commands as root) is out of their reach; open and allowlists wait for a proxy out of that network';
-
-/** The interfaces /proc/<pid>/net/dev lists, in its order; undefined when the text is not that file. */
-export function netDevInterfaces(text: string): string[] | undefined {
-	const lines = text.split("\n");
-	if (!lines[0]?.startsWith("Inter-|") || !lines[1]?.includes("face |")) return undefined;
-	const names: string[] = [];
-	for (const line of lines.slice(2)) {
-		if (line.trim() === "") continue;
-		const at = line.indexOf(":");
-		if (at < 0) return undefined;
-		names.push(line.slice(0, at).trim());
-	}
-	return names;
-}
 
 /**
  * The drift of a computer's programs' network from their own loopback alone, in words: none when the live interfaces
@@ -67,7 +53,7 @@ export function probeOwnNetworkDrift(report: OwnNetworkReport): string[] {
  */
 export async function readOwnNetwork(client: ComputerClient, timeoutMs: number, signal?: AbortSignal): Promise<Result<string[]>> {
 	const ran = await client.call("exec.run", { argv: [DAEMON_IN_COMPUTER, "probe"], timeoutMs }, signal ? { signal } : undefined);
-	if (!ran.ok) return fail(ran.error.code, `reading the computer's own network back (computerd probe): ${ran.error.message}`);
+	if (!ran.ok) return failAs(ran.error, `reading the computer's own network back (computerd probe): ${ran.error.message}`);
 	const out = Buffer.from(ran.value.stdout, "base64").toString("utf8");
 	if (ran.value.exitCode !== 0) return fail("refused", `computerd probe, reading the computer's own network back, exited ${ran.value.exitCode}: ${Buffer.from(ran.value.stderr, "base64").toString("utf8").trim().slice(0, 300)}`);
 	try {

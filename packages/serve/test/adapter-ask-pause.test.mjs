@@ -14,12 +14,12 @@ after(closeOpenSessions);
 
 const CAP = 0.01;
 /** The run's own model, free: its requests always fit, so only the browser ask meets the cap. */
-const FREE = { id: "claude-sonnet-4-5", api: "anthropic-messages", price: { input: 0, output: 0 }, outputCeiling: 8_192 };
+const FREE = { id: "claude-sonnet-5-5", api: "anthropic-messages", price: { input: 0, output: 0 }, outputCeiling: 8_192 };
 /** Browserbase at $0.12 an hour: a person's fifteen minutes are $0.03, past a $0.01 cap. */
 const PRICE = { usdPerHour: 0.12, minimumS: 60 };
 
 /** A run whose one tool asks a person for fifteen minutes in the browser (`pauses`: the agent's ask, or a take-over). */
-async function askRun(t, pauses) {
+async function askRun(t, pauses, { price } = {}) {
   const answered = [];
   const script = [{ call: "ask_person" }, { say: "done" }];
   const specOf = (sent) => async (claim, run) => {
@@ -33,7 +33,7 @@ async function askRun(t, pauses) {
         return "refused" in hold ? hold.refused : "a person has the browser";
       },
     };
-    return piAdapterSpec({ script, tools: { ask_person: askPerson }, hooks: quiet }, { fetch: scriptedOrigin(script, sent) })(claim, run);
+    return piAdapterSpec({ script, tools: { ask_person: askPerson }, hooks: quiet }, { fetch: scriptedOrigin(script, sent), ...(price ? { price } : {}) })(claim, run);
   };
   // The cap as E2 hands it to the loop, kept by the server across a raise (adapter-pi-cap-raise.test.mjs's closure).
   let capUsd = CAP;
@@ -66,6 +66,35 @@ test("an agent's ask refused at the cap parks the run at its next request with t
     now = await server.runs.get("run-1");
   }
   assert.equal(now.state, "ended", `the raise resumed the run, and it ended: ${JSON.stringify({ state: now.state, summary: now.summary })}`);
+});
+
+test("an answer that passed the cap, then an ask refused at it: the run ends spend_cap_reached in the cap's words, never parked for a raise", async (t) => {
+  // Each answer is booked at $0.02 (its model's hold was $0: free to the cap before it left), past the $0.01 cap; its ask
+  // is then refused, which would pause the run at its next request. Passing the cap ends it first. The answer took the
+  // run past its share of the cap (tool-budget.ts wrappingUp), so the ask's call is refused in the wrap-up's words before
+  // it runs, and never reaches the cap's check of the ask itself.
+  const { row, answered } = await askRun(t, true, { price: () => 0.02 });
+  assert.deepEqual(answered, [], `the ask never ran: the wrap-up refused its call first: ${JSON.stringify(answered)}`);
+  assert.deepEqual([row.state, row.summary], ["failed", "spend_cap_reached: The run cost $0.02, $0.01 over its cap of $0.01."], `the run ended over its cap, never parked: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+});
+
+test("an end-of-run answer that passes the cap ends the run spend_cap_reached in the cap's words, never completed", async (t) => {
+  // The job's answer is free and fits; the end-of-run turn's answer, asked after it, is booked at $0.02 (its model's hold
+  // was $0, so it was sent), past the $0.01 cap. The run's end reads its spend again after that turn.
+  const script = [{ say: "the job's answer" }, { say: "a note" }];
+  let answers = 0;
+  const price = () => (++answers === 1 ? 0 : 0.02);
+  const specOf = (sent) => piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent), price });
+  const asked = [];
+  const endOfRun = async (input) => {
+    asked.push(await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 10_000 }));
+    return undefined;
+  };
+  let capUsd = CAP;
+  const runCap = { get capUsd() { return capUsd; }, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
+  const { row } = await capRun(t, { script, specOf, cap: runCap, runCap: { capUsd: () => capUsd, modelOf: () => FREE }, endOfRun });
+  assert.deepEqual(asked, [{ ended: true, answer: "a note" }], "the end-of-run turn was asked once and answered");
+  assert.deepEqual([row.state, row.summary], ["failed", "spend_cap_reached: The run cost $0.02, $0.01 over its cap of $0.01."], `the run ended over its cap: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
 });
 
 test("a person's take-over refused at the cap never pauses the run: the agent goes on and the run ends", async (t) => {

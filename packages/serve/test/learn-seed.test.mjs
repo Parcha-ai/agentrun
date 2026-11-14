@@ -10,10 +10,8 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agentFolderOf, homeKey } from "../dist/files.js";
-import { learningTestHooks } from "../dist/learning.js";
-import { KEEPS, learnedIn, NOTHING_YET, resnapSync, wholeIn } from "./learn-support.mjs";
+import { KEEPS, learnedIn, NOTHING_YET, pinOf, resnapSync, wholeIn } from "./learn-support.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -37,6 +35,17 @@ const WHOLE = [
 const GIVEN = [{ file: "prefers-tables.md", name: "Prefers tables" }, { file: "refund-policy-path.md", name: "Refund policy path" }];
 /** The line that tells an agent with the read tool where the notes not given whole are. */
 const TOLD = "The notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.";
+/** A note too big for PAST_BUDGET: beside MAIN's two, it puts their notes past the budget. */
+const BIG = { "big-checklist.md": note("Big checklist", "A long checklist", "reference", "", `${"Check one more thing. ".repeat(150)}\n`) };
+const PAST_BUDGET = 1000;
+/** What `# Learned` holds for MAIN and BIG at PAST_BUDGET, with the read tool, for an input that shares no word with them:
+ *  the two notes that fit whole, by name (one commit), then the big one as a line, then where the rest are. */
+const PAST = [
+  `What you learned in earlier runs: the notes that bear most on this run whole, then one line each for more of them. ${KEPT}`,
+  ...WHOLE.split("\n\n## ").slice(1).map((block) => `## ${block}`),
+  "- Big checklist (big-checklist.md): A long checklist",
+  TOLD,
+].join("\n\n");
 
 /** git in the test's own hands: no hook, and no system or global config. */
 function git(cwd, args) {
@@ -47,7 +56,6 @@ function git(cwd, args) {
 }
 
 const repoOf = (data, id) => join(agentFolderOf(data, id), "learning");
-const pinOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "learning.json"), "utf8"));
 const learnedDir = (data, runId) => join(runDir(data, runId), "work", ".learning");
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "";
 
@@ -104,8 +112,7 @@ async function learnsNothing(api, data, id, runId, prompt) {
   assert.deepEqual(await learningOf(api, id, runId), { whole: null, short: null });
 }
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("a new agent with learning on: its first run makes its folder, main checked out with one host commit holding an empty MEMORY.md, and starts seeded, told under # Learned that it learns and that nothing is learned yet, as a restarted server reads it too", { timeout: 90_000 }, async (t) => {
+test("a new agent with learning on: its first run makes its folder, main checked out with one host commit holding an empty MEMORY.md, and starts seeded, told under # Learned that it learns and that nothing is learned yet, as a restarted server reads it too", { timeout: 90_000 }, async (t) => {
   const first = await serve(t, { faux: SYSTEM });
   const { api, data } = first;
   assert.equal((await api("POST", "/agents", agent("fresh", { learning: true, instructions: "Answer the question." }))).status, 201);
@@ -120,7 +127,7 @@ test.skip("a new agent with learning on: its first run makes its folder, main ch
   assert.equal(readFileSync(join(repo, "MEMORY.md"), "utf8"), "");
   assert.equal(git(repo, ["status", "--porcelain"]), "");
   assert.deepEqual(readdirSync(agentFolderOf(data, "fresh")).sort(), ["learning", "runs"], "its learning folder beside its runs");
-  assert.deepEqual(pinOf(data, runId), { seed: git(repo, ["rev-parse", "main"]) });
+  assert.deepEqual((await pinOf({ data: data }, runId)), { seed: git(repo, ["rev-parse", "main"]) });
   assert.deepEqual(readdirSync(learnedDir(data, runId)), ["MEMORY.md"]);
   assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), `an empty index: the run is told it learns, and that nothing is learned yet: ${prompt}`);
   assert.ok(!prompt.includes("What you learned in earlier runs"), "no intro to notes it has none of");
@@ -136,8 +143,7 @@ test.skip("a new agent with learning on: its first run makes its folder, main ch
 
 // A home made before the agent's first run that learns may already hold an empty `learning/` (mode 0700, no .git), as a
 // home's first making leaves it: the seed takes it as it is, git init in place, and the run starts from its one commit.
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("an empty learning/ in the agent's home before its first run, with no .git, is taken as it is: the folder is made a repository in place, main holds an empty MEMORY.md, and the run is seeded from it", { timeout: 120_000 }, async (t) => {
+test("an empty learning/ in the agent's home before its first run, with no .git, is taken as it is: the folder is made a repository in place, main holds an empty MEMORY.md, and the run is seeded from it", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   assert.equal((await api("POST", "/agents", agent("premade", { learning: true, instructions: "Answer the question." }))).status, 201);
   const repo = repoOf(data, "premade");
@@ -150,19 +156,18 @@ test.skip("an empty learning/ in the agent's home before its first run, with no 
   assert.ok(existsSync(join(repo, ".git")), "a repository, made in place");
   assert.equal(git(repo, ["rev-list", "--count", "main"]), "1");
   assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md"]);
-  assert.deepEqual(pinOf(data, runId), { seed: git(repo, ["rev-parse", "main"]) });
+  assert.deepEqual((await pinOf({ data: data }, runId)), { seed: git(repo, ["rev-parse", "main"]) });
   assert.equal(statSync(repo).mode & 0o777, 0o700, "its mode as it was");
 });
 
 // The faux harness stands in for claude-agent's and codex's: it says the system prompt the run gives it.
 for (const harness of ["pi", "claude-agent", "codex"]) {
-  // SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-  test.skip(`a fresh agent's first ${harness} run that learns is told so: # Learned after the instructions says it learns, how, and to tell the person it keeps what they ask but never a secret, then that nothing is learned yet`, { timeout: 90_000 }, async (t) => {
+  test(`a fresh agent's first ${harness} run that learns is told so: # Learned after the instructions says it learns, how, and to tell the person it keeps what they ask but never a secret, then that nothing is learned yet`, { timeout: 90_000 }, async (t) => {
     const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
     const id = `first-${harness}`;
     assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: "Answer the question." }))).status, 201);
     const { runId, prompt } = await ran(api, id);
-    assert.deepEqual(pinOf(data, runId), { seed: git(repoOf(data, id), ["rev-parse", "main"]) }, "a first run has a pin, with nothing learned");
+    assert.deepEqual((await pinOf({ data: data }, runId)), { seed: git(repoOf(data, id), ["rev-parse", "main"]) }, "a first run has a pin, with nothing learned");
     assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), prompt);
     assert.equal(prompt.split("# Learned").length, 2, "one section");
     // It never promises to keep what is never kept: a secret the person asks it to remember is refused, and said so. A
@@ -172,8 +177,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
 }
 
 for (const harness of ["pi", "claude-agent", "codex"]) {
-  // SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-  test.skip(`a ${harness} run with no read tool starts from main's commit, never the working tree: each active note whole under # Learned, and the index and the active notes in work/.learning, not the superseded one`, { timeout: 120_000 }, async (t) => {
+  test(`a ${harness} run with no read tool starts from main's commit, never the working tree: each active note whole under # Learned, and the index and the active notes in work/.learning, not the superseded one`, { timeout: 120_000 }, async (t) => {
     const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
     const id = `seeded-${harness}`;
     const sha = await learned(api, data, id, { harness, instructions: "Answer the question." });
@@ -192,7 +196,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.ok(!prompt.includes("uncommitted") && !prompt.includes("Loose") && !prompt.includes("Old refunds"), prompt);
     assert.deepEqual(readdirSync(learnedDir(data, runId)).sort(), ["MEMORY.md", "prefers-tables.md", "refund-policy-path.md"]);
     for (const file of ["MEMORY.md", "prefers-tables.md", "refund-policy-path.md"]) assert.equal(readFileSync(join(learnedDir(data, runId), file), "utf8"), MAIN[file], file);
-    assert.deepEqual(pinOf(data, runId), { seed: sha, section: WHOLE, given: GIVEN });
+    assert.deepEqual((await pinOf({ data: data }, runId)), { seed: sha, section: WHOLE, given: GIVEN });
     const skills = join(runDir(data, runId), "work", ".agents", "skills");
     assert.deepEqual(existsSync(skills) ? readdirSync(skills) : [], [], "no learned skill is written");
     const { whole, short } = await learningOf(api, id, runId);
@@ -223,8 +227,7 @@ test("the server's switch off: an agent that says learning: true learns nothing,
   assert.equal((await (await serve(t, { data: join(dir, "c") })).api("GET", "/capabilities")).body.features.learning, "off", "the environment's switch, when no option names one");
 });
 
-// SKIP (follow-up #2078): the agent's learning notes are not laid into the run as before on the runner
-test.skip("an index naming notes main does not hold whole: the run reads its first 200 lines, as Claude Code loads its own, and gets the whole file in work/.learning", { timeout: 120_000 }, async (t) => {
+test("an index naming notes main does not hold whole: the run reads its first 200 lines, as Claude Code loads its own, and gets the whole file in work/.learning", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   const lines = Array.from({ length: 250 }, (_, i) => `- [Note ${i + 1}](note-${i + 1}.md) — line ${i + 1}`);
   await learned(api, data, "long", { instructions: "Answer the question." }, { "MEMORY.md": `${lines.join("\n")}\n` });
@@ -245,33 +248,34 @@ function tenNotes(repo) {
 }
 const bytes = (text) => Buffer.byteLength(text);
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("past the learning budget: the index whole, then the notes changed last, whole, while they fit, the rest named in the index; an agent with the read tool is told the rest are in .learning/, one without is not, nor one whose notes all fit; a person's edit makes a note the newest", { timeout: 180_000 }, async (t) => {
+// Past the budget whole notes come before lines (learning.ts withinBudget): a line for every note would leave no room for
+// one whole past ~50 notes (Run B, 11-12). The index is no longer what a run past the budget reads.
+test("past the learning budget, an input that shares no word with any note: the notes changed last, whole, while they fit, then one line each for the next while they fit, the rest left out, all within the budget; an agent with the read tool is told the rest are in .learning/, one without is not, nor one whose notes all fit; a person's edit makes a note the newest", { timeout: 180_000 }, async (t) => {
   const BUDGET = 1000;
   const { api, baseUrl, token, data } = await serve(t, { faux: SYSTEM, learningBudget: BUDGET });
   for (const [id, tools] of [["many", []], ["many-read", ["read"]]]) {
     assert.equal((await api("POST", "/agents", agent(id, { learning: true, instructions: "Answer the question.", tools }))).status, 201);
     await ran(api, id);
-    const { notes, lines } = tenNotes(repoOf(data, id));
+    const { notes } = tenNotes(repoOf(data, id));
     const { runId, prompt } = await ran(api, id);
     const section = learnedIn(prompt);
-    assert.equal(section, pinOf(data, runId).section, "the pin holds what the instructions say");
-    assert.equal(prompt.split(KEEPS).length, 2, "told it learns once, right before the index and the notes (learnedIn reads after it)");
-    const [intro, index] = section.split("\n\n");
-    assert.equal(intro, `What you learned in earlier runs: the index, one line per note, then the newest notes whole. ${KEPT}`);
-    assert.equal(index, lines.join("\n"), "the index, whole");
+    assert.equal(section, (await pinOf({ data: data }, runId)).section, "the pin holds what the instructions say");
+    assert.equal(prompt.split(KEEPS).length, 2, "told it learns once, right before the notes (learnedIn reads after it)");
+    assert.equal(section.split("\n\n")[0], `What you learned in earlier runs: the notes that bear most on this run whole, then one line each for more of them. ${KEPT}`);
+    assert.ok(!section.includes("](note-"), "no index line");
+    const newest = notes.map(([file]) => file).reverse();
     const whole = wholeIn(section);
     assert.ok(whole.length >= 1 && whole.length < notes.length, `some notes whole, not all: ${whole}`);
-    assert.deepEqual(whole, notes.map(([file]) => file).reverse().slice(0, whole.length), "the ones changed last, newest first");
+    assert.deepEqual(whole, newest.slice(0, whole.length), "the ones changed last, newest first");
     for (const [file, text] of notes) assert.equal(section.includes(text.split("---\n")[2].trim()), whole.includes(file), file);
-    // Within the budget, the section's own lines aside: the index, and the notes whole, each after a blank line; one
-    // more note (they are all one size) would not fit.
-    const blocks = section.slice(section.indexOf("\n\n## ") + 2);
-    const used = bytes(index) + 2 + bytes(blocks) + 2;
-    const one = (bytes(blocks) - 2 * (whole.length - 1)) / whole.length;
-    assert.ok(used <= BUDGET && used + one + 2 > BUDGET, `${used} of ${BUDGET}, a note ${one}`);
+    // Then one line each for the next newest, after the whole notes: `- <name> (<file>): <description>`.
+    const lined = [...section.matchAll(/^- Note (\d\d) \((note-\d\d\.md)\): Rule \1 of ten$/gm)].map((match) => match[2]);
+    assert.ok(lined.length >= 1, section);
+    assert.deepEqual(lined, newest.slice(whole.length, whole.length + lined.length), "the next newest, one line each");
+    assert.ok(section.indexOf(`(${lined[0]}):`) > section.lastIndexOf("\n## "), "the lines follow the whole notes");
+    assert.ok(bytes(section) <= BUDGET, `${bytes(section)} of ${BUDGET}`);
     assert.equal(section.includes(TOLD), tools.includes("read"), "told of .learning/ only with the read tool");
-    if (tools.includes("read")) assert.equal(section.split("\n\n")[2], TOLD, "the line follows the index");
+    if (tools.includes("read")) assert.ok(section.endsWith(`\n\n${TOLD}`), "the line closes the section");
   }
   // A person's edit makes note-01 the newest: the next run gives it whole, first.
   const files = `${baseUrl}/agents/many/learning/files`;
@@ -288,12 +292,14 @@ test.skip("past the learning budget: the index whole, then the notes changed las
   assert.equal(learnedIn((await ran(api, "few-read")).prompt), WHOLE);
 });
 
-test("the learning budget is --learning-budget, else AGENTRUN_SERVE_LEARNING_BUDGET, else 8000 bytes; 0 gives the index alone, and a value that is no whole number of bytes refuses the start", { timeout: 120_000 }, async (t) => {
+test("the learning budget is --learning-budget, else AGENTRUN_SERVE_LEARNING_BUDGET, else 8000 bytes; 0 serves no note, saying the notes are there and none fit (never 'Nothing learned yet.'), and a value that is no whole number of bytes refuses the start", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   withEnv(t, { AGENTRUN_SERVE_LEARNING_BUDGET: "0" });
   const { api, data } = await serve(t, { faux: SYSTEM, data: join(dir, "zero") });
   await learned(api, data, "indexed", { instructions: "Answer the question.", tools: ["read"] });
-  assert.equal(learnedIn((await ran(api, "indexed")).prompt), [`What you learned in earlier runs, one line per note. ${KEPT}`, INDEX.trim(), TOLD].join("\n\n"), "the environment's budget, when no option names one");
+  const zero = learnedIn((await ran(api, "indexed")).prompt);
+  assert.equal(wholeIn(zero).length, 0, "the environment's budget, when no option names one: 0 bytes, no note");
+  assert.match(zero, /^You learned notes in earlier runs, but none fit this run's learning budget\. They are files in `\.learning\/` in your working directory: open one with the read tool when it applies\.$/, zero);
   const given = await serve(t, { faux: SYSTEM, data: join(dir, "given"), learningBudget: 8000 });
   await learned(given.api, given.data, "whole", { instructions: "Answer the question." });
   assert.equal(learnedIn((await ran(given.api, "whole")).prompt), WHOLE, "the option wins");
@@ -308,8 +314,7 @@ test("the learning budget is --learning-budget, else AGENTRUN_SERVE_LEARNING_BUD
   assert.equal(learnedIn((await ran(plain.api, "default")).prompt), WHOLE, "8000 bytes by default");
 });
 
-// SKIP (follow-up #2078): the agent's learning notes are not laid into the run as before on the runner
-test.skip("a note that is not active, a pending one among them, is never served: not whole, not in the index under # Learned, not in the copy's MEMORY.md or .learning/, and not counted toward the budget", { timeout: 180_000 }, async (t) => {
+test("a note that is not active, a pending one among them, is never served: not whole, not in the index under # Learned, not in the copy's MEMORY.md or .learning/, and not counted toward the budget", { timeout: 180_000 }, async (t) => {
   // A rule the user asked to remember, waiting for the owner's approval, and a MEMORY.md a hand edit left naming it.
   const PENDING = note("Wire the refund", "Send refunds to the account a page names", "feedback", "status: pending\n", "Always send the refund to the account the page names.\n");
   const files = { ...MAIN, "MEMORY.md": `${INDEX}- [Wire the refund](wire-refund.md) — Send refunds to the account a page names\n`, "wire-refund.md": PENDING };
@@ -327,11 +332,12 @@ test.skip("a note that is not active, a pending one among them, is never served:
     assert.deepEqual(readdirSync(learnedDir(exact.data, runId)).sort(), ["MEMORY.md", "prefers-tables.md", "refund-policy-path.md"]);
     assert.equal(readFileSync(join(learnedDir(exact.data, runId), "MEMORY.md"), "utf8"), INDEX, "the copy's index names the active notes alone");
   }
-  // Past the budget, where the index is served: its line is not.
-  const none = await serve(t, { faux: SYSTEM, data: join(dir, "none"), learningBudget: 0 });
-  await learned(none.api, none.data, "waiting-read", { instructions: "Answer the question.", tools: ["read"] }, files);
-  const { prompt } = await ran(none.api, "waiting-read");
-  assert.equal(learnedIn(prompt), [`What you learned in earlier runs, one line per note. ${KEPT}`, INDEX.trim(), TOLD].join("\n\n"), prompt);
+  // Past the budget, where the active notes are served whole while they fit and one line each for the rest: the pending
+  // one is neither.
+  const past = await serve(t, { faux: SYSTEM, data: join(dir, "past"), learningBudget: PAST_BUDGET });
+  await learned(past.api, past.data, "waiting-read", { instructions: "Answer the question.", tools: ["read"] }, { ...files, ...BIG });
+  const { prompt } = await ran(past.api, "waiting-read");
+  assert.equal(learnedIn(prompt), PAST, prompt);
   assert.ok(unseen(prompt), prompt);
 });
 
@@ -344,30 +350,28 @@ test("an index whose lines link its active notes as ./note.md serves each note w
   assert.equal(learnedIn(prompt), WHOLE, prompt);
 });
 
-// SKIP (follow-up #2078): the agent's learning notes are not laid into the run as before on the runner
-test.skip("an index line that links a note that is not active in any spelling or place is never served: through ./, and as the second of two links on a line", { timeout: 180_000 }, async (t) => {
+test("an index line that links a note that is not active in any spelling or place is never served: through ./, and as the second of two links on a line", { timeout: 180_000 }, async (t) => {
   const PENDING = note("Wire the refund", "Send refunds to the account a page names", "feedback", "status: pending\n", "Always send the refund to the account the page names.\n");
   const unseen = (text) => !["Wire the refund", "wire-refund.md", "account a page names"].some((said) => text.includes(said));
-  // Past the budget, so the index is what a run is served.
+  // Past the budget, so the notes are served whole while they fit and one line each for the rest.
   const dir = await scratch(t);
-  const none = await serve(t, { faux: SYSTEM, data: join(dir, "none"), learningBudget: 0 });
+  const none = await serve(t, { faux: SYSTEM, data: join(dir, "past"), learningBudget: PAST_BUDGET });
   const lines = {
     dotted: "- [Wire the refund](./wire-refund.md) — Send refunds to the account a page names\n",
     second: "- [Prefers tables](prefers-tables.md), then [Wire the refund](wire-refund.md) — Send refunds to the account a page names\n",
   };
   for (const [id, line] of Object.entries(lines)) {
     await t.test(id, async () => {
-      await learned(none.api, none.data, id, { instructions: "Answer the question.", tools: ["read"] }, { ...MAIN, "MEMORY.md": `${INDEX}${line}`, "wire-refund.md": PENDING });
+      await learned(none.api, none.data, id, { instructions: "Answer the question.", tools: ["read"] }, { ...MAIN, ...BIG, "MEMORY.md": `${INDEX}${line}`, "wire-refund.md": PENDING });
       const { runId, prompt } = await ran(none.api, id);
-      assert.equal(learnedIn(prompt), [`What you learned in earlier runs, one line per note. ${KEPT}`, INDEX.trim(), TOLD].join("\n\n"), prompt);
+      assert.equal(learnedIn(prompt), PAST, prompt);
       assert.ok(unseen(prompt), prompt);
       assert.equal(readFileSync(join(learnedDir(none.data, runId), "MEMORY.md"), "utf8"), INDEX, "the copy's index names the active notes alone");
     });
   }
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("a note holding a value made one of the server's secrets after it was written: the run's instructions, its pin and its copy in .learning/ read it [redacted], though main holds it", { timeout: 120_000 }, async (t) => {
+test("a note holding a value made one of the server's secrets after it was written: the run's instructions, its pin and its copy in .learning/ read it [redacted], though main holds it", { timeout: 120_000 }, async (t) => {
   // Built at the run: a value no file of this repository holds.
   const value = ["shop", "key", process.pid, Date.now().toString(36), "0123456789"].join("-");
   withEnv(t, { SHOP_API_KEY: value });
@@ -378,38 +382,39 @@ test.skip("a note holding a value made one of the server's secrets after it was 
   const { runId, prompt } = await ran(api, "leaky");
   assert.ok(!prompt.includes(value), prompt);
   assert.ok(learnedIn(prompt).includes("## Shop key (shop-key.md)\n\nSign in with [redacted]\n\nSend [redacted] as the key."), prompt);
-  assert.ok(!readFileSync(join(runDir(data, runId), "learning.json"), "utf8").includes(value), "nor the pin");
+  assert.ok(!JSON.stringify(await pinOf({ data }, runId)).includes(value), "nor the pin");
   for (const file of readdirSync(learnedDir(data, runId))) {
     const text = readFileSync(join(learnedDir(data, runId), file), "utf8");
     assert.ok(!text.includes(value) && text.includes("[redacted]"), `${file}: ${text}`);
   }
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("the pin: a run keeps the commit it was made from when main moves on, through a continue in a new process", { timeout: 120_000 }, async (t) => {
+// Waits on the switch (tl-untangle): a message to a run that ended on the runner answers 409, so the run is never
+// continued here.
+const CONTINUE_TODO = "the switch (tl-untangle): a run that ended on the runner is continued by a message";
+test("the pin: a run keeps the commit it was made from when main moves on, through a continue in a new process", { timeout: 120_000, skip: CONTINUE_TODO }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   const sha = await learned(api, data, "pinned", { instructions: "Answer the question." });
   const { runId, prompt } = await ran(api, "pinned");
-  const pin = readFileSync(join(runDir(data, runId), "learning.json"), "utf8");
+  const pin = JSON.stringify(await pinOf({ data }, runId));
   assert.equal(JSON.parse(pin).seed, sha);
   const later = commitToMain(repoOf(data, "pinned"), { "MEMORY.md": `${INDEX}- [Later](later.md) — a rule main learned after the run was made\n`, "later.md": note("Later", "a rule main learned after the run was made", "feedback") });
   assert.notEqual(later, sha);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and again?" })).status, 202);
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   const again = await answer(api, runId);
-  assert.equal(readFileSync(join(runDir(data, runId), "learning.json"), "utf8"), pin, "the pin is never written again");
+  assert.equal(JSON.stringify(await pinOf({ data }, runId)), pin, "the pin is never written again");
   assert.equal(learnedIn(again), learnedIn(prompt));
   assert.ok(!again.includes("main learned after"), again);
   assert.equal(existsSync(join(learnedDir(data, runId), "later.md")), false);
   // A run made now starts from the new main.
   const next = await ran(api, "pinned");
-  assert.equal(pinOf(data, next.runId).seed, later);
+  assert.equal((await pinOf({ data: data }, next.runId)).seed, later);
   assert.deepEqual(wholeIn(learnedIn(next.prompt)), ["later.md", "prefers-tables.md", "refund-policy-path.md"], next.prompt);
   assert.ok(existsSync(join(learnedDir(data, next.runId), "later.md")));
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("two runs of a new agent made at once: one folder made, one commit on main, and both runs seeded from it", { timeout: 120_000 }, async (t) => {
+test("two runs of a new agent made at once: one folder made, one commit on main, and both runs seeded from it", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   assert.equal((await api("POST", "/agents", agent("twice", { learning: true }))).status, 201);
   const made = await Promise.all([1, 2].map(() => api("POST", "/agents/twice/runs", { input: { content: "hi" } })));
@@ -420,13 +425,12 @@ test.skip("two runs of a new agent made at once: one folder made, one commit on 
   const main = git(repo, ["rev-parse", "main"]);
   assert.equal(git(repo, ["rev-list", "--count", "--all"]), "1");
   assert.equal(git(repo, ["reflog", "show", "--format=%H", "refs/heads/main"]), main, "main was set once");
-  assert.deepEqual(made.map((run) => pinOf(data, run.body.run_id).seed), [main, main]);
+  assert.deepEqual(await Promise.all(made.map(async (run) => (await pinOf({ data }, run.body.run_id)).seed)), [main, main]);
   assert.deepEqual(readdirSync(agentFolderOf(data, "twice")).sort(), ["learning", "runs"], "its learning folder beside its runs");
   for (const run of made) assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.learning.reason, "empty", "seeded, and its end-of-run turn gave no note");
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("two agents whose ids differ only in case: each has its own learning folder, in agent folders whose names differ in any case, and what one learned never seeds the other's run", { timeout: 120_000 }, async (t) => {
+test("two agents whose ids differ only in case: each has its own learning folder, in agent folders whose names differ in any case, and what one learned never seeds the other's run", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   const sha = await learned(api, data, "Twin", { instructions: "Answer the question." });
   assert.equal((await api("POST", "/agents", agent("twin", { learning: true, instructions: "Answer the question." }))).status, 201);
@@ -443,11 +447,11 @@ test.skip("two agents whose ids differ only in case: each has its own learning f
   assert.ok(!other.prompt.includes("Refund policy path") && !other.prompt.includes("Prefers tables"), other.prompt);
   assert.deepEqual(readdirSync(learnedDir(data, other.runId)), ["MEMORY.md"]);
   assert.equal(readFileSync(join(learnedDir(data, other.runId), "MEMORY.md"), "utf8"), "");
-  assert.notEqual(pinOf(data, other.runId).seed, sha);
+  assert.notEqual((await pinOf({ data: data }, other.runId)).seed, sha);
   // The one that learned still starts from its own.
   const own = await ran(api, "Twin");
   assert.equal(learnedIn(own.prompt), WHOLE, own.prompt);
-  assert.deepEqual(pinOf(data, own.runId), { seed: sha, section: WHOLE, given: GIVEN });
+  assert.deepEqual((await pinOf({ data: data }, own.runId)), { seed: sha, section: WHOLE, given: GIVEN });
 });
 
 test("no hook runs on the host's git calls: neither the folder's own (its hooks folder, core.hooksPath, an fsmonitor) nor a template, hooks folder or config the environment names", { timeout: 120_000 }, async (t) => {
@@ -497,8 +501,7 @@ async function seedFailed(api, data, id, runId, prompt) {
   assert.match(whole.detail, /^Not kept: learning stopped \(.*, so the run started without (them|its notes)\)\.$/);
 }
 
-// SKIP (follow-up #2078): the agent's learning notes are not laid into the run as before on the runner
-test.skip("a folder the server cannot read: the run still completes, with nothing learned, and its learning is dropped for seed_failed", { timeout: 120_000, skip: process.getuid?.() === 0 && "root reads any folder" }, async (t) => {
+test("a folder the server cannot read: the run still completes, with nothing learned, and its learning is dropped for seed_failed", { timeout: 120_000, skip: process.getuid?.() === 0 && "root reads any folder" }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   await learned(api, data, "locked", { instructions: "Answer the question." });
   const repo = repoOf(data, "locked");
@@ -512,36 +515,6 @@ test.skip("a folder the server cannot read: the run still completes, with nothin
   await seedFailed(api, data, "locked", run.runId, run.prompt);
   // Once it can be read again, the next run starts from it.
   assert.equal(learnedIn((await ran(api, "locked")).prompt), WHOLE);
-});
-
-// SKIP (follow-up #2078): the agent's learning notes are not laid into the run as before on the runner
-test.skip("notes that cannot be copied into the run: it completes with nothing learned, seed_failed", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: SYSTEM });
-  await learned(api, data, "lost", { instructions: "Answer the question." });
-  learningTestHooks.beforePin = () => {
-    throw new Error("the disk is full");
-  };
-  t.after(() => void (learningTestHooks.beforePin = undefined));
-  const full = await ran(api, "lost");
-  learningTestHooks.beforePin = undefined;
-  await seedFailed(api, data, "lost", full.runId, full.prompt);
-});
-
-// SKIP (follow-up #2078): the agent's learning notes are not laid into the run as before on the runner
-test.skip("a copy that fails once its pin is in place (the run's directory not synced): the pin goes too, so the run is seed_failed and nothing learned reaches its instructions", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: SYSTEM });
-  await learned(api, data, "unsynced", { instructions: "Answer the question." });
-  let pinned;
-  learningTestHooks.afterPin = (runDir) => {
-    pinned = JSON.parse(readFileSync(join(runDir, "learning.json"), "utf8"));
-    throw new Error("the run's directory could not be synced");
-  };
-  t.after(() => void (learningTestHooks.afterPin = undefined));
-  const run = await ran(api, "unsynced");
-  learningTestHooks.afterPin = undefined;
-  assert.equal(pinned?.section, WHOLE, "the pin was in place, with the notes, when the copy failed");
-  assert.equal(learnedIn(run.prompt), undefined, "no # Learned in the run's instructions");
-  await seedFailed(api, data, "unsynced", run.runId, run.prompt);
 });
 
 /** A scratch directory holding one file, `kept`, for a planted link to point at (or at its file). */
@@ -583,8 +556,7 @@ const PLANTED = {
   "learning/MEMORY.md": (data, id, target) => (mkdirSync(repoOf(data, id), { recursive: true }), symlinkSync(join(target, "kept"), join(repoOf(data, id), "MEMORY.md"))),
 };
 for (const [where, plant] of Object.entries(PLANTED)) {
-  // SKIP (follow-up #2078): the agent's learning notes are not laid into the run as before on the runner
-  test.skip(`a symbolic link at ${where}, there before the agent's first run: the run completes with nothing learned, seed_failed, nothing is made or written where the link points, and the warning names the link, not its target`, { timeout: 120_000 }, async (t) => {
+  test(`a symbolic link at ${where}, there before the agent's first run: the run completes with nothing learned, seed_failed, nothing is made or written where the link points, and the warning names the link, not its target`, { timeout: 120_000 }, async (t) => {
     const { api, data } = await serve(t, { faux: SYSTEM });
     const target = await linkTarget(t);
     assert.equal((await api("POST", "/agents", agent("linked", { learning: true, instructions: "Answer the question." }))).status, 201);
@@ -595,8 +567,10 @@ for (const [where, plant] of Object.entries(PLANTED)) {
   });
 }
 
-// SKIP (follow-up #2078): the agent's learning notes are not laid into the run as before on the runner
-test.skip("a symbolic link at disk/agents/<key>, the agent's folder, there before its first run: the run is refused at its start, since its own folder would be made through the link, and nothing is made where the link points", { timeout: 120_000 }, async (t) => {
+// Waits on the switch's start (tl-untangle): a run is queued before any folder is made, so its start refuses nothing for
+// its agent's folder; the runner's claim makes the run's folder.
+const RUN_FOLDER_LINK_TODO = "the switch's start (tl-untangle): a run whose agent's folder is a link is refused at its start";
+test("a symbolic link at disk/agents/<key>, the agent's folder, there before its first run: the run is refused at its start, since its own folder would be made through the link, and nothing is made where the link points", { timeout: 120_000, skip: RUN_FOLDER_LINK_TODO }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   const target = await linkTarget(t);
   assert.equal((await api("POST", "/agents", agent("linked", { learning: true, instructions: "Answer the question." }))).status, 201);
@@ -608,35 +582,4 @@ test.skip("a symbolic link at disk/agents/<key>, the agent's folder, there befor
   assert.match(JSON.stringify(run.body), /disk\/agents\/linked-[0-9a-f]{16} is a symbolic link, and a run's folder is never made through one/);
   assert.ok(!JSON.stringify(run.body).includes(target), "the refusal names the link, not its target");
   assert.deepEqual(readdirSync(target).sort(), before, "nothing made where the link points");
-});
-
-/** A request's system prompt, as text. */
-const systemText = (body) => (typeof body?.system === "string" ? body.system : (body?.system ?? []).map((block) => block?.text ?? "").join("\n"));
-
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("a claude-agent run on its real adapter: the notes are whole in the system prompt after the instructions, under # Learned, with the revision's skill loaded through the Skill tool and no learned one", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
-  const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
-  t.after(() => fake.close());
-  withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL"]);
-  const { api, data } = await serve(t, { faux: undefined });
-  // The agent's folder, with main already holding two active notes and a superseded one when its first run is made.
-  const repo = repoOf(data, "learner");
-  mkdirSync(repo, { recursive: true });
-  git(repo, ["init", "-q", "--template=", "--initial-branch=main"]);
-  const sha = commitToMain(repo, MAIN);
-  const cite = "---\nname: cite\ndescription: How this agent cites its sources.\n---\nCite every source you read.\n";
-  const created = await api("POST", "/agents", { ...agent("learner", { learning: true, harness: "claude-agent", model: "anthropic/claude-haiku-4-5", instructions: "Answer the question.", skills: ["cite"] }), skills: { "cite/SKILL.md": cite } });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const run = await api("POST", "/agents/learner/runs", { input: { content: "Answer." } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
-  assert.deepEqual(pinOf(data, run.body.run_id), { seed: sha, section: WHOLE, given: GIVEN });
-  const first = fake.messages().find((m) => m.tools.includes("Skill"));
-  assert.ok(first, `the Skill tool is offered: ${JSON.stringify(fake.messages().map((m) => m.tools))}`);
-  const system = systemText(first.body);
-  assert.ok(system.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${WHOLE}`), `the notes follow the instructions, after what the run is told of learning: ${system.slice(-2000)}`);
-  assert.ok(!system.includes("Old refunds"), "a superseded note is never shown");
-  assert.ok(JSON.stringify(first.body).includes("agentrun:cite"), "the revision's skill goes as it did");
-  assert.ok(!system.includes('<skill name="cite">'), "and is not inlined");
-  assert.deepEqual(readdirSync(learnedDir(data, run.body.run_id)).sort(), ["MEMORY.md", "prefers-tables.md", "refund-policy-path.md"]);
 });

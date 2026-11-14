@@ -154,12 +154,12 @@ def _bad_answer(route: str, status: int, what: str) -> AgentRunRefused:
     return AgentRunRefused(route, status, "bad_answer", None, f"The server's answer to {route} is not {what}.")
 
 
-def _read_answer(op: Operation, route: str, response: Response, stream: bool, timeout: float, scrub: Optional[Callable[[Any], Any]]) -> Any:
+def _read_answer(op: Operation, route: str, response: Response, stream: bool, timeout: float, scrub: Optional[Callable[[Any], Any]], base_url: str) -> Any:
     """A success's body as the operation answers: JSON parsed (a secret body's values cut from it), text as a str, a
     file's bytes as they came, or a StreamedResponse for a download asked to stream. What the server sent is read in
     _answer_of: this frame, which raises, never holds it."""
     if op.answer == "bytes" and scrub is None:
-        return response.stream(timeout) if stream else response.read()
+        return response.stream(timeout, base_url) if stream else response.read()
     if op.answer == "none":
         response.close()
         return None
@@ -308,7 +308,7 @@ class AgentRun(Resources):
             op.method, url[len(self.base_url):], route, retryable=op.method == "GET" or "Idempotency-Key" in headers, headers=headers, body=sent,
             timeout=timeout, secret=secret_op is not None, secrets=found, streamed=streamed,
         ))
-        answer = _read_answer(op, route, response, streamed, timeout or self.timeout, scrubber_of(found) if secret_op is not None else None)
+        answer = _read_answer(op, route, response, streamed, timeout or self.timeout, scrubber_of(found) if secret_op is not None else None, self.base_url)
         return Tagged(answer, response.headers.get("etag")) if op.tagged else answer
 
     def _send(self, x: Exchange) -> Response:

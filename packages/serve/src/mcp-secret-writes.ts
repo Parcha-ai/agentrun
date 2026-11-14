@@ -17,6 +17,9 @@ import { isObject } from "./validate.js";
 export function mcpWritesSecret(operation: string, body: unknown): boolean {
   if (operation === "putMcpPrivateHosts" || operation === "startMcpOAuth") return true;
   if (operation !== "saveMcpServer" || !isObject(body) || !isObject(body.auth)) return false;
+  // A per_run server keeps no credential: headers sent with its save only list its tools, as a preview's do. The
+  // credentials it later receives are the ones each run's own caller hands it (mcp_auth).
+  if (body.auth.type === "per_run") return false;
   const { token, headers } = body.auth;
   return token !== undefined || (isObject(headers) && Object.keys(headers).length > 0);
 }
@@ -61,4 +64,8 @@ for (const operation of MCP_SECRET_OPERATIONS) registerSecretWrite(operation, (b
 // A preview keeps nothing, so it is never a secret write; its body's fields are marked secret in the document, so it is
 // registered all the same.
 registerSecretWrite("previewMcpServer", () => false);
+// The Composio preset takes the owner's API key and seals it as an MCP header: both routes are the owner's session alone,
+// whatever the body (the listing sends the key too, and only the session may type one).
+registerSecretWrite("listComposioTools", () => true);
+registerSecretWrite("saveComposioServer", () => true);
 registerNotSecretWrite("refreshMcpServer", "A refresh lists the saved server's tools again with its sealed credential, and writes no credential.");

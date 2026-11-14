@@ -1,0 +1,33 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "fixture.canvas",
+  "version": 1,
+  "title": "Click the canvas three times (ui fixture)",
+  "split": "heldout",
+  "tags": ["fixture"],
+  "needs": { "os": "macos", "kind": "desktop", "apps": ["ai.agentrun.uifixture"] },
+  "setup": [
+    { "method": "apps.terminate", "params": { "id": "ai.agentrun.uifixture" }, "allow": ["not_found"] },
+    { "method": "apps.launch", "params": { "id": "ai.agentrun.uifixture" } }
+  ],
+  "instruction": "In the UI fixture app, click the Canvas exactly three times.",
+  "budget": { "steps": 8, "usd": 0.1, "wall_s": 20 },
+  "checks": [
+    { "id": "three", "kind": "ui", "why": "The canvas counts the clicks that reached it: three, not two or four. It takes foreground input only, so a click that went another way is not counted.", "app": "ai.agentrun.uifixture", "find": { "name": { "equals": "Canvas" }, "value": { "equals": "3" } }, "min": 1, "max": 1 }
+  ],
+  "teardown": [{ "method": "apps.terminate", "params": { "id": "ai.agentrun.uifixture" }, "allow": ["not_found"] }],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "params": {
+        "target": { "app": "ai.agentrun.uifixture" },
+        "foreground": true,
+        "steps": [
+          { "click": { "find": { "name": { "equals": "Canvas" } } } },
+          { "click": { "find": { "name": { "equals": "Canvas" } } } },
+          { "click": { "find": { "name": { "equals": "Canvas" } } } }
+        ]
+      }
+    }
+  ]
+}

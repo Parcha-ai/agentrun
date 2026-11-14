@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
-import { conformanceCases, DockerProvider, GROUPS } from "../../dist/index.js";
+import { DockerProvider } from "../../dist/docker.js";
+import { conformanceCases, GROUPS } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const CLI = fileURLToPath(new URL("../../dist/conformance/cli.js", import.meta.url));
@@ -27,6 +28,9 @@ function optionalForDocker() {
 		if (need.startsWith("user:")) return (caps.user ?? []).includes(need.slice("user:".length));
 		if (need === "release:stop") return caps.release.includes("stop");
 		if (need === "vendor-agent") return Array.isArray(caps.vendorAgentPorts);
+		// Docker takes no key: its conformance module's ENV names none, so the CLI plants nothing and the runner reads the
+		// need as undeclared (health.no-key-in-errors).
+		if (need === "secrets") return false;
 		throw new Error(`a need this count does not read: ${need}`);
 	};
 	return conformanceCases.filter((c) => c.level === "core" && !c.needs.every(declared)).length;

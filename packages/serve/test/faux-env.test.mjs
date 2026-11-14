@@ -2,7 +2,8 @@
 // server's own environment never enables the hook, loads its module, or decides what a run answers. On the cutover a run is
 // claimed and run by a SEPARATE runner process over the store, never forked by the server, so the fence is read over the
 // store: the server, with a faux name in its own environment and no faux option, shows no faux and loads no module; and the
-// run runs on a separate runner whose dispatch strips the ambient faux (model.ts withoutFaux), reaching the real gateway,
+// run runs on a separate runner whose start strips the ambient faux (runner/main.ts runnerMain: model.ts withoutFaux, a
+// faux model only from its own --faux), reaching the real gateway,
 // never the answer the ambient faux module would give. The runner process itself carries the operator's faux name (the
 // realistic threat), so this is not circular.
 //
@@ -55,14 +56,13 @@ async function heldEndpoint(t) {
   return { url: `http://127.0.0.1:${server.address().port}`, release, asked: () => asked };
 }
 
-// SKIP (follow-up #2080): a separate runner started with no faux option never reaches the real gateway in 60 s (in-flight fix: PR #2053).
-test.skip("a faux name in the server's own environment, with no faux option, enables nothing: capabilities show no faux, the run runs on a separate runner that reaches the real gateway and never the faux module, and no process loads it", { timeout: 90_000 }, async (t) => {
+test("a faux name in the server's own environment, with no faux option, enables nothing: capabilities show no faux, the run runs on a separate runner that reaches the real gateway and never the faux module, and no process loads it", { timeout: 90_000 }, async (t) => {
   const dir = await scratch(t);
   const marker = join(dir, "imported");
   const endpoint = await heldEndpoint(t);
   // The operator's environment holds a faux name (AGENTRUN_SERVE_FAUX, AGENTRUN_HARNESS_TABLE); the gateway is the run's model.
   const fauxEnv = { AGENTRUN_SERVE_FAUX: MARKER_MODULE, AGENTRUN_HARNESS_TABLE: MARKER_MODULE, AGENTRUN_TEST_FAUX_MARKER: marker };
-  const gatewayEnv = { AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL: "gpt-4o", AGENT_MODEL_API_KEY: "none" };
+  const gatewayEnv = { AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL: "gpt-6.1-sol", AGENT_MODEL_API_KEY: "none" };
   withEnv(t, { ...fauxEnv, ...gatewayEnv }, ["AGENTRUN_SERVE_FAUX", "AGENTRUN_HARNESS_TABLE", "AGENTRUN_TEST_FAUX_MARKER", "AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE"]);
   // The server alone (no in-process runner): a separate agentrun-serve runner process claims and runs the run.
   const { api, data } = await serve(t, { faux: undefined, runner: false });
@@ -73,8 +73,8 @@ test.skip("a faux name in the server's own environment, with no faux option, ena
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
 
-  // A separate runner process, started WITH the operator's environment (it inherits the faux name, like the server). Its
-  // dispatch strips the ambient faux (withoutFaux), so the run reaches the real gateway; the CLI reads its secrets from the
+  // A separate runner process, started WITH the operator's environment (it inherits the faux name, like the server) and
+  // no --faux. Its start strips the ambient faux (withoutFaux), so the run reaches the real gateway; the CLI reads its secrets from the
   // environment when no launcher pipe is set.
   const runner = spawn(process.execPath, [RUNNER_CLI, "runner", "--data", data], { env: { ...process.env, ...fauxEnv, ...gatewayEnv }, stdio: "ignore" });
   const exited = new Promise((resolve) => runner.once("exit", resolve));

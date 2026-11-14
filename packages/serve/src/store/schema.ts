@@ -1,8 +1,16 @@
-// The store's one schema, version 5 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// The store's one schema, version 11 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
 // store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
 // version 3 numbers each save of a sign-in (sign_ins.save); version 4 stamps an MCP token's end (mcp_servers.token_until);
-// version 5 maps an externally owned agent (agents.external_ref, revisions.external_version).
+// version 5 maps an externally owned agent (agents.external_ref, revisions.external_version); version 6 tells a person's
+// stop from a cancel (runs.outcome 'stopped' or 'cancelled'); version 7 keeps a run's learning by round
+// (learning_proposals.round: a follow-up to a run that ended looks back again, a round of its own); version 8 adds the
+// run-change feed (run_changes), each channel post's tries (channel_attempts) and the claim a post's try settles under
+// (channel_posts.claim); version 9 adds where a live viewer answers (computer_viewers.host, a runner's live host,
+// live-reach.ts); version 10 pairs a person's own computer (paired_computers, pairing_codes); version 11 keeps a command's answer
+// (commands.answer). The template packages imported from GitHub (imported_templates) are a table of their own that nothing
+// else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
+// (IMPORTED_TEMPLATES), as it does the one-answer index.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -14,16 +22,31 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 11;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
  *  (runs-over-store.ts approve). In STORE_DDL, and added at a server open to a store an earlier build of this version made. */
 /** One unrefused answer per approval of a run: an answer the runner refused (its run could not resume) holds no place, so
  *  the person can answer again. */
-export const COMMANDS_ONE_ANSWER = `CREATE UNIQUE INDEX IF NOT EXISTS commands_one_answer ON commands (run_id, json_extract(body, '$.approval')) WHERE kind IN ('approve', 'deny') AND refused IS NULL`;
+export const ONE_ANSWER_INDEX = "commands_one_answer";
+export const COMMANDS_ONE_ANSWER = `CREATE UNIQUE INDEX IF NOT EXISTS ${ONE_ANSWER_INDEX} ON commands (run_id, json_extract(body, '$.approval')) WHERE kind IN ('approve', 'deny') AND refused IS NULL`;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
+
+/** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
+ *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read
+ *  (`files`, a JSON object of path to base64). A re-import of the id replaces the row. The server checks the files again
+ *  as it loads them at its start (templates.ts readPackage); nothing in them runs. In STORE_DDL, and added at a server
+ *  open to a store an earlier build of this version made. */
+export const IMPORTED_TEMPLATES = `CREATE TABLE IF NOT EXISTS imported_templates (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    sha TEXT NOT NULL,
+    publisher TEXT NOT NULL,
+    ${json("files")},
+    imported_at INTEGER NOT NULL
+  ) STRICT`;
 
 export const STORE_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS store_meta (
@@ -86,10 +109,11 @@ export const STORE_DDL: readonly string[] = [
     cost_usd REAL,
     ${json("metrics", true)},
     summary TEXT,
-    -- How an ended run (state 'ended') ended apart from being done: 'escalated' (it finished its work and waits for a
-    -- person, which v2 reads as completed with a review) or 'completed'; null is a plain completion. A failed or stopped
-    -- run says so in its state and needs none. Written in the run's end commit (RunPatch.outcome).
-    outcome TEXT CHECK (outcome IS NULL OR outcome IN ('completed', 'escalated')),
+    -- How the run ended beside its state (RunOutcome). An ended run: 'escalated' (it finished its work and waits for a
+    -- person, which v2 reads as completed with a review) or 'completed'; null is a plain completion. A stopped run:
+    -- 'stopped' when a person stopped it (its turn is over, not the run: a message reopens it) or 'cancelled' (over for
+    -- good). A failed run says so in its state and needs none. Written in the run's end commit (RunPatch.outcome).
+    outcome TEXT CHECK (outcome IS NULL OR outcome IN ('completed', 'escalated', 'stopped', 'cancelled')),
     -- When the run itself was archived (its agent's archive is the agent row's): hidden from the default lists, kept.
     archived_at INTEGER,
     -- The session an imported run came from ({source, session}), written by Store.importRun; null for a run started here.
@@ -110,6 +134,25 @@ export const STORE_DDL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS runs_by_agent ON runs (agent_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_by_revision ON runs (revision_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_claimable ON runs (state, started_at)`,
+  // The run-change feed (Runs.changedSince): a row for each run reaching a final state or let go by its runner (parked, or
+  // running with no runner), written by the trigger below in the transaction of the write that made it, so no writer of a
+  // run's state or runner can miss it and none lands without its write. `seq` numbers them in commit order (one writer).
+  `CREATE TABLE IF NOT EXISTS run_changes (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    ended_at INTEGER,
+    epoch INTEGER NOT NULL,
+    runner TEXT
+  ) STRICT`,
+  // A change is a move of the state or the runner into a final state, parked, or running with none: a fence's touch of
+  // the row (epoch = epoch), a claim, a renew and a cost or summary write are none.
+  `CREATE TRIGGER IF NOT EXISTS runs_changed AFTER UPDATE OF state, runner ON runs
+    WHEN (OLD.state IS NOT NEW.state OR OLD.runner IS NOT NEW.runner)
+      AND (NEW.state IN ('ended', 'stopped', 'failed', 'parked') OR (NEW.state = 'running' AND NEW.runner IS NULL))
+    BEGIN
+      INSERT INTO run_changes (run_id, state, ended_at, epoch, runner) VALUES (NEW.id, NEW.state, NEW.ended_at, NEW.epoch, NEW.runner);
+    END`,
   // One run per imported session: Store.importRun is refused a session it already imported (as the old store's
   // UNIQUE (source, session) did).
   `CREATE UNIQUE INDEX IF NOT EXISTS runs_import ON runs (json_extract(imported_from, '$.source'), json_extract(imported_from, '$.session')) WHERE imported_from IS NOT NULL`,
@@ -123,7 +166,8 @@ export const STORE_DDL: readonly string[] = [
     created_at INTEGER NOT NULL,
     taken_at INTEGER,
     refused TEXT,
-    tries INTEGER NOT NULL DEFAULT 0
+    tries INTEGER NOT NULL DEFAULT 0,
+    ${json("answer", true)}
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS commands_by_run ON commands (run_id, id)`,
   `CREATE INDEX IF NOT EXISTS commands_untaken ON commands (run_id) WHERE taken_at IS NULL`,
@@ -231,6 +275,7 @@ export const STORE_DDL: readonly string[] = [
     attempts INTEGER NOT NULL DEFAULT 0,
     next_at INTEGER NOT NULL,
     claimed_until INTEGER,
+    claim TEXT,
     state TEXT NOT NULL CHECK (state IN ('queued', 'sending', 'sent', 'dropped')),
     reason TEXT,
     created_at INTEGER NOT NULL
@@ -244,6 +289,22 @@ export const STORE_DDL: readonly string[] = [
     at INTEGER NOT NULL,
     PRIMARY KEY (channel, run_id, marker)
   ) STRICT`,
+  // Each try of a channel's post (the outbound webhook's deliveries log): kept to the newest few per channel, each once by
+  // its try's id.
+  `CREATE TABLE IF NOT EXISTS channel_attempts (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    try_id TEXT NOT NULL UNIQUE,
+    channel TEXT NOT NULL,
+    post_id TEXT NOT NULL,
+    moment TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    status_code INTEGER,
+    latency_ms INTEGER NOT NULL,
+    error TEXT,
+    retry_at INTEGER,
+    redelivery INTEGER NOT NULL CHECK (redelivery IN (0, 1))
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS channel_attempts_by_channel ON channel_attempts (channel, seq)`,
 
   // A code review's ledger, per head and firing.
   `CREATE TABLE IF NOT EXISTS review_ledger (
@@ -279,6 +340,29 @@ export const STORE_DDL: readonly string[] = [
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (provider, session_id)
   ) STRICT`,
+  // A person's own machine paired with this server (spec/computer/attach.md): its driver dials the attach socket with the
+  // token pairing gave it, of which only the SHA-256 is kept (hex). `hello`: the driver's hello at pairing, what it paired
+  // as; `driver`: the build its last hello named. `seen_at`: its last socket's hello; `revoked_at`: when it was removed,
+  // after which its token dials no more (the row stays, so a run that names it is told it was removed).
+  `CREATE TABLE IF NOT EXISTS paired_computers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    ${json("hello")},
+    driver TEXT NOT NULL,
+    ${json("labels")},
+    token_sha256 TEXT NOT NULL UNIQUE,
+    pairing_id TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    seen_at INTEGER,
+    revoked_at INTEGER
+  ) STRICT`,
+  // A pairing code, by its SHA-256 alone (hex): good once, until expires_at. A used one is deleted as it pairs. `id` names
+  // the pairing (not the code): the console that made it reads it back on the computer the code made (paired_computers.pairing_id).
+  `CREATE TABLE IF NOT EXISTS pairing_codes (
+    id TEXT NOT NULL UNIQUE,
+    code_sha256 TEXT PRIMARY KEY,
+    expires_at INTEGER NOT NULL
+  ) STRICT`,
   `CREATE TABLE IF NOT EXISTS learning (
     agent_id TEXT NOT NULL REFERENCES agents (id),
     key TEXT NOT NULL,
@@ -286,13 +370,14 @@ export const STORE_DDL: readonly string[] = [
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (agent_id, key)
   ) STRICT`,
+  IMPORTED_TEMPLATES,
 
   // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD
   // sign_ins|<agent>:<provider>|pointer), which the store never opens. The owner sees its name ("default") and saved_at,
   // never the pointer, and no run's tools ever do. Forgetting a sign-in moves its sealed pointer, byte for byte so it
   // still opens, into a tombstone row (sign_in_tombstones), kept only so a server started later can still cut it from
-  // what a run it was handed shows; the newest 32 per agent are kept, the oldest dropped first.
+  // what a run it was handed shows and from what its agent learned; every one is kept, never pruned.
   `CREATE TABLE IF NOT EXISTS sign_ins (
     agent_id TEXT NOT NULL REFERENCES agents (id),
     provider TEXT NOT NULL,
@@ -397,20 +482,24 @@ export const STORE_DDL: readonly string[] = [
     at INTEGER NOT NULL,
     runner TEXT NOT NULL,
     epoch INTEGER NOT NULL,
+    host TEXT,
     PRIMARY KEY (run_id, kind, tag)
   ) STRICT`,
 
   // Learning on the runner: what a run's end-of-run turn kept (the turn it asked and answered, and the proposal checked from
   // it), written in the same commit as the run's end, beside the learning run that grades and merges it (learning_run_id,
-  // none for a learning dropped before it was proposed). Read by the learning routes (the pre-merge view), by the
-  // learning run, and by the reader of a run's learning end (store-reads/learning.ts).
+  // none for a learning dropped before it was proposed). One row a round: a run's first end is round 1, and each end
+  // after a follow-up opened it again is the next. Read by the learning routes (the pre-merge view), by the learning run,
+  // and by the reader of a run's learning end (store-reads/learning.ts), which reads the newest round.
   `CREATE TABLE IF NOT EXISTS learning_proposals (
-    run_id TEXT PRIMARY KEY REFERENCES runs (id),
+    run_id TEXT NOT NULL REFERENCES runs (id),
+    round INTEGER NOT NULL CHECK (round >= 1),
     agent_id TEXT NOT NULL REFERENCES agents (id),
     ${json("turn")},
     ${json("proposal")},
     learning_run_id TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, round)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS learning_proposals_by_agent ON learning_proposals (agent_id, created_at DESC)`,
 ];

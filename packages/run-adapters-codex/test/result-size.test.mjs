@@ -54,7 +54,7 @@ test("on the pinned binary, a host tool's result past Codex's default truncation
     return new Response(sse(n, answers[n - 1] ?? [say(n)]), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   const sessionsDir = join(dir, 'sessions');
-  const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir, fetch });
+  const codex = codexAdapter({ model: 'gpt-6-luna', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir, fetch });
   const page = { name: 'page', description: 'A long page.', inputSchema: { type: 'object', properties: {} }, replay: 'safe', call: async () => ({ text }) };
   const widePage = { name: 'wide', description: 'A long page in CJK.', inputSchema: { type: 'object', properties: {} }, replay: 'safe', call: async () => ({ text: wide }) };
   const runNode = kernel.createHarnessRunner(codex, { store: memorySessionStore(), tools: [page, widePage], timeoutMs: 120_000 });

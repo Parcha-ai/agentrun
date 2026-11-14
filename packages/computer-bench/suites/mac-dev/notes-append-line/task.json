@@ -1,0 +1,60 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.notes.append-line",
+  "version": 1,
+  "title": "Add a last line to an existing note",
+  "split": "heldout",
+  "tags": ["notes", "edit"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Notes"] },
+  "params": {
+    "title": { "pick": ["Packing list", "Camping kit", "Beach bag", "Ski trip"] },
+    "add": { "pick": ["sunscreen", "headphones", "umbrella", "toothbrush", "rain jacket"] }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No note of this title is left from an earlier run, in Recently Deleted either.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "purge"], "timeoutMs": 60000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "The note to edit: its title, then passport, charger and socks. It lacks the line the agent adds.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "start"], "timeoutMs": 60000 }
+    },
+    { "method": "apps.launch", "params": { "id": "com.apple.Notes" } }
+  ],
+  "instruction": "In Notes, add \"{{add}}\" as a new last line of the note \"{{title}} {{nonce}}\". Keep the lines it already has.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "one-note",
+      "kind": "exec",
+      "why": "Exactly one live note (not in Recently Deleted) has the title: the agent edited it rather than making a second.",
+      "argv": ["osascript", "-e", "{{file:notes.applescript}}", "count"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "1" }
+    },
+    {
+      "id": "lines",
+      "kind": "exec",
+      "why": "The note's non-empty lines, read from its plain text, are the three it had in order and then the new one, last.",
+      "argv": ["osascript", "-e", "{{file:notes.applescript}}", "lines"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "{{title}} {{nonce}}|passport|charger|socks|{{add}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the note, and again from Recently Deleted.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "purge"], "timeoutMs": 60000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Append the line to the note's body.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "append", "{{add}}"], "timeoutMs": 60000 }
+    }
+  ]
+}

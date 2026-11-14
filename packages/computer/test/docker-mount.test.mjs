@@ -10,6 +10,9 @@ import * as computer from "../dist/index.js";
 import { container, fakeDocker, idOf, removal, report, valuesOf } from "./fake-docker.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
+let requests = 0;
+/** A create's context: a new request each time. */
+const req = () => ({ requestId: `docker-mount-${++requests}` });
 const TOKEN = "archil-token-fedcba9876543210";
 const DEFAULT_USER = process.getuid() !== 0 && process.getgid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 const runOf = (all) => all.find((args) => args[0] === "run");
@@ -43,7 +46,7 @@ test("check() takes a bind of an existing run folder, and refuses an Archil moun
 	const refused = provider.check(archil);
 	assert.deepEqual(refused.map((r) => r.field), ["mount"]);
 	assert.match(refused[0].message, /does not take a mount of kind archil; it takes bind/);
-	const created = await provider.create(archil);
+	const created = await provider.create(archil, req());
 	assert.equal(created.ok, false);
 	assert.equal(created.error.code, "refused");
 	assert.match(created.error.message, /^mount: this provider does not take a mount of kind archil/);
@@ -70,7 +73,7 @@ test("check() refuses a bind path Docker cannot take or that is not the run fold
 		const refused = provider.check({ ...SPEC, mount: bind(path) });
 		assert.deepEqual(refused.map((r) => r.field), ["mount"], `${path}: ${JSON.stringify(refused)}`);
 		assert.match(refused[0].message, words, path);
-		const created = await provider.create({ ...SPEC, mount: bind(path) });
+		const created = await provider.create({ ...SPEC, mount: bind(path) }, req());
 		assert.equal(created.ok, false);
 		assert.equal(created.error.code, "refused");
 	}
@@ -80,7 +83,7 @@ test("check() refuses a bind path Docker cannot take or that is not the run fold
 test("create() binds the run folder read-write at /workspace after the daemon's mount; HOME and the workdir stay /work", async () => {
 	const { provider, calls, bound } = fakeDocker();
 	const dir = runFolder();
-	const result = await provider.create({ ...SPEC, mount: bind(dir) });
+	const result = await provider.create({ ...SPEC, mount: bind(dir) }, req());
 	assert.equal(result.ok, true, JSON.stringify(result));
 	const run = runOf(calls());
 	assert.deepEqual(valuesOf(run, "--mount"), [`type=bind,src=${bound},dst=/opt/agentrun/computerd,readonly`, `type=bind,src=${dir},dst=/workspace`]);
@@ -88,7 +91,7 @@ test("create() binds the run folder read-write at /workspace after the daemon's 
 	assert.deepEqual(valuesOf(run, "--workdir"), ["/work"]);
 	assert.ok(!valuesOf(run, "--tmpfs").some((tmpfs) => tmpfs.startsWith("/workspace")), "no tmpfs over the run folder");
 	const plain = fakeDocker();
-	assert.equal((await plain.provider.create(SPEC)).ok, true);
+	assert.equal((await plain.provider.create(SPEC, req())).ok, true);
 	assert.deepEqual(valuesOf(runOf(plain.calls()), "--mount").length, 1, "a spec with no mount binds nothing at /workspace");
 });
 
@@ -102,7 +105,7 @@ test("create() refuses a run folder the computer's user cannot write, in words, 
 	]) {
 		const { provider, calls } = fakeDocker();
 		const dir = runFolder(mode);
-		const result = await provider.create({ ...SPEC, ...spec, mount: bind(dir) });
+		const result = await provider.create({ ...SPEC, ...spec, mount: bind(dir) }, req());
 		assert.equal(result.ok, false, `${why}: ${JSON.stringify(result)}`);
 		assert.equal(result.error.code, "refused");
 		const user = spec.user ?? DEFAULT_USER;
@@ -117,15 +120,15 @@ test("create() refuses a run folder the computer's user cannot write, in words, 
 	// Others' write and search permission is enough for any user; so is the group's for a user in it.
 	for (const [mode, spec] of [[0o777, { user: "54321:54321" }], [0o1777, { user: "54321:54321" }]]) {
 		const { provider } = fakeDocker();
-		const result = await provider.create({ ...SPEC, ...spec, mount: bind(runFolder(mode)) });
+		const result = await provider.create({ ...SPEC, ...spec, mount: bind(runFolder(mode)) }, req());
 		assert.equal(result.ok, true, `mode ${mode.toString(8)}: ${JSON.stringify(result)}`);
 	}
 	const { provider } = fakeDocker();
-	const result = await provider.create({ ...SPEC, user: `54321:${gid}`, mount: bind(runFolder(0o770)) });
+	const result = await provider.create({ ...SPEC, user: `54321:${gid}`, mount: bind(runFolder(0o770)) }, req());
 	assert.equal(result.ok, true, JSON.stringify(result));
 	// Root with no capabilities is held to the same bits: it cannot write a folder that is not its own.
 	if (process.getuid() !== 0) {
-		const refused = await fakeDocker().provider.create({ ...SPEC, user: "0", mount: bind(runFolder(0o700)) });
+		const refused = await fakeDocker().provider.create({ ...SPEC, user: "0", mount: bind(runFolder(0o700)) }, req());
 		assert.equal(refused.ok, false);
 		assert.match(refused.error.message, /not writable by the computer's user 0:0/);
 	}
@@ -151,7 +154,7 @@ test("create() with a bind on a host that remaps user ids is refused in words be
 	const dir = runFolder();
 	for (const [remap, SecurityOptions] of REMAPS) {
 		const { provider, calls, names } = fakeDocker({ info: { SecurityOptions } });
-		const result = await provider.create({ ...SPEC, mount: bind(dir) });
+		const result = await provider.create({ ...SPEC, mount: bind(dir) }, req());
 		assert.equal(result.ok, false, `${remap}: ${JSON.stringify(result)}`);
 		assert.equal(result.error.code, "refused");
 		assert.match(
@@ -169,12 +172,12 @@ test("create() with a bind on a host that remaps user ids is refused in words be
 		assert.deepEqual(provider.check({ ...SPEC, mount: bind(dir) }).map((r) => r.field), ["mount"], remap);
 		assert.match(provider.check({ ...SPEC, mount: bind(dir) })[0].message, /^this Docker host remaps user ids/);
 		assert.deepEqual(provider.check(SPEC), [], `${remap}: a spec with no mount`);
-		const plain = await provider.create(SPEC);
+		const plain = await provider.create(SPEC, req());
 		assert.equal(plain.ok, true, `${remap}: a computer with no mount: ${JSON.stringify(plain)}`);
 	}
 	// A host that does not remap ids binds as before.
 	const { provider } = fakeDocker();
-	assert.equal((await provider.create({ ...SPEC, mount: bind(dir) })).ok, true);
+	assert.equal((await provider.create({ ...SPEC, mount: bind(dir) }, req())).ok, true);
 });
 
 test("create() deletes a computer whose bind is not what was asked: another folder, read-only, or none", async () => {
@@ -184,7 +187,7 @@ test("create() deletes a computer whose bind is not what was asked: another fold
 		["drop", /workspace mount: declared .* bound read-write at \/workspace, read back \[\]/],
 	]) {
 		const { provider, calls, names } = fakeDocker({ binds });
-		const result = await provider.create({ ...SPEC, mount: bind(runFolder()) });
+		const result = await provider.create({ ...SPEC, mount: bind(runFolder()) }, req());
 		assert.equal(result.ok, false, JSON.stringify(binds));
 		assert.equal(result.error.code, "refused");
 		assert.match(result.error.message, words);
@@ -239,7 +242,7 @@ test("attach() refuses a computer whose /workspace is read-only, or that binds a
 test("drift(): a bind declared and made is no drift; one missing, extra, elsewhere, read-only or of another propagation is", () => {
 	const deadline = "2026-11-06T12:00:00.000Z";
 	const expected = { version: "1.2.3", kind: "linux", groups: ["exec", "files", "processes"], arch: "amd64", daemonPath: "/data/computerd", deadline, user: "1000:1000", apparmor: false, selinux: false };
-	const hello = { version: "1.2.3", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+	const hello = { protocol: computer.PROTOCOL_VERSION, version: "1.2.3", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 	const spec = { ...SPEC, mount: bind("/runs/r1") };
 	const made = (binds) =>
 		report({ id: "f".repeat(64), name: "computer-0123456789ab", labels: { "agentrun.computer": "1", "agentrun.computer.deadline": deadline }, cmd: ["init", "--deadline", deadline], daemonPath: "/data/computerd", binds });

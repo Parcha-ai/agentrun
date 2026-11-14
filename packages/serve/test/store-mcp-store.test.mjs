@@ -1,7 +1,7 @@
 // The MCP registry and OAuth pending sign-ins as store rows (mcp-store.ts over store.mcp / store.mcpOauth), sealed with the
 // store's one rule (§7): the registry credential bound to the url's origin inside the sealed plaintext, the pending
-// sign-in's secret parts (its verifier and OAuth client) sealed by its state. These are the store-backed primitives the cut
-// wires into McpServers / McpSignIns.
+// sign-in's secret parts (its verifier and OAuth client) sealed by its state. These are the store primitives
+// McpServersOverStore and McpSignIns run over.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -21,7 +21,8 @@ test("a server's row saves with its credential sealed, opens back with the origi
   assert.deepEqual(opened.credential.headers, { authorization: "Bearer gh-secret" }, "opens back");
   assert.equal(opened.credential.origin, "https://mcp.example.com", "the url origin is bound inside");
   assert.deepEqual((await listMcpServers(store)).map((r) => r.name), ["github"]);
-  await removeMcpServer(store, "github");
+  const removed = await removeMcpServer(store, KEY, "github");
+  assert.deepEqual(removed.opened.credential.headers, { authorization: "Bearer gh-secret" }, "it answers the credential the row held as it went");
   assert.equal(await store.mcp.server("github"), undefined, "removed");
   // A server with no credential (auth none) keeps no sealed bytes at all; opening it says none (store-seal.test.mjs).
   await saveMcpServer(store, KEY, { name: "public", url: "https://mcp.example.com/public", auth: "none", tools: [] });

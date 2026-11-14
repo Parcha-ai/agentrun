@@ -20,7 +20,10 @@ export type AnalyticsScope = { range: StatsRange; onRange: (range: StatsRange) =
  *  or failed (each count a link to its list), what they cost (said with its basis, never $0 for a cost not known), runs
  *  per agent, and the latest runs with their agent, duration and cost, with the runs' tokens, time, success and tools
  *  over the range picked (MissionAnalytics). Before the owner's first run, `startHere` takes the place of all of it. */
-export function MissionControl({ view, error, onRetry, scope, needsYou, asking, startHere }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; asking?: number | null; startHere?: React.ReactNode }) {
+/** `asking`, `failed` and `live`: what Needs you lists beside the tiles (the runs asking a person, the failures of the last
+ *  24 h, the runs working now), each null while still being read; the tile beside each counts what it lists. Without
+ *  them (no list beside the tiles), the server's own counts. */
+export function MissionControl({ view, error, onRetry, scope, needsYou, asking, failed, live, startHere }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; asking?: number | null; failed?: number | null; live?: number | null; startHere?: React.ReactNode }) {
   if (error) return <ProblemCard problem={error} onRetry={onRetry} />;
   if (!view) return <MissionSkeleton />;
   if (startHere) return (
@@ -41,12 +44,17 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
     ["Runs", String(view.runs.total), "#/runs"],
     // Running runs the server can't tell the state of are in no other count: said under Active, never dropped. Active
     // counts queued, working and paused runs, which no one list holds, so it links nowhere (Needs you lists the working).
-    ["Active", String(view.runs.active), undefined, undefined, view.runs.statusUnknown ? `${view.runs.statusUnknown} unknown` : undefined],
+    // Running now (Needs you) lists the working ones only: where that differs, the tile says how many are running now.
+    ["Active", String(view.runs.active), undefined, undefined, [typeof live === "number" && live !== view.runs.active ? `${live} running now` : "", view.runs.statusUnknown ? `${view.runs.statusUnknown} unknown` : ""].filter(Boolean).join(" · ") || undefined],
     // What Needs you lists, counted from the same runs (asksPerson): a stopped run asks nothing, so it is not counted (it
     // shows in Recent runs as Stopped). Still being read: a dash. With no list beside it: the server's own count.
     ["Needs input", asking === null ? "–" : String(asking ?? view.runs.needsInput), "#/runs?status=input_required", (asking ?? view.runs.needsInput) ? "text-warning-text" : undefined],
-    // Escalated runs waiting for review are counted apart from the failed: said under Failed, never in it.
-    ["Failed", String(view.runs.failed), "#/runs?status=failed", view.runs.failed ? "text-destructive-text" : undefined, view.runs.needsReview ? `${view.runs.needsReview} ${view.runs.needsReview === 1 ? "needs" : "need"} review` : undefined],
+    // What Needs you lists, the failures of the last 24 h (imported history left out), under that window's name, with
+    // every failed run (the server's count) one click away; still being read: a dash. With no list beside it: the server's
+    // count, all of them. Escalated runs waiting for review are counted apart from the failed: said under it, never in it.
+    failed === undefined
+      ? ["Failed", String(view.runs.failed), "#/runs?status=failed", view.runs.failed ? "text-destructive-text" : undefined, review(view.runs.needsReview)]
+      : ["Failed · last 24 h", failed === null ? "–" : String(failed), "#/runs?status=failed", failed ? "text-destructive-text" : undefined, [`See all ${view.runs.failed}`, review(view.runs.needsReview) ?? ""].filter(Boolean).join(" · ")],
   ];
   return (
     <div className="h-full overflow-auto">
@@ -55,7 +63,7 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
         {needsYou}
         <ul className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
           {tiles.map(([label, value, href, tone, note]) => {
-            const body = <><p className="caps text-[11px] text-muted-foreground">{label}</p><p className={cn("mt-2 font-mono text-xl font-semibold", tone)}>{value}</p>{note && <p className="mt-1 font-mono text-[11px] text-muted-foreground">{note}</p>}</>;
+            const body = <><p className="caps text-label text-muted-foreground">{label}</p><p className={cn("mt-2 font-mono text-xl font-semibold", tone)}>{value}</p>{note && <p className="mt-1 font-mono text-label text-muted-foreground">{note}</p>}</>;
             return <li key={label}>{href ? <a href={href} className="block h-full border p-4 hover:border-border-strong hover:bg-accent">{body}</a> : <div className="h-full border p-4">{body}</div>}</li>;
           })}
         </ul>
@@ -68,35 +76,38 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
         </section>
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
           <section className="border">
-            <h2 className="caps border-b px-4 py-3 text-[12px] font-semibold">Runs per agent</h2>
+            <h2 className="caps border-b px-4 py-3 text-small font-semibold">Runs per agent</h2>
             {perAgent.length ? (
               <ul>{perAgent.map((a) => (
-                <li key={a.agentId} className="border-b last:border-b-0"><a href={agentHash(a.agentId, "runs")} className="flex items-center justify-between gap-3 px-4 py-3 text-[14px] hover:bg-accent"><span className="min-w-0 truncate">{a.name}</span><span className="font-mono text-[13px] text-muted-foreground">{a.runs}</span></a></li>
+                <li key={a.agentId} className="border-b last:border-b-0"><a href={agentHash(a.agentId, "runs")} className="flex items-center justify-between gap-3 px-4 py-3 text-lead hover:bg-accent"><span className="min-w-0 truncate">{a.name}</span><span className="font-mono text-body text-muted-foreground">{a.runs}</span></a></li>
               ))}</ul>
-            ) : <p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No agents yet.</p>}
+            ) : <p className="px-4 py-6 text-center font-mono text-body text-muted-foreground">No agents yet.</p>}
           </section>
           <section className="border">
-            <h2 className="caps border-b px-4 py-3 text-[12px] font-semibold">Recent runs</h2>
+            <h2 className="caps border-b px-4 py-3 text-small font-semibold">Recent runs</h2>
             {view.recent.length ? (
               <ul>{view.recent.map((r) => (
                 <li key={r.run_id} className="border-b last:border-b-0"><a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex items-center gap-3 px-4 py-3 hover:bg-accent">
                   <StatusBadge run={r} />
                   {/* The run's title, then its chips (what it learned and used) right after it. */}
-                  <span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 truncate text-[14px]">{runTitle(r)}</span><LearningChips run={r} className="hidden sm:inline-flex" />
-                    {stoppedRun(r) && <span className="shrink-0 text-[12px] text-muted-foreground">send a message to continue</span>}</span>
-                  <span className="hidden shrink-0 text-[13px] text-muted-foreground md:inline">{name(r.agent_id)}</span>
-                  {r.ended_at && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
-                  {r.cost && (r.cost.usd !== null || soFar(r.cost)) && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline">{cost(r.cost, { ended: runEnded(r.status) })}</span>}
-                  <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline">{when(r.created_at)}</span>
+                  <span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 truncate text-lead">{runTitle(r)}</span><LearningChips run={r} className="hidden sm:inline-flex" />
+                    {stoppedRun(r) && <span className="shrink-0 text-small text-muted-foreground">send a message to continue</span>}</span>
+                  <span className="hidden shrink-0 text-body text-muted-foreground md:inline">{name(r.agent_id)}</span>
+                  {r.ended_at && <span className="hidden font-mono text-small text-muted-foreground sm:inline" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
+                  {r.cost && (r.cost.usd !== null || soFar(r.cost)) && <span className="hidden font-mono text-small text-muted-foreground sm:inline">{cost(r.cost, { ended: runEnded(r.status) })}</span>}
+                  <span className="hidden font-mono text-small text-muted-foreground sm:inline">{when(r.created_at)}</span>
                 </a></li>
               ))}</ul>
-            ) : <p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No runs yet.</p>}
+            ) : <p className="px-4 py-6 text-center font-mono text-body text-muted-foreground">No runs yet.</p>}
           </section>
         </div>
       </div>
     </div>
   );
 }
+
+/** "2 need review", for the runs escalated to a person; nothing for none. */
+const review = (n: number) => (n ? `${n} ${n === 1 ? "needs" : "need"} review` : undefined);
 
 /** What the analytics on screen cover, read from their own answer (not the range picked, whose answer may still be on
  *  its way): "Runs started in the last 30 days", or since the date asked, of one agent when it names one. */

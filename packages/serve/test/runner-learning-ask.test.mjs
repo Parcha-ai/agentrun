@@ -1,7 +1,8 @@
 // The learning run's grader call (runner/learning-ask.ts bookedAsk) is a paid model request like a pi turn: booked in
 // the learning run's own records through the run's one booking (runBooking over its journal sessions, modelPortFor),
 // sent through the kernel's model proxy, and asked of the learning run's own cap first. Its dollars and its tokens are
-// the grade's (the reader's cost_usd.grade and tokens.grade). A cap that leaves no room for the grade sends nothing.
+// the grade's (the reader's cost_usd.grade and tokens.grade). A cap that leaves no room for the grade sends nothing, and
+// the grade is skipped, said so.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -14,14 +15,15 @@ const { learningLoopFactory } = await import("../dist/runner/learning-factory.js
 const { bookedAsk } = await import("../dist/runner/learning-ask.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { runLearningEnd } = await import("../dist/store-reads/learning.js");
+const { gradeCapOf } = await import("../dist/runner/learning-end.js");
 const { beforeRequestOf } = await import("../../run-adapters/dist/kernel/cap/index.js");
 
-const MODEL = "claude-sonnet-4-5";
+const MODEL = "claude-sonnet-5-5";
 /** The grader's model as the cap prices it, and the same price for the proxy's booking: Sonnet's list price. */
 const GRADER = Object.freeze({ id: MODEL, api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 });
 const price = (_model, usage) => (usage.input * 3 + usage.output * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
 const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: Retry a flaky fetch twice\ntype: reference\n---\nRetry a flaky fetch twice.\n" };
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }] });
 /** What the grader's answer used: 1,200 input tokens and 40 output, $0.0042 at Sonnet's price. */
 const USED = { input: 1_200, output: 40 };
 const eight = (usd) => Math.round(usd * 1e8) / 1e8;
@@ -59,7 +61,7 @@ async function spendInRecords(store, runId) {
 
 /** run-1 ended keeping NOTE, its learning run learn-1 claimed and run by the factory's loop, the grader's ask booked
  *  under `capUsd`. The loop's end, every request the provider got, and the store. */
-async function learnedUnder(t, capUsd) {
+async function learnedUnder(t, capUsd, wire = {}) {
   const { store, dir } = await storeOn(t);
   await agentWithRevision(store);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
@@ -68,10 +70,10 @@ async function learnedUnder(t, capUsd) {
   await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }, { table: "learning_run", row: { id: "learn-1" } }] });
   const sent = [];
   const ask = bookedAsk({
-    provider: { api: "anthropic-messages", origin: "https://grader.invalid", credential: () => `not-a-secret-${"x"}` },
+    provider: { api: wire.api ?? "anthropic-messages", origin: "https://grader.invalid", credential: () => `not-a-secret-${"x"}` },
     model: MODEL,
     price,
-    fetch: graderOrigin(sent),
+    fetch: (wire.origin ?? graderOrigin)(sent),
     beforeRequest: beforeRequestOf({ capUsd: () => capUsd, modelOf: () => GRADER }),
   });
   const claim = await store.claim("learn-1", "runner-b", { leaseMs: 60_000 });
@@ -98,6 +100,74 @@ test("a learning run whose cap leaves no room for the grade sends nothing: the c
   assert.equal(sent.length, 0, `no grade request reached the provider: ${sent.length} did`);
   const learning = await runLearningEnd(store, "run-1");
   assert.equal(learning?.state, "dropped", JSON.stringify(learning));
-  assert.equal(learning.reason, "grade_failed", "the grade could not be made");
+  assert.deepEqual([learning.reason, learning.detail], ["no_budget", "Not graded: no room under the cap."], "skipped for room, never a failure");
   assert.equal(await spendInRecords(store, "learn-1"), 0, "nothing spent");
+});
+
+test("a grade a restart cut before it was saved keeps what its earlier attempt spent: an ask the cap refuses after it ends the learning run at that spend, and the next round's grade is capped with it counted", async (t) => {
+  const clock = { now: Date.UTC(2026, 10, 13) };
+  const { store, dir } = await storeOn(t, { clock });
+  await agentWithRevision(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const kept = { state: "proposed", notes: ["Retries"], skills: [], workflows: [], proposal: { notes: [NOTE] }, detail: "Proposed 1 note." };
+  await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }, { table: "learning_run", row: { id: "run-1-learning" } }] });
+  const sent = [];
+  const route = { provider: { api: "anthropic-messages", origin: "https://grader.invalid", credential: () => `not-a-secret-${"x"}` }, model: MODEL, price, fetch: graderOrigin(sent) };
+  // The earlier attempt: its grader request sent, answered and booked, and its runner gone before the grade was saved.
+  const dead = await store.claim("run-1-learning", "runner-dead", { leaseMs: 60_000 });
+  await bookedAsk(route)({ prompt: "Grade these notes.", maxTokens: 16_000 }, new AbortController().signal, { journal: () => store.journal(dead), flush: () => store.flush() });
+  clock.now += 120_000;
+  const earlier = eight((USED.input * 3 + USED.output * 15) / 1e6);
+  assert.equal(eight(await spendInRecords(store, "run-1-learning")), earlier, "the earlier attempt's request is booked in the run's records");
+  // The next attempt, under a cap with no room for another grade request once that spend is counted.
+  const CAP = earlier + 0.001;
+  const ask = bookedAsk({ ...route, beforeRequest: beforeRequestOf({ capUsd: () => CAP, modelOf: () => GRADER }) });
+  const claim = await store.claim("run-1-learning", "runner-b", { leaseMs: 60_000 });
+  assert.ok(claim, "the next attempt claims the learning run");
+  const end = await learningLoopFactory({ store, data: dir, ask })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal }).start(claim);
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(sent.length, 1, "the next attempt sent nothing");
+  const learning = await runLearningEnd(store, "run-1");
+  assert.deepEqual([learning?.state, learning?.reason], ["dropped", "no_budget"], JSON.stringify(learning));
+  assert.equal(eight(learning.cost_usd.grade), earlier, `the grade's dollars are the earlier attempt's, never $0: ${JSON.stringify(learning.cost_usd)}`);
+  assert.equal(learning.tokens.grade, null, "the earlier attempt's tokens are unknown here: never read as none");
+  const row = await store.runs.get("run-1-learning");
+  assert.deepEqual([row.state, eight(row.costUsd)], ["ended", earlier], "the learning run's cost is what its grade spent");
+  // The next round's grade: the cap less the run's spend ($0 here) and this round's grade, so together they stay within it.
+  const room = await gradeCapOf(store, "run-1", 2, CAP);
+  assert.equal(eight(room), eight(CAP - earlier), "the next round's room counts the earlier spend");
+  assert.ok(row.costUsd + room <= CAP + 1e-12, "this round's grade and the next one's room within the cap");
+});
+
+/** A gateway's Responses stream (what a pi grade on a gateway model reads): KEEP at USED, its connection left open
+ *  `lingerMs` after its completion event and its `[DONE]`, as a real gateway's can be: pi-ai's Responses client is done
+ *  at `[DONE]`, and the proxy books the request only once the stream ends. */
+const lingeringResponses = (lingerMs) => (sent) => async (_url, init = {}) => {
+  sent.push(JSON.parse(String(init.body ?? "{}")));
+  const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: KEEP, annotations: [] }] };
+  const events = [
+    { type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } },
+    { type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } },
+    { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: KEEP },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response: { id: "resp_1", status: "completed", output: [item], usage: { input_tokens: USED.input, output_tokens: USED.output, total_tokens: USED.input + USED.output } } },
+  ];
+  return new Response(new ReadableStream({
+    async start(controller) {
+      for (const event of events) controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+      controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+      await new Promise((resolve) => setTimeout(resolve, lingerMs));
+      controller.close();
+    },
+  }), { status: 200, headers: { "content-type": "text/event-stream" } });
+};
+
+test("a grade on a gateway's Responses stream that stays open after its answer is priced, never $0: the ask reads the spend once the proxy has booked the request", async (t) => {
+  const { end, store } = await learnedUnder(t, 1, { api: "openai-responses", origin: lingeringResponses(300) });
+  assert.deepEqual(end, { state: "ended" });
+  const learning = await runLearningEnd(store, "run-1");
+  assert.equal(learning?.state, "merged", JSON.stringify(learning));
+  assert.equal(eight(learning.cost_usd.grade), eight((USED.input * 3 + USED.output * 15) / 1e6), `the grade's dollars: ${JSON.stringify(learning.cost_usd)}`);
+  assert.equal(eight(await spendInRecords(store, "learn-1")), eight(learning.cost_usd.grade), "the grade's figure is the booking's");
 });

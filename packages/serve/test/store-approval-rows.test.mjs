@@ -12,7 +12,8 @@ import { storeOn, T0 } from "./store-helpers.mjs";
 const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
 /** The run's Timeline rows as GET /runs/{id}/timeline serves them. */
 const timelineOverStore = (store, runId, deps) => servedTimelineRows({ ...deps, keyEnv: () => ({}) }, store, runId, context);
-const { outcomeShows } = await import("../dist/run-view.js");
+const { outcomeShows, withApprovalRows } = await import("../dist/run-view.js");
+const { ChangeClock, RowLog } = await import("../dist/rows.js");
 
 const iso = (ms) => new Date(ms).toISOString();
 const ROOT = 1;
@@ -36,8 +37,8 @@ async function runWith(t, calls, { ended = true } = {}) {
     await add({ kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: call.id, name: call.tool, arguments: call.args }], timestamp: (at += 100) }] });
     await add({ kind: "agentrun.ask", data: { callId: call.id, tool: call.tool, args: call.args, requestedAt: iso((at += 100)) } });
     if (!call.answer) continue;
-    await add({ kind: "agentrun.answer", data: { callId: call.id, approved: call.answer.approved, ...(call.answer.note !== undefined ? { note: call.answer.note } : {}) } });
-    await add({ kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: call.id, toolName: call.tool, content: [{ type: "text", text: call.result.text }], isError: call.result.isError, timestamp: (at += 100) }] });
+    await add({ kind: "agentrun.answer", data: { callId: call.id, approved: call.answer.approved, ...(call.answer.decision ? { decision: call.answer.decision } : {}), ...(call.answer.note !== undefined ? { note: call.answer.note } : {}), ...(call.answer.by ? { by: call.answer.by } : {}), ...(call.answer.superseded ? { superseded: call.answer.superseded } : {}) } });
+    await add({ kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: call.id, toolName: call.tool, content: [{ type: "text", text: call.result.text }], isError: call.result.isError, ...(call.result.details ? { details: call.result.details } : {}), timestamp: (at += 100) }] });
   }
   if (ended) await add({ kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }], timestamp: (at += 100) }] });
   await commitWrites(j, writes, context);
@@ -55,11 +56,11 @@ function readFor(rows, id) {
   return { own: own.map((row) => [row.kind, row.summary]), after: rows.slice(last + 1, last + 3) };
 }
 
-test("an allowed call reads held, then your approval, then that it ran; a note sent with the allow is shown nowhere", async (t) => {
+test("an allowed call reads what it did, then your approval, then that it ran; a note sent with the allow is shown nowhere", async (t) => {
   const store = await runWith(t, [fetchCall("c1", { approved: true, note: "only the home page" }, { text: "fetched", isError: false })]);
   const rows = await timelineOverStore(store, "run-1", deps);
   const { own, after } = readFor(rows, "c1");
-  assert.deepEqual(own, [["tool_use", "Held for your approval"], ["tool_result", "Held for your approval"]], JSON.stringify(rows.map((r) => [r.kind, r.summary])));
+  assert.deepEqual(own, [["tool_use", "Fetched example.test"], ["tool_result", "Fetched example.test: ok (ran once you allowed it)"]], JSON.stringify(rows.map((r) => [r.kind, r.summary])));
   assert.deepEqual([after[0]?.kind, after[0]?.summary], ["tool_approval_requested", 'Asked your approval: web_fetch {"url":"https://example.test"}']);
   assert.deepEqual([after[1]?.kind, after[1]?.origin, after[1]?.summary], ["phase", "server", "AgentRun: web_fetch ran once you allowed it; its result went to the agent"]);
   assert.equal(JSON.stringify(rows).includes("only the home page"), false, "the allow's note is on no row");
@@ -88,6 +89,40 @@ test("a denied call reads held, then your approval, then 'You declined <tool>: <
   assert.equal(rows.some((row) => /:saved:/.test(row.id)), false, "no Saved row for a call that never ran");
 });
 
+test("an allowed call that ran shows its outcome like any call, plus that it ran once you allowed it; never 'Held for your approval'", async (t) => {
+  const store = await runWith(t, [fetchCall("c1", { approved: true }, { text: "fetched the page", isError: false }), fetchCall("c2", { approved: true, by: "setting" }, { text: "fetched again", isError: false })]);
+  const rows = await timelineOverStore(store, "run-1", deps);
+  const shown = JSON.stringify(rows.map((r) => [r.kind, r.summary, r.tool_status]));
+  for (const [id, words] of [["c1", "ran once you allowed it"], ["c2", "ran, as its setting allows it"]]) {
+    const own = rows.filter((row) => row.tool_use_id === id && (row.kind === "tool_use" || row.kind === "tool_result"));
+    assert.equal(own.some((row) => row.summary === "Held for your approval"), false, `${id}: ${shown}`);
+    const result = own.find((row) => row.kind === "tool_result");
+    // The rows the timeline gives any call that ran, its status kept, and the words of how it came to run.
+    assert.equal(own.find((row) => row.kind === "tool_use")?.summary, "Fetched example.test", `${id}: ${shown}`);
+    assert.equal(result?.tool_status, "success", `${id}: ${shown}`);
+    assert.equal(result?.summary, `Fetched example.test: ok (${words})`, `${id}: ${shown}`);
+  }
+});
+
+test("a call allowed by the person, its tool set to deny on this server before it ran: every row says it was refused by that deny, and the person's allow shows", async (t) => {
+  const refusal = "Permission denied: web_fetch is set to deny on this server. It was not run: nothing was sent and nothing was charged. Don't retry it.";
+  const store = await runWith(t, [
+    fetchCall("c1", { approved: false, decision: "deny", by: "setting", superseded: { decision: "allow", answeredAt: iso(T0 + 5_000) } }, { text: refusal, isError: true, details: { "agentrun.refused": true } }),
+    fetchCall("c2", { approved: false, decision: "deny", by: "setting" }, { text: refusal, isError: true, details: { "agentrun.refused": true } }),
+  ]);
+  const rows = await timelineOverStore(store, "run-1", deps);
+  const shown = JSON.stringify(rows.map((r) => [r.kind, r.summary]));
+  assert.equal(/ended while it waited|Withdrawn|Held for your approval/.test(shown), false, shown);
+  const one = readFor(rows, "c1");
+  assert.deepEqual(one.own.map(([, s]) => s), ["Not run: its tool is now set to deny on this server", "Not run: its tool is now set to deny on this server"], shown);
+  assert.equal(one.after[0]?.summary, 'Denied by the tool\'s setting on this server: web_fetch {"url":"https://example.test"}');
+  assert.equal(one.after[1]?.summary, "AgentRun: You allowed web_fetch, but it is now set to deny on this server, so it was not run");
+  assert.equal(one.after[1]?.text, `You allowed web_fetch, but it is now set to deny on this server, so it was not run.\n${refusal}`);
+  assert.equal(readFor(rows, "c2").after[1]?.summary, "AgentRun: web_fetch was not run: it is now set to deny on this server");
+  // The refused call's result row reads refused, as any refused call's does.
+  assert.equal(rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "c1")?.refused, true, shown);
+});
+
 test("a note is redacted whole, its links' query values elided, cut to its first line at 200 code points", async (t) => {
   const note = `use scratch, see https://files.example/doc?sig=s3cr3tQuery and ${HELD} ${"a".repeat(260)}\nsecond line`;
   const store = await runWith(t, [fetchCall("c1", { approved: false, note }, { text: "refused", isError: true })]);
@@ -112,9 +147,73 @@ test("a call still waiting reads not run yet, then waiting for your approval, an
 test("two approvals in one run each read in order, and reading the rows twice gives the same rows", async (t) => {
   const store = await runWith(t, [fetchCall("c1", { approved: true }, { text: "one", isError: false }), fetchCall("c2", { approved: false, note: "not that page twice" }, { text: "refused", isError: true })]);
   const rows = await timelineOverStore(store, "run-1", deps);
-  for (const [id, outcome] of [["c1", "AgentRun: web_fetch ran once you allowed it; its result went to the agent"], ["c2", "AgentRun: You declined web_fetch: not that page twice"]]) {
+  for (const [id, outcome, ownRows] of [["c1", "AgentRun: web_fetch ran once you allowed it; its result went to the agent", ["Fetched example.test", "Fetched example.test: ok (ran once you allowed it)"]], ["c2", "AgentRun: You declined web_fetch: not that page twice", ["Held for your approval", "Held for your approval"]]]) {
     const { own, after } = readFor(rows, id);
-    assert.deepEqual([...own.map(([, s]) => s), after[0]?.kind, after[1]?.summary], ["Held for your approval", "Held for your approval", "tool_approval_requested", outcome], id);
+    assert.deepEqual([...own.map(([, s]) => s), after[0]?.kind, after[1]?.summary], [...ownRows, "tool_approval_requested", outcome], id);
   }
   assert.deepEqual(await timelineOverStore(store, "run-1", deps), rows, "the same rows read again");
+});
+
+test("a parked write that was allowed shows no Saved row: the outcome row says it ran, never the call's own Saved row", async (t) => {
+  const write = { id: "w1", tool: "write", args: { path: "hello.txt", content: "hello" }, answer: { approved: true }, result: { text: "Successfully wrote 5 bytes to hello.txt", isError: false } };
+  const store = await runWith(t, [write]);
+  const rows = await timelineOverStore(store, "run-1", deps);
+  assert.deepEqual(rows.filter((row) => /^Saved /.test(row.summary ?? "")).map((row) => row.summary), [], JSON.stringify(rows.map((r) => [r.id, r.kind, r.summary])));
+  assert.equal(readFor(rows, "w1").after[1]?.summary, "AgentRun: write ran once you allowed it; its result went to the agent");
+});
+
+test("a person's message that declined a waiting call is their own row, their words redacted, between the approval row and the outcome", async (t) => {
+  const said = `use the cached copy instead, not ${HELD}`;
+  const store = await runWith(t, [fetchCall("c1", { approved: false, note: said, by: "message" }, { text: `The user denied this web_fetch call. Reason: ${said}`, isError: true })]);
+  const rows = await timelineOverStore(store, "run-1", deps);
+  assert.equal(readFor(rows, "c1").after[0]?.summary.split(":")[0], "Declined by your message");
+  const persons = rows.filter((row) => row.kind === "user_message");
+  assert.equal(persons.length, 2, JSON.stringify(rows.map((r) => [r.kind, r.summary])));
+  assert.equal(persons[0].text, "Fetch it.");
+  assert.ok(persons[1].text.startsWith("use the cached copy instead, not "), persons[1].text);
+  assert.equal(persons[1]?.summary?.startsWith("You: use the cached copy instead, not "), true, persons[1]?.summary);
+  assert.equal(JSON.stringify(persons[1]).includes(HELD.slice(0, 12)), false, "their words go through the run's redactor");
+  const ask = rows.findIndex((row) => row.kind === "tool_approval_requested");
+  const outcome = rows.findIndex((row) => row.summary === "AgentRun: Your message declined web_fetch.");
+  assert.ok(ask < rows.indexOf(persons[1]) && rows.indexOf(persons[1]) < outcome, "between the approval row and the outcome");
+});
+
+test("served across reads, a call's approval row moves below the call's result once it ran: the call, its result, your approval, the outcome", () => {
+  // The Timeline route keeps the seq each row id was first served with (rows.ts RowLog): the approval row is served while
+  // the call waits, before its result row exists. Once the result is in, the approval and outcome rows must still read
+  // after it, as the person reads a call: what it was, that it waited, what came of it.
+  const use = { id: "1:a", kind: "tool_use", tool_use_id: "c1", tool_name: "web_fetch", summary: "Fetching", text: "" };
+  const result = { id: "1:b", kind: "tool_result", tool_use_id: "c1", tool_name: "web_fetch", summary: "Fetched: ok", text: "fetched", tool_status: "success" };
+  const answer = { id: "1:c", kind: "final_answer", summary: "done", text: "done" };
+  const asks = new Map([["c1", { id: "c1", call_id: "c1", tool: "web_fetch", args_json: '{"url":"https://example.test"}', requested_at: "" }]]);
+  const same = (text) => text;
+  for (const decision of ["allow", "deny"]) {
+    const log = new RowLog(new ChangeClock());
+    log.sync(withApprovalRows([use], asks, {}, same));
+    // A deny's outcome shows at once, before the refusal is the call's result.
+    if (decision === "deny") log.sync(withApprovalRows([use], asks, { c1: { decision, answered_at: "" } }, same));
+    const rows = withApprovalRows([use, result, answer], asks, { c1: { decision, answered_at: "" } }, same);
+    // A pass over its own output gives the same rows: an allowed call's "(ran once you allowed it)" is said once.
+    assert.deepEqual(withApprovalRows(rows, asks, { c1: { decision, answered_at: "" } }, same), rows, `${decision}: a second pass`);
+    log.sync(rows);
+    const read = log.rows().map((row) => `${row.kind}: ${row.summary.split(":")[0]}`);
+    // An allowed call that ran reads as any call (what it did, its result); a declined one stays held.
+    const own = decision === "allow" ? ["tool_use: Fetching", "tool_result: Fetched"] : ["tool_use: Held for your approval", "tool_result: Held for your approval"];
+    assert.deepEqual(read, [...own, "tool_approval_requested: Asked your approval", `phase: AgentRun`, "final_answer: done"], `${decision}: ${JSON.stringify(read)}`);
+  }
+});
+
+
+test("a denied call's result row alone is marked refused: the approval, the person's message and the outcome rows keep their own status", async (t) => {
+  const said = "use the cached copy instead";
+  const refused = (text) => ({ text, isError: true, details: { "agentrun.refused": true } });
+  const store = await runWith(t, [
+    fetchCall("c1", { approved: false, note: "no" }, refused("The user denied this web_fetch call. Reason: no")),
+    fetchCall("c2", { approved: false, note: said, by: "message" }, refused(`The user denied this web_fetch call. Reason: ${said}`)),
+  ]);
+  const rows = await timelineOverStore(store, "run-1", deps);
+  const marked = rows.filter((row) => row.refused === true);
+  assert.deepEqual(marked.map((row) => row.kind), ["tool_result", "tool_result"], JSON.stringify(rows.map((r) => [r.kind, r.summary, r.refused])));
+  for (const id of ["c1", "c2"]) for (const row of readFor(rows, id).after) assert.equal(row.refused, undefined, JSON.stringify(row));
+  assert.equal(rows.find((row) => row.summary === `You: ${said}`)?.refused, undefined, "the person's message row");
 });

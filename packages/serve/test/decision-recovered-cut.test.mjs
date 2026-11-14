@@ -1,4 +1,4 @@
-// A completed run's decision rows are read back from its store (pi durableDecisions), so what the row keeps of a receipt
+// A completed run's decision rows are read back from its store (readDecisions), so what the row keeps of a receipt
 // is what the graph serves: a decision's error stored cut at 64 KB (error_truncated) must stay marked, or its tail, where
 // a held value the cut split sits, is shown.
 import assert from "node:assert/strict";
@@ -10,7 +10,8 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { decisionRecovery, durableDecisions } from "@parcha/agentrun-pi/durable";
+import { decisionRecovery } from "../dist/workflow/decision-recovery.js";
+import { readDecisions } from "../dist/workflow/decisions.js";
 import { servedPart } from "../dist/graph-served.js";
 
 /** A held value of 512 characters, made at runtime: no credential-shaped literal for the source export. */
@@ -22,7 +23,8 @@ const holdsRun = (text) => {
 
 test("a decision error cut at 64 KB with a held value across the cut, read back from the run's store: marked cut, and served with no part of it", async () => {
   const file = join(mkdtempSync(join(tmpdir(), "decision-cut-")), "run.sqlite");
-  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: createModels() }, ctx);
+  const open = async () => Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: createModels() }, ctx);
+  let harness = await open();
   // As the DSL stores it: the first 64 KB of a provider's error that repeats the value, the cut inside a copy.
   const error = `refused ${`${HELD} `.repeat(130)}`.slice(0, 65_536);
   const receipt = {
@@ -35,7 +37,13 @@ test("a decision error cut at 64 KB with a held value across the cut, read back 
   } finally {
     await harness.close(ctx);
   }
-  const [row] = durableDecisions(file);
+  harness = await open();
+  let row;
+  try {
+    [row] = await readDecisions(harness, ctx);
+  } finally {
+    await harness.close(ctx);
+  }
   assert.equal(row.error, error);
   assert.equal(row.error_truncated, true, "the row keeps the receipt's mark");
   assert.equal(row.state_truncated, false);

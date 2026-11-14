@@ -360,6 +360,19 @@ test("the browser section names upload and downloads only for an agent offered t
   assert.match(some, /cannot be collected from the browser/);
 });
 
+test("the browser section tells the model the browser opens with its agent's saved profile only when it does", async (t) => {
+  const backend = new FakeBackend();
+  const section = async (options) => {
+    const { extension } = createBrowserExtension({ provider: () => backend.provider, driver: fakeDriver(backend), evidence: { file: async () => null }, workspace: () => scratchSync(t, "signin-section-"), ...options });
+    return extension.sections[0].render({ agent: { tools: [{ name: "snapshot" }, { name: "run" }] }, read: { snapshot: async () => undefined }, conversationId: 1 }, {});
+  };
+  const signedIn = await section({ signIns: true });
+  assert.match(signedIn, /This browser opens with this agent's saved browser profile/);
+  assert.match(signedIn, /not web_fetch: web_fetch reads every page signed out/);
+  assert.doesNotMatch(await section({}), /saved browser profile/, "none claimed without one");
+  assert.doesNotMatch(await section({ signIns: false }), /saved browser profile/);
+});
+
 test("the fixture's code step signs in only after the password step, never on a code alone", async (t) => {
   const site = await startSite();
   t.after(() => site.close());

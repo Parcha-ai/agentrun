@@ -38,10 +38,16 @@ export default function reply(context, faux) {
   return faux.signal && answer instanceof Promise ? Promise.race([answer, abortedOf(faux)]) : answer;
 }
 
+/** The report a format node writes ("Write the card report"): a table, then its Flagged and Grand total lines. */
+export const REPORT = "| Category | Count | Total |\n|---|---|---|\n| Office | 2 | 1663.10 |\n\nFlagged: Best Buy\nGrand total: $1663.10";
+
 function replyTo(context, faux) {
   const untilExists = (file) => untilExistsOr(file, faux.signal);
   const users = personOf(context).map(textOf);
-  const [first = "", last = ""] = [users[0], users.at(-1)];
+  // The run's first message as the person wrote it: the spend cap's note, placed in a request with one user message by
+  // appending it to that message, is the server's, never part of the words a pattern below reads. The last message keeps it
+  // (a reply that quotes the last text shows where the note went: cap-raise.test.mjs).
+  const [first = "", last = ""] = [(users[0] ?? "").replace(/\s*<system-reminder>[\s\S]*?<\/system-reminder>\s*$/, ""), users.at(-1)];
   const answered = context.messages.at(-1)?.role === "toolResult";
   // A workflow's model node: it delivers its record through `submit`, slowly when its input says so.
   const results = context.messages.filter((m) => m.role === "toolResult").length;
@@ -51,11 +57,17 @@ function replyTo(context, faux) {
   const read = first.includes("Read the example page");
   // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then its answer as the tool said it.
   const learned = /Use the learned workflow (\S+) on (.+?)\.$/.exec(first);
+  // "Reply with the learned workflow <name>'s output on <question>.": the run's learned_workflow, then its output as the
+  // tool gave it, and nothing else (a caller that keeps the answer as the workflow wrote it).
+  const verbatim = /Reply with the learned workflow (\S+)'s output on (.+?)\.$/.exec(first);
+  if (verbatim && !context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) && !context.tools?.some((tool) => tool.name === "submit")) {
+    return results === 0 ? faux.message(faux.toolCall("learned_workflow", { name: verbatim[1], input: { question: verbatim[2] } }), { stopReason: "toolUse" }) : faux.message(textOf(context.messages.at(-1)));
+  }
   if (learned && !context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) && !context.tools?.some((tool) => tool.name === "submit")) {
     return results === 0 ? faux.message(faux.toolCall("learned_workflow", { name: learned[1], input: { question: learned[2] } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
   }
   // A workflow's model node on pi-durable (its submit tool added by a system message), or in a session of its own (a
-  // learned workflow's: agentrun-pi's host runner, its tools in the context).
+  // learned workflow's: the host runner, workflow/host-session.ts, its tools in the context).
   if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) || context.tools?.some((tool) => tool.name === "submit")) {
     // A node that says whether anything it can reach holds a decision key (Jev's or Parallel's): this process's
     // environment (as its tools get it), the environment the kernel shows, the descriptor the server hands the keys on,
@@ -78,6 +90,14 @@ function replyTo(context, faux) {
     if (canary.includes("Submit the held key")) {
       if (answered) return faux.message("Submitted.");
       return faux.message(faux.toolCall("submit", { note: `kept ${CUT_KEY} here`, n: 7 }), { stopReason: "toolUse" });
+    }
+    // A node that writes a report in a fixed format (a learned workflow's last node, as a skill's format asks it).
+    if (canary.includes("Write the card report")) {
+      if (answered) return faux.message("Submitted.");
+      // In a session of its own, submit takes the DSL's envelope: the record under `value`.
+      const params = [...context.messages.flatMap((m) => m.toolsAdded ?? []), ...(context.tools ?? [])].find((tool) => tool.name === "submit")?.parameters;
+      const enveloped = Boolean(params?.properties?.value && Object.keys(params.properties).length === 1);
+      return faux.message(faux.toolCall("submit", enveloped ? { value: { report: REPORT } } : { report: REPORT }), { stopReason: "toolUse" });
     }
     // A node whose model request a provider refused (401), in pi-ai's words.
     if (canary.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
@@ -129,7 +149,7 @@ function replyTo(context, faux) {
     if ((browse || read) && results === 0) return faux.message(faux.toolCall(read ? "browser_read" : "snapshot", {}), { stopReason: "toolUse" });
     if ((browse || read) && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");
-    // In a session of its own (agentrun-pi's host runner), submit takes the DSL's envelope: the record under `value`.
+    // In a session of its own (the host runner, workflow/host-session.ts), submit takes the DSL's envelope: the record under `value`.
     const submitTool = [...context.messages.flatMap((m) => m.toolsAdded ?? []), ...(context.tools ?? [])].find((tool) => tool.name === "submit");
     const params = submitTool?.parameters;
     const enveloped = Boolean(params?.properties?.value && Object.keys(params.properties).length === 1 && params.required?.includes("value"));
@@ -175,6 +195,29 @@ function replyTo(context, faux) {
   if (record) {
     process.getBuiltinModule("node:fs").writeFileSync(record[1], first);
     return faux.message("Recorded.");
+  }
+  // Answers in words, then the given JSON as its last fenced json block: an agent's structured answer
+  // (agent-output-schema.test.mjs). Read off the message's first line; what a trigger appends after it is quoted back
+  // first, as "Handed: ...", so a test reads what the run was handed.
+  // With ", then on a retry with this json: <B>", a later message (the output contract's one retry, the server's) is
+  // answered with B, its words quoted as "Told: ..."; without it, every message gets the same JSON. "Answer in prose,
+  // then on a retry with this json: <B>" answers the first message with no json block at all.
+  const [line, ...rest] = first.split("\n");
+  const structured = /^Answer (?:with this json: (.+?)|in prose)(?:, then on a retry with this json: (.+))?$/.exec(line ?? "");
+  if (structured) {
+    const retry = users.length > 1 && structured[2] !== undefined;
+    const json = retry ? structured[2] : structured[1];
+    const told = users.length > 1 ? `\n\nTold: ${last}` : "";
+    return faux.message(`Here is the answer.${rest.join("\n").trim() ? `\n\nHanded: ${rest.join("\n").trim()}` : ""}${told}${json === undefined ? "" : `\n\n\`\`\`json\n${json}\n\`\`\``}`);
+  }
+  // Quotes what its system prompt says from "End your final answer" on (the output contract, agent-output-schema.test.mjs),
+  // else NO CONTRACT.
+  if (first === "Quote the output contract.") {
+    // pi carries the run's system sections as system messages too (as "Use the skill that fits:" reads them below).
+    const sectionText = (part) => (typeof part === "string" ? part : Array.isArray(part) ? part.map((p) => (typeof p?.text === "string" ? p.text : "")).join("") : "");
+    const system = [context.systemPrompt ?? "", ...context.messages.filter((m) => m.role === "system").flatMap((m) => [textOf(m), ...Object.values(m.sections ?? {}).map(sectionText)])].join("\n");
+    const at = system.indexOf("End your final answer");
+    return faux.message(at < 0 ? "NO CONTRACT" : system.slice(at));
   }
   // Answers with a console link and the key in a file, in a URL's query (answer-urls.test.mjs).
   const linked = /^Answer with the console link and the key in (\S+)$/.exec(first);
@@ -277,6 +320,14 @@ function replyTo(context, faux) {
     if (users.length === 2) return results === 0 ? faux.message([faux.text("Let me reread the report first."), faux.toolCall("read", { path: "report.md" })], { stopReason: "toolUse" }) : slow(faux, 60_000, "Reread it.");
     return faux.message("");
   }
+  // Holds its first answer until the first file exists, and the answer to the person's first message until the second
+  // does: a later message lands while that second turn works.
+  const twice = /Hold twice, until (\S+) and then (\S+)\./.exec(first);
+  if (twice) {
+    if (users.length === 1) return untilExists(twice[1]).then(() => faux.message("Answer 1."));
+    if (users.length === 2) return untilExists(twice[2]).then(() => faux.message("Answer 2."));
+    return faux.message("Answer 3.");
+  }
   // Holds its first answer until the file exists; the person's follow-up, placed at that answer's end with it, is
   // answered in a run of its own.
   const held = /Hold the answer until (\S+)\./.exec(first)?.[1];
@@ -312,6 +363,12 @@ function replyTo(context, faux) {
   // "Answer once <file> exists.": the test says when, by making the file.
   const once = /^Answer once (\S+) exists\.$/.exec(first);
   if (once && users.length === 1) return untilExists(once[1]).then(() => faux.message("Now."));
+  // "Hold the follow-up until <file>.": the first turn answers at once; a follow-up's turn waits for the file.
+  const followHeld = /^Hold the follow-up until (\S+)\.$/.exec(first);
+  if (followHeld) return users.length === 1 ? faux.message("First.") : untilExists(followHeld[1]).then(() => faux.message("Followed."));
+  // "Fail once <file> exists.": works until the test makes the file, then the provider refuses the request.
+  const failOnce = /^Fail once (\S+) exists\.$/.exec(first);
+  if (failOnce && users.length === 1) return untilExists(failOnce[1]).then(() => faux.message("", { stopReason: "error", errorMessage: "the provider refused the request" }));
   // A follow-up whose answer stops at its length (max output tokens): text, no tool call, stopReason "length".
   if (first.includes("Stop the follow-up at its length") && users.length > 1) return faux.message("The follow-up's answer, cut at its length", { stopReason: "length" });
   // A provider error long enough to be cut on its Timeline row, echoing the key it was sent across the summary's cut (its

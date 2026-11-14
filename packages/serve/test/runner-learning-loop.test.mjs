@@ -5,7 +5,6 @@
 // with a wake, the grade never asked again. The grader's prompt is the server's (learn/grade.ts gradePrompt), asked once
 // more on an answer it cannot read, as grade.ts did.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
@@ -18,25 +17,25 @@ const { gradePrompt } = await import("../dist/learn/grade.js");
 const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: retry twice\n---\nRetry a flaky fetch twice." };
 const PROPOSAL = { seed: "s1", notes: [NOTE], asked: ["please be careful with retries"] };
 const MAIN = { active: [], superseded: [], graded: { "old.md": "oid-1" } };
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", keep: true, why: "useful" }] });
-const DROP = JSON.stringify({ merge: false, reason: "Too vague to help.", items: [{ file: "retries.md", keep: false, why: "vague" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }] });
+const DROP = JSON.stringify({ merge: false, reason: "Too vague to help.", items: [{ file: "retries.md", decision: "drop", why: "vague" }] });
 const MERGED = { ok: true, main: "c0ffee", commit: "c0ffee", files: ["retries.md"] };
 
 /** A source run that ended keeping PROPOSAL, and its queued learning run, claimed by a runner. */
-async function setUp(t) {
+async function setUp(t, proposal = PROPOSAL) {
   const { store, clock } = await storeOn(t);
   await agentWithRevision(store);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   // The row as the end-of-run hook keeps it (runner/reflect-hook.ts): its state and words, the kept Proposal inside.
-  const kept = { state: "proposed", notes: ["Retries"], skills: [], workflows: [], proposal: PROPOSAL, detail: "Proposed 1 note." };
+  const kept = { state: "proposed", notes: ["Retries"], skills: [], workflows: [], proposal, detail: "Proposed 1 note." };
   await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: { answer: "…" }, proposal: kept } }, { table: "learning_run", row: { id: "learn-1" } }] });
   const claim = await store.claim("learn-1", "runner-a", { leaseMs: 60_000 });
   return { store, clock, claim };
 }
 
 /** The learning loop over the store, with fakes for the grader, the folder and its write; `calls` counts each. */
-function loopOn(store, clock, { answers = [KEEP], commit = async () => MERGED, readMain = async () => MAIN } = {}) {
+function loopOn(store, clock, { answers = [KEEP], commit = async () => MERGED, readMain = async () => MAIN, mainTexts = async () => ({}), merged = async () => undefined } = {}) {
   const calls = { ask: [], commit: [], flush: 0 };
   const queue = [...answers];
   const factory = createLearningLoop({
@@ -46,11 +45,17 @@ function loopOn(store, clock, { answers = [KEEP], commit = async () => MERGED, r
     readMain,
     ask: async (request, signal) => {
       calls.ask.push({ request, aborted: signal.aborted });
-      const answer = queue.shift();
+      // A function is the grade's request in flight: it runs with the request's signal, and gives the answer or throws.
+      const next = queue.shift();
+      const answer = typeof next === "function" ? await next(signal) : next;
       if (answer instanceof Error) throw answer;
       return { text: answer, usd: 0.01 };
     },
     commit: async (ws, change) => (calls.commit.push({ ws, change }), commit(ws, change)),
+    // A fake main that holds no note by any of these names.
+    mainTexts,
+    // A fake main that holds no merge of this run yet.
+    merged,
     now: () => clock.now,
   });
   const loop = factory({ journal: (claim) => store.journal(claim), flush: async () => (calls.flush++, store.flush()), signal: new AbortController().signal });
@@ -77,10 +82,8 @@ test("the grader's prompt and bounds are the server's: gradePrompt over the same
   const expected = gradePrompt({ run: "run-1", instructions: "Be brief.", active: [], superseded: [], proposed: [NOTE], asked: PROPOSAL.asked });
   assert.equal(calls.ask[0].request.prompt, expected);
   assert.equal(calls.ask[0].request.maxTokens, GRADE_MAX_TOKENS);
-  // The same figures the server's grade.ts used, while it is still in the tree.
-  const server = readFileSync(new URL("../src/grade.ts", import.meta.url), "utf8");
-  assert.match(server, new RegExp(`GRADE_TIMEOUT_MS = ${GRADE_TIMEOUT_MS.toLocaleString("en-US").replace(/,/g, "_")};`));
-  assert.match(server, new RegExp(`GRADE_MAX_TOKENS = ${GRADE_MAX_TOKENS.toLocaleString("en-US").replace(/,/g, "_")};`));
+  // The figures main's server grade used (its grade.ts, gone with E6): 180 s and 16,000 tokens.
+  assert.deepEqual([GRADE_TIMEOUT_MS, GRADE_MAX_TOKENS], [180_000, 16_000]);
 });
 
 test("an answer the grader's reader can't read is asked once more; two such answers drop it unread", async (t) => {
@@ -90,6 +93,47 @@ test("an answer the grader's reader can't read is asked once more; two such answ
   assert.equal(calls.ask.length, 2, "asked twice");
   assert.equal(calls.commit.length, 0, "nothing merged");
   assert.deepEqual(await kindsOf(store, claim), [KINDS.learningGraded, KINDS.learningDropped]);
+});
+
+/** A grade that contradicts itself: every item kept, and no merge, with a reason that says it can be kept (#2407). */
+const CONTRADICTS = JSON.stringify({ merge: false, reason: "It is general, so it can be kept.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }] });
+
+test("a grade that keeps every item and says no merge is asked once more, the contradiction named; the second answer is the one that counts", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  const { loop, calls } = loopOn(store, clock, { answers: [CONTRADICTS, KEEP] });
+  assert.deepEqual(await loop.start(claim), { state: "ended" });
+  assert.equal(calls.ask.length, 2, "asked once more");
+  const [first, again] = calls.ask.map((call) => call.request.prompt);
+  assert.ok(again.startsWith(first) && again.length > first.length, "the same grade asked again, with more said after it");
+  assert.match(again.slice(first.length), /"merge": false/);
+  assert.match(again.slice(first.length), /kept every item/);
+  assert.equal(calls.commit.length, 1, "the consistent answer merges");
+  assert.deepEqual(await kindsOf(store, claim), [KINDS.learningGraded, KINDS.learningMerged]);
+});
+
+test("two answers that contradict themselves drop the proposal in words that say so, never the grader's 'so it can be kept'", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  const { loop, calls } = loopOn(store, clock, { answers: [CONTRADICTS, CONTRADICTS] });
+  assert.deepEqual(await loop.start(claim), { state: "ended" });
+  assert.equal(calls.ask.length, 2, "asked twice, no more");
+  assert.equal(calls.commit.length, 0, "nothing merged");
+  const entries = await journalEntries(store.journal(claim), BACKGROUND_CONTEXT);
+  const dropped = entries.find((entry) => entry.kind === KINDS.learningDropped).data;
+  assert.equal(dropped.reason, "grader");
+  assert.match(dropped.detail, /^Not kept: .*contradicted itself/);
+  assert.doesNotMatch(dropped.detail, /can be kept/);
+});
+
+test("an unreadable answer, then one that contradicts itself, drops it as contradicted once, never 'twice' (the retry was for the unreadable one)", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  const { loop, calls } = loopOn(store, clock, { answers: ["not json", CONTRADICTS] });
+  assert.deepEqual(await loop.start(claim), { state: "ended" });
+  assert.equal(calls.ask.length, 2, "asked once more, for the unreadable answer");
+  assert.equal(calls.commit.length, 0, "nothing merged");
+  const entries = await journalEntries(store.journal(claim), BACKGROUND_CONTEXT);
+  const dropped = entries.find((entry) => entry.kind === KINDS.learningDropped).data;
+  assert.match(dropped.detail, /contradicted itself: it kept them and said not to/);
+  assert.doesNotMatch(dropped.detail, /twice/);
 });
 
 test("a verdict that keeps nothing is dropped with the grader's words, and nothing is written to the folder", async (t) => {
@@ -146,9 +190,67 @@ test("a stop row ends the learning run stopped, its row taken, with nothing merg
   await loop.stop({ kind: "command", commandId: stop.id });
   const end = await loop.start(claim);
   assert.equal(end.state, "stopped");
+  assert.equal(calls.ask.length, 0, "stopped before its grade: nothing is asked");
   assert.equal(calls.commit.length, 0, "nothing merged");
-  assert.equal((await store.runs.get("learn-1")).state, "stopped");
+  const row = await store.runs.get("learn-1");
+  assert.deepEqual([row.state, row.costUsd], ["stopped", 0], "nothing sent, nothing spent");
   assert.notEqual((await store.commands("learn-1", 0)).find((row) => row.id === stop.id).takenAt, null, "its row taken");
+});
+
+test("a stop row cuts the grade's request in flight at once: its signal aborts, the run ends stopped with its row taken, nothing merged", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  let loop;
+  const stop = await store.command("learn-1", { kind: "stop" });
+  const inFlight = async (signal) => {
+    // The request waits for an answer that never comes; only its signal ends it.
+    void loop.stop({ kind: "command", commandId: stop.id });
+    await new Promise((_, reject) => (signal.aborted ? reject(signal.reason) : signal.addEventListener("abort", () => reject(signal.reason), { once: true })));
+  };
+  const made = loopOn(store, clock, { answers: [inFlight] });
+  loop = made.loop;
+  assert.equal((await loop.start(claim)).state, "stopped");
+  assert.equal(made.calls.ask.length, 1);
+  assert.equal(made.calls.commit.length, 0, "nothing merged");
+  const row = await store.runs.get("learn-1");
+  assert.deepEqual([row.state, row.costUsd], ["stopped", null], "a cut request may have been billed: unknown, never 0");
+  assert.notEqual((await store.commands("learn-1", 0)).find((one) => one.id === stop.id).takenAt, null, "its row taken");
+});
+
+test("a learning run stopped after its grade booked keeps that grade's cost on its row, and /v2/usage's learning spend counts it", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  let loop;
+  const stop = await store.command("learn-1", { kind: "stop" });
+  // The stop lands while the grade's request is out, which answers anyway (booked before the cut could take).
+  const answered = async () => (void loop.stop({ kind: "command", commandId: stop.id }), KEEP);
+  const made = loopOn(store, clock, { answers: [answered] });
+  loop = made.loop;
+  const { calls } = made;
+  assert.equal((await loop.start(claim)).state, "stopped");
+  assert.equal(calls.ask.length, 1, "the grade was asked and booked before the stop was seen");
+  const row = await store.runs.get("learn-1");
+  assert.deepEqual([row.state, row.costUsd], ["stopped", 0.01], "the paid grade stays on the stopped run's row");
+  const { learningSpendOverStore } = await import("../dist/store-reads/learning.js");
+  assert.deepEqual((await learningSpendOverStore(store, { from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => [one.agent, one.cost]), [["agent-1", 0.01]], "what /v2/usage reads as learning's spend");
+  const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+  const [run] = (await agentCostOverStore(store, "agent-1")).runs;
+  assert.deepEqual([run.run_id, run.learning_usd], ["run-1", 0.01], "the cost per run books the stopped grade's cost to its run");
+});
+
+test("a learning run stopped while its grade request was cut keeps an unknown cost (null), and /v2/usage's learning spend says so", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  let loop;
+  const stop = await store.command("learn-1", { kind: "stop" });
+  // The stop lands while the grade's request is out, which fails cut.
+  const cut = async () => (void loop.stop({ kind: "command", commandId: stop.id }), new Error("the grade request was cut"));
+  loop = loopOn(store, clock, { answers: [cut] }).loop;
+  assert.equal((await loop.start(claim)).state, "stopped");
+  const row = await store.runs.get("learn-1");
+  assert.deepEqual([row.state, row.costUsd], ["stopped", null], "a cut request may have been billed: unknown, never 0");
+  const { learningSpendOverStore } = await import("../dist/store-reads/learning.js");
+  assert.deepEqual((await learningSpendOverStore(store, { from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => [one.agent, one.cost]), [["agent-1", null]]);
+  const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+  const [run] = (await agentCostOverStore(store, "agent-1")).runs;
+  assert.deepEqual([run.run_id, run.learning_usd, run.total_usd], ["run-1", null, null], "the cost per run says the stopped grade's cost is unknown, never 0");
 });
 
 test("a learning run whose source kept nothing ends with nothing graded", async (t) => {
@@ -160,4 +262,39 @@ test("a learning run whose source kept nothing ends with nothing graded", async 
   assert.deepEqual(await loop.start(claim), { state: "ended" });
   assert.equal(calls.ask.length, 0);
   assert.deepEqual(await kindsOf(store, claim), [KINDS.learningDropped]);
+});
+
+// LS-07: a kept proposal's `held` (the learning end's: a draft calling an unpriced MCP tool) holds that draft for its
+// owner's OK whatever the grade: its README is merged pending.
+test("a draft the proposal holds as unpriced is merged pending though the grader keeps it; without the hold it is merged active", async (t) => {
+  const FLOW = { file: "workflows/file-ticket/workflow.json", text: "{}" };
+  const README = { file: "workflows/file-ticket/README.md", text: "---\nname: file-ticket\ndescription: Files a ticket\n---\n" };
+  const keepAll = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }, { file: FLOW.file, decision: "keep", general: true, why: "a repeatable job" }] });
+  for (const [held, want] of [[{ [FLOW.file]: ["its step File the ticket calls create_issue on linear, which has no price here, so it runs outside the run's cost and cap"] }, [README.file]], [undefined, undefined]]) {
+    const { store, clock } = await storeOn(t);
+    await agentWithRevision(store);
+    await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+    const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+    const proposal = { ...PROPOSAL, files: [FLOW, README], ...(held ? { held } : {}) };
+    await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: { answer: "…" }, proposal: { state: "proposed", notes: ["Retries"], skills: [], workflows: ["file-ticket"], proposal, detail: "Proposed." } } }, { table: "learning_run", row: { id: "learn-1" } }] });
+    const claim = await store.claim("learn-1", "runner-a", { leaseMs: 60_000 });
+    const { loop, calls } = loopOn(store, clock, { answers: [keepAll] });
+    assert.deepEqual(await loop.start(claim), { state: "ended" });
+    assert.deepEqual(calls.commit[0].change.held, want, JSON.stringify(calls.commit[0].change));
+  }
+});
+
+// A draft held in code (LS-07: an MCP tool with no declared price) waits whatever the grade, and the grader is told so,
+// and why, under the draft: the learning run passes the proposal's `held` to the grade prompt (a main merge once dropped
+// it, and nothing caught it).
+test("a held draft's grade prompt says it waits for its owner's OK, and why", async (t) => {
+  const draft = "workflows/answer/workflow.json";
+  const files = [{ file: draft, text: JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } }) }, { file: "workflows/answer/README.md", text: "---\nname: answer\ndescription: Answers a question\n---\n" }];
+  const why = "its step lookup calls the MCP tool billing.charge, which declares no price";
+  const { store, clock, claim } = await setUp(t, { ...PROPOSAL, files, held: { [draft]: [why] } });
+  const { loop, calls } = loopOn(store, clock, { answers: [JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }, { file: draft, decision: "keep", general: true, why: "useful" }] })] });
+  await loop.start(claim);
+  const prompt = calls.ask[0].request.prompt;
+  assert.match(prompt, /It waits for its owner's OK whatever you decide, for the reason below/, prompt.slice(-1500));
+  assert.ok(prompt.includes(why), "the hold's reason, under the draft");
 });

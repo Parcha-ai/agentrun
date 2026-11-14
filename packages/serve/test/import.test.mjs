@@ -12,8 +12,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
-import { startServe } from "../dist/index.js";
+import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
 import { agentIdOf, importCommand, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
 import { summaryLines } from "../dist/import-summary.js";
@@ -23,7 +22,7 @@ import { runEntries } from "../dist/store-reads/journal.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, client, FAUX, scratch, triggerStore } from "./support.mjs";
+import { agent, client, FAUX, scratch, startServe, triggerStore } from "./support.mjs";
 
 /** The server's store on a data directory: role "server" to import into, role "runner" to read what an import wrote. */
 const openData = (data, role = "server") => openSqliteStore({ dataDir: data, role });
@@ -532,7 +531,7 @@ test("this server's own secrets, pasted into sessions, are cut out of what the i
   let open = true;
   t.after(() => open && server.close());
   const api = client(server.baseUrl, server.token);
-  const set = await api("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" });
+  const set = await api("PUT", "/settings/webhook", { url: "https://hooks.example/hook" });
   assert.equal(set.status, 201, JSON.stringify(set.body));
   await server.close();
   open = false;
@@ -619,7 +618,7 @@ test("an import handed no seal key, or another one, over a server's store refuse
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   let open = true;
   t.after(() => open && server.close());
-  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
+  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "https://hooks.example/hook" })).status, 201);
   await server.close();
   open = false;
   const at = join(root, "home");
@@ -662,7 +661,7 @@ test("what an import says on stderr goes through the cut its other lines do: a d
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   let open = true;
   t.after(() => open && server.close());
-  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
+  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "https://hooks.example/hook" })).status, 201);
   await server.close();
   open = false;
   const at = join(root, "home");
@@ -912,7 +911,7 @@ test("what the CLI prints is cut with the saved tool keys too: a skipped file na
 test("the README says what an import removes and what it leaves", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
   assert.ok(readme.includes("Known key formats are removed. Other secrets in your session history, like passwords in config files, are imported as they are."));
-  assert.ok(readme.includes("So are a key-shaped value this server did not make (a `whsec_` secret from another service) and a run's own door token."));
+  assert.ok(readme.includes("So is a key-shaped value this server did not make (a `whsec_` secret from another service)."));
 });
 
 test("a key of the environment's that holds a slash, across a skill's folders, leaves no part of itself in what the import keeps, and the skill stays one skill", async (t) => {
@@ -1002,19 +1001,21 @@ const cliImport = (h, data, env) => {
   return ran;
 };
 
-// SKIP (follow-up #2078): the store now opens Postgres from AGENTRUN_STORE_URL, so the value the test plants for it as a launcher secret is refused at start
-test.skip("the CLI's import cuts every one of the server's own keys, whatever its name: each launcher secret, its own value, is nowhere in what it keeps", async (t) => {
+test("the CLI's import cuts every one of the server's own keys, whatever its name: each launcher secret, its own value, is nowhere in what it keeps", async (t) => {
   // The list holds names no key pattern matches (the seal key's among them): each one's value is cut all the same.
   assert.ok(SERVER_KEYS.includes("AGENTRUN_SEAL_KEY") && SERVER_KEYS.includes("OPENAI_API_KEY") && SERVER_KEYS.some((name) => !/(_API_KEY|_TOKEN)$|SECRET/i.test(name)), SERVER_KEYS.join(" "));
+  // Every one but the store's URL, which the import opens its store from (a value that is no store is refused at start):
+  // its password's custody is secret-custody.test.mjs's.
+  const planted = SERVER_KEYS.filter((name) => name !== "AGENTRUN_STORE_URL");
   const root = await scratch(t);
   const h = home(root);
-  const values = SERVER_KEYS.map(canaryOf);
+  const values = planted.map(canaryOf);
   appendFileSync(join(h.site, "CLAUDE.md"), `Keys: ${values.join(" ")}\n`);
   claudeSession(h.at, h.site, 14, { prompt: "Print the environment.", output: values.join(" ") });
   const data = join(root, "agents");
-  cliImport(h, data, Object.fromEntries(SERVER_KEYS.map((name) => [name, canaryOf(name)])));
+  cliImport(h, data, Object.fromEntries(planted.map((name) => [name, canaryOf(name)])));
   const kept = keptUnder(data);
-  const found = SERVER_KEYS.filter((name) => kept.some(([path, bytes]) => bytes.includes(canaryOf(name)) || path.includes(canaryOf(name))));
+  const found = planted.filter((name) => kept.some(([path, bytes]) => bytes.includes(canaryOf(name)) || path.includes(canaryOf(name))));
   assert.deepEqual(found, [], "no server key's value is in what the import kept");
   assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "their places are marked");
 });
@@ -1279,7 +1280,7 @@ test("a Claude Code API error is a request that failed, at its 0 tokens, never u
   assert.deepEqual([two.metrics.requests, two.metrics.unmetered], [2, 0]);
   assert.deepEqual(two.kinds, ["pi.user", "pi.assistant", "pi.tool-result", "pi.assistant", "pi.user", "pi.user"]);
   const rows = async (id) => timelineOf(await entriesOf(store, id), { settled: true });
-  assert.ok((await rows(failed.id)).some((r) => r.kind === "error" && r.summary === "Model request failed: API Error: overloaded"));
+  assert.ok((await rows(failed.id)).some((r) => r.kind === "error" && r.summary === "Model request failed: API Error: overloaded (its cost is unknown: the provider sent no price and may still bill it)"));
   assert.equal((await rows(interrupted.id)).findLast((r) => r.kind === "user_message").summary, "Claude Code: No response requested.");
   assert.equal((await readSession(noted, "claude-code")).users, 2, "the note is not the person's");
 });
@@ -1308,14 +1309,14 @@ async function listPrice(provider, id, { input = 0, output = 0, cacheRead = 0, c
 
 test("a run its source did not price gets the catalog's estimate at its own provider's price, its cost still unknown; an unlisted model, a provider the catalog does not list for it, or a request of unknown tokens leaves it unknown, a source's cost is kept with none, and a provider's $0 is $0", async (t) => {
   const { store, runs } = await importedOne(t, (home, project) => {
-    codexSession(home, project, 51, { model: "gpt-5.5" });
+    codexSession(home, project, 51, { model: "gpt-6.1-sol" });
     codexSession(home, project, 52);
-    codexSession(home, project, 53, { model: "gpt-5.5", usage: "none" });
+    codexSession(home, project, 53, { model: "gpt-6.1-sol", usage: "none" });
     claudeSession(home, project, 54, { unknownCost: true });
     claudeSession(home, project, 55);
     piSession(home, project, 56, { provider: "google", modelId: "gemma-4-26b-a4b-it", costs: [null, null] });
-    // A provider of its own: the catalog lists gpt-5.5, but not as this provider serves it.
-    codexSession(home, project, 57, { model: "gpt-5.5", provider: "router" });
+    // A provider of its own: the catalog lists gpt-6.1-sol, but not as this provider serves it.
+    codexSession(home, project, 57, { model: "gpt-6.1-sol", provider: "router" });
     // Free from this provider, though others list it paid: its own price, never another's.
     piSession(home, project, 58, { provider: "qwen-token-plan", modelId: "deepseek-v4-pro", costs: [null, null] });
   });
@@ -1324,7 +1325,7 @@ test("a run its source did not price gets the catalog's estimate at its own prov
     const { costUsdEst, costBasis } = await storedMetrics(store, run.id);
     priced.push([run.importedFrom.source, run.costUsd ?? null, costUsdEst ?? null, costBasis ?? null]);
   }
-  const codex = await listPrice("openai", "gpt-5.5", { input: 300 + 100, cacheRead: 600 + 900, output: 40 + 25 });
+  const codex = await listPrice("openai", "gpt-6.1-sol", { input: 300 + 100, cacheRead: 600 + 900, output: 40 + 25 });
   const claude = await listPrice("anthropic", "claude-sonnet-5", { input: 3 + 5, cacheRead: 1000 + 1300, cacheWrite: 200 + 100, output: 50 + 30 });
   assert.ok(codex > 0 && claude > 0);
   assert.deepEqual(priced, [

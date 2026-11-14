@@ -6,6 +6,7 @@ import { browserCases } from "./browser.js";
 import { driftCases } from "./drift.js";
 import { execCases } from "./exec.js";
 import { filesCases } from "./files.js";
+import { gpuCases } from "./gpu.js";
 import { healthCases } from "./health.js";
 import { inputCases } from "./input.js";
 import { isolationCases } from "./isolation.js";
@@ -15,6 +16,7 @@ import { processCases } from "./process.js";
 import { providerCases } from "./provider.js";
 import { screenCases } from "./screen.js";
 import { touchCases } from "./touch.js";
+import { uiCases } from "./ui.js";
 
 export { browserCases, browserOnlyCases } from "./browser.js";
 
@@ -31,7 +33,9 @@ export const conformanceCases: Case[] = [
 	...inputCases,
 	...touchCases,
 	...appsCases,
+	...uiCases,
 	...lifetimeCases,
+	...gpuCases,
 ];
 
 /**

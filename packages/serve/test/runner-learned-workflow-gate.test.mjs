@@ -67,7 +67,7 @@ async function codexSpec(t, { toolSettings }) {
   });
   const sha = await landWorkflows(dir, AGENT, FLOWS);
   await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "codex", tools: GRANTED, learning: true, toolSettings } });
-  const launch = { input: { content: "Fetch it." }, title: "t", place: { mode: "runner" }, harness: "codex", model: { provider: "openai", modelId: "gpt-5" }, learning: startAt(sha) };
+  const launch = { input: { content: "Fetch it." }, title: "t", place: { mode: "runner" }, harness: "codex", model: { provider: "openai", modelId: "gpt-6.1-sol" }, learning: startAt(sha) };
   await server.runs.create({ id: "run-1", agentId: AGENT, revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   await linkHarnesses(dir);

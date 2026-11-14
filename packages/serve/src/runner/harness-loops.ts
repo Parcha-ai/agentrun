@@ -7,17 +7,28 @@
 //   - pi runs on the kernel's adapter loop with the run's pi spec (adapterRunSpecFromLaunch);
 //   - a CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter;
 //   - anything else fails the run in words (the dispatch's UnknownHarness).
+import { hostMemory, neverFits } from "../host.js";
 import type { RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
-import { savedModelKeys, withModelKeys } from "./claim-secrets.js";
+import { hostDecisionKeys, savedModelKeys, withModelKeys } from "./claim-secrets.js";
+import { decisionProvidersIn, DEFAULT_DECISION_PROVIDER, FAUX_JEV_ENV } from "../decisions.js";
+import { FAUX_ENV } from "../model.js";
+import { generalThresholdOf } from "../learn/general.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
-import { gradeModelFor, gradeRouteOf, learningLoopOf } from "./learning-dispatch.js";
-import type { LoopFactory } from "./loop-contract.js";
+import { gradeModelFor, type GradeRouteAsk, gradeRouteOf, learningLoopOf } from "./learning-dispatch.js";
+import type { GraderRoute } from "./learning-ask.js";
+import { ClaimRefused, type LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
+
+/** A claimed run whose harness this host's memory never holds: its message is the host's words (neverFits). A claim
+ *  refused for good, so a parked run it wakes fails too, never retried as a resume (runner.ts finish). */
+export class NeverFits extends ClaimRefused {
+  override name = "NeverFits";
+}
 
 /** The dispatch's `resolve`, built from the runner's deps: it reads the run's revision (for a workflow revision) and
  *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words). */
@@ -50,9 +61,20 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
         routeOf: async (grade) => {
           const base = deps.env ?? process.env;
           const env = withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base }));
-          return gradeRouteOf(gradeModelFor(grade), env, (model) => deps.routeOf(model, env, "default", PI_WIRES));
+          return gradeRouteFor(grade, env, deps.routeOf);
         },
         ...(deps.log ? { log: deps.log } : {}),
+        ...(deps.gradeBound ? { gradeBound: deps.gradeBound } : {}),
+        // The generality pre-check (learn/general.ts) on this host's Jev, built as a learning end builds its check's
+        // decision providers (hostDecisionKeys: the runner's environment first, then the key saved in Settings), on the
+        // client and model a workflow's decision node gets when it names none. No Jev key: none asked. A faux host asks only
+        // its faux Jev (FAUX_JEV_ENV), as its grade goes only to the faux route: a key it inherited never sends a note out.
+        jev: async () => {
+          const env = deps.env ?? process.env;
+          if (env[FAUX_ENV] && !env[FAUX_JEV_ENV]) return undefined;
+          return (await decisionProvidersIn({ ...env, ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, [DEFAULT_DECISION_PROVIDER])) }))?.providers[DEFAULT_DECISION_PROVIDER];
+        },
+        generalThreshold: generalThresholdOf(deps.env ?? process.env),
       });
     }
     // The harness's own entry decides which spec builds the run, by the entry's facts and never the harness's name: an entry
@@ -60,6 +82,12 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     // runs the pi spec (adapterRunSpecFromLaunch). A harness with no entry is unknown here: the dispatch fails it in words.
     const runner = resolveHarness(harness);
     if (runner) {
+      // A run this host's memory never holds (host.ts neverFits: one run of its harness is more than the host has for runs)
+      // fails at its claim, in the words a start of it is refused in here (harness.ts harnessOffers): a run another host
+      // started, or one left before this host's memory shrank. Claimed alone (runner.ts claimByMemory), it would run past
+      // the host's memory and its OOM kill would take every run on it.
+      const tooBig = neverFits(harness, hostMemory());
+      if (tooBig) throw new NeverFits(tooBig);
       // A run that learns supplies its own end-of-run step (reflect + proposal over its store) from its spec builder now,
       // where the run's Archil claim is: a Mode 2 run's learning folder is on its claim's disk, not this machine's local
       // path (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The loop prefers the spec's step over its deps' (stepOf); a
@@ -67,14 +95,27 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       return createAdapterLoop((claim, adapterRun) =>
         runner.record === "loop"
           ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
-          : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim));
+          : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim), deps.modelRetry ?? {});
     }
     return undefined;
   };
 }
 
+/** The route a grade asks for (gradeModelFor: the grade model the server named, else the agent's own), from the runner's
+ *  one route (`routeOf`), through gradeRouteOf. A grade model the server named (--grade-model, else AGENT_MODEL_STRONG)
+ *  is the strong tier's: it goes with that tier's settings, sent whole as AGENT_MODEL_STRONG is (never cut to its bare id
+ *  by AGENT_MODEL_GATEWAY_IDS) and priced at AGENT_MODEL_STRONG_PRICE. The agent's own model goes as its runs' does, on
+ *  the default tier. */
+export function gradeRouteFor(grade: GradeRouteAsk, env: NodeJS.ProcessEnv, routeOf: AdapterSpecDeps["routeOf"]): Promise<GraderRoute> {
+  return gradeRouteOf(gradeModelFor(grade), env, (model) => (grade.model !== undefined && model === grade.model
+    // The runner's environment under the grader as its strong model: every key it holds read through it, a non-enumerable
+    // one (a launcher-held or Settings key) too, which a copy would drop.
+    ? routeOf(undefined, Object.create(env, { AGENT_MODEL_STRONG: { value: model, enumerable: true } }) as NodeJS.ProcessEnv, "strong", PI_WIRES)
+    : routeOf(model, env, "default", PI_WIRES)));
+}
+
 /** The loop factory the runner holds for every run (its createLoop), built from the runner's deps over the one store: the
- *  dispatch (dispatch.ts) reads each run's launch and asks the switch (resolveRunnerLoop) for its harness loop. The server
+ *  dispatch (dispatch.ts) reads each run's launch and asks resolveRunnerLoop for its harness loop. The server
  *  start and the test server pass this to startRunner. */
 export function dispatchRunner(deps: AdapterSpecDeps): LoopFactory {
   return createDispatchLoop({

@@ -29,7 +29,7 @@ export function fakeLiveViewersStore({ start = 1_000 } = {}) {
     async put(claim, v) {
       received.push({ claim, v });
       if (!leaseHolds(claim)) return false;
-      ofRun(claim.runId).set(keyOf(v.kind, v.tag), { kind: v.kind, tag: v.tag, port: v.port, id: v.id, sealed: v.sealed, at: now, runner: claim.runner, epoch: claim.epoch });
+      ofRun(claim.runId).set(keyOf(v.kind, v.tag), { kind: v.kind, tag: v.tag, ...(v.host ? { host: v.host } : {}), port: v.port, id: v.id, sealed: v.sealed, at: now, runner: claim.runner, epoch: claim.epoch });
       return true;
     },
     async drop(claim, kind, tag) {

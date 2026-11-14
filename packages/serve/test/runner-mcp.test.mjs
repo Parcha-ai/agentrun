@@ -16,7 +16,7 @@ import { rootEntries, SONNET, specCap } from "./adapter-pi-cap-support.mjs";
 
 /** A tool as the registry keeps it: as its server listed it (input_schema). */
 const listed = ({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema });
-const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index.js");
+const { openSqliteStore, openRunMcpAuth, sealMcpCredential, sealRunMcpAuth } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
@@ -25,11 +25,12 @@ const { deniedText } = await import("../dist/runner/loop-contract.js");
 const { deniedText: setToDenyText } = await import("../dist/refusal-words.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { META_REASON } = await import("../dist/mcp-meta.js");
-const { TOOL_COST, TOOL_UNMETERED } = await import("@parcha/pi-durable-agent/timeline");
+const { TOOL_COST, TOOL_UNMETERED } = await import("../dist/timeline/index.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
+const { UNUSABLE } = await import("../dist/mcp-probe.js");
 
 test.after(() => closeOpenSessions());
 
@@ -56,13 +57,13 @@ const lastResult = (sent) => {
  * `script` with the run's MCP (`grants`), its gate the tool gate's permissions over `settings` (an mcp: tool asks by
  * default). Runs until the run is not running, or `until(row)` says so.
  */
-async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, onCommand, network, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, timing = STEADY, opened = [], serverNow }) {
+async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, onCommand, network, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, launchSealed, held, timing = STEADY, opened = [], serverNow, inspect, beforeIntent = async () => {} }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-"));
   // `serverNow`: the test's own handle on the store reads its clock (a claim taken over when it is moved past the lease);
   // the runner's handle keeps the wall clock.
   const server = await openSqliteStore({ dataDir: dir, role: "server", ...(serverNow ? { now: serverNow } : {}) });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
-  const fake = await startFakeMcp({ token: fakeToken });
+  const fake = await startFakeMcp({ token: fakeToken, ...(inspect ? { inspect } : {}) });
   let runner;
   t.after(async () => {
     await runner?.close();
@@ -71,19 +72,20 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.mcp.put({ name: "fake", url: fake.url, auth, tools: tools.map(listed), ...(prices ? { prices } : {}), sealed: auth === "github_app" ? null : seal(fake.url) });
+  await server.mcp.put({ name: "fake", url: fake.url, auth, tools: tools.map(listed), ...(prices ? { prices } : {}), sealed: auth === "github_app" || auth === "per_run" ? null : seal(fake.url) });
   await server.agents.create({ id: "agent-1", name: "Mcp" }, { id: "rev-1", kind: "agentic", body: {} });
-  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  // `launchSealed(url)`: the run's launch row, its sealed column what the server's start writes for a run's mcp_auth.
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, ...(launchSealed ? [{ body: { input: { content: "go" }, title: "go", place: { mode: "runner" } }, sealed: launchSealed(fake.url) }] : []));
   await before?.({ server, store, fake });
   const sent = [];
   const origin = scriptedOrigin(script, sent);
-  const base = piAdapterSpec({ script, tools: hostTools, hooks: { beforeIntent: async () => {}, beforeResult: async () => {} } }, { fetch: events ? (...args) => (events.push("request"), origin(...args)) : origin });
+  const base = piAdapterSpec({ script, tools: hostTools, hooks: { beforeIntent, beforeResult: async () => {} } }, { fetch: events ? (...args) => (events.push("request"), origin(...args)) : origin });
   // `events`: each model request, in order with whatever else the test pushes there.
   const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-work-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const loop = createAdapterLoop(async (claim, run) => {
     // As a spec builder does: the claim's MCP first (mcpForClaim), before anything the spec would have to let go.
-    const mcp = await mcpForClaim({ claim, store: { mcp: store.mcp, runs: store.runs, settings: store.settings, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(network ? { network } : {}), ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
+    const mcp = await mcpForClaim({ loopback: true, claim, store: { mcp: store.mcp, runs: store.runs, settings: store.settings, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(held ? { hold: (values) => held.push(...values) } : {}), ...(network ? { network } : {}), ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
     if (mcp) opened.push(mcp);
     return {
       ...(await base(claim, run)),
@@ -269,11 +271,17 @@ test("R8: a server whose URL changed since the run was pinned refuses each call 
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(lastResult(run.sent), "The MCP server fake's address changed since this run started; nothing was sent. Start a new run to use it at its new address.");
   assert.equal(toolCalls(run.fake).length + toolCalls(moved).length, 0, "nothing sent to either address");
+  // Not even a connection's handshake: no initialize or server/discover (nor any other request) reached either address.
+  const handshakes = (log) => log.filter((entry) => entry.method === "initialize" || entry.method === "server/discover").length;
+  assert.deepEqual([handshakes(run.fake.log), handshakes(moved.log)], [0, 0], "no initialize or server/discover to either address");
+  assert.deepEqual([run.fake.log.length, moved.log.length], [0, 0], "no request of any kind to either address");
 });
 
 test("R9: a priced MCP call the run's cap has no room for is refused unsent and parks the run on a raise", async (t) => {
   const script = [{ call: "mcp__fake__paid", args: { query: "q" } }, { sayLastResult: true }];
-  const { row, sent, fake, server } = await mcpRun(t, { script, grants: ["mcp:fake/paid"], settings: { "mcp:fake/paid": { permission: "allow" } }, prices: { paid: 0.5 }, capUsd: 0.1 });
+  const { row, sent, fake, server } = await mcpRun(t, { script, grants: ["mcp:fake/paid"], settings: { "mcp:fake/paid": { permission: "allow" } }, prices: { paid: 0.5 }, capUsd: 0.3 });
+  // A cap with room to answer (its wrap-up reserve, a step and an answer of a request with the run's tools listed) and none
+  // for the call's price.
   assert.equal(row.state, "parked", JSON.stringify(row));
   assert.equal(toolCalls(fake).length, 0, "nothing sent");
   // The model's next request is refused with the call's refusal (the turn ends on it), so the provider never reads the
@@ -301,6 +309,43 @@ test("R10: a priced MCP call with room is sent once, held at its price and booke
   // Booked once: on the one ledger, never again by the gateway's own marks on the run's root.
   assert.equal(entries.filter((entry) => entry.kind === "runner.request" && entry.data.model === "paid:mcp:fake/paid").length, 1, "one hold");
   assert.deepEqual(await entriesOf(server, TOOL_COST), [], "no second booking on the run's root");
+});
+
+// The money fence on the runner's path: a priced MCP call, not replay-safe, has its intent made durable (side-effects.ts,
+// the flush before a call that is not replay-safe) and then its hold (the run's ledger, the flush before a paid request
+// leaves) before it reaches its server. So a box lost once the server has it neither runs it again (its intent is on
+// disk: the next claim ends it interrupted) nor loses its charge (its hold is on disk: the next claim counts it). Read
+// from the order on a real store and runner: the moment its intent is about to be written, each flush of the runner's
+// store (noting whether the call's hold was already committed when it began), and the moment the fake server receives it.
+test("R10b: a priced MCP call reaches its server only after a flush of its intent and then a flush of its hold", async (t) => {
+  const script = [{ call: "mcp__fake__paid", args: { query: "q" } }, { sayLastResult: true }];
+  const events = [];
+  let fake;
+  let server;
+  const held = async () => (await journalOf(server)).some((entry) => entry.kind === "runner.request" && entry.data.model === "paid:mcp:fake/paid");
+  const before = async (world) => {
+    ({ fake, server } = world);
+    const flush = world.store.flush.bind(world.store);
+    world.store.flush = async () => {
+      const withHold = await held();
+      await flush();
+      events.push(withHold ? "flushed with the hold" : "flushed");
+    };
+  };
+  // Called as the fake logs a request, before it answers: the call has left the runner.
+  const inspect = () => {
+    const last = fake.log.at(-1);
+    if (last?.method === "tools/call" && last.tool === "paid") events.push("sent");
+  };
+  const beforeIntent = async (call) => void (call.tool === "mcp:fake/paid" && events.push("intent"));
+  const { row } = await mcpRun(t, { script, grants: ["mcp:fake/paid"], settings: { "mcp:fake/paid": { permission: "allow" } }, prices: { paid: 0.5 }, capUsd: 5, before, inspect, beforeIntent });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const sent = events.indexOf("sent");
+  assert.ok(sent > 0, `the call reached its server once: ${JSON.stringify(events)}`);
+  assert.equal(events.filter((event) => event === "sent").length, 1, `once: ${JSON.stringify(events)}`);
+  const between = events.slice(events.indexOf("intent") + 1, sent);
+  assert.ok(events.indexOf("intent") >= 0 && events.indexOf("intent") < sent, `its intent came first: ${JSON.stringify(events)}`);
+  assert.deepEqual(between, ["flushed", "flushed with the hold"], `between its intent and its send: its intent's flush, then its hold's: ${JSON.stringify(events)}`);
 });
 
 /** An OAuth sign-in's token set, its authorization server at auth.example.com, its access token ending at `expires`. */
@@ -335,7 +380,7 @@ test("R11: a command row handed to a running loop makes its MCP credentials fres
   const hostTools = { wait: { name: "wait", replaySafe: false, run: async () => (events.push("tool"), toolRuns(), await waiting, "waited") } };
   const script = [{ call: "wait", args: {} }, { say: "done" }];
   const running = mcpRun(t, {
-    script, grants: ["mcp:fake/add"], hostTools, events, network, auth: "oauth",
+    script, grants: ["mcp:fake/add"], hostTools, settings: { wait: { permission: "allow" } }, events, network, auth: "oauth",
     seal: (url) => sealedOAuth(url, oauthSet(`not-a-secret-${"valid-access"}`, Date.now() + 3_600_000)),
     onCommand: (command) => command.kind === "steer" && steerTaken(),
     before: async (opened) => void ((server = opened.server), (fakeUrl = opened.fake.url)),
@@ -440,4 +485,65 @@ test("R15: a github_app server on a server with no GitHub App refuses the call u
   assert.equal(run.row.state, "ended", JSON.stringify(run.row));
   assert.equal(lastResult(run.sent), `The MCP server fake's credential can't be used right now: ${GITHUB_UNUSABLE.noAccess}.`);
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
+});
+
+/** A run's mcp_auth for the "fake" server as the server's start seals it into run-1's launch: `token` as its bearer, bound
+ *  to the origin of the server's url then. */
+const handed = (token) => (url) => sealRunMcpAuth(KEY, "run-1", { fake: { headers: { authorization: `Bearer ${token}` }, origin: new URL(url).origin } });
+const RUN_TOKEN = `not-a-secret-${"per-run-bearer-for-the-scan"}`;
+
+test("R16: a per_run server is called with the credential the run was handed, which is in no store file or log line, and the run's end erases it from its launch", async (t) => {
+  const lines = captureLines(t);
+  const script = [{ call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "per_run", fakeToken: RUN_TOKEN, launchSealed: handed(RUN_TOKEN) });
+  assert.equal(run.row.state, "ended", JSON.stringify(run.row));
+  assert.equal(lastResult(run.sent), "5");
+  assert.equal(toolCalls(run.fake, "add")[0]?.authorization, true, "sent with the run's credential");
+  assert.equal((await run.server.runs.launch("run-1")).sealed, null, "erased by the write that ended the run");
+  await assertNowhere(RUN_TOKEN, run, lines);
+});
+
+test("R17: a per_run server's call in a run handed no credential for it is refused unsent, in UNUSABLE.perRunMissing's words", async (t) => {
+  const script = [{ call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "per_run", fakeToken: RUN_TOKEN, launchSealed: (url) => sealRunMcpAuth(KEY, "run-1", { other: { headers: { authorization: "Bearer x" }, origin: new URL(url).origin } }) });
+  assert.equal(run.row.state, "ended", JSON.stringify(run.row));
+  assert.equal(lastResult(run.sent), `The MCP server fake's credential can't be used right now: ${UNUSABLE.perRunMissing}.`);
+  assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
+});
+
+test("R18: a message's new credential (the steer's launchSealed) reaches a running loop before its next call, and the old one is never sent again", async (t) => {
+  const NEXT = `not-a-secret-${"per-run-second-bearer"}`;
+  // The server takes one credential at a time: the first until the message lands, then only the one it hands.
+  let current = RUN_TOKEN;
+  let release;
+  const waiting = new Promise((resolve) => (release = resolve));
+  let toolRuns;
+  const toolRan = new Promise((resolve) => (toolRuns = resolve));
+  let steerTaken;
+  const taken = new Promise((resolve) => (steerTaken = resolve));
+  let server;
+  let fakeUrl;
+  const hostTools = { wait: { name: "wait", replaySafe: false, run: async () => (toolRuns(), await waiting, "waited") } };
+  const script = [{ call: "mcp__fake__add", args: { a: 1, b: 1 } }, { call: "wait", args: {} }, { call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
+  // What the claim hands the run's redactors: a token handed mid-run must join them before a call carries it.
+  const held = [];
+  const running = mcpRun(t, {
+    held,
+    script, grants: ["mcp:fake/add"], hostTools, settings: { "mcp:fake/add": { permission: "allow" }, wait: { permission: "allow" } }, auth: "per_run",
+    fakeToken: (authorization) => authorization === `Bearer ${current}`, launchSealed: handed(RUN_TOKEN),
+    onCommand: (command) => command.kind === "steer" && steerTaken(),
+    before: async (opened) => void ((server = opened.server), (fakeUrl = opened.fake.url)),
+  });
+  await toolRan;
+  // The caller's message, with a credential minted again: written with its steer, in one write.
+  await server.command("run-1", { kind: "steer", body: { text: "go on" } }, { launchSealed: handed(NEXT)(fakeUrl) });
+  current = NEXT;
+  await taken;
+  release();
+  const { row, sent, fake } = await running;
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.equal(lastResult(sent), "5", "the call after the message went with the new credential");
+  assert.equal(toolCalls(fake, "add").length, 2);
+  assert.deepEqual(openRunMcpAuth(KEY, "run-1", (await server.runs.launch("run-1")).sealed), {}, "erased at the run's end");
+  for (const value of [RUN_TOKEN, NEXT, `Bearer ${NEXT}`]) assert.ok(held.includes(value), "each handed credential, bare and as its header, joined the run's redactors");
 });

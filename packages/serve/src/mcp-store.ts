@@ -1,12 +1,11 @@
 // The MCP registry and OAuth sign-ins in flight, in the one store (store.mcp, store.mcpOauth), sealed with the store's one
 // rule (store/seal.ts): the registry row's credential under AAD mcp_servers|<name>|sealed with the url
 // origin inside the plaintext, and a pending sign-in's secret parts (the PKCE verifier and the OAuth client, with its
-// secret) under AAD mcp_oauth_pending|<state>|sealed. The
-// store-backed replacement for mcp-servers.ts's file store and mcp-oauth.ts's in-memory pending map; the cut wires these
-// into McpServers / McpSignIns, which keep their SDK tool-probe, validation and sign-in flow. The store never opens a
-// credential; only this process (and a runner) does, with the seal key.
+// secret) under AAD mcp_oauth_pending|<state>|sealed. McpServersOverStore (mcp-servers-store.ts) and McpSignIns
+// (mcp-oauth.ts) keep the SDK tool-probe, validation and sign-in flow over these. The store never opens a credential;
+// only this process (and a runner) does, with the seal key.
 import {
-  type Mcp, type McpCredential, type McpCredentialMark, type McpOauth, type McpServerRow, type McpServerWrite, openMcpCredential, type OpenedMcpCredential,
+  type Mcp, type McpCredential, type McpCredentialMark, type McpOauth, type McpRemoved, type McpServerRow, type McpServerWrite, openMcpCredential, type OpenedMcpCredential,
   sealColumn, sealedAt, sealMcpCredential, unsealColumn,
 } from "./store/index.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
@@ -94,27 +93,62 @@ export async function rewriteMcpServer(
   }, seen);
 }
 
-/** The server's row goes. */
-export async function removeMcpServer(store: { mcp: Pick<Mcp, "remove"> }, name: string): Promise<void> {
-  await store.mcp.remove(name);
+/** The server's row goes; what it held as it went (its address, its credential opened, as openServerCredential does), or
+ *  undefined when there was no row. */
+export async function removeMcpServer(store: { mcp: Pick<Mcp, "remove"> }, sealKey: Buffer, name: string): Promise<RemovedMcpServer | undefined> {
+  return removedServer(sealKey, name, await store.mcp.remove(name));
 }
 
-/** The server's row goes, only while its credential is still `expected` (Mcp.removeIfCredential). False when it is not. */
-export async function removeMcpServerIfCredential(store: { mcp: Pick<Mcp, "removeIfCredential"> }, name: string, expected: NonNullable<McpCredentialMark>): Promise<boolean> {
-  return store.mcp.removeIfCredential(name, expected);
+/** The server's row goes, only while its credential is still `expected` (Mcp.removeIfCredential). Undefined when it is not. */
+export async function removeMcpServerIfCredential(store: { mcp: Pick<Mcp, "removeIfCredential"> }, sealKey: Buffer, name: string, expected: NonNullable<McpCredentialMark>): Promise<RemovedMcpServer | undefined> {
+  return removedServer(sealKey, name, await store.mcp.removeIfCredential(name, expected));
 }
+
+/** A removed row: its address and its credential opened (§7), the credential the one the deleting statement saw. */
+export type RemovedMcpServer = { url: string; opened: OpenedMcpCredential | undefined };
+const removedServer = (sealKey: Buffer, name: string, removed: McpRemoved | undefined): RemovedMcpServer | undefined => {
+  if (!removed) return undefined;
+  try {
+    return { url: removed.url, opened: openMcpCredential(sealKey, { name, url: removed.url, sealed: removed.sealed }) };
+  } catch {
+    return { url: removed.url, opened: undefined };
+  }
+};
 
 /** Every saved server's row, by name (its credential stays sealed). */
 export async function listMcpServers(store: { mcp: Pick<Mcp, "servers"> }): Promise<McpServerRow[]> {
   return store.mcp.servers();
 }
 
+/** One saved server's row (its credential stays sealed), or undefined when no such server. */
+export async function getMcpServer(store: { mcp: Pick<Mcp, "server"> }, name: string): Promise<McpServerRow | undefined> {
+  return store.mcp.server(name);
+}
+
+/** The credential of a row already read, opened (§7), as openServerCredential does for a name. */
+export function openMcpRow(sealKey: Buffer, row: Pick<McpServerRow, "name" | "url" | "sealed">): OpenedMcpCredential {
+  return openMcpCredential(sealKey, { name: row.name, url: row.url, sealed: row.sealed });
+}
+
 /** A saved server's credential opened (§7): the credential with its origin, or why not — none saved; unopened (another
  *  seal key, or not the store's format); damaged (saved for another origin than the row's url, so it is never sent).
  *  undefined when no such server. */
 export async function openServerCredential(store: { mcp: Pick<Mcp, "server"> }, sealKey: Buffer, name: string): Promise<OpenedMcpCredential | undefined> {
-  const row = await store.mcp.server(name);
-  return row && openMcpCredential(sealKey, { name: row.name, url: row.url, sealed: row.sealed });
+  const row = await getMcpServer(store, name);
+  return row && openMcpRow(sealKey, row);
+}
+
+/** A refreshed OAuth `credential` sealed and kept as the server's, only while its row's credential is still the one the
+ *  refresh started from (`row.sealed`): Mcp.keepRefreshed, whose `holder` is the refresh lease's. */
+export async function keepRefreshedCredential(
+  store: { mcp: Pick<Mcp, "keepRefreshed"> },
+  sealKey: Buffer,
+  row: Pick<McpServerRow, "name" | "url" | "sealed">,
+  credential: McpCredential,
+  holder: string,
+): Promise<boolean> {
+  const { kept } = await store.mcp.keepRefreshed(row.name, { seen: row.sealed, sealed: sealMcpCredential(sealKey, row.name, credential, row.url), holder, tokenLeftMs: tokenLeftOf(credential) });
+  return kept;
 }
 
 /** Saves an MCP OAuth sign-in in flight, its secret parts sealed (§7, AAD mcp_oauth_pending|<state>|sealed): the PKCE

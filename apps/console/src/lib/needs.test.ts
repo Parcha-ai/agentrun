@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { choicesOf, failureGroups, hasOwnRun, mergeNeeds, pollSettled, rerunBody } from "./needs";
 import type { Run } from "./v2";
 
-const run = (id: string, over: Partial<Run> = {}): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const run = (id: string, over: Partial<Run> = {}): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: id, agent_id: "calc", agent_version: 1, revision: "r1", kind: "agentic", status: "failed", state: "idle", title: id,
   created_at: "2026-11-03T16:08:00Z", ended_at: "2026-11-03T16:08:30Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, ...over,
 });
@@ -73,6 +73,25 @@ describe("rerunBody", () => {
     const cut = `${"x".repeat(1997)}...`;
     expect(rerunBody(base, cut)).toEqual({ refusal: `"x": its first message is longer than the timeline keeps; start it again from its agent's page` });
     expect(rerunBody(base, undefined)).toEqual({ refusal: `"x": its first message could not be read` });
+  });
+});
+
+// A typed agent's first message is the server's: its message, then its other fields as an `Input:` JSON block. Run again
+// reads them back out, so the run starts with the same typed input; one it can't read back is refused, plainly.
+describe("rerunBody, a typed agent's run", () => {
+  const base = run("t1", { title: "Research Acme" });
+  const schema = { type: "object", properties: { company: { type: "string" }, limit: { type: "integer" } }, required: ["company"] };
+  it("reads the message and the Input block back into the typed input", () => {
+    const first = 'Look into them.\n\nInput:\n```json\n{\n  "company": "Acme",\n  "limit": 5\n}\n```';
+    expect(rerunBody(base, first, schema)).toEqual({ body: { input: { content: "Look into them.", company: "Acme", limit: 5 } } });
+  });
+  it("reads a block with no message before it, and one in a longer fence", () => {
+    expect(rerunBody(base, 'Input:\n```json\n{\n  "company": "Acme"\n}\n```', schema)).toEqual({ body: { input: { company: "Acme" } } });
+    expect(rerunBody(base, 'Go.\n\nInput:\n````json\n{\n  "company": "A ``` B"\n}\n````', schema)).toEqual({ body: { input: { content: "Go.", company: "A ``` B" } } });
+  });
+  it("refuses one whose typed fields can't be read back, when its schema requires a field other than content", () => {
+    expect(rerunBody(base, "Look into them.", schema)).toEqual({ refusal: `"Research Acme": its typed input could not be read back from its first message; start it again from its agent's page` });
+    expect(rerunBody(base, "Just a message.", { type: "object", properties: { company: { type: "string" } } })).toEqual({ body: { input: { content: "Just a message." } } });
   });
 });
 

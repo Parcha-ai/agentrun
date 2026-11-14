@@ -104,7 +104,6 @@ test("the adapter loop's own failed end: its journal end and the row say why wit
   /** A session that opens, then fails its turn with the key in the error, as a provider that echoes it would. */
   const echoing = {
     id: "echoing",
-    capabilities: () => ({}),
     check: () => [],
     async open() {
       return {
@@ -145,7 +144,6 @@ test("the runner's log holds no key: a run whose release throws with the key in 
   /** A session that answers at once: the run ends, then its release is let go. */
   const answering = {
     id: "answering",
-    capabilities: () => ({}),
     check: () => [],
     async open() {
       let state = "new";
@@ -196,7 +194,7 @@ test("a run spec's own log lines hold no key: a CLI run's computer release refus
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "opencode", tools: ["read"] } });
-  const launch = { input: { content: "Go." }, title: "t", place: { mode: "runner" }, harness: "opencode", model: { provider: "openai", modelId: "gpt-5" } };
+  const launch = { input: { content: "Go." }, title: "t", place: { mode: "runner" }, harness: "opencode", model: { provider: "openai", modelId: "gpt-6.1-sol" } };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });

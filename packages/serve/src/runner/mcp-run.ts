@@ -4,29 +4,24 @@
 // now, the pinned servers' credentials opened into this claim's memory) and builds ONE gateway (mcp-gateway.ts) for the
 // claim, never shared with another, reading those credentials live. The builder puts what it returns in its spec
 // (AdapterRunSpec.mcp); the loop does the rest:
-// - pi (no MCP client of its own) gets one host tool per pinned tool (`tools`), under its wire name with the pinned
-//   description and schema, as main's mcpRegistrations named them, on the loop's path for every host tool: the gate
-//   before the intent (allow, ask and park, deny), the flush, the record, the run's one ledger for a priced call.
-// - a harness with its own MCP client gets the session's MCP (`session`), which its adapter mounts once on its model
-//   proxy at `/mcp/<server>`: each call asks the loop's gate first, then runs the same host tool as the loop wrapped it.
-//   An asked call parks the run as main's gate did through the door: the CLI is answered the waiting words, marked parked,
-//   and nothing is sent. The claim that resumes it answers it (parkedFollowUp): an allow runs the call once, a deny is
-//   told in words, and the session goes on with main's resume message for it.
+// - one host tool per pinned tool (`tools`), under its wire name with the pinned description and schema, for every
+//   harness: the loop hands them to the session as it hands every host tool (pi's registry, the CLIs' own channel for
+//   host tools), on its path for every host tool: the gate before the intent (allow, ask and park, deny), the flush, the
+//   record, the run's one ledger for a priced call.
 // - a command row handed to the running loop makes the credentials fresh again (`fresh`, on the same pin) before its
 //   next model request; the loop calls `release` when its pass ends, the claim is lost or its signal aborts.
 // The gateway holds no gate here (the loop's is the run's one gate) and keeps the rest as it is: the meta refusal, the
 // unopened refusal, the URL check per call, the scrub of each call's credentials held only while that call is out, prices
 // on the run's one ledger and the not-metered booking on the run's root.
-import type { HostTool, McpCallResult, SessionMcp } from "@parcha/agentrun-kernel";
+import type { HostTool } from "@parcha/agentrun-kernel";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
-import { mcpGateway, type McpGatewayOptions, noCallId } from "../mcp-gateway.js";
-import type { OAuthNetwork } from "../mcp-oauth.js";
+import { mcpGateway, type McpGatewayOptions } from "../mcp-gateway.js";
+import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
+import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store, TriggerSettings } from "../store/index.js";
-import { type ApprovalPrice, argsPreview, mcpToolName, resumeText, RESUME_PREFIX, waitingText } from "../tool-gate.js";
-import { deniedText } from "./loop-contract.js";
-import { type AnswerData, type AskData, type CallEndData, endedAnswer, KINDS } from "./journal-kinds.js";
+import { type ApprovalPrice, mcpToolName } from "../tool-gate.js";
 import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
 import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
@@ -58,6 +53,9 @@ export interface McpForClaimOptions {
   /** A test's fake GitHub MCP origin, handed to the claim step (mcpClaim's githubMcpOrigin): for tests only: no environment variable, flag or setting maps onto it; absent, GitHub's hosted MCP
    *  (github.ts GITHUB_MCP_ORIGIN). */
   readonly githubMcpOrigin?: string;
+  /** Whether this runner may reach an MCP server whose URL is on loopback (AdapterSpecDeps.mcpLoopback): only a runner
+   *  beside a local-install server is. Absent, never. */
+  readonly loopback?: boolean;
   /** For tests: the authorization servers' network, a refresh's bound, the gateway's upstream fetch and bounds, and the
    *  timer a github_app token's refresh is armed on. */
   readonly network?: OAuthNetwork;
@@ -65,38 +63,25 @@ export interface McpForClaimOptions {
   readonly fetch?: typeof fetch;
   readonly callBounds?: { callMs?: number; connectMs?: number };
   readonly githubTimer?: GithubTimer;
+  /** Each credential value the claim opens, refreshes or mints, for the run's redactors (mcp-claim.ts `hold`). */
+  readonly hold?: (values: string[]) => void;
 }
-
-/** A call as the loop's gate is asked about it: the tool by its catalog name. */
-export type McpGateCall = { readonly callId: string; readonly tool: string; readonly args: Record<string, unknown> };
-/** The loop's gate's answer to a call through the door: let go (undefined), refused in words, or parked (the run parks on
- *  its ask, nothing sent). */
-export type McpGateAnswer = undefined | { readonly refused: string } | { readonly parked: true };
 
 /** A claim's MCP (AdapterRunSpec.mcp): what the loop reaches the gateway by, and the claim step's own hooks. */
 export interface ClaimMcp {
-  /** One host tool per pinned tool, under its wire name: pi's tools, and what `session`'s calls run. Each reaches the
-   *  gateway only as the loop wraps it, behind the run's one gate (the gate before the intent); nothing else does. */
+  /** One host tool per pinned tool, under its wire name, on every harness. Each reaches the gateway only as the loop
+   *  wraps it, behind the run's one gate (the gate before the intent); nothing else does. */
   readonly tools: readonly HostTool[];
   /** A pinned tool's catalog name (`mcp:<server>/<tool>`) by its wire name; undefined for any other tool. */
   catalogOf(tool: string): string | undefined;
   /** What an asked call of a pinned tool costs on its card (main's: its price, else "not metered"); undefined otherwise. */
   priceOf(name: string): ApprovalPrice | undefined;
-  /** The session's MCP for a harness with its own client: each call through `gate` (let go; refused in words, nothing
-   *  sent; or parked, answered the gate's waiting words marked parked, nothing sent), then its host tool from `wrapped`,
-   *  as the loop wrapped it. */
-  session(wrapped: ReadonlyMap<string, HostTool>, gate: (call: McpGateCall) => Promise<McpGateAnswer>): SessionMcp;
-  /** The credential values the gateway's calls in flight hold, for a redaction: each call's for as long as it is out,
-   *  with any token refreshed while it was; none when idle. */
-  redactions(): string[];
   /** The claim step's credentials opened again on the same pin (an expired OAuth token refreshed), then the claim
    *  confirmed: before a resumed loop's next model request. */
   fresh(): Promise<void>;
   /** Drops every credential held: the pass ended, the claim is lost, or its signal aborted. */
   release(): void;
 }
-
-const said = (text: string, isError = false): McpCallResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
 
 /** The run's MCP for one claim: undefined when it grants no MCP tool. Throws McpClaimRefused (a pin that cannot be made,
  *  a pinned tool that is a meta tool now: the loop ends the run in those words, before its session opens) or Fenced (the
@@ -117,9 +102,11 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       signal: held.signal,
       ...(options.bounds ? { bounds: options.bounds } : {}),
       ...(options.network ? { network: options.network } : {}),
+      ...(options.loopback ? { loopback: true } : {}),
       ...(githubApp ? { githubApp } : {}),
       ...(options.githubMcpOrigin ? { githubMcpOrigin: options.githubMcpOrigin } : {}),
       ...(options.githubTimer ? { githubTimer: options.githubTimer } : {}),
+      ...(options.hold ? { hold: options.hold } : {}),
     });
   } catch (error) {
     held.abort();
@@ -130,10 +117,20 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     held.abort();
     return undefined;
   }
+  const network = options.network ?? systemNetwork;
   const gateway = mcpGateway({
     pin,
     credentials: step.credentials,
-    liveCredentials: true,
+    // Each request's address checked as the server checks it at a save (mcp-oauth.ts mcpServerAt), with the owner's
+    // private-network hosts read now, and dialled at the address checked: a name that resolves somewhere private since the
+    // save, or a host the owner no longer allows, is refused unsent. A URL on loopback is reached only by a runner told
+    // so by the local-install server beside it, in its own process (options.loopback): never by what a store says, so
+    // one host's local install never opens loopback for another host's runner on a shared store.
+    reach: async (url, signal) => {
+      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true });
+      return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
+    },
+    beforeCall: step.beforeCall,
     work: options.work,
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
     ...(options.fetch ? { fetch: options.fetch } : {}),
@@ -168,75 +165,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       if (!pinned?.tools.some((tool) => tool.name === parsed![2])) return undefined;
       return pinned.prices && Object.hasOwn(pinned.prices, parsed![2]!) ? pinned.prices[parsed![2]!]! : "not metered";
     },
-    session: (wrapped, gate) => ({
-      servers: gateway.servers,
-      async call(server, tool, args, { signal, callId }) {
-        const name = mcpToolName(server, tool);
-        const host = wrapped.get(wireName(name));
-        if (!host) return said(`${tool} is not a tool of the MCP server ${server} in this run.`, true);
-        // The gate and the run's record know a call by its id: one without is never sent.
-        if (!callId) return said(noCallId(name), true);
-        const answer = await gate({ callId, tool: name, args });
-        if (answer && "refused" in answer) return said(answer.refused, true);
-        // The run parks on its ask: the CLI reads main's waiting words, and its adapter records the call as one that did not
-        // run (McpCallResult.parked); the claim that resumes the run answers it (parkedFollowUp).
-        if (answer) return { ...said(waitingText(name)), parked: true };
-        const result = await host.call(args, { callId, signal });
-        return said(result.text, result.isError === true);
-      },
-    }),
-    redactions: () => gateway.heldValues(),
     fresh: () => step.fresh(),
     release: () => held.abort(),
   };
-}
-
-/** What the loop lends parkedFollowUp: the journal's root entries, its answer for an asked call (an answer entry, the
- *  approve or deny row the claim was handed, or a park when none came: AdapterLoop answerOf), its gate's word on a call
- *  now (a deny set since it asked refuses it), and the call itself through the loop's host-tool path. */
-export interface ParkedFollowUpOptions {
-  readonly entries: readonly { readonly kind: string; readonly data?: unknown }[];
-  answer(call: McpGateCall, price: ApprovalPrice | null): Promise<AnswerData | "park">;
-  deniedNow(call: McpGateCall): Promise<string | undefined>;
-  run(call: McpGateCall): Promise<{ text: string; isError?: boolean }>;
-}
-
-/** For a harness with its own MCP client, on a claim that finds its MCP calls parked through the door: each asked call's
- *  answer acted on once, as main's gate did after a person answered (tool-gate.ts): an allow runs the call through the
- *  loop's path (its start and end on the run's record, never sent twice: a call with an end is answered from it), a deny
- *  is told in its words; then one message, main's resume message per call (resumeText), the session goes on with.
- *  "park": a call still waits (the run parks again, its ask asked again). Undefined: nothing waits. A call a follow-up
- *  already answered (its resume message on the record) is not answered again. */
-export async function parkedFollowUp(mcp: ClaimMcp, options: ParkedFollowUpOptions): Promise<{ text: string; callIds: string[] } | "park" | undefined> {
-  const said = new Set<string>();
-  for (const entry of options.entries) {
-    const text = (entry.data as { text?: unknown } | null)?.text;
-    if (entry.kind === KINDS.message && typeof text === "string" && text.startsWith(RESUME_PREFIX)) said.add(text);
-  }
-  const answered = (callId: string) => [...said].some((text) => text.includes(` call ${callId} `));
-  const ended = new Map<string, CallEndData>();
-  for (const entry of options.entries) if (entry.kind === KINDS.callEnd) ended.set((entry.data as CallEndData).callId, entry.data as CallEndData);
-  const texts: string[] = [];
-  const callIds: string[] = [];
-  const asked = new Set<string>();
-  for (const entry of options.entries) {
-    if (entry.kind !== KINDS.ask) continue;
-    const ask = entry.data as AskData;
-    if (asked.has(ask.callId) || mcp.priceOf(ask.tool) === undefined || answered(ask.callId)) continue;
-    asked.add(ask.callId);
-    const call: McpGateCall = { callId: ask.callId, tool: ask.tool, args: (ask.args ?? {}) as Record<string, unknown> };
-    const answer = await options.answer(call, ask.price ?? null);
-    if (answer === "park") return "park";
-    let result: { text: string; isError?: boolean };
-    if (!answer.approved) result = { text: deniedText(call.tool, answer.note), isError: true };
-    else {
-      const done = ended.get(call.callId);
-      const denied = await options.deniedNow(call);
-      // A call that already ended is answered from its end (endedAnswer: a crash-cut one in the kernel's words).
-      result = done ? endedAnswer(call.tool, done) : denied !== undefined ? { text: denied, isError: true } : await options.run(call);
-    }
-    texts.push(resumeText({ tool: call.tool, call_id: call.callId }, argsPreview(call.args), answer.approved ? "allow" : "deny", { text: result.text, isError: result.isError === true }));
-    callIds.push(call.callId);
-  }
-  return texts.length ? { text: texts.join("\n\n"), callIds } : undefined;
 }

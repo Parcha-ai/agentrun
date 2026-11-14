@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { after } from "node:test";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { DockerProvider, VOLUME_SUBPATH_ENGINE } from "../dist/index.js";
+import { DockerProvider } from "../dist/docker.js";
+import { VOLUME_SUBPATH_ENGINE } from "../dist/index.js";
 import { DAEMON_BYTES, fakeDocker, valuesOf } from "./fake-docker.mjs";
 
 /** The egress proxy's code as this package builds it. */
@@ -17,6 +18,9 @@ const PACKAGE = fileURLToPath(new URL("../package.json", import.meta.url));
 const CODE_FILES = ["egress-main.js", "egress-proxy.js", "egress-table.js"];
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
+let requests = 0;
+/** A create's context: a new request each time. */
+const req = () => ({ requestId: `docker-volume-${++requests}` });
 const NAME = "agentrun_agentrun-data";
 const runOf = (all) => all.find((args) => args[0] === "run");
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "computer-docker-volume-")));
@@ -49,7 +53,7 @@ const daemonMount = (paths) => `type=volume,src=${NAME},dst=/opt/agentrun,volume
 test("compose: create mounts the daemon's copy and the run's folder as the volume's subpaths, never a bind of this process's paths", async () => {
 	const paths = layout();
 	const { provider, calls } = withVolume(paths);
-	const made = await provider.create({ ...SPEC, mount: { kind: "bind", path: paths.work } });
+	const made = await provider.create({ ...SPEC, mount: { kind: "bind", path: paths.work } }, req());
 	assert.equal(made.ok, true, JSON.stringify(made));
 	const mounts = valuesOf(runOf(calls()), "--mount");
 	assert.deepEqual(mounts, [daemonMount(paths), `type=volume,src=${NAME},dst=/workspace,volume-subpath=disk/agents/a1/runs/r1/work,volume-nocopy`]);
@@ -75,7 +79,7 @@ test("compose: create mounts the daemon's copy and the run's folder as the volum
 test("compose: a computer with no run folder mounts only the daemon's copy from the volume", async () => {
 	const paths = layout();
 	const { provider, calls } = withVolume(paths);
-	const made = await provider.create(SPEC);
+	const made = await provider.create(SPEC, req());
 	assert.equal(made.ok, true, JSON.stringify(made));
 	assert.deepEqual(valuesOf(runOf(calls()), "--mount"), [daemonMount(paths)]);
 	assert.equal((await provider.attach({ id: made.value.name })).ok, true);
@@ -92,7 +96,7 @@ test("compose: a run folder that is not below the volume's root, or is the root 
 		assert.equal(refusals.length, 1, JSON.stringify(refusals));
 		assert.equal(refusals[0].field, "mount");
 		assert.match(refusals[0].message, new RegExp(`mount\\.path ${path} is not below the provider's volume root ${paths.root} \\(the volume ${NAME}\\)`));
-		const made = await provider.create({ ...SPEC, mount: { kind: "bind", path } });
+		const made = await provider.create({ ...SPEC, mount: { kind: "bind", path } }, req());
 		assert.equal(made.ok, false);
 		assert.equal(made.error.code, "refused");
 		assert.match(made.error.message, /is not below the provider's volume root/);
@@ -126,7 +130,7 @@ test(`compose: a Docker Engine older than ${VOLUME_SUBPATH_ENGINE}, or one with 
 		const paths = layout();
 		const { provider, calls } = withVolume(paths, { info: { ServerVersion } });
 		assert.deepEqual(provider.check(SPEC), [], "check knows the engine only once the host is read");
-		const made = await provider.create(SPEC);
+		const made = await provider.create(SPEC, req());
 		assert.equal(made.ok, false);
 		assert.equal(made.error.code, "refused");
 		assert.match(made.error.message, new RegExp(`host: Docker Engine <26 can't mount a named volume's subpath, which the provider's volume option needs: upgrade to Docker 26\\+ \\(this host's engine reads ${reads}\\)`));
@@ -135,7 +139,7 @@ test(`compose: a Docker Engine older than ${VOLUME_SUBPATH_ENGINE}, or one with 
 	}
 	// Without the option an old engine is fine: nothing needs a volume's subpath.
 	const { provider } = fakeDocker({ info: { ServerVersion: "25.0.5" } });
-	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.equal((await provider.create(SPEC, req())).ok, true);
 });
 
 const proxyRunOf = (all) => all.find((args) => args[0] === "run" && args.includes("--entrypoint") && args[args.indexOf("--entrypoint") + 1] === "node");
@@ -144,7 +148,7 @@ const computerRunOf = (all) => all.find((args) => args[0] === "run" && args.incl
 test("compose: an allowlist's proxy mounts its code from a copy staged below the volume's root, by subpath, never a bind; the computer starts and reads it back", async () => {
 	const paths = layout();
 	const { provider, calls } = withVolume(paths);
-	const made = await provider.create({ ...SPEC, network: { allow: ["pypi.org"] }, mount: { kind: "bind", path: paths.work } });
+	const made = await provider.create({ ...SPEC, network: { allow: ["pypi.org"] }, mount: { kind: "bind", path: paths.work } }, req());
 	assert.equal(made.ok, true, JSON.stringify(made));
 	assert.ok(!calls().some((args) => args.some((arg) => typeof arg === "string" && arg.startsWith("type=bind"))), "no bind of a path only this process's container has");
 	// One directory, mounted whole at /code: docker/ with the modules, package.json beside it, as the proxy runs them.
@@ -173,13 +177,13 @@ test("compose: the staged code is reused when it holds the same bytes; one a fil
 	const paths = layout();
 	const { provider, calls } = withVolume(paths);
 	const spec = { ...SPEC, network: { allow: ["pypi.org"] } };
-	assert.equal((await provider.create(spec)).ok, true);
+	assert.equal((await provider.create(spec, req())).ok, true);
 	const subpathOf = (all) => /volume-subpath=([^,]+),/.exec(valuesOf(proxyRunOf(all), "--mount")[1])[1];
 	const first = subpathOf(calls());
 	const at = join(paths.root, first);
 	const before = statSync(join(at, "docker", CODE_FILES[0]));
 	const again = withVolume(paths);
-	assert.equal((await again.provider.create(spec)).ok, true);
+	assert.equal((await again.provider.create(spec, req())).ok, true);
 	assert.equal(subpathOf(again.calls()), first, "the same copy, by its content");
 	assert.equal(statSync(join(at, "docker", CODE_FILES[0])).ino, before.ino, "not written again");
 	assert.deepEqual(readdirSync(join(paths.root, "cache")).filter((entry) => entry.startsWith(".egress-")), [], "no temporary directory is left");
@@ -187,14 +191,14 @@ test("compose: the staged code is reused when it holds the same bytes; one a fil
 	// published beside it, the proxy mounts that one, and later creates reuse it.
 	writeFileSync(join(at, "docker", CODE_FILES[0]), "tampered");
 	const third = withVolume(paths);
-	assert.equal((await third.provider.create(spec)).ok, true);
+	assert.equal((await third.provider.create(spec, req())).ok, true);
 	assert.equal(readFileSync(join(at, "docker", CODE_FILES[0]), "utf8"), "tampered", "the changed copy is left as it is");
 	assert.equal(statSync(join(at, "docker", CODE_FILES[0])).ino, before.ino);
 	const beside = subpathOf(third.calls());
 	assert.match(beside, new RegExp(`^${first}-[0-9a-f]{16}$`));
 	assert.ok(readFileSync(join(paths.root, beside, "docker", CODE_FILES[0])).equals(readFileSync(join(BUILT, CODE_FILES[0]))), "the new copy holds the build's bytes");
 	const fourth = withVolume(paths);
-	assert.equal((await fourth.provider.create(spec)).ok, true);
+	assert.equal((await fourth.provider.create(spec, req())).ok, true);
 	assert.equal(subpathOf(fourth.calls()), beside, "the copy beside it is reused");
 	const computer = fourth.names().find((name) => !name.endsWith("-egress"));
 	assert.deepEqual(await fourth.provider.network({ id: "", name: computer }), { ok: true, value: { allow: ["pypi.org"] } }, "and the read-back holds the proxy to it");
@@ -204,7 +208,7 @@ test("compose: computers mounted on two different verified copies, published bes
 	const paths = layout();
 	const fake = withVolume(paths);
 	const spec = { ...SPEC, network: { allow: ["pypi.org"] } };
-	const first = await fake.provider.create(spec);
+	const first = await fake.provider.create(spec, req());
 	assert.equal(first.ok, true, JSON.stringify(first));
 	const cache = join(paths.root, "cache");
 	const trees = () => readdirSync(cache).filter((entry) => /^(daemon|egress)-[0-9a-f]{64}/.test(entry)).sort();
@@ -212,13 +216,13 @@ test("compose: computers mounted on two different verified copies, published bes
 	// Both trees change under the first computer (a hand edit), so the next create publishes copies beside them.
 	writeFileSync(join(cache, daemonTree, "computerd"), "changed");
 	writeFileSync(join(cache, egressTree, "docker", CODE_FILES[0]), "changed");
-	const second = await fake.provider.create(spec);
+	const second = await fake.provider.create(spec, req());
 	assert.equal(second.ok, true, JSON.stringify(second));
 	const besides = trees().filter((entry) => entry.split("-").length === 3);
 	assert.equal(besides.length, 2, JSON.stringify(trees()));
 	// A second provider that repaired the same trees at the same moment published copies of its own, under other names:
 	// the third computer is mounted on those.
-	const third = await fake.provider.create(spec);
+	const third = await fake.provider.create(spec, req());
 	assert.equal(third.ok, true, JSON.stringify(third));
 	for (const tree of besides) {
 		const other = `${tree.slice(0, tree.lastIndexOf("-"))}-ffffffffffffffff`;
@@ -261,7 +265,7 @@ test("compose: computers mounted on two different verified copies, published bes
 test("without the volume option, create binds the daemon's copy and the run's folder as before", async () => {
 	const paths = layout();
 	const { provider, calls, bound } = fakeDocker();
-	const made = await provider.create({ ...SPEC, mount: { kind: "bind", path: paths.work } });
+	const made = await provider.create({ ...SPEC, mount: { kind: "bind", path: paths.work } }, req());
 	assert.equal(made.ok, true, JSON.stringify(made));
 	assert.deepEqual(valuesOf(runOf(calls()), "--mount"), [`type=bind,src=${bound},dst=/opt/agentrun/computerd,readonly`, `type=bind,src=${paths.work},dst=/workspace`]);
 });
@@ -271,9 +275,9 @@ test("compose: a subpath the volume does not have fails create in Docker's words
 	// The fake's volume holds another directory, so the copy's subpath is not in it, as on a volume that is not root's.
 	const { provider, names } = withVolume(paths, { volumeRoots: { [NAME]: join(scratch, "empty-volume") } });
 	mkdirSync(join(scratch, "empty-volume"), { recursive: true });
-	const made = await provider.create(SPEC);
+	const made = await provider.create(SPEC, req());
 	assert.equal(made.ok, false);
-	assert.equal(made.error.code, "docker");
+	assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "docker"]);
 	assert.match(made.error.message, /cannot access path cache\/daemon-[0-9a-f]{64} of volume agentrun_agentrun-data/);
 	assert.deepEqual(names(), []);
 });

@@ -42,6 +42,7 @@ export function runnableCode(code: string): string {
 }
 
 export type RunAction =
+  | { op: "goto"; url: string }
   | { op: "click"; id: string }
   | { op: "hover"; id: string }
   | { op: "fill"; id: string; value: string }
@@ -54,7 +55,12 @@ export type PageDriver = BrowserDriver & {
   /** `checked`: an action after the first of a run of several, sent alone (driving-guard sends a batch one action at a time)
    *  after the whole batch was checked against the page's snapshot: the page's address, which the batch's own earlier
    *  actions may have moved (a same-page link), is not checked against the snapshot again. Its ids still are. */
-  run(input: { code?: string; actions?: RunAction[]; checked?: true }): Promise<unknown>;
+  run(input: { code?: string; actions?: RunAction[]; checked?: true; rest?: number }): Promise<unknown>;
+  /** Whether the last `run` moved the driver to another tab (it followed a tab the page opened, or left one that
+   *  closed): the batch's actions after it name the old tab's ids, so driving-guard sends none of them. `rest`, given to
+   *  `run`, is how many of the batch's actions follow the ones it was sent, for its answer to say they were not run.
+   *  Optional: a driver that never changes tabs has neither. */
+  movedTab?(): boolean;
   /** The page's URL, cheaply: no page content is read. */
   url(): Promise<string>;
   /** Drops every snapshot's element ids, so an action by an old id fails as a stale snapshot (a person changed the page, whatever its URL). Optional:
@@ -436,7 +442,10 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         const url = pageUrl(call, await s.driver.url());
         const receipt = await file(s, call, { tool: "screenshot", args: region ? { ...requested, clip: region.clip, ...region.of } : requested, status: "ok", facts: { final_url: url }, body: Buffer.from(shot.data, "base64"), ext: shot.size.type === "png" ? "png" : "jpg" });
         const first = shot.adjusted?.first;
-        const adjusted = shot.adjusted && `adjusted: the first capture${first ? ` (${first.width}x${first.height})` : ""} was over the ${shot.adjusted.why === "long_edge" ? "2,000 px long edge" : "size"} budget; this is ${region ? "the clip" : "the viewport"} at ${shot.size.width}x${shot.size.height}`;
+        const over = shot.adjusted?.why === "long_edge" ? "was over the 2,000 px long edge budget" : shot.adjusted?.why === "base64_bytes" ? "was over the size budget" : "could not be measured";
+        const taken = shot.options.clip ? "the clip" : shot.options.fullPage ? "the full page" : "the viewport";
+        const scaled = shot.options.scale !== undefined && shot.options.scale < 1 ? ", scaled down" : "";
+        const adjusted = shot.adjusted && `adjusted: the first capture${first ? ` (${first.width}x${first.height})` : ""} ${over}; this is ${taken} at ${shot.size.width}x${shot.size.height}${scaled}`;
         const lines = [news, `url: ${url}`, `evidence: ${receipt.path ?? "(not filed)"}`, adjusted].filter(Boolean).join("\n");
         const media = { kind: "screenshot", path: receipt.bodyPath, mime: shot.mimeType, bytes: Buffer.from(shot.data, "base64").byteLength, width: shot.size.width, height: shot.size.height, ...(region ? { clip: region.clip, ...region.of } : {}), ...(ask ? { ask } : {}) };
         return { content: [{ type: "text", text: lines }, { type: "image", data: shot.data, mimeType: shot.mimeType }], details: { evidence: receipt.path, sha256: receipt.sha256, media } };

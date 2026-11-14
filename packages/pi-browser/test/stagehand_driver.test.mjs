@@ -44,6 +44,14 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
       assert.equal(await driver.run({ code: `await page.goto(${JSON.stringify(`${site.base}/a`)}); return await page.title();` }), "Page A");
       assert.equal(await driver.url(), `${site.base}/a`);
     });
+    await t.test("a goto action navigates as run code does, and a scheme other than http, https or about:blank is refused", async () => {
+      assert.deepEqual(await driver.run({ actions: [{ op: "goto", url: `${site.base}/a` }] }), { completed: 1, url: `${site.base}/a` });
+      await assert.rejects(driver.run({ actions: [{ op: "goto", url: "file:///etc/hostname" }] }), /goto takes an http or https URL/);
+      assert.equal(await driver.url(), `${site.base}/a`);
+      // A batch of gotos names no id: its check needs no snapshot, as the driving guard runs it on a fresh browser.
+      driver.forgetSnapshots();
+      await driver.checkActions([{ op: "goto", url: `${site.base}/a` }, { op: "goto", url: `${site.base}/a` }]);
+    });
     await t.test("page() returns the page's url, title, text and html", async () => {
       const page = await driver.page();
       assert.equal(page.url, `${site.base}/a`);
@@ -79,8 +87,8 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
       assert.equal(await readAfterNavigation(() => driver.run({ code: AFTER_SUBMIT }), (value) => typeof value === "string"), "Submission 1 received for Ada Lovelace.");
       assert.equal(site.submissions(), 1);
     });
-    await t.test("screenshot honors type, quality and the css or device scale", async () => {
-      const png = await driver.screenshot({ type: "png", scale: "css" });
+    await t.test("screenshot honors type and quality, and takes a scale below 1 at one image pixel per CSS pixel", async () => {
+      const png = await driver.screenshot({ type: "png", scale: 0.5 });
       assert.equal(png.mimeType, "image/png");
       assert.deepEqual(pngSize(png.data), { width: 1000, height: (pngSize(png.data)).height });
       const jpeg = await driver.screenshot({ type: "jpeg", quality: 40.4 });

@@ -1,8 +1,8 @@
 // A Docker computer's way out to the network when its spec asks for an allowlist ({ allow: [names or CIDRs] }): the
 // computer stays `--network none`, and its own egress proxy runs in a second container the provider makes, reads back
-// and removes with it. Moved from serve's box-egress.ts and rewritten onto the provider: the proxy no longer lives in the
-// process that made the computer, so the computer keeps its network when that process ends, and attach and list read it
-// back from Docker anywhere.
+// and removes with it. The proxy does not live in the process that
+// made the computer, so the computer keeps its network when that process ends, and attach and list read it back from
+// Docker anywhere.
 //
 //  - The volume `<computer>-egress`: a tmpfs of 1 MiB, mode 0700, owned by the computer's uid:gid. The proxy's Unix
 //    socket is made in it; the computer mounts it read-only at EGRESS_MOUNT.
@@ -17,14 +17,16 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
-import { DEADLINE_LABEL, type DockerInspect } from "../drift.js";
+import { DEADLINE_LABEL } from "../drift.js";
+import type { DockerInspect } from "./inspect.js";
 import type { NetworkPolicy } from "../provider.js";
 import { LISTED_PORTS, parseAllow } from "./egress-proxy.js";
 import { checkAddress } from "./egress-table.js";
 
-/** The proxy container's image: node:22.23.4-bookworm-slim, pinned to its multi-arch index digest (as serve pins its
- *  own), so every host runs the same Node. The provider's `egress.image` replaces it. */
-export const EGRESS_IMAGE = "node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d";
+/** The proxy container's image: node:22.23.5-trixie-slim (Node 22's November 2026 security release), pinned to its
+ *  multi-arch index digest (amd64 and arm64 both listed), so every host runs the same Node. serve's macOS proxy pins the
+ *  same image. The provider's `egress.image` replaces it. */
+export const EGRESS_IMAGE = "node:22.23.5-trixie-slim@sha256:68c76cfad89921b927eae28ba21407475e29d0ce450afcdbe70c1532db042b64";
 /** The label the proxy container and the volume carry: the computer's name. In the provider's own namespace, which a
  *  spec's labels cannot use. */
 export const EGRESS_LABEL = "agentrun.computer.egress";
