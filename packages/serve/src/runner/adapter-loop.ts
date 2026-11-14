@@ -82,7 +82,7 @@ import { builtinHarness } from "../harness-table.js";
 import { Fenced } from "../store/index.js";
 import { answerAsServed } from "../answer-json.js";
 import type { ClaimMcp } from "./mcp-run.js";
-import { type RequestFigures, reserveFor, TOOL_BUDGET_TEXT, withinBudget, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
+import { type RequestFigures, reserveFor, WRAP_UP_TEXT, wrappingUp } from "../wrap-up.js";
 import { LEARNED_CLIP, LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
 
@@ -111,9 +111,6 @@ export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean
   readonly askedAs?: (tool: string) => string;
   /** What an asked call's card shows beside its input (a learned workflow's MCP calls it would make), if anything. */
   readonly askedFor?: (tool: string, args: unknown) => Promise<Record<string, unknown> | undefined>;
-  /** The revision's tool-call budget (definition.max_tool_calls, tool-budget.ts): the calls each conversation may make. A
-   *  call past it is refused before anything else is asked; one the adapter counts no calls for (a CLI's) is not held. */
-  readonly toolCalls?: number;
   /** A tool's setting now, by any name a call reaches the gate by (a harness's own, Codex's `web_search`), read again at
    *  each ask: what the session reads (SessionIO.permission) for a tool no call of which reaches the gate before it runs. */
   readonly permission?: (tool: string) => Promise<"allow" | "ask" | "deny">;
@@ -1762,7 +1759,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             Date.now(),
           );
         };
-        /** What the run keeps back to answer (tool-budget.ts reserveFor), its typical step the run's own priced answers'. */
+        /** What the run keeps back to answer (wrap-up.ts reserveFor), its typical step the run's own priced answers'. */
         const reserveOf = (figures: RequestFigures | undefined): number | undefined => reserveFor(figures, (step0Usd) => typicalCost(capNote.costs, step0Usd));
         let bookingNow: ModelBooking | undefined;
         const wrapUpNote = (model: string, asked?: NoteRequest): string | undefined => {
@@ -1791,7 +1788,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             { capUsd, spentUsd, heldUsd, costs: capNote.costs, told: false, mode: config.mode ?? "expected", now: Date.now() },
           );
           // The two wrap-ups read as one story: the note tells the model what is left; once what the run keeps back to
-          // answer (tool-budget.ts reserveFor) no longer fits, its tools stop. So the note comes due on that same rule too, if
+          // answer (wrap-up.ts reserveFor) no longer fits, its tools stop. So the note comes due on that same rule too, if
           // its own has not made it due before: told on the request whose tool call would be refused now, no later than the
           // first refusal. The rule's figure here is the run's spend and holds as they stand at this take, and this request's
           // own reserve. (The gate's reader, wrapUp, reads the records at each call and is async; a reading kept from an
@@ -1861,7 +1858,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // of this claim, and a replay the gate refuses makes none, so it is opened here for the cut alone, never read as free.
         const toolsAtOpen = sessionSpendOf(await sessions.read(TOOL_SESSION));
         if (spec.runCap && toolsAtOpen.turns.some((turn) => !toolsAtOpen.answered.has(turn))) await paidOf();
-        // The cap's wrap-up (tool-budget.ts wrappingUp): what every session of the run has taken as the cap counts it, its
+        // The cap's wrap-up (wrap-up.ts wrappingUp): what every session of the run has taken as the cap counts it, its
         // spend and each request or paid step still out at its hold and bound, read from the run's records at each call. A
         // hold-only step still open (a browser session's reserve) is no spend in its records, but the cap holds it in
         // flight: it counts at its hold too. One a lost claim left open was given back at this claim's open (bookCut).
@@ -2737,10 +2734,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // The end-of-run turn's notes are kept only from its answer: a write there is refused before its intent.
       if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
-      // The tool-call budget, before the gate's settings: a call past it is refused in its fixed words, never parked or
-      // asked about. Counted here for every call, a nested one too (tool-budget.ts withinBudget); a conversation's own
-      // budget (a subagent's max_tool_calls) narrows the run's, never widens it.
-      if (!(await withinBudget(harness!, call.conversationId, call, spec.gate?.toolCalls, context))) return { deny: TOOL_BUDGET_TEXT };
       // The cap's wrap-up, the same way: once the run has taken its share of the cap, every call the model makes is refused
       // in its fixed words, and the model answers from what it has. A call a running tool makes is that tool's, let through.
       if (call.nested !== true && (await wrapUp())) return { deny: WRAP_UP_TEXT };

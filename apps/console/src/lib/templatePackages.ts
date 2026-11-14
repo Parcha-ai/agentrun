@@ -36,7 +36,6 @@ export function needsOf(t: TemplateView, { secrets = true, mcp = true } = {}): [
   if (mcp && t.mcp.length) out.push(["MCP", t.mcp.map((m) => `${m.toolkit} (${SOURCE_LABEL[m.source]}${m.required ? "" : ", optional"})`).join(", ")]);
   if (t.triggers.length) out.push(["Triggers", count(t.triggers.length, "trigger")]);
   if (t.budget?.per_run_usd) out.push(["Budget", `${dollars(t.budget.per_run_usd)} a run`]);
-  if (t.budget?.tool_calls) out.push(["Tool calls", `${count(t.budget.tool_calls, "call")} a conversation`]);
   if (t.harness?.length) out.push(["Harness", t.harness.join(", ")]);
   if (t.model) out.push(["Model", `${t.model.tier}${t.model.prefer ? `, ${t.model.prefer} first` : ""}`]);
   return out;

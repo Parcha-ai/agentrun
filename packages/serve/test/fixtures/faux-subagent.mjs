@@ -4,8 +4,7 @@
 // A child (its system prompt says it is a subagent) reads its prompt: "Say <text>" answers it; "Wait <ms> then say
 // <text>" answers it after a wait; "Call <tool> with <json>" makes that call once, then answers "Tool said: <result>";
 // "Read forever <path>" reads the file on every turn and never answers (a test's cap ends it); "Tools?" answers the
-// names of the tools it was offered; "Count reads <path>" reads the file until the tool budget refuses a call, then answers
-// "Reads: <n>"; "Cut <text>" answers <text> cut at its output limit; "Hold <text>" answers <text> once the file $FAUX_SUBAGENT_RELEASE exists, holding
+// names of the tools it was offered; "Cut <text>" answers <text> cut at its output limit; "Hold <text>" answers <text> once the file $FAUX_SUBAGENT_RELEASE exists, holding
 // its request open until then (a stop or a cancel aborts it, noted as `aborted`). Each request is one JSON line in
 // $FAUX_SUBAGENT_LOG (its model, whether a child asked, the tools offered, the first line it was asked, and when a wait
 // ran or a hold began), when a test names that file.
@@ -57,13 +56,6 @@ export default async function reply(context, faux) {
     await sleep(Number(wait[1]), faux.signal);
     note({ wait: wait[2], from, until: Date.now() });
     return faux.message(wait[2]);
-  }
-  // "Count reads <path>": read the file until a call is refused for the tool budget, then answer how many reads ran.
-  const reads = /^Count reads (\S+)$/.exec(asked);
-  if (reads) {
-    const spent = results.some((m) => textOf(m).includes("Tool budget spent"));
-    if (spent) return faux.message(`Reads: ${results.filter((m) => !textOf(m).includes("Tool budget spent")).length}`);
-    return faux.message(faux.toolCall("read", { path: reads[1] }), { stopReason: "toolUse" });
   }
   // "Cut <text>": an answer its provider cut at the output limit.
   const cut = /^Cut (.*)$/.exec(asked);

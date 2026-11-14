@@ -134,13 +134,12 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 	const errorOf = (value: Record<string, unknown> | undefined) => (value?.error ?? {}) as { code?: string; message?: string };
 	const agents = new Map<string, Promise<string>>();
 
-	/** One agent per bench run, arm, kind and exec (and step budget, on pi), made once: its definition is the arm's, and a
+	/** One agent per bench run, arm, kind and exec, made once: its definition is the arm's, and a
 	 *  new bench run makes new ones, so an arm's definition is never edited under runs that used it. Its computer has the
-	 *  arm's surface ("code" or "tools"), and for a task that denies exec, `exec: false` (its id ends -ui). On pi the step
-	 *  budget is the agent's own `max_tool_calls` (serve holds it on pi alone), a backstop: on every harness the bench
-	 *  counts the computer calls on the Timeline's tool rows and stops the run past the budget. */
-	const agentFor = (bench: string, arm: Arm, kind: string, steps: number, exec: "allow" | "deny"): Promise<string> => {
-		const id = `${bench}-${arm.id}-${kind}-${arm.surface}${exec === "deny" ? "-ui" : ""}${arm.harness === "pi" ? `-s${steps}` : ""}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+	 *  arm's surface ("code" or "tools"), and for a task that denies exec, `exec: false` (its id ends -ui). The bench counts
+	 *  the computer calls on the Timeline's tool rows and stops the run past the step budget. */
+	const agentFor = (bench: string, arm: Arm, kind: string, exec: "allow" | "deny"): Promise<string> => {
+		const id = `${bench}-${arm.id}-${kind}-${arm.surface}${exec === "deny" ? "-ui" : ""}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
 		let made = agents.get(id);
 		if (!made) {
 			// The arm's own definition may pin the computer (its provider, say), never its kind, its surface or its exec: those
@@ -158,7 +157,6 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 				approvals: "never",
 				skills: [],
 				tools: [],
-				...(arm.harness === "pi" ? { max_tool_calls: steps } : {}),
 				...own,
 				computer: { kind, ...(typeof arm.options?.provider === "string" ? { provider: arm.options.provider } : {}), ...pinned, surface: arm.surface, ...(exec === "deny" ? { exec: false } : {}) },
 			};
@@ -189,7 +187,7 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 			const { task, arm, signal } = request;
 			let agentId: string;
 			try {
-				agentId = await agentFor(request.labels["agentrun.bench"] ?? "bench", arm, task.task.spec.needs.kind, task.budget.steps, task.task.spec.exec ?? "allow");
+				agentId = await agentFor(request.labels["agentrun.bench"] ?? "bench", arm, task.task.spec.needs.kind, task.task.spec.exec ?? "allow");
 			} catch (error) {
 				return { ok: false, error: { code: (error as { code?: string }).code ?? "serve", message: (error as Error).message } };
 			}
@@ -385,7 +383,7 @@ const runBody = (content: string, usd: number, holdMinutes: number | undefined) 
  *  needs each for, and the item of README.md's "What serve needs" that asks for it (0: serve has it without a hold). */
 export const SERVE_CONTRACT: readonly { method: string; path: string; body?: Json; answers: string; need: string; item: number }[] = [
 	{ method: "GET", path: "/openapi.json", answers: "serve's OpenAPI document", need: "reads whether a run's create takes hold and its read has computer.held", item: 0 },
-	{ method: "POST", path: "/agents", body: { definition: "{id, name, instructions, harness, model, thinking (arm.effort)?, approvals, skills, tools, max_tool_calls (pi: budget.steps), ...arm.options.definition, computer {kind, provider?, ...arm.options.definition.computer, surface (arm.surface), exec: false (a task's exec deny)?}}" }, answers: "the saved agent", need: "saves an agent per arm, kind and exec (and step budget, on pi)", item: 0 },
+	{ method: "POST", path: "/agents", body: { definition: "{id, name, instructions, harness, model, thinking (arm.effort)?, approvals, skills, tools, ...arm.options.definition, computer {kind, provider?, ...arm.options.definition.computer, surface (arm.surface), exec: false (a task's exec deny)?}}" }, answers: "the saved agent", need: "saves an agent per arm, kind and exec", item: 0 },
 	{ method: "POST", path: "/agents/{agent_id}/runs", body: { input: "{content}", max_cost_usd: "budget.usd", hold: true, hold_minutes: "options.holdMinutes?" }, answers: "{run_id, status, computer {state, held {state}}}; with hold, the agent waits for /start", need: "claims a run's computer and holds it, its agent not started", item: 1 },
 	{ method: "GET", path: "/runs/{run_id}", answers: "{status, computer {state, provider, why, held {state starting|waiting|started|ended|released, why}}, cost {usd, so_far_usd}, result {final_answer}, error {code, message}}", need: "reads where the hold is, and how the run ended", item: 5 },
 	{ method: "POST", path: "/runs/{run_id}/computer/call", body: { method: "a protocol method", params: "its params" }, answers: "{ok, value} | {ok: false, error {code, message}}: the computer's answer, verbatim", need: "reaches the held computer through it, for setup, frames, checks and teardown", item: 2 },
