@@ -91,3 +91,28 @@ test("saving again re-pins: an unchanged definition after the server changed its
   assert.equal((await api("PUT", "/agents/again/definition", { definition })).status, 200);
   assert.equal((await api("GET", "/agents/again")).body.revisions, 2, "nothing changed: no revision");
 });
+
+test("a save while a granted server is down keeps its previous pin when the edit grants nothing new from it; a tool new to the pin, or no previous pin, is refused", { timeout: 120_000 }, async (t) => {
+  const { api, fake } = await setup(t);
+  assert.equal((await retried(api)("POST", "/agents", agent("kept", { tools: [ADD] }))).status, 201);
+  const first = (await api("GET", "/agents/kept")).body;
+  const definition = { ...first.definition, instructions: "Add the numbers you are given, then say the sum." };
+  delete definition.version;
+  await fake.close();
+  // An edit of the instructions alone: the server's grants are all in the previous pin, so it is carried, nothing listed.
+  const edited = await api("PUT", "/agents/kept/definition", { definition });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  const second = (await api("GET", "/agents/kept")).body;
+  assert.equal(second.revisions, 2, "a new revision");
+  assert.equal(second.definition.instructions, definition.instructions);
+  assert.deepEqual(second.mcp_pin, first.mcp_pin, "the previous revision's pin, carried");
+  // A tool from the down server that the previous pin does not hold: refused in the words that name the server.
+  const added = await api("PUT", "/agents/kept/definition", { definition: { ...definition, tools: [ADD, "mcp:fake/delete_thing"] } });
+  assert.equal(added.status, 422, JSON.stringify(added.body));
+  assert.match(JSON.stringify(added.body), /The MCP server fake could not be listed to pin its tools/);
+  assert.equal((await api("GET", "/agents/kept")).body.revisions, 2, "nothing saved");
+  // A new agent has no previous pin: refused the same way.
+  const fresh = await retried(api)("POST", "/agents", agent("fresh", { tools: [ADD] }));
+  assert.equal(fresh.status, 422, JSON.stringify(fresh.body));
+  assert.match(JSON.stringify(fresh.body), /The MCP server fake could not be listed to pin its tools/);
+});
