@@ -1,4 +1,4 @@
-"""The Mac mini's five demo tasks, on Notes, Safari, Finder, TextEdit and Calendar. Each is driven through
+"""The Mac's six demo tasks, on Notes, Safari, Finder, TextEdit, Calendar and System Settings. Each is driven through
 the running Computerd's own computerd command by ui.observe and ui.act with batched steps. Each call's latency is
 logged. With --movie, each is recorded from screen.watch to a movie of its own window, with the step on screen.
 
@@ -7,17 +7,17 @@ logged. With --movie, each is recorded from screen.watch to a movie of its own w
 
 --agent=MODEL (repeatable: one run of each task per model) has an agent do the tasks in place of the script: the task
 in plain words to an agent on agentrun-serve, started here from packages/serve's build, with this Mac paired to it for
-the run (Computerd's policy.json lets it touch only the five apps and see the screen; the old policy is put back after,
+the run (Computerd's policy.json lets it touch only the six apps and see the screen; the old policy is put back after,
 and the Mac unpaired). The agent is pi's code mode on the computer surface. MODEL is a model as serve names one
 (anthropic/claude-sonnet-5-5, openrouter/openai/gpt-6.1-terra), its key in this environment, or faux: a scripted model
 (agent-faux.mjs) for the TextEdit task alone, which proves the path with no key. The harness makes each task's sandbox
 and checks the outcome as the scripted task does; the movie follows the app's front window, captioned with the agent's
 own words and each script's first comment.
 
-TASK is a task's id (mac.notes.new-note, ...); none runs all five. Without --movie nothing is recorded (no frames, no
+TASK is a task's id (mac.notes.new-note, ...); none runs them all. Without --movie nothing is recorded (no frames, no
 movie). --movie works only on a demo machine, and refuses before anything is made otherwise: a CI runner
 (GITHUB_ACTIONS=true), or a user whose login name starts with "agentrun-demo" (a dedicated demo account, made by a
-person). Nothing else unlocks it. --ask-grants raises Computerd's Automation prompts for the five apps, for a person at the Mac to answer, and
+person). Nothing else unlocks it. --ask-grants raises Computerd's Automation prompts for the five scripted apps, for a person at the Mac to answer, and
 exits. --answer-alerts (CI only) takes one screen shot, which raises the screen capture alert, answers the system's
 alerts (see clear_alerts), and exits: before the conformance cases, whose fixture could not come in front of it. Writes,
 under OUT_DIR:
@@ -53,7 +53,7 @@ person's, is left as it is. Calendar and Notes are asked about (snapshot, teardo
 would start them.
 
 Before each task the harness takes a snapshot of what it can see: every calendar with its count of today's events,
-every Notes folder with its count of notes, the onscreen windows of the five apps by id, and the sandbox root. Only
+every Notes folder with its count of notes, the onscreen windows of the six apps by id, and the sandbox root. Only
 names, counts and ids: never an event's, note's or file's contents; the calendars and folders only while Calendar and
 Notes run. After the teardown it takes it again, and any difference is the task's "left", Calendar or Notes started or
 quit during the task among them. The run's last line is "N/5 pass, K left behind"; the exit code is 1 unless every
@@ -64,7 +64,8 @@ script itself looks for, so a person's own titles never reach a file. On a CI ru
 nothing of a person's, nothing is redacted, so a failure's words can be read.
 
 The ids are the computer bench's mac-dev ids (packages/computer-bench/suites/mac-dev), and each task checks what the
-bench's task checks.
+bench's task checks; mac.settings.about is this file's own (what Safari's task shows, with no WebKit: a CI runner's
+WebKit draws no page).
 """
 
 import base64
@@ -118,7 +119,11 @@ PREFIX = "AgentRun demo "
 NAME = PREFIX + RUN
 # /tmp is a link to /private/tmp: Finder and TextEdit answer with the real path, so the root is named by it.
 ROOT = "/private/tmp/agentrun-demos"
-APPS = {"com.apple.iCal": "Calendar", "com.apple.Notes": "Notes", "com.apple.finder": "Finder", "com.apple.TextEdit": "TextEdit", "com.apple.Safari": "Safari"}
+APPS = {"com.apple.iCal": "Calendar", "com.apple.Notes": "Notes", "com.apple.finder": "Finder", "com.apple.TextEdit": "TextEdit", "com.apple.Safari": "Safari",
+        "com.apple.systempreferences": "System Settings"}
+# The apps the sandbox's AppleScript drives, whose Automation grants Computerd needs. System Settings' task makes and
+# checks nothing by AppleScript.
+AUTOMATED = [app for app in APPS if app != "com.apple.systempreferences"]
 
 
 class Client:
@@ -324,10 +329,10 @@ def can_automate(c, ask=False):
     """Computerd's grants the sandbox needs, by what they are for: granted, denied, unasked, not running. Automation of
     each app, and Calendars (Privacy & Security > Calendars), since Calendar's AppleScript reads the store for the
     process that sent the event: without it the snapshot waited on Calendar with no answer."""
-    words = exec_run(c, ["/usr/bin/swift", os.path.join(here, "can-automate.swift")] + (["--ask"] if ask else []) + list(APPS), 600000)
+    words = exec_run(c, ["/usr/bin/swift", os.path.join(here, "can-automate.swift")] + (["--ask"] if ask else []) + AUTOMATED, 600000)
     names = dict(APPS, calendars="calendar data")
     pairs = (line.split(" ", 1) for line in words.splitlines() if " " in line)
-    return {(f"Automation of {names[k]}" if k in APPS else names.get(k, k)): v for k, v in pairs}
+    return {(f"Automation of {names[k]}" if k in AUTOMATED else names.get(k, k)): v for k, v in pairs}
 
 
 # The onscreen windows of every app, by id, through CoreGraphics from JavaScript for Automation's bridge: no Apple event,
@@ -367,7 +372,7 @@ function run(argv) {
 
 
 def running():
-    """Which of the five apps run now (apps.list lists the installed ones too)."""
+    """Which of the six apps run now (apps.list lists the installed ones too)."""
     done = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", RUNNING_JS, *APPS], capture_output=True, text=True, timeout=30)
     if done.returncode != 0:
         raise Failed(f"the running apps: {done.stderr.strip()[-300:]}")
@@ -856,7 +861,7 @@ def first_run(task, tree):
     return tree, pressed
 
 
-# --- the five tasks ---------------------------------------------------------------------------------------------------
+# --- the six tasks ----------------------------------------------------------------------------------------------------
 # Each one is (prepare, drive): prepare opens the app and its first-run sheets before the snapshot; drive makes the
 # task's sandbox and does the task in it.
 
@@ -983,6 +988,26 @@ def safari_follow_link(t):
     back = find(tree["nodes"], role="button", name="Go back") or need(t, tree["nodes"], "the Back button", role="button", contains="back")
     t.act([{"press": back["ref"]}], "go back (the Back button)", expect={"text": "Quarterly report", "timeoutMs": 10000})
     t.notes.append("followed the link by its name and came back by the Back button")
+
+
+def settings_about(t):
+    """mac.settings.about: in System Settings, open General and then About by their names, read the macOS version
+    there, and go back. What Safari's task shows (a place reached by a named link, and left by Back) with no WebKit,
+    which draws no page on a CI runner (see smoke.sh). It makes nothing, so it leaves nothing."""
+    version = t.run_exec(["/usr/bin/sw_vers", "-productVersion"], "the macOS version (sw_vers)").strip()
+    t.launch()
+    t.wait_for("General", "wait for System Settings' sidebar")
+    tree = t.observe()
+    general = need(t, tree["nodes"], "General in the sidebar", name="General")
+    t.act([{"click": general["ref"]}], "open General", expect={"text": "Software Update", "timeoutMs": 10000})
+    tree = t.observe("observe General")
+    about = need(t, tree["nodes"], "About in General", name="About")
+    t.act([{"click": about["ref"]}], "open About", expect={"text": version, "timeoutMs": 10000})
+    t.notes.append(f"About shows macOS {version}")
+    tree = t.observe("observe About")
+    back = find(tree["nodes"], role="button", name="Back") or need(t, tree["nodes"], "the Back button", role="button", contains="back")
+    t.act([{"press": back["ref"]}], "go back (the Back button)", expect={"text": "Software Update", "timeoutMs": 10000})
+    t.notes.append("followed General, then About, by their names, and came back by the Back button")
 
 
 def notes_prepare(t):
@@ -1173,9 +1198,11 @@ TASKS = [
     ("mac.finder.rename-file", "com.apple.finder", None, finder_rename_file),
     ("mac.textedit.edit-number", "com.apple.TextEdit", None, textedit_edit_number),
     ("mac.calendar.new-event", "com.apple.iCal", calendar_prepare, calendar_new_event),
+    ("mac.settings.about", "com.apple.systempreferences", None, settings_about),
 ]
 # Each movie's title, in plain words.
 TITLES = {
+    "mac.settings.about": "System Settings: open General, then About, read the macOS version, and go back",
     "mac.notes.new-note": "Notes: write a new note, its title and a line, in a folder of its own",
     "mac.safari.follow-link": "Safari: follow a link by its name, then go back",
     "mac.finder.rename-file": "Finder: rename draft.txt to final.txt",
@@ -1256,7 +1283,7 @@ class Serve:
                 return e.code, None
 
     def pair(self):
-        """Computerd paired with this server for the run, its policy first: the five apps, and the screen. The owner's
+        """Computerd paired with this server for the run, its policy first: the six apps, and the screen. The owner's
         policy as it was is kept, and put back by close."""
         policy = os.path.join(home, "policy.json")
         self.policy = open(policy, "rb").read() if os.path.exists(policy) else b""
@@ -1325,9 +1352,9 @@ def agent_run(t, serve, model, prompt):
     # The recorder's clock is monotonic from the task's start: a row's wall time maps onto it.
     wall0 = time.time() - (time.monotonic() - t.t0)
     agent = f"mac-demo-{RUN}-{secrets.token_hex(3)}"
-    # On the runner: no box and no shell, the Mac its one computer.
+    # The Mac its one computer: no box and no shell.
     definition = {"id": agent, "version": 1, "name": agent, "instructions": INSTRUCTIONS, "skills": [], "tools": [], "harness": "pi",
-                  "place": {"mode": "runner"}, "computer": {"kind": "desktop", "provider": serve.computer}}
+                  "computer": {"kind": "desktop", "provider": serve.computer}}
     if model != "faux":
         definition["model"] = model
     status, made = serve.api("POST", "/agents", {"definition": definition})
@@ -1459,13 +1486,24 @@ end run"""
     return f"In Calendar, add an event titled \"{title}\" today, in the calendar \"{NAME}\".", check
 
 
+def agent_settings(t):
+    version = t.run_exec(["/usr/bin/sw_vers", "-productVersion"], "the macOS version (sw_vers)").strip()
+
+    def check():
+        if version not in ((t.agent or {}).get("answer") or ""):
+            raise Failed(f"the agent's answer does not name macOS {version}: {(t.agent or {}).get('answer')!r}")
+        t.notes.append(f"the agent read macOS {version} from About")
+    return "In System Settings, open General, then About, and tell me which macOS version this Mac runs. Then go back to General.", check
+
+
 # The agent's tasks: the scripted ones' ids and sandboxes, in plain words. Safari's is not among them: a runner's
-# WebKit draws no page (see smoke.sh), so its movie would show an empty window.
+# WebKit draws no page (see smoke.sh), so its movie would show an empty window; System Settings' shows the same thing.
 AGENT_TASKS = [
     ("mac.notes.new-note", "com.apple.Notes", notes_prepare, agent_notes),
     ("mac.finder.rename-file", "com.apple.finder", None, agent_finder),
     ("mac.textedit.edit-number", "com.apple.TextEdit", None, agent_textedit),
     ("mac.calendar.new-event", "com.apple.iCal", calendar_prepare, agent_calendar),
+    ("mac.settings.about", "com.apple.systempreferences", None, agent_settings),
 ]
 
 
@@ -1474,7 +1512,7 @@ def agent_tasks(serve):
     TITLES."""
     tasks = []
     for model in models:
-        slug = re.sub(r"[^a-z0-9]+", "-", model_name(model).lower()).strip("-")
+        slug = re.sub(r"[^a-z0-9]+", "-", model.split("/")[-1].lower()).strip("-")
         for tid, app, prepare, setup in AGENT_TASKS:
             if model == "faux" and tid != "mac.textedit.edit-number":
                 continue
@@ -1495,6 +1533,7 @@ AGENT_PROMPTS = {
     "mac.finder.rename-file": "rename draft.txt to final.txt in Finder",
     "mac.textedit.edit-number": "change Pears from 41 to 42 in TextEdit, and save",
     "mac.calendar.new-event": "add an event to its own calendar",
+    "mac.settings.about": "read the macOS version from System Settings' About",
 }
 
 
