@@ -1,6 +1,7 @@
 // A granted monid endpoint on the runner is one host tool of its own (runner/monid-run.ts), from its revision's pin (what
 // the save stamped, monid.ts pinMonid): named `monid:<provider>/<endpoint>`, its call a paid step on the run's one ledger
-// under that name, held at its pinned price, sent with it as monid's maxCost, and settled at what monid charged; its ask card shows that price; an
+// under that name, held at its pinned price (one priced by usage: at monid's estimate for the call's own input), sent with
+// that hold as monid's maxCost, and settled at what monid charged; its ask card shows that price (or that estimate); an
 // endpoint the pin does not hold is no tool, never sent; one over the cap parks the run unsent; one monid charges above
 // its hold is booked at that charge and stops the run, in words and in the log. Faux monid, a scripted
 // model origin, the real loop on a real store.
@@ -117,21 +118,51 @@ test("a call is sent with its hold as monid's maxCost: an endpoint monid now pri
   assert.equal(paid.heldUsd(), 0, "its hold released");
 });
 
-test("an endpoint monid has re-priced by usage since the save is refused unsent: its estimate passing the pinned maxCost would not bound its charge", async (t) => {
+/** faux /person/search: priced per result ($0.001 a result), so monid estimates a call from its own `limit`; a call
+ *  charges $1.42 unless the test says otherwise (charging). */
+const SEARCH = "monid:faux/person/search";
+/** Its pin as a save stamps an endpoint priced by usage: no fixed price. */
+const USAGE_PIN = { [SEARCH]: { description: "faux /person/search: enrich a person.", input: INPUT, usd: null } };
+/** Three results: monid's estimate is $0.003. */
+const SEARCH_ARGS = { body: { name: "Ada", limit: 3 } };
+
+test("a call priced by usage is held at monid's estimate for its own input, sent with that estimate as maxCost, and settled at its charge", async (t) => {
   const sent = callLog(t);
-  // Pinned at $0.01 a call when the agent was saved; monid now prices it per result, estimates one result ($0.001,
-  // under the pinned maxCost) and charges $1.42.
-  const SEARCH = "monid:faux/person/search";
-  const stale = { ...PIN[ENRICH], description: "faux /person/search", usd: 0.01 };
+  charging(t, 0.002);
+  const { spec } = await specFor(t, { body: { tools: [SEARCH], monidPin: USAGE_PIN }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const [search] = spec.mcp.tools;
+  const paid = await toolLedger(1);
+  const answer = await bookedIn({ call: "c1", paid }, () => search.call(SEARCH_ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
+  assert.equal(answer.isError, undefined, answer.text);
+  assert.deepEqual(sent().map((call) => call.maxCost), [0, 0.003], "the estimate read (maxCost 0: monid runs and charges nothing), then the call at that estimate");
+  const booked = paidBookings(await paid.records()).filter((row) => row.call === "c1");
+  assert.deepEqual(booked.map((row) => [row.kind, row.tool, row.heldUsd ?? row.usd]), [["agentrun.tool_started", SEARCH, 0.003], ["agentrun.tool_cost", SEARCH, 0.002]], JSON.stringify(booked));
+});
+
+test("a call priced by usage whose estimate does not fit the cap is refused unsent, in the cap's words naming its estimate", async (t) => {
+  const sent = callLog(t);
+  const { spec } = await specFor(t, { body: { tools: [SEARCH], monidPin: USAGE_PIN }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const [search] = spec.mcp.tools;
+  const paid = await toolLedger(0.002);
+  const answer = await bookedIn({ call: "c1", paid }, () => search.call(SEARCH_ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
+  assert.equal(answer.isError, true);
+  assert.match(answer.text, /Not sent: .*monid:faux\/person\/search, could cost up to \$0\.003/, answer.text);
+  assert.deepEqual(sent().map((call) => call.maxCost), [0], "only the estimate read, which runs nothing");
+});
+
+test("an endpoint monid has re-priced by usage since the save is held at monid's estimate for the call, as any call priced by usage", async (t) => {
+  const sent = callLog(t);
+  charging(t, 0.001);
+  // Pinned at $0.01 a call when the agent was saved; monid now prices it per result and estimates one result ($0.001).
+  const stale = { ...USAGE_PIN[SEARCH], usd: 0.01 };
   const { spec } = await specFor(t, { body: { tools: [SEARCH], monidPin: { [SEARCH]: stale } }, keys: { MONID_API_KEY: KEY }, env: env() });
   const [search] = spec.mcp.tools;
   const paid = await toolLedger(0.5);
   const answer = await bookedIn({ call: "c1", paid }, () => search.call(ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
-  assert.deepEqual(sent(), [], "never sent");
-  assert.equal(answer.isError, true, answer.text);
-  assert.match(answer.text, /monid:faux\/person\/search was not sent: monid now prices it per result \(PER_RESULT\), not the fixed \$0\.01 pinned when the agent was saved/, answer.text);
-  assert.equal(paid.spentUsd(), 0, `booked $${paid.spentUsd()} against a $0.5 cap`);
-  assert.equal(paid.heldUsd(), 0, "nothing held");
+  assert.equal(answer.isError, undefined, answer.text);
+  assert.deepEqual(sent().map((call) => call.maxCost), [0, 0.001]);
+  const booked = paidBookings(await paid.records()).filter((row) => row.call === "c1");
+  assert.deepEqual(booked.map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", 0.001], ["agentrun.tool_cost", 0.001]], JSON.stringify(booked));
 });
 
 /** run-1 on a new store, its agent granted `tools` with the pin `pin`, run by a runner on the adapter spec with a
@@ -171,6 +202,14 @@ test("a pinned endpoint's ask card names it and shows its pinned price", async (
   callLog(t);
   const one = await monidRun(t, { tools: [MATCH], pin: { [MATCH]: PIN[MATCH] }, script: [{ call: "monid__apollo__people__match", args: ARGS }, { say: "done" }] });
   assert.deepEqual(one.asks.map((ask) => [ask.tool, ask.price]), [[MATCH, 0.026]], JSON.stringify(one.asks));
+});
+
+test("a call priced by usage asks with monid's estimate for its own input on its card, the call itself unsent", async (t) => {
+  const sent = callLog(t);
+  const one = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
+  assert.equal(one.row.state, "parked", JSON.stringify(one.row));
+  assert.deepEqual(one.asks.map((ask) => [ask.tool, ask.price]), [[SEARCH, { estimate_usd: 0.003 }]], JSON.stringify(one.asks));
+  assert.deepEqual(sent().map((call) => call.maxCost), [0], "only the estimate read, which runs nothing");
 });
 
 test("past the deferral threshold, tools_search finds a pinned endpoint by what it does, with its pinned input", async (t) => {
@@ -254,6 +293,19 @@ test("a monid charge above both its hold and the run's cap ends the run in the c
   // Held at $0.026 under a $0.04 cap; charged $0.05, past both.
   const run = await monidRun(t, { tools: [MATCH], pin: { [MATCH]: PIN[MATCH] }, toolSettings: { [MATCH]: { permission: "allow" } }, launch: { max_cost_usd: 0.04 }, script: [{ call: "monid__apollo__people__match", args: ARGS }, { say: "done" }] });
   assert.deepEqual([run.row.state, run.row.summary], ["failed", "monid charged $0.05, more than the $0.026 held; the run stopped"], JSON.stringify(run.row));
+});
+
+test("a call priced by usage that monid charges above its estimate is booked at its charge, and the run stops at once in words that say so", async (t) => {
+  const sent = callLog(t);
+  t.mock.method(console, "error", () => {});
+  const requests = [];
+  // Estimated (and held) at $0.003 for three results; monid charges $1.42.
+  const run = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, toolSettings: { [SEARCH]: { permission: "allow" } }, launch: { max_cost_usd: 1 }, requests, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
+  const booked = paidBookings(run.records.entries).filter((row) => row.tool === SEARCH);
+  assert.deepEqual(booked.map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", 0.003], ["agentrun.tool_cost", 1.42]], JSON.stringify(booked));
+  assert.deepEqual(sent().map((call) => call.maxCost), [0, 0.003], "no further call after its result");
+  assert.equal(requests.length, 1, "no further model turn after its result");
+  assert.deepEqual([run.row.state, run.row.summary], ["failed", "monid charged $1.42, more than the $0.003 held; the run stopped"], JSON.stringify(run.row));
 });
 
 test("a monid charge at its call's hold is booked and the run goes on, as before", async (t) => {
