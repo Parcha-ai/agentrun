@@ -64,8 +64,8 @@ const ROLE_WORDS: Readonly<Record<string, string>> = {
   image: "image", text: "text", heading: "heading", group: "group", progressbar: "progress bar",
 };
 /** Roles whose name alone says what was pressed: “Save”, never "the button “Save”". An element of no known role (a
- *  phone's clickable row, "generic") is its name too. */
-const NAME_ONLY: ReadonlySet<string> = new Set(["button", "link", "menuitem", "tab", "listitem", "row", "cell", "radio", "generic"]);
+ *  phone's clickable row, "generic") and a label's text ("General" in System Settings' sidebar) are their names too. */
+const NAME_ONLY: ReadonlySet<string> = new Set(["button", "link", "menuitem", "tab", "listitem", "row", "cell", "radio", "generic", "text", "heading"]);
 
 /** The element a step acted on, in words: “Save”, the text box “Pears: 41”, the list. */
 function targetWords(on: ComputerStepRow["on"]): string | undefined {

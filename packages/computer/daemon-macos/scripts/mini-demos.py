@@ -979,9 +979,9 @@ def textedit_edit_number(t):
     before = "Apples: 3\nPears: 41\nPlums: 7\n"
     after = "Apples: 3\nPears: 42\nPlums: 7\n"
     t.write(path, before, "write the totals file")
-    t.say("open the totals file in TextEdit, in the background")
+    t.say("Opened the totals file in TextEdit, in the background")
     t.run_exec(["/usr/bin/open", "-g", "-a", "TextEdit", path], "open -g -a TextEdit the totals file")
-    t.pin(f"totals-{RUN}.txt", "find the document's window")
+    t.pin(f"totals-{RUN}.txt", "Found the document's window")
     t.wait_for("Pears: 41", "wait for the document")
     tree = t.observe()
     text = need(t, tree["nodes"], "text area", role="textbox", contains="Pears: 41")
@@ -1008,11 +1008,11 @@ def finder_rename_file(t):
     folder = sandbox_folder(t, "finder")
     t.write(f"{folder}/draft.txt", "the draft\n", "write draft.txt")
     t.write(f"{folder}/other.txt", "another file\n", "write other.txt")
-    t.say("open the folder in Finder, in the background")
+    t.say("Opened the folder in Finder, in the background")
     t.run_exec(["/usr/bin/open", "-g", folder], "open -g the folder")
     # Finder has a person's own windows open on a real desktop: the task's window is found by its title and every later
     # call names it.
-    t.pin(os.path.basename(folder), "find the folder's window")
+    t.pin(os.path.basename(folder), "Found the folder's window")
     t.wait_for("draft", "wait for the folder's files")
     tree = t.observe()
     # By element, never by point: the window may sit under other apps' windows on a real desktop. As a list, each
@@ -1072,11 +1072,11 @@ def safari_follow_link(t):
     t.write(f"{folder}/index.html", f"<!doctype html><title>{home_title}</title><h1>{home_title}</h1><p><a href=\"report.html\">Quarterly report</a></p><p><a href=\"other.html\">Something else</a></p>", "write index.html")
     t.write(f"{folder}/report.html", f"<!doctype html><title>{report_title}</title><h1>{report_title}</h1><p>Revenue grew 12%.</p>", "write report.html")
     t.write(f"{folder}/other.html", f"<!doctype html><title>Other {RUN}</title><h1>Other</h1>", "write other.html")
-    t.say("open the site in Safari, in the background")
+    t.say("Opened the site in Safari, in the background")
     t.run_exec(["/usr/bin/open", "-g", "-a", "Safari", f"{folder}/index.html"], "open -g -a Safari index.html")
     # Safari may put the page in a tab of a person's own window: the window is found by the page's title, the tab it
     # shows, and the teardown closes the tab by its address.
-    t.pin(home_title, "find the page's window")
+    t.pin(home_title, "Found the page's window")
     t.wait_for("Quarterly report", "wait for the page")
     tree, _ = first_run(t, t.observe())
     link = need(t, tree["nodes"], "the Quarterly report link", role="link", contains="Quarterly report")
@@ -1119,7 +1119,7 @@ def notes_prepare(t):
     if not pressed:
         return
     setup = f"{NAME} setup"
-    t.say("make and remove a setup folder, answering the iCloud alert it raises")
+    t.say("Made and removed a setup folder, answering the iCloud alert it raised")
     with shielded():
         notes_setup_folder(t, setup)
 
@@ -1145,35 +1145,17 @@ def notes_setup_folder(t, setup):
         t.run_exec(["/usr/bin/osascript", "-e", REMOVE_FOLDERS, setup], "remove the setup folder")
 
 
-PROBE_MENUS = """on run argv
-  set out to ""
-  tell application "System Events" to tell process "Notes"
-    repeat with top in {"View", "Format", "Window"}
-      repeat with m in (every menu item of menu 1 of menu bar item (top as text) of menu bar 1)
-        set out to out & top & " > " & (name of m as text) & " [" & (value of attribute "AXMenuItemCmdChar" of m as text) & " " & (value of attribute "AXMenuItemCmdModifiers" of m as text) & "]" & linefeed
-        try
-          repeat with s in (every menu item of menu 1 of m)
-            set out to out & top & " > " & (name of m as text) & " > " & (name of s as text) & " [" & (value of attribute "AXMenuItemCmdChar" of s as text) & " " & (value of attribute "AXMenuItemCmdModifiers" of s as text) & "]" & linefeed
-          end repeat
-        end try
-      end repeat
-    end repeat
-    set out to out & "window size " & ((size of window 1) as text) & linefeed
-  end tell
-  return out
-end run"""
-
-
 def notes_probe(t):
     """A one-off look at Notes' menus and settings on CI, for sizing its text in the movie."""
-    for argv in (["/usr/bin/defaults", "read", "com.apple.Notes"],
-                 ["/usr/bin/defaults", "read", os.path.expanduser("~/Library/Containers/com.apple.Notes/Data/Library/Preferences/com.apple.Notes")]):
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=30)
-        print(f"    probe {argv[-1]}: {done.returncode}\n{done.stdout[-6000:]}\n{done.stderr[-500:]}", flush=True)
     try:
-        print("    probe menus:\n" + osa(t.c, PROBE_MENUS), flush=True)
+        built = subprocess.run(["swiftc", os.path.join(here, "probe-menus.swift"), "-o", "/tmp/probe-menus"], capture_output=True, text=True, timeout=300)
+        print(f"    probe build: {built.returncode} {built.stderr[-800:]}", flush=True)
+        print("    probe menus:\n" + exec_run(t.c, ["/tmp/probe-menus", "com.apple.Notes"]), flush=True)
     except Exception as e:
         print(f"    probe menus failed: {e!r}", flush=True)
+    for argv in (["/usr/bin/defaults", "read", "com.apple.universalaccess"], ["/usr/bin/defaults", "-currentHost", "read", "-g"]):
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        print(f"    probe {' '.join(argv[1:])}: {done.returncode}\n{done.stdout[-3000:]}\n{done.stderr[-300:]}", flush=True)
 
 
 def notes_new_note(t):
@@ -1182,7 +1164,7 @@ def notes_new_note(t):
         notes_probe(t)
     # The line starts with a capital: Notes capitalizes a line's first word as it is typed (it did on CI's runner).
     title, line = f"{NAME} groceries", "Oat milk and eggs"
-    t.say("make the task's Notes folder (AppleScript)")
+    t.say("Made the task's Notes folder (AppleScript)")
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_FOLDER, NAME], "make the Notes folder")
     # The folder list shows a folder made by AppleScript a moment later.
     try:
@@ -1263,7 +1245,7 @@ def calendar_prepare(t):
     if add is not None:
         with shielded():
             calendar_setup_quick_event(t, add)
-    t.say("wait for Calendar's list of calendars to be still")
+    t.say("Waited for Calendar's list of calendars to be still")
     start = time.monotonic()
     names, since = calendar_names(t.c), start
     while time.monotonic() - since < 8 and time.monotonic() - start < 40:
@@ -1279,7 +1261,7 @@ def calendar_prepare(t):
 def calendar_new_event(t):
     """mac.calendar.new-event: a new event with a given title, in the task's own calendar."""
     title = event_title(RUN)
-    t.say("make the task's calendar (AppleScript)")
+    t.say("Made the task's calendar (AppleScript)")
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_CALENDAR, NAME], "make the calendar")
     tree = t.observe()
     # The toolbar's Add Event button opens the quick event field: the title typed there and enter make the event, in
@@ -1493,7 +1475,7 @@ def agent_run(t, serve, model, prompt):
     """One run of the agent on the task: made, followed on its timeline to its end, each row printed, and the movie
     captioned with each computer call its scripts made at the time the call started (serve keeps them on the script's
     result row), a failed script's error, and the answer. Answers what the run did."""
-    t.say(f"the agent gets the task: {prompt}")
+    t.say(f"The agent got the task: {prompt}")
     # The recorder's clock is monotonic from the task's start: a row's wall time maps onto it.
     wall0 = time.time() - (time.monotonic() - t.t0)
     agent = f"mac-demo-{RUN}-{secrets.token_hex(3)}"
@@ -1611,7 +1593,7 @@ def agent_finder(t):
 
 
 def agent_notes(t):
-    t.say("make the task's Notes folder (AppleScript)")
+    t.say("Made the task's Notes folder (AppleScript)")
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_FOLDER, NAME], "make the task's folder")
     title, line = f"{NAME} groceries", "Oat milk and eggs"
     count = """on run argv
@@ -1626,7 +1608,7 @@ end run"""
 
 
 def agent_calendar(t):
-    t.say("make the task's calendar (AppleScript)")
+    t.say("Made the task's calendar (AppleScript)")
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_CALENDAR, NAME], "make the calendar")
     t.inspector = True  # the teardown closes an inspector the agent left open, before it deletes the calendar
     title = event_title(RUN)
@@ -1681,7 +1663,7 @@ def agent_tasks(serve):
             def drive(t, setup=setup, model=model):
                 prompt, check = setup(t)
                 agent_run(t, serve, model, prompt)
-                t.say("check the outcome")
+                t.say("Checked the outcome")
                 check()
             TITLES[f"{tid}.{slug}"] = f"{model_name(model)}: {AGENT_PROMPTS[tid]}"
             tasks.append((f"{tid}.{slug}", app, prepare, drive))
@@ -1967,7 +1949,7 @@ def main():
                 t.span[0] = t.rec.clock() if t.rec else None
                 try:
                     drive(t)
-                    t.say("done")
+                    t.say("Done")
                 except Failed as e:
                     error = str(e)
                 except BaseException as e:
