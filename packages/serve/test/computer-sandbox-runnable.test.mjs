@@ -3,7 +3,7 @@
 // as one of the old boxes (boxes.ts BOX_IDS, only those AGENTRUN_BOXES lists, docker alone by default); an agent with only
 // an old place keeps the box check (runnable.ts).
 //
-// So a remote sandbox (E2B, Daytona) with its key saved in Settings → Computers runs in Mode 2 (the server's Archil
+// So a remote sandbox (E2B, Modal) with its key saved in Settings → Computers runs in Mode 2 (the server's Archil
 // settings saved, so it mounts the run's folder from Archil): its save says nothing of its place, and its run is never
 // refused for it. One whose key is not saved is refused in words that name Settings → Computers. In Mode 1 a sandbox needs
 // a bind mount of this machine's folder, which only Docker gives: an E2B sandbox is refused in those words, and a Docker
@@ -74,7 +74,7 @@ async function saveAndStart(api, id, setting) {
   };
 }
 
-for (const [provider, keys] of [["e2b", { E2B_API_KEY: "fake-test-key" }], ["daytona", { DAYTONA_API_KEY: "fake-test-key" }]]) {
+for (const [provider, keys] of [["e2b", { E2B_API_KEY: "fake-test-key" }], ["modal", { MODAL_TOKEN_ID: "fake-test-id", MODAL_TOKEN_SECRET: "fake-test-key" }]]) {
   test(`an agent whose computer is a ${provider} sandbox, its key saved in Settings → Computers, is never refused for its place in Mode 2 (AGENTRUN_BOXES unset)`, async (t) => {
     const api = await server(t, { archil: true });
     const saved = await api("PUT", `/computers/${provider}/keys`, keys);
@@ -103,15 +103,13 @@ test("an agent whose computer is an e2b sandbox with no key saved is refused in 
   assert.doesNotMatch(said.started[2], PLACE_WORDS);
 });
 
-test("Mode 2: a Daytona sandbox's GPUs are checked at the save and the run's start: a GPU computer can't mount the run's folder yet, said with what to use instead, and a type Daytona does not give is refused (409)", async (t) => {
+test("Mode 2: a Daytona sandbox, with GPUs or without, is refused at the save and the run's start (409), saying Archil's client hangs on its sandboxes", async (t) => {
   const api = await server(t, { archil: true });
   assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: "fake-test-key" })).status, 200);
-  for (const [name, gpu, words] of [
-    // Daytona's GPU host gives no /dev/fuse, and Mode 2's folder is an Archil mount.
-    ["gpu-unmounted", { type: "H100", count: 1 }, /^A Daytona GPU computer can't mount this run's folder: Daytona's GPU runtime gives it no \/dev\/fuse\. Use a GPU computer from the library, or this sandbox without a GPU\.$/],
-    ["gpu-refused", { type: "T4", count: 1 }, /^A Daytona sandbox can't have this agent's GPUs: gpu\.type "T4" is not one this provider offers: H100\b/],
-  ]) {
-    const said = await saveAndStart(api, name, { computer: { kind: "sandbox", provider: "daytona", gpu } });
+  // Mode 2's folder is an Archil mount, which Daytona doesn't take: the reason comes before any GPU's.
+  const words = /^A Daytona sandbox can't mount the run's folder from Archil \(Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes\): pick another sandbox for this agent's computer in Settings → Computers\.$/;
+  for (const [name, gpu] of [["no-gpu", undefined], ["gpu", { type: "H100", count: 1 }]]) {
+    const said = await saveAndStart(api, name, { computer: { kind: "sandbox", provider: "daytona", ...(gpu ? { gpu } : {}) } });
     assert.deepEqual(said.saved.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
     assert.match(said.saved[0][2], words);
     assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
@@ -210,7 +208,7 @@ test("Mode 1: an agent saved with place {sandbox, docker} on a host where Docker
   // check (docker-daemon.ts: `docker version`, here the fake that fails) and refuses it now, in the one wording.
   const api = await server(t, { archil: false, docker: false });
   const said = await saveAndStart(api, "docker-down", { place: { mode: "sandbox", box: "docker" } });
-  const words = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
+  const words = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
   assert.deepEqual(said.saved, [["definition.computer", "not_set_up_here", words]], JSON.stringify(said));
   assert.deepEqual(said.refused, [["definition.computer", "not_set_up_here", words]], JSON.stringify(said));
   assert.deepEqual(said.started.slice(0, 2), [409, "agent_not_runnable"], JSON.stringify(said));

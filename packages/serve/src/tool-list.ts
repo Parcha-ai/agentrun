@@ -19,7 +19,7 @@ export const TOOL_LIST: Readonly<Record<string, ToolRow>> = Object.freeze({
   write: { table: true, askable: true, replay: "never", blurb: "Write files in the run's folder" },
   edit: { table: true, askable: true, replay: "never", blurb: "Edit files in the run's folder" },
   bash: { table: true, askable: true, replay: "never", blurb: "Run shell commands in the sandbox" },
-  ask_person: { table: true, blurb: "Ask you a question mid-run" },
+  ask_person: { table: true, replay: "safe", blurb: "Ask you a question mid-run" },
   web_fetch: { table: true, askable: true, replay: "safe", host: true, blurb: "Read a public web page" },
   web_search: { table: true, askable: true, replay: "safe", host: true, blurb: "Search the web" },
   browser: { table: true, blurb: "Browse websites in a hosted browser" },

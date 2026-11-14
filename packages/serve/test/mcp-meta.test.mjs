@@ -125,7 +125,7 @@ test("a run of a revision saved granting what is now a meta tool is 409 naming i
 });
 
 
-test("a grant of a meta tool is 422 in the same words on every harness: pi, claude-agent and codex that bind MCP tools, and opencode that doesn't (never a setup warning)", async () => {
+test("a grant of a meta tool is 422 in the same words on every harness: pi, claude-agent, codex and opencode, each of which binds MCP tools (never a setup warning)", async () => {
   const { api } = shared;
   const words = [];
   for (const harness of ["pi", "claude-agent", "codex", "opencode"]) {

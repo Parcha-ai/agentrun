@@ -1,4 +1,4 @@
-// The host tools a run on another harness gets are pi's, each with the replay the kernel keeps: read,
+// The host tools a run on another harness gets are pi's, each with the replay the kernel keeps: read, ask_person,
 // web_fetch and web_search, and monid's discover and inspect, may run again after a crash; write, edit and monid.run
 // never (the faux harness does not consult it, so it is checked here, where it is set). Each goes to the harness under
 // its wire name.
@@ -9,6 +9,7 @@ import { CLAUDE_AGENT_MAX_IMAGE_BYTES, claudeAgentAdapter } from "@parcha/agentr
 import { codexAdapter } from "@parcha/agentrun-harness-codex";
 import { workspaceRelative } from "../dist/host-tools.js";
 import { monidRegistration } from "../dist/monid.js";
+import { asked, askPerson } from "../dist/tools.js";
 import { webFetchTool } from "../dist/web-fetch.js";
 import { webSearchTool } from "../dist/web-search.js";
 import { localWorkspace } from "../dist/workspace/index.js";
@@ -25,12 +26,18 @@ const monid = () => ["discover", "inspect", "run"].map((kind) => monidRegistrati
 /** A registration named `name` that is no tool a host runs: what it would bind is never asked. */
 const named = (name) => ({ name, description: name, parameters: { type: "object" }, execute: async () => ({}) });
 /** The tools a run on another harness may name here, as their registrations. */
-const registrations = () => [...fileTools(), bashTool(), webFetchTool(process.env), webSearchTool(process.env), ...monid(), named("ask_person"), named("browser")];
+const registrations = () => [...fileTools(), bashTool(), webFetchTool(process.env), webSearchTool(process.env), ...monid(), askPerson, named("browser")];
 
-test("read, web_fetch and web_search are replay-safe; write, edit and bash never replay; a tool a host runs none of, ask_person or browser, gives none", () => {
+test("read, web_fetch, web_search and ask_person are replay-safe; write, edit and bash never replay; a tool a host runs none of, the browser, gives none", () => {
   const tools = hostToolsOf(RUN, ["read", "write", "edit", "web_fetch", "web_search", "ask_person", "browser", "bash"], ctx, new Map(), registrations());
-  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["edit", "never"], ["web_fetch", "safe"], ["web_search", "safe"], ["bash", "never"]]);
+  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["edit", "never"], ["web_fetch", "safe"], ["web_search", "safe"], ["ask_person", "safe"], ["bash", "never"]]);
   for (const tool of tools) assert.equal(tool.inputSchema.type, "object", `${tool.name} keeps pi's parameters`);
+});
+
+test("ask_person as a host tool answers what pi's own tool does: the question asked, the answer to come as the person's next message", async () => {
+  const [tool] = hostToolsOf(RUN, ["ask_person"], ctx, new Map(), [askPerson]);
+  const answer = await tool.call({ question: "Which region should I pick?" }, { callId: "ask-1", signal: new AbortController().signal });
+  assert.deepEqual(answer, { text: asked("Which region should I pick?"), isError: false });
 });
 
 test("a host tool's answer keeps the tail of a long output within pi's limits, then its diagnostics, also when the tool failed", async () => {

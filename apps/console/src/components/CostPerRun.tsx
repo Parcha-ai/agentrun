@@ -61,6 +61,9 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
   const notes = [
     data.total_runs > data.runs.length ? `The latest ${data.runs.length.toLocaleString("en-US")} of ${data.total_runs.toLocaleString("en-US")} runs.` : null,
     data.unknown_cost_runs ? `${data.unknown_cost_runs === 1 ? "1 run's" : `${data.unknown_cost_runs} runs'`} cost is not known: left out.` : null,
+    // A learned workflow the money rule stopped: why it no longer runs first (both sides all-in, learning included), and
+    // what comes next.
+    ...data.workflows.filter((w) => w.state === "needs_revision" && w.served && w.by_hand).map((w) => `${w.workflow} no longer runs first: ${level(w.served!.mean_usd)} a run all-in over its last ${w.served!.runs} runs, at or over ${level(w.by_hand!.mean_usd)} a run by hand.${w.unknown_cost_runs ? ` ${w.unknown_cost_runs === 1 ? "1 run" : `${w.unknown_cost_runs} runs`} of unknown cost left out.` : ""} Its next run asks the agent for a new version, which runs first again.`),
   ].filter((n): n is string => !!n);
 
   if (points.length < 2) {

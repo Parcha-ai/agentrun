@@ -109,7 +109,7 @@ function sandbox(fields = {}) {
 	};
 }
 
-test("capabilities: a linux computer with init a child of Daytona's toolbox, a vendor lifetime up to 30 days, network none read back, a container, stop and delete, an Archil mount, and the toolbox's port", () => {
+test("capabilities: a linux computer with init a child of Daytona's toolbox, a vendor lifetime up to 30 days, network none read back, a container, stop and delete, no mount, and the toolbox's port", () => {
 	const { provider, rec } = setup();
 	assert.equal(provider.id, "daytona");
 	assert.equal(provider.version, VERSION);
@@ -125,7 +125,7 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 		maxLifetimeMs: 30 * 24 * 3600 * 1000,
 		release: ["stop", "delete"],
 		stopDeletes: false,
-		mount: ["archil"],
+		mount: [],
 		vendorAgentPorts: [2280],
 		// daytona-gpu's one H100 and its limits: its stop deletes it, it runs in region earth, its size is the snapshot's, and
 		// it takes no mount.
@@ -157,7 +157,7 @@ test("the constructor refuses what it cannot run with, in words", () => {
 		assert.throws(make({ autoDeleteMinutes: value }), /autoDeleteMinutes is a whole number of minutes/, String(value));
 	}
 	assert.throws(make({ gpuSnapshot: "someone-elses-gpu" }), /not a GPU snapshot of box\/Dockerfile/);
-	assert.throws(make({ archilEgress: "192.0.2.40:8100:42050" }), /the Archil egress is/);
+	assert.throws(make({ archilEgress: "192.0.2.40:18100:42050" }), /Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes, so it takes no archilEgress/);
 	assert.throws(make({ timeouts: { retryMs: 0 } }), /retryMs/);
 });
 
@@ -185,6 +185,29 @@ test("check() refuses in words, field by field, before any request", () => {
 	assert.deepEqual(refused({ ...SPEC, labels: { "agentrun.computer.deadline": "never" } }), ["labels"]);
 	assert.deepEqual(refused({ ...SPEC, labels: { team: 1 } }), ["labels"]);
 	assert.equal(rec.requests.length, 0, "check makes no request");
+});
+
+// Archil's client (0.10.1) never answers its own FUSE INIT on Daytona's container (Sysbox) sandboxes, on every kernel and
+// mount shape tried (live 11-14), and the org is offered no linux-vm class. So Daytona declares no mount, and a create
+// that asks for one is refused up front in one sentence saying why: never a sandbox made and a 120 s timeout.
+const ARCHIL_SPEC = {
+	...SPEC,
+	labels: { "agentrun.run": "r1", "agentrun.epoch": "3" },
+	mount: { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "tok-daytona-archil-0123456789abcdef" },
+};
+const NO_ARCHIL = "Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes";
+
+test("an Archil mount is refused up front, in one sentence saying why, and nothing is asked of Daytona", async () => {
+	const { provider, rec } = setup();
+	assert.deepEqual(provider.capabilities().mount, [], "Daytona declares no mount kind");
+	assert.deepEqual(provider.check(ARCHIL_SPEC), [{ field: "mount", message: NO_ARCHIL }]);
+	assert.deepEqual(provider.check({ ...ARCHIL_SPEC, gpu: GPU, image: "daytona-gpu" }).map((r) => r.message)[0], NO_ARCHIL, "a GPU computer's own refusal comes after it");
+	const made = await provider.create(ARCHIL_SPEC, { requestId: "r-archil" });
+	assert.equal(made.ok, false);
+	assert.equal(made.error.code, "refused", "a mount kind Daytona doesn't declare");
+	assert.match(made.error.message, /Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes/);
+	assert.ok(!made.error.message.includes(ARCHIL_SPEC.mount.token), "the refusal holds no token");
+	assert.equal(rec.requests.length, 0, "no request: no sandbox is made to time out");
 });
 
 test("create() asks Daytona for the request's name and labels, a TTL in whole minutes, no public port, network none, and no resources", async () => {
@@ -530,11 +553,10 @@ test("exec: a failed read of the command's session ends the run with that failur
 	assert.match(deleted[0], /\/process\/session\/agentrun-[0-9a-f]{16}$/);
 });
 
-test("exec is a session command of its own: argv as one shell line, async, no input echo; archilEgress is the adapter's, so the helper's argv, egress= and all, goes as the adapter gives it", async () => {
-	const helper = "/usr/local/sbin/agentrun-archil";
-	const run = async (options, argv) => {
+test("exec is a session command of its own: argv as one shell line, async, no input echo, and Daytona adds no word of its own", async () => {
+	const run = async (argv) => {
 		const tb = toolboxRecorder();
-		const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: tb.fetch, timeouts: TIMEOUTS, ...options });
+		const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: tb.fetch, timeouts: TIMEOUTS });
 		const ran = await provider.host.exec(REF.id, argv, { stdin: true }, { timeoutMs: 1_000 });
 		assert.equal(ran.ok, false);
 		assert.equal(tb.commands.length, 1);
@@ -543,12 +565,8 @@ test("exec is a session command of its own: argv as one shell line, async, no in
 		for (const request of tb.requests) assert.equal(request.headers.Authorization, `Bearer ${KEY}`);
 		return tb.commands[0].command;
 	};
-	const egress = { archilEgress: "192.0.2.40:18100:42050" };
-	for (const verb of ["mount", "revoke"]) {
-		assert.equal(await run(egress, [helper, verb, "dsk", "aws-us-east-1", "/f", "egress=192.0.2.40:18100:42050"]), `${helper} ${verb} dsk aws-us-east-1 /f egress=192.0.2.40:18100:42050`, verb);
-		assert.equal(await run(egress, [helper, verb, "dsk", "aws-us-east-1", "/f"]), `${helper} ${verb} dsk aws-us-east-1 /f`, `${verb}: Daytona adds no word of its own`);
-	}
-	assert.equal(await run({}, ["sh", "-c", 'echo "$1"', "sh", "it's"]), `sh -c 'echo "$1"' sh 'it'\\''s'`, "every word but a plain one quoted");
+	assert.equal(await run(["/usr/local/bin/tool", "run", "a1", "/f", "k=v:1"]), "/usr/local/bin/tool run a1 /f k=v:1", "plain words go as given");
+	assert.equal(await run(["sh", "-c", 'echo "$1"', "sh", "it's"]), `sh -c 'echo "$1"' sh 'it'\\''s'`, "every word but a plain one quoted");
 });
 
 test("the loopback block: network none only, the toolbox's port declared, and open and allowlists refused in words", () => {

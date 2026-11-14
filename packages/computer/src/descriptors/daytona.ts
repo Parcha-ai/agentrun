@@ -1,7 +1,10 @@
-// Daytona's descriptor: a sandbox on Daytona's cloud, the run's folder on an Archil disk, with GPUs when asked.
+// Daytona's descriptor: a sandbox on Daytona's cloud, with GPUs when asked; no mount of the run's folder yet.
 import { defineProvider } from "../descriptor.js";
 import type { GpuCapability } from "../provider.js";
 import { SANDBOX } from "./shared.js";
+
+/** Why a Daytona computer takes no Archil mount: check() refuses one in these words. */
+export const DAYTONA_NO_ARCHIL = "Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes";
 
 /** The image a Daytona computer starts from when its spec names "default": Daytona's own default snapshot. */
 export const DAYTONA_DEFAULT_SNAPSHOT = "default";
@@ -84,17 +87,19 @@ export const DAYTONA = defineProvider({
 		{ name: "DAYTONA_API_KEY", option: "apiKey", required: true },
 		{ name: "DAYTONA_API_URL", option: "apiUrl", required: false },
 		{ name: "DAYTONA_TARGET", option: "target", required: false },
-		{ name: "DAYTONA_ARCHIL_EGRESS", option: "archilEgress", required: false },
 	],
 	metered: true,
-	mounts: ["archil"],
+	// No mount: Archil's client (0.10.1) mounts on Daytona's container sandboxes, but nothing reads its /dev/fuse after,
+	// so the first statx of the folder hangs, on every kernel and mount shape tried (live, 11-14), and Daytona offered
+	// no linux-vm class to try instead. An Archil mount is refused in these words, before any request.
+	mounts: [],
+	unmounted: { archil: DAYTONA_NO_ARCHIL },
 	// None: its programs run in a network of their own (isolation.ts OWN_NETWORK_ONLY).
 	network: ["none"],
 	// A linux computer, with GPUs when asked.
 	capabilities: [{ ...SANDBOX, gpu: DAYTONA_GPU }],
 	defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
-	// A Daytona computer that mounts the run's folder from Archil needs a snapshot of box/Dockerfile (build-daytona.py
-	// builds one and prints its name): the operator names it here, and the default snapshot stands while unset.
+	// The operator's own snapshot for every Daytona computer, named here; the default snapshot stands while unset.
 	imageEnv: "AGENTRUN_DAYTONA_SNAPSHOT",
 	load: () => import("../daytona.js"),
 });

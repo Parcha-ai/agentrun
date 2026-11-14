@@ -136,6 +136,10 @@ export interface ComputerForClaimDeps {
    *  the OS's version and its architecture): the run's caller says it on the run's timeline. A browser session, made
    *  by the run's tool, is never told. Absent: nothing is said. */
   readonly onConnected?: (said: ComputerSaid) => void;
+  /** Told once, as the claim asks its provider for a new computer (never for a browser, or an agent's own computer,
+   *  whose claim says what became of it in onComputerNote): the run's caller says it on the run's timeline, which
+   *  otherwise shows nothing while a phone boots. Absent: nothing is said. */
+  readonly onStarting?: (said: Pick<ComputerSaid, "provider" | "kind">) => void;
   /** Why this machine cannot run a provider's computers, by its provider id (computers.ts hostCommandRefusals: the
    *  phone's adb not on PATH), in words that say how to fix it, or undefined: refused with code computer_unavailable
    *  before anything is rented. Absent: not asked. */
@@ -586,6 +590,7 @@ export async function computerForClaim(
           note: deps.onComputerNote ?? (() => {}),
         }, signal);
       } else {
+        deps.onStarting?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none"> });
         launched = await providerLaunch(provider, launch, spec, signal);
       }
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };

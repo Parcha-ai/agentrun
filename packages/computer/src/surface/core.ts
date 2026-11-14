@@ -5,7 +5,7 @@
 import type { ComputerClient, DaemonMethod, DaemonMethods, FileEntry, FileStat, HelloResult, InputAction, Point, UiImage, UiObserveResult, UiStep } from "../protocol.js";
 import { MAX_CHUNK_BYTES } from "../protocol.js";
 import type { ActArgs, ActResult, AppInfo, Card, FileInfo, Image, ObserveArgs, RunResult, ScreenshotArgs, State, StepResult } from "./api.js";
-import { outlineOf } from "./outline.js";
+import { outlineOf, quoted } from "./outline.js";
 
 /** What a surface can be asked, by name: the members of Computer and the tools' calls. */
 export type SurfaceOp =
@@ -110,8 +110,34 @@ function jsonText(value: unknown): string {
 /** The name of a step: its first key ("press", "click", ...). */
 export const stepName = (step: UiStep): string => Object.keys(step)[0] ?? "step";
 
-/** An act's answer as lines: one per step (named by `names`), then the expect, then whether it changed and the new
- *  state, then the new observation's outline when there is one. */
+/** The element a step acts on, by its ref: press's, set's, perform's, and click's or scroll's when they name one, or
+ *  type's `into`. None for a step at a point or with no element. */
+function stepRef(step: UiStep): string | undefined {
+	const at = "type" in step ? step.into : "press" in step ? step.press : "set" in step ? step.set : "perform" in step ? step.perform : "click" in step ? step.click : "scroll" in step ? step.scroll : undefined;
+	return typeof at === "string" ? at : undefined;
+}
+
+/** The most elements a surface remembers the names of, past which the oldest seen go first. */
+const MAX_NAMED = 4000;
+
+/** An element as a step's line names it: its ref, its role, its name, and `[secure]` for a secure field. */
+type Named = { role: string; name?: string; secure: boolean };
+
+/** A step as its line in an act's answer names it: its name, then the element it acted on as the outline names it
+ *  (`press @e3 button "Save"`, `type into @e4 textbox "PIN" [secure]`), where that element was seen in an observation;
+ *  `[secure]` is that element's own flag. A type with no element names none: where the focus is when it runs (which
+ *  app, which field, after what the steps before it, a person, or the system did) is not known here, so no reader of
+ *  its line can tell it went to an ordinary field, and none shows what was typed. */
+export function stepWords(step: UiStep, named: (ref: string) => Named | undefined): string {
+	const ref = stepRef(step);
+	const node = ref === undefined ? undefined : named(ref);
+	if (ref === undefined || node === undefined) return stepName(step);
+	const target = [ref, node.role, ...(node.name ? [quoted(node.name)] : []), ...(node.secure ? ["[secure]"] : [])].join(" ");
+	return `${stepName(step)}${"type" in step ? " into" : ""} ${target}`;
+}
+
+/** An act's answer as lines: one per step (named by `names`, stepWords), then the expect, then whether it changed and
+ *  the new state, then the new observation's outline when there is one. */
 export function actText(names: readonly string[], result: ActResult): string {
 	const lines = result.steps.map((outcome, index) => {
 		const name = names[index] ?? "step";
@@ -145,6 +171,32 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 	let lastApp: string | undefined;
 	/** The app each observed state belongs to: an act that names a state and no app was run on that state's app. */
 	const appOfState = new Map<string, string>();
+	/** Every element observed, by ref, as an act's step line names it (stepWords): a ref stays good across states. */
+	const named = new Map<string, Named>();
+
+	/** Remembers an observation's elements. One with no name of its own (an Android row, a container whose text is in
+	 *  its children) takes its first named element's within a few levels, as a person reading the row would say it. */
+	function remember(nodes: readonly UiObserveResult["nodes"][number][]): void {
+		const parentOf = new Map<string, string | undefined>();
+		for (const node of nodes) {
+			parentOf.set(node.ref, node.parent);
+			named.delete(node.ref);
+			named.set(node.ref, { role: node.role, ...(node.name ? { name: node.name } : {}), secure: node.flags?.includes("secure") === true });
+		}
+		for (const node of nodes) {
+			if (!node.name) continue;
+			let up = node.parent;
+			for (let level = 0; up !== undefined && level < 3; level += 1, up = parentOf.get(up)) {
+				const above = named.get(up);
+				if (above === undefined || above.name !== undefined) break;
+				above.name = node.name;
+			}
+		}
+		for (const ref of named.keys()) {
+			if (named.size <= MAX_NAMED) break;
+			named.delete(ref);
+		}
+	}
 
 	async function call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], signal?: AbortSignal): Promise<DaemonMethods[M]["result"]> {
 		const result = await client.call(method, params, { signal });
@@ -175,6 +227,7 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 		lastState.set(result.app.id, result.state);
 		appOfState.set(result.state, result.app.id);
 		lastApp = result.app.id;
+		remember(result.nodes);
 		const outline = outlineOf(head, result.nodes, result.truncated, result.empty);
 		const imageNote = result.image ? `\nimage: ${result.image.width}×${result.image.height} px of the window's ${window.bounds[2]}×${window.bounds[3]} points` : "";
 		return {
@@ -364,8 +417,10 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 			case "observe":
 				return observeAnswer(await observe(args as ObserveArgs, signal));
 			case "act": {
+				// Each step named as its element was before the act: what it pressed, not what the press made of it.
+				const given: unknown = args.steps;
+				const names = Array.isArray(given) ? (given as UiStep[]).map((step) => stepWords(step, (ref) => named.get(ref))) : [];
 				const result = await act(args as unknown as ActArgs, signal);
-				const names = ((args.steps as UiStep[] | undefined) ?? []).map(stepName);
 				return { value: result, text: actText(names, result), images: result.after?.image ? [result.after.image] : [] };
 			}
 			case "input.act": {

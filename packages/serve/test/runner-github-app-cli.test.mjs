@@ -1,7 +1,7 @@
-// A github_app MCP server on a CLI harness's own MCP client: the CLI calls the session's MCP through its proxy's
-// /mcp/<server> door, and each call meets the claim's per-call check of the App, as pi's host tools do. Here the CLI is a
-// stand-in that speaks MCP to the real door as Claude Code's client does; it calls twice in one turn, and the App is
-// disconnected between the two calls.
+// A github_app MCP server on a CLI harness: the CLI calls the server's tool as a host tool through its tool bridge, and
+// each call meets the claim's per-call check of the App, as pi's do. Here the CLI is a stand-in that asks the host's gate
+// and calls the tool as every CLI adapter's bridge does; it calls twice in one turn, and the App is disconnected between
+// the two calls.
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -10,8 +10,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { seal } from "../dist/sealing.js";
-import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
-import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { registryPin } from "./store-helpers.mjs";
 
@@ -47,21 +45,20 @@ async function fakeGitHub(t) {
   return { api: `http://127.0.0.1:${server.address().port}`, minted, revoked };
 }
 
-/** A CLI stand-in with its own MCP client: its one turn calls `add` at the session's door, then `between()`, then calls
- *  `add` again; `seen.answers` keeps what the door answered each time. */
-function mcpCli(seen, between) {
-  const client = { callIdMeta: "claudecode/toolUseId" };
+/** A CLI stand-in whose one turn calls `mcp__gh__add` through the host's gate, then `between()`, then calls it again;
+ *  `seen.answers` keeps what each call was answered. */
+function bridgeCli(seen, between) {
   return {
     id: "stand-in-cli",
-    capabilities: () => ({ mcpClient: client }),
     check: () => [],
     async open(spec, io) {
-      const proxy = await startModelProxy({ policy: anthropicPolicy({ model: "claude-test", tools: [] }), hooks: io.models, model: "claude-test", origin: "https://faux.invalid", credential: async () => "not-a-secret-provider", ...(spec.mcp ? { mcp: { session: spec.mcp, client } } : {}) }, randomBytes(32).toString("base64url"));
       let state = "new";
       let turn;
       const call = async (n) => {
-        const response = await fetch(`${proxy.url}/mcp/gh`, { method: "POST", headers: { authorization: `Bearer ${proxy.key}`, "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: n, method: "tools/call", params: { name: "add", arguments: { a: 2, b: 3 }, _meta: { [client.callIdMeta]: `toolu_cli_${n}` } } }) });
-        return (await response.json()).result;
+        const one = { callId: `toolu_cli_${n}`, tool: "mcp__gh__add", args: { a: 2, b: 3 } };
+        const answer = await io.gate(one);
+        if (answer !== "allow") return { text: answer.deny ?? "held", isError: true };
+        return spec.tools.find((tool) => tool.name === one.tool).call(one.args, { callId: one.callId, signal: io.signal });
       };
       return {
         get state() { return state; },
@@ -80,16 +77,13 @@ function mcpCli(seen, between) {
         async settleOpenTurn() { state = "idle"; },
         turnEnd: () => turn,
         async interrupt() {},
-        async close() {
-          await turn?.catch(() => undefined);
-          await proxy.close().catch(() => undefined);
-        },
+        async close() { await turn?.catch(() => undefined); },
       };
     },
   };
 }
 
-test("a CLI harness's own MCP client meets the per-call App check too: an App disconnected between two calls of one claim refuses the second unsent, in words, and the run goes on; the token is revoked", { timeout: 60_000 }, async (t) => {
+test("a CLI harness's MCP call meets the per-call App check too: an App disconnected between two calls of one claim refuses the second unsent, in words, and the run goes on; the token is revoked", { timeout: 60_000 }, async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-github-app-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -115,7 +109,7 @@ test("a CLI harness's own MCP client meets the per-call App check too: an App di
   const loop = createAdapterLoop(async (claim, run) => {
     const mcp = await mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: ["mcp:gh/add"], harness: run.harness, work: () => work, launchInput: { content: "Fix https://github.com/acme/widgets" }, githubAppAccess: (s, key, input) => githubAppAccess(s, key, input, { api: github.api }), githubMcpOrigin: new URL(fake.url).origin });
     return {
-      adapter: mcpCli(seen, () => server.triggerSettings.removeScope("github", "server")),
+      adapter: bridgeCli(seen, () => server.triggerSettings.removeScope("github", "server")),
       session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },
       input: "Add them.",
       record: "loop",
@@ -132,9 +126,10 @@ test("a CLI harness's own MCP client meets the per-call App check too: an App di
     if (row.state !== "running" && row.state !== "queued" && row.runner === null) break;
   }
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.deepEqual(seen.answers[0], { content: [{ type: "text", text: "5" }] }, "the first call, with the App's token");
+  assert.equal(seen.answers[0].text, "5", "the first call, with the App's token");
+  assert.notEqual(seen.answers[0].isError, true);
   assert.equal(seen.answers[1].isError, true, JSON.stringify(seen.answers[1]));
-  assert.equal(seen.answers[1].content[0].text, `The MCP server gh's credential can't be used right now: ${GITHUB_UNUSABLE.disconnected}.`);
+  assert.equal(seen.answers[1].text, `The MCP server gh's credential can't be used right now: ${GITHUB_UNUSABLE.disconnected}.`);
   assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, 1, "the second call never reached the server");
   assert.deepEqual(github.minted, [GH_TOKEN], "no mint in between");
   // The revoke is sent as the token is dropped, best effort: it lands within the run's end, or soon after.

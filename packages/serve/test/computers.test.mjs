@@ -116,11 +116,15 @@ test("under AGENTRUN_BOX_ALLOW=none a computer that needs a network is not ready
   assert.deepEqual([providerOf(listed, "phone", "phone-harness").ready, kindOf(listed, "phone").offered, providerOf(listed, "phone", "phone-harness").network], [true, true, "the vendor's own network; this server's allow-list doesn't apply"]);
 });
 
-test("Mode 2 today: Docker's sandbox can't mount the owner's disk; Daytona, Modal and E2B mount it from Archil, so the sandbox is offered, each waiting on its own key; a desktop, phone or browser is", async (t) => {
+/** Why a Daytona sandbox is refused in Mode 2: it takes no Archil mount, and its descriptor says why. */
+const DAYTONA_NO_DISK = "Daytona can't mount the owner's disk this server keeps run folders on (Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes): set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)";
+
+test("Mode 2 today: Docker's sandbox can't mount the owner's disk, nor can Daytona's (saying why); Modal and E2B mount it from Archil, so the sandbox is offered, each waiting on its own key; a desktop, phone or browser is", async (t) => {
   const { routes } = await setup(t, { mode: "disk" });
   const view = await routes.view();
   assert.match(providerOf(view, "sandbox", "docker").why, /Docker can't mount the owner's disk/);
-  for (const [id, needs] of [["daytona", "Daytona needs DAYTONA_API_KEY saved: save it"], ["modal", "Modal needs MODAL_TOKEN_ID and MODAL_TOKEN_SECRET saved: save them"], ["e2b", "E2B needs E2B_API_KEY saved: save it"]]) {
+  assert.equal(providerOf(view, "sandbox", "daytona").why, DAYTONA_NO_DISK);
+  for (const [id, needs] of [["modal", "Modal needs MODAL_TOKEN_ID and MODAL_TOKEN_SECRET saved: save them"], ["e2b", "E2B needs E2B_API_KEY saved: save it"]]) {
     assert.equal(providerOf(view, "sandbox", id).why, `${needs} in Settings → Computers`, `${id} mounts the owner's disk, so only its keys are missing`);
   }
   assert.equal(kindOf(view, "sandbox").offered, true);
@@ -132,7 +136,7 @@ test("Mode 2 once the remote sandboxes mount the owner's disk: Docker's sandbox 
   const { routes } = await setup(t, { mode: "disk", kinds: KINDS });
   const view = await routes.view();
   assert.match(providerOf(view, "sandbox", "docker").why, /Docker can't mount the owner's disk/);
-  assert.equal(providerOf(view, "sandbox", "daytona").why, "Daytona needs DAYTONA_API_KEY saved: save it in Settings → Computers");
+  assert.equal(providerOf(view, "sandbox", "e2b").why, "E2B needs E2B_API_KEY saved: save it in Settings → Computers");
   assert.equal(kindOf(view, "sandbox").offered, true);
 });
 
@@ -314,7 +318,7 @@ test("each choice says where its runs have their shell, the host tools that give
   // Mode 2: the run folders are on the owner's disk.
   const disk = await (await setup(t, { mode: "disk", kinds: KINDS })).routes.view();
   assert.deepEqual(choice(kindOf(disk, "none")), { shell: "local", host_tools: names("local"), shell_note: "No computer: bash runs in a fresh container on the folder's own storage; background commands need a computer." });
-  assert.deepEqual(choice(providerOf(disk, "sandbox", "daytona")), { shell: "computer", host_tools: names("computer"), shell_note: undefined });
+  assert.deepEqual(choice(providerOf(disk, "sandbox", "e2b")), { shell: "computer", host_tools: names("computer"), shell_note: undefined });
   assert.deepEqual(choice(providerOf(disk, "desktop", "orgo")), { shell: "local", host_tools: names("local"), shell_note: SHELL_NOTES.local }, "Orgo's desktop does not mount the disk");
   assert.deepEqual(choice(providerOf(disk, "desktop", "e2b")), { shell: "computer", host_tools: names("computer"), shell_note: undefined }, "E2B's desktop mounts it");
   for (const view of [local, disk]) {
@@ -326,7 +330,7 @@ test("each choice says where its runs have their shell, the host tools that give
 
 /** The words a person reads when no Docker daemon answers here, over the fixture registry: a Mode 1 sandbox (its vendors
  *  need Archil first) and a desktop in either mode. */
-const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
+const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
 const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. E2B, Agent37 or Orgo for a desktop.";
 
 test("no Docker daemon here: Docker is not ready, in words that name the vendors of each kind, and the claim refuses it in the same words", async (t) => {
@@ -399,10 +403,10 @@ test("a sandbox provider's GPUs show on GET /v2/computers as its configuration d
 
   await routes.saveKeys("daytona", { DAYTONA_API_KEY: "good-d" });
   await routes.saveKeys("modal", { MODAL_TOKEN_ID: "good-i", MODAL_TOKEN_SECRET: "good-s" });
-  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }), `${noFolder("Daytona")} (Settings → Computers)`);
-  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "T4", count: 1 } }), "Daytona can't give this agent's computer its GPUs: gpu.type \"T4\" is not one this provider offers: H100 (Settings → Computers)");
-  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } }), /gpu.count 2 is not a whole number from 1 to 1/);
-  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona" }), undefined, "a Daytona sandbox with no GPU is as before");
+  // A Daytona sandbox takes no Archil mount at all, so in Mode 2 it is refused for that first, GPUs or none.
+  for (const gpu of [{ type: "H100", count: 1 }, { type: "T4", count: 1 }, { type: "H100", count: 2 }, undefined]) {
+    assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", ...(gpu ? { gpu } : {}) }), DAYTONA_NO_DISK, JSON.stringify(gpu));
+  }
   assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }), `${noFolder("Modal")} (Settings → Computers)`);
   assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal" }), undefined, "a Modal sandbox with no GPU is as before");
   const local = (await setup(t)).routes;
