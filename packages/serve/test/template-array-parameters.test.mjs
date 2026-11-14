@@ -4,7 +4,7 @@
 // given no value is dropped, so the input schema sees the field absent. In longer text a list fills as its items joined
 // by ", ", an empty one as "". Apply checks the filled input against the agent's input schema.
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { compiled, filledPins, PackageError, packageView, readPackage } from "../dist/templates.js";
@@ -103,4 +103,8 @@ test("the package check fills a parameter with no default from a sample: at a fi
   readPackage(await write("{ type: string, required: true, description: The country. }"));
   const integer = await write("{ type: integer, required: true, description: The country. }");
   assert.throws(() => readPackage(integer), (error) => error instanceof PackageError && error.problems.some((one) => /triggers\[0\]\.target\.input\.country/.test(one)));
+  // A field the inputs don't name is refused whatever the sample: a typo never waits for the apply.
+  const typo = await write("{ type: string, required: true, description: The country. }");
+  writeFileSync(join(typo, "agent.md"), readFileSync(join(typo, "agent.md"), "utf8").replace('country: "${parameters.country}"', 'countri: "${parameters.country}"'));
+  assert.throws(() => readPackage(typo), (error) => error instanceof PackageError && error.problems.some((one) => /triggers\[0\]\.target\.input.*countri/.test(one)));
 });

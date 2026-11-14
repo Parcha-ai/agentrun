@@ -176,6 +176,16 @@ describe("applying a template", () => {
     expect(t.sent[0].body.parameters).toEqual({ companies: ["Stripe", "Adyen"] });
   });
 
+  it("sends a required list left empty as [], for the server to take or refuse; an optional one left empty is not sent", async () => {
+    const WATCH: TemplateView = { ...REVIEWER, name: "watch", display_name: null, mcp: [], parameters: {
+      companies: { type: "array", items: { type: "string" }, required: true, description: "The companies to watch." },
+      limits: { type: "array", items: { type: "integer" }, required: false, description: "Item caps." },
+    } };
+    const t = await open("watch", { templates: [WATCH] });
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ companies: [] });
+  });
+
   it("sends a boolean parameter as its checkbox shows it: false untouched, true once ticked", async () => {
     const FLAGGED: TemplateView = { ...REVIEWER, name: "flagged", parameters: { ...REVIEWER.parameters, strict: { type: "boolean", required: true, description: "Fail on any finding" } } };
     const t = await open("flagged", { templates: [FLAGGED] });
