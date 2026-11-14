@@ -12,6 +12,8 @@ __all__ = [
     "AgentExternal",
     "AgentLearning",
     "AgentList",
+    "AgentMcpPinValue",
+    "AgentMcpPinValueToolsItem",
     "AgentOwnComputer",
     "AgentRuns",
     "AgentTemplate",
@@ -222,6 +224,8 @@ __all__ = [
     "GetAgentResponse",
     "GetAgentResponseExternal",
     "GetAgentResponseLearning",
+    "GetAgentResponseMcpPinValue",
+    "GetAgentResponseMcpPinValueToolsItem",
     "GetAgentResponseOwnComputer",
     "GetAgentResponseRuns",
     "GetAgentResponseTemplate",
@@ -423,6 +427,8 @@ __all__ = [
     "ListMcpServersResponseServersItemToolsItem",
     "ListRevisionsResponse",
     "ListRevisionsResponseRevisionsItem",
+    "ListRevisionsResponseRevisionsItemMcpPinValue",
+    "ListRevisionsResponseRevisionsItemMcpPinValueToolsItem",
     "ListRunFilesResponse",
     "ListRunsResponse",
     "ListTemplatesResponse",
@@ -912,6 +918,7 @@ class Agent(_AgentRequired, total=False):
     revisions: int
     archived_at: str | None
     learning: AgentLearning
+    mcp_pin: dict[str, AgentMcpPinValue] | None
     own_computer: AgentOwnComputer | None
     template: AgentTemplate | None
     warnings: list[InputIssue]
@@ -1132,6 +1139,25 @@ class AgentLearning(TypedDict):
     pending: int
 
 
+class _AgentMcpPinValueRequired(TypedDict):
+    tools: list[AgentMcpPinValueToolsItem]
+
+
+class AgentMcpPinValue(_AgentMcpPinValueRequired, total=False):
+    prices: dict[str, float]
+
+
+class _AgentMcpPinValueToolsItemRequired(TypedDict):
+    name: str
+    input_schema: dict[str, Any]
+
+
+class AgentMcpPinValueToolsItem(_AgentMcpPinValueToolsItemRequired, total=False):
+    title: str
+    description: str
+    annotations: dict[str, Any]
+
+
 class _AgentOwnComputerRequired(TypedDict):
     provider: str
     id: str
@@ -1215,6 +1241,7 @@ class GetAgentResponse(_GetAgentResponseRequired, total=False):
     revisions: int
     archived_at: str | None
     learning: GetAgentResponseLearning
+    mcp_pin: dict[str, GetAgentResponseMcpPinValue] | None
     own_computer: GetAgentResponseOwnComputer | None
     template: GetAgentResponseTemplate | None
     warnings: list[InputIssue]
@@ -1250,6 +1277,25 @@ class GetAgentResponseToolsItem(_GetAgentResponseToolsItemRequired, total=False)
 
 class GetAgentResponseLearning(TypedDict):
     pending: int
+
+
+class _GetAgentResponseMcpPinValueRequired(TypedDict):
+    tools: list[GetAgentResponseMcpPinValueToolsItem]
+
+
+class GetAgentResponseMcpPinValue(_GetAgentResponseMcpPinValueRequired, total=False):
+    prices: dict[str, float]
+
+
+class _GetAgentResponseMcpPinValueToolsItemRequired(TypedDict):
+    name: str
+    input_schema: dict[str, Any]
+
+
+class GetAgentResponseMcpPinValueToolsItem(_GetAgentResponseMcpPinValueToolsItemRequired, total=False):
+    title: str
+    description: str
+    annotations: dict[str, Any]
 
 
 class _GetAgentResponseOwnComputerRequired(TypedDict):
@@ -3176,7 +3222,7 @@ class ListRevisionsResponse(TypedDict):
     next_cursor: str | None
 
 
-class ListRevisionsResponseRevisionsItem(TypedDict):
+class _ListRevisionsResponseRevisionsItemRequired(TypedDict):
     revision: str
     version: int
     parent: str | None
@@ -3185,6 +3231,29 @@ class ListRevisionsResponseRevisionsItem(TypedDict):
     note: str | None
     created_at: Timestamp
     definition: Definition
+
+
+class ListRevisionsResponseRevisionsItem(_ListRevisionsResponseRevisionsItemRequired, total=False):
+    mcp_pin: dict[str, ListRevisionsResponseRevisionsItemMcpPinValue] | None
+
+
+class _ListRevisionsResponseRevisionsItemMcpPinValueRequired(TypedDict):
+    tools: list[ListRevisionsResponseRevisionsItemMcpPinValueToolsItem]
+
+
+class ListRevisionsResponseRevisionsItemMcpPinValue(_ListRevisionsResponseRevisionsItemMcpPinValueRequired, total=False):
+    prices: dict[str, float]
+
+
+class _ListRevisionsResponseRevisionsItemMcpPinValueToolsItemRequired(TypedDict):
+    name: str
+    input_schema: dict[str, Any]
+
+
+class ListRevisionsResponseRevisionsItemMcpPinValueToolsItem(_ListRevisionsResponseRevisionsItemMcpPinValueToolsItemRequired, total=False):
+    title: str
+    description: str
+    annotations: dict[str, Any]
 
 
 class SetCurrentBody(TypedDict):

@@ -409,9 +409,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const checkout = body.checkout === "pull_request" ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part })) : undefined;
   holds.hold({ checkout });
 
-  // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin made at the first claim or read as written, its
+  // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin, the one its revision's save made, read, its
   // credentials opened under the server's seal key into this claim's memory, one gateway for the claim. First, before
-  // anything the spec would have to let go: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its
+  // anything the spec would have to let go: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
   const hold = (values: string[]) => cut.hold(values);

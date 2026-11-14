@@ -151,6 +151,16 @@ export type Agent = {
   learning?: {
     pending: number;
   };
+  mcp_pin?: Record<string, {
+    tools: Array<{
+      name: string;
+      title?: string;
+      description?: string;
+      input_schema: Record<string, unknown>;
+      annotations?: Record<string, unknown>;
+    }>;
+    prices?: Record<string, number>;
+  }> | null;
   own_computer?: {
     provider: string;
     id: string;
@@ -2373,6 +2383,16 @@ export type ListRevisionsResponse = {
     note: string | null;
     created_at: Timestamp;
     definition: Definition;
+    mcp_pin?: Record<string, {
+      tools: Array<{
+        name: string;
+        title?: string;
+        description?: string;
+        input_schema: Record<string, unknown>;
+        annotations?: Record<string, unknown>;
+      }>;
+      prices?: Record<string, number>;
+    }> | null;
   }>;
   next_cursor: string | null;
 };

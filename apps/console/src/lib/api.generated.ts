@@ -42,6 +42,16 @@ export interface components {
     learning?: {
       pending: number;
     };
+    mcp_pin?: Record<string, {
+      tools: {
+        name: string;
+        title?: string;
+        description?: string;
+        input_schema: Record<string, unknown>;
+        annotations?: Record<string, unknown>;
+      }[];
+      prices?: Record<string, number>;
+    }> | null;
     own_computer?: {
       provider: string;
       id: string;
@@ -3041,6 +3051,16 @@ export interface operations {
         note: string | null;
         created_at: components["Timestamp"];
         definition: components["Definition"];
+        mcp_pin?: Record<string, {
+          tools: {
+            name: string;
+            title?: string;
+            description?: string;
+            input_schema: Record<string, unknown>;
+            annotations?: Record<string, unknown>;
+          }[];
+          prices?: Record<string, number>;
+        }> | null;
       }[];
       next_cursor: string | null;
     };

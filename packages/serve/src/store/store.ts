@@ -88,6 +88,9 @@ export interface NewRevision {
   readonly package?: TemplatePackage;
   /** The version this revision maps in an externally owned agent, set only on an inline-agent run's revision. */
   readonly externalVersion?: string;
+  /** The MCP tools the revision grants, pinned as their servers listed them when it was saved (mcp-gateway.ts McpPin), which
+   *  every run of it calls; none when it grants none. */
+  readonly mcpPin?: unknown;
 }
 
 export interface RevisionRow {
@@ -106,6 +109,8 @@ export interface RevisionRow {
   readonly createdAt: number;
   /** The version this revision maps in the agent's owning system (one revision per version), or null for one committed here. */
   readonly externalVersion: string | null;
+  /** Its MCP pin as its save made it (NewRevision.mcpPin), or null for a revision that grants no MCP tool. */
+  readonly mcpPin: unknown;
 }
 
 /** How a run ended, beside its state. An ended run (state 'ended'): 'escalated' (it finished its work and waits for a
@@ -570,6 +575,8 @@ export interface Agents {
   byExternal(ref: string): Promise<AgentRow | undefined>;
   /** Whether the agent already has the revision that maps `version` of its owning system (one row looked up, no bodies read). */
   hasExternalVersion(agentId: string, version: string): Promise<boolean>;
+  /** The revision that maps `version` of its owning system, or undefined before that version's first run. */
+  externalRevision(agentId: string, version: string): Promise<RevisionRow | undefined>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
@@ -585,6 +592,10 @@ export interface Agents {
   setCurrent(agentId: string, revisionId: string): Promise<void>;
   revision(id: string): Promise<RevisionRow | undefined>;
   revisions(agentId: string): Promise<RevisionRow[]>;
+  /** Pins a revision saved with no MCP pin (before pins were made at save) at its first run: `pin` is written only while
+   *  the revision still has none, and the pin it has then is the answer, so two first runs at once agree on one. Null when
+   *  there is no such revision. */
+  pinOnce(revisionId: string, pin: unknown): Promise<unknown>;
 }
 
 export interface Templates {
@@ -669,7 +680,7 @@ export interface Runs {
    *  revision's `note` is kept by its first use, as an edit's note is; it is not part of its body. */
   createInline(input: {
     agent: { id: string; name: string; description?: string | null; ref: string };
-    revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown; note?: string };
+    revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown; note?: string; mcpPin?: unknown };
     run: { id: string; origin?: RunOrigin };
     launch: RunLaunchInput;
   }): Promise<RunRow>;
@@ -808,7 +819,8 @@ export interface McpServerStamp {
   readonly tokenUntil: number | null;
 }
 
-/** A run's MCP pin: what it may call, per granted server (url, tools, prices), written once at its first claim. */
+/** A run's MCP pin: what it may call, per granted server (url, tools, prices), as its revision's save pinned it
+ *  (RevisionRow.mcpPin); `pinnedAt` is when that revision was saved. */
 export interface McpPinRow {
   readonly runId: string;
   readonly body: unknown;
@@ -867,12 +879,8 @@ export interface Mcp {
    *  (runner/mcp-claim.ts) to see its credential removed, replaced or moved, or its access token near its end. Undefined
    *  when it is no longer saved. */
   stamp(name: string): Promise<McpServerStamp | undefined>;
-  /** The run's pin, or none (a run that grants no MCP tool has none). */
+  /** The run's pin: its revision's, as the revision's save made it; none for a run whose revision grants no MCP tool. */
   pin(runId: string): Promise<McpPinRow | undefined>;
-  /** Writes the run's pin under `claim` unless it has one, in one transaction with the claim's epoch fence, and answers the
-   *  pin as stored: never rewritten, so a second call (or a later claim's) reads the first. Fenced, writing nothing, on a
-   *  stale claim. */
-  pinOnce(claim: Claim, body: unknown): Promise<McpPinRow>;
   /** One refresh at a time per server (a provider that rotates refresh tokens spends the old one at each refresh): the lease
    *  is granted to `holder` for `ms` (MCP_REFRESH_LEASE_MS by default) only while the credential is still the one it read
    *  (`seen`: the sealed bytes, null for none) and no live lease is held. Not granted: the current row comes back, and the

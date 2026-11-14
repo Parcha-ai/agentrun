@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { GitHubConnect } from "../dist/github-connection.js";
 import { appPermissionWarnings, TOOL_PERMISSIONS } from "../dist/template-github-permissions.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
 
 const RELEASE_NOTES = { name: "release-notes", mcp: [{ server: "github", tools: ["list_releases", "pull_request_read", "issue_write"], required: false, allow: [], pin: {} }] };
@@ -44,6 +45,11 @@ test("a permissions map that could not be read says the check could not be made,
   const warned = await appPermissionWarnings(RELEASE_NOTES, onApp, reads({ unreadable: "GitHub gave no permissions for the installation on acme (HTTP 502)" }));
   assert.deepEqual(warned, [{ field: "grants.mcp:github/issue_write", reason: "not_set_up_here", message: "mcp:github/issue_write needs Issues: write of the GitHub App, and this server could not check whether it has it (GitHub gave no permissions for the installation on acme (HTTP 502)): if release-notes can't use it, it keeps its draft in its answer." }]);
   assert.ok(!warned[0].message.includes("refuses"), "never says GitHub refuses it");
+  // No App to ask: at an apply only when GitHub was disconnected after the save listed the server (with no App the listing
+  // itself refuses the apply), and said so, never guessed.
+  const none = new GitHubConnect({ credentials: () => undefined, view: () => undefined }, { api: "http://127.0.0.1:9", say: () => {} });
+  assert.deepEqual(await none.installationPermissions(), { unreadable: "this server has no GitHub App" });
+  assert.match((await appPermissionWarnings(RELEASE_NOTES, onApp, () => none.installationPermissions()))[0].message, /could not check whether it has it \(this server has no GitHub App\): if release-notes can't use it/);
 });
 
 /** A GitHub whose GET /app/installations/{id} answers as `routes[id]` says: {status, body} at once, or {hang: true} never.
@@ -123,19 +129,34 @@ test("installation readers: a refusal, a missing map or an unknown level leaves 
   assert.match((await bare.warned())[0].message, /has no Issues permission on a1, so GitHub refuses it/);
 });
 
-/** A server whose MCP server `github` is saved as `auth` (its row put in the store before the server starts: on the
- *  cutover a github_app server's save-time listing waits on the store registry's App token, github-tokens.test.mjs). */
+/** GitHub's hosted MCP as a test has it: a fake on loopback that lists the github tools the templates tick (each taking
+ *  anything), never api.githubcopilot.com. Its origin is the one a github_app server may have (the server's
+ *  githubMcpOrigin seam), so a template's apply lists and pins it as it would GitHub's. */
+const GITHUB_TOOLS = ["list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "list_pull_requests", "search_pull_requests", "pull_request_read", "get_file_contents", "search_issues", "list_issues", "get_label", "issue_write", "search_code", "get_repository_tree", "pull_request_review_write", "add_comment_to_pending_review"];
+async function githubMcp(t) {
+  const fake = await startFakeMcp({ name: "github" });
+  t.after(() => fake.close());
+  for (const name of Object.keys(fake.tools)) delete fake.tools[name];
+  for (const name of GITHUB_TOOLS) fake.tools[name] = { description: `GitHub's ${name}.`, input: { type: "object", properties: {}, additionalProperties: true }, run: () => ({ content: [{ type: "text", text: name }] }) };
+  return fake;
+}
+
+/** A server whose MCP server `github` is saved as `auth` at the fake GitHub MCP (its row put in the store before the server
+ *  starts: on the cutover a github_app server's save-time listing waits on the store registry's App token,
+ *  github-tokens.test.mjs). */
 async function savedGitHub(t, auth, options = {}) {
+  const fake = await githubMcp(t);
   const data = join(await scratch(t), "agents");
   await mkdir(data, { recursive: true });
   const store = await openSqliteStore({ dataDir: data, role: "server" });
   try {
-    const tools = ["list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "list_pull_requests", "pull_request_read", "get_file_contents", "list_issues", "get_label", "issue_write", "get_repository_tree", "pull_request_review_write", "add_comment_to_pending_review"].map((name) => ({ name, description: `GitHub's ${name}.`, input_schema: { type: "object", properties: {}, additionalProperties: true } }));
-    await store.mcp.put({ name: "github", url: "https://api.githubcopilot.com/mcp/", auth, tools });
+    const tools = GITHUB_TOOLS.map((name) => ({ name, description: `GitHub's ${name}.`, input_schema: { type: "object", properties: {}, additionalProperties: true } }));
+    await store.mcp.put({ name: "github", url: fake.url, auth, tools });
   } finally {
     await store.close();
   }
-  return serve(t, { data, ...options });
+  const server = await serve(t, { data, githubMcpOrigin: new URL(fake.url).origin, ...options });
+  return { ...server, fake };
 }
 
 /** The apply's grants that tick release-notes' issue write. */
@@ -143,25 +164,31 @@ const ISSUE_WRITE = ["mcp:github/issue_write"];
 /** The one repository each apply here is for. */
 const WIDGETS = { owner: "acme", repo: "widgets" };
 
-test("release-notes applied against an installation whose GitHub says Issues: read names it in the apply answer; with no App to ask it says it could not check; code-review and the owner's own token are not warned", { timeout: 120_000 }, async (t) => {
+test("release-notes applied against an installation whose GitHub says Issues: read names it in the apply answer; with no App connected the apply is refused and nothing is made; code-review and the owner's own token are not warned", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
-  const { api } = await savedGitHub(t, "github_app", { fauxGitHub: true });
+  const { api, fake } = await savedGitHub(t, "github_app", { fauxGitHub: true });
   // Only a tool the owner ticks is the agent's, so only a ticked one is checked: unticked, issue_write is not said.
   const unticked = await api("POST", "/templates/release-notes/apply", { parameters: WIDGETS });
   assert.equal(unticked.status, 201, JSON.stringify(unticked.body));
   assert.deepEqual(unticked.body.warnings.filter((w) => w.field === "grants.mcp:github/issue_write"), [], "an unticked tool is not granted: nothing to check");
   const notes = await api("POST", "/templates/release-notes/apply", { parameters: WIDGETS, grants: ISSUE_WRITE });
   assert.equal(notes.status, 201, JSON.stringify(notes.body));
+  assert.ok(fake.log.some((entry) => entry.method === "tools/list"), "the apply listed the local GitHub MCP to pin its tools");
   assert.deepEqual(notes.body.warnings.filter((w) => w.field === "grants.mcp:github/issue_write"), [{ field: "grants.mcp:github/issue_write", reason: "not_allowed", message: WORDS.replace("on acme", "on faux-org") }]);
   const review = await api("POST", "/templates/code-review/apply", { parameters: WIDGETS, grants: ["pull_request_read", "get_file_contents", "get_repository_tree", "pull_request_review_write", "add_comment_to_pending_review"].map((tool) => `mcp:github/${tool}`) });
   assert.equal(review.status, 201, JSON.stringify(review.body));
   assert.ok(!review.body.warnings.some((w) => w.message.includes("GitHub App has")), JSON.stringify(review.body.warnings));
+  // With no App connected, a github_app server can't be listed to pin its tools (no token to list it with), so the
+  // apply is refused, as any save whose granted server can't be listed is, and nothing is made: an agent made then would
+  // have every run refused at its claim. Connect GitHub, apply again, and its tools are pinned.
   const bare = await savedGitHub(t, "github_app");
-  const unchecked = await bare.api("POST", "/templates/release-notes/apply", { parameters: WIDGETS, grants: ISSUE_WRITE });
-  assert.equal(unchecked.status, 201, JSON.stringify(unchecked.body));
-  const said = unchecked.body.warnings.filter((w) => w.field === "grants.mcp:github/issue_write");
-  assert.equal(said.length, 1, JSON.stringify(unchecked.body.warnings));
-  assert.match(said[0].message, /could not check whether it has it \(this server has no GitHub App\)/);
+  const unconnected = await bare.api("POST", "/templates/release-notes/apply", { parameters: WIDGETS, grants: ISSUE_WRITE });
+  assert.equal(unconnected.status, 422, JSON.stringify(unconnected.body));
+  assert.equal(unconnected.body.error.code, "input_invalid");
+  assert.equal(unconnected.body.error.message, "The MCP server github could not be listed to pin its tools: This server has no GitHub App: Connect GitHub in Settings. Nothing was saved: save again once it answers.");
+  assert.equal((await bare.api("GET", "/agents/release-notes")).status, 404, "no agent was made");
+  assert.deepEqual([(await bare.api("GET", "/agents")).body.agents, (await bare.api("GET", "/triggers")).body.triggers], [[], []], "nothing was made");
+  assert.ok(!bare.fake.log.length, "nothing reached the GitHub MCP");
   const own = await savedGitHub(t, "bearer");
   const mine = await own.api("POST", "/templates/release-notes/apply", { parameters: WIDGETS, grants: ISSUE_WRITE });
   assert.equal(mine.status, 201, JSON.stringify(mine.body));
