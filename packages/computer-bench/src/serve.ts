@@ -141,6 +141,11 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 		const id = `${bench}-${arm.id}-${kind}-${arm.surface}${exec === "deny" ? "-ui" : ""}${arm.harness === "pi" ? `-s${steps}` : ""}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
 		let made = agents.get(id);
 		if (!made) {
+			// The arm's own definition may pin the computer (its provider, say), never its kind, its surface or its exec: those
+			// are the task's and the arm's, and the record says them.
+			const own = (arm.options?.definition as JsonObject | undefined) ?? {};
+			const ownComputer = own.computer && typeof own.computer === "object" && !Array.isArray(own.computer) ? own.computer : {};
+			const pinned = Object.fromEntries(Object.entries(ownComputer).filter(([key]) => key !== "kind" && key !== "surface" && key !== "exec"));
 			const definition = {
 				id,
 				name: `computer-bench ${arm.id} (${kind})`,
@@ -148,12 +153,12 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 				harness: arm.harness,
 				model: arm.model,
 				...(arm.effort ? { thinking: arm.effort } : {}),
-				computer: { kind, ...(typeof arm.options?.provider === "string" ? { provider: arm.options.provider } : {}), surface: arm.surface, ...(exec === "deny" ? { exec: false } : {}) },
 				approvals: "never",
 				skills: [],
 				tools: [],
 				...(arm.harness === "pi" ? { max_tool_calls: steps } : {}),
-				...((arm.options?.definition as JsonObject | undefined) ?? {}),
+				...own,
+				computer: { kind, ...(typeof arm.options?.provider === "string" ? { provider: arm.options.provider } : {}), ...pinned, surface: arm.surface, ...(exec === "deny" ? { exec: false } : {}) },
 			};
 			made = api("POST", "/agents", { definition }).then(({ status, value }) => {
 				if (status >= 300) throw Object.assign(new Error(`the agent ${id} was not saved: ${status} ${errorOf(value).message ?? ""}`), { code: "refused" });
@@ -355,9 +360,13 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 			}
 		}
 		await readTimeline();
+		// Serve runs a script's calls before the bench reads them (the last may show only now, after the run's end): a
+		// run that made more computer calls than the budget is over it, whatever its checks say.
+		const overSteps = computerCalls > request.budget.steps;
+		if (!stopped && overSteps) stopped = "budget";
 		const usd = view.cost?.usd ?? view.cost?.so_far_usd;
 		const final = answer ?? view.result?.final_answer ?? undefined;
-		const common = { ...(typeof usd === "number" ? { cost_usd: usd } : {}), ...(final ? { answer: final } : {}), tool_calls: done.size, transcript: `serve run ${runId}` };
+		const common = { ...(typeof usd === "number" ? { cost_usd: usd } : {}), ...(final ? { answer: final } : {}), tool_calls: done.size, ...(overSteps ? { over_steps: true } : {}), transcript: `serve run ${runId}` };
 		if (stopped === "budget") return { ...common, outcome: "budget", message: computerCalls > request.budget.steps ? `the task's budget of ${request.budget.steps} computer calls is spent` : "the run paused at its cap" };
 		if (stopped === "signal") return { ...common, outcome: "budget", message: String((request.signal.reason as Error | undefined)?.message ?? "stopped") };
 		if (view.computer?.held?.state === "ended" || view.status === "completed") return { ...common, outcome: "done" };
@@ -374,7 +383,7 @@ const runBody = (content: string, usd: number, holdMinutes: number | undefined) 
  *  needs each for, and the item of README.md's "What serve needs" that asks for it (0: serve has it without a hold). */
 export const SERVE_CONTRACT: readonly { method: string; path: string; body?: Json; answers: string; need: string; item: number }[] = [
 	{ method: "GET", path: "/openapi.json", answers: "serve's OpenAPI document", need: "reads whether a run's create takes hold and its read has computer.held", item: 0 },
-	{ method: "POST", path: "/agents", body: { definition: "{id, name, instructions, harness, model, thinking (arm.effort)?, computer {kind, provider?, surface (arm.surface), exec: false (a task's exec deny)?}, approvals, skills, tools, max_tool_calls (pi: budget.steps), ...arm.options.definition}" }, answers: "the saved agent", need: "saves an agent per arm, kind and exec (and step budget, on pi)", item: 0 },
+	{ method: "POST", path: "/agents", body: { definition: "{id, name, instructions, harness, model, thinking (arm.effort)?, approvals, skills, tools, max_tool_calls (pi: budget.steps), ...arm.options.definition, computer {kind, provider?, ...arm.options.definition.computer, surface (arm.surface), exec: false (a task's exec deny)?}}" }, answers: "the saved agent", need: "saves an agent per arm, kind and exec (and step budget, on pi)", item: 0 },
 	{ method: "POST", path: "/agents/{agent_id}/runs", body: { input: "{content}", max_cost_usd: "budget.usd", hold: true, hold_minutes: "options.holdMinutes?" }, answers: "{run_id, status, computer {state, held {state}}}; with hold, the agent waits for /start", need: "claims a run's computer and holds it, its agent not started", item: 1 },
 	{ method: "GET", path: "/runs/{run_id}", answers: "{status, computer {state, provider, why, held {state starting|waiting|started|ended|released, why}}, cost {usd, so_far_usd}, result {final_answer}, error {code, message}}", need: "reads where the hold is, and how the run ended", item: 5 },
 	{ method: "POST", path: "/runs/{run_id}/computer/call", body: { method: "a protocol method", params: "its params" }, answers: "{ok, value} | {ok: false, error {code, message}}: the computer's answer, verbatim", need: "reaches the held computer through it, for setup, frames, checks and teardown", item: 2 },

@@ -31,7 +31,7 @@ function callRecordOf(method, params, answer, ms) {
  *  SERVE_CONTRACT names them) 404 "no route" or 405, an agent or run it doesn't have 404 not_found, and, once it has the
  *  agent, a runs body field it keeps none of (`keepsNo`) 422 not_allowed. Its OpenAPI document has RunCreate.hold unless
  *  it keeps no hold, and Run.computer.held unless `noHeld`, which leaves held out of its run reads too. */
-async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, lacks = [], lackStatus = 404, keepsNo = [], noHeld = false, agents: extraAgents = {}, words = false, maxCalls = 200 } = {}) {
+async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, lacks = [], lackStatus = 404, keepsNo = [], noHeld = false, agents: extraAgents = {}, words = false, maxCalls = 200, lateRows = false } = {}) {
 	const agents = new Map();
 	const runs = new Map();
 	const requests = [];
@@ -104,6 +104,7 @@ async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, la
 		if (req.method === "GET" && rest === "") {
 			run.polls += 1;
 			if (run.held === "starting" && run.polls >= holdPolls) [run.held, run.computer] = ["waiting", "ready"];
+			if (run.held === "ended" || final()) run.toldEnded = true;
 			return send(200, view());
 		}
 		if (req.method === "POST" && rest === "computer/call") {
@@ -153,7 +154,9 @@ async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, la
 		}
 		if (req.method === "GET" && rest === "timeline") {
 			const after = Number(url.searchParams.get("after") ?? 0);
-			const rows = run.timeline.filter((one) => one.seq > after);
+			// lateRows: the Timeline shows the agent's rows only once a run read has said its agent is done, as when its
+			// last script ends between the bench's Timeline read and its run read.
+			const rows = lateRows && !run.toldEnded ? [] : run.timeline.filter((one) => one.seq > after);
 			return send(200, { run_id: run.id, rows, next_after: rows.at(-1)?.seq ?? after, has_more: false });
 		}
 		if (req.method === "POST" && rest === "cancel") {
@@ -309,6 +312,18 @@ test("serve: the step budget is computer calls: a script past it stops the run t
 	} finally {
 		await bounded.close();
 	}
+	// The calls of a script that ends between the bench's Timeline read and its run read are counted after the run ends.
+	const late = await fakeServe({ agents: { six }, lateRows: true });
+	try {
+		const [task] = fakeTasks("fake.settings.dark-theme");
+		const tight = withSpec(task, { budget: { ...task.spec.budget, steps: 4 } });
+		const backend = withTask(serveBackend({ baseUrl: late.baseUrl, token: TOKEN, pollMs: 5 }), late);
+		const [result] = await runBench({ tasks: [tight], arms: [arm("six", "six", "code")], seeds: [1], backend, store: store(), grade: "never" });
+		assert.equal(result.outcome, "budget", "six calls past a budget of four never pass, however late the Timeline shows them");
+		assert.match(result.why ?? "", /budget of 4 computer calls/);
+	} finally {
+		await late.close();
+	}
 });
 
 test("serve: an exec deny task runs on its own agent whose computer has exec false, and its result says deny", async () => {
@@ -322,19 +337,24 @@ test("serve: an exec deny task runs on its own agent whose computer has exec fal
 		const deny = withSpec(task, { id: "fake.settings.dark-theme-ui", exec: "deny" });
 		const s = store();
 		const backend = withTask(serveBackend({ baseUrl: serve.baseUrl, token: TOKEN, pollMs: 5 }), serve);
-		const [allowed, denied] = await runBench({ tasks: [task, deny], arms: [arm("shell")], seeds: [1], backend, store: s, grade: "never" });
+		// An arm whose definition pins its own computer keeps its provider, never its say over the surface or exec.
+		const pinned = { ...arm("shell", "pinned"), options: { definition: { computer: { kind: "desktop", provider: "pinned-vendor", surface: "code", exec: true } } } };
+		const [allowed, pinnedAllowed, denied, pinnedDenied] = await runBench({ tasks: [task, deny], arms: [arm("shell"), pinned], seeds: [1], backend, store: s, grade: "never" });
 		assert.deepEqual([allowed.exec, allowed.outcome, allowed.exec_calls], ["allow", "pass", 1]);
 		assert.deepEqual([denied.exec, denied.outcome, denied.exec_calls], ["deny", "fail", 0]);
+		assert.deepEqual([pinnedAllowed.outcome, pinnedDenied.exec, pinnedDenied.outcome, pinnedDenied.exec_calls], ["pass", "deny", "fail", 0]);
 		const definitions = [...serve.agents.values()];
 		assert.deepEqual(
-			definitions.map((one) => [one.id.replace(/^.*-shell-/, ""), one.computer]),
+			definitions.map((one) => [one.id.replace(/^.*?-(shell|pinned)-/, "$1-"), one.computer]),
 			[
-				["desktop-tools", { kind: "desktop", surface: "tools" }],
-				["desktop-tools-ui", { kind: "desktop", surface: "tools", exec: false }],
+				["shell-desktop-tools", { kind: "desktop", surface: "tools" }],
+				["pinned-desktop-tools", { kind: "desktop", provider: "pinned-vendor", surface: "tools" }],
+				["shell-desktop-tools-ui", { kind: "desktop", surface: "tools", exec: false }],
+				["pinned-desktop-tools-ui", { kind: "desktop", provider: "pinned-vendor", surface: "tools", exec: false }],
 			],
 		);
 		const header = recordOf(s, denied.run)[0].data;
-		assert.deepEqual(header.agent, { surface: "tools", exec: "deny", groups: ["files", "screen", "input.pointer", "input.keys", "apps", "ui"], id: definitions[1].id });
+		assert.deepEqual(header.agent, { surface: "tools", exec: "deny", groups: ["files", "screen", "input.pointer", "input.keys", "apps", "ui"], id: definitions[2].id });
 	} finally {
 		await serve.close();
 	}

@@ -314,14 +314,14 @@ test("null mode runs no agent, and oracle mode solves the task on the bench's ch
 
 test("the arm's surface is real: tools gives the agent one method per tool call, code one script per tool call and no bare call", async () => {
 	const s = store();
-	const [tools, code] = await runBench({ tasks: fakeTasks("fake.notes.new-note"), arms: [arm("fake-right", "right-tools", "tools"), arm("fake-right", "right-code", "code")], seeds: [1], backend: fakeBackend({ agents: FAKE_AGENTS }), store: s, grade: "never" });
-	assert.deepEqual([tools.outcome, code.outcome], ["pass", "pass"]);
-	assert.deepEqual([tools.steps, tools.tool_calls], [4, 4], "tools: each of the four computer calls is its own tool call");
-	assert.deepEqual([code.steps, code.tool_calls], [4, 1], "code: one script of four computer calls is one tool call");
+	const [stepwise, scripted] = await runBench({ tasks: fakeTasks("fake.notes.new-note"), arms: [arm("fake-right", "right-tools", "tools"), arm("fake-right", "right-code", "code")], seeds: [1], backend: fakeBackend({ agents: FAKE_AGENTS }), store: s, grade: "never" });
+	assert.deepEqual([stepwise.outcome, scripted.outcome], ["pass", "pass"]);
+	assert.deepEqual([stepwise.steps, stepwise.tool_calls], [4, 4], "tools: each of the four computer calls is its own tool call");
+	assert.deepEqual([scripted.steps, scripted.tool_calls], [4, 1], "code: one script of four computer calls is one tool call");
 	const agentSteps = (result) => recordOf(s, result.run).filter((entry) => entry.kind === ENTRY.step && entry.data.phase === "agent").map((entry) => entry.data);
-	assert.deepEqual(agentSteps(tools).map((step) => step.turn), [1, 2, 3, 4]);
-	assert.deepEqual(agentSteps(code).map((step) => step.turn), [1, 1, 1, 1]);
-	assert.deepEqual(recordOf(s, code.run)[0].data.agent, { surface: "code", exec: "allow", groups: ["exec", "files", "screen", "input.pointer", "input.keys", "apps", "ui"] });
+	assert.deepEqual(agentSteps(stepwise).map((step) => step.turn), [1, 2, 3, 4]);
+	assert.deepEqual(agentSteps(scripted).map((step) => step.turn), [1, 1, 1, 1]);
+	assert.deepEqual(recordOf(s, scripted.run)[0].data.agent, { surface: "code", exec: "allow", groups: ["exec", "files", "screen", "input.pointer", "input.keys", "apps", "ui"] });
 	// What each surface is given, as the agent sees it.
 	const seen = {};
 	const probe = async (wire, request) => {

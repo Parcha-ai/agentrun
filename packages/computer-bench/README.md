@@ -69,7 +69,8 @@ under the same conditions):
    be done without, the groups setup and checks need) before setup touches it, in one sentence naming what is missing;
 3. runs setup; a setup that fails is infra;
 4. runs the agent under its budget: the step budget answers `limit` past it and stops the agent, the wall budget aborts
-   it, and a run that spent more than `usd` counts as `budget` whatever its checks say;
+   it, and a run that spent more than `usd`, or made more computer calls than `steps` (on serve, which runs a script's
+   calls before the bench reads them), counts as `budget` whatever its checks say;
 5. runs the checks on the computer as the agent left it, then reads the tree and a last frame;
 6. tears down and releases (always, once setup began);
 7. grades, after the release: no computer waits on a model.
@@ -178,7 +179,7 @@ first is the baseline. On serve, the arm is an agent definition: `harness` and `
 `thinking` level, `computer: {kind, provider?, surface, exec?}` (`kind` from the task, `provider` from
 `options.provider`, `surface` the arm's: "code", the harness's script tool alone; "tools", the per-step computer tools
 alone; and `exec: false` for a task that denies exec), and `options.definition` any other field of the definition as it
-is. One agent per bench run, arm, kind and exec (and step budget, on pi): its id is
+is. Its `computer` may pin more (a provider, say) but never `kind`, `surface` or `exec`: the bench sets those. One agent per bench run, arm, kind and exec (and step budget, on pi): its id is
 `<bench>-<arm>-<kind>-<surface>[-ui][-s<steps>]`, `-ui` where exec is denied.
 
 ```json

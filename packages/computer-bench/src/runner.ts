@@ -40,6 +40,9 @@ export interface AgentResult {
 	/** The model's tool calls (its turns at the computer and every other tool), where the backend counts them apart from
 	 *  its computer calls (serve's Timeline). Absent: the agent tap's count. */
 	tool_calls?: number;
+	/** It made more computer calls than the step budget before anyone could stop it (on serve the calls run on serve's
+	 *  side; the tap refuses the one past the budget): like money spent over budget, a success bought so is not one. */
+	over_steps?: boolean;
 	/** sha256 of what the agent was given. */
 	given?: RunHeader["given"];
 	/** Where its transcript is, when the backend keeps one (a serve run id, a file). */
@@ -451,8 +454,9 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 			clearTimeout(wall);
 		}
 		if (spent && agent.outcome !== "infra") agent = { ...agent, outcome: "budget", message: agent.message ?? `the ${spent} budget is spent` };
-		const overspent = agent.cost_usd !== undefined && agent.cost_usd > resolved.budget.usd;
-		if (overspent && agent.outcome === "done") agent = { ...agent, outcome: "budget", message: `it spent $${agent.cost_usd?.toFixed(2)} of a $${resolved.budget.usd} budget` };
+		const overUsd = agent.cost_usd !== undefined && agent.cost_usd > resolved.budget.usd;
+		const overspent = overUsd || agent.over_steps === true;
+		if (overspent && agent.outcome === "done") agent = { ...agent, outcome: "budget", message: overUsd ? `it spent $${agent.cost_usd?.toFixed(2)} of a $${resolved.budget.usd} budget` : `it made more than the task's budget of ${resolved.budget.steps} computer calls` };
 		const agentWall = sinceS(agentStart);
 		if (signal.aborted) return end({ ...empty, outcome: "infra", phase: "agent", why: "the bench run was stopped" });
 		const tallies = tally(steps);
@@ -522,8 +526,8 @@ async function grade(options: RunOptions, run: Checked, signal: AbortSignal): Pr
 		stage1,
 		checks: checks.map(({ id, kind, status }) => ({ id, kind, status })),
 		by: combined.by,
-		// An agent (or an oracle) that failed by its own account says why; the checks still decide.
-		...(run.input.agent.outcome === "error" && run.input.agent.message ? { why: run.input.agent.message } : {}),
+		// An agent (or an oracle) that failed by its own account says why, and so does a budget; the checks still decide.
+		...((run.input.agent.outcome === "error" || outcome === "budget") && run.input.agent.message ? { why: run.input.agent.message } : {}),
 		...(verdict && options.judge ? { grade: { verdict: verdict.verdict, locus: verdict.locus, by: combined.by, confidence: verdict.confidence, judge: options.judge.id } } : {}),
 		...(queue ? { queue } : {}),
 	});
