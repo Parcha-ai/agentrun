@@ -81,6 +81,27 @@ describe("xfwm4 as E2B and Agent37 start it", { skip: LIVE ? false : "set AGENTR
 		assert.deepEqual(await stray(), [], "a program of the computer's user connects to no socket but the computer's own");
 	});
 
+	// Review (#2787, PRRT_kwDOUmdVMs63e4QM): the user owns the window manager's user namespace, so a program of the user's
+	// could join it, then its network namespace, and reach the bus by its abstract name. init's filter refuses setns.
+	it("a program of the user cannot join the window manager's namespaces to reach its bus", async () => {
+		const script = [
+			'for p in /proc/[0-9]*; do case "$(tr "\\0" " " < $p/cmdline 2>/dev/null)" in "xfwm4 "*) wm=${p#/proc/};; esac; done',
+			'[ -n "$wm" ] || { echo "no xfwm4"; exit 9; }',
+			'[ "$(readlink /proc/$wm/ns/net)" != "$(readlink /proc/self/ns/net)" ] || { echo "xfwm4 shares the user\'s network"; exit 9; }',
+			"call='dbus-send --bus=unix:abstract=/agentrun/window-manager --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.GetId'",
+			'$call && echo "outside: reached"',
+			'nsenter --preserve-credentials -U -n -t "$wm" $call && echo "joined: reached"',
+			"echo done",
+		].join("\n");
+		const ran = await client.call("exec.run", { argv: ["sh", "-c", script], timeoutMs: 20_000 });
+		assert.ok(ran.ok, JSON.stringify(ran));
+		const out = Buffer.from(ran.value.stdout, "base64").toString();
+		const err = Buffer.from(ran.value.stderr, "base64").toString();
+		assert.match(out, /^done$/m, `the script ran through: ${out} ${err}`);
+		assert.doesNotMatch(out, /reached/, `a program of the user reached the window manager's bus: ${out}`);
+		assert.match(err, /nsenter: .*Operation not permitted/, `nsenter is refused (setns, EPERM): ${err}`);
+	});
+
 	it("after apps.launch of Mousepad, a program of the user still reaches none but the computer's own", async () => {
 		const launched = await client.call("apps.launch", { id: "org.xfce.mousepad" }, { signal: AbortSignal.timeout(30_000) });
 		assert.ok(launched.ok, JSON.stringify(launched));

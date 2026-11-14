@@ -1475,7 +1475,7 @@ from (the loopback block):
   root inside the sandbox.
 - So init starts with `--own-network` (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)): the
   daemon and every program it starts run in a network namespace of their own, with their loopback alone, and reach
-  neither port 2280 on the loopback nor the sandbox's own address; vsock and io_uring are refused to them; and init
+  neither port 2280 on the loopback nor the sandbox's own address; vsock, io_uring and setns are refused to them; and init
   refuses to start while another process holds their uid, so a toolbox (or a session shell of its) that runs as the
   daemon's user is refused, not shared. `capabilities().vendorAgentPorts` declares 2280, and the Core case
   isolation.vendor-agent probes it from a program of the computer's user, on both loopbacks. Init takes others' access
@@ -1788,7 +1788,8 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    --sm-client-disable`, `WINDOW_MANAGER`), so the apps an agent opens are framed and focused. xfwm4 reads its
    settings over a session bus and exits without one. So it runs under `dbus-run-session`, in a user namespace (the
    same uid) and a network namespace of its own (`unshare --user --map-current-user --net`), and its bus listens on an
-   abstract name there. A program of the computer's user reaches no socket of that bus. xfwm4 reaches the display by
+   abstract name there. A program of the computer's user reaches no socket of that bus, and joins neither namespace:
+   init refuses setns to every program. xfwm4 reaches the display by
    its path. It and every app `apps.launch` opens get `NO_AT_BRIDGE=1`: the template has at-spi2-core, so GTK's
    accessibility bridge would start an at-spi bus, a socket of the user's at `/work/.cache/at-spi/bus_0` that nothing
    of ours uses. An app also gets no session bus (`DBUS_SESSION_BUS_ADDRESS=disabled:`). Given none, it would start

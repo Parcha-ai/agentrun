@@ -45,10 +45,11 @@ var socketTypes = []struct{ network, name string }{{"unix", "stream"}, {"unixgra
 
 // ConnectableSockets lists the unix sockets that the calling process can connect to: every socket found by walking
 // roots (each root by its real path, links never followed, each within bounds of its own), and every path and abstract
-// name (@...) in netUnix, the text of /proc/net/unix. An abstract name is in no folder: the network namespace holds it,
-// so every program in the namespace reaches it. Each is tried with a connect of each type, bounded by timeout, at once;
-// the real paths and names of those that accept, with the type, sorted. A root whose walk reached a bound is named in
-// Incomplete.
+// name (@...) in the table at netUnix (/proc/net/unix, the sockets of the reader's network namespace). An abstract name
+// is in no folder: the network namespace holds it, so every program in the namespace reaches it, and the table alone
+// names it. Each is tried with a connect of each type, bounded by timeout, at once; the real paths and names of those
+// that accept, with the type, sorted. A root whose walk reached a bound, and a table that could not be read, are named
+// in Incomplete.
 func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, timeout time.Duration) SocketSearch {
 	candidates := map[string]bool{}
 	add := func(path string) {
@@ -95,14 +96,16 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 			incomplete = append(incomplete, fmt.Sprintf("%s: folders deeper than %d levels were not searched", real, bounds.Depth))
 		}
 	}
-	for _, line := range strings.Split(netUnix, "\n") {
-		fields := strings.Fields(line)
-		switch {
-		case len(fields) < 8:
-		case strings.HasPrefix(fields[7], "/"):
-			add(fields[7])
-		case strings.HasPrefix(fields[7], "@"):
-			candidates[fields[7]] = true // Go dials a name that starts with @ as an abstract one
+	table, err := os.ReadFile(netUnix)
+	if err != nil {
+		incomplete = append(incomplete, fmt.Sprintf("%s: cannot be read, so no abstract name was tried: %v", netUnix, err))
+	}
+	for _, line := range strings.Split(string(table), "\n") {
+		switch name := unixSocketName(line); {
+		case strings.HasPrefix(name, "/"):
+			add(name)
+		case strings.HasPrefix(name, "@"):
+			candidates[name] = true // Go dials a name that starts with @ as an abstract one
 		}
 	}
 	var mu sync.Mutex
@@ -128,4 +131,20 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 	wg.Wait()
 	sort.Slice(sockets, func(i, j int) bool { return sockets[i].Path < sockets[j].Path })
 	return SocketSearch{Sockets: sockets, Incomplete: incomplete}
+}
+
+// unixSocketName is the name a line of /proc/net/unix gives its socket, or "" for one with none (and for the header).
+// The kernel writes seven columns, then one space and the name as it is, spaces and all, so the name is the rest of
+// the line after that space, not a field.
+func unixSocketName(line string) string {
+	rest := line
+	for range 7 {
+		rest = strings.TrimLeft(rest, " ")
+		end := strings.IndexByte(rest, ' ')
+		if end < 0 {
+			return ""
+		}
+		rest = rest[end:]
+	}
+	return strings.TrimPrefix(rest, " ")
 }
