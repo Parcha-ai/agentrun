@@ -15,6 +15,10 @@ import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
+/** The host's search and call-by-name tools, and its script tool where the harness has no code mode of its own (Codex's). */
+const { TOOLS_SEARCH, TOOLS_CALL, CODEMODE } = await import("../dist/meta-tool-names.js");
+const metasOf = (harness) => (harness === "codex" ? [TOOLS_SEARCH, TOOLS_CALL] : [TOOLS_SEARCH, TOOLS_CALL, CODEMODE]);
+
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 const FAUX = { harnessTable: fauxTable(fixture("faux-harness.mjs")), fauxWeb: fixture("faux-web.mjs"), fauxParallel: fixture("faux-parallel.mjs"), fauxUpstream: fixture("faux-upstream.mjs"), fauxExa: fixture("faux-exa.mjs") };
 const PAGE = "http://public.example/";
@@ -122,7 +126,7 @@ test.skip("with only model keys: native search on pi, claude-agent and codex, an
     const run = await research(api, `parallel-${harness}`, { harness, instructions: HARNESS_RESEARCH });
     const opened = (await seen()).opened.slice(before);
     assert.deepEqual(opened.filter((line) => line.harness), [{ harness, options: {} }], `${harness}: its own search off`);
-    assert.deepEqual(opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write"]], `${harness}: web_search a host tool`);
+    assert.deepEqual(opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write", ...metasOf(harness)]], `${harness}: web_search a host tool`);
     assert.match(run.results.web_fetch, /"via":"parallel"/);
   }
   calls = await seen();
@@ -189,7 +193,7 @@ test("a capped claude-agent run on auto never sends Claude's own search: it reso
     const run = await research(api, id, { harness: "claude-agent", instructions: HARNESS_RESEARCH }, { max_cost_usd: 1 });
     const calls = await seen();
     assert.deepEqual(calls.opened.filter((line) => line.harness), [{ harness: "claude-agent", options: {} }], `${id}: no WebSearch on the adapter`);
-    assert.deepEqual(calls.opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write"]], `${id}: web_search a host tool`);
+    assert.deepEqual(calls.opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write", ...metasOf("claude-agent")]], `${id}: web_search a host tool`);
     // The run's resolved plane, as its start wrote it on the run's launch in the store (the runner reads it at the claim).
     assert.equal((await store.runs.launch(run.runId))?.body?.plane?.web_search, keyed ? "parallel" : "exa-keyless");
     assert.match(run.results.web_search, keyed ? /^\{"provider":"parallel"/ : /^\{"provider":"exa-keyless"/);

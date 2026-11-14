@@ -76,6 +76,8 @@ import { bookedIn } from "../paid-calls.js";
 import { type HostCalls, withHostCalls } from "../host-calls.js";
 import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
+import { metaTools } from "./meta-tools.js";
+import { builtinHarness } from "../harness-table.js";
 import { Fenced } from "../store/index.js";
 import { answerAsServed } from "../answer-json.js";
 import type { ClaimMcp } from "./mcp-run.js";
@@ -1893,6 +1895,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // bridge asks first; one refused is on the record from the gate, bridgeGate), so its record's start is written
           // here, before the flush and the call, and its end after.
           call: async (args, toolContext) => {
+            // A tool that only nests calls (tools_call, codemode) has no row of its own on a CLI's record: each call it makes
+            // is on the record as its own tool's (its id `<callId>/<key>`), and it runs again whole after a crash, its
+            // recorded calls answered from their records.
+            const record = tool.nests ? undefined : cliRecord;
             // A call its CLI issues again under an id the record already ended (after the CLI's own resume) is answered
             // from that end, never run again.
             const ended = record?.endOf(toolContext.callId);
@@ -1966,7 +1972,26 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }
           },
         });
-        const tools: HostTool[] = [...spec.session.tools, ...(mcp?.tools ?? [])].map(hosted);
+        const own: HostTool[] = [...spec.session.tools, ...(mcp?.tools ?? [])].map(hosted);
+        // tools_search, tools_call and codemode over the session's tools (meta-tools.ts), on every harness (codemode on
+        // each but one that runs scripts of its own): what they call is called nested, each call asked about and recorded
+        // as its own tool's. A search finds a tool whose setting is not deny; an MCP tool's setting is its catalog name's.
+        const settingOf = spec.gate?.permission;
+        // The harness's own tools beside them (pi's subagent, its browser's): found and called by name as the host's are,
+        // run by the harness as its own nested calls. Never called here: a nested call reaches them through the harness.
+        const native: HostTool[] = (spec.adapter.ownTools ?? []).filter((one) => !own.some((tool) => tool.name === one.name)).map((one) => ({
+          name: one.name,
+          description: one.description,
+          inputSchema: one.inputSchema,
+          replay: "never",
+          call: async () => ({ text: `${one.name} is run by the harness itself, as a nested call of tools_call or a script.`, isError: true }),
+        }));
+        const metas = metaTools({
+          tools: () => [...own, ...native],
+          granted: async (name) => !settingOf || (await settingOf(mcp?.catalogOf(name) ?? name).catch(() => "deny" as const)) !== "deny",
+          codemode: builtinHarness(spec.adapter.id)?.facts?.ownCodemode !== true,
+        }).filter((meta) => ![...own, ...native].some((one) => one.name === meta.name));
+        const tools: HostTool[] = [...own, ...metas.map(hosted)];
         // An MCP tool of the run by its catalog name, as wrapped above: what a learned workflow's MCP node calls.
         mcpHosted = (catalog) => {
           const wire = mcp?.tools.find((one) => mcp?.catalogOf(one.name) === catalog);

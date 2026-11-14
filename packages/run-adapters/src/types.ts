@@ -53,7 +53,40 @@ export interface HostTool {
    *  way, by the child's key. `model`: the calling session's model as its harness resolves it (pi's: a pi-ai Model, whose
    *  input and input limits a file read sizes an image by); `output`: where the call's output goes while it runs (the
    *  session's live view of the running tool). Each is absent where a harness has none to give. */
-  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number; model?: unknown; output?(chunk: string): void }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; /** The answer as a value (a computer tool's), its images' data left out: what a script's nested call reads (Codex's code mode) and an MCP client's structuredContent. */ structured?: JsonValue; parked?: true }>;
+  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number; model?: unknown; output?(chunk: string): void; /** The session's other tools, called as calls of their own nested in this one (NestedCalls): given to a tool that `nests`, where the harness has a way to. */ nested?: NestedCalls }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; /** The answer as a value (a computer tool's), its images' data left out: what a script's nested call reads (Codex's code mode) and an MCP client's structuredContent. */ structured?: JsonValue; parked?: true }>;
+  /** The tool only calls the session's other tools (tools_call, codemode), each as a call of its own nested in this one
+   *  (`context.nested`): each nested call passes the gate as itself and is recorded under its own id, so this call writes
+   *  no intent or outcome of its own. A harness runs it again after a crash, its recorded nested calls answered from their
+   *  records, never run twice. */
+  nests?: true;
+}
+
+/**
+ * A tool's calls of the session's other tools, each a call of its own nested in the calling one: asked about at the gate
+ * as itself (GateCall `nested`), its intent and outcome recorded under `<callId>/<key>` before and after it runs, as a
+ * call the model made is. A call the record finished answers from the record, never runs again.
+ */
+export interface NestedCalls {
+  /** Call tool `name` (a session tool, by its host name) with `args`, under `key`: stable for the same call in a rerun
+   *  of the calling one. A deny answers `refused` with the gate's words; a park holds until the session lets go, then
+   *  rejects. */
+  call(name: string, args: Record<string, unknown>, key: string): Promise<NestedResult>;
+  /** `value` the first time `key` is asked in this call, and that first value again in every rerun of the call. */
+  memo<T extends JsonValue>(key: string, value: T): Promise<T>;
+}
+
+/** A nested call's answer. */
+export interface NestedResult {
+  text: string;
+  isError?: boolean;
+  images?: readonly ToolImage[];
+  structured?: JsonValue;
+  /** The gate refused it: `text` is the gate's words, and nothing of it ran. */
+  refused?: true;
+  /** Its intent was recorded and its outcome lost (a crash cut it): it may or may not have taken effect. */
+  interrupted?: true;
+  /** It was asked and run (or refused) now, in this attempt of the calling call; false when its answer came from the record. */
+  fresh: boolean;
 }
 
 /** A tool of a remote MCP server, as the server listed it when its owner saved it (the run's pinned copy). */
@@ -274,6 +307,9 @@ export interface GateCall {
   /** The call runs again after an earlier attempt whose start the log holds (a replay-safe call a crash cut): that
    *  attempt may have been sent, so a refusal never says nothing was. */
   readonly replayed?: true;
+  /** A call a running tool made (NestedCalls: a script's, tools_call's), part of a call already let through: the cap's
+   *  wrap-up never refuses one, so a call in flight is never cut short, as pi's nested call is not. */
+  readonly nested?: true;
 }
 
 /** The host's answer before a call's intent: run it, refuse it in these words, or park the run on it. */
@@ -380,6 +416,9 @@ export interface AdapterFacts {
   readonly webSearch?: "native" | "live";
   /** Its model is its own, chosen on its own wire's settings, never the host's default for the other harnesses. */
   readonly ownModel: boolean;
+  /** It runs the model's scripts itself (Codex's code mode, its nested calls the host's tools): the host offers no
+   *  `codemode` of its own beside it. Absent: the host's codemode is offered. */
+  readonly ownCodemode?: true;
   /** The model as the harness names it (Anthropic's id has no dot). */
   normalizeModel(model: { provider: string; modelId: string }): { provider: string; modelId: string };
   /** How it is installed and pinned: the line that installs it into a project, the package it pins, and the codes its
@@ -412,6 +451,9 @@ export interface SessionPort {
 
 export interface AgentAdapter {
   readonly id: string;
+  /** Tools the harness runs itself beside the session's host tools (pi's subagent tool, its browser's): offered to the
+   *  model as the host tools are, so the host's tools_search lists them and a nested call reaches one by its name. */
+  readonly ownTools?: readonly { readonly name: string; readonly description: string; readonly inputSchema: Record<string, unknown> }[];
   /** Problems with a session before anything is spent; an empty list opens it. */
   check(spec: SessionSpec): string[];
   /** Opens the session, restoring it from `io.writer` when its key has records. */

@@ -151,8 +151,8 @@ function whereOf(file: string): string {
 
 /** The flags the store's worker is given when this process was started with code on its command line: this process's
  *  less those that apply only to that code (`--input-type`, `-e`/`--eval` and `-p`/`--print` with their code). A worker
- *  from a file refuses them ("--input-type can only be used with string input via --eval"), and the server's launcher
- *  starts Node exactly so (`node --input-type=module -e '…'`), so a store opened under it would have no worker. Undefined
+ *  from a file refuses them ("--input-type can only be used with string input via --eval"), and a process started
+ *  so (`node --input-type=module -e '…'`, as a test or a server's own `--` command may be) would have no worker. Undefined
  *  when there are none to drop: the worker then inherits this process's flags as Node gives them, untouched (a list given
  *  to Worker is checked flag by flag, and one a worker may not take, a process-wide one, is refused). */
 export function workerExecArgv(given: readonly string[]): string[] | undefined {
