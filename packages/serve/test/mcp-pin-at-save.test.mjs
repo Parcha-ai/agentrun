@@ -119,30 +119,110 @@ test("a save while a granted server is down keeps its previous pin when the edit
   assert.match(JSON.stringify(fresh.body), /The MCP server fake could not be listed to pin its tools/);
 });
 
-test("a revision saved before this release has no pin: its run is refused (409) saying to save the agent again, and saving the unchanged definition pins it and runs", { timeout: 240_000 }, async (t) => {
-  const { api, data } = await setup(t);
-  assert.equal((await retried(api)("POST", "/agents", agent("older", { tools: [ADD], tool_settings: ALLOW }))).status, 201);
-  const first = (await api("GET", "/agents/older")).body;
-  // What a server open leaves on a revision an earlier build saved: the column, null (store/sqlite/store.ts open).
+const ADD_CALL = { content: 'Call mcp__fake__add with {"a":2,"b":3}' };
+const INLINE = { external: { source: "grep", kind: "expert", id: "7", version: 1 }, definition: { name: "Expert 7", instructions: "Answer.", skills: [], tools: [ADD], tool_settings: ALLOW }, input: ADD_CALL };
+
+/** Clears `revisionId`'s pin, as a server open leaves a revision an earlier build saved (store/sqlite/store.ts open). */
+function unpin(data, revisionId) {
   const raw = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
   try {
-    raw.prepare("UPDATE revisions SET mcp_pin = NULL WHERE id = ?").run(first.revision);
+    raw.prepare("UPDATE revisions SET mcp_pin = NULL WHERE id = ?").run(revisionId);
   } finally {
     raw.close();
   }
+}
+
+/** The fake's add listed with another description at each read, so two listings never pin the same tool. */
+function changingAdd(fake) {
+  let reads = 0;
+  Object.defineProperty(fake.tools.add, "description", { get: () => `Add two numbers (read ${++reads}).`, enumerable: true, configurable: true });
+}
+
+const completes = async (api, runId) => {
+  assert.equal((await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 })).last.status, "completed", JSON.stringify((await api("GET", `/runs/${runId}`)).body.error));
+  assert.match(await answerOf(api, runId), /The tool said: 5/);
+};
+
+test("an earlier revision's first run pins it and completes: the run lists the server once, writes the pin on that revision, and a later run reads it", { timeout: 240_000 }, async (t) => {
+  const { api, data, store, fake } = await setup(t);
+  assert.equal((await retried(api)("POST", "/agents", agent("older", { tools: [ADD], tool_settings: ALLOW }))).status, 201);
+  const first = (await api("GET", "/agents/older")).body;
+  unpin(data, first.revision);
   assert.equal((await api("GET", "/agents/older")).body.mcp_pin, null);
-  const refused = await api("POST", "/agents/older/runs", { input: { content: 'Call mcp__fake__add with {"a":2,"b":3}' } });
+  const started = await api("POST", "/agents/older/runs", { input: ADD_CALL });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await completes(api, started.body.run_id);
+  const after = (await api("GET", "/agents/older")).body;
+  assert.equal(after.revision, first.revision, "the same revision, pinned: no new one");
+  assert.equal(after.revisions, 1);
+  assert.deepEqual(after.mcp_pin, { fake: { tools: [PINNED_ADD] } }, "the pin its first run made");
+  // Pinned now: a later run lists nothing, whatever the server lists by then.
+  const lists = fake.log.filter((entry) => entry.method === "tools/list").length;
+  fake.tools.add.description = "Add two numbers, changed.";
+  const later = await api("POST", "/agents/older/runs", { input: ADD_CALL });
+  assert.equal(later.status, 202, JSON.stringify(later.body));
+  await completes(api, later.body.run_id);
+  assert.equal(fake.log.filter((entry) => entry.method === "tools/list").length, lists, "no listing after the pin");
+  assert.equal((await store.mcp.pin(later.body.run_id))?.body?.fake?.tools?.[0]?.description, "Add two numbers.");
+});
+
+test("an earlier revision's first run while its server is down is refused (409) in the words that say to save the agent again, and nothing is pinned", { timeout: 120_000 }, async (t) => {
+  const { api, data, fake } = await setup(t);
+  assert.equal((await retried(api)("POST", "/agents", agent("downed", { tools: [ADD], tool_settings: ALLOW }))).status, 201);
+  unpin(data, (await api("GET", "/agents/downed")).body.revision);
+  await fake.close();
+  const refused = await api("POST", "/agents/downed/runs", { input: ADD_CALL });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.error.code, "agent_not_runnable", JSON.stringify(refused.body));
   assert.match(JSON.stringify(refused.body), /The MCP tool mcp:fake\/add was not pinned when this revision was saved: save the agent again to pin it\./);
-  const definition = { ...first.definition };
-  delete definition.version;
-  assert.equal((await api("PUT", "/agents/older/definition", { definition })).status, 200);
-  const saved = (await api("GET", "/agents/older")).body;
-  assert.equal(saved.revisions, 2, "the unchanged definition saved again is a new revision: it holds a pin the old one did not");
-  assert.deepEqual(saved.mcp_pin, { fake: { tools: [PINNED_ADD] } });
-  const started = await api("POST", "/agents/older/runs", { input: { content: 'Call mcp__fake__add with {"a":2,"b":3}' } });
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  assert.equal((await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 180_000 })).last.status, "completed");
-  assert.match(await answerOf(api, started.body.run_id), /The tool said: 5/);
+  assert.equal((await api("GET", "/agents/downed")).body.mcp_pin, null, "nothing pinned");
+});
+
+test("two first runs of an earlier revision at once make one pin: both run on it, and the revision keeps it", { timeout: 240_000 }, async (t) => {
+  const { api, data, store, fake } = await setup(t);
+  assert.equal((await retried(api)("POST", "/agents", agent("raced", { tools: [ADD], tool_settings: ALLOW }))).status, 201);
+  const revision = (await api("GET", "/agents/raced")).body.revision;
+  unpin(data, revision);
+  changingAdd(fake);
+  const [one, two] = await Promise.all([1, 2].map(() => api("POST", "/agents/raced/runs", { input: ADD_CALL })));
+  assert.deepEqual([one.status, two.status], [202, 202], JSON.stringify([one.body, two.body]));
+  await completes(api, one.body.run_id);
+  await completes(api, two.body.run_id);
+  const kept = (await api("GET", "/agents/raced")).body;
+  assert.equal(kept.revision, revision);
+  const pins = [(await store.mcp.pin(one.body.run_id))?.body, (await store.mcp.pin(two.body.run_id))?.body];
+  assert.ok(pins[0]?.fake?.tools?.[0]?.description, JSON.stringify(pins));
+  assert.deepEqual(pins[1], pins[0], "one pin for both runs");
+  assert.equal(kept.mcp_pin.fake.tools[0].description, pins[0].fake.tools[0].description, "the revision keeps the pin both ran on");
+});
+
+test("an inline agent's version stored before pins were made at save is pinned at its next run, which completes", { timeout: 240_000 }, async (t) => {
+  const { api, data, store } = await setup(t);
+  const first = await api("POST", "/runs", INLINE);
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  await completes(api, first.body.run_id);
+  const revision = first.body.revision;
+  unpin(data, revision);
+  const again = await api("POST", "/runs", INLINE);
+  assert.equal(again.status, 202, JSON.stringify(again.body));
+  assert.equal(again.body.revision, revision, "the version's stored revision");
+  await completes(api, again.body.run_id);
+  assert.deepEqual((await store.agents.revision(revision))?.mcpPin?.fake?.tools?.map((tool) => tool.name), ["add"], "the stored version is pinned");
+});
+
+test("two runs at once of an inline agent's version stored with no pin make one pin, and both run on it", { timeout: 240_000 }, async (t) => {
+  const { api, data, store, fake } = await setup(t);
+  const first = await api("POST", "/runs", INLINE);
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  await completes(api, first.body.run_id);
+  unpin(data, first.body.revision);
+  changingAdd(fake);
+  const [one, two] = await Promise.all([1, 2].map(() => api("POST", "/runs", INLINE)));
+  assert.deepEqual([one.status, two.status], [202, 202], JSON.stringify([one.body, two.body]));
+  await completes(api, one.body.run_id);
+  await completes(api, two.body.run_id);
+  const pins = [(await store.mcp.pin(one.body.run_id))?.body, (await store.mcp.pin(two.body.run_id))?.body];
+  assert.ok(pins[0]?.fake?.tools?.[0]?.description, JSON.stringify(pins));
+  assert.deepEqual(pins[1], pins[0], "one pin for both runs");
+  assert.deepEqual((await store.agents.revision(first.body.revision))?.mcpPin, pins[0], "the stored version keeps it");
 });

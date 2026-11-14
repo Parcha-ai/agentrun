@@ -463,3 +463,19 @@ test("M17: claims waiting on another claim's refresh read the server's row O(1) 
   assert.ok(oauth.accepts(bearer(opened[0])), "a token the server takes");
   assert.ok(reads <= 4 * CLAIMS, `the server's row read at most 4 times a claim: ${reads} reads for ${CLAIMS} claims`);
 });
+
+test("M20: a revision with no pin is pinned once: the first write stands, a second reads it back, and a revision that has a pin keeps it", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store, "run-1");
+  const first = { fake: { url: "http://127.0.0.1:1/mcp", tools: [{ ...ADD, description: "first" }] } };
+  const second = { fake: { url: "http://127.0.0.1:1/mcp", tools: [{ ...ADD, description: "second" }] } };
+  assert.deepEqual(await store.agents.pinOnce("rev-1", first), first, "the first write");
+  assert.deepEqual(await store.agents.pinOnce("rev-1", second), first, "a second write reads back the first");
+  assert.deepEqual((await store.mcp.pin("run-1"))?.body, first, "the run reads the one pin");
+  assert.deepEqual((await store.agents.revision("rev-1"))?.mcpPin, first);
+  // Two at once: one write stands, and both read it.
+  await store.agents.create({ id: "agent-2", name: "agent-2" }, { id: "rev-2", kind: "agentic", body: { instructions: "Answer." } });
+  const both = await Promise.all([first, second].map((pin) => store.agents.pinOnce("rev-2", pin)));
+  assert.deepEqual(both[1], both[0], "both read the one that stood");
+  assert.equal(await store.agents.pinOnce("rev-missing", first), null, "no such revision: nothing written");
+});
