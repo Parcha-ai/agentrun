@@ -143,7 +143,7 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 
 test("the constructor refuses what it cannot run with, in words", () => {
 	const make = (options) => () => new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: async () => assert.fail("no request"), ...options });
-	assert.throws(make({ apiKey: "" }), /API key is required/);
+	assert.throws(make({ apiKey: "" }), /the Daytona API key, is required/);
 	assert.throws(() => create({ daemonPath: DAEMON }), /options\.apiKey/);
 	assert.throws(make({ apiUrl: "http://api.daytona.test/api" }), /must be https/);
 	assert.throws(make({ daemonUser: "0:0" }), /root/);
