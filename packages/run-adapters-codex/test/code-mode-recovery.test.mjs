@@ -172,7 +172,7 @@ async function gateParkedExec(gate, repair = 'note') {
     return { ran, asked, recovered, items: injected, state: () => next.state() };
   }
   const items = [{ type: 'custom_tool_call_output', call_id: EXEC, output: '' }];
-  const recovered = mode.recoverItems(items, [{ callId: EXEC, name: 'exec', type: 'custom_tool_call' }], [], since);
+  const recovered = mode.recoverItems(items, [{ callId: EXEC, name: 'exec', type: 'custom_tool_call' }], [], since, true);
   return { ran, asked, recovered, items, state: () => next.state() };
 }
 

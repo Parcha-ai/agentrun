@@ -290,8 +290,9 @@ export function codeMode(deps: CodeModeDeps) {
      *  any other call keeps its generic output, as an item of its own kind, and code mode's `wait` is told that it had started. `since`: the
      *  turn the dangling calls ran in: the interrupted one a recovery note resumes, or with none, the turn that ended last. Every output is then
      *  held to the host's bound as the tool bridge holds a call's result (`boundResult`): these come from the log, not through the bridge, and
-     *  both repairs (with a recovery note and without) inject what this leaves. */
-    async recoverItems(items: Record<string, unknown>[], dangling: readonly Dangling[], lines: readonly string[], since: number): Promise<void> {
+     *  both repairs (with a recovery note and without) inject what this leaves. `resume`: the open turn a recovery note resumes, whose
+     *  parked nested calls run now; the repair of an ended turn (repairUnnoted) only tells, and runs nothing. */
+    async recoverItems(items: Record<string, unknown>[], dangling: readonly Dangling[], lines: readonly string[], since: number, resume = false): Promise<void> {
       const ties = (await journal.read<Tie>(NESTED_STREAM)).map((r) => r.data);
       const execs = dangling.filter(isExec).map((d) => d.callId);
       const rolled = completedNested(lines);
@@ -299,10 +300,11 @@ export function codeMode(deps: CodeModeDeps) {
       // the session: the host's gate parked it for a person's approval, or a crash came before its intent) runs now, through
       // the bridge under its own id, the gate first, so the person's answer on it holds, as a dangling call of the model's own
       // does (resumeUnstartedCalls): its outcome is the exec's output, and nothing runs it again. A gate that parks again
-      // rejects out of here, nothing written.
+      // rejects out of here, nothing written. Only on the resume of the open turn: an ended turn's repair runs nothing, so a call a
+      // person may never have answered does not run on a later turn.
       const resumed = new Map<string, NonNullable<NestedFact["resumed"]>>();
       const cut = new Set(execs);
-      for (const tie of ties) {
+      for (const tie of resume ? ties : []) {
         const ofThisTurn = tie.exec === null ? tie.since === since && execs.length > 0 : cut.has(tie.exec);
         if (!ofThisTurn || tie.tool === undefined || ctx.state().effects.has(toolKey(tie.callId)) || rolled.has(tie.callId)) continue;
         if (!deps.bridge.call || !deps.bridge.get(tie.tool)) continue;
