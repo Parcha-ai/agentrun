@@ -24,7 +24,7 @@ import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
 import { recordedClient } from "../computer-calls.js";
 import type { MountCheck } from "./attach.js";
-import type { RunComputer } from "./run-tools.js";
+import type { AgentComputer, RunComputer } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
 
 /** The setting kind (what an agent is given, not a computer's capabilities().kind), a machine's kind and groups, and one
@@ -32,8 +32,13 @@ import type { Workspace } from "./workspace.js";
 export type { ComputerSettingKind, KindCapabilities, ProviderEntry, ShellPlace };
 
 /** An agent's computer setting. `image`: the one of the provider's configurations it selects; absent, the default. A
- *  sandbox's may ask for GPUs. `persistent`: the agent keeps its own computer between runs (agent-computer.ts). */
-export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly image?: string; readonly gpu?: GpuSpec; readonly persistent?: boolean };
+ *  sandbox's may ask for GPUs. `persistent`: the agent keeps its own computer between runs (agent-computer.ts). A
+ *  desktop's or a phone's `surface` and `exec` go to the run's tools on the RunComputer (run-tools.ts); `exec: false`
+ *  also mounts no folder in it and gives the run no shell. */
+export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly image?: string; readonly gpu?: GpuSpec; readonly persistent?: boolean; readonly surface?: "code" | "tools"; readonly exec?: boolean };
+
+/** Whether a setting takes its agent's programs away: a desktop or a phone with `exec: false`. */
+const noExec = (setting: ComputerSetting): boolean => setting.exec === false && (setting.kind === "desktop" || setting.kind === "phone");
 
 /** The computer module's kind registry (src/kinds.ts), by its own names: the setting kinds, why a machine does not serve
  *  one (servingRefusals, whose words a refusal here carries), and the providers. */
@@ -240,6 +245,8 @@ export function runShellOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick
   if (!entry) return "none";
   const serving = selectedOf(servingOf(registry, entry, kind), setting, entry, kind);
   if (serving.length === 0) return "none";
+  // An agent whose computer runs no programs of its own has no shell anywhere: not its computer's, not Archil's exec.
+  if (noExec(setting)) return "none";
   const mounts = mountsFolder(kind, entry, serving, mode);
   if (kind === "sandbox" && !mounts) return "none";
   return shellPlaceOf(mounts, mode);
@@ -312,12 +319,13 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   }
 
   // The run's folder: mounted where the selected configuration has files and exec and the provider mounts the mode's
-  // folder.
-  const mounts = mountsFolder(kind, entry, [configuration], mode);
+  // folder, and the agent may run programs there (a folder is mounted for its shell).
+  const mounts = !noExec(setting) && mountsFolder(kind, entry, [configuration], mode);
   if (kind === "sandbox" && !mounts) {
     if (mode === 1) return { refused: `Mode 1 runs a sandbox only on Docker: a ${entry.label} sandbox can't reach the run's folder on this machine. Pick Docker for this agent's computer in ${SETTINGS}, or another kind of computer.` };
     if (entry.mounts.includes("bind")) return { refused: `Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them. Pick a remote sandbox for this agent's computer in ${SETTINGS}, or no computer.` };
-    return { refused: `A ${entry.label} sandbox can't mount the run's folder from Archil: pick another sandbox for this agent's computer in ${SETTINGS}.` };
+    const why = entry.unmounted?.archil;
+    return { refused: `A ${entry.label} sandbox can't mount the run's folder from Archil${why ? ` (${why})` : ""}: pick another sandbox for this agent's computer in ${SETTINGS}.` };
   }
 
   // Its GPUs, a sandbox's alone: in gpuRefused's words, against what the configuration the setting selected declares,
@@ -365,7 +373,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
         if (said && !said.up && said.absent) throw unavailable(noDockerWords(kind, registry.PROVIDERS, mode));
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
       }
-      const computer = runComputerOf(kind, launched, mounts ? check : undefined);
+      const computer = runComputerOf(kind, launched, mounts ? check : undefined, { ...(setting.surface ? { surface: setting.surface } : {}), ...(noExec(setting) ? { exec: false as const } : {}) });
       if (typeof computer === "string") {
         await launched.release();
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${computer}`);
@@ -375,18 +383,19 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   };
 }
 
-/** The started computer as runTools takes it, or what it lacks, in words. */
-function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined): RunComputer | string {
+/** The started computer as runTools takes it, or what it lacks, in words. `agent`: a desktop's or a phone's surface and
+ *  exec, as its agent's setting says them. */
+function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined, agent: AgentComputer): RunComputer | string {
   // The run's browser tool opens a browser's sessions through its provider.
   if (kind === "browser") return launched.browser ? { kind, browser: launched.browser } : "it gave no CDP connection";
   const { hello } = launched;
   if (!launched.client) return "it gave no computer protocol client";
   // Each call the agent's tools make is recorded on the tool call's row (computer-calls.ts): the run's one client.
   const client = recordedClient(launched.client);
-  if (kind === "phone") return hello ? { kind, computer: { client }, hello } : "it gave no hello";
+  if (kind === "phone") return hello ? { kind, computer: { client }, hello, ...agent } : "it gave no hello";
   if (check && !launched.readBack) return "it gave no read-back of its mount";
   const readBack = launched.readBack ? () => launched.readBack!() : async (): Promise<Result<MountReadBack>> => ({ ok: false, error: { code: "unsupported", message: "nothing is mounted in this computer" } });
   const computer = { id: launched.id, client, readBack };
   if (kind === "sandbox") return check ? { kind, computer, check } : "a sandbox mounts the run's folder";
-  return hello ? { kind, computer, hello, ...(check ? { check } : {}) } : "it gave no hello";
+  return hello ? { kind, computer, hello, ...(check ? { check } : {}), ...agent } : "it gave no hello";
 }

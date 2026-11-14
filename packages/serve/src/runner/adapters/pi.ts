@@ -8,21 +8,24 @@
 // Messages or OpenAI's Responses), under that wire's CLI policy, and pi-ai's client speaks the same. The host's tools run through HostTool.call, where the kernel's rule
 // before a side effect sits (runner/adapter-loop.ts); the gate is asked before pi stores a call's intent (pi's beforeTool
 // hook), through io.gate.
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type Cursor, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type HookApi, type Registry, type Submission, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
-import { anthropicPolicy, CLAUDE_WEB_SEARCH_USD, withWebSearches } from "@parcha/agentrun-harness-claude";
+import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type SessionIO, type SessionPort, type SessionSpec, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
-import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
+import { durableWait } from "../../workflow/pi-versions.js";
 import { HOSTED_SEARCH_ALLOWANCE_TOKENS } from "../../hosted-search.js";
 import { sessionProvider, tierProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
 import { CALL_REFUSED } from "../../timeline/index.js";
 import { ConversationToolBudget, countCalls } from "../../tool-budget.js";
+import { type ComputerCallRecord, recordingCalls } from "../../computer-calls.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
 export interface PiRun {
@@ -59,7 +62,23 @@ export type PiSessionIO = SessionIO & {
   /** What the request that just answered cost, as the runner's booking wrote it (the session's ledger): its figure, null
    *  when unknown, undefined when none was booked. pi's own price for the model is none (the adapter does not know it). */
   bookedCost?: () => Promise<number | null | undefined>;
+  /** Keeps a tool call's computer calls beside it on the run's root, by the call's id (the loop's, as its host tools'
+   *  are kept): each run's pi-native tool (code mode's script among them) runs inside recordingCalls with it, so its row
+   *  carries the calls it made as a host tool's does. */
+  keepCalls?: (call: string, calls: readonly ComputerCallRecord[], dropped: number) => Promise<void>;
 };
+
+/** `extension` with each of its tools run inside recordingCalls, its calls kept by `keep` under the call's id. */
+function recordingExtension(extension: Extension, keep: NonNullable<PiSessionIO["keepCalls"]>): Extension {
+  if (!extension.tools?.length) return extension;
+  return {
+    ...extension,
+    tools: extension.tools.map((tool) => ({
+      ...tool,
+      execute: (args: never, api: { readonly callId: string }, context: never) => recordingCalls(async () => tool.execute(args, api as never, context), (calls, dropped) => keep(api.callId, calls, dropped)),
+    })) as typeof extension.tools,
+  };
+}
 
 export interface PiAdapterOptions {
   readonly run: PiRun;
@@ -108,7 +127,6 @@ export function piAdapter(options: PiAdapterOptions): AgentAdapter {
   return {
     // pi is the default harness: its id is the harness table's, never a literal of its own.
     id: DEFAULT_HARNESS,
-    capabilities: () => ({}),
     check: () => [],
     open: (spec, io) => openPi(options, spec, io as PiSessionIO),
   };
@@ -209,7 +227,7 @@ export function piPolicy(model: string, tools: readonly string[], auth?: "bearer
   if (!webSearch) return policy;
   // The hosted search's fees held with its tokens: each use its tool's max_uses allows, at the search's fee. One with no
   // max_uses has no bound, and its worst case is unknown (the proxy's feeMaxUsd).
-  return { ...policy, feeMaxUsd: (body) => searchesAllowed(body, (tool) => typeof tool.type === "string" && tool.type.startsWith("web_search_"), "max_uses") * CLAUDE_WEB_SEARCH_USD } as ProviderPolicy;
+  return { ...policy, feeMaxUsd: (body) => searchesAllowed(body, (tool) => typeof tool.type === "string" && tool.type.startsWith("web_search_"), "max_uses") * NATIVE_SEARCH_USD } as ProviderPolicy;
 }
 
 /** The most searches `body` allows its hosted search tool (the one `isSearch` picks): its `limit` (the tool's own key, or
@@ -349,8 +367,9 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     ],
   });
   run.registry.install(extension);
-  // The run's pi-native extensions (options.extensions), in the claim's registry beside the session's.
-  const native = options.extensions ?? [];
+  // The run's pi-native extensions (options.extensions), in the claim's registry beside the session's: each tool's computer
+  // calls recorded on its row (io.keepCalls), as the loop records its host tools'.
+  const native = (options.extensions ?? []).map((each) => (io.keepCalls ? recordingExtension(each, io.keepCalls) : each));
   for (const each of native) run.registry.install(each);
   // The root conversation may exist already (the loop's session records live beside it, under it): its agent is set here,
   // the session's model, the run's system text (pi's instructions, its parts as the CLI adapters join them), this
@@ -379,7 +398,9 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   let state: AdapterSession["state"] = existing === undefined ? "new" : later ? "open_turn" : existing.status === "done" ? "idle" : "open_turn";
   let running: Promise<{ status: TurnStatus; error?: string }> | undefined;
   const watch = (submission: Submission) => {
-    running = submission.wait(context).then(
+    // Its wait never holds the claim's signal (durableWait): an abort while it registers (a close, a lost claim, as a
+    // resumed loop opens) ends the turn interrupted here, never as a rejection nothing handles, which ends the process.
+    running = durableWait((at) => submission.wait(at), context).then(
       (record) => {
         state = "idle";
         const status: TurnStatus = record.status === "done" ? "completed" : "failed";

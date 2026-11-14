@@ -1,6 +1,7 @@
 // Apps: the fixture installs, is listed, comes to the front when launched and leaves it when terminated; ui.observe has
 // the protocol's shape, inside its window, with the fixture's button found by its id. A phone's stock Settings app is
-// listed, launched and terminated with no install, which needs the apps group alone: its launch is seen in ui.observe
+// listed, launched and terminated with no install, which needs the apps group alone, and so is a Linux desktop's stock
+// editor or terminal (DESKTOP_APPS), on any vendor: its launch is seen in ui.observe
 // (Settings' list) when the phone has the ui group, else in a screenshot that is not the one before. On a phone that
 // takes no fixture file the observation's shape is checked on Settings, with its rows found (settings.ts).
 import { MAX_UI_NODES, type Rect, UI_FLAGS, UI_ROLES, type UiNode } from "../../protocol.js";
@@ -8,7 +9,7 @@ import { FIXTURE_BUTTON } from "../fixture.js";
 import { featureOff } from "../../ui-engine.js";
 import type { Case, CaseContext } from "../types.js";
 import { UI_FIXTURE } from "../ui-fixture.js";
-import { shoot } from "./screen.js";
+import { captureOff, shoot } from "./screen.js";
 import { namesOf, observe, openSettings, rowsOf, settingsApp, throughSettings } from "./settings.js";
 
 /** Whether the provider and the computer both declare group. */
@@ -30,11 +31,12 @@ async function screenPrint(t: CaseContext): Promise<string> {
 
 /**
  * What the screen shows now, as the case compares it: ui.observe's names and values when it reads the elements, else a
- * screenshot's print, else (ui.tree off, no screen group) ui.observe's image. Undefined when the launch cannot be seen.
+ * screenshot's print, else (ui.tree off, no screen group or screen.capture off) ui.observe's image. Undefined when the
+ * launch cannot be seen.
  */
 async function shown(t: CaseContext): Promise<string | undefined> {
 	if (readsTree(t)) return JSON.stringify(namesOf(await observe(t)));
-	if (declares(t, "screen")) return screenPrint(t);
+	if (declares(t, "screen") && captureOff(t) === undefined) return screenPrint(t);
 	if (declares(t, "ui")) return (await observe(t)).image?.data;
 	return undefined;
 }
@@ -86,6 +88,19 @@ export function observeWrong(result: unknown): string | undefined {
 
 const foreground = async (t: CaseContext) => (await t.call("apps.list", {})).foreground;
 
+/**
+ * The stock apps a Linux desktop may have, by their desktop file ids, any vendor's: the text editor and the terminal of
+ * Xfce, which E2B Desktop's template and the box image (box/build-agent37.mjs) both carry, and xterm, which a bare
+ * desktop has (the Docker suite's, test/fixtures/desktop).
+ */
+export const DESKTOP_APPS: readonly string[] = ["org.xfce.mousepad", "mousepad", "xfce4-terminal", "org.xfce.terminal", "xterm"];
+
+/** A stock app the computer lists: the first of DESKTOP_APPS on a desktop, a phone's Settings, or the case skips in words. */
+function stockApp(t: CaseContext, listed: readonly { id: string }[]): string {
+	if (t.provider.capabilities().kind !== "desktop") return settingsApp(t);
+	return DESKTOP_APPS.find((id) => listed.some((one) => one.id === id)) ?? t.skip(`this desktop lists none of the stock apps the case knows (${DESKTOP_APPS.join(", ")})`);
+}
+
 export const appsCases: Case[] = [
 	{
 		id: "apps.install-launch",
@@ -112,12 +127,12 @@ export const appsCases: Case[] = [
 		group: "apps",
 		needs: ["apps"],
 		async run(t) {
-			// An app the computer has: the ui fixture where it is installed, else the phone's own Settings app. Listed;
-			// launched, in front and shown; terminated, and no longer in front.
+			// An app the computer has: the ui fixture where it is installed, else a stock app (a Linux desktop's editor or
+			// terminal, the phone's own Settings app). Listed; launched, in front and shown; terminated, and no longer in front.
 			const listed = await t.call("apps.list", {});
 			t.assert(Array.isArray(listed.apps) && listed.apps.every((one) => typeof one?.id === "string"), `apps.list gives apps with ids: ${JSON.stringify(listed.apps).slice(0, 300)}`);
 			const uiFixture = listed.apps.some((one) => one.id === UI_FIXTURE.id);
-			const app = uiFixture ? UI_FIXTURE.id : settingsApp(t);
+			const app = uiFixture ? UI_FIXTURE.id : stockApp(t, listed.apps);
 			t.assert(listed.apps.some((one) => one.id === app), `apps.list holds ${app}`);
 			t.deepEqual(await t.call("apps.terminate", { id: app }), {}, `apps.terminate ${app}`);
 			await t.until(async () => (await foreground(t)) !== app, `${app} not in front after apps.terminate`);
@@ -151,7 +166,7 @@ export const appsCases: Case[] = [
 		async run(t) {
 			if (treeOff(t) !== undefined && featureOff(t.hello.features ?? {}, "ui.image") !== undefined) return t.skip("ui.observe has nothing to show on this computer: ui.tree and ui.image are both off");
 			const listed = await t.call("apps.list", {});
-			const app = listed.apps.some((one) => one.id === UI_FIXTURE.id) ? UI_FIXTURE.id : settingsApp(t);
+			const app = listed.apps.some((one) => one.id === UI_FIXTURE.id) ? UI_FIXTURE.id : stockApp(t, listed.apps);
 			t.assert(listed.apps.some((one) => one.id === app), `apps.list holds ${app}`);
 			t.deepEqual(await t.call("apps.terminate", { id: app }), {}, `apps.terminate ${app}`);
 			await t.until(async () => (await foreground(t)) !== app, `${app} not in front after apps.terminate`);

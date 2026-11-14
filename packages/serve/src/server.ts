@@ -48,7 +48,7 @@ import { answerPage, byOwnerSession, ConsoleSessions, heldSessions, isJson, over
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
-import { type ComputerOf, computerView } from "./computer-view.js";
+import { type ComputerOf, computerView, type JournalEntry, sessionIn } from "./computer-view.js";
 import { liveReachOf } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
@@ -84,7 +84,7 @@ import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
 import { hostAddressesOnce, noHostAddresses, unionOf } from "./docker-host-addresses.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES } from "./cap.js";
-import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
+import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { bootSealKey, withSealKey } from "./seal-key.js";
@@ -99,11 +99,11 @@ import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
-import { MCP_AUTH_TYPES, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
+import { MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type ComposioControl, composioSave, composioTools } from "./composio-preset.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
+import { getMcpServer, listMcpServers } from "./mcp-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
-import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
@@ -122,10 +122,12 @@ import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
+import { isMcpWildcard, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageTiers, packageView, pickComputer, readPackages, type ShellHere, type TemplatesDeps } from "./templates.js";
-import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, inputSchemaOf, isObject, type Json, stable, unknownFields } from "./validate.js";
+import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, loadToolSettings, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { wakeAnsweredBySetting } from "./settings-wake.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
 import type { DraftAsk } from "./learn/skills.js";
@@ -741,7 +743,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       tool_keys: { routes: true, at_rest: "sealed" },
       /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
        *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. */
-      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...MCP_HARNESSES] },
+      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...HARNESSES] },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
@@ -960,18 +962,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // pins and credentials from the store at a run's claim (runner/mcp-claim.ts); this server hands a run no MCP source.
   let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[] }>();
   const refreshMcpMeta = async (): Promise<void> => {
-    mcpMeta = new Map((await store.mcp.servers()).map((row) => [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [] }]));
+    mcpMeta = new Map((await listMcpServers(store)).map((row) => [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [] }]));
   };
   await refreshMcpMeta();
   // Each saved server's tools in the harnesses' shape (the registry keeps input_schema; a bound tool takes inputSchema),
   // with whether each can be granted: a known meta tool can't (mcp-meta.ts).
   const mcpTools = (server: string) => {
     const saved = mcpMeta.get(server);
-    return saved?.tools.map((tool) => {
-      const meta = metaToolOf(saved.url, tool.name);
-      const bound = { name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), inputSchema: (tool.input_schema ?? {}) as Record<string, unknown>, ...(tool.annotations ? { annotations: tool.annotations as Record<string, unknown> } : {}) };
-      return meta ? { ...bound, grantable: false as const, reason: meta.reason } : bound;
-    });
+    return saved && marked(saved.url, { tools: saved.tools.map((tool) => ({ name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), inputSchema: (tool.input_schema ?? {}) as Record<string, unknown>, ...(tool.annotations ? { annotations: tool.annotations as Record<string, unknown> } : {}) })) }).tools;
   };
   // The server's tool settings, in the store: capabilities say what they resolve to, again after a PUT. load() reads them
   // once here.
@@ -1672,7 +1670,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
     const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
     // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
-    const rows = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? await store.mcp.servers().catch(() => []) : [];
+    const rows = (body.tools ?? []).some(isMcpWildcard) ? await listMcpServers(store).catch(() => []) : [];
     const listed = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
     const gate = (name: string) => permissionFrom(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask");
     // `deniedBy`: where each deny was set (the agent's tool settings, the server's), which a refused draft's words name.
@@ -1896,8 +1894,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** A template package applied: its parameters and the owner's grants checked (422), then the secrets and required MCP
    *  servers it names (409, nothing made; an MCP server it can do without is skipped, with a warning), then its
-   *  agent made as POST /agents makes one, its MCP tools at the owner's own settings save those granted, set to allow (a
-   *  deny the owner set on this server stays, with a warning), its body held to POST /agents' limit (413), on the first harness of its list this server runs and the model packageModel
+   *  agent made as POST /agents makes one, granted the MCP tools the owner ticked (grants) alone, each set to allow (a
+   *  deny the owner set on this server stays, with a warning): a tool left unticked is not the agent's, under any approvals, its body held to POST /agents' limit (413), on the first harness of its list this server runs and the model packageModel
    *  picks, then each trigger on it as POST /triggers makes one. A trigger refused undoes the apply: the triggers made
    *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`; a
    *  github trigger GitHub is not connected for is skipped instead, with a warning there, and one made is said there. A webhook
@@ -1937,10 +1935,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The agent's approvals: the apply's override, else the package's own (a template whose job runs on triggers says
     // never), else ask. Deny and pins hold either way.
     const chosenApprovals = approvals ?? pkg.approvals;
-    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), ...(tiers.modelTiers ? { modelTiers: tiers.modelTiers } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), ...(chosenApprovals ? { approvals: chosenApprovals } : {}), ...(pick ? { computer: pick } : {}) }, templateDeps);
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), ...(tiers.modelTiers ? { modelTiers: tiers.modelTiers } : {}), mcp: saved, defaultTools, grants, held: denied, ...(chosenApprovals ? { approvals: chosenApprovals } : {}), ...(pick ? { computer: pick } : {}) }, templateDeps);
     // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
     // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>).
-    const refusedTriggers = madeTriggerIssues(made.triggers, Date.now());
+    const refusedTriggers = madeTriggerIssues(made.triggers, Date.now(), pkg.inputSchema);
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
@@ -1982,10 +1980,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     // A pinned send whose destination parameter was not given is denied, never let go anywhere: said, by its gate name.
     const unpinned: InputIssue[] = made.unpinned.map(({ tool, parameters: named }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: `${tool}'s arguments are fixed by ${named.map((one) => `the ${one} parameter`).join(" and ")}, which was not given, so the agent was made with ${tool} set to deny: it can't call it at all. Apply again with ${named.join(" and ")} set to let it.` }));
-    // A GitHub tool the package grants that an installation of Connect GitHub's App does not hold the permission for (read
-    // from GitHub, never assumed), where the github MCP server runs on the App's tokens: said now, before a run's first
-    // call is refused; or that the check could not be made (template-github-permissions.ts).
-    const appShort = await appPermissionWarnings({ name: pkg.name, mcp: saved }, (server) => mcpMeta.get(server)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
+    // A GitHub tool the owner granted (ticked) that an installation of Connect GitHub's App does not hold the permission
+    // for (read from GitHub, never assumed), where the github MCP server runs on the App's tokens: said now, before a run's
+    // first call is refused; or that the check could not be made (template-github-permissions.ts). An unticked tool is
+    // not the agent's, so nothing is said of it.
+    const ticked = saved.map((need) => ({ ...need, tools: need.tools.filter((tool) => grants.includes(mcpToolName(need.server, tool))) }));
+    const appShort = await appPermissionWarnings({ name: pkg.name, mcp: ticked }, (server) => mcpMeta.get(server)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
     const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
@@ -1999,28 +1999,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return { applied, minted };
   }
 
-  /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
-   *  with the documented run bodies; a workflow run's its workflow's input schema, never the agentic example. Each value
+  /** A run create's issues told from the input this server checks (explain.ts): an agentic run's input schema in force
+   *  (`{content: string}` with none), with the documented run bodies;a workflow run's its workflow's input schema, never the agentic example. Each value
    *  suggested must pass this route's own checks of the body, the workflow's input check among them. */
   async function explainRun(issues: InputIssue[], body: Json, revision: Revision | null | undefined): Promise<InputIssue[]> {
     const dsl = revision?.kind === "workflow" ? await import("@parcha/agentrun-dsl") : undefined;
     const workflow = dsl && revision?.kind === "workflow" ? revision.body.workflow : undefined;
     const declared = workflow?.input?.schemaId === undefined ? undefined : workflow.schemas[workflow.input.schemaId];
-    const input = !dsl ? DEFAULT_INPUT_SCHEMA : declared ? (dsl.resolveSchemaForWorkflow(workflow!, declared) as Json) : { type: "object" };
+    const typed = revision?.kind === "agentic" ? inputSchemaOf((revision.body as { inputSchema?: unknown }).inputSchema) : DEFAULT_INPUT_SCHEMA;
+    const input = !dsl ? typed : declared ? (dsl.resolveSchemaForWorkflow(workflow!, declared) as Json) : { type: "object" };
     const base = deref(openapi, { $ref: "#/components/schemas/RunCreate" }) ?? {};
     const schema = { ...base, properties: { ...(base.properties as Json), input } };
     const check = (sent: unknown) => {
       const value = isObject(sent) ? sent : {};
       const issues = runBodyIssues(value);
       if (!revision || !isObject(value.input)) return issues;
-      return [...issues, ...(dsl ? workflowInputIssues(dsl.validateWorkflow, revision, value.input) : inputIssues(value.input, DEFAULT_INPUT_SCHEMA as Json))];
+      return [...issues, ...(dsl ? workflowInputIssues(dsl.validateWorkflow, revision, value.input) : inputIssues(value.input, typed))];
     };
     return explain(issues, openapi, schema, { examples: dsl ? [] : examplesOf("createRun"), body, check });
   }
 
-  /** A run's input: an agentic run's `{content: string}`, a workflow run's what its workflow's input schema takes. */
+  /** A run's input: an agentic run's what its revision's input schema in force takes (`{content: string}` with none), a
+   *  workflow run's what its workflow's input schema takes. */
   async function inputIssuesOf(revision: Revision, input: Json) {
-    if (revision.kind === "agentic") return inputIssues(input, DEFAULT_INPUT_SCHEMA as Json);
+    if (revision.kind === "agentic") return inputIssues(input, inputSchemaOf((revision.body as { inputSchema?: unknown }).inputSchema));
     const { validateWorkflow } = await import("@parcha/agentrun-dsl");
     return workflowInputIssues(validateWorkflow, revision, input);
   }
@@ -2060,7 +2062,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const handed = mcpAuthOf(mcp_auth, issues);
       const auth: Record<string, RunMcpAuth[string]> = {};
       for (const [server, headers] of Object.entries(handed ?? {})) {
-        const row = await store.mcp.server(server);
+        const row = await getMcpServer(store, server);
         if (row?.auth !== "per_run") issues.push({ field: `mcp_auth.${server}`, reason: "not_an_option", message: row ? `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` : `No MCP server ${server} is saved here.` });
         else auth[server] = { headers, origin: new URL(row.url).origin };
       }
@@ -2944,8 +2946,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const run = await needRun(id);
         const family: LiveFamily = found.name === "getRunBrowser" ? "browser" : "computer";
         // The run's open viewer, from the store's sealed viewer rows the runner publishes its hand-over into (browser-live.ts
-        // liveViewerLink/computerViewerLink, under the seal key); who drives, from the cut's computerHoldOf over the store.
-        const hold = await computerHoldOf(store, run.id);
+        // liveViewerLink/computerViewerLink, under the seal key); who drives, from the cut's computerHoldOf over the store,
+        // and where a computer with no viewer is (sessionIn), both over one read of the run's journal.
+        const entries = (await runEntries(store, run.id, ctx)) as unknown as readonly JournalEntry[];
+        const hold = await computerHoldOf(store, run.id, { entries: async () => entries });
         const kept = await keptBrowserOf(store, run.id);
         // A desktop or a phone (the run's revision's computer) whose screen is not open now is still the run's computer:
         // none with its kind, never off as if the agent had none (#2170).
@@ -2959,6 +2963,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             return computerViewerLink(store, sealKey, run.id, answers);
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family)),
+          session: (kind) => sessionIn(kind, entries),
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
@@ -3266,9 +3271,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = await bodyOf(req);
         const issues = settingsIssues(body);
         if (issues.length) throw invalid(issues);
+        const before = settings.get();
         await settings.put(body as ToolSettingsMap);
         // A setting changes what the web tools resolve to, never env or what a harness offers: capabilities again.
         recompose();
+        // A run parked on a call whose tool reads allow now, on its pinned revision: woken, so its next claim's gate answers
+        // the ask by the setting (settings-wake.ts), before this answer. The settings as the runner's gate reads them.
+        const woken = await wakeAnsweredBySetting(store, await loadToolSettings(store), before);
+        if (woken.length) log?.(logLine("tool_settings", { condition: "runs_woken", runs: woken.join(",") }));
         return send(res, 200, withDefaults(settings.get()));
       }
       // A person's view and control of what an agent learned (learning-routes.ts). Every text cut of the host's secrets as

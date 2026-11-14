@@ -9,7 +9,7 @@
 // tools are the kernel registry's hands on the run's Workspace (runTools), and — once built through the ToolHost below —
 // tools.ts's full set (browser, web, MCP, decisions, monid) by their own names. The gate before a call's intent is the
 // run's revision's tool settings, read through runGate (approvals "never" among them), the adapter loop asking it.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
@@ -22,10 +22,10 @@ import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
 import { runnerLiveOf } from "../live-reach.js";
 import { llmTiers, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
-import { firstMessage } from "../run-manifest.js";
+import { firstMessage, inputMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
-import { isObject } from "../validate.js";
+import { isWebHostTool } from "../tool-list.js";
 import { deniedText, mcpServersOf, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom } from "../tool-gate.js";
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
@@ -35,10 +35,11 @@ import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { environmentLine } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
+import { outputContract } from "../answer-json.js";
 import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
-import { learningEndOfRun } from "./learning-end.js";
+import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { learnedAskFits, learnedAskShown, LEARNED_WORKFLOW_TOOL, learnedMcpTools, learnedWorkflowTool } from "../learned-workflow.js";
 import { PORT_PROVIDER, tieredModels, tierProvider } from "../port-models.js";
 import { promptOf, readsFiles } from "../skills.js";
@@ -49,6 +50,7 @@ import { runTools, type ToolResults, withKindTools } from "../workspace/run-tool
 import { copyRunFiles } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
+import { durableWait } from "../workflow/pi-versions.js";
 import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
@@ -70,7 +72,7 @@ import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
-import { type claimComputer, type ComputerDeps, computerReadyWords, imageWaitWords } from "../workspace/computer-deps.js";
+import { type claimComputer, type ComputerDeps, computerReadyWords, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { RunComputerHold } from "./computer-journal.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
@@ -82,6 +84,7 @@ import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
+import { monidApprovalPrice } from "../monid.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -230,6 +233,8 @@ type RevisionBody = {
   readonly model?: string;
   /** The model of each of its tiers it names (a subagent's: runner/subagent.ts), absent for the host's tier model. */
   readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>;
+  /** The JSON Schema its final answer's last json block meets (definition.output_schema), absent for none. */
+  readonly outputSchema?: unknown;
 };
 
 /** What the runner routes a claimed run on: the launch's model as its start pinned it, sent as pinned, with the
@@ -424,7 +429,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent. What
     // became of the agent's own computer (a persistent setting) is said on the run's timeline.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
@@ -436,7 +441,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const heldComputer = heldSpecOf(launch, loopComputer);
   // Under the agent's bash policy, its shell's environment is the policy's too (bash-read-only.ts policyEnv).
   const bashPolicy = bashPolicyOf(body.toolSettings);
-  const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }) });
+  // pi's codemode is its script tool (codeMode): a code-only computer lists no computer_script beside it, and a
+  // tools-only one gets no codemode (tools.computer is absent then).
+  const tools = await runTools(ws.workspace, computer.computer, { mode, context, codeMode: true, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }) });
   holds.hold({ tools });
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
@@ -462,8 +469,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // - ask_person is pi's own tool (tools.ts): a run granted it carries its native extension, so pi runs it as its own tool
   //   task under the session's gate and keeps its control.terminate — the turn ends on the person's question and the loop
   //   parks the run (endedOnTurnEndingTool), or, with the browser's session open, waits for the answer in its claim
-  //   (adapter-loop waitInClaim, the browser's personWait below). It stays out of the session's host tools and REPLAY, so a CLI harness still
-  //   refuses it (runnable.ts). pi only.
+  //   (adapter-loop waitInClaim, the browser's personWait below). It stays out of this session's host tools: a CLI
+  //   harness gets the same tool as a host tool (cli-run-spec.ts), whose turn the loop cuts at the question.
   // - the browser's durable extension, when the run gets one (bindNonHandTools, below, before the session opens).
   // - pi's code mode, with a desktop or a phone (pi-computer.ts): the `codemode` tool beside the run's own, its scripts
   //   with `computer` bound on the run's held port.
@@ -533,6 +540,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const capModel = capModelOf(route);
   // And each tier's model (tierRoutes, filled below), by the route its request names (its tier's proxy, ModelRequest.route),
   // priced as that route books it: one id the run's model and a tier share is priced apart, never at the other's price.
+  const besideOf = spentBesideOf(launch, deps.store, claim.runId);
   const runCap: RunCapConfig = {
     capUsd: () => launch.maxCostUsd,
     modelOf: (id, by) => {
@@ -541,6 +549,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       return tierRoute && tierRoute.model === id ? capModelOf(tierRoute) : undefined;
     },
     ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
+    // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
+    ...(besideOf ? { beside: besideOf } : {}),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run
   // has a cap. A park names the cap the loop holds the run to then (a raise's, else this one).
@@ -652,13 +662,14 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
   // pi installs it before every other section), then the revision's instructions with what the agent learned laid in
   // (learning.ts laidLearned, from the launch's learning start — the # Learned section decided once at launch, so the runner
-  // reads no learning folder), its own skills through skills.ts promptOf, then the effort guidance (the launch's effort,
-  // never this process's environment). The one path for every harness.
+  // reads no learning folder), its own skills through skills.ts promptOf, the output schema it answers in (answer-json.ts
+  // outputContract, the CLI spec's too), then the effort guidance (the launch's effort, never this process's environment).
+  // The one path for every harness.
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section, start.use === true) : (body.instructions ?? "");
   const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
-  const system = [environmentLine(), checkout?.note, instructions, guidance].filter((line): line is string => Boolean(line));
+  const system = [environmentLine(), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
 
   // The subagent tool, one of the session's own tools (no extension of its own): a child's tools are a subset of the
   // revision's grants (each by its session name: an MCP tool's wire name, the browser's registrations), its model the
@@ -697,8 +708,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
 
   // The person's first message: the start body's content, with the run's file manifest beside it (run-manifest.ts), read
   // through the run's Workspace (Mode 2: its inputs/ on the disk, never a folder of this machine).
-  const content = isObject(launch.input) && typeof (launch.input as { content?: unknown }).content === "string" ? (launch.input as { content: string }).content : "";
-  const input = await firstMessage(content, ws.workspace);
+  // A typed input's other fields follow its content as one json block (inputMessage).
+  const input = await firstMessage(inputMessage(launch.input), ws.workspace);
 
   // The run's end-of-run step, when it learns (learningEndOfRun from the launch's learning start; none otherwise): the
   // reflect-and-propose turn over the run's store, asked in the end turn while the claim is held (adapter-loop.ts stepOf).
@@ -732,7 +743,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The gate's answer with its words (adapterRunGate, RunGate.decide): a deny names where it was set and that nothing was
     // sent or charged, and a pinned MCP tool's call outside its pin is refused before it is asked or sent.
     gate,
+    // monid.run's card shows what the call is held at (monid.ts monidApprovalPrice), as an MCP tool's shows its price.
+    approvalPrice: monidApprovalPrice(toolEnv),
     runCap,
+    // The answer's schema: a miss is asked again once (adapter-loop.ts, the output contract's retry).
+    ...(body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {}),
     ...(cap ? { cap } : {}),
     // The run's MCP for a harness with its own client (mcp-run.ts), the session the adapter mounts; absent when none.
     ...(mcp ? { mcp } : {}),
@@ -796,7 +811,8 @@ export function hostToolCtxOf(run: AdapterRun, context: Context, results: ToolRe
     env: async () => ({ cwd: root }) as never,
     commit: (change, at, options) => run.harness.commit(change, at, options),
     snapshot: ((...args: unknown[]) => Reflect.apply(run.harness.snapshot, run.harness, args)) as ToolExecutionApi["snapshot"],
-    waitForTask: (id, at) => run.harness.waitForTask(id, at),
+    // Never on the call's signal (durableWait): an abort while it registers rejects this wait, never one unhandled.
+    waitForTask: (id, at) => durableWait((bare) => run.harness.waitForTask(id, bare), at),
     agent: async (at) => {
       const conversation = await run.harness.conversation(ROOT_CONVERSATION_ID, at);
       if (!conversation) throw new Error("the run has no root conversation");
@@ -992,16 +1008,13 @@ export function buildToolHost(opts: {
   };
 }
 
-/** The tools of `granted` that bind as web host tools on every harness: web_fetch, web_search and the monid tools. */
-export const webToolNames = (granted: readonly string[]): string[] => granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));
-
-/** The run's web host tools (webToolNames: web_fetch, web_search, monid) as HostTool[], each bound through `host` by its
+/** The run's web host tools (tool-list.ts `host` rows: web_fetch, web_search, monid) as HostTool[], each bound through `host` by its
  *  catalog name and wrapped as the hands are (host-tools.ts hostToolOf, with `ctx`), the one binding the pi spec and the
  *  CLI spec share. Each runs under the adapter loop's one gate (spec.gate) on the claim's keys (host.env), and books its
  *  paid requests on the run's one ledger itself (bookedIn): they carry no settle of their own. */
 export async function webHostTools(host: ToolHost, granted: readonly string[], ctx: HostToolCtx): Promise<HostTool[]> {
   const tools: HostTool[] = [];
-  for (const name of webToolNames(granted)) {
+  for (const name of granted.filter(isWebHostTool)) {
     const entry = toolOf(name);
     if (!entry) continue;
     const binding = await entry.bind(host);

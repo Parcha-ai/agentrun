@@ -51,6 +51,16 @@ enum Roles {
 		return byRole[role] ?? "generic"
 	}
 
+	/// A window's title-bar buttons, by subrole: AppKit gives them no title and no description.
+	static let titleBarButtons: [String: String] = [
+		"AXCloseButton": "Close", "AXMinimizeButton": "Minimize", "AXZoomButton": "Zoom", "AXFullScreenButton": "Full Screen",
+	]
+
+	/// An element's name: its title, else its description, else what its subrole says it is (a title-bar button).
+	static func name(title: String?, description: String?, subrole: String?) -> String? {
+		title ?? description ?? subrole.flatMap { titleBarButtons[$0] }
+	}
+
 	/// The roles that take typed text.
 	static let textInput: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
 

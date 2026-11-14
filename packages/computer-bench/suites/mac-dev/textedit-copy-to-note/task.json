@@ -1,0 +1,87 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.textedit.copy-to-note",
+  "version": 1,
+  "title": "Copy one line of a TextEdit file into a new note",
+  "split": "dev",
+  "tags": ["textedit", "notes", "cross-app", "copy"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.TextEdit", "com.apple.Notes"] },
+  "params": {
+    "want": {
+      "pick": [
+        { "key": "Door code", "line": "Door code: 4417" },
+        { "key": "Wi-Fi password", "line": "Wi-Fi password: maple-river-82" },
+        { "key": "Alarm PIN", "line": "Alarm PIN: 9023" },
+        { "key": "Parking spot", "line": "Parking spot: B14" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No note of this title is left from an earlier run, in Recently Deleted either.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "purge"], "timeoutMs": 60000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Close documents a run left open from the folder, so TextEdit reads the fresh file.",
+      "params": { "argv": ["osascript", "-e", "{{file:close.applescript}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "handover.txt with its five lines, open in TextEdit.",
+      "params": { "argv": ["sh", "-c", "{{file:setup.sh}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "TextEdit has handover.txt open. In Notes, make a new note titled \"Handover {{nonce}}\" whose second line is the file's \"{{want.key}}\" line, copied exactly.",
+  "budget": { "steps": 30, "usd": 1.5, "wall_s": 420 },
+  "checks": [
+    {
+      "id": "one-note",
+      "kind": "exec",
+      "why": "Exactly one live note (not in Recently Deleted) has the title.",
+      "argv": ["osascript", "-e", "{{file:notes.applescript}}", "count"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "1" }
+    },
+    {
+      "id": "lines",
+      "kind": "exec",
+      "why": "The note's non-empty lines are the title and the file's whole line for that key, nothing else: not another line, not the whole file.",
+      "argv": ["osascript", "-e", "{{file:notes.applescript}}", "lines"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "Handover {{nonce}}|{{want.line}}" }
+    },
+    {
+      "id": "file-kept",
+      "kind": "exec",
+      "why": "handover.txt on disk is unchanged: the agent copied from it without editing it.",
+      "argv": ["sh", "-c", "cat \"$HOME/Documents/computer-bench-{{nonce}}/handover.txt\" | tr '\\n' '|'"],
+      "stdout": { "equals": "Handover for the weekend|Door code: 4417|Wi-Fi password: maple-river-82|Alarm PIN: 9023|Parking spot: B14|" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the note, and again from Recently Deleted.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "purge"], "timeoutMs": 60000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Close the document without saving.",
+      "params": { "argv": ["osascript", "-e", "{{file:close.applescript}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Remove the folder.",
+      "params": { "argv": ["sh", "-c", "rm -rf \"$HOME/Documents/computer-bench-{{nonce}}\""], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Make the note with the line as its second line.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "make", "<div>Handover {{nonce}}</div><div>{{want.line}}</div>"], "timeoutMs": 60000 }
+    }
+  ]
+}

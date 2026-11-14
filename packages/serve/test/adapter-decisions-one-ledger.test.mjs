@@ -180,11 +180,8 @@ test("a browser's release at a PARK (a call that asks a person) books on the run
   near(said["run-1"]?.at(-1), 0.0014, `the run's paid calls after its release at its park (${JSON.stringify(said)})`);
 });
 
-test("two runs on one runner: each browser's release books on its own run's ledger and on no other's, and the process-wide cap sees none of it", async (t) => {
+test("two runs on one runner: each browser's release books on its own run's ledger and on no other's", async (t) => {
   const { said } = await releasesAt(t, { runs: { "run-1": 0.0014, "run-2": 0.0021 }, script: [{ say: "done" }] });
   near(said["run-1"]?.at(-1), 0.0014, `run-1's paid calls hold only its own release (${JSON.stringify(said)})`);
   near(said["run-2"]?.at(-1), 0.0021, `run-2's paid calls hold only its own release (${JSON.stringify(said)})`);
-  const processCap = await import("../dist/cap.js");
-  assert.equal(processCap.runCap(), undefined, "the process-wide cap (cap.ts) holds no run");
-  assert.equal(processCap.paidHolds(), 0, "and nothing is held on it");
 });

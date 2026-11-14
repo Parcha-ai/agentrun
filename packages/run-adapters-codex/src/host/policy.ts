@@ -16,10 +16,9 @@
 // recorded (any other web search tool is refused), while the host's web_search setting allows it at that request
 // (`searchAllowed`, read per request: a deny or ask set mid-run drops it from the next one), and each search the provider
 // ran is booked at its per-call price (`withWebSearches`). A function or custom tool
-// that is not one of the session's names is dropped, so the model is offered exactly the host's tools. A remote MCP
-// server's granted tools come in a namespace of their own (`mcp__<server>`, each tool by its own name), and only those
-// pass. A code-mode
-// model's request carries Codex's own `exec` and `wait` in an `additional_tools` item; those pass, and nothing else in
+// that is not one of the session's names is dropped, so the model is offered exactly the host's tools (a run's remote MCP
+// tools among them: host tools like any other); an MCP server's namespace of Codex's own (`mcp__<server>`) never passes.
+// A code-mode model's request carries Codex's own `exec` and `wait` in an `additional_tools` item; those pass, and nothing else in
 // the item does (the sub-agent and user-input tools it also lists are dropped), so the model is offered exactly the
 // host's tools, called from `exec` as nested ones.
 //
@@ -28,7 +27,7 @@
 // inside `input_tokens`; they are booked apart (as pi-ai books them), and reasoning tokens inside `output_tokens`. The
 // searches a response ran are read from the same event, its `tool_usage.web_search.num_requests`.
 import type { IncomingHttpHeaders } from "node:http";
-import { providerInputOverhead, ProxyRefusal, responsesImagesIn, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { NATIVE_SEARCH_USD, providerInputOverhead, ProxyRefusal, responsesImagesIn, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },
@@ -64,8 +63,8 @@ const isLiveSearch = (tool: Record<string, unknown>) => Object.keys(tool).length
  * not listed: their searches, like any model's not listed here (a gateway's own id, say), are an unknown cost, never $0.
  */
 const WEB_SEARCH_USD: readonly (readonly [RegExp, number])[] = [
-  [/^(?:gpt-6|gpt-5|o3|o4-mini)(?:[-.][a-z0-9.-]+)?$/, 0.01],
-  [/^gpt-4(?:o|\.1)(?:-\d{4}-\d{2}-\d{2})?$/, 0.01],
+  [/^(?:gpt-6|gpt-5|o3|o4-mini)(?:[-.][a-z0-9.-]+)?$/, NATIVE_SEARCH_USD],
+  [/^gpt-4(?:o|\.1)(?:-\d{4}-\d{2}-\d{2})?$/, NATIVE_SEARCH_USD],
 ];
 
 /** The price of one web search call on `model`, or undefined when it is not known. */
@@ -96,9 +95,6 @@ export interface CodexPolicyOptions {
   model: string;
   /** The session's own tool names: every other tool definition is dropped. */
   tools: readonly string[];
-  /** The granted tools of the session's remote MCP servers, `mcp__<server>__<tool>`: the pinned CLI offers a server's tools
-   *  in a namespace named `mcp__<server>`, each by the server's own name. */
-  mcpTools?: readonly string[];
   /** The most output tokens one request may ask for. Default 32 000. */
   maxOutputTokens?: number;
   /** Codex's own web search, live: the live search tool the pinned CLI sends passes, and a `tool_choice` naming it. Each
@@ -118,8 +114,8 @@ export interface CodexPolicyOptions {
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** A list of tool definitions with no provider-hosted tool but the live web search when `search` is on, less any not the
- *  session's own: `allowed` by name, `mcp` (`mcp__<server>__<tool>`) in a server's namespace. */
-function ownTools(tools: unknown, allowed: ReadonlySet<string>, search = false, mcp: ReadonlySet<string> = new Set()): unknown[] {
+ *  session's own (`allowed`, by name). */
+function ownTools(tools: unknown, allowed: ReadonlySet<string>, search = false): unknown[] {
   if (!Array.isArray(tools)) throw new ProxyRefusal(400, "tools is not a list");
   const out: unknown[] = [];
   for (const tool of tools) {
@@ -133,9 +129,9 @@ function ownTools(tools: unknown, allowed: ReadonlySet<string>, search = false, 
     }
     if (DROPPED_TOOLS.has(type)) continue;
     if (type === "namespace") {
-      // A namespace holds the tools of a built-in family, or of an MCP server (`mcp__<server>`): only the session's own ones
-      // stay, and an empty one goes.
-      const kept = ownTools(tool.tools, name.startsWith("mcp__") ? new Set([...mcp].flatMap((own) => (own.startsWith(`${name}__`) ? [own.slice(name.length + 2)] : []))) : allowed);
+      // A namespace holds the tools of a built-in family: only the session's own ones stay, and an empty one goes. One of
+      // an MCP server's (`mcp__<server>`) holds none of the session's: Codex binds no MCP server of its own.
+      const kept = ownTools(tool.tools, name.startsWith("mcp__") ? new Set() : allowed);
       if (kept.length) out.push({ ...tool, tools: kept });
       continue;
     }
@@ -591,7 +587,6 @@ export function addResponsesNote(body: Record<string, unknown>, text: string): R
 
 export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
   const allowed = new Set(options.tools);
-  const mcp = new Set(options.mcpTools ?? []);
   const maxOutputTokens = options.maxOutputTokens ?? 32_000;
   const search = options.webSearch === "live";
   return {
@@ -657,7 +652,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     if (out.reasoning !== undefined && !isPlain(out.reasoning)) throw new ProxyRefusal(400, "reasoning is not an object");
     if (out.text !== undefined) out.text = textOptions(out.text);
     // Without the search now, its tool is dropped as a session without one drops it (DROPPED_TOOLS).
-    if (out.tools !== undefined) out.tools = ownTools(out.tools, own, searchNow, mcp);
+    if (out.tools !== undefined) out.tools = ownTools(out.tools, own, searchNow);
     if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, own, searchNow);
     if (Array.isArray(out.input) && out.input.some((item) => isPlain(item) && item.type === "additional_tools")) {
       // While a script that yielded still runs, the model is offered `wait` and not `exec`: one script is live at a time.

@@ -15,6 +15,7 @@ import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { codexAdapter } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
+import { CLASSIC_MODEL } from './offer.mjs';
 
 const binary = verifyCodexBinary(findCodex());
 const problem = binary instanceof Error ? binary.message : undefined;
@@ -121,7 +122,7 @@ test("with the built-ins off, a code-mode model (luna, sol) is offered no apply_
 });
 
 test('a classic model is told nothing about a read-only sandbox, and is offered the host\'s write tool',{ skip, timeout: 180_000 }, async () => {
-  const { request, config } = await firstRequest('gpt-5.4-mini');
+  const { request, config } = await firstRequest(CLASSIC_MODEL);
   assert.deepEqual(sandboxNotes(request), [], 'no message describes Codex\'s sandbox');
   assert.deepEqual((request.tools ?? []).map((t) => t.name), ['write']);
   assert.match(config, /^include_permissions_instructions = false$/m);

@@ -157,6 +157,6 @@ test("a desktop or phone run whose screen is not open reads none with its kind; 
     const runId = (await server.api("POST", `/agents/${id}/runs`, { input: { content: "Look." } })).body.run_id;
     return (await call(server.port, { path: `/v2/runs/${runId}/computer`, headers: { cookie: owner.cookie } })).json;
   };
-  assert.deepEqual(await read("desk", { computer: { kind: "desktop", provider: "e2b" } }), { state: "none", kind: "desktop", hold: "agent" });
+  assert.deepEqual(await read("desk", { computer: { kind: "desktop", provider: "e2b" } }), { state: "none", kind: "desktop", hold: "agent", session: "opening" }, "queued: its claim opens it");
   assert.deepEqual(await read("plain", {}), { state: "off", hold: "agent", why: "this run's agent has no computer" });
 });

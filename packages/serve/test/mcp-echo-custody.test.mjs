@@ -1,6 +1,6 @@
 // A remote MCP server that answers a tool call with the very credential it was sent: its bearer and a saved header's value.
-// Through the API, on pi (the faux model, the runner's host tool) and on codex (the stand-in for Codex's app-server, whose
-// own MCP client calls the session's door): after the run, neither value is in any journal entry or row of the store, any
+// Through the API, on pi (the faux model) and on codex (the stand-in for Codex's app-server), each calling it as the
+// runner's host tool: after the run, neither value is in any journal entry or row of the store, any
 // timeline row or the run's view, any file under the data directory, or anything the server or its runner logged. The
 // scrub is the gateway's (each call's credential values, and any refreshed while it was out); nothing else holds them.
 import assert from "node:assert/strict";
@@ -108,7 +108,7 @@ async function echoGateway(t) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-test("codex: an MCP server that echoes its bearer and a header value to Codex's own MCP client: neither reaches a journal entry, a row, a file or a log", { timeout: 90_000 }, async (t) => {
+test("codex: an MCP server that echoes its bearer and a header value in a call Codex makes as a host tool: neither reaches a journal entry, a row, a file or a log", { timeout: 90_000 }, async (t) => {
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
   await copyStandIn(standIn);
   withEnv(t, {
@@ -121,7 +121,7 @@ test("codex: an MCP server that echoes its bearer and a header value to Codex's 
   }, ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
   const logs = logsOf(t);
   const server = await serve(t, { faux: undefined });
-  await echoRun(t, server, logs, { harness: "codex", content: "mcp echo whoami {}", answered: /^whoami returned: authorization: .+; region key: .+ \(item \S+\)$/ });
+  await echoRun(t, server, logs, { harness: "codex", content: "call mcp_echo__whoami {}", answered: /^mcp_echo__whoami returned: authorization: .+; region key: .+$/ });
 });
 
 test("pi: an OAuth access token refreshed mid-claim, echoed by its server in a tool's answer and in a tool's error: no token of the sign-in reaches a journal entry, a row, a file or a log", { timeout: 120_000 }, async (t) => {

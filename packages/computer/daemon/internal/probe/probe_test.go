@@ -75,7 +75,8 @@ func afterRequest(reply []byte, got chan<- []byte) func(net.Conn) {
 	}
 }
 
-// refusing is an address nothing listens on any more.
+// refusing is an address nothing listens on any more. Its port is free again, so a listener opened after it may be given
+// the same one: a test that also listens opens its listeners first.
 func refusing(t *testing.T) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -262,7 +263,8 @@ func TestAnIPv6TargetIsTriedAsAnyOther(t *testing.T) {
 }
 
 func TestRunReportsEachTargetInTheOrderAsked(t *testing.T) {
-	closed, quiet, speaks := refusing(t), listening(t, silent), listening(t, banner)
+	quiet, speaks := listening(t, silent), listening(t, banner)
+	closed := refusing(t)
 	asked := []string{speaks, closed, quiet}
 	result := probe.Run(asked, quick)
 	outcomes := []string{}

@@ -32,7 +32,7 @@
 // scored); a replay whose every input was skipped holds the revision in those words. Its credentials resolve at its claim
 // as any run's of the agent do: saved ones from the server's store, and the per_run MCP credentials the run whose claim
 // started it was handed, sealed anew for the replay run alone (startReplay), never opened outside the claim.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { LearnedWorkflow } from "../learning.js";
 import { LEARNING_LABEL } from "../learning.js";
 import type { GuardRow } from "../learned-nodes.js";

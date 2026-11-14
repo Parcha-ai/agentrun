@@ -2,6 +2,9 @@
 // phone) answering where a phone's phoned would: the provider pushes the jar and starts phoned through the fake adb, and
 // every case runs against the Java code that runs on a phone. Run by `npm run test:phoned`, which builds FakeMain first.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { conformanceCases, formatReport, runConformance } from "../../dist/index.js";
 import { fakePhoneHarness, KEY, PHONED_JAR } from "../fake-phone-harness.mjs";
@@ -18,9 +21,19 @@ const reasonOf = (report, id) => report.results.find((r) => r.id === id)?.reason
  */
 const clock = { now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5))) };
 
-/** A provider over the fake phone harness whose phones run FakeMain for phoned, and a drifted twin of it. */
+/**
+ * A provider over the fake phone harness whose phones run FakeMain for phoned, and a drifted twin of it. Every phoned
+ * shares the phone's one UiAutomation registration and keeps it a moment after its stdin closes, as a phone's does: each
+ * case's connection starts a phoned of its own, and its first ui call needs the last case's phoned gone.
+ */
 async function setup() {
-	const fake = fakePhoneHarness({ startPhoned: () => startFakeMain().stream, clock });
+	const phone = mkdtempSync(join(tmpdir(), "phoned-phone-"));
+	process.once("exit", () => rmSync(phone, { recursive: true, force: true }));
+	const startPhoned = () => {
+		const main = startFakeMain({ phone, exitMs: 250 });
+		return { stream: main.stream, pid: main.child.pid, exited: main.exited, kill: () => main.child.kill("SIGKILL") };
+	};
+	const fake = fakePhoneHarness({ startPhoned, clock });
 	const options = { apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: clock.now, sleep: clock.sleep, maxLifetimeMs: 10 * 60_000, phoned: PHONED_JAR };
 	return { fake, provider: await create(options), drifted: await create({ ...options, daemonVersion: "0.0.0-drift" }) };
 }
@@ -34,7 +47,7 @@ test("a cloud Android with phoned passes the phone kind, the ui fixture's Full c
 	assert.ok(report.coreNotRun.every((id) => /^(exec|files|process)\./.test(id) || ["provider.deadline", "drift.arch", "isolation.vendor-agent", "input.click-lands", "input.actions-stops-at-first-failure", "apps.install-launch"].includes(id)), report.coreNotRun.join(" "));
 	assert.deepEqual(report.kindVerdict, { kind: "phone", verdict: "pass", reasons: [] }, formatReport(report));
 	const got = statuses(report);
-	const ui = ["ui.fixture-shape", "ui.refs-stable", "ui.expect", "ui.stale-ref", "ui.stale-point", "ui.route-reported", "ui.features-declared", "ui.features-off-refused"];
+	const ui = ["ui.fixture-shape", "ui.refs-stable", "ui.expect", "ui.stale-ref", "ui.stale-point", "ui.route-reported", "ui.features-declared", "ui.features-off-refused", "ui.set-holds"];
 	for (const id of ["health.hello", "health.kind-consistent", "provider.create-release", "provider.list", "drift.version", "screen.screenshot-size", "touch.tap", "touch.swipe", "input.type-text", "input.key-table-refuses-unknown", "apps.launch-terminate", "ui.observe-shape", "ui.hello", ...ui]) {
 		assert.equal(got[id], "pass", `${id}: ${reasonOf(report, id)}\n${formatReport(report)}`);
 	}

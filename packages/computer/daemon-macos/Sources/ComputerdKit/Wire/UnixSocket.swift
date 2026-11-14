@@ -23,8 +23,14 @@ public enum Paths {
 	/// The attach binding's settings: the server this Mac is paired with, and its computer id.
 	public static var attach: String { home + "/attach.json" }
 
-	/// The owner's policy for this Mac: the apps a connection may touch.
+	/// The owner's policy for this Mac: the apps a connection may touch, and what the paired server may use.
 	public static var policy: String { home + "/policy.json" }
+
+	/// A path as words show it: under the user's home, from "~".
+	public static func shown(_ path: String) -> String {
+		let home = NSHomeDirectory()
+		return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
+	}
 }
 
 /// A unix stream socket: listen on a path, accept, connect.

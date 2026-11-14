@@ -63,8 +63,8 @@ test("each Screen poll's ended state is one settings read, never the run's journ
   const store = storeOf();
   await markWaitEnded(store.settings, "run-poll", ENDED);
   for (let i = 0; i < 5; i += 1) {
-    const view = await computerView({ viewer: async () => undefined, computer: () => ({ kind: "browser" }), ended: () => readWaitEnded(store.settings, "run-poll") });
-    assert.deepEqual(view, { state: "none", kind: "browser", hold: "agent", ended: ENDED });
+    const view = await computerView({ viewer: async () => undefined, computer: () => ({ kind: "browser" }), session: () => { throw new Error("an ended state is closed: no journal read"); }, ended: () => readWaitEnded(store.settings, "run-poll") });
+    assert.deepEqual(view, { state: "none", kind: "browser", hold: "agent", session: "closed", ended: ENDED });
   }
   assert.equal(store.reads.settings, 5, "one settings read a poll");
 });
@@ -99,10 +99,10 @@ test("the wait's end hands its row's words and time to the ended state, once; an
 });
 
 test("GET /computer's none carries `ended` for a browser only, and only when there is one", async () => {
-  const none = (kind, ended) => computerView({ viewer: async () => undefined, computer: () => ({ kind }), ended: async () => ended });
-  assert.deepEqual(await none("browser", ENDED), { state: "none", kind: "browser", hold: "agent", ended: ENDED });
-  assert.deepEqual(await none("browser", undefined), { state: "none", kind: "browser", hold: "agent" });
-  assert.deepEqual(await none("desktop", ENDED), { state: "none", kind: "desktop", hold: "agent" }, "a desktop's none says nothing of a browser's wait");
-  const live = await computerView({ viewer: async () => ({ kind: "browser", viewer: "/v2/runs/r/computer/live/v/1#t=x" }), computer: () => ({ kind: "browser" }), ended: async () => { throw new Error("not read while a viewer is open"); } });
+  const none = (kind, ended) => computerView({ viewer: async () => undefined, computer: () => ({ kind }), session: () => "opening", ended: async () => ended });
+  assert.deepEqual(await none("browser", ENDED), { state: "none", kind: "browser", hold: "agent", session: "closed", ended: ENDED });
+  assert.deepEqual(await none("browser", undefined), { state: "none", kind: "browser", hold: "agent", session: "opening" });
+  assert.deepEqual(await none("desktop", ENDED), { state: "none", kind: "desktop", hold: "agent", session: "opening" }, "a desktop's none says nothing of a browser's wait");
+  const live = await computerView({ viewer: async () => ({ kind: "browser", viewer: "/v2/runs/r/computer/live/v/1#t=x" }), computer: () => ({ kind: "browser" }), session: () => { throw new Error("not read while a viewer is open"); }, ended: async () => { throw new Error("not read while a viewer is open"); } });
   assert.equal(live.state, "live");
 });

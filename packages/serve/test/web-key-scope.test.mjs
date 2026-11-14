@@ -14,6 +14,7 @@ const { searchFor } = await import("../dist/web-search.js");
 const { webFetchTool } = await import("../dist/web-fetch.js");
 const { TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
 const { bookedIn } = await import("../dist/paid-calls.js");
+const { toolLedger } = await import("./support.mjs");
 
 const KEYED_PARALLEL = new URL("./fixtures/faux-parallel-keys.mjs", import.meta.url).pathname;
 /** The faux web the public-host guard resolves hosts through under --faux (as web-fetch.test.mjs uses it). */
@@ -24,7 +25,7 @@ const newKey = () => `par-test-${randomBytes(8).toString("hex")}`;
 const claimEnv = (key) => ({ AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_PARALLEL: KEYED_PARALLEL, PARALLEL_API_KEY: key, [TOOL_PLANE_ENV]: JSON.stringify({ web_search: "parallel", web_fetch: "parallel" }) });
 
 /** A call to book each request to Parallel under (paid-calls.ts), as a run's call gives one: a request with none is never sent. */
-const inCall = (fn) => (t) => bookedIn({ call: "test-call", record: async () => undefined }, () => fn(t));
+const inCall = (fn) => async (t) => bookedIn({ call: "test-call", paid: await toolLedger() }, () => fn(t));
 
 /** The requests the fake Parallel was sent in this test, each with the key it carried. */
 function keyLog(t) {

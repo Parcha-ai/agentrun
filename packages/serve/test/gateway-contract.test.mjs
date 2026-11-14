@@ -77,7 +77,7 @@ async function onGateway(t, harness, base, { model = "openai/gpt-6.1-sol", price
   withEnv(t, { AGENT_MODEL_BASE_URL: base(gw.url), AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: model, ...(price ? { AGENT_MODEL_PRICE: price } : {}), ...(harness === "codex" ? CODEX_STAND_IN : {}) }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   // max_concurrent_runs follows the host's memory: admission.test.mjs checks it.
-  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === harness);
+  const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === harness);
   assert.deepEqual(offer, { id: harness, available: true, steer: harness === "pi", default_model: `agent-model/${model}`, run_memory_mib: { pi: 128, codex: 192, "claude-agent": 288 }[harness] });
   assert.equal((await api("POST", "/agents", agent(`${harness}-gw`, harness === "pi" ? {} : { harness }))).status, 201);
   const { run, usage } = await runOf(api, `${harness}-gw`, deadlineMs);
@@ -114,7 +114,7 @@ test("claude-agent through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY: POST /v1/me
   const gw = await gateway(t);
   withEnv(t, { ANTHROPIC_BASE_URL: gw.url, ANTHROPIC_API_KEY: KEY("anthropic"), AGENT_MODEL: "anthropic/claude-haiku-5-5" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
-  const { max_concurrent_runs, ...claude } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
+  const { max_concurrent_runs, models: _models, ...claude } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
   assert.deepEqual(claude, { id: "claude-agent", available: true, steer: false, default_model: "anthropic/claude-haiku-5-5", run_memory_mib: 288 });
   assert.equal((await api("POST", "/agents", agent("claude-gw", { harness: "claude-agent", model: "anthropic/claude-haiku-5.5" }))).status, 201);
   const { run, usage } = await runOf(api, "claude-gw", 150_000);
@@ -176,7 +176,7 @@ test("custody, guard on main: with the OpenRouter key and an explicit Anthropic 
   const gw = await gateway(t);
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY, ANTHROPIC_BASE_URL: `${gw.url}/api` }, NAMES);
   const { api } = await serve(t, { faux: undefined });
-  const { max_concurrent_runs, ...claude } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
+  const { max_concurrent_runs, models: _models, ...claude } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
   assert.deepEqual(claude, { id: "claude-agent", available: false, steer: false, reason: "claude-agent needs ANTHROPIC_API_KEY.", default_model: null, run_memory_mib: 288 });
   assert.equal((await api("POST", "/agents", agent("claude-custody", { harness: "claude-agent", model: CLAUDE_OR_MODEL }))).status, 201);
   const started = await api("POST", "/agents/claude-custody/runs", { input: { content: "Say hi." } });
@@ -202,7 +202,7 @@ for (const [harness, model] of [["claude-agent", CLAUDE_OR_MODEL], ["codex", COD
     withEnv(t, { OPENROUTER_API_KEY: OR_KEY }, NAMES);
     const { api } = await serve(t, { faux: undefined });
     // How many fit at once is this host's memory (admission.test.mjs); the memory a run takes is the harness's own.
-    const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === harness);
+    const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === harness);
     assert.deepEqual(offer, { id: harness, available: true, steer: false, default_model: model, run_memory_mib: { "claude-agent": 288, codex: 192 }[harness] });
     assert.deepEqual(gw.requests, [], "no request reached the loopback gateway");
   });
@@ -214,7 +214,7 @@ const PI_OR_DEFAULT = "openrouter/openai/gpt-6.1-sol";
 test("pi on OPENROUTER_API_KEY alone: its default model, on pi-ai's own openrouter provider, keyed by OPENROUTER_API_KEY and priced (red on main: pi has no default)", { timeout: 60_000, skip: !PI_OR_DEFAULT && "pi's default id on OpenRouter alone is not set yet" }, async (t) => {
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY }, NAMES);
   const { api } = await serve(t, { faux: undefined });
-  const { max_concurrent_runs, ...pi } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "pi");
+  const { max_concurrent_runs, models: _models, ...pi } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "pi");
   assert.deepEqual(pi, { id: "pi", available: true, steer: true, default_model: PI_OR_DEFAULT, run_memory_mib: 128 });
   const { runModels } = await import("../dist/model.js");
   const { models, model } = await runModels({ OPENROUTER_API_KEY: OR_KEY }, undefined);
