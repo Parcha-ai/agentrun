@@ -297,10 +297,10 @@ class ModalHost implements MachineHost {
 	 * Modal's own rules of a spec, over the adapter's: an image Modal can pull or holds (no option, no space), sizes in
 	 * the units Modal takes, and the sandbox's tags within Modal's 512 bytes. No call.
 	 */
-	check(spec: ComputerSpec): Refusal[] {
+	check(spec: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
-		const { image, cpus, memoryMb, labels, mount } = (typeof spec === "object" && spec !== null ? spec : {}) as Partial<ComputerSpec>;
+		const { image, cpus, memoryMb, labels, mount } = spec;
 		if (typeof image === "string" && (image.startsWith("-") || /\s/.test(image))) {
 			refuse("image", `an image is a registry tag for linux/amd64 that Modal can pull, such as ${MODAL_DEFAULT_IMAGE}, or an image Modal holds by its id (im-...)`);
 		}
@@ -310,7 +310,7 @@ class ModalHost implements MachineHost {
 		if (memoryMb !== undefined && !(isWhole(memoryMb) && memoryMb > 0)) refuse("memoryMb", "memoryMb must be a whole number of MiB above 0");
 		const archil = mount === undefined || (mount?.kind === "archil" && ["disk", "region", "folder"].every((key) => typeof (mount as unknown as Record<string, unknown>)[key] === "string"));
 		if (refusals.length === 0 && typeof image === "string" && (labels === undefined || isLabels(labels)) && archil) {
-			const problem = tagProblem(tagsForSpec(spec));
+			const problem = tagProblem(tagsForSpec(spec as ComputerSpec));
 			if (problem) refuse(mount === undefined ? "labels" : "mount", problem);
 		}
 		return refusals;
@@ -385,7 +385,7 @@ class ModalHost implements MachineHost {
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
 		const until = Date.now() + ctx.timeoutMs;
 		const app = await this.#theApp();
-		// The mount label is a tag of another text (tagsOf): the listing filters by the rest, and each read by all.
+		// The mount label is a tag of another text (tagsOf): the listing filters by the rest, and the adapter by all.
 		const { [ARCHIL_MOUNT_LABEL]: _mount, ...filter } = labels;
 		const iterator = this.#sdk.sandboxes.list({ appId: app.appId, tags: filter })[Symbol.asyncIterator]();
 		const machines: Machine[] = [];
@@ -395,7 +395,7 @@ class ModalHost implements MachineHost {
 				const next = await iterator.next();
 				if (next.done) break;
 				const machine = await this.#machine(next.value);
-				if (machine !== undefined && Object.entries(labels).every(([key, value]) => machine.labels[key] === value)) machines.push(machine);
+				if (machine !== undefined) machines.push(machine);
 			}
 		} finally {
 			Promise.resolve(iterator.return?.()).catch(() => {});
