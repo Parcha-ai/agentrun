@@ -206,7 +206,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
     <div className="flex h-full min-h-0 flex-col short:h-auto">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
       <Tabs tabs={tabs.map(([id, label]) => ({ id, label }))} value={tab} onChange={setTab} />
-      {tab === "graph" ? <div className="min-h-0 flex-1 short:min-h-96">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
+      {tab === "graph" ? <div className="min-h-0 flex-1 short:min-h-96">{graphView}</div> : <div data-scroll-pane className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (
