@@ -274,16 +274,19 @@ test("every computer provider's key and Archil's account key is on the launcher'
 
 // Started by its launcher with the Archil account key and a computer provider's key set, the server holds neither in its
 // environment, and still reads each where it was started: Archil's settings and Settings → Computers say `source: "env"`.
-test("started by its launcher with ARCHIL_API_KEY and E2B_API_KEY set, neither is in the server's environment, and Archil and Settings → Computers still read each from where it started", { timeout: 120_000 }, async (t) => {
+test("started by its launcher with ARCHIL_API_KEY and E2B_API_KEY set, neither is in the server's environment, and Archil and Settings → Computers still read each from where it started", { timeout: 150_000 }, async (t) => {
+  // Past the launcher's own 120 s wait for the banner (printed's backstop), so a start that hangs fails with the server's
+  // output; each request after it has 30 s, and a slow one fails naming its route.
+  const within = (what, promise) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} gave no answer in 30 s`)), 30_000).unref())]);
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
   const { root, api } = await launched(t, { AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN-${"t".repeat(16)}`, [ARCHIL_API_KEY_ENV]: `${canary}-archil`, E2B_API_KEY: `${canary}-e2b` }, []);
   const environ = read(`/proc/${root}/environ`).toString().split("\0");
   for (const name of [ARCHIL_API_KEY_ENV, "E2B_API_KEY"]) assert.ok(!environ.some((entry) => entry.startsWith(`${name}=`)), `no ${name} in the server's environment`);
   noSecretAnywhere(root, canary);
-  const archil = await api("GET", "/workspace/archil");
+  const archil = await within("GET /workspace/archil", api("GET", "/workspace/archil"));
   assert.equal(archil.status, 200);
   assert.deepEqual([archil.body.secret.set, archil.body.secret.source], [true, "env"], "Archil reads the account key the server was started with");
-  const computers = await api("GET", "/computers");
+  const computers = await within("GET /computers", api("GET", "/computers"));
   assert.equal(computers.status, 200);
   const e2b = computers.body.kinds.flatMap((kind) => kind.providers).find((provider) => provider.id === "e2b");
   const key = e2b?.secrets.find((meta) => meta.name === "computer:e2b:E2B_API_KEY");
