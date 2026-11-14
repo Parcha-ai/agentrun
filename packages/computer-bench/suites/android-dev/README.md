@@ -58,7 +58,7 @@ through Chrome's share sheet, one into another app (Contacts) and one into the p
 The sixteen Settings, Clock, Contacts and Files tasks deny the agent `exec`, and their oracles use only `ui.act`
 (`find` by role and name), `apps.launch` and `input.actions`. The bench's test holds every exec-deny oracle to those
 methods. They were written against the phone-harness cloud phone (redroid 15, AOSP Settings, DeskClock, Contacts and
-DocumentsUI, 360x640 points at 2x) and verified there on seeds 1 to 3. They lean on that image:
+DocumentsUI, 360x640 points at 2x), and the PR that changes one carries its run there. They lean on that image:
 
 - Swipes are in screen pixels (a slow 300-point swipe to bring Dark theme, Do Not Disturb or a contact's Email field on
   screen; a 200-point swipe back to Location from the end of the Settings list). A find sees only what is on screen,

@@ -107,8 +107,8 @@ These apply to every task. Each task's `source.changes` lists its own changes.
     fake, teardown also left the user's files exactly as they were.
   - The six tasks done in Settings or Files (brightness max and min, flight mode on and off, bid-file-rename,
     invoice-receipt-copy) are `"exec": "deny"`, and their oracles do the task through the UI with `ui.act`,
-    `apps.launch` and `input.actions`. They were verified on the phone-harness cloud phone (redroid 15) on seeds 1
-    to 3 and lean on that image as android-dev's README says: the brightness slider is dragged at its place on that
+    `apps.launch` and `input.actions`. They were written against the phone-harness cloud phone (redroid 15) and
+    lean on that image as android-dev's README says: the brightness slider is dragged at its place on that
     screen, DocumentsUI's selection-bar More options is tapped at (336,48) points, and Copy to goes through the
     storage root named `redroid15_arm64`. The file oracles search Download by name, since a find sees only what is
     on screen.
