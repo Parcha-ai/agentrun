@@ -3,6 +3,7 @@
 // holds the bytes the server sealed (store/seal.ts), which the store never opens. Both are the server's own writes.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { raw } from "./store-target.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
 test("settings: a value reads back as it was put, replaced in place, removed; a key with no row reads undefined", async (t) => {
@@ -62,4 +63,51 @@ test("sealed keys: the bytes in are the bytes out, replaced in place, removed; t
   await store.sealedKeys.remove("ANTHROPIC_API_KEY");
   assert.equal(await store.sealedKeys.get("ANTHROPIC_API_KEY"), undefined, "removed");
   assert.deepEqual((await store.sealedKeys.all()).map((row) => row.name), ["OPENAI_API_KEY"]);
+});
+
+test('settings: a filtered read returns only one namespace and JSON owner without loading unrelated values', async t => {
+  const { store } = await storeOn(t);
+  await store.settings.put('native.remote.command.first', { connector_id: 'chosen', payload: 'first' });
+  await store.settings.put('native.remote.command.other', { connector_id: 'other', payload: 'unrelated' });
+  await store.settings.put('native.remote.target.first', { connector_id: 'chosen', payload: 'different namespace' });
+  const rows = await store.settings.all({ prefix: 'native.remote.command.', connectorId: 'chosen' });
+  assert.deepEqual(rows.map(row => [row.key, row.value.payload]), [['native.remote.command.first', 'first']]);
+});
+
+test('settings: connector ownership stays a strict string comparison for numeric and boolean JSON values',async t=>{
+ const {store}=await storeOn(t),prefix='native.remote.command.';
+ for(const [name,owner] of [['string-number','123'],['number',123],['string-boolean','true'],['boolean',true]])await store.settings.put(prefix+name,{connector_id:owner});
+ for(const owner of ['123','true']){
+  const rows=await store.settings.all({prefix,connectorId:owner});
+  assert.deepEqual(rows.map(row=>row.value.connector_id),[owner]);
+ }
+});
+
+test('settings: indexed connector reads preserve escaped NUL in an unrelated native payload',async t=>{
+ const {store}=await storeOn(t),prefix='native.remote.command.';
+ const value={connector_id:'chosen',payload:{prompt:'Before\u0000after',nested:['safe','\u0000']}};
+ await store.settings.put(prefix+'nul',value);
+ assert.deepEqual(await store.settings.get(prefix+'nul'),value);
+ const rows=await store.settings.all({prefix,connectorId:'chosen'});
+ assert.deepEqual(rows.map(row=>row.value),[value]);
+});
+
+
+test('settings: native connector metadata follows successful value changes and never changes on failed CAS',async t=>{
+ const {store,file}=await storeOn(t),key='native.remote.command.atomic',rawStore=await raw(file);
+ t.after(()=>rawStore.close());
+ const first={connector_id:'first',payload:'before\u0000after'},second={connector_id:'second',payload:'changed'};
+ await store.settings.put(key,first);
+ const metadata=async()=>(await rawStore.get('SELECT connector_id FROM settings WHERE key = ?',key)).connector_id;
+ assert.equal(await metadata(),'first');
+ assert.deepEqual(await store.settings.putIfAbsent(key,second),first);assert.equal(await metadata(),'first');
+ assert.equal(await store.settings.replaceIf(key,{connector_id:'wrong'},second),false);assert.equal(await metadata(),'first');
+ assert.equal(await store.settings.replaceIf(key,first,second),true);assert.equal(await metadata(),'second');
+ assert.equal((await store.settings.all({prefix:'native.remote.command.',connectorId:'first'})).length,0);
+ assert.equal((await store.settings.all({prefix:'native.remote.command.',connectorId:'second'})).length,1);
+ for(const owner of [null,123,true,[],{},'', 'x\u0000y','chosen\n','x'.repeat(9000)]){
+  const value={connector_id:owner,payload:'preserved'};await store.settings.put(key,value);
+  assert.equal(await metadata(),null);assert.deepEqual(await store.settings.get(key),value,'invalid owner metadata never makes valid JSON unwriteable');
+ }
+ await store.settings.remove(key);assert.equal(await rawStore.get('SELECT connector_id FROM settings WHERE key = ?',key),undefined);
 });

@@ -15,6 +15,40 @@ export type Agent = {
   home_etag: string;
   created_at: Timestamp;
   updated_at: Timestamp;
+  native_status?: {
+    runtime: "claude-code" | "codex";
+    project: string;
+    selector: {
+      kind: "project" | "agent" | "profile";
+      name?: string;
+    };
+    machine_id: string;
+    version: string | null;
+    model: string | null;
+    fingerprint: string;
+    configuration: Array<{
+      path: string;
+      sha256: string;
+    }>;
+    skills: Array<string>;
+    mcp_servers: Array<string>;
+    state: "needs_verification" | "needs_attention" | "ready";
+    issues: Array<string>;
+    capabilities: {
+      launch: boolean;
+      notes: boolean;
+      skills: boolean;
+      workflows: false;
+      approval: "native" | "unavailable";
+      usage: boolean;
+    };
+    connected: boolean;
+    verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
+  };
   external?: {
     source: string;
     kind: string;
@@ -114,6 +148,10 @@ export type DefinitionInput = {
     };
     connected: boolean;
     verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
   };
   model?: string;
   model_tiers?: {
@@ -1147,6 +1185,10 @@ export type ConnectNativeResponse = {
     };
     connected: boolean;
     verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
   };
 };
 
@@ -1199,6 +1241,10 @@ export type DisconnectNativeResponse = {
     };
     connected: boolean;
     verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
   };
 };
 
@@ -1343,6 +1389,10 @@ export type GetNativeResponse = {
     };
     connected: boolean;
     verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
   } | null;
 };
 
@@ -1451,6 +1501,196 @@ export type VerifyNativeResponse = {
     };
     connected: boolean;
     verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
+  };
+};
+
+/** Complete a source command once under its valid lease (POST /connectors/{connector_id}/commands/{command_id}/complete). */
+export type CompleteRemoteCommandBody = {
+  lease_token: string;
+  result?: unknown;
+  error?: string;
+};
+export type CompleteRemoteCommandResponse = {
+  accepted: true;
+};
+
+/** Create a ten-minute one-use connection code (POST /connectors/enrollment). */
+export type EnrollRemoteConnectorBody = {
+  label?: string;
+  capabilities?: {
+    native_execution?: boolean;
+  };
+};
+export type EnrollRemoteConnectorResponse = {
+  enrollment_token: string;
+  expires_at: string;
+  workspace_id: "local";
+};
+
+/** Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import). */
+export type ImportRemoteTargetBody = {
+  target_id: string;
+  name?: string;
+  target: {
+    runtime: "claude-code" | "codex";
+    project: string;
+    selector: {
+      kind: "project" | "agent" | "profile";
+      name?: string;
+    };
+    machine_id: string;
+    version: string | null;
+    model: string | null;
+    fingerprint: string;
+    configuration: Array<{
+      path: string;
+      sha256: string;
+    }>;
+    skills: Array<string>;
+    mcp_servers: Array<string>;
+    state: "needs_verification" | "needs_attention" | "ready";
+    issues: Array<string>;
+    capabilities: {
+      launch: boolean;
+      notes: boolean;
+      skills: boolean;
+      workflows: false;
+      approval: "native" | "unavailable";
+      usage: boolean;
+    };
+    connected: boolean;
+    verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
+  };
+};
+export type ImportRemoteTargetResponse = {
+  agent_id: string;
+  native: {
+    runtime: "claude-code" | "codex";
+    project: string;
+    selector: {
+      kind: "project" | "agent" | "profile";
+      name?: string;
+    };
+    machine_id: string;
+    version: string | null;
+    model: string | null;
+    fingerprint: string;
+    configuration: Array<{
+      path: string;
+      sha256: string;
+    }>;
+    skills: Array<string>;
+    mcp_servers: Array<string>;
+    state: "needs_verification" | "needs_attention" | "ready";
+    issues: Array<string>;
+    capabilities: {
+      launch: boolean;
+      notes: boolean;
+      skills: boolean;
+      workflows: false;
+      approval: "native" | "unavailable";
+      usage: boolean;
+    };
+    connected: boolean;
+    verified_at?: string;
+    remote?: {
+      connector_id: string;
+      target_id: string;
+    };
+  };
+};
+
+/** List remote source machines and imported agent targets (GET /connectors). */
+export type ListRemoteConnectorsResponse = {
+  connectors: Array<{
+    id: string;
+    connector_id: string;
+    label: string;
+    created_at: string;
+    last_seen_at: string | null;
+    status: "online" | "offline" | "revoked";
+    capabilities: {
+      observe: true;
+      native_execution: boolean;
+    };
+    targets: Array<Record<string, unknown>>;
+  }>;
+};
+
+/** Renew active source leases and claim one command without replay (POST /connectors/{connector_id}/poll). */
+export type PollRemoteConnectorBody = {
+  worker_id: string;
+  active?: Array<{
+    command_id: string;
+    lease_token: string;
+  }>;
+};
+export type PollRemoteConnectorResponse = {
+  commands: Array<Record<string, unknown>>;
+  cancelled: Array<string>;
+  server_time: number;
+  lease_ttl_ms: number;
+};
+
+/** Exchange a one-use enrollment code for a connector-scoped credential (POST /connectors). */
+export type RegisterRemoteConnectorBody = {
+  installation_id: string;
+  operation_id: string;
+  label?: string;
+  capabilities: {
+    native_execution: boolean;
+  };
+};
+export type RegisterRemoteConnectorResponse = {
+  connector: {
+    id: string;
+    connector_id: string;
+    label: string;
+    created_at: string;
+    last_seen_at: string | null;
+    status: "online" | "offline" | "revoked";
+    capabilities: {
+      observe: true;
+      native_execution: boolean;
+    };
+    targets: Array<Record<string, unknown>>;
+  };
+  credential: string;
+  credential_expires_at: string;
+};
+
+/** Append an ordered idempotent native event batch for a valid command lease (POST /connectors/{connector_id}/commands/{command_id}/events). */
+export type RemoteCommandEventsBody = {
+  lease_token: string;
+  sequence: number;
+  events: Array<Record<string, unknown>>;
+};
+export type RemoteCommandEventsResponse = {
+  accepted: true;
+};
+
+/** Revoke a source connector and stop its outstanding commands (DELETE /connectors/{connector_id}). */
+export type RevokeRemoteConnectorResponse = {
+  connector: {
+    id: string;
+    connector_id: string;
+    label: string;
+    created_at: string;
+    last_seen_at: string | null;
+    status: "online" | "offline" | "revoked";
+    capabilities: {
+      observe: true;
+      native_execution: boolean;
+    };
+    targets: Array<Record<string, unknown>>;
   };
 };
 
@@ -4235,6 +4475,14 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   unarchiveAgent: {"method":"POST","path":"/agents/{agent_id}/unarchive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   updateDefinition: {"method":"PUT","path":"/agents/{agent_id}/definition","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
   verifyNative: {"method":"POST","path":"/agents/{agent_id}/native/verify","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  completeRemoteCommand: {"method":"POST","path":"/connectors/{connector_id}/commands/{command_id}/complete","pathParams":["connector_id","command_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  enrollRemoteConnector: {"method":"POST","path":"/connectors/enrollment","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  importRemoteTarget: {"method":"POST","path":"/connectors/{connector_id}/import","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listRemoteConnectors: {"method":"GET","path":"/connectors","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  pollRemoteConnector: {"method":"POST","path":"/connectors/{connector_id}/poll","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  registerRemoteConnector: {"method":"POST","path":"/connectors","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  remoteCommandEvents: {"method":"POST","path":"/connectors/{connector_id}/commands/{command_id}/events","pathParams":["connector_id","command_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  revokeRemoteConnector: {"method":"DELETE","path":"/connectors/{connector_id}","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createFile: {"method":"POST","path":"/files","pathParams":[],"multiSegment":[],"query":["path","content_type","sha256"],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json","application/octet-stream","*/*"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteFile: {"method":"DELETE","path":"/files/{file_id}","pathParams":["file_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   getFile: {"method":"GET","path":"/files/{file_id}","pathParams":["file_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -4380,6 +4628,24 @@ export function resources(call: Call) {
       update: (agentId: string, body: UpdateDefinitionBody, params?: UpdateDefinitionParams, options?: RequestOptions): Promise<Tagged<UpdateDefinitionResponse>> => call("updateDefinition", [agentId], body, params, options),
       /** Check native CLI and sign-in without a paid model call (POST /agents/{agent_id}/native/verify). */
       verifyNative: (agentId: string, options?: RequestOptions): Promise<VerifyNativeResponse> => call("verifyNative", [agentId], undefined, undefined, options),
+    },
+    connectors: {
+      /** Complete a source command once under its valid lease (POST /connectors/{connector_id}/commands/{command_id}/complete). */
+      completeRemoteCommand: (connectorId: string, commandId: string, body: CompleteRemoteCommandBody, options?: RequestOptions): Promise<CompleteRemoteCommandResponse> => call("completeRemoteCommand", [connectorId, commandId], body, undefined, options),
+      /** Create a ten-minute one-use connection code (POST /connectors/enrollment). */
+      enrollRemoteConnector: (body: EnrollRemoteConnectorBody, options?: RequestOptions): Promise<EnrollRemoteConnectorResponse> => call("enrollRemoteConnector", [], body, undefined, options),
+      /** Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import). */
+      importRemoteTarget: (connectorId: string, body: ImportRemoteTargetBody, options?: RequestOptions): Promise<ImportRemoteTargetResponse> => call("importRemoteTarget", [connectorId], body, undefined, options),
+      /** List remote source machines and imported agent targets (GET /connectors). */
+      listRemoteConnectors: (options?: RequestOptions): Promise<ListRemoteConnectorsResponse> => call("listRemoteConnectors", [], undefined, undefined, options),
+      /** Renew active source leases and claim one command without replay (POST /connectors/{connector_id}/poll). */
+      pollRemoteConnector: (connectorId: string, body: PollRemoteConnectorBody, options?: RequestOptions): Promise<PollRemoteConnectorResponse> => call("pollRemoteConnector", [connectorId], body, undefined, options),
+      /** Exchange a one-use enrollment code for a connector-scoped credential (POST /connectors). */
+      registerRemoteConnector: (body: RegisterRemoteConnectorBody, options?: RequestOptions): Promise<RegisterRemoteConnectorResponse> => call("registerRemoteConnector", [], body, undefined, options),
+      /** Append an ordered idempotent native event batch for a valid command lease (POST /connectors/{connector_id}/commands/{command_id}/events). */
+      remoteCommandEvents: (connectorId: string, commandId: string, body: RemoteCommandEventsBody, options?: RequestOptions): Promise<RemoteCommandEventsResponse> => call("remoteCommandEvents", [connectorId, commandId], body, undefined, options),
+      /** Revoke a source connector and stop its outstanding commands (DELETE /connectors/{connector_id}). */
+      revokeRemoteConnector: (connectorId: string, options?: RequestOptions): Promise<RevokeRemoteConnectorResponse> => call("revokeRemoteConnector", [connectorId], undefined, undefined, options),
     },
     files: {
       /** Reserve an upload (POST /files). */

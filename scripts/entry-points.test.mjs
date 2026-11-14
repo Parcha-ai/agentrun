@@ -68,6 +68,7 @@ const bare = new Map([
   ['examples/research-live.mjs', copiedOut],
   ['examples/run-rank-candidates.mjs', copiedOut],
   ['examples/run-support-answer.mjs', copiedOut],
+  ['packages/serve/src/native/remote-worker-bridge.ts', 'a package-local worker command, also imported by tests: its package requires Node >=24.22.3, which sets import.meta.main, and the installed bridge cannot import repository scripts/'],
   ['packages/dsl/test/fixtures/graph/generate.mjs', ownPackage],
   ['packages/dsl/test/fixtures/graph/record.mjs', ownPackage],
   ['packages/computer/box/build-agent37.mjs', ownPackage],

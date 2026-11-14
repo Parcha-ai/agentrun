@@ -16,6 +16,40 @@ export interface components {
     home_etag: string;
     created_at: components["Timestamp"];
     updated_at: components["Timestamp"];
+    native_status?: {
+      runtime: "claude-code" | "codex";
+      project: string;
+      selector: {
+        kind: "project" | "agent" | "profile";
+        name?: string;
+      };
+      machine_id: string;
+      version: string | null;
+      model: string | null;
+      fingerprint: string;
+      configuration: {
+        path: string;
+        sha256: string;
+      }[];
+      skills: string[];
+      mcp_servers: string[];
+      state: "needs_verification" | "needs_attention" | "ready";
+      issues: string[];
+      capabilities: {
+        launch: boolean;
+        notes: boolean;
+        skills: boolean;
+        workflows: false;
+        approval: "native" | "unavailable";
+        usage: boolean;
+      };
+      connected: boolean;
+      verified_at?: string;
+      remote?: {
+        connector_id: string;
+        target_id: string;
+      };
+    };
     external?: {
       source: string;
       kind: string;
@@ -259,6 +293,10 @@ export interface components {
       };
       connected: boolean;
       verified_at?: string;
+      remote?: {
+        connector_id: string;
+        target_id: string;
+      };
     };
     model?: string;
     model_tiers?: {
@@ -1338,6 +1376,16 @@ export interface operations {
     body: never;
     answer: components["CancelResult"];
   };
+  completeRemoteCommand: {
+    body: {
+      lease_token: string;
+      result?: unknown;
+      error?: string;
+    };
+    answer: {
+      accepted: true;
+    };
+  };
   connectGitHub: {
     body: {
       org?: string;
@@ -1388,6 +1436,10 @@ export interface operations {
         };
         connected: boolean;
         verified_at?: string;
+        remote?: {
+          connector_id: string;
+          target_id: string;
+        };
       };
     };
   };
@@ -1768,6 +1820,10 @@ export interface operations {
         };
         connected: boolean;
         verified_at?: string;
+        remote?: {
+          connector_id: string;
+          target_id: string;
+        };
       };
     };
   };
@@ -1806,6 +1862,19 @@ export interface operations {
           usage: boolean;
         };
       }[];
+    };
+  };
+  enrollRemoteConnector: {
+    body: {
+      label?: string;
+      capabilities?: {
+        native_execution?: boolean;
+      };
+    };
+    answer: {
+      enrollment_token: string;
+      expires_at: string;
+      workspace_id: "local";
     };
   };
   fireTrigger: {
@@ -2259,6 +2328,10 @@ export interface operations {
         };
         connected: boolean;
         verified_at?: string;
+        remote?: {
+          connector_id: string;
+          target_id: string;
+        };
       } | null;
     };
   };
@@ -2812,6 +2885,83 @@ export interface operations {
       outcome?: "done" | "cancelled" | "expired";
     };
   };
+  importRemoteTarget: {
+    body: {
+      target_id: string;
+      name?: string;
+      target: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+        connected: boolean;
+        verified_at?: string;
+        remote?: {
+          connector_id: string;
+          target_id: string;
+        };
+      };
+    };
+    answer: {
+      agent_id: string;
+      native: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+        connected: boolean;
+        verified_at?: string;
+        remote?: {
+          connector_id: string;
+          target_id: string;
+        };
+      };
+    };
+  };
   importTemplate: {
     body: {
       source: string;
@@ -3287,6 +3437,24 @@ export interface operations {
       }[];
     };
   };
+  listRemoteConnectors: {
+    body: never;
+    answer: {
+      connectors: {
+        id: string;
+        connector_id: string;
+        label: string;
+        created_at: string;
+        last_seen_at: string | null;
+        status: "online" | "offline" | "revoked";
+        capabilities: {
+          observe: true;
+          native_execution: boolean;
+        };
+        targets: Record<string, unknown>[];
+      }[];
+    };
+  };
   listRevisions: {
     body: never;
     answer: {
@@ -3612,6 +3780,21 @@ export interface operations {
       run_id: string;
       paused: boolean;
       status: components["RunStatus"];
+    };
+  };
+  pollRemoteConnector: {
+    body: {
+      worker_id: string;
+      active?: {
+        command_id: string;
+        lease_token: string;
+      }[];
+    };
+    answer: {
+      commands: Record<string, unknown>[];
+      cancelled: string[];
+      server_time: number;
+      lease_ttl_ms: number;
     };
   };
   previewMcpServer: {
@@ -3984,12 +4167,49 @@ export interface operations {
       };
     };
   };
+  registerRemoteConnector: {
+    body: {
+      installation_id: string;
+      operation_id: string;
+      label?: string;
+      capabilities: {
+        native_execution: boolean;
+      };
+    };
+    answer: {
+      connector: {
+        id: string;
+        connector_id: string;
+        label: string;
+        created_at: string;
+        last_seen_at: string | null;
+        status: "online" | "offline" | "revoked";
+        capabilities: {
+          observe: true;
+          native_execution: boolean;
+        };
+        targets: Record<string, unknown>[];
+      };
+      credential: string;
+      credential_expires_at: string;
+    };
+  };
   releaseRunComputer: {
     body: Record<string, never>;
     answer: {
       held: {
         state: "released";
       };
+    };
+  };
+  remoteCommandEvents: {
+    body: {
+      lease_token: string;
+      sequence: number;
+      events: Record<string, unknown>[];
+    };
+    answer: {
+      accepted: true;
     };
   };
   restoreLearningFile: {
@@ -4007,6 +4227,24 @@ export interface operations {
   retireLearningFile: {
     body: never;
     answer: never;
+  };
+  revokeRemoteConnector: {
+    body: never;
+    answer: {
+      connector: {
+        id: string;
+        connector_id: string;
+        label: string;
+        created_at: string;
+        last_seen_at: string | null;
+        status: "online" | "offline" | "revoked";
+        capabilities: {
+          observe: true;
+          native_execution: boolean;
+        };
+        targets: Record<string, unknown>[];
+      };
+    };
   };
   rotateTriggerSecret: {
     body: {
@@ -4514,6 +4752,10 @@ export interface operations {
         };
         connected: boolean;
         verified_at?: string;
+        remote?: {
+          connector_id: string;
+          target_id: string;
+        };
       };
     };
   };
