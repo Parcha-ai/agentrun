@@ -2390,12 +2390,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         if (served?.outcome === "answered") data = { state: "ended" };
         else for (;;) {
           const end = await Promise.race([turn.then((ended) => (ended === "lapsed" ? ("lapsed" as const) : ("answered" as const))), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const)]);
-          if (end === "parked") {
-            // Let the tool host go first (a browser's release, booked under the live claim), then seal.
-            await releaseHost(harness);
-            gate.seal(new Parked());
-            return { state: "parked" };
-          }
+          // Parked on a call held at the gate (a CLI's at its tool bridge): the answer that made the call may still be
+          // streaming, and its booking lands before the claim goes (parkClaim).
+          if (end === "parked") return await parkClaim(harness, gate);
           if (end === "closed" && fault && !stopReason && !deps.signal.aborted) {
             await closeSession();
             continue passes;
@@ -2456,12 +2453,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // raise could fix parks the run on a raise; one no raise could fix (or a check with no cap) fails it, in the
             // check's own words, never as a run with no answer.
             const park = spec.cap?.park(refusalOf(refused), raisedCapUsd ?? spec.cap.capUsd);
-            if (park?.outcome === "parked" && pausedAtRefusal) {
-              // Its pause and the run parked landed before pi heard of the refusal.
-              await releaseHost(harness);
-              gate.seal(new Parked());
-              return { state: "parked" };
-            }
+            // Its pause and the run parked landed before pi heard of the refusal.
+            if (park?.outcome === "parked" && pausedAtRefusal) return await parkClaim(harness, gate);
             if (park?.outcome === "parked") return await parkAtCap(harness, root, gate, { pending: park.pending, words: park.words });
             data = { state: "failed", summary: park?.outcome === "failed" ? park.error : refused.refuse };
           } else if (outcome.status === "failed" && spec.record === "loop" && afterTurn.length > 0 && !stopReason && !deps.signal.aborted) {
@@ -2856,9 +2849,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     parkedAt.catch(() => undefined);
     await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.personAsked, data: { callId } }), context);
     await parkedAt;
-    await releaseHost(on);
-    theGate.seal(new Parked());
-    return { state: "parked" };
+    return parkClaim(on, theGate);
   }
 
   /** The row's waiting summary of a wait in the claim, gone: its answer came by a way whose commit did not clear it. */
@@ -3118,7 +3109,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  cap's words (as the ask park's entry and state), and the loop ends parked: a raise row wakes it. */
   async function parkAtCap(on: Harness, conversation: Conversation, theGate: Gate, data: BudgetData): Promise<LoopEnd> {
     await pauseAtCap(on, conversation, theGate, data);
+    return parkClaim(on, theGate);
+  }
+
+  /** A park's release of the claim, as the end's: the tool host let go first (a browser's release, booked under the live
+   *  claim), then every paid request the session admitted booked (bookingsSettled), then the journal sealed. A CLI turn
+   *  the park cuts (its call held at the tool bridge) may still be streaming its answer: closed under it, its booking
+   *  would be lost and the next claim would book the turn cut, at an unknown price. Past the bound, it is that cut. */
+  async function parkClaim(on: Harness, theGate: Gate): Promise<LoopEnd> {
     await releaseHost(on);
+    await bookingsSettled();
     theGate.seal(new Parked());
     return { state: "parked" };
   }

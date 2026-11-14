@@ -98,6 +98,16 @@ triggers:
   assert.throws(() => readCases(evaled), (error) => /evals\/bad\/prompt\.md: input\.company/.test(error.message) && /evals\/bad\/prompt\.md: input\.country/.test(error.message) && !/evals\/good/.test(error.message), "the bad case's input is refused by path, the good one's taken");
   const { cases } = readCases(evaled, ["good"]);
   assert.deepEqual(cases[0].fields, { company: "Stripe, Inc.", country: "US" });
+
+  // The Input: block is the server's, made from `input:`: a case never writes its own.
+  const handWritten = await pkg(t, INPUTS, {
+    extra: (dir) => {
+      mkdirSync(join(dir, "evals", "own", "graders"), { recursive: true });
+      writeFileSync(join(dir, "evals", "own", "prompt.md"), '---\ninput: { company: "Stripe, Inc." }\n---\nCheck them.\n\nInput:\n```json\n{"country": "US"}\n```\n');
+      writeFileSync(join(dir, "evals", "own", "graders", "named.md"), "---\ntype: regex\npattern: Stripe\n---\n");
+    },
+  });
+  assert.throws(() => readCases(handWritten), (error) => /evals\/own\/prompt\.md: .*Input:/.test(error.message), "a hand-written Input: block is refused");
 });
 
 test("kyb takes its subject as typed input matching its report's subject.input, and each of its eval cases gives one its schema takes", () => {
