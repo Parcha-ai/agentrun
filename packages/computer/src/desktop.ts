@@ -43,8 +43,8 @@ const WINDOW_MANAGER_BUS = `<busconfig>
  * no compositor and no session manager. It reads its settings from xfconfd over a session bus, and exits at once
  * without one ("Xfconf could not be initialized"). So it runs in a session bus of its own (dbus-run-session, WINDOW_MANAGER_BUS, written to a file of
  * its own under /tmp), in a user namespace (the same uid) and a network namespace of its own: a program of the
- * computer's user reaches no socket of that bus. The user owns that user namespace, but init's filter refuses setns to
- * every program (daemon/internal/isolate), so none joins it. xfwm4 reaches the display as any program does, by its path.
+ * computer's user reaches no socket of that bus, unless it joins those namespaces (nsenter), as the same uid may
+ * ptrace xfwm4. xfwm4 reaches the display as any program does, by its path.
  */
 export const WINDOW_MANAGER: readonly string[] = [
 	"unshare",

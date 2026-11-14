@@ -11,8 +11,8 @@
 //	                    capability in any set and no_new_privs set, or refuses to start.
 //	                    With --own-network (and --user), for a remote computer whose vendor runs its own agent in it,
 //	                    init, still root, refuses to start while another process holds uid, moves itself into a network
-//	                    namespace of its own whose loopback alone is up, and once dropped refuses vsock, io_uring and
-//	                    setns to every thread: its programs reach their own loopback and nothing else (internal/isolate)
+//	                    namespace of its own whose loopback alone is up, and once dropped refuses vsock and io_uring to
+//	                    every thread: its programs reach their own loopback and nothing else (internal/isolate)
 //	                    Where root may not make the network namespace itself (EPERM: no CAP_SYS_ADMIN, as on gVisor),
 //	                    init makes it inside a user namespace instead: it starts itself again as `computerd userns-init`
 //	                    in a user namespace that maps every id to itself and a network namespace, both its own; that init

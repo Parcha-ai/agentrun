@@ -897,7 +897,8 @@
    "runs": 59,
    "mean_usd": 0.127661
   },
-  "times_cheaper": 7.0
+  "times_cheaper": 7.0,
+  "hand_backs": { "ran": 59, "back": 3 }
  },
  "workflows": []
 }
