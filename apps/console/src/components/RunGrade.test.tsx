@@ -26,10 +26,12 @@ const read = (graded?: RunGraded): RunLearningRead => ({
 });
 const answer = (body: GradeBody, feedback: GradeAnswer["feedback"]): GradeAnswer => ({ run_id: "run-g", correct: body.correct, source: "feedback", graded_at: "2026-11-14T10:05:00.000Z", path: "agent", workflow: null, workflow_digest: null, feedback });
 
-/** A grade as the learning read gives it back: the PUT's answer without `expected`. */
-const gradedOf = (over: Partial<RunGraded> = {}): RunGraded => ({ run_id: "run-g", correct: false, source: "feedback", graded_at: "2026-11-14T10:02:00.000Z", path: "agent", workflow: null, workflow_digest: null, feedback: null, ...over });
+/** A grade as the learning read gives it back: the PUT's answer without `expected`, and whether its round ended. */
+const gradedOf = (over: Partial<RunGraded> = {}): RunGraded => ({ run_id: "run-g", correct: false, source: "feedback", graded_at: "2026-11-14T10:02:00.000Z", path: "agent", workflow: null, workflow_digest: null, feedback: null, feedback_ended: false, ...over });
 /** The run's end after gradedOf's round: the round it opened ended the run again. */
 const ENDED_AGAIN = "2026-11-14T10:03:00Z";
+/** A run's end dated before the grade (gradedOf's 10:02, answer's 10:05) by a runner whose clock trails the server's. */
+const ENDED_SKEWED = "2026-11-14T10:01:00Z";
 
 /** `readLearning`: the page's learning read in place of the server's (one still pending, one that failed, an older one).
  *  `refreshed: false`: the run read after the PUT failed, so the page still holds the run as it was before the grade. */
@@ -37,8 +39,9 @@ async function open(r: Run, { graded, grade, readLearning, refreshed = true }: {
   const sent: GradeBody[] = [];
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  // The server's side: the learning read gives back the newest grade it took. A grade that opens a round opens the run
-  // again, and the page reads the run again before the answer returns (LiveRun's grade).
+  // The server's side: the learning read gives back the newest grade it took, and whether the round it opened ended (its
+  // run's journal says so, `end` below). A grade that opens a round opens the run again, and the page reads the run again
+  // before the answer returns (LiveRun's grade).
   let stored = graded;
   const show = (next: Run) => root!.render(createElement(RunDetail, { ...props, run: next }));
   const props = { run: r, agentName: "Invoice sorter", messages: messageFeatures, harnessSteers: true, rows: [], files: [], tab: "report" as const,
@@ -46,7 +49,7 @@ async function open(r: Run, { graded, grade, readLearning, refreshed = true }: {
     onGrade: async (body: GradeBody) => {
       sent.push(body);
       const { expected: _, ...a } = grade ? await grade(body) : answer(body, body.label ? "look_back" : null);
-      stored = a;
+      stored = { ...a, feedback_ended: false };
       if (a.feedback && refreshed) show({ ...r, status: "working", state: "working", ended_at: null });
       return a;
     } };
@@ -60,6 +63,8 @@ async function open(r: Run, { graded, grade, readLearning, refreshed = true }: {
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, text); box.dispatchEvent(new Event("input", { bubbles: true })); });
   };
   const rerender = async (next: Run) => { act(() => show(next)); await settle(); };
+  // The round the grade opened ends on the server (its run's end after its words), and the page reads the run as `next`.
+  const end = async (next: Run) => { if (stored) stored = { ...stored, feedback_ended: true }; await rerender(next); };
   // A tab of the run page, by the start of its label ("Files 0").
   const tab = async (name: string) => {
     const b = [...host.querySelectorAll('[role="tab"]')].find((t) => t.textContent?.startsWith(name)) as HTMLButtonElement | undefined;
@@ -67,7 +72,7 @@ async function open(r: Run, { graded, grade, readLearning, refreshed = true }: {
     await act(async () => { b!.click(); });
     await settle();
   };
-  return { host, sent, section, button, click, boxes, type, rerender, tab };
+  return { host, sent, section, button, click, boxes, type, rerender, end, tab };
 }
 
 /** A grade's answer that opened a `revise` round: a learned workflow gave the answer alone. */
@@ -104,11 +109,54 @@ describe("a run's page, the Grade control", () => {
     // The run, open again on the round, then ended again: the round is done.
     await t.rerender(run({ status: "working", state: "working", ended_at: null }));
     expect(t.section()!.textContent).toContain("Reviewing");
-    await t.rerender(run({ ended_at: "2026-11-14T10:06:00Z" }));
+    await t.end(run({ ended_at: "2026-11-14T10:06:00Z" }));
     text = t.section()!.textContent ?? "";
     expect(text).not.toContain("Reviewing");
     expect(text).toContain("The agent looked back on your words.");
     expect(t.button("Grade again")).toBeTruthy();
+  });
+
+  // Review on #2858 (round 2): `graded_at` is the API server's clock, `ended_at` the runner's. The round's end is the
+  // server's word (`feedback_ended`, read from the run's journal), never the two clocks compared.
+  it("shows a finished round's outcome when the runner's clock trails the server's: the run's end dated before the grade", async () => {
+    const t = await open(run());
+    await t.click("Wrong");
+    await t.type(t.boxes()[0]!, "Wrong vendor.");
+    await t.click("Send grade");
+    await t.rerender(run({ status: "working", state: "working", ended_at: null }));
+    expect(t.section()!.textContent).toContain("Reviewing");
+    await t.end(run({ ended_at: ENDED_SKEWED }));
+    let text = t.section()!.textContent ?? "";
+    expect(text).not.toContain("Reviewing");
+    expect(text).toContain("The agent looked back on your words.");
+    expect(t.button("Grade again")).toBeTruthy();
+    act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+
+    // And after a reload.
+    const again = await open(run({ ended_at: ENDED_SKEWED }), { graded: gradedOf({ feedback: "look_back", feedback_ended: true }) });
+    text = again.section()!.textContent ?? "";
+    expect(text).not.toContain("Reviewing");
+    expect(again.section()!.querySelector('[role="status"]')?.textContent).toBe("The agent looked back on your words.");
+    expect(again.button("Grade again")).toBeTruthy();
+  });
+
+  it("stays reviewing while the server says the round runs, even once the page's run reads ended after the grade", async () => {
+    const t = await open(run());
+    await t.click("Wrong");
+    await t.type(t.boxes()[0]!, "Wrong vendor.");
+    await t.click("Send grade");
+    await t.rerender(run({ ended_at: "2026-11-14T10:06:00Z" }));
+    let text = t.section()!.textContent ?? "";
+    expect(text).toContain("Reviewing");
+    expect(text).toContain("The agent is looking back on your words.");
+    expect(t.button("Grade again")).toBeUndefined();
+    act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+
+    // And after a reload.
+    const again = await open(run({ ended_at: "2026-11-14T10:06:00Z" }), { graded: gradedOf({ feedback: "look_back" }) });
+    text = again.section()!.textContent ?? "";
+    expect(text).toContain("Reviewing");
+    expect(again.button("Grade again")).toBeUndefined();
   });
 
   it("says a look-back needs words while they are empty, and sends a wrong grade without them", async () => {
@@ -145,7 +193,7 @@ describe("a run's page, the Grade control", () => {
     expect(open1.button("Grade again")).toBeUndefined();
     act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
 
-    const t = await open(run({ ended_at: ENDED_AGAIN }), { graded });
+    const t = await open(run({ ended_at: ENDED_AGAIN }), { graded: { ...graded, feedback_ended: true } });
     text = t.section()!.textContent ?? "";
     expect(text).toContain("Graded wrong");
     expect(text).not.toContain("Reviewing");
@@ -158,7 +206,7 @@ describe("a run's page, the Grade control", () => {
   });
 
   it("says a finished round's outcome after a reload, from the grade read back", async () => {
-    const t = await open(run({ ended_at: ENDED_AGAIN }), { graded: gradedOf({ feedback: "look_back" }) });
+    const t = await open(run({ ended_at: ENDED_AGAIN }), { graded: gradedOf({ feedback: "look_back", feedback_ended: true }) });
     const text = t.section()!.textContent ?? "";
     expect(text).toContain("Graded wrong");
     expect(text).not.toContain("Reviewing");
@@ -169,7 +217,7 @@ describe("a run's page, the Grade control", () => {
 
   it("is still reviewing after a reload while the round's learning settles: no Grade again until it has", async () => {
     const settling = run({ ended_at: ENDED_AGAIN, learning: { ...LEARNS!, state: "reflecting", reason: null } });
-    const t = await open(settling, { graded: gradedOf({ feedback: "look_back" }) });
+    const t = await open(settling, { graded: gradedOf({ feedback: "look_back", feedback_ended: true }) });
     const text = t.section()!.textContent ?? "";
     expect(text).toContain("Reviewing");
     expect(text).toContain("The agent is looking back on your words.");
@@ -229,7 +277,7 @@ describe("a run's page, the Grade control", () => {
     expect(t.section()!.textContent).not.toContain("Graded wrong");
   });
 
-  it("keeps the round it opened reviewing when the run read after the grade failed, until a run read says it ended again", async () => {
+  it("keeps the round it opened reviewing when the run read after the grade failed, until the learning read says it ended", async () => {
     const t = await open(run(), { refreshed: false });
     await t.click("Wrong");
     await t.type(t.boxes()[0]!, "Wrong vendor.");
@@ -239,7 +287,8 @@ describe("a run's page, the Grade control", () => {
     expect(text).toContain("Reviewing");
     expect(text).toContain("The agent is looking back on your words.");
     expect(t.button("Grade again")).toBeUndefined();
-    await t.rerender(run({ ended_at: "2026-11-14T10:06:00Z" }));
+    // The page's run read later brings the run's new end, which reads the learning again.
+    await t.end(run({ ended_at: "2026-11-14T10:06:00Z" }));
     text = t.section()!.textContent ?? "";
     expect(text).not.toContain("Reviewing");
     expect(text).toContain("The agent looked back on your words.");
@@ -277,7 +326,7 @@ describe("a run's page, the Grade control", () => {
       expect(t.section()!.textContent).toContain("The learned workflow that answered is being revised with your grade.");
       await t.rerender(reopened);
       expect(t.section()!.textContent).toContain("Reviewing");
-      await t.rerender(ends(learning));
+      await t.end(ends(learning));
       const text = t.section()!.textContent ?? "";
       expect(text).not.toContain("Reviewing");
       expect(text).toContain(said);

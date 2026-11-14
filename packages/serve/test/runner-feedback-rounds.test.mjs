@@ -25,8 +25,10 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { gradesOf, markGradeRound, putGrade } = await import("../dist/learn/promote.js");
-const { keepGrade, feedbackRoundOf } = await import("../dist/runner/feedback-round.js");
+const { keepGrade, feedbackEnded, feedbackRoundOf } = await import("../dist/runner/feedback-round.js");
 const { runLearningOverStore } = await import("../dist/store-reads/learning.js");
+const { runEntries } = await import("../dist/store-reads/journal.js");
+const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
 const { secretsShown } = await import("../dist/learning.js");
 const { servedAnswerStands, sameAnswer } = await import("../dist/runner/workflow-first.js");
 const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
@@ -117,10 +119,11 @@ async function world(t, { wrong = new Set(), calls = new Set(), outputSchema } =
     return ended(id);
   };
   /** The grade route's work (server.ts gradeRun, keepGrade): the grade with the path its record says, kept with the
-   *  feedback round it opened; a round opened is waited for to its end. `store`: the store it writes through. */
-  const grade = async (row, correct, label, store = server) => {
+   *  feedback round it opened; a round opened is waited for to its end. `store`: the store it writes through; `at`: when
+   *  it was given, by the API server's clock. */
+  const grade = async (row, correct, label, store = server, at = new Date().toISOString()) => {
     const m = row.metrics ?? {};
-    const graded = { run: row.id, correct, expected: { answer: 42 }, source: "eval", at: new Date().toISOString(), path: m.path ?? "agent", ...(m.workflow ? { workflow: m.workflow } : {}), ...(m.workflow_digest ? { digest: m.workflow_digest } : {}) };
+    const graded = { run: row.id, correct, expected: { answer: 42 }, source: "eval", at, path: m.path ?? "agent", ...(m.workflow ? { workflow: m.workflow } : {}), ...(m.workflow_digest ? { digest: m.workflow_digest } : {}) };
     const kept = await keepGrade(store, "agent-1", graded, label);
     return { round: kept.feedback, kept, row: kept.feedback ? await ended(row.id, row.endedAt ?? 0) : await server.runs.get(row.id) };
   };
@@ -365,13 +368,37 @@ test("a grade names its round only once the round opened: a failed reopen leaves
   const [failed] = await gradesOf(server.settings, "agent-1");
   assert.deepEqual([failed?.run, failed?.feedback], ["run-reopen", null], `the grade is kept, naming no round: ${JSON.stringify(failed)}`);
   assert.equal((await server.runs.get("run-reopen")).endedAt, first.endedAt, "the run was never opened again");
-  assert.equal((await runLearningOverStore(server, "run-reopen", secretsShown([]), []))?.graded?.feedback, null, "the read says no round");
+  const none = (await runLearningOverStore(server, "run-reopen", secretsShown([]), []))?.graded;
+  assert.deepEqual([none?.feedback, none?.feedback_ended], [null, false], `the read says no round: ${JSON.stringify(none)}`);
 
   const { round, kept } = await grade(first, false, LABEL(1));
   assert.equal(round, "look_back");
   const [marked] = await gradesOf(server.settings, "agent-1");
   assert.deepEqual([marked.feedback, marked.seq, marked.at], ["look_back", kept.seq, kept.at], `marked in place: ${JSON.stringify(marked)}`);
   assert.equal(kept.seq, failed.seq + 1, "one new seq per grade, none for the round's mark");
+});
+
+// Review on #2858 (round 2): a round's end is read from its run's journal, which one writer orders (the store's command
+// id on the round's steer, the runner's FEEDBACK entry naming it, then the run's end entry), never by comparing the API
+// server's `graded_at` with the runner's `ended_at`. A grade dated after the round's end (a runner whose clock trails
+// the server's) still reads its round ended; a round whose run has not ended since its words, or whose steer no runner
+// took yet, reads running.
+test("a grade's round reads ended from its run's journal, never a clock: a grade dated after the round's end still reads it ended", { timeout: 120_000 }, async (t) => {
+  const { server, start, grade } = await world(t);
+  const first = await start("run-skew", 1, { byHand: true });
+  const { round, kept, row } = await grade(first, false, LABEL(1), server, "2099-01-01T00:00:00.000Z");
+  assert.equal(round, "look_back");
+  assert.ok(row.endedAt < Date.parse(kept.at), `the runner's end is dated before the grade: ${row.endedAt} vs ${kept.at}`);
+  const read = (await runLearningOverStore(server, first.id, secretsShown([]), []))?.graded;
+  assert.deepEqual([read?.feedback, read?.feedback_ended], ["look_back", true], `the round ended: ${JSON.stringify(read)}`);
+
+  const [marked] = await gradesOf(server.settings, "agent-1");
+  assert.equal(typeof marked.feedbackCommand, "number", `the grade keeps its round's steer: ${JSON.stringify(marked)}`);
+  const entries = await runEntries(server, first.id, BACKGROUND_CONTEXT);
+  assert.equal(feedbackEnded(entries, marked.feedbackCommand), true);
+  const end = entries.findLastIndex((entry) => entry.kind === "agentrun.end");
+  assert.equal(feedbackEnded(entries.slice(0, end), marked.feedbackCommand), false, "no end after its words yet: running");
+  assert.equal(feedbackEnded(entries, marked.feedbackCommand + 1), false, "a newer round whose steer no runner took yet: running");
 });
 
 // Two grades of one run can share their `at` (a millisecond): the second replaces the first, then the first's round
@@ -386,7 +413,7 @@ test("a round marks only the grade it was opened for: a replacement given in the
   const at = "2026-11-14T10:05:00.000Z";
   const first = await putGrade(settings, "agent-1", { run: "run-same-ms", correct: false, source: "feedback", at, path: "agent", feedback: null });
   const second = await putGrade(settings, "agent-1", { run: "run-same-ms", correct: true, source: "feedback", at, path: "agent", feedback: null });
-  await markGradeRound(settings, "agent-1", first, "look_back");
+  await markGradeRound(settings, "agent-1", first, { round: "look_back", command: 1 });
   const [only] = await gradesOf(settings, "agent-1");
   assert.deepEqual([only.seq, only.correct, only.feedback], [second.seq, true, null], `the replacement names no round: ${JSON.stringify(only)}`);
 });
