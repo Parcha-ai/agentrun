@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
 import { runLabel, when } from "@/lib/format";
-import { kindOf, MARKER_LETTER, MARKER_WORDS, type MarkerKind, proofOf, proven, recordOf, refitOf, replayLine, standingOf, stoppedOf } from "@/lib/learningLoop";
+import { kindOf, MARKER_LETTER, MARKER_WORDS, type MarkerKind, recordOf, refitOf, replayLine, standingOf, stoppedOf } from "@/lib/learningLoop";
 import type { LearningCost, LearningLoop, LoopCompile, Promotion, Serving } from "@/lib/v2";
 
 // The learning feed: what the loop did, newest first. A compile turn (a run's end, any round of it, wrote a workflow from
@@ -62,7 +62,7 @@ function Compiled({ compile: c, promotions, serving, stopped }: { compile: LoopC
       <div className="flex flex-wrap items-center gap-2">
         {failed ? <Chip tone="error">Draft failed</Chip> : <Chip tone="plain">Compiled</Chip>}
         {c.workflow ? <span className="min-w-0 break-all font-mono text-body font-semibold">{c.workflow}</span> : <span className="text-body text-muted-foreground">no workflow kept</span>}
-        {standing && <Chip tone={standing.tone}>{standing.word}{standing.proof ? ` · ${standing.proof}` : ""}</Chip>}
+        {standing && <Chip tone={standing.tone}>{standing.text}</Chip>}
       </div>
       {c.from_notes.length > 0 && (
         <p className="mt-1 break-words text-small text-muted-foreground">From {c.from_notes.length === 1 ? "1 note" : `${c.from_notes.length} notes`}: <span className="font-mono text-foreground">{c.from_notes.join(", ")}</span></p>
@@ -84,13 +84,14 @@ function Compiled({ compile: c, promotions, serving, stopped }: { compile: LoopC
 
 function Decided({ record }: { record: Promotion }) {
   const kind = kindOf(record);
-  // What it was decided on beside the word: a promote with no replay behind it (its dry run) is never green.
-  const proof = proofOf(record);
-  const tone = kind === "promote" && !proven(record) ? "plain" : MARKER_TONE[kind];
+  // The decision's word is the marker's; its tone and what it was decided on are the standing's (a promote with no
+  // replay behind it, its dry run, is never green): the record read as if it were the champion.
+  const standing = standingOf(record, { serving: record.digest });
+  const tone = kind === "promote" ? standing.tone : MARKER_TONE[kind];
   return (
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2">
-        <Chip tone={tone}>{MARKER_LETTER[kind]} · {MARKER_WORDS[kind]}{proof ? ` · ${proof}` : ""}</Chip>
+        <Chip tone={tone}>{MARKER_LETTER[kind]} · {MARKER_WORDS[kind]}{standing.proof ? ` · ${standing.proof}` : ""}</Chip>
         <span className="min-w-0 break-all font-mono text-body font-semibold">{record.workflow}</span>
         <span className="font-mono text-label text-muted-foreground">{record.digest.slice(0, 7)}</span>
       </div>
