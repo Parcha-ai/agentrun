@@ -98,7 +98,7 @@ test("an answer that misses the output schema gets one more turn in the same ses
 
   const wrong = await ranOn(api, "digest", `Answer with this json: ${JSON.stringify({ quiet: "no", items: [] })}, then on a retry with this json: ${JSON.stringify(MET)}`);
   assert.deepEqual(wrong.run.result.output, MET);
-  assert.match(RETRY.exec(retriesOf(wrong.rows)[0].text)[1], /^the answer's json does not meet the output schema: \/quiet /, "a block the schema refuses says which path");
+  assert.match(RETRY.exec(retriesOf(wrong.rows)[0].text)[1], /^\/quiet /, "a block the schema refuses says which path, the schema named once");
 
   const met = await ranOn(api, "digest", `Answer with this json: ${JSON.stringify(MET)}`);
   assert.deepEqual([met.run.result.output, retriesOf(met.rows).length], [MET, 0], "an answer that meets the schema at once is never asked again");

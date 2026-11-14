@@ -57,15 +57,19 @@ export function outputContract(schema: unknown): string | undefined {
 }
 
 /** The one retry turn's message (the server's, never the person's): sent once, in the same session, when a run would end
- *  with an answer whose last json block misses its output schema. `why` is structuredAnswer's. */
+ *  with an answer whose last json block misses its output schema. `why` is outputMiss's. */
 export const outputRetryWords = (why: string): string => `Your final JSON did not match the output schema: ${why}. Reply again, ending with the corrected json block.`;
 
-/** Why `answer` misses `schema` (structuredAnswer's why), or undefined when it meets it. Undefined too when the schema does
- *  not compile (a save refuses one): asking the model again cannot mend a schema. */
+/** Why `answer` misses `schema`, in the retry's words (no block, not JSON, or the first problems against the schema, which
+ *  the retry's own sentence already says are the schema's), or undefined when it meets it. Undefined too when the schema
+ *  does not compile (a save refuses one): asking the model again cannot mend a schema. */
 export function outputMiss(answer: string, schema: unknown): string | undefined {
-  if ("why" in schemaCheck(schema)) return undefined;
-  const read = structuredAnswer(answer, schema);
-  return "why" in read ? read.why : undefined;
+  const compiled = schemaCheck(schema);
+  if ("why" in compiled) return undefined;
+  const json = answerJson(answer);
+  if ("why" in json) return json.why;
+  const problems = compiled.check(json.value);
+  return problems.length ? problems.slice(0, 3).join("; ") : undefined;
 }
 
 /** A final answer's structured part against an agent's output schema: the value of its last fenced json block when it
