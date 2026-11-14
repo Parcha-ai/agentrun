@@ -11,15 +11,16 @@ import Foundation
 final class AXChanges: Changes, @unchecked Sendable {
 	static let shared = AXChanges()
 
-	/// What counts as a change: what a look reads (values, titles, elements made and gone, the focus, the selection,
-	/// layout) and the window's place, size and turn as main window. Not AXSelectedTextChanged: a caret that moves
-	/// changes nothing a look shows.
+	/// What counts as a change: what a look reads (values, titles, elements made, the focus, the selection, layout) and
+	/// the window's place, size and turn as main window. Not AXUIElementDestroyed or AXRowCountChanged: apps tell those
+	/// for what a read itself made (on CI, System Settings told 43 to 113 elements destroyed and 8 to 10 row counts per
+	/// act, Notes, Calendar and Safari 5 to 16 row counts), so every read looked like a change and was read again. Nor
+	/// AXSelectedTextChanged: a caret that moves changes nothing a look shows.
 	static let notifications: [String] = [
-		kAXValueChangedNotification, kAXTitleChangedNotification, kAXCreatedNotification, kAXUIElementDestroyedNotification,
+		kAXValueChangedNotification, kAXTitleChangedNotification, kAXCreatedNotification,
 		kAXFocusedUIElementChangedNotification, kAXLayoutChangedNotification, kAXSelectedChildrenChangedNotification,
-		kAXSelectedRowsChangedNotification, kAXRowCountChangedNotification, kAXWindowCreatedNotification,
-		kAXWindowMovedNotification, kAXWindowResizedNotification, kAXFocusedWindowChangedNotification,
-		kAXMainWindowChangedNotification,
+		kAXSelectedRowsChangedNotification, kAXWindowCreatedNotification, kAXWindowMovedNotification,
+		kAXWindowResizedNotification, kAXFocusedWindowChangedNotification, kAXMainWindowChangedNotification,
 	]
 
 	private let lock = NSLock()
