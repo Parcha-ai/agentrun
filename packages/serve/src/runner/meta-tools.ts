@@ -87,8 +87,11 @@ export interface MetaToolsOptions {
   tools: () => readonly HostTool[];
   /** Whether a tool is granted to search: its setting is not deny. */
   granted: (name: string) => Promise<boolean>;
-  /** Whether to offer codemode (every harness but Codex, which keeps its own). */
+  /** Whether to offer codemode (every harness but Codex, which keeps its own, and not where its setting is deny). */
   codemode: boolean;
+  /** Whether to offer tools_search and tools_call: the run's catalog tools are deferred (not listed), so the model finds
+   *  and calls them through these (tool-deferral.ts; never where the harness defers them itself, or a setting is deny). */
+  discovery: { search: boolean; call: boolean };
 }
 
 /** The three tools for a session: each `nests` (but the search, which calls nothing). */
@@ -96,7 +99,7 @@ export function metaTools(options: MetaToolsOptions): HostTool[] {
   const own = () => options.tools().filter((tool) => !META_TOOLS.has(tool.name));
   const search: HostTool = {
     name: TOOLS_SEARCH,
-    description: `Search this run's tools by what they do, and get each match's name, description and input schema, best match first. Call a match with ${TOOLS_CALL}${options.codemode ? `, or from a ${CODEMODE} script` : ""}.`,
+    description: `This run lists only some of its tools. Search all of them by what they do, and get each match's name, description and input schema, best match first. Call a match with ${options.discovery.call ? TOOLS_CALL : "its name"}${options.codemode ? `, or from a ${CODEMODE} script` : ""}.`,
     inputSchema: { type: "object", properties: { query: { type: "string", description: "What the tool should do, in a few words, or its name." }, limit: { type: "integer", minimum: 1, maximum: SEARCH_MAX_LIMIT, description: `How many tools to answer with (default ${SEARCH_DEFAULT_LIMIT}).` } }, required: ["query"], additionalProperties: false },
     replay: "safe",
     call: async (args) => {
@@ -127,7 +130,7 @@ export function metaTools(options: MetaToolsOptions): HostTool[] {
   const codemode: HostTool = {
     name: CODEMODE,
     description: [
-      `Run a JavaScript script (the body of an async function: top-level await and return work) that calls this run's tools as \`await tools.<name>(args)\`; find them with ${TOOLS_SEARCH}, and \`ALL_TOOLS\` lists them. A call answers its value, and a call that fails throws.`,
+      `Run a JavaScript script (the body of an async function: top-level await and return work) that calls this run's tools as \`await tools.<name>(args)\`; ${options.discovery.search ? `find them with ${TOOLS_SEARCH}, and ` : ""}\`ALL_TOOLS\` lists them. A call answers its value, and a call that fails throws.`,
       "The script's text(...) and console output, and its returned value, are the answer. It has no timers, network or files of its own: only the tools.",
       "Each call is asked about and recorded as that tool's own. A call that needs a person's approval stops the script: once they answer, that call runs (or is refused), its outcome is the answer, and the rest of the script does not run. A refused call ends the script with the refusal.",
     ].join(" "),
@@ -141,7 +144,7 @@ export function metaTools(options: MetaToolsOptions): HostTool[] {
       return runScript(script, own(), context.nested, context.signal);
     },
   };
-  return options.codemode ? [search, call, codemode] : [search, call];
+  return [...(options.discovery.search ? [search] : []), ...(options.discovery.call ? [call] : []), ...(options.codemode ? [codemode] : [])];
 }
 
 /** One nested call's line in a script's stopped answer, as Codex's code mode words its recovered calls. */
@@ -222,7 +225,7 @@ async function runScript(script: string, tools: readonly HostTool[], nested: Nes
           break;
         }
         seq += 1;
-        const outcome: CodemodeOutcome = result.isError ? { ok: false, message: result.text } : { ok: true, value: result.structured !== undefined ? result.structured : result.text };
+        const outcome: CodemodeOutcome = result.isError ? { ok: false, message: result.text } : { ok: true, value: scriptValue(result) };
         if (!run.finished) run.deliver(seq, start.startedAt, call.id, outcome);
       }
     })().catch((error: unknown) => {
@@ -243,6 +246,21 @@ async function runScript(script: string, tools: readonly HostTool[], nested: Nes
     return { text: shown.text || "(the script returned nothing and showed nothing)", ...(shown.images.length ? { images: shown.images } : {}), ...(result.value !== undefined ? { structured: result.value as JsonValue } : {}) };
   } finally {
     await sandbox.close();
+  }
+}
+
+/** A nested call's value in a script: its structured value (an MCP result's structuredContent) when it has one; else, when
+ *  its answer is one text part (no image beside it) whose text parses as a JSON object or array, that value (a Composio
+ *  answer comes as one); else its text. The text the model reads of the call is its text either way. */
+function scriptValue(result: NestedResult): unknown {
+  if (result.structured !== undefined) return result.structured;
+  const text = result.text.trim();
+  if (result.images?.length || !(text.startsWith("{") || text.startsWith("["))) return result.text;
+  try {
+    const value: unknown = JSON.parse(text);
+    return value !== null && typeof value === "object" ? value : result.text;
+  } catch {
+    return result.text;
   }
 }
 

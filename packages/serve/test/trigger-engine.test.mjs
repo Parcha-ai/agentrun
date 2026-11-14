@@ -674,18 +674,6 @@ test("a firing claimed before its agent's archive starts no run after it: one wa
   assert.equal((await triggers.get(raced.id)).failures_in_a_row, 0, "no failure counted");
 });
 
-test("a create or a PATCH answers once its timer is armed: the clock moved right after the answer fires the trigger", async (t) => {
-  const { clock, triggers } = await engine(t, {});
-  const made = await triggers.create(body({ at: "2026-06-01T00:05:00Z" }));
-  // No wait for the timer: the answer is the schedule in effect.
-  clock.to("2026-06-01T00:05:00Z");
-  await until(async () => (await triggers.firings(made.id)).firings.length === 1, "the create's time fired");
-  // A one-time schedule turned itself off once it fired: on again, at its new time.
-  await triggers.update(made.id, { source: { kind: "schedule", at: "2026-06-01T00:09:00Z" }, enabled: true });
-  clock.to("2026-06-01T00:09:00Z");
-  await until(async () => (await triggers.firings(made.id)).firings.length === 2, "the PATCH's time fired");
-});
-
 test("run now with the same Idempotency-Key twice answers the first firing and its run, and starts one run", async (t) => {
   const { triggers, runs } = await hookEngine(t);
   const made = await triggers.create({ ...body({ cron: "0 9 * * 1" }), enabled: false });

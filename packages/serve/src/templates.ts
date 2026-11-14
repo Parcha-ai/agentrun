@@ -9,18 +9,21 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import { type InputIssue, invalid } from "./errors.js";
+// Where a package's MCP tools come from (a Composio toolkit, GitHub's MCP server, or any other server by its address): a
+// saved MCP server records one too, and apply maps each need to a server whose record matches.
+import { MCP_SOURCES, type McpSource } from "./mcp-sources.js";
 import type { GitHubConnectionView } from "./github-connection.js";
 import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
 import type { PinScalar, PinValue } from "./tool-gate.js";
-import { isMcpName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName } from "./tool-names.js";
+import { formatToolName, isMcpName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName, parseToolName } from "./tool-names.js";
 import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { BOUND_TOOLS, toolOf } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
-import { definitionBodyIssues, inputIssues, inputSchemaOf, isObject, type Json, MAX_TOOL_CALLS, MODEL_REF, MODEL_TIER_NAMES, unknownFields } from "./validate.js";
+import { definitionBodyIssues, inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF, MODEL_TIER_NAMES, unknownFields } from "./validate.js";
 import { schemaCheck } from "./answer-json.js";
 import { APPROVALS, type Approvals } from "./approvals.js";
 
@@ -43,7 +46,15 @@ export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "schema
  *  `none`, no shell, the file tools alone. Apply takes the first this server meets now (pickComputer). */
 export const COMPUTER_ENTRIES = ["shell", "none"] as const;
 export type ComputerEntry = (typeof COMPUTER_ENTRIES)[number];
-const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "checkout", "parameters", "inputs", "secrets", "budget", "learning", "approvals", "triggers", "output", "checks"];
+const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "category", "tags", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "checkout", "parameters", "inputs", "secrets", "budget", "learning", "approvals", "triggers", "output", "checks"];
+/** What a package is for, shown on a marketplace page and the console's list: display only, never applied. */
+export const CATEGORIES = ["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] as const;
+const TAG = /^[a-z0-9-]{1,32}$/;
+const MAX_TAGS = 8;
+/** An MCP need's reason: one line, shown on the apply screen beside its tools. */
+const MAX_REASON = 280;
+/** The files an examples/<name>/ folder holds: the run's input, its answer, and the answer as a reader sees it. */
+const EXAMPLE_FILES = ["input.json", "output.json", "output.md"];
 /** A run input's types (`inputs`): a parameter's, and a list of one of them. */
 export const INPUT_TYPES = [...PARAMETER_TYPES, "array"] as const;
 /** What a string input's value is: a form asks for it as such, and the server checks the JSON Schema formats it knows
@@ -79,11 +90,15 @@ const PLACEHOLDER = /\$\{parameters\.([^}]*)\}/g;
 const WHOLE = /^\$\{parameters\.([^}]*)\}$/;
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
-/** An MCP server a package uses: its tools, granted to the agent, and `allow`, those of them the package asks the owner to
- *  allow (a consent screen shows it). The package sets no permission itself: an apply's `grants`, the owner's answer, do.
- *  `pin`, by tool: the arguments each of its calls must carry (a value, or `${parameters.<name>}`), which apply writes as
- *  the tool's pin in the agent's tool settings, so a send goes only to the destination the owner set. */
-export type McpNeed = { server: string; tools: string[]; required: boolean; allow: string[]; pin: Record<string, Record<string, PinValue>> };
+/** An MCP server a package uses, by where it comes from (`source`, `toolkit`), never by the name an owner saves it under:
+ *  inside the package its tools are `mcp:<toolkit>/<tool>`. `tools`, granted to the agent, and `allow`, those of them the
+ *  package asks the owner to allow (a consent screen shows it, with `reason`). The package sets no permission itself: an
+ *  apply's `grants`, the owner's answer, do. `pin`, by tool: the arguments each of its calls must carry (a value, or
+ *  `${parameters.<name>}`), which apply writes as the tool's pin in the agent's tool settings, so a send goes only to the
+ *  destination the owner set. */
+export type McpNeed = { source: McpSource; toolkit: string; tools: string[]; required: boolean; reason?: string; allow: string[]; pin: Record<string, Record<string, PinValue>> };
+/** A need mapped to the saved MCP server an apply gives it (`server`, its saved name). */
+export type McpServed = McpNeed & { server: string };
 type Scalar = string | number | boolean;
 type ScalarType = (typeof PARAMETER_TYPES)[number];
 /** A parameter: a scalar, or (`type: array`) a list of one, its `items` that scalar's JSON Schema (an input's vocabulary). */
@@ -118,6 +133,12 @@ export type Package = {
   license?: string;
   author?: Json;
   repository?: string;
+  /** What it is for and its tags (CATEGORIES, TAG): display only. */
+  category?: (typeof CATEGORIES)[number];
+  tags: string[];
+  /** examples/<name>/, each checked (its input against the input schema, its answer against the output schema): shown on
+   *  a marketplace page, never given to the agent. */
+  examples: string[];
   /** Harness ids in the order the package prefers them; absent, any (the server's default). */
   harness?: string[];
   /** The agent's tier and the model it prefers on it; `fast` and `strong`, the model it prefers for each of those tiers
@@ -126,8 +147,8 @@ export type Package = {
   effort?: string;
   /** Absent, the tools the server gives a new agent that names none. */
   tools?: string[];
-  /** MCP servers by the name a server saves them under, and the tools of each the agent is granted. One `required`
-   *  refuses an apply on a server that has not saved it; any other is skipped there, with a warning. */
+  /** MCP servers by their source and toolkit, and the tools of each the agent is granted. One `required` refuses an apply
+   *  on a server that has saved none that matches; any other is skipped there, with a warning. */
   mcp: McpNeed[];
   /** The computers it prefers, in order (`[shell, none]`): apply takes the first this server meets now (pickComputer)
    *  and writes it as the agent's computer. Absent (or `default` in the manifest): where this server puts a new agent. */
@@ -142,9 +163,8 @@ export type Package = {
   /** Each run's typed input (manifest `inputs`), compiled: the agent's input_schema. Absent, a run takes {content}. */
   inputSchema?: Json;
   secrets: string[];
-  /** Each run's limits: its spend cap (the agent's max_cost_usd) and the tool calls each of its conversations may make
-   *  (the agent's max_tool_calls, tool-budget.ts). */
-  budget?: { per_run_usd?: number; tool_calls?: number };
+  /** Each run's limit: its spend cap (the agent's max_cost_usd). */
+  budget?: { per_run_usd: number };
   learning?: boolean;
   /** Whether the agent asks its person before a tool runs (`ask`) or runs unattended (`never`): the package's default,
    *  shown to the owner at apply. A template whose job runs on triggers says never. Deny and pins hold either way. */
@@ -483,19 +503,21 @@ export function readPackage(from: string | PackageFiles): Package {
   if (src.kind("") !== "dir") throw new PackageError(dir, ["it is not a folder: a package is one"]);
   if (kind(MANIFEST) !== "file") throw new PackageError(dir, [`${MANIFEST}: missing: a package is a folder with agent.md (its manifest in the front matter, the agent's instructions in the body)`]);
   for (const entry of src.entries("")) {
-    if (entry.isDirectory() && !["skills", "rules", "evals"].includes(entry.name)) bad(`${entry.name}/`, "a package's folders are skills/, rules/ and evals/");
+    if (entry.isDirectory() && !["skills", "rules", "evals", "examples"].includes(entry.name)) bad(`${entry.name}/`, "a package's folders are skills/, rules/, evals/ and examples/");
   }
   // Bounded before anything is read: a file, the files together, and how many there are.
   // The agent's files' bytes (evals/ is the package's own test data, never part of an agent) under POST /v2/agents'
   // limits, an eval's file under MAX_EVAL_FILE_BYTES alone; every file, evals/ too, counts toward MAX_PACKAGE_FILES. A
   // file under evals/ an agent is given all the same (the answer's schema, which becomes its output_schema and is in its
-  // instructions) keeps the agent's limits: checked once the manifest names it, before it is read.
+  // instructions) keeps the agent's limits: checked once the manifest names it, before it is read. examples/ is never an
+  // agent's either: each of its files keeps a package file's own limit.
   const listed = files("");
-  const all = listed.filter((path) => !path.startsWith("evals/"));
+  const all = listed.filter((path) => !path.startsWith("evals/") && !path.startsWith("examples/"));
   const sizes = all.map((path) => [path, src.size(path)] as const);
   const agentBytes = sizes.reduce((sum, [, size]) => sum + size, 0);
   const limits = [
     ...listed.filter((path) => path.startsWith("evals/") && src.size(path) > MAX_EVAL_FILE_BYTES).map((path) => `${path}: is over ${MAX_EVAL_FILE_BYTES} bytes, an eval file's limit`),
+    ...listed.filter((path) => path.startsWith("examples/") && src.size(path) > MAX_FILE_BYTES).map((path) => `${path}: is over ${MAX_FILE_BYTES} bytes, a package file's limit`),
     ...sizes.filter(([, size]) => size > MAX_FILE_BYTES).map(([path]) => `${path}: is over ${MAX_FILE_BYTES} bytes, a package file's limit`),
     ...(agentBytes > MAX_PACKAGE_BYTES ? [`the package's files are over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit`] : []),
     ...(listed.length > MAX_PACKAGE_FILES ? [`the package holds over ${MAX_PACKAGE_FILES} files`] : []),
@@ -512,6 +534,9 @@ export function readPackage(from: string | PackageFiles): Package {
   if (f.license !== undefined && typeof f.license !== "string") bad(MANIFEST, "license is an SPDX id");
   if (f.author !== undefined && !(isObject(f.author) && !unknownFields(f.author, ["name", "email", "url"]).length && typeof f.author.name === "string" && Object.values(f.author).every((v) => typeof v === "string"))) bad(MANIFEST, "author is {name, email?, url?}");
   if (f.repository !== undefined && !(typeof f.repository === "string" && URL.canParse(f.repository) && /^https?:$/.test(new URL(f.repository).protocol))) bad(MANIFEST, "repository is an http(s) URL");
+  // Display only: what a marketplace page and the console's list file it under, and its tags.
+  if (f.category !== undefined && !(CATEGORIES as readonly unknown[]).includes(f.category)) bad(MANIFEST, `category is one of ${CATEGORIES.join(", ")}`);
+  const tags = f.tags === undefined ? [] : Array.isArray(f.tags) && f.tags.length <= MAX_TAGS && f.tags.every((tag) => typeof tag === "string" && TAG.test(tag)) && new Set(f.tags).size === f.tags.length ? (f.tags as string[]) : (bad(MANIFEST, `tags is a list of at most ${MAX_TAGS} tags, each once, each lowercase letters, digits and dashes (${TAG.source})`), []);
   const harness = f.harness === undefined ? undefined : list(f.harness, "harness", (id) => (HARNESSES as readonly string[]).includes(id));
   if (harness && !harness.length) bad(MANIFEST, `harness is a non-empty preference list of ${HARNESSES.join(", ")}; leave it out for any`);
   const ref = (value: unknown) => value === undefined || (typeof value === "string" && MODEL_REF.test(value));
@@ -521,17 +546,26 @@ export function readPackage(from: string | PackageFiles): Package {
   if (tools?.some(isMcpName)) bad(MANIFEST, "tools grants no MCP tool: mcp lists them, by server");
   for (const tool of tools?.filter((tool) => !isMcpName(tool) && !BOUND_TOOLS.includes(tool)) ?? []) bad(MANIFEST, `tools: ${tool} is not a tool this server binds (${BOUND_TOOLS.join(", ")})`);
   const mcp: McpNeed[] = [];
-  for (const [i, need] of (f.mcp === undefined ? [] : Array.isArray(f.mcp) ? f.mcp : (bad(MANIFEST, "mcp is a list of {server, tools, required?}"), [])).entries()) {
+  // Each need by where its tools come from (source, toolkit), never by a saved server's name: the package names its tools
+  // mcp:<toolkit>/<tool>, and apply maps the toolkit to the server the owner saved for it.
+  for (const [i, need] of (f.mcp === undefined ? [] : Array.isArray(f.mcp) ? f.mcp : (bad(MANIFEST, "mcp is a list of {source, toolkit, tools, required?, reason?, allow?, pin?}"), [])).entries()) {
     const names = isObject(need) && Array.isArray(need.tools) ? need.tools : [];
     const allow = isObject(need) && need.allow !== undefined ? need.allow : [];
     const pin = isObject(need) && need.pin !== undefined ? need.pin : {};
-    const ok = isObject(need) && !unknownFields(need, ["server", "tools", "required", "allow", "pin"]).length && typeof need.server === "string" && MCP_SERVER_NAME.test(need.server) && names.length > 0 && names.every((tool) => typeof tool === "string" && MCP_TOOL_NAME.test(tool)) && new Set(names).size === names.length && (need.required === undefined || typeof need.required === "boolean")
+    const reason = isObject(need) ? need.reason : undefined;
+    const ok = isObject(need) && !unknownFields(need, ["source", "toolkit", "tools", "required", "reason", "allow", "pin"]).length && (MCP_SOURCES as readonly unknown[]).includes(need.source) && typeof need.toolkit === "string" && MCP_SERVER_NAME.test(need.toolkit)
+      && names.length > 0 && names.every((tool) => typeof tool === "string" && MCP_TOOL_NAME.test(tool)) && new Set(names).size === names.length && (need.required === undefined || typeof need.required === "boolean")
+      && (reason === undefined || (typeof reason === "string" && reason.trim() !== "" && reason.length <= MAX_REASON && !/[\r\n]/.test(reason)))
       && Array.isArray(allow) && allow.every((tool) => names.includes(tool)) && new Set(allow).size === allow.length;
-    if (!ok) bad(MANIFEST, `mcp[${i}] is {server: an MCP server's name (${MCP_SERVER_NAME.source}), tools: its tool names (${MCP_TOOL_NAME.source}), none twice, required?: true or false, allow?: the tools of its tools it asks the owner to allow, pin?: {<tool>: {<argument>: <value>}}}`);
-    else if (mcp.some((m) => m.server === need.server)) bad(MANIFEST, `mcp[${i}]: the server ${need.server as string} is listed twice`);
+    // A toolkit is held to the MCP server name rule (tool-names.ts), so mcp:<toolkit>/<tool> inside the package is a catalog
+    // name every place that checks one (an agent's grant, a tool setting, a learned workflow) takes.
+    if (isObject(need) && need.toolkit !== undefined && (typeof need.toolkit !== "string" || !MCP_SERVER_NAME.test(need.toolkit))) bad(MANIFEST, `mcp[${i}].toolkit ${JSON.stringify(need.toolkit)} is not a toolkit name: ${MCP_SERVER_NAME.source}, the MCP server name rule, since the package names its tools mcp:<toolkit>/<tool>`);
+    else if (!ok) bad(MANIFEST, `mcp[${i}] is {source: ${MCP_SOURCES.join(" | ")}, toolkit: the toolkit its tools come from, the name the package calls them by (mcp:<toolkit>/<tool>, ${MCP_SERVER_NAME.source}), tools: its tool names (${MCP_TOOL_NAME.source}), none twice, required?: true or false, reason?: one line of at most ${MAX_REASON} characters on why the agent needs them, allow?: the tools of its tools it asks the owner to allow, pin?: {<tool>: {<argument>: <value>}}}`);
+    else if (need.source === "github" && need.toolkit !== "github") bad(MANIFEST, `mcp[${i}]: a github source's toolkit is github (GitHub's MCP server), not ${need.toolkit as string}`);
+    else if (mcp.some((m) => m.toolkit === need.toolkit)) bad(MANIFEST, `mcp[${i}]: the toolkit ${need.toolkit as string} is listed twice: its tools are all mcp:${need.toolkit as string}/<tool>, so they are one entry`);
     else {
-      const pinned = pinOf(pin, need.server as string, names as string[], `mcp[${i}].pin`, (message) => bad(MANIFEST, message));
-      mcp.push({ server: need.server as string, tools: names as string[], required: need.required === true, allow: allow as string[], pin: pinned });
+      const pinned = pinOf(pin, need.toolkit as string, names as string[], `mcp[${i}].pin`, (message) => bad(MANIFEST, message));
+      mcp.push({ source: need.source as McpSource, toolkit: need.toolkit as string, tools: names as string[], required: need.required === true, ...(typeof reason === "string" ? { reason } : {}), allow: allow as string[], pin: pinned });
     }
   }
   // A policy by tool: bash's alone (bash-read-only.ts), on a package that grants bash or names no tools (a new agent's
@@ -605,11 +639,9 @@ export function readPackage(from: string | PackageFiles): Package {
   const inputSchema = inputsSchema(f.inputs, (message) => bad(MANIFEST, message));
   const secrets = list(f.secrets, "secrets", (secret) => /^[A-Z][A-Z0-9_]{0,127}$/.test(secret));
   for (const secret of secrets.filter((name) => !PACKAGE_SECRETS.includes(name))) bad(MANIFEST, `secrets names ${secret}, a key this server cannot hold: a package needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
-  // Each run's limits: its spend cap (per_run_usd, the agent's max_cost_usd) and its tool-call budget (tool_calls, the
-  // agent's max_tool_calls: each conversation's calls), one of them at least.
+  // Each run's limit: its spend cap (per_run_usd, the agent's max_cost_usd), required once a budget is given.
   const perRun = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0;
-  const toolCalls = (value: unknown) => Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= MAX_TOOL_CALLS;
-  if (f.budget !== undefined && !(isObject(f.budget) && Object.keys(f.budget).length && !unknownFields(f.budget, ["per_run_usd", "tool_calls"]).length && (f.budget.per_run_usd === undefined || perRun(f.budget.per_run_usd)) && (f.budget.tool_calls === undefined || toolCalls(f.budget.tool_calls)))) bad(MANIFEST, `budget is {per_run_usd?: a number above 0, tool_calls?: a whole number from 1 to ${MAX_TOOL_CALLS}}, one of them at least`);
+  if (f.budget !== undefined && !(isObject(f.budget) && !unknownFields(f.budget, ["per_run_usd"]).length && perRun(f.budget.per_run_usd))) bad(MANIFEST, "budget is {per_run_usd: a number above 0}");
   if (f.learning !== undefined && typeof f.learning !== "boolean") bad(MANIFEST, "learning is true or false");
   if (f.approvals !== undefined && f.approvals !== "ask" && f.approvals !== "never") bad(MANIFEST, "approvals is ask (the agent asks its person before a tool runs) or never (it runs unattended; deny and pins still hold)");
   const triggers = f.triggers === undefined ? [] : Array.isArray(f.triggers) ? (f.triggers as unknown[]) : (bad(MANIFEST, "triggers is a list of POST /v2/triggers bodies"), []);
@@ -734,12 +766,45 @@ export function readPackage(from: string | PackageFiles): Package {
     }
   }
 
+  // examples/<name>/: a run's input (input.json, checked against the input schema in force), its answer (output.json,
+  // checked against the output schema when the package has one) and, optionally, that answer as a reader sees it
+  // (output.md). Shown on a marketplace page; never given to the agent, never applied.
+  const examples: string[] = [];
+  const answerCheck = isObject(outputSchema) ? schemaCheck(outputSchema) : undefined;
+  for (const entry of kind("examples") === "dir" ? src.entries("examples") : []) {
+    const at = `examples/${entry.name}`;
+    if (!entry.isDirectory() || !NAME.test(entry.name)) {
+      bad(at, "examples/ holds only example folders, each named in lowercase letters, digits and dashes");
+      continue;
+    }
+    examples.push(entry.name);
+    const own = files(at).map((path) => path.slice(at.length + 1));
+    for (const path of own.filter((p) => !EXAMPLE_FILES.includes(p))) bad(`${at}/${path}`, `an example holds ${EXAMPLE_FILES.slice(0, -1).join(", ")} and ${EXAMPLE_FILES.at(-1)} only`);
+    const json = (file: string): { value: unknown } | undefined => {
+      if (!own.includes(file)) return bad(at, `has no ${file}`), undefined;
+      try {
+        return { value: JSON.parse(text(`${at}/${file}`)) };
+      } catch {
+        return bad(`${at}/${file}`, "is not JSON"), undefined;
+      }
+    };
+    const input = json("input.json");
+    if (input && !isObject(input.value)) bad(`${at}/input.json`, "is not a JSON object: it is a run's input");
+    else if (input) for (const issue of inputIssues(input.value as Json, inputSchemaOf(inputSchema))) bad(`${at}/input.json`, `${issue.message}, as a run's input is`);
+    const output = json("output.json");
+    if (output && answerCheck && "check" in answerCheck) {
+      const wrong = answerCheck.check(output.value);
+      if (wrong.length) bad(`${at}/output.json`, `does not match the output schema: ${wrong.slice(0, 3).join("; ")}`);
+    }
+  }
+
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   const p: Package = {
     id: name, origin: null, name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
+    ...(typeof f.category === "string" ? { category: f.category as NonNullable<Package["category"]> } : {}), tags, examples,
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as NonNullable<Package["model"]> } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { ...(typeof f.budget.per_run_usd === "number" ? { per_run_usd: f.budget.per_run_usd } : {}), ...(typeof f.budget.tool_calls === "number" ? { tool_calls: f.budget.tool_calls } : {}) } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
+    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), checks, instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
@@ -748,9 +813,10 @@ export function readPackage(from: string | PackageFiles): Package {
   // refusal, never a server's start.
   const samples = Object.fromEntries(Object.entries(parameters).map(([key, spec]) => [key, spec.default ?? (spec.type === "array" ? [sampleOf(spec.items!)] : sampleOf(spec))]));
   const declared = Object.fromEntries(MODEL_TIER_NAMES.flatMap((tier) => (p.model?.[tier] ? [[tier, p.model[tier]!]] : [])));
-  // Every MCP tool ticked: the widest agent an apply can make, so each tool the package lists is checked as a grant.
-  const every = mcp.flatMap(({ server, tools: listed }) => listed.map((tool) => mcpToolName(server, tool)));
-  const made = compiled(p, samples, { ...(harness ? { harness: harness[0]! } : {}), ...(p.model?.prefer ? { model: p.model.prefer } : {}), ...(Object.keys(declared).length ? { modelTiers: declared } : {}), mcp, defaultTools: [], grants: every });
+  // Every MCP tool ticked, each served under its toolkit's name: the widest agent an apply can make, so each tool the
+  // package lists is checked as a grant.
+  const every = mcp.flatMap(({ toolkit, tools: listed }) => listed.map((tool) => mcpToolName(toolkit, tool)));
+  const made = compiled(p, samples, { ...(harness ? { harness: harness[0]! } : {}), ...(p.model?.prefer ? { model: p.model.prefer } : {}), ...(Object.keys(declared).length ? { modelTiers: declared } : {}), mcp: mcp.map((need) => ({ ...need, server: need.toolkit })), defaultTools: [], grants: every });
   for (const issue of definitionBodyIssues(made.agent)) bad(issue.field.startsWith("skills.") ? `skills/${issue.field.slice("skills.".length)}` : MANIFEST, `${issue.field.startsWith("skills.") ? "" : `the agent it makes: ${issue.field}: `}${issue.message}`);
   // A sample stands in for a value apply is given: at a target.input field a parameter with no default fills whole, what
   // hangs on the value (a pattern, a bound, a choice) is the apply's, on the value given. Its type, and whether the
@@ -792,9 +858,10 @@ export function packageView(p: Package) {
   return {
     id: p.id, bundled: p.origin === null, source: p.origin?.source ?? null, sha: p.origin?.sha ?? null, publisher: p.origin?.publisher ?? null,
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
+    category: p.category ?? null, tags: p.tags, examples: p.examples,
     output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
     harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, checkout: p.checkout ?? null,
-    mcp: p.mcp.map(({ server, tools, required, allow, pin }) => ({ server, required, tools: tools.map((name) => ({ name, tool: mcpToolName(server, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, input_schema: p.inputSchema ?? null, secrets: p.secrets,
+    mcp: p.mcp.map(({ source, toolkit, tools, required, reason, allow, pin }) => ({ source, toolkit, required, reason: reason ?? null, tools: tools.map((name) => ({ name, tool: mcpToolName(toolkit, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, input_schema: p.inputSchema ?? null, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, approvals_default: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
 }
@@ -833,11 +900,19 @@ export class TemplateRegistry {
 /** POST /v2/templates/{name}/apply's body (`{parameters, grants?, overrides?: {model}}`), checked against the package:
  *  the parameters as given, the MCP tools the owner allows (each one the package lists, by its gate name), and the model
  *  asked for in place of the package's. 422 naming every field that is wrong. */
-export function applyBodyOf(p: Package, body: Json): { parameters: Record<string, Scalar | Scalar[]>; grants: string[]; model?: string; approvals?: Approvals } {
-  const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "overrides"]);
-  const listed = p.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
+export function applyBodyOf(p: Package, body: Json): { parameters: Record<string, Scalar | Scalar[]>; grants: string[]; servers: Record<string, string>; model?: string; approvals?: Approvals } {
+  const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides"]);
+  const listed = p.mcp.flatMap(({ toolkit, tools }) => tools.map((tool) => mcpToolName(toolkit, tool)));
   const grants: string[] = [];
-  if (body.grants !== undefined && !Array.isArray(body.grants)) issues.push({ field: "grants", reason: "wrong_type", message: "grants is a list of the package's MCP tools, by gate name (mcp:<server>/<tool>), the owner allows" });
+  if (body.grants !== undefined && !Array.isArray(body.grants)) issues.push({ field: "grants", reason: "wrong_type", message: "grants is a list of the package's MCP tools, by the package's own names (mcp:<toolkit>/<tool>), the owner allows" });
+  // The owner's pick of a saved server for a toolkit (when several match): checked against what is saved at apply.
+  const servers: Record<string, string> = {};
+  if (body.servers !== undefined && !isObject(body.servers)) issues.push({ field: "servers", reason: "wrong_type", message: "servers is an object: {<toolkit>: <the saved MCP server's name>}, for a need several saved servers match" });
+  for (const [toolkit, name] of Object.entries(isObject(body.servers) ? body.servers : {})) {
+    if (!p.mcp.some((need) => need.toolkit === toolkit)) issues.push({ field: `servers.${toolkit}`, reason: "not_allowed", message: `The package ${p.name} uses no toolkit ${toolkit}: its MCP needs are ${p.mcp.map((need) => need.toolkit).join(", ") || "none"}.` });
+    else if (typeof name !== "string" || !MCP_SERVER_NAME.test(name)) issues.push({ field: `servers.${toolkit}`, reason: "wrong_type", message: `servers.${toolkit} is the name of a saved MCP server` });
+    else servers[toolkit] = name;
+  }
   for (const [i, grant] of (Array.isArray(body.grants) ? body.grants : []).entries()) {
     if (typeof grant !== "string" || !listed.includes(grant)) issues.push({ field: `grants.${i}`, reason: "not_allowed", message: `grants.${i} is not a tool of the package ${p.name}: it grants ${listed.join(", ") || "no MCP tool"}.` });
     else if (!grants.includes(grant)) grants.push(grant);
@@ -871,7 +946,7 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Record<string
     if (overrides.model !== undefined && !(typeof overrides.model === "string" && MODEL_REF.test(overrides.model))) issues.push({ field: "overrides.model", reason: "bad_format", message: 'overrides.model is "provider/model-id"' });
   }
   if (issues.length) throw invalid(issues);
-  return { parameters, grants, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
+  return { parameters, grants, servers, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
 }
 
 /** The model a package's agent gets here, as `{model?, warning?}`: its `prefer` when this server runs it on `harness`
@@ -962,8 +1037,8 @@ export async function packageTiers(env: NodeJS.ProcessEnv, model: Package["model
 }
 
 /** The bodies an apply makes: POST /v2/agents' (its definition and skill files) and each trigger's, with no agent_id,
- *  every `${parameters.x}` filled. `grants`, the owner's answer at apply (the tools ticked): of the package's tools on
- *  `mcp`, the MCP servers this server has saved, those alone are granted, beside the package's tools (or, when it names
+ *  every `${parameters.x}` filled. `grants`, the owner's answer at apply (the tools ticked, by the saved servers' names):
+ *  of the package's tools on `mcp`, its needs each served by a saved server, those alone are granted, beside the package's tools (or, when it names
  *  none, `defaultTools`, those this server gives a new agent), each set to allow but those `held` (a deny the owner set on
  *  this server holds them: granted, never allowed). A tool left unticked is not the agent's at all, so no harness offers
  *  it and approvals never, which lifts an ask of a tool the agent has, has nothing to lift: the owner grants it later in
@@ -971,7 +1046,7 @@ export async function packageTiers(env: NodeJS.ProcessEnv, model: Package["model
  *  and ticked or not (it holds once the tool is granted later); one whose pin fills empty (its parameter not given) is set
  *  to deny instead, and named in `unpinned` (by gate name, with the parameters not given): a send with no destination set
  *  never runs. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; modelTiers?: Record<string, string>; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; held?: readonly string[]; approvals?: Approvals; computer?: ComputerPick }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; modelTiers?: Record<string, string>; mcp: McpServed[]; defaultTools: readonly string[]; grants: readonly string[]; held?: readonly string[]; approvals?: Approvals; computer?: ComputerPick }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
   // The ticks, in the package's order: never a tool of a server not saved here, nor one the owner did not tick.
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool))).filter((tool) => chosen.grants.includes(tool));
@@ -997,7 +1072,7 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, instructions: filled(p.instructions, parameters),
     ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(chosen.modelTiers && Object.keys(chosen.modelTiers).length ? { model_tiers: chosen.modelTiers } : {}), ...(p.effort ? { thinking: p.effort } : {}),
     ...(pick ? { computer: pick.computer } : {}), ...(tools ? { tools } : {}), ...(Object.keys(settings).length ? { tool_settings: settings } : {}),
-    ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget?.per_run_usd ? { max_cost_usd: p.budget.per_run_usd } : {}), ...(p.budget?.tool_calls ? { max_tool_calls: p.budget.tool_calls } : {}), skills,
+    ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget?.per_run_usd ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
     // The apply's choice: unattended only when it says never (none given: the agent asks).
     ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
     // The package's typed input (manifest `inputs`): what each run's input is checked against, and how the model reads it.
@@ -1012,9 +1087,67 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
 
 /** Each pin the package's MCP servers (`mcp`) set, by the tool's gate name, its values filled from `parameters`, and the
  *  parameters it names that were not given (`empty`, none when it fills whole). */
-export function filledPins(mcp: readonly McpNeed[], parameters: Json): { tool: string; pin: Record<string, PinValue>; empty: string[] }[] {
+export function filledPins(mcp: readonly McpServed[], parameters: Json): { tool: string; pin: Record<string, PinValue>; empty: string[] }[] {
   return mcp.flatMap(({ server, pin }) => Object.entries(pin).map(([tool, args]) => {
     const each = Object.entries(args).map(([arg, value]) => [arg, pinFilled(value, parameters)] as const);
     return { tool: mcpToolName(server, tool), pin: Object.fromEntries(each.map(([arg, one]) => [arg, one.value])), empty: [...new Set(each.flatMap(([, one]) => one.empty))] };
   }));
+}
+
+/** How the owner sets up a need no saved server matches, in words: the Composio preset with its toolkit and actions,
+ *  GitHub's MCP on the App, or any server marked with the toolkit in Settings. */
+export function mcpSetUp(need: Pick<McpNeed, "source" | "toolkit" | "tools">): string {
+  const tools = need.tools.join(", ");
+  return need.source === "composio" ? `Add it in Settings → MCP servers → Add from Composio, toolkit ${need.toolkit}, actions ${tools}, then apply the template again.`
+    : need.source === "github" ? "Connect GitHub in Settings, then add GitHub's MCP server in Settings → MCP servers with GitHub App access, and apply the template again."
+    : `Add the MCP server that serves ${tools} in Settings → MCP servers and set its toolkit to ${need.toolkit}, then apply the template again.`;
+}
+
+/** A saved MCP server as an apply matches it: its name and the source and toolkit it records (mcp-sources.ts). */
+export type SavedSource = { name: string; source: McpSource; toolkit: string | null };
+
+/** Each MCP need of `p` mapped to a saved server here: `candidates`, those whose record is the need's {source, toolkit},
+ *  by name; `server`, the owner's pick among them (`picks`, by toolkit), else the one candidate, else none. Never picked
+ *  silently: several candidates and no pick is refused (422 under servers.<toolkit>, naming them), and so is a pick that
+ *  is not a candidate (an owner never maps a need to a server that says it is something else). */
+export function serversFor(p: Package, saved: readonly SavedSource[], picks: Readonly<Record<string, string>>): { need: McpNeed; server: string | null; candidates: string[] }[] {
+  const issues: InputIssue[] = [];
+  const mapped = p.mcp.map((need) => {
+    const candidates = saved.filter((one) => one.source === need.source && one.toolkit === need.toolkit).map((one) => one.name).sort();
+    const pick = Object.hasOwn(picks, need.toolkit) ? picks[need.toolkit] : undefined;
+    if (pick !== undefined && !candidates.includes(pick)) issues.push({ field: `servers.${need.toolkit}`, reason: "not_an_option", message: `${pick} is not a saved MCP server that is ${need.source} ${need.toolkit}: ${candidates.length ? `${candidates.join(", ")} ${candidates.length === 1 ? "is" : "are"}` : "none is saved here"}.` });
+    else if (pick === undefined && candidates.length > 1) issues.push({ field: `servers.${need.toolkit}`, reason: "missing", message: `Saved MCP servers ${new Intl.ListFormat("en", { type: "conjunction" }).format(candidates)} are each ${need.source} ${need.toolkit}: servers.${need.toolkit} says which one the agent uses.` });
+    const server = pick ?? (candidates.length === 1 ? candidates[0]! : null);
+    return { need, server, candidates };
+  });
+  if (issues.length) throw invalid(issues);
+  return mapped;
+}
+
+const SERVER_PART = MCP_SERVER_NAME.source.slice(1, -1);
+const TOOL_PART = MCP_TOOL_NAME.source.slice(1, -1);
+/** A catalog MCP name in prose (`mcp:<server>/<tool>` or `mcp:<server>/*`), whole: not the tail of a longer word
+ *  (`xmcp:gmail/x`), nor cut short of a longer tool name. */
+const MCP_NAME_IN_TEXT = new RegExp(`(?<![A-Za-z0-9_.:/-])mcp:${SERVER_PART}/(?:\\*|${TOOL_PART}(?![A-Za-z0-9_-]))`, "g");
+
+/** Catalog name `name` on the saved servers of `servers` ({toolkit: saved name}): read (parseToolName), its server swapped
+ *  when it is one of the package's toolkits, and written again (formatToolName); a wildcard `mcp:<toolkit>/*` the same
+ *  way. Any other name, or one outside the grammar, as it is. */
+export function onServerName(name: string, servers: Readonly<Record<string, string>>): string {
+  const parsed = parseToolName(name);
+  if (!parsed || parsed.kind === "plain" || !Object.hasOwn(servers, parsed.server)) return name;
+  return formatToolName({ ...parsed, server: servers[parsed.server]! });
+}
+
+/** `text` with each whole catalog MCP name in it on the saved servers' (onServerName), in one pass, so a server named as
+ *  another of the package's toolkits is never rewritten twice. */
+export function onServerNames(text: string, servers: Readonly<Record<string, string>>): string {
+  if (!Object.keys(servers).some((toolkit) => servers[toolkit] !== toolkit)) return text;
+  return text.replace(MCP_NAME_IN_TEXT, (name) => onServerName(name, servers));
+}
+
+/** `p` as the agent an apply makes on `servers` sees it: its instructions and each skill file with the package's tool
+ *  names on the saved servers' (onServerNames). Nothing else of it names a server: its pins and allow are by tool. */
+export function onServers(p: Package, servers: Readonly<Record<string, string>>): Package {
+  return { ...p, instructions: onServerNames(p.instructions, servers), skills: Object.fromEntries(Object.entries(p.skills).map(([path, text]) => [path, onServerNames(text, servers)])) };
 }

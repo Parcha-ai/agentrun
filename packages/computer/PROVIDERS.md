@@ -114,16 +114,11 @@ Archil, and the agent's programs still have no network.
 
 **`get(id, ctx)`** reads one machine as your API sees it now. It returns a `Machine` with its labels, its `state`
 (`starting`, `running`, `stopping`, `stopped`, `going` or `failed`), and the network and image you read back. A machine
-that no longer exists is `undefined`, not an error.
+that no longer exists is `undefined`, or an error that maps to `not_found`; neither is a failure.
 
 ```ts
 	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
-		try {
-			return ok(machineOf(await this.#Sandbox.getInfo(id, this.#api(ctx.timeoutMs, ctx.signal))));
-		} catch (error) {
-			if (codeOf(error) === "not_found") return ok(undefined);
-			throw error;
-		}
+		return ok(machineOf(await this.#Sandbox.getInfo(id, this.#api(ctx.timeoutMs, ctx.signal))));
 	}
 ```
 
@@ -147,11 +142,7 @@ fine. AgentRun then waits until `get` and `list` stop showing it.
 ```ts
 	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
 		// …
-		try {
-			await this.#Sandbox.kill(id, this.#api(ctx.timeoutMs));
-		} catch (error) {
-			if (codeOf(error) !== "not_found") throw error;
-		}
+		await this.#Sandbox.kill(id, this.#api(ctx.timeoutMs));
 		return ok(undefined);
 	}
 ```
@@ -177,8 +168,8 @@ E2B's SDK hands `commands.run` output over as text, decoded as UTF-8, which brea
 		)[Symbol.asyncIterator]();
 		// … the start event gives the pid; then each data event's bytes go to out or err as they come
 		return ok({
-			stdout: out.iterable,
-			stderr: err.iterable,
+			stdout: out,
+			stderr: err,
 			write: (bytes) => sandbox.commands.sendStdin(pid, bytes, { requestTimeoutMs }),
 			end: () => sandbox.commands.closeStdin(pid, { requestTimeoutMs }),
 			wait: () => exited,
@@ -187,13 +178,15 @@ E2B's SDK hands `commands.run` output over as text, decoded as UTF-8, which brea
 	}
 ```
 
-**`errorCode(error)`** maps an error your client threw to one of AgentRun's [codes](#refusals). Anything you don't
-recognise is `"vendor"`. E2B's `errorCode` returns `codeOf(error)`:
+**`errorCode(error)`** is optional. It maps an error your client threw to one of AgentRun's [codes](#refusals), and
+anything you don't map is `"vendor"`. AgentRun reads an `AbortError` as `aborted` and a `TimeoutError` as `timeout`
+itself, so map the rest. Map your vendor's not-found exception to `not_found`: AgentRun reads that from `get` as a
+machine that is gone and from `delete` as done, so those two need no catch of their own. E2B's `errorCode` returns
+`codeOf(error)`:
 
 ```ts
 function codeOf(error: unknown): ComputerErrorCode {
 	const name = (error as { name?: unknown } | null)?.name;
-	if (name === "AbortError") return "aborted";
 	if (name === "SandboxNotFoundError" || name === "NotFoundError" || name === "FileNotFoundError") return "not_found";
 	// …
 	return "vendor";

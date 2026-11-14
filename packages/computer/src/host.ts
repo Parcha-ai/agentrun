@@ -57,8 +57,11 @@ export interface MachineHost {
 	 * streams the file through exec's stdin.
 	 */
 	upload?(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<Result<void>>;
-	/** The code of an error the vendor's client threw: one of ComputerErrorCode, "vendor" for anything else. */
-	errorCode(error: unknown): ComputerErrorCode;
+	/**
+	 * The code of an error the vendor's client threw: one of ComputerErrorCode. Optional: the adapter reads an
+	 * AbortError as "aborted" and a TimeoutError as "timeout" itself, and anything else a host does not map is "vendor".
+	 */
+	errorCode?(error: unknown): ComputerErrorCode;
 	/** Vendor settings a machine takes once it runs and before the daemon goes in (egress rules, an idle timer). */
 	prepare?(id: string, ctx: HostCall): Promise<Result<void>>;
 	/**
