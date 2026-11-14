@@ -42,7 +42,7 @@ macOS 14 or later.
 
    `COMPUTERD_SIGN_IDENTITY="Developer ID Application: <name> (<team>)" scripts/bundle.sh` signs it for distribution.
    An ad-hoc build is granted anew after each rebuild; a Developer ID build keeps its grants across updates. A Mac that
-   builds its own Computerd (the bench's Mac mini) signs with a local identity instead: see [MINI.md](MINI.md).
+   builds its own Computerd can sign with a local self-signed identity instead.
 
 2. **Open it.** Double-click Computerd in Applications. It writes its LaunchAgent to
    `~/Library/LaunchAgents/ai.parcha.computerd.plist` and loads it with `launchctl`, which starts it now and at every
@@ -132,7 +132,7 @@ swift build --build-tests && swift test     # on a Mac; the core (ComputerdKit) 
   `build/UIFixture.app`; test-only.
 
 CI (`.github/workflows/computer-macos.yml`) builds and tests on `macos-26`, bundles the app, seeds the runner's grants,
-starts the app under launchd in the runner's desktop, and runs `scripts/smoke.py` through `computerd`, with the results
-in the job summary.
+starts the app under launchd in the runner's desktop, and checks the socket's peer check, and runs the protocol's health, ui and input conformance cases
+(`scripts/ui-conformance.mjs`) through `computerd`, with the results in the job summary.
 
 See NOTICE for the projects whose findings Computerd uses.

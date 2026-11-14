@@ -54,7 +54,7 @@ export const needsKindWords = (tool: string, kind: CapabilityKind): string =>
 export type ComputerAnswer = { readonly value: unknown; readonly text: string; readonly images: readonly ToolImage[] };
 
 /** The run's computer as its tools reach it: its groups (its hello's), and one call per op (observe, act, screenshot,
- *  input.act, apps.list, apps.open, shell.run, files.read, files.write, files.list, files.stat), which
+ *  input.act, apps.list, apps.open, shell.run, processes.start, files.read, files.write, files.list, files.stat), which
  *  @parcha/agentrun-computer's surface answers the same for a per-step tool, a script and the claim's MCP endpoint. A
  *  refusal throws an error with a `kind` (stale, unsupported, ...) and the computer's words; an abort throws. */
 export type ComputerPort = {

@@ -1,19 +1,16 @@
 import { ArrowLeft, Check, LayoutTemplate } from "lucide-react";
-import { Picker } from "@/components/ui/picker";
-import { ScheduleWhen } from "@/components/ScheduleWhen";
-import { ZonePicker } from "@/components/ZonePicker";
+import { FieldInput, FieldIssues as Issues } from "@/components/FieldInput";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
 import { SecretOnce } from "@/components/Schedules";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
-import { Input } from "@/components/ui/field";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
-import { choiceOptions, grantsOf, issuesAt, needsOf, paramHelp, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
+import { grantsOf, issuesAt, needsOf, paramHelp, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
@@ -221,23 +218,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
         <Section title="Parameters">
           {params.map(([key, p]) => (
             <div key={key} data-field={`parameters.${key}`} className="px-4 py-3">
-              <label className="block">
-                <span className="caps text-small font-semibold">{paramLabel(key, p)}{p.required && <span className="text-destructive-text"> *</span>}</span>
-                {/* The parameter's own words (a cron line's or a zone's without their format, which the picker says in
-                    words); its pattern is the server's to check, never printed. */}
-                <span className="mb-1.5 block text-small text-muted-foreground">{paramHelp(p)}</span>
-                {/* A parameter with its own list of choices offers just those, whatever its format: the server holds it to them. */}
-                {choiceOptions(p)
-                  ? <Picker label={paramLabel(key, p)} className="w-full" value={values[key] ?? ""} onChange={(v) => setParam(key, v)} options={choiceOptions(p)!} />
-                  : p.format === "cron" && p.type === "string"
-                  ? <ScheduleWhen label={paramLabel(key, p)} value={values[key] ?? ""} onChange={(v) => setParam(key, v)} />
-                  : p.format === "timezone" && p.type === "string"
-                  ? <ZonePicker label={paramLabel(key, p)} className="w-full" value={values[key] ?? ""} onChange={(v) => setParam(key, v)} />
-                  : p.type === "boolean"
-                  ? <input type="checkbox" className="size-4 accent-primary" checked={values[key] === "true"} onChange={(e) => setParam(key, e.target.checked ? "true" : "false")} />
-                  : <Input type={p.type === "string" ? "text" : "number"} step={p.type === "integer" ? 1 : "any"} value={values[key] ?? ""} required={p.required} placeholder={p.default === undefined ? undefined : String(p.default)}
-                      onChange={(e) => setParam(key, e.target.value)} />}
-              </label>
+              <FieldInput field={p} label={paramLabel(key, p)} help={paramHelp(p)} value={values[key] ?? ""} onChange={(v) => setParam(key, v)} />
               <Issues issues={at(`parameters.${key}`)} words={(i) => paramIssueWords(i, key, p)} />
             </div>
           ))}
@@ -245,7 +226,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       )}
 
       {t.mcp.length > 0 && (
-        <Section title="Tools you allow" note="Nothing is granted until you tick it. A tool you leave unticked stays at your own setting for it.">
+        <Section title="Tools you allow" note="Nothing is granted until you tick it. A tool you leave unticked is not given to the agent, even when it never asks: you can add it later on the agent's page.">
           {t.mcp.map((m) => (
             <div key={m.server} data-mcp={m.server} className="px-4 py-3">
               <p className="flex flex-wrap items-center gap-2 font-mono text-body">
@@ -274,7 +255,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
                           {/* A tick is a grant, and the server stores every granted tool as allow: that is what the tick says. What the
                               template asks for is said apart. */}
                           <span className="block text-small">Allow: the agent may call this without asking you.</span>
-                          <span className="block text-small text-muted-foreground">{tool.asks === "allow" ? "The template asks you to allow this." : "The template does not ask for this; unticked, it stays at your setting."}</span>
+                          <span className="block text-small text-muted-foreground">{tool.asks === "allow" ? "The template asks you to allow this." : "The template does not ask for this; unticked, the agent doesn't get it."}</span>
                         </span>
                       </label>
                       {index >= 0 && <Issues issues={at(`grants.${index}`)} />}
@@ -330,17 +311,6 @@ function Section({ title, note, children }: { title: string; note?: string; chil
       {note && <p className="mt-0.5 text-small text-muted-foreground">{note}</p>}
       <div className="mt-2 divide-y border">{children}</div>
     </section>
-  );
-}
-
-/** A field's issues, in the server's words (or `words`, the form's for a parameter), with its `fix` when it names one.
- *  `named`: each with its field. */
-function Issues({ issues, named = false, words = (i) => i.message }: { issues: FieldIssue[]; named?: boolean; words?: (issue: FieldIssue) => string }) {
-  if (!issues.length) return null;
-  return (
-    <ul className="mt-1.5 space-y-1 text-small text-destructive-text" role="alert">
-      {issues.map((i, n) => <li key={`${i.field}:${n}`}>{named && <span className="font-mono">{i.field} </span>}{words(i)}{i.fix && <span className="block text-foreground/80">{i.fix}</span>}</li>)}
-    </ul>
   );
 }
 

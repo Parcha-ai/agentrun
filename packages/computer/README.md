@@ -176,11 +176,17 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   as root in a container by hand: `internal/isolate`'s and the isolated `TestBecome...` need CAP_SYS_ADMIN and
   CAP_NET_ADMIN (`docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN`), and the refusal without them a container
   with Docker's defaults.
-- `computerd probe [--connect <host:port>[/udp]]...` prints one JSON line: the uid and gid it runs as, the kernel's
-  release, `interfaces` (the network interfaces its network namespace holds: `["lo"]` alone under `--own-network`),
-  `reached` (the targets that answered), `accepted` (the targets that accepted a TCP connection and sent nothing back)
-  and `results`, each target's `protocol`, `outcome` (`refused`, `accepted` or `answered`), `bytes` and `detail` in
-  words. A provider whose vendor reads nothing back runs it through `exec.run` (below, Modal), under the rule in
+- `computerd probe [--sockets] [--connect <host:port>[/udp]]...` prints one JSON line: the uid and gid it runs as, the
+  kernel's release, `interfaces` (the network interfaces its network namespace holds: `["lo"]` alone under
+  `--own-network`), `reached` (the targets that answered), `accepted` (the targets that accepted a TCP connection and
+  sent nothing back) and `results`, each target's `protocol`, `outcome` (`refused`, `accepted` or `answered`), `bytes`
+  and `detail` in words. With `--sockets` it adds the isolation case's two listings: `sockets`, the unix sockets with a
+  path it can connect to, and `listeners`, the TCP and UDP sockets that listen in its own network namespace (TCP in
+  LISTEN and UDP bound with no peer, read from `/proc/net/tcp`, `tcp6`, `udp` and `udp6`), each with its `protocol`,
+  `address`, `port`, `uid`, the `owner` that holds it (`pid N (command)`, where `/proc` shows that process's
+  descriptors) and `computerd` (that owner runs computerd's own program); each listing names in `incomplete` what it
+  could not search or read. `isolation.vendor-agent` fails on a listener that is not computerd's; under `--own-network`
+  computerd listens on nothing there, so on any listener. A provider whose vendor reads nothing back runs it through `exec.run` (below, Modal), under the rule in
   [Network none, read from inside](#network-none-read-from-inside-nothing-answers). `computerd probe --diagnose` asks
   more: for 1.1.1.1, 8.8.8.8, 9.9.9.9 and 151.101.1.57 (Fastly's anycast edge, which is no resolver) on 443/tcp,
   80/tcp and 53/udp it reports `refused` (no TCP accept, no UDP answer), `accepted` (an accept, no answer) or
@@ -1740,15 +1746,18 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
 4. The adapter's start command, a background command as root, starts `computerd init --deadline <time> --user
    2510:2510 --own-network --max-deadline <create's time plus the cap>` with `DISPLAY=:0`, in a clean environment,
    detached: in a session of its own (`setsid`), its output to `/run/agentrun-init.log`, so the command ends at once
-   and a daemon that never answers is reported with init's own words. envd runs every command under `bash -l -c`
-   (`index.mjs:5123-5146`), each with timeout 0, because envd kills a command whose timeout passes (envd
-   `process/start.go:39-44`); the SDK's default would end it after 60 s (`index.mjs:4978`).
-5. `connect()` starts `computerd stdio` the same way, as root, with `stdin: true` and `retainOutput: false` (so a long
-   connection keeps no copy of its output, `index.mjs:2708-2711`, `5150-5153`): its stdout comes through `onStdout`
-   (decoded as a stream, `index.mjs:2860`), and requests go in with `sendStdin`, one call after another.
-   `close()` kills the bridge (SIGKILL, `index.mjs:5092-5095`), which ends nothing else, and disconnects from it. The
-   bridge has no command timeout, so one whose start answers after the call gave up on it (its bound passed, or the
-   caller aborted) is killed and disconnected as it lands.
+   and a daemon that never answers is reported with init's own words. Every command goes through envd's
+   `Process.Start` stream, called on the SDK's own Connect client (`commands.rpc`, `index.mjs:4972-4985`) as
+   `commands.run` calls it (`index.mjs:5123-5146`): `/bin/bash -l -c` and the argv quoted, root by the Basic header
+   (`index.mjs:1896-1900`), envd's keepalive every 50 s, and no deadline on the stream (timeout 0, which the Connect
+   transport reads as none), because envd kills a command whose timeout passes (envd `process/start.go:39-44`); the
+   SDK's default would end it after 60 s (`index.mjs:4978`). Only the start is bounded.
+5. `connect()` starts `computerd stdio` the same way, as root, with `stdin: true`. Its stdout is the bytes each data
+   event carries, passed on as they come: `commands.run` would hand them to `onStdout` as text, decoded as UTF-8
+   (`index.mjs:2702`, `2860`), which turns every byte that is not UTF-8 into U+FFFD, so `exec` reads the stream
+   itself. Requests go in with `sendStdin`, one call after another. `close()` kills the bridge (SIGKILL,
+   `index.mjs:5092-5095`), which ends nothing else, and lets go of its stream. The bridge has no command timeout, so one
+   whose start answers after the call gave up on it (its bound passed, or the caller aborted) is killed as it lands.
 6. A desktop's X server, `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`, starts through the daemon with
    `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
    shared with Docker). Hello re-checks the display on every call, so `connect()` refuses a desktop whose X server has
@@ -2459,6 +2468,12 @@ optional screen screenshot-size                              - 1
 core PASS 55/55 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps ui extend not declared
 ```
 
+A hosted vendor runs the exec pre-check first, with `--exec-stream --machine <id> [--quick]`: the module's
+`createHost(options)` and `host.exec` alone, on a machine made by hand, checked for a live, two-way, byte-exact stream
+with no timeout (`src/conformance/exec-stream.ts`; [the contract](../../spec/computer/provider.md#a-hosted-vendors-exec)).
+It exits 0 when every check passes and 1 when one fails, and `--json` prints `{ host, machine, checks: [{ id, status,
+words, ms }], pass }`.
+
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
 resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
@@ -2724,8 +2739,14 @@ npm run conformance -w @parcha/agentrun-computer -- --provider fly
 
 ```sh
 npm run build -w @parcha/agentrun-computer          # the TypeScript, into dist/
-npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64 and -arm64; needs Go 1.24 or newer on PATH
+npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64 and -arm64, and dist/computerd.json
 ```
+
+`build:daemon` builds the daemon with Go 1.24 or newer when Go is on PATH, and records the daemon source it came from in
+`dist/computerd.json`. Without Go, it takes both binaries from this version's package on npm, but only when that
+package's `computerd.json` names the same daemon source as the checkout (`scripts/daemon-source.mjs`); otherwise it
+stops and says to install Go. Each release carries the record, so a checkout of a released version needs no Go until
+its daemon changes.
 
 ## Tests
 
@@ -2774,7 +2795,10 @@ capabilities.
 container of the desktop fixture's image, starts Xvfb through the daemon on the display init was given and waits for
 hello to declare the screen, and checks that `deadline.extend` moves up to `--max-deadline` and no further. The
 programs the daemon starts get no `DISPLAY` of init's (it passes on only PATH, HOME, USER and LOGNAME): a caller that
-starts a GUI program gives it `DISPLAY` in the request's `env`, on E2B as on Docker.
+starts a GUI program gives it `DISPLAY` in the request's `env`, on E2B as on Docker. The surface is that caller for an
+agent: on a desktop whose hello names a display, `shell.run` and `processes.start` add it under the call's own `env`.
+`processes.start` is `process.start` with `orphans: "keep"`, so an app (or the app a launcher forks) stays open after
+the call, where `exec.run`'s guard ends everything its command started.
 
 ## Acknowledgements
 

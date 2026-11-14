@@ -18,7 +18,7 @@
 // is dropped, so the model is offered exactly the host's tools. With `webSearch`, one hosted tool passes: Anthropic's web
 // search, exactly as the pinned CLI asks for it in the request its WebSearch tool makes. Usage is read from the stream's
 // `message_start` (input and cache tokens) and its last `message_delta` (output, and the searches the provider ran).
-import { messagesImagesIn, providerInputOverhead, ProxyRefusal, type InputCounter, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { messagesImagesIn, providerInputOverhead, NATIVE_SEARCH_USD, ProxyRefusal, type InputCounter, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
 export const OWN_TOOL_PREFIX = "mcp__hands__";
@@ -64,9 +64,6 @@ export const CLAUDE_WEB_SEARCH_TOOL = "web_search_20250305";
 const WEB_SEARCH_KEYS: ReadonlySet<string> = new Set(["type", "name", "max_uses", "allowed_domains", "blocked_domains"]);
 /** The most searches one request may ask the provider for: the pinned CLI's `max_uses`. */
 const WEB_SEARCH_MAX_USES = 8;
-/** What one web search costs on Anthropic's API, in USD, beside the tokens: $10 per 1,000 searches, "Web search tool" in
- *  https://platform.claude.com/docs/en/about-claude/pricing (a search that errs is not billed). */
-export const CLAUDE_WEB_SEARCH_USD = 0.01;
 
 export interface AnthropicPolicyOptions {
   /** The session's model, and the one the CLI's small background calls use (default: the session's). */
@@ -319,13 +316,13 @@ function bookedUsage(usage: unknown): AnthropicUsage | undefined {
   return { input, output, cacheRead: tokenCount(usage.cache_read_input_tokens) ?? 0, cacheWrite: tokenCount(usage.cache_creation_input_tokens) ?? 0, ...(webSearches ? { webSearches } : {}) };
 }
 
-/** `price` with each web search a response reports added at `CLAUDE_WEB_SEARCH_USD`: the host prices the tokens, the
+/** `price` with each web search a response reports added at `NATIVE_SEARCH_USD`: the host prices the tokens, the
  *  searches are Anthropic's flat rate. An unknown price stays unknown. */
 export function withWebSearches(price: (model: string, usage: ProxyUsage) => number | null): (model: string, usage: ProxyUsage) => number | null {
   return (model, usage) => {
     const usd = price(model, usage);
     const count = (usage as AnthropicUsage).webSearches ?? 0;
-    return usd === null || count === 0 ? usd : usd + count * CLAUDE_WEB_SEARCH_USD;
+    return usd === null || count === 0 ? usd : usd + count * NATIVE_SEARCH_USD;
   };
 }
 

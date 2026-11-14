@@ -48,6 +48,8 @@ public actor UIEngine {
 	/// foreground route: from then on every step checks.
 	var takeOver: TakeOverWatch?
 	var takeOverArmed = false
+	/// The running step's mark (Marks), which only that step moves.
+	var stepMark: UInt64?
 
 	public init(platform: Platform, policy: Policy, timing: Timing = Timing()) {
 		self.platform = platform
@@ -510,8 +512,7 @@ public actor UIEngine {
 	func run(_ step: Step, view: View, state: String?, held: View?, foreground: Bool) async throws -> (Route, Bool, View?) {
 		let target = view.target
 		if case .nav(let nav) = step {
-			if case .off(let reason) = platform.navFeature { throw RPCError.unsupported("nav \(nav.rawValue): ui.nav is off here: \(reason)") }
-			throw RPCError.unsupported("nav \(nav.rawValue): no route takes it here")
+			throw RPCError.unsupported("nav \(nav.rawValue): ui.nav is off here: \(FeatureName.navOff)")
 		}
 		let (node, element) = try self.element(step.ref, in: view)
 		// A step on a disabled control is refused, so its text never goes to whatever has the focus.
@@ -522,6 +523,7 @@ public actor UIEngine {
 			throw RPCError(.refused, "\(into) is not a text field: nothing was typed")
 		}
 		if let point = step.point { try await bind(point, view: view, state: state, held: held) }
+		mark(step, element: element, target: target)
 
 		let attempts: [Attempt]
 		switch step {
@@ -763,6 +765,28 @@ public actor UIEngine {
 		throw RPCError.stale("\(ref) is gone: its element is no longer in the window. Observe again for fresh refs")
 	}
 
+	/// Marks the step's place for the live view (Marks): its element, else its point, else (a key or text to the window's
+	/// focus) where the last step was.
+	func mark(_ step: Step, element: ElementHandle?, target: ResolvedTarget) {
+		let frame = element.flatMap { ax.frame($0) }.flatMap { $0.area > 0 ? $0 : nil }
+		let marks = platform.marks
+		let kind: Marks.Kind
+		switch step {
+		case .press, .click, .perform: kind = .press
+		case .type, .set: kind = frame == nil ? .point : .type
+		case .key, .scroll, .drag, .nav: kind = .point
+		}
+		if let frame {
+			stepMark = marks.mark(kind, at: frame.center, box: kind == .type ? frame : nil, now: clock.now())
+		} else if let point = step.point {
+			stepMark = marks.mark(kind, at: target.toScreen(point), now: clock.now())
+		} else if let last = marks.lastPoint {
+			stepMark = marks.mark(.point, at: last, now: clock.now())
+		} else {
+			stepMark = nil
+		}
+	}
+
 	/// The middle of an element on screen, scrolled into its window's view when it is outside it.
 	func center(_ ref: String, _ element: ElementHandle, in target: ResolvedTarget) throws -> Point {
 		guard var frame = ax.frame(element), frame.area > 0 else {
@@ -770,7 +794,11 @@ public actor UIEngine {
 		}
 		if !target.window.bounds.contains(frame.center) {
 			try? ax.scrollToVisible(element)
-			if let moved = ax.frame(element) { frame = moved }
+			if let moved = ax.frame(element) {
+				frame = moved
+				// The step's mark was read before the scroll: it follows the element to where the pointer goes.
+				if let stepMark { platform.marks.move(stepMark, to: moved.center, box: moved) }
+			}
 		}
 		guard target.window.bounds.contains(frame.center) else {
 			throw RouteUnavailable("\(ref) is outside its window's visible area: scroll to it first")
@@ -908,7 +936,7 @@ extension ResolvedTarget {
 }
 
 extension Rect {
-	func intersects(_ other: Rect) -> Bool {
+	public func intersects(_ other: Rect) -> Bool {
 		x < other.x + other.w && other.x < x + w && y < other.y + other.h && other.y < y + h
 	}
 }

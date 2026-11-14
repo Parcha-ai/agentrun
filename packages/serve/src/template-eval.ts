@@ -17,11 +17,13 @@ import { parseDocument } from "yaml";
 import { answerJson, lastJsonBlock, schemaCheck } from "./answer-json.js";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
-import { MCP_SERVER_NAME, shownUrl } from "./mcp-probe.js";
+import { inputMessage } from "./run-manifest.js";
+import { shownUrl } from "./mcp-probe.js";
+import { MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName } from "./tool-names.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { applyBodyOf, compiled, filledPins, type Package, packageView, readPackage } from "./templates.js";
-import { isObject, type Json, MODEL_REF } from "./validate.js";
+import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
 export const GRADER_INSTRUCTIONS = `You grade one run of an AI agent against one rubric. You see the rubric, the task the agent was given, its answer, and the tool calls it made; nothing else, and nothing else matters.
@@ -42,7 +44,7 @@ export const QUEUE_TIMEOUT_MS = 2 * 60_000;
 export const GRADER_NAME = "Template eval grader";
 
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
-const PROMPT_FIELDS = ["description", "runs", "max_cost_usd"];
+const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
 const CASE_FIELDS = ["parameters", "grants", "mcp", "learning"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
@@ -51,8 +53,6 @@ const GRADER_FIELDS: Record<string, string[]> = {
   file_exists: ["type", "path"],
   schema: ["type", "schema"],
 };
-/** A gate name of an MCP tool: `mcp:<server>/<tool>`. */
-const MCP_GATE = /^mcp:([a-z][a-z0-9-]{0,31})\/([A-Za-z0-9_.-]{1,128})$/;
 /** A target: a field of the answer's JSON, dotted for a nested one. */
 const TARGET = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
 const ENDED = ["completed", "failed", "cancelled"];
@@ -60,6 +60,9 @@ const ENDED = ["completed", "failed", "cancelled"];
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule each fake MCP server listens on loopback only, for a server on this machine
 /** A host name on this machine: a case with fake MCP servers needs a server here, which reaches them on loopback. */
 const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule a server on this machine reaches the fakes
+
+/** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
+export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
 
 type Validate = (value: unknown) => string[];
 export type Grader =
@@ -83,8 +86,10 @@ export type EvalCase = {
   description: string;
   runs: number;
   maxCostUsd?: number;
-  /** The prompt's body: each run's input.content. */
+  /** The prompt's body: each run's input.content (none when empty). */
   input: string;
+  /** The prompt's `input:` front matter: each run's typed input beside its content (the package's `inputs`). */
+  fields?: Json;
   parameters: Json;
   grants: string[];
   /** Each fake MCP server, by the name it is saved under. */
@@ -149,7 +154,7 @@ function fixtureOf(text: string, name: string, at: string, bad: (message: string
       && (search.limit === undefined || (Number.isSafeInteger(search.limit) && (search.limit as number) >= 1)) && (search.note === undefined || typeof search.note === "string"));
     const ok = isObject(spec) && !unknown(spec, ["description", "input", "answers", "default", "search"]).length && searchOk && typeof spec.description === "string" && isObject(spec.input) && spec.input.type === "object"
       && answers !== undefined && answers.every((a) => isObject(a) && !unknown(a, ["when", "result"]).length && (isObject(a.when) || (Array.isArray(a.when) && a.when.length > 0 && a.when.every(isObject))) && isObject(a.result)) && (spec.default === undefined || isObject(spec.default));
-    if (!ok || !/^[A-Za-z0-9_.-]{1,128}$/.test(tool)) {
+    if (!ok || !MCP_TOOL_NAME.test(tool)) {
       bad(`${at}: tools.${tool} is {description, input: an object's JSON Schema, answers: [{when: {...} or [{...}, ...], result: an MCP tool result}], default?: a result, search?: {query: the argument's name, files: [{path, text}], limit?, note?}}`);
       continue;
     }
@@ -189,9 +194,9 @@ function graderOf(dir: string, p: Package, file: string, text: string, mcp: Reco
     case "tool_used": {
       const tools = data.tool !== undefined && data.tools === undefined ? [data.tool] : data.tools;
       if (!Array.isArray(tools) || !tools.length || !tools.every((t) => typeof t === "string") || (data.tool !== undefined && data.tools !== undefined)) return bad(`${file}: a tool_used grader names tool (one gate name) or tools (a list), not both`), undefined;
-      const listed = p.mcp.flatMap(({ server, tools: names }) => names.map((name) => `mcp:${server}/${name}`));
+      const listed = p.mcp.flatMap(({ server, tools: names }) => names.map((name) => mcpToolName(server, name)));
       for (const tool of tools as string[]) {
-        if (MCP_GATE.test(tool) ? !listed.includes(tool) : !(BOUND_TOOLS.includes(tool) || tool === ASK_TOOL)) bad(`${file}: ${tool} is neither a tool this server binds nor an MCP tool the package lists (mcp:<server>/<tool>)`);
+        if (mcpNameOf(tool) ? !listed.includes(tool) : !(BOUND_TOOLS.includes(tool) || tool === ASK_TOOL)) bad(`${file}: ${tool} is neither a tool this server binds nor an MCP tool the package lists (mcp:<server>/<tool>)`);
       }
       const expect = data.expect ?? "called";
       if (expect !== "called" && expect !== "not_called") return bad(`${file}: expect is called or not_called`), undefined;
@@ -201,7 +206,7 @@ function graderOf(dir: string, p: Package, file: string, text: string, mcp: Reco
       if (data.args !== undefined) {
         if (!isObject(data.args)) bad(`${file}: args is a mapping of the arguments a call must carry`);
         // A call's arguments are known whole only from a fake MCP server's log: the timeline keeps a preview.
-        for (const tool of tools as string[]) if (!Object.hasOwn(mcp, MCP_GATE.exec(tool)?.[1] ?? "")) bad(`${file}: args are checked on a faked MCP tool's calls alone, and ${tool} is not one (case.yaml mcp fakes its server)`);
+        for (const tool of tools as string[]) if (!Object.hasOwn(mcp, mcpNameOf(tool)?.server ?? "")) bad(`${file}: args are checked on a faked MCP tool's calls alone, and ${tool} is not one (case.yaml mcp fakes its server)`);
       }
       return { file, type, tools: tools as string[], expect, ...(count !== undefined ? { count: count as number } : {}), ...(isObject(data.args) ? { args: data.args } : {}) };
     }
@@ -245,6 +250,11 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     for (const field of unknown(f, PROMPT_FIELDS)) bad(`${at}/prompt.md: no field ${field}: its fields are ${PROMPT_FIELDS.join(", ")}`);
     if (f.runs !== undefined && !(Number.isSafeInteger(f.runs) && (f.runs as number) >= 1)) bad(`${at}/prompt.md: runs is a whole number, 1 or more`);
     if (f.max_cost_usd !== undefined && !(typeof f.max_cost_usd === "number" && f.max_cost_usd > 0 && Number.isFinite(f.max_cost_usd))) bad(`${at}/prompt.md: max_cost_usd is a number above 0`);
+    // The case's typed input (`input:`, the package's `inputs`) beside its body as content: each run's input, checked
+    // as the server checks a run's, so a case the agent's schema refuses fails here, before any run.
+    const body = typeof prompt === "string" ? "" : prompt.body.trim();
+    const fields = f.input === undefined ? undefined : isObject(f.input) && !Object.hasOwn(f.input, "content") ? f.input : (bad(`${at}/prompt.md: input is a mapping of the run's typed input, by field (the body is its content)`), undefined);
+    for (const issue of inputIssues(runInput(body, fields), inputSchemaOf(pkg.inputSchema))) bad(`${at}/prompt.md: ${issue.message}`);
     const spec = lstatSync(join(root, "case.yaml"), { throwIfNoEntry: false })?.isFile() ? yamlOf(readFileSync(join(root, "case.yaml"), "utf8")) : {};
     const c = typeof spec === "string" ? (bad(`${at}/case.yaml: ${spec}`), {}) : isObject(spec) ? spec : (bad(`${at}/case.yaml: is not a mapping`), {});
     for (const field of unknown(c, CASE_FIELDS)) bad(`${at}/case.yaml: no field ${field}: its fields are ${CASE_FIELDS.join(", ")}`);
@@ -274,7 +284,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     }
     // A grant of a faked server's tool its fixture does not serve: the agent would be granted a tool the fake lacks.
     for (const grant of grants) {
-      const [, server, tool] = MCP_GATE.exec(grant) ?? [];
+      const { server, tool } = mcpNameOf(grant) ?? {};
       if (server !== undefined && mcp[server] && !Object.hasOwn(mcp[server].tools, tool!)) bad(`${at}/case.yaml: grants ${grant}, a tool the fake ${server} does not serve`);
     }
     const learning: EvalCase["learning"] = [];
@@ -306,7 +316,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     if (problems.length > before) continue;
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
-      ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: typeof prompt === "string" ? "" : prompt.body.trim(),
+      ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
       parameters, grants, mcp, learning, graders,
     });
   }
@@ -445,7 +455,7 @@ export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run
     case "tool_used": {
       // A faked MCP tool's calls are its fake's log (each call that reached it, whole); any other tool's, the timeline's.
       const calls = grader.tools.flatMap((tool) => {
-        const server = MCP_GATE.exec(tool)?.[1];
+        const server = mcpNameOf(tool)?.server;
         const from = server !== undefined && faked.includes(server) ? run.mcpCalls : run.calls;
         return from.filter((call) => call.tool === tool && (!grader.args || carries(call.arguments, grader.args)));
       });
@@ -505,7 +515,7 @@ export async function startFake(name: string, fixture: McpFixture): Promise<Fake
     for (const [tool, spec] of Object.entries(fixture.tools)) {
       server.registerTool(tool, { description: spec.description, inputSchema: fromJsonSchema(spec.input as Parameters<typeof fromJsonSchema>[0]) }, (args: unknown) => {
         const given = isObject(args) ? args : {};
-        calls.push({ tool: `mcp:${name}/${tool}`, arguments: given });
+        calls.push({ tool: mcpToolName(name, tool), arguments: given });
         return fakeAnswer(fixture, tool, given) as never;
       });
     }
@@ -883,7 +893,7 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     expectOk(`seeding the note ${note.file}`, await api("PUT", `/agents/${encodeURIComponent(agentId)}/learning/files/${encodeURIComponent(note.file)}`, note.text, { "if-none-match": "*" }));
   }
   stopped();
-  const runId = await startRun(ctx, agentId, { input: { content: one.input }, ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }, "starting the run");
+  const runId = await startRun(ctx, agentId, { input: runInput(one.input, one.fields), ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }, "starting the run");
   // A run started is paid for: whatever fails after this (a read, a grade) still gives it a result, with its cost where
   // the server says it, so the case's total never drops it.
   try {
@@ -944,7 +954,7 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     }
     // A grade that fails to read fails that grader alone: the run's own result and cost stay.
     try {
-      graders.push({ grader: grader.file, type: grader.type, ...(await gradeLlm(ctx, await ctx.graderAgent(), graderInput(grader, one.input, record))) });
+      graders.push({ grader: grader.file, type: grader.type, ...(await gradeLlm(ctx, await ctx.graderAgent(), graderInput(grader, inputMessage(runInput(one.input, one.fields)), record))) });
     } catch (error) {
       if (!(error instanceof ApiFailure)) throw error;
       graders.push({ grader: grader.file, type: grader.type, pass: false, reason: `not graded: ${error.message}`, cost_usd: null });

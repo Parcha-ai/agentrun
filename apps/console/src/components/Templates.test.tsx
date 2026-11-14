@@ -25,7 +25,7 @@ const REVIEWER: TemplateView = {
     repo: { type: "string", required: true, description: "The repository, as owner/name", pattern: "^[^/]+/[^/]+$" },
     max_files: { type: "integer", required: false, description: "How many files it reads at most" },
   },
-  secrets: ["PARALLEL_API_KEY"], budget: { per_run_usd: 0.5 }, learning: false, approvals_default: "ask", triggers: [{ kind: "github", events: ["pull_request"] }], skills: [], evals: [],
+  input_schema: null, secrets: ["PARALLEL_API_KEY"], budget: { per_run_usd: 0.5 }, learning: false, approvals_default: "ask", triggers: [{ kind: "github", events: ["pull_request"] }], skills: [], evals: [],
 };
 const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: {}, secrets: [], budget: null, triggers: [] };
 
@@ -135,7 +135,7 @@ describe("applying a template", () => {
     const writes = t.host.querySelector('[data-tool="mcp:github/create_review"]')!.textContent ?? "";
     for (const row of [reads, writes]) expect(row).toContain("Allow: the agent may call this without asking you.");
     expect(reads).toContain("The template asks you to allow this.");
-    expect(writes).toContain("The template does not ask for this; unticked, it stays at your setting.");
+    expect(writes).toContain("The template does not ask for this; unticked, the agent doesn't get it.");
     expect(t.host.textContent).not.toContain("asks you before each call");
     // The MCP server, set up here or not, and the secrets by name only.
     expect(t.host.querySelector('[data-mcp="github"]')!.textContent).toContain("Set up here");
