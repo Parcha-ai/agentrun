@@ -4,7 +4,7 @@
 // `both` guard only on 30 rows with 5 wrong.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answerCorrect, championOf, clears, escalates, GRADES_KEPT, putGrade, PROMOTIONS_KEPT, servingOf, gradesOf, promotionOf, recordOnly, recordPromotion, promotionsOf, replayScore, sameAnswer, thresholdsOf } from "../dist/learn/promote.js";
+import { answerCorrect, championOf, clears, escalates, GRADES_KEPT, putGrade, PROMOTIONS_KEPT, servingOf, gradesOf, promotionOf, recordOnly, recordPromotion, promotionsOf, replayScore, sameAnswer, thresholdsOf, trimPromotions } from "../dist/learn/promote.js";
 import { FIT_MIN_ROWS, fitLogistic, refitGuards } from "../dist/learn/refit.js";
 
 const guard = (node, p, threshold = 0) => ({ node, signal: "self", self: p ?? undefined, p, threshold, escalated: false });
@@ -234,6 +234,31 @@ test("the promotion history trim never drops a champion: newer revisions replayi
   assert.equal(records.length, PROMOTIONS_KEPT);
   assert.equal(championOf(records, "answer")?.digest, "champ", "the champion still serves");
   assert.deepEqual(records.at(-1), rec(`c${PROMOTIONS_KEPT - 1}`, "hold"), "the newest kept");
+});
+
+// Review on #2644 (round 4): the champion never depends on which records the trim keeps. A late graded check of an
+// older champion (A promoted, B promoted, A checked) must not make A the champion once A's first promote record is trimmed;
+// nor may a held last revision's records trimmed away hand the champion back to the one before it.
+test("the promotion history trim never changes the champion: an older revision's late check, or a held last revision, survive any trim", () => {
+  const rec = (workflow, digest, decided, extra = {}) => ({ workflow, digest, at: "t", decided, source: "replay", reason: "r", ...extra });
+  const filler = (n) => Array.from({ length: n }, (_, i) => rec("other", `o${i}`, "replaying"));
+  // A promoted, B promoted, then A's graded check (still promote): B is the champion, before and after the trim.
+  let items = [rec("answer", "A", "promote"), rec("answer", "B", "promote"), rec("answer", "A", "promote", { checked: 20 }), ...filler(PROMOTIONS_KEPT - 2)];
+  assert.equal(championOf(items, "answer")?.digest, "B");
+  assert.equal(championOf(trimPromotions(items), "answer")?.digest, "B", "the older revision's late check never makes it champion");
+  // D promoted, L promoted then held by its graded runs, then D's late check: no champion, before and after the trim.
+  items = [rec("answer", "D", "promote"), rec("answer", "L", "promote"), rec("answer", "L", "hold", { source: "graded" }), rec("answer", "D", "promote", { checked: 20 }), ...filler(PROMOTIONS_KEPT - 1)];
+  assert.equal(championOf(items, "answer"), undefined);
+  assert.equal(championOf(trimPromotions(items), "answer"), undefined, "a held last revision trimmed away never hands the champion back");
+  // Any order of promotes, checks, replays and holds over a few revisions: the trim keeps the champion, and the cap.
+  let seed = 7;
+  const next = (n) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31), seed % n);
+  for (let round = 0; round < 40; round++) {
+    items = Array.from({ length: PROMOTIONS_KEPT + 1 + next(60) }, () => rec(next(4) ? "answer" : "other", `d${next(6)}`, ["promote", "promote", "hold", "replaying", "superseded"][next(5)], { checked: next(9) }));
+    const kept = trimPromotions(items);
+    assert.ok(kept.length <= PROMOTIONS_KEPT, `round ${round}: ${kept.length} kept`);
+    for (const workflow of ["answer", "other"]) assert.equal(championOf(kept, workflow)?.digest, championOf(items, workflow)?.digest, `round ${round} ${workflow}`);
+  }
 });
 
 // Review on #2644 (child guard names): the DSL names a step of a child workflow `parent/child` (its guard row's `node`
