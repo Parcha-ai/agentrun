@@ -684,8 +684,10 @@ test("a PATCH that moves a schedule's time fires it at the new time and not the 
   clock.to("2026-06-01T00:06:00Z");
   assert.equal((await triggers.firings(made.id)).firings.length, 0, "past the old time, nothing fired");
   clock.to("2026-06-01T00:09:00Z");
-  await until(async () => (await triggers.firings(made.id)).firings.length === 1, "the PATCH's time fired");
-  assert.equal((await triggers.firings(made.id)).firings.length, 1, "fired once");
+  // A due row is written before the start is driven: wait for the run to start, not for a row to exist.
+  await until(async () => (await triggers.firings(made.id)).firings.some((f) => f.status === "started"), "the PATCH's firing started");
+  const fired = (await triggers.firings(made.id)).firings;
+  assert.deepEqual(fired.map((f) => [f.nominal_at, f.status]), [["2026-06-01T00:09:00Z", "started"]], "one firing, at the new time, started, none at the old time");
 });
 
 test("run now with the same Idempotency-Key twice answers the first firing and its run, and starts one run", async (t) => {
