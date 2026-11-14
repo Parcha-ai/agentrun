@@ -50,8 +50,13 @@ booleans summarize actual active rules: do not infer them from defaults or an ol
 Each PR has `number`, `state: "OPEN"|"MERGED"|"CLOSED"`, `author`, `headRef`, full `head`,
 `baseRef`, full `baseSha`, full `mergeBase`, `parent` (PR number or null), a verified
 `parentIsAncestor: true`, `isDraft: false`, `mergeable: "MERGEABLE"`, and numeric
-`unresolvedThreads: 0`. For a merged parent the live child must already target the new
-trunk; an old parent receipt is not silently carried forward.
+`unresolvedThreads: 0`. `parentIsAncestor` verifies the active unmerged PR parent; with no
+active parent (`parent: null`) it is vacuously true, not evidence that current trunk is an
+ancestor. `baseSha` is the resolved live base-ref target (`baseRef.target.oid`); GitHub's
+stored PR `baseRefOid` can lag and must be retained separately. Preserve actual trunk
+ancestry, merge base and the fresh-base assessment as distinct raw facts. For a merged
+parent the live child must already target the new trunk; an old parent receipt is not
+silently carried forward.
 
 `gate.binding` is the immutable object returned by `bindingFor(snapshot, number)` when the
 proof was actually established. It contains repository, native stack ID, trunk ref/SHA,
