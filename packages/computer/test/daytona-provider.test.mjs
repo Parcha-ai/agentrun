@@ -304,12 +304,13 @@ test("the read-back: Daytona's states as the adapter's, its end, its GPUs and it
 	assert.equal(await provider.host.get(REF.id, { timeoutMs: 1_000 }), undefined);
 });
 
-test("list: the adapter's label alone is asked for, every page followed, destroyed ones left out; the adapter keeps the rest by labels with no get", async () => {
+test("list: the adapter's label alone is asked for, every page followed, destroyed ones left out; the adapter keeps the rest by labels and reads each by get", async () => {
 	const mine = sandbox({ id: "sb-1", labels: { ...sandbox().labels, team: "a" } });
 	const other = sandbox({ id: "sb-2", labels: { ...sandbox().labels, team: "b" } });
 	const destroyed = sandbox({ id: "sb-3", state: "destroyed", labels: { ...sandbox().labels, team: "a" } });
 	const { rec, provider } = setup({
 		"GET /api/sandbox": (request) => (request.query.get("cursor") === null ? { body: { items: [mine, destroyed], nextCursor: "page-2" } } : { body: { items: [other] } }),
+		"GET /api/sandbox/sb-1": { body: mine },
 	});
 	const listed = await provider.host.list({ team: "a" }, { timeoutMs: 1_000 });
 	assert.deepEqual(listed.map((m) => [m.id, m.state]), [["sb-1", "running"], ["sb-2", "running"]], "the listing as it reads");
@@ -318,7 +319,7 @@ test("list: the adapter's label alone is asked for, every page followed, destroy
 	for (const page of pages) assert.deepEqual(JSON.parse(page.query.get("labels")), { [COMPUTER]: "1" });
 	const infos = await provider.list({ team: "a" });
 	assert.deepEqual(infos.value.map((info) => [info.ref.id, info.network]), [["sb-1", "none"]]);
-	assert.equal(rec.requests.filter((r) => r.path === "/api/sandbox/sb-1").length, 0, "no get per listed computer");
+	assert.equal(rec.requests.filter((r) => r.path === "/api/sandbox/sb-1").length, 1, "one get of the listed computer kept: the listing finds, get answers");
 });
 
 test("every request carries the key passed in, the source header and no redirect, whatever DAYTONA_ or COMPUTER_DAYTONA_ names hold; a refused key is never echoed", async () => {
