@@ -790,3 +790,15 @@ describe("Settings → MCP servers, the Composio preset", () => {
     expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/gh/composio", body: { api_key: KEY, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"] } });
   });
 });
+
+describe("Settings → MCP servers, deleting a Composio server", () => {
+  it("says what to remove in Composio when it could not be removed there, after the row is gone", async () => {
+    const note = "Remove hn in Composio yourself: https://platform.composio.dev";
+    const s = server([[saved({ name: "hn" })], []], (c) => (c.method === "DELETE" ? json(200, { deleted: true, composio: { removed: false, note } }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Delete$/, p.row("hn"));
+    await p.click(/^Delete$/, p.row("hn").querySelector('[role="alertdialog"]')!);
+    expect(p.text()).toContain("No MCP server is saved here yet");
+    expect(p.host.querySelector('[role="status"]')?.textContent).toContain(note);
+  });
+});
