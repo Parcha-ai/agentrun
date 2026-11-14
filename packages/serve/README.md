@@ -1441,7 +1441,9 @@ the save is still held and sent at its pinned price, so monid runs it only at an
 pass it (below). A call of an endpoint pinned as priced by usage is held at monid's estimate for the call's own input
 instead: the call is first
 sent with `maxCost` 0, which monid refuses unrun and uncharged, naming its estimate; that estimate is the hold, and the
-call is sent with it as `maxCost`. Its approval card reads "Priced by usage, about $X (monid's estimate), can cost
+call is sent with it as `maxCost`. That read is itself a paid step of the call, marked at $0 on the run's ledger before
+it is sent (a crash while monid holds it leaves its charge unknown, as any cut call's) and given back when monid refused
+it unrun; with no run's ledger it is never sent. Its approval card reads "Priced by usage, about $X (monid's estimate), can cost
 more" (`pending.price` `{estimate_usd}`), read once, when the card is first made: an answer given after the run
 parked reads nothing again, and a stop or a lost claim cuts the read off. Its charge can pass the estimate: then it is booked as charged, and the run
 stops at once, failed, in the words "monid charged $X, more than the $Y held; the run stopped". A run's spend cap is a
