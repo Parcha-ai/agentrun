@@ -7,3 +7,4 @@ Agent37 starts from our public box image in any account. Its provider's `prepare
 - A desktop that mounts the run's folder starts the `shell` group's commands and the programs `processes.start` opens in `/workspace`, as `bash` does.
 - Serve's default sandbox image (`AGENTRUN_DOCKER_IMAGE`) and its refusal of a desktop with no image are Docker's alone. A provider that prepares its image gets no image from them.
 - Breaking: `AGENT37_BOX_TEMPLATE` is gone from `@parcha/agentrun-computer`, and Agent37's descriptor has no `defaultImage`. The box template's name carries the recipe's hash; ask the provider's `prepareImage()` for it.
+- Breaking: `box/build-agent37.mjs` is gone from the package. Agent37 never builds the box: `prepareImage()` registers the published image.

@@ -309,7 +309,7 @@ class Agent37Host implements MachineHost {
 			maxLifetimeMs: DAY_MS,
 			arch: "amd64",
 			vendorAgentPorts: [AGENT37_SSH_PORT, AGENT37_TTYD_PORT],
-			// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
+			// The box template is the box image (box/Dockerfile), which has xfwm4: the apps an agent opens are framed and focused.
 			windowManager: true,
 			specFields: ["cpus", "memoryMb"],
 			labelRules: { maxBytes: METADATA_MAX_BYTES, measure: "json" },
