@@ -190,6 +190,27 @@ test("a desktop's view is told whether its computer is gone by the provider's li
   await answer.release();
 });
 
+test("a phone ended under the run, outside its release (the service listing it closing, so stopped), is gone: a phone is never stopped and kept; listed running, or a listing that failed, is not", async () => {
+  const answers = [];
+  const asked = [];
+  const list = async (labels) => (answers.length ? (asked.push(labels), answers.shift()) : { ok: true, value: [] });
+  const view = views();
+  const { run } = await claim({ kind: "phone", provider: "phone-harness" }, { keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: ["screen", "input.touch", "input.keys", "apps", "ui"], machine: "android", view, list });
+  const answer = await run();
+  const [gone] = view.gones;
+  assert.equal(typeof gone, "function", "the phone's view is given the question");
+  const info = (id, state) => ({ ref: { id, name: id }, labels: { "agentrun.run": "run-1", "agentrun.epoch": "3" }, deadline: undefined, state, network: "open" });
+  answers.push(
+    { ok: true, value: [info("c1", "running")] },
+    { ok: false, error: { code: "vendor", vendor: "phone-harness", message: "GET /sessions answered 503" } },
+    { ok: true, value: [info("c1", "stopped")] },
+    { ok: true, value: [] },
+  );
+  assert.deepEqual([await gone(), await gone(), await gone(), await gone()], [false, false, true, true]);
+  assert.deepEqual(asked, Array(4).fill({ "agentrun.run": "run-1", "agentrun.epoch": "3" }), "listed under the run's own labels");
+  await answer.release();
+});
+
 test("a phone's view is opened with its platform, as the phone says it: android, or ios", async () => {
   const PHONE = ["screen", "input.touch", "input.keys", "apps", "ui"];
   for (const machine of ["android", "ios"]) {

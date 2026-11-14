@@ -233,10 +233,12 @@ const watchOf = (provider: ComputerProvider, ref: { readonly id: string; readonl
 
 /** Whether the computer `id` is gone now: its provider's listing under `labels` (the run's, or its owner's for the
  *  agent's own) no longer shows it, deleted under the run (by the vendor's own API, say) or going. The listing is the
- *  janitor's read: it starts nothing and leaves out a machine on its way out. A listing that failed is not gone. */
-const goneOf = (provider: ComputerProvider, id: string, labels: Record<string, string>) => async (): Promise<boolean> => {
+ *  janitor's read: it starts nothing and leaves out a machine on its way out. A listing that failed is not gone. A
+ *  desktop listed stopped is still there. A phone is never stopped and kept (a phone provider has no stop), so one
+ *  listed stopped is ending (the phone harness lists a closing or errored session so) and counts as gone. */
+const goneOf = (provider: ComputerProvider, id: string, labels: Record<string, string>, kind: "desktop" | "phone") => async (): Promise<boolean> => {
   const listed = await provider.list(labels);
-  return listed.ok && !listed.value.some((info) => info.ref.id === id);
+  return listed.ok && !listed.value.some((info) => info.ref.id === id && (kind === "desktop" || info.state === "running"));
 };
 
 /** The browser computer `ref`'s CDP URL now: the provider's connect (its signed URL), its words and code when the session
@@ -613,7 +615,7 @@ export async function computerForClaim(
         deps.onStarting?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none"> });
         launched = await providerLaunch(provider, launch, spec, signal);
       }
-      made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch, gone: goneOf(provider, launched.id, listedUnder) } : {}) };
+      made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch, ...(kind === "desktop" || kind === "phone" ? { gone: goneOf(provider, launched.id, listedUnder, kind) } : {}) } : {}) };
       madeBy = entry;
       const { os, osVersion, arch } = launched.hello;
       deps.onConnected?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none">, hello: { os, ...(osVersion ? { osVersion } : {}), arch } });
