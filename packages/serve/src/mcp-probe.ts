@@ -8,9 +8,9 @@
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
+import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject, unknownFields } from "./validate.js";
 
-export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 /** The names AgentRun's own tools are called by, which no MCP server takes: claude-agent calls the kernel's host tools
  *  as `mcp__hands__<tool>`, and monid's are `monid_<tool>` (tool-gate.ts settingsKeyOf reads both as AgentRun's). */
 const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];

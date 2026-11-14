@@ -132,7 +132,7 @@ swift build --build-tests && swift test     # on a Mac; the core (ComputerdKit) 
   `build/UIFixture.app`; test-only.
 
 CI (`.github/workflows/computer-macos.yml`) builds and tests on `macos-26`, bundles the app, seeds the runner's grants,
-starts the app under launchd in the runner's desktop, and runs `scripts/smoke.py` through `computerd`, with the results
-in the job summary.
+starts the app under launchd in the runner's desktop, and checks the socket's peer check, and runs the protocol's health, ui and input conformance cases
+(`scripts/ui-conformance.mjs`) through `computerd`, with the results in the job summary.
 
 See NOTICE for the projects whose findings Computerd uses.

@@ -37,21 +37,21 @@ import { isTableTool, isToolRow, tableTools } from "./tool-list.js";
 import { deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
+import { formatToolName, isMcpName, mcpNameOf, mcpServerOf, mcpToolName } from "./tool-names.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
-/** An MCP tool's gate name: `mcp:<server>/<tool>`. */
-export const mcpToolName = (server: string, tool: string): string => `mcp:${server}/${tool}`;
-/** Whether `name` is an MCP tool's gate name. */
-export const isMcpTool = (name: string): boolean => /^mcp:[^/]+\/.+$/.test(name);
+// An MCP tool's gate name is its catalog name, `mcp:<server>/<tool>` (tool-names.ts).
+export { mcpToolName };
 /** The MCP servers a revision grants tools of, by their catalog names (`mcp:<server>/<tool>`, a server's wildcard too), each
  *  once: what a harness that names a session's MCP tool its own way (its facts' toolAlias: OpenCode's `<server>_<tool>`) is
  *  matched against, so its call is held to that tool's settings and never to a table tool's of the same shape. */
-export const mcpServersOf = (granted: readonly string[]): string[] => [...new Set(granted.flatMap((name) => /^mcp:([^/]+)\//.exec(name)?.[1] ?? []))];
-/** A third-party catalog tool, by its name: monid's (`monid.<tool>`) or an MCP server's (`mcp:<server>/<tool>`). */
-export const isCatalogTool = (name: string): boolean => name.startsWith("monid.") || isMcpTool(name);
+export const mcpServersOf = (granted: readonly string[]): string[] => [...new Set(granted.flatMap((name) => mcpServerOf(name) ?? []))];
+/** A third-party catalog tool, by its name: monid's (`monid.<tool>`) or any in MCP's namespace (`mcp:<server>/<tool>`, a
+ *  server's wildcard; one that does not parse too, so the default for it is a catalog tool's ask). */
+export const isCatalogTool = (name: string): boolean => name.startsWith("monid.") || isMcpName(name);
 /** Where a run's shell is, as its default permissions read it: `computer` false for a run with no computer (its bash, where
  *  it has one, runs on the run's folder's own exec: Archil's in Mode 2); undefined where no run is in view (the server's
  *  settings page, capabilities), which reads the computer's defaults. */
@@ -88,8 +88,8 @@ const shellPermission = (name: string, bash: Permission): Permission => (bash ==
 /** The settings keys that may set `name`'s permission, most specific first: the tool's own name, then, for an MCP
  *  tool, its server's wildcard `mcp:<server>/*`. */
 export function permissionKeys(name: string): string[] {
-  if (!isMcpTool(name)) return [name];
-  return [name, `${name.slice(0, name.indexOf("/"))}/*`];
+  const mcp = mcpNameOf(name);
+  return mcp ? [name, formatToolName({ kind: "mcp-server", server: mcp.server })] : [name];
 }
 
 /** The browser's registrations on pi (pi-browser's BROWSER_TOOL_NAMES, which a test holds this list to): each is a call
@@ -198,7 +198,7 @@ function bothOf(own: PinValue, theirs: PinValue): PinValue | undefined {
  *  its list. An argument both layers pin takes what holds both; where nothing does, every call is refused. `ran`: whether an earlier attempt of
  *  the call may have been sent (deniedText's). `mismatched`: the arguments that do not hold, for the gate's log line. */
 export function pinRefusal(name: string, args: unknown, server: PermissionSettings, agent: PermissionSettings = {}, ran: "no" | "unknown" = "no"): { text: string; mismatched: string[] } | undefined {
-  if (!isMcpTool(name)) return undefined;
+  if (!mcpNameOf(name)) return undefined;
   const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
   if (server[name]?.brokenPin) return { text: `${name} can't be called: its pin in this server's tool settings does not read, so no call is let through until the owner sets it again (Settings → Tools). ${what}`, mismatched: [] };
   const own = agent[name]?.pin ?? {};

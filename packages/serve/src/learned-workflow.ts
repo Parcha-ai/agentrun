@@ -42,6 +42,7 @@ import type { Plane } from "./tool-plane.js";
 import { ARGS_PREVIEW_BYTES, deniedText, type SettingFrom } from "./tool-gate.js";
 import type { DenyFrom } from "./refusal-words.js";
 import { allows, CALL_TOOLS, learnedDraftTools, toolOf, workflowTools } from "./tools.js";
+import { isMcpName } from "./tool-names.js";
 import type { Complete } from "./llm.js";
 import type { SearchOn } from "./web-search.js";
 import type { Workspace } from "./workspace/workspace.js";
@@ -74,9 +75,6 @@ export const learnedAskFits = (asks: readonly string[]): boolean => Buffer.byteL
 export const learnedApprovedTools = (card: Readonly<Record<string, unknown>> | undefined): ReadonlySet<string> =>
   new Set(Array.isArray(card?.mcp_calls) ? card.mcp_calls.filter((name): name is string => typeof name === "string") : []);
 
-/** An MCP tool's catalog name, `mcp:<server>/<tool>`: a call node that names one runs it through the run's own MCP. */
-const MCP_TOOL = /^mcp:[^/]+\/.+$/;
-
 /** The MCP tools a learned workflow's call nodes name (`via: "tool"`, `tool: "mcp:<server>/<tool>"`), each once; none for
  *  one that does not read. The run's gate asks about them before the workflow's call runs (adapter-run-spec.ts). */
 export async function learnedMcpTools(workflow: string): Promise<string[]> {
@@ -88,7 +86,7 @@ export async function learnedMcpTools(workflow: string): Promise<string[]> {
   }
   const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
   try {
-    return workflowTools(workflowNodes(doc, inspectWorkflow(doc as never))).calls.filter((tool) => MCP_TOOL.test(tool));
+    return workflowTools(workflowNodes(doc, inspectWorkflow(doc as never))).calls.filter((tool) => isMcpName(tool));
   } catch {
     return [];
   }
@@ -382,7 +380,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     // Its call id under the workflow's call: the node, its execution path, its item in a map. Its paid requests are booked
     // under it, as a call of its own.
     const callId = `${ledger?.call ?? LEARNED_WORKFLOW_TOOL}/${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`;
-    if (tool && MCP_TOOL.test(tool)) {
+    if (tool && isMcpName(tool)) {
       // An MCP tool of the run, through the run's own MCP as the loop wrapped it (its flush, its booking on the run's one
       // ledger, a CLI's record, the stop's abort), after the gate's rule read again now, as the harness's own call is.
       const send = (run.mcpTools ?? []).includes(tool) && run.decide ? hostCalls()?.mcp(tool) : undefined;
