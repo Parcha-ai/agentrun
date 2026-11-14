@@ -89,7 +89,8 @@ function guardFetch(monid) {
   const outbound = [];
   globalThis.fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input.url ?? String(input));
-    if (monid && url.hostname === "api.monid.ai") return new Response(JSON.stringify(monid), { status: 200, headers: { "content-type": "application/json" } });
+    // An inspect (the call's price, read before it is sent) answers the pinned fixed price.
+    if (monid && url.hostname === "api.monid.ai") return new Response(JSON.stringify(url.pathname === "/v1/inspect" ? { price: { type: "PER_CALL", amount: { value: 0.003, currency: "USD" } } } : monid), { status: 200, headers: { "content-type": "application/json" } });
     if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
       outbound.push(`${init?.method ?? "GET"} ${url.origin}${url.pathname}`);
       throw new Error(`a test reached ${url.origin}: no call leaves this machine`);

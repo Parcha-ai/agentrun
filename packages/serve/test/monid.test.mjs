@@ -24,7 +24,8 @@ const allowed = (...names) => Object.fromEntries(names.map((name) => [name, { pe
 const sleeps = [];
 /** The client on the fake, its waits recorded and skipped. */
 const monid = (extra = {}) => monidClient({ key: KEY, fetch: fakeMonid, sleep: async (ms) => void sleeps.push(ms), ...extra });
-const sent = (from) => calls.slice(from).map((call) => `${call.method} ${call.path}`);
+/** The runs sent to the fake since `from`: a call's inspect (its price, read before it is sent) is no run. */
+const sent = (from) => calls.slice(from).filter((call) => call.path !== "/v1/inspect").map((call) => `${call.method} ${call.path}`);
 
 test("the listing is read page by page and an endpoint inspected as monid answers; a short answer is its JSON, whole", async (t) => {
   const work = await scratch(t);

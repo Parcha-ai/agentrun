@@ -1425,7 +1425,9 @@ own (`Tool cost: monid charged $0.0260 for monid:apollo/people/match`) and summe
 Each run is marked in the run's records before it is sent, held at its pinned price (a per-call price; the dearest
 variant of a matrix; a tiered price's default and every tier), and its approval card shows that hold; its charge
 settles the mark. It is sent with that hold as monid's `maxCost`, so an endpoint monid prices higher now than when the
-agent was saved is refused by monid unrun and uncharged, never booked past its hold. A mark a crash left unsettled leaves the run's cost unknown, as a
+agent was saved is refused by monid unrun and uncharged, never booked past its hold. Before it is sent, its price is
+read again from monid (an inspect, which monid does not charge): one monid now prices by usage, whose estimate could
+pass that `maxCost` while its charge does not, is refused unsent, in words naming how monid prices it now. A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
 never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as

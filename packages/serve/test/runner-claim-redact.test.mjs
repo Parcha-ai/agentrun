@@ -100,7 +100,8 @@ test("a key a claim opens from the store is cut by the runner's one redactor: a 
   const { entries } = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
   const journal = JSON.stringify(entries);
 
-  assert.ok(monidCalls.includes("/v1/run"), `the run's call reached monid: ${JSON.stringify(monidCalls)}`);
+  // The call reads the endpoint's price first (/v1/inspect), which the fake refuses with the key echoed.
+  assert.ok(monidCalls.includes("/v1/inspect"), `the run's call reached monid: ${JSON.stringify(monidCalls)}`);
   assert.ok(requests.length >= 2, `the provider was asked again after the tool, and refused: ${requests.length}`);
   assert.match(journal, /Invalid API key: \[redacted\]/, "the tool's error is in the journal, its key cut");
   assert.ok(!journal.includes(STORED), "the journal holds no stored key");

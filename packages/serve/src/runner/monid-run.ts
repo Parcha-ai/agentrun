@@ -4,17 +4,16 @@
 // hands them to every harness as it hands every host tool, asks the gate about a call by its catalog name
 // (`monid:<provider>/<endpoint>`, catalogOf), and shows the pinned price on its card (priceOf).
 // A call is a paid step on the run's one ledger (paid-calls.ts paidStep, the ledger the loop's bookedIn sets around it),
-// named by its catalog name: its price read again from monid first and the call refused unsent unless monid still fixes
-// it (one re-priced by usage since the save would pass any maxCost), held at the pinned price (a fixed one: the save
-// pins no endpoint priced by usage), refused unsent when that does not fit the cap, sent with that hold as monid's
-// maxCost (so monid refuses it unrun if it now prices it higher), and settled at what monid says it charged. With no run's ledger to book it on, it is never sent. Its key is the
+// named by its catalog name: held at the pinned price (a fixed one: the save pins no endpoint priced by usage), refused
+// unsent when that does not fit the cap, then its price read again from monid and the call answered uncharged, unsent,
+// unless monid still fixes it (fixedThenRun: one re-priced by usage since the save would pass any maxCost), sent with
+// that hold as monid's maxCost (so monid refuses it unrun if it now prices it higher), and settled at what monid says it charged. With no run's ledger to book it on, it is never sent. Its key is the
 // claim's (claim-secrets.ts: a run that grants a monid endpoint, and no other, is handed MONID_API_KEY), read at the call
 // and sent to monid alone: never in the tool's input, its answer, or the run's computer.
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { fauxFetch } from "../decisions.js";
-import { redacted } from "../key-refusal.js";
-import { chargeOf, FAUX_MONID_ENV, heldOf, MONID_KEY_ENV, type MonidAnswer, monidClient, type MonidPin, monidText, priceWords } from "../monid.js";
+import { chargeOf, FAUX_MONID_ENV, heldOf, MONID_KEY_ENV, type MonidAnswer, monidClient, type MonidPin, monidText, priceWords, uncharged } from "../monid.js";
 import { paidLedger, paidStep, unbookedRefusal } from "../paid-calls.js";
 import { monidNameOf, parseToolName } from "../tool-names.js";
 import type { Json } from "../validate.js";
@@ -47,15 +46,8 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
         const ledger = paidLedger();
         if (!ledger) return { text: JSON.stringify({ error: unbookedRefusal(name) }), isError: true };
         const faux = await fauxFetch(env, FAUX_MONID_ENV);
-        const key = env[MONID_KEY_ENV] ?? "";
-        const client = monidClient({ key, ...(faux ? { fetch: faux } : {}) });
-        // The price is read again first (an inspect, which monid does not charge): maxCost bounds only monid's estimate,
-        // so an endpoint monid has re-priced by usage since the save could pass the pinned maxCost and be charged past it.
-        // A call is sent only while monid still prices it at a fixed price; one priced above the pin, monid refuses unrun.
-        const now = await client.inspect({ provider: at.provider, endpoint: `/${at.endpoint}` }, context.signal);
-        if (now.error !== undefined) return { text: JSON.stringify({ error: `${name} was not sent: monid's price for it could not be read before the call (${redacted(String(now.error), [key])}), and a call is sent only at a price monid still fixes.` }), isError: true };
-        if (heldOf(now.price) === undefined) return { text: JSON.stringify({ error: `${name} was not sent: monid now prices it ${priceWords(now.price)}, not the fixed $${pinned.usd} pinned when the agent was saved, and monid does not bound what a call priced by usage is charged. A run's cap could not be kept.` }), isError: true };
-        const paid = await paidStep<MonidAnswer>(ledger, context.callId, { name, holdUsd: pinned.usd, basis, by: "monid" }, () => client.run({ provider: at.provider, endpoint: `/${at.endpoint}`, input: (args ?? {}) as Json, maxCost: pinned.usd }, context.signal), (outcome) => {
+        const client = monidClient({ key: env[MONID_KEY_ENV] ?? "", ...(faux ? { fetch: faux } : {}) });
+        const paid = await paidStep<MonidAnswer>(ledger, context.callId, { name, holdUsd: pinned.usd, basis, by: "monid" }, () => fixedThenRun(client, at, (args ?? {}) as Json, name, pinned.usd, context.signal), (outcome) => {
           if (!("result" in outcome)) return null;
           const usd = chargeOf(outcome.result);
           return usd === undefined ? 0 : usd;
@@ -84,6 +76,18 @@ export function withMonid(mcp: ClaimMcp | undefined, monid: ClaimMonid | undefin
     fresh: async () => mcp?.fresh(),
     release: () => mcp?.release(),
   };
+}
+
+/** One call of the endpoint `at` (`tool`, pinned at `usd`), sent with `usd` as monid's maxCost only once its price is read
+ *  again and is still a fixed one. maxCost bounds only monid's estimate, so an endpoint monid has re-priced by usage since
+ *  the save could pass it and be charged past it: that call, and one whose price cannot be read, is answered uncharged,
+ *  never sent. An inspect costs nothing; one priced above the pin, monid refuses unrun at maxCost. monid's words reach
+ *  the model as a run's error does: through the runner's one redactor. */
+async function fixedThenRun(client: ReturnType<typeof monidClient>, at: { provider: string; endpoint: string }, input: Json, tool: string, usd: number, signal: AbortSignal): Promise<MonidAnswer> {
+  const now = await client.inspect({ provider: at.provider, endpoint: `/${at.endpoint}` }, signal);
+  if (now.error !== undefined) return uncharged({ error: `${tool} was not sent: monid's price for it could not be read before the call (${String(now.error)}), and a call is sent only at a price monid still fixes.` });
+  if (heldOf(now.price) === undefined) return uncharged({ error: `${tool} was not sent: monid now prices it ${priceWords(now.price)}, not the fixed $${usd} pinned when the agent was saved, and monid does not bound what a call priced by usage is charged. A run's cap could not be kept.` });
+  return client.run({ provider: at.provider, endpoint: `/${at.endpoint}`, input, maxCost: usd }, signal);
 }
 
 /** What a subagent may be given for the grant `grant` (subagent.ts sessionNames): for a provider's wildcard, every endpoint

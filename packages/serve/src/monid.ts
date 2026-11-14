@@ -55,7 +55,7 @@ export type MonidAnswer = Json & { error?: string };
 /** On an answer monid charged nothing for: the run never ran (refused as sent), was blocked or stopped, or the provider
  *  failed. A symbol, so the model never reads it. */
 const UNCHARGED = Symbol("monid.uncharged");
-const uncharged = (answer: MonidAnswer): MonidAnswer => Object.assign(answer, { [UNCHARGED]: true });
+export const uncharged = (answer: MonidAnswer): MonidAnswer => Object.assign(answer, { [UNCHARGED]: true });
 export type MonidOptions = {
   key: string;
   fetch?: typeof fetch;
