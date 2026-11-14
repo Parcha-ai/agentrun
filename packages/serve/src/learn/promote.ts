@@ -172,26 +172,37 @@ export const promotionsOf = async (settings: Pick<Settings, "get">, agentId: str
 export const promotionOf = (records: readonly PromotionRecord[], workflow: string, digest: string): PromotionRecord | undefined =>
   records.findLast((one) => one.workflow === workflow && one.digest === digest);
 
-/** The champion of `workflow`: the newest record of the digest promoted last (a digest's place is its first promote
- *  record's), while that digest's newest record still says promote. A newer revision replaying or held never stops it; a
+/** The champion of `workflow`: the newest record of the digest promoted last (a digest's place is its latest win's,
+ *  winsOf), while that digest's newest record still says promote. A newer revision replaying or held never stops it; a
  *  wrong served grade asks for a revision and never stops it; it stops when a newer revision's replay promotes that one
- *  (then the champion), or its own graded runs hold it (source graded: no champion until a revision is promoted). The
- *  money rule stops it on its own (runner/workflow-first.ts). Undefined: none. */
+ *  (then the champion), or its own graded runs hold it (source graded: no champion until a revision is promoted). A held
+ *  revision its owner replays (runner/promotion.ts askReplay) and the replay promotes wins again: the champion from then.
+ *  The money rule stops it on its own (runner/workflow-first.ts). Undefined: none. */
 export function championOf(records: readonly PromotionRecord[], workflow: string): PromotionRecord | undefined {
   const last = lastPromotedOf(records, workflow);
   const now = last === undefined ? undefined : promotionOf(records, workflow, last);
   return now?.decided === "promote" ? now : undefined;
 }
 
-/** The digest of `workflow` promoted last: the one whose first promote record is the newest of every digest's first. */
+/** Each promote record's win, by index: the index of the promote record that began its digest's run of promote records
+ *  (its first, or the first after a record of that digest that was not promote: a replay that promoted a held revision).
+ *  A graded check's mark (a promote after a promote, runner/promotion.ts stillServing) is never a win of its own. */
+function winsOf(records: readonly PromotionRecord[]): Map<number, number> {
+  const wins = new Map<number, number>();
+  const streak = new Map<string, number>();
+  records.forEach((one, i) => {
+    const at = JSON.stringify([one.workflow, one.digest]);
+    if (one.decided !== "promote") return void streak.delete(at);
+    if (!streak.has(at)) streak.set(at, i);
+    wins.set(i, streak.get(at)!);
+  });
+  return wins;
+}
+
+/** The digest of `workflow` promoted last: the one whose latest win (winsOf) is the newest of every digest's. */
 function lastPromotedOf(records: readonly PromotionRecord[], workflow: string): string | undefined {
-  const seen = new Set<string>();
   let last: string | undefined;
-  for (const one of records) {
-    if (one.workflow !== workflow || one.decided !== "promote" || seen.has(one.digest)) continue;
-    seen.add(one.digest);
-    last = one.digest;
-  }
+  for (const [i, win] of winsOf(records)) if (i === win && records[i]!.workflow === workflow) last = records[i]!.digest;
   return last;
 }
 
@@ -256,23 +267,23 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
 
 /** The newest records, at most PROMOTIONS_KEPT, in order, with each workflow's champion (championOf) the same after as
  *  before, whatever was dropped. championOf reads two things, and the trim keeps both: the place of every digest it can
- *  still see promoted (a promote record kept keeps its digest's first promote record beside it, so an older revision's
- *  late graded check never reads as a newer promotion), and the digest promoted last, its first promote record and its
- *  newest record (so a held last revision is never trimmed into handing the champion back). */
+ *  still see promoted (a promote record kept keeps its win, winsOf, beside it, so an older revision's late graded check
+ *  never reads as a newer promotion), and the digest promoted last, its latest win and its newest record (so a held last
+ *  revision is never trimmed into handing the champion back). The kept records are a run of the newest plus those wins,
+ *  and a win's own run reaches no further back than it: a record that ended an older run of the same digest is newer
+ *  than every record of that run, so a run is never joined to an older one by the trim. */
 export function trimPromotions(items: readonly PromotionRecord[]): PromotionRecord[] {
   if (items.length <= PROMOTIONS_KEPT) return [...items];
-  const firstPromote = new Map<string, number>();
-  items.forEach((one, i) => {
-    const at = JSON.stringify([one.workflow, one.digest]);
-    if (one.decided === "promote" && !firstPromote.has(at)) firstPromote.set(at, i);
-  });
-  const placeOf = (i: number): number | undefined => (items[i]!.decided === "promote" ? firstPromote.get(JSON.stringify([items[i]!.workflow, items[i]!.digest])) : undefined);
+  const wins = winsOf(items);
+  const placeOf = (i: number): number | undefined => wins.get(i);
   const keep = new Set<number>();
   for (const workflow of new Set(items.map((one) => one.workflow))) {
     const last = lastPromotedOf(items, workflow);
     if (last === undefined) continue;
-    keep.add(firstPromote.get(JSON.stringify([workflow, last]))!);
-    keep.add(items.findLastIndex((one) => one.workflow === workflow && one.digest === last));
+    const newest = items.findLastIndex((one) => one.workflow === workflow && one.digest === last);
+    // Its latest win: the newest win of that digest.
+    keep.add(Math.max(...[...wins].filter(([i, win]) => i === win && items[i]!.workflow === workflow && items[i]!.digest === last).map(([i]) => i)));
+    keep.add(newest);
   }
   for (let i = items.length - 1, room = PROMOTIONS_KEPT - keep.size; i >= 0 && room > 0; i--) {
     if (keep.has(i)) continue;
