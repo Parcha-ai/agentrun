@@ -64,8 +64,11 @@ public enum FeatureName {
 	public static let navOff = "macOS has no system back, home or app switcher: use the app's own controls or a key chord such as super+["
 	/// screen.shot and screen.watch capture the whole screen.
 	public static let screenCapture = "screen.capture"
+	/// screen.watch takes an ask ahead (after one past the newest frame). computerd on a Linux desktop lists it; this
+	/// driver answers one ask at a time and does not.
+	public static let screenAhead = "screen.ahead"
 
-	public static let all = [screenCapture, appsBackground, tree, image, background, foreground, page, nav]
+	public static let all = [screenCapture, screenAhead, appsBackground, tree, image, background, foreground, page, nav]
 }
 
 /// What the machine is, the same fields on every OS: "Apple", "MacBook Pro".

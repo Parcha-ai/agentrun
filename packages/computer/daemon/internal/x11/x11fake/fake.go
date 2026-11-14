@@ -27,6 +27,13 @@ const (
 	MaxKey = 255
 )
 
+// DamageMajor is DAMAGE's major opcode, and DamageEvent its DamageNotify's event code, when the fake has it
+// (Server.Damage).
+const (
+	DamageMajor = 141
+	DamageEvent = 91
+)
+
 func pad4(n int) int { return (4 - n%4) % 4 }
 
 // setupReply is a successful setup: one screen of Width x Height, depth 24 TrueColor in 32 bits a pixel, with the
@@ -111,11 +118,14 @@ type Server struct {
 	// MinKeycode, MaxKeycode and ScanlinePad are what the setup announces: MinKey, MaxKey and 32 unless set.
 	MinKeycode, MaxKeycode, ScanlinePad byte
 	NoXTest                             bool
+	// Damage is the DAMAGE extension: with it, Damaged sends each connection that made a damage object a DamageNotify.
+	Damage bool
 	// Keymap is the keysyms, PerCode a keycode, from MinKey; nil is a map with no keysym at all. Once a client
 	// connects, read it with Keys.
 	Keymap  []uint32
 	PerCode int
 	Image   func(x, y, w, h int) []byte
+	// Pointer is where QueryPointer says the pointer is; once a client connects, move it with MovePointer.
 	Pointer [2]int
 	// ErrorFor answers a request with an X error of the code it gives, instead of its reply.
 	ErrorFor func(r Request) (code byte, ok bool)
@@ -133,11 +143,13 @@ type Server struct {
 	exit      func()
 }
 
-// session is one connection the fake serves: its writes, one at a time, and the sequence number of its last request.
+// session is one connection the fake serves: its writes, one at a time, the sequence number of its last request, and
+// the damage object it made, if any.
 type session struct {
-	mu   sync.Mutex
-	conn net.Conn
-	seq  uint16
+	mu     sync.Mutex
+	conn   net.Conn
+	seq    uint16
+	damage uint32
 }
 
 func (s *session) write(out []byte) error {
@@ -242,6 +254,39 @@ func (f *Server) Rebind(code byte, syms ...uint32) {
 	copy(f.Keymap[at:at+f.PerCode], syms)
 	f.mu.Unlock()
 	f.notify(code, 1)
+}
+
+// MovePointer is the pointer moving to (x, y): QueryPointer says so from now on.
+func (f *Server) MovePointer(x, y int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Pointer = [2]int{x, y}
+}
+
+// Damaged is something drawn in the rectangle at (x, y), width x height: each connection that made a damage object is
+// sent a DamageNotify of it, on the root.
+func (f *Server) Damaged(x, y, width, height int) {
+	f.mu.Lock()
+	sessions := append([]*session(nil), f.sessions...)
+	f.mu.Unlock()
+	for _, s := range sessions {
+		s.mu.Lock()
+		if s.damage != 0 {
+			e := make([]byte, 32)
+			e[0] = DamageEvent
+			le.PutUint16(e[2:], s.seq)
+			le.PutUint32(e[4:], Root)
+			le.PutUint32(e[8:], s.damage)
+			le.PutUint16(e[16:], uint16(int16(x)))
+			le.PutUint16(e[18:], uint16(int16(y)))
+			le.PutUint16(e[20:], uint16(width))
+			le.PutUint16(e[22:], uint16(height))
+			le.PutUint16(e[28:], Width)
+			le.PutUint16(e[30:], Height)
+			_, _ = s.conn.Write(e)
+		}
+		s.mu.Unlock()
+	}
 }
 
 // Exit is the X server exiting: it stops listening and hangs up every connection. Only a display Listen serves exits.
@@ -379,6 +424,11 @@ func (f *Server) serve(conn net.Conn) {
 		if r.Opcode == 100 && len(r.Body) >= 4 { // ChangeKeyboardMapping
 			f.notify(r.Body[0], r.Data)
 		}
+		if f.Damage && r.Opcode == DamageMajor && r.Data == 1 && len(r.Body) >= 4 { // DAMAGE's Create
+			s.mu.Lock()
+			s.damage = le.Uint32(r.Body)
+			s.mu.Unlock()
+		}
 	}
 }
 
@@ -400,12 +450,20 @@ func (f *Server) answer(r Request) []byte {
 		if string(r.Body[4:4+n]) == "XTEST" && !f.NoXTest {
 			return Reply(r.Seq, 0, []byte{1, XTest, 0, 0}, nil)
 		}
+		if string(r.Body[4:4+n]) == "DAMAGE" && f.Damage {
+			return Reply(r.Seq, 0, []byte{1, DamageMajor, DamageEvent, 0}, nil)
+		}
 		return Reply(r.Seq, 0, []byte{0, 0, 0, 0}, nil)
 	case XTest:
 		if r.Data == 0 { // GetVersion
 			return Reply(r.Seq, 2, le.AppendUint16(nil, 2), nil)
 		}
 		return nil // FakeInput has no reply
+	case DamageMajor:
+		if r.Data == 0 { // QueryVersion: 1.1
+			return Reply(r.Seq, 0, append(le.AppendUint32(nil, 1), le.AppendUint32(nil, 1)...), nil)
+		}
+		return nil // Create has no reply
 	case 14: // GetGeometry
 		fixed := le.AppendUint32(nil, Root)
 		fixed = le.AppendUint16(fixed, 0)
@@ -414,10 +472,13 @@ func (f *Server) answer(r Request) []byte {
 		fixed = le.AppendUint16(fixed, Height)
 		return Reply(r.Seq, 24, fixed, nil)
 	case 38: // QueryPointer
+		f.mu.Lock()
+		at := f.Pointer
+		f.mu.Unlock()
 		fixed := le.AppendUint32(nil, Root)
 		fixed = le.AppendUint32(fixed, 0)
-		fixed = le.AppendUint16(fixed, uint16(f.Pointer[0]))
-		fixed = le.AppendUint16(fixed, uint16(f.Pointer[1]))
+		fixed = le.AppendUint16(fixed, uint16(at[0]))
+		fixed = le.AppendUint16(fixed, uint16(at[1]))
 		return Reply(r.Seq, 1, fixed, nil)
 	case 73: // GetImage
 		x, y := int(int16(le.Uint16(r.Body[4:]))), int(int16(le.Uint16(r.Body[6:])))
