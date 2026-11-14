@@ -9,13 +9,16 @@ import { type LinkedFiles, markdown } from "@/lib/format";
 type Shape = { contentMediaType?: unknown; title?: unknown; properties?: Record<string, unknown>; items?: unknown; $ref?: unknown };
 const objectOf = (value: unknown): Record<string, unknown> | undefined => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined);
 /** `schema`, its local `$ref` ("#/$defs/report", any JSON pointer into `root`) followed, a few deep at most. What is
- *  written beside a reference is the field's own, over its target's (a title, a contentMediaType). */
+ *  written beside a reference is the field's own, over its target's (a title, a contentMediaType), and properties beside
+ *  it add to the target's. */
 function shapeOf(schema: unknown, root: unknown): Shape | undefined {
   let at = objectOf(schema) as Shape | undefined;
   for (let hops = 0; at && typeof at.$ref === "string" && at.$ref.startsWith("#") && hops < 8; hops++) {
     const path = at.$ref.slice(1).split("/").filter(Boolean).map((part) => decodeURIComponent(part).replaceAll("~1", "/").replaceAll("~0", "~"));
     const { $ref: _followed, ...beside } = at;
-    at = { ...objectOf(path.reduce<unknown>((node, key) => objectOf(node)?.[key], root)), ...beside };
+    const target = (objectOf(path.reduce<unknown>((node, key) => objectOf(node)?.[key], root)) ?? {}) as Shape;
+    const properties = target.properties || beside.properties ? { ...objectOf(target.properties), ...objectOf(beside.properties) } : undefined;
+    at = { ...target, ...beside, ...(properties ? { properties } : {}) };
   }
   return at;
 }
