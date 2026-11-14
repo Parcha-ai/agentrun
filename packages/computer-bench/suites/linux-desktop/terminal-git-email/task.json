@@ -36,12 +36,12 @@
     },
     {
       "method": "exec.run",
-      "why": "Wait for the terminal's window (20 s at most), make it fill the screen, and put the pointer on it: with no window manager, keys go to the window under the pointer.",
-      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class xfce4-terminal | head -n1); [ -n \"$w\" ] || { echo no terminal window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); sleep 1"], "timeoutMs": 30000 }
+      "why": "Wait for the terminal's window (20 s at most), make it fill the screen, put the pointer on it and activate it: a window manager gives the keys to the window activated, and with none they go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class xfce4-terminal | head -n1); [ -n \"$w\" ] || { echo no terminal window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); xdotool windowactivate $w 2>/dev/null; sleep 1"], "timeoutMs": 30000 }
     }
   ],
   "exec": "deny",
-  "instruction": "In the terminal window, set the user.email of the git repository /tmp/computer-bench-{{nonce}}/repo-{{nonce}} to {{who.new}}, for that repository only (not your global git config). This desktop has no window manager: keys go to the window under the mouse pointer.",
+  "instruction": "In the terminal window, set the user.email of the git repository /tmp/computer-bench-{{nonce}}/repo-{{nonce}} to {{who.new}}, for that repository only (not your global git config).",
   "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
   "checks": [
     {

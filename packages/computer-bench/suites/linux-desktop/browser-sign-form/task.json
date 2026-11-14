@@ -46,12 +46,12 @@
     },
     {
       "method": "exec.run",
-      "why": "Wait for Firefox's window (40 s at most), make it fill the screen, and put the pointer on it: with no window manager, keys go to the window under the pointer.",
-      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 40 xdotool search --sync --onlyvisible --class firefox | head -n1); [ -n \"$w\" ] || { echo no Firefox window in 40 s >&2; exit 1; }; sleep 3; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); sleep 1"], "timeoutMs": 60000 }
+      "why": "Wait for Firefox's window (40 s at most), make it fill the screen, put the pointer on it and activate it: a window manager gives the keys to the window activated, and with none they go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 40 xdotool search --sync --onlyvisible --class firefox | head -n1); [ -n \"$w\" ] || { echo no Firefox window in 40 s >&2; exit 1; }; sleep 3; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); xdotool windowactivate $w 2>/dev/null; sleep 1"], "timeoutMs": 60000 }
     }
   ],
   "exec": "deny",
-  "instruction": "In Firefox, open http://127.0.0.1:{{port}}/ and sign the guest book there with the name \"{{g.name}} {{nonce}}\". This desktop has no window manager: keys go to the window under the mouse pointer.",
+  "instruction": "In Firefox, open http://127.0.0.1:{{port}}/ and sign the guest book there with the name \"{{g.name}} {{nonce}}\".",
   "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
   "checks": [
     {

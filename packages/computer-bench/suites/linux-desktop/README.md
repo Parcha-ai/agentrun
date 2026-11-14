@@ -22,12 +22,17 @@ teardown use the bench's own channel (`exec.run`, `process.start`, `files.read`)
 The terminal tasks are `exec: "deny"` too: the agent types into the terminal window like a person; it gets no
 `exec.run` of its own.
 
+A task's capability probe asks for its apps and xdotool (`command -v`); a desktop without them refuses the task.
+
 ## Proven live
 
-`computer-bench verify` on E2B Desktop, seeds 1, 2 and 3, on 2026-11-14: 30 of 30 right (after setup alone every check
-fails; after setup and the oracle every check passes), 60 desktops, each episode on its own desktop. The kit is a frozen
-folder outside the repository (`bench2-verify-e2b-2`) that runs `serve` and `computer-bench verify --backend serve` from
-a pinned commit; verify holds a run and never starts its agent.
+`computer-bench verify` on E2B Desktop, seeds 1, 2 and 3, on 2026-11-14: after setup alone every check fails, and after
+setup and the oracle every check passes, each episode on its own desktop. Two runs, 60 desktops each, 30 of 30 right in
+both:
+
+- on main at 9deeebf662 (after #2735), where E2B's desktop runs xfwm4;
+- on main before #2735, where E2B's desktop ran no window manager (the tasks then lacked setup's `windowactivate`, which
+  does nothing there).
 
 | task | seed 1 | seed 2 | seed 3 |
 |---|---|---|---|
@@ -42,27 +47,23 @@ a pinned commit; verify holds a run and never starts its agent.
 | linux.cross.terminal-to-note | right | right | right |
 | linux.cross.page-to-note | right | right | right |
 
+The runs came from a frozen kit outside the repository that builds `serve` and the bench at a pinned commit and runs
+`computer-bench verify --backend serve`: verify holds a run and never starts its agent, so no model is called.
+
 What the two cross-app oracles prove: they know the answer (the size, the code), so they type it into Mousepad and save
 without using the terminal or reading the page. They prove the check reads the saved note and that the editor's half
 works with the two windows side by side; the first half is the agent's.
 
-## No window manager
+## Windows, with or without a window manager
 
-E2B Desktop runs the computer as uid 2510, which has no passwd entry. `dbus-daemon` refuses to start for it ("Could not
-get password database information for UID of current process"), and xfwm4 does not start without Xfconf's session bus,
-so no window manager runs there. The tasks are written for that:
+Setup places each window with xdotool: a one-app task's window fills the screen; a cross-app task puts the first app on
+the left half and Mousepad on the right half. Then it puts the pointer on the window the agent types into first and
+activates it. A window manager gives the keys to the active window. With none, X gives them to the window under the
+pointer, and activating fails quietly; dialogs (Mousepad's Save As, Thunar's Rename) then open centred over their window,
+under the pointer, and clicking a window does not raise it.
 
-- Setup places each window with xdotool: a one-app task's window fills the screen; a cross-app task puts the first app on
-  the left half and Mousepad on the right half.
-- X's focus follows the pointer when no window manager sets it, so setup puts the pointer on the window the agent types
-  into first, and every instruction says "keys go to the window under the mouse pointer". Clicking a window does not
-  raise it; the keys go to it because the pointer is on it.
-- Dialogs (Mousepad's Save As, Thunar's Rename) open centred over their window, under the pointer. Save As is taller
-  than E2B's 1280x800 screen, so its Save button is off screen; Enter in its name field saves.
-- Windows have no frames: Mousepad and Firefox draw their own title bars, Thunar and the terminal have none.
-
-The capability probes ask only for the apps and xdotool (`command -v`), so the suite runs on a desktop with a window
-manager too.
+Mousepad's Save As is taller than E2B's 1280x800 screen, so its Save button can be off screen; Enter in its name field
+saves.
 
 ## Reset
 

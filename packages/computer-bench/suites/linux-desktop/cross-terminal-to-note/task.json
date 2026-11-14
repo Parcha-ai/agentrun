@@ -38,12 +38,12 @@
     },
     {
       "method": "exec.run",
-      "why": "Wait for Mousepad's window (20 s at most), give it the right half of the screen, and put the pointer on it: with no window manager, keys go to the window under the pointer.",
-      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class mousepad | head -n1); [ -n \"$w\" ] || { echo no Mousepad window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); h=$((WIDTH / 2)); xdotool windowmove $w $h 0 windowsize $w $h $HEIGHT; xdotool mousemove $((h + h / 2)) $((HEIGHT / 2)); sleep 1"], "timeoutMs": 30000 }
+      "why": "Wait for Mousepad's window (20 s at most), give it the right half of the screen, put the pointer on it and activate it: a window manager gives the keys to the window activated, and with none they go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class mousepad | head -n1); [ -n \"$w\" ] || { echo no Mousepad window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); h=$((WIDTH / 2)); xdotool windowmove $w $h 0 windowsize $w $h $HEIGHT; xdotool mousemove $((h + h / 2)) $((HEIGHT / 2)); xdotool windowactivate $w 2>/dev/null; sleep 1"], "timeoutMs": 30000 }
     }
   ],
   "exec": "deny",
-  "instruction": "Use the terminal (left) to find the size in bytes of /tmp/computer-bench-{{nonce}}/data-{{nonce}}.bin. Then, in Mousepad (right), where notes-{{nonce}}.txt is open, write the line \"size: <the size in bytes>\" (just the number, such as size: 1234) and save the file. This desktop has no window manager: keys go to the window under the mouse pointer.",
+  "instruction": "Use the terminal (left) to find the size in bytes of /tmp/computer-bench-{{nonce}}/data-{{nonce}}.bin. Then, in Mousepad (right), where notes-{{nonce}}.txt is open, write the line \"size: <the size in bytes>\" (just the number, such as size: 1234) and save the file.",
   "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
   "checks": [
     {
