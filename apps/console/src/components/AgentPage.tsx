@@ -1,6 +1,6 @@
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { workflowGraph } from "@dsl/graph";
-import { ArrowLeft, ArrowUpRight, Bot, ChevronRight, RefreshCw, Search, Workflow } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bot, ChevronRight, ExternalLink, RefreshCw, Search, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentVersions } from "@/components/AgentVersions";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
@@ -16,7 +16,7 @@ import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { SignIns } from "@/components/SignIns";
 import { LearningTab } from "@/components/Learning";
 import { LearningChips, WaitingCount } from "@/components/LearningChips";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Banner, Chip, Input, Tabs, tabPanelProps } from "@/components/ui";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { type Agent, runsWhere } from "@/lib/agentForm";
@@ -294,14 +294,49 @@ function useRunHistory(agent: Agent, v2: Client, reread: () => Promise<unknown>,
   return { runs, cursor, reading, more, error, refresh: () => { void read(null, true); }, loadMore: () => { if (cursor) void read(cursor); }, reloadLatest: limited ? () => { void read(null, true, true); } : null };
 }
 
+/** A run-list summary omits the result: confirm the full local record before treating a completed run as a success.
+ *  This optional row stays absent while that read is pending or fails; a late answer cannot follow the user elsewhere. */
+function ProductionOnboarding({ agentId, runId, v2 }: { agentId: string; runId: string; v2: Client }) {
+  const [read, setRead] = useState<{ client: Client; run: Run } | null>(null);
+  useEffect(() => {
+    let live = true;
+    setRead(null);
+    v2.getRun(runId).then((run) => { if (live) setRead({ client: v2, run }); }, () => {});
+    return () => { live = false; };
+  }, [agentId, runId, v2]);
+  const run = read?.client === v2 ? read.run : null;
+  if (!run || run.agent_id !== agentId || run.run_id !== runId || run.archived_at || run.status !== "completed" || run.review || run.error || run.result === undefined || run.result?.output_error) return null;
+  return (
+    <section aria-label="Production onboarding" className="mt-6 flex flex-wrap items-center justify-between gap-4 border p-4">
+      <div className="max-w-prose">
+        <h2 className="text-body font-semibold">Taking this to production?</h2>
+        <p className="mt-1 text-body text-muted-foreground">Create an account or sign in to AgentRun Cloud. Talk to us for help getting set up. Cloud setup is separate from this server.</p>
+      </div>
+      {/* Plain external links: no agent, run, prompt, configuration or referring URL is sent to either destination. */}
+      <div className="flex flex-wrap items-center gap-4">
+        <a href="https://calendly.com/d/dtwn-dsp-nx5/agentrun" target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className={buttonVariants({ size: "sm" })}>
+          Talk to us <ExternalLink aria-hidden /><span className="sr-only"> (opens in a new tab)</span>
+        </a>
+        <a href="https://console.agentrun.ai/" target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="inline-flex h-control-sm items-center text-small text-muted-foreground underline underline-offset-2 hover:text-foreground">
+          Open Cloud<span className="sr-only"> (opens in a new tab)</span>
+        </a>
+      </div>
+    </section>
+  );
+}
+
 /** The same run links and statuses as the all-runs view, scoped to this agent. Full timelines live on each run page. */
-function RunsTab({ agent, history }: TabProps) {
+function RunsTab({ agent, history, v2 }: TabProps) {
   const [query, setQuery] = useState("");
   const { runs, cursor, reading, more, error, refresh, loadMore, reloadLatest } = history!;
   if (error && !runs) return <ProblemCard problem={error} onRetry={refresh} className="" />;
   if (!runs) return <ListSkeleton label="Loading the runs" rows={5} />;
   const filtered = runs.filter((r) => `${runTitle(r)} ${r.run_id} ${r.status}`.toLowerCase().includes(query.toLowerCase()));
-  return <section className="min-h-[380px] overflow-hidden border" aria-label="Agent run history">
+  // A newer success is not a quiet moment while any known run still needs attention, even outside the loaded pages.
+  const quiet = !agent.runs?.live && runs.every((r) => r.archived_at || (runEnded(r.status) && !r.review && (r.status !== "completed" || (!r.error && !r.result?.output_error))));
+  const latest = runs[0];
+  const offerProduction = !reading && !error && !agent.archived_at && latest?.agent_id === agent.agent_id && !latest.archived_at && latest.status === "completed" && quiet;
+  return <><section className="min-h-[380px] overflow-hidden border" aria-label="Agent run history">
     <div className="flex flex-wrap items-center gap-3 border-b p-3">
       <label className="flex min-w-0 items-center gap-2"><Search className="size-3.5 text-muted-foreground" aria-hidden /><Input aria-label="Search this agent's runs" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search runs…" className="w-40 min-w-0" /></label>
       <span className="text-small text-muted-foreground">{runs.length}{cursor ? "+" : ""} {runs.length === 1 && !cursor ? "run" : "runs"}</span>
@@ -320,7 +355,9 @@ function RunsTab({ agent, history }: TabProps) {
       : <div className="px-4 py-12 text-center text-body text-muted-foreground"><p>No runs of this agent yet.</p>{!agent.archived_at && <p className="mt-2">Choose Run agent to continue with your coding agent or the API playground.</p>}</div>}
     {error && <div className="m-4 space-y-3"><ProblemCard problem={error} onRetry={refresh} className="" />{reloadLatest && <Button size="sm" onClick={reloadLatest} disabled={reading}>Reload latest runs</Button>}</div>}
     {cursor && <div className="flex justify-center p-4"><Button size="sm" onClick={loadMore} disabled={reading}>{more ? "Loading" : "Load more"}</Button></div>}
-  </section>;
+  </section>
+    {offerProduction && <ProductionOnboarding key={`${agent.agent_id}/${latest.run_id}`} agentId={agent.agent_id} runId={latest.run_id} v2={v2} />}
+  </>;
 }
 
 /** The current revision's workflow as its graph, read-only; editing it is the editor's Workflow step. */
