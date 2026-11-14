@@ -2086,7 +2086,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (askCut.armed && event.type === "tool_start") askCut.disarm();
           theRecord.onEvent(event);
         };
-        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? onEvent(record) : () => {}, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, bookedCost };
+        // A pi-native tool's call (a code mode script's) records its computer calls as a hosted call does (hosted's route).
+        const recordCalls = <T,>(callId: string, work: () => Promise<T>): Promise<T> => recordingCalls(work, (calls, dropped) => keepCalls(callId, calls, dropped));
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? onEvent(record) : () => {}, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, bookedCost, recordCalls };
         // The MCP tools are host tools like any other (mcp.tools, wrapped above): every harness gets them on its own channel
         // for host tools, each call through the gate before its intent.
         session = await spec.adapter.open({ ...spec.session, tools }, io);

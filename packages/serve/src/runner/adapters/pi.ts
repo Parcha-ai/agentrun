@@ -61,6 +61,10 @@ export type PiSessionIO = SessionIO & {
   /** What the request that just answered cost, as the runner's booking wrote it (the session's ledger): its figure, null
    *  when unknown, undefined when none was booked. pi's own price for the model is none (the adapter does not know it). */
   bookedCost?: () => Promise<number | null | undefined>;
+  /** Runs one call of a pi-native tool (options.extensions' and options.tools': pi's own tool tasks, which never pass
+   *  HostTool.call) with the computer protocol calls it makes recorded on its result row under `callId`, as the loop
+   *  records a host tool's (computer-calls.ts recordingCalls). */
+  recordCalls?: <T>(callId: string, work: () => Promise<T>) => Promise<T>;
 };
 
 export interface PiAdapterOptions {
@@ -303,7 +307,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // intent: a call it runs with no pass here is one it reruns after a crash (a replay-safe call whose intent an earlier
   // attempt stored), told to the host tool as an attempt above 0, so the loop asks the gate about it again.
   const passed = new Set<string>();
-  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined))), ...(options.tools ?? [])];
+  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined))), ...(options.tools ?? []).map((tool) => recordedTool(tool, io))];
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = refusalWords();
   const extension = defineExtension({
@@ -350,8 +354,9 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     ],
   });
   run.registry.install(extension);
-  // The run's pi-native extensions (options.extensions), in the claim's registry beside the session's.
-  const native = options.extensions ?? [];
+  // The run's pi-native extensions (options.extensions), in the claim's registry beside the session's, each tool's calls
+  // recorded as a host tool's are (recordedTool).
+  const native = (options.extensions ?? []).map((each) => (each.tools?.length ? { ...each, tools: each.tools.map((tool) => recordedTool(tool, io)) } : each));
   for (const each of native) run.registry.install(each);
   // The root conversation may exist already (the loop's session records live beside it, under it): its agent is set here,
   // the session's model, the run's system text (pi's instructions, its parts as the CLI adapters join them), this
@@ -495,6 +500,19 @@ async function callsBefore(api: HookApi, callId: string, upTo: number, context: 
  *  continue". Each CLI adapter is told the same bound (harness-opencode/config.ts TOOL_OUTPUT, Claude's maxResultSizeChars,
  *  Codex's tool_output_token_limit); each host tool keeps its own answer within it (test/host-bounds.test.mjs). */
 export const HOST_TOOL_OUTPUT = Object.freeze({ maxLines: HOST_RESULT_MAX_CHARS + 1, maxBytes: HOST_RESULT_MAX_CHARS * 3 });
+
+/** A pi-native tool (pi's own tool task: a code mode script, a subagent) with each call run inside io.recordCalls under
+ *  its call's id, so the computer calls it makes are on its result row as a host tool's are (piTool's go through
+ *  HostTool.call, where the loop records them). A call pi runs again after a restart records what that attempt makes: a
+ *  code mode script's replay hands back the results of the calls its earlier attempt made, never making them again, so
+ *  none is recorded twice. The earlier attempt's own record goes with it, as a host tool's cut attempt's does: the
+ *  shutdown seals the journal before its call ends. */
+function recordedTool<T extends ToolRegistration>(tool: T, io: PiSessionIO): T {
+  const record = io.recordCalls;
+  if (!record) return tool;
+  const execute = tool.execute.bind(tool) as (...given: Parameters<T["execute"]>) => ReturnType<T["execute"]>;
+  return { ...tool, execute: (...given: Parameters<T["execute"]>) => record(given[1].callId, () => execute(...given)) };
+}
 
 /** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows, passed
  *  whole within the host's bound (HOST_TOOL_OUTPUT). Each call gets what pi's own tool task gives a tool: the calling
