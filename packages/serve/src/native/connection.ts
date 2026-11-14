@@ -51,6 +51,7 @@ export async function verifyConnection(store:Store,entry:AgentEntry,env=nativeEn
  return updateNative(store,entry,{...native,connected:before.connected});
 }
 export async function launchNative(binding:NativeBinding,env=nativeEnvironment()):Promise<NativeBinding>{
+ if(binding.remote)throw new ApiError('agent_not_runnable','This source target must run through its remote connector, never on the server filesystem.');
  if(!binding.connected)throw new ApiError('agent_not_runnable','This native connection is disconnected. Reconnect its source project.');
  const fresh=await selectedNative(binding,env);
  if(fresh.machine_id!==binding.machine_id)throw new ApiError('agent_not_runnable','The source machine is offline or this runner is on another machine. Start AgentRun on the source machine.');

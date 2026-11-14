@@ -14,8 +14,8 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 test('connector source and notices ship without local worker state or Python build output', async t => {
   const f = await fixture(t);
-  const sources = ['connector/pyproject.toml', 'connector/README.md', 'connector/LICENSE', 'connector/NOTICE', 'connector/src/agentrun_cli/cli.py'];
-  const privateFiles = ['connector/.venv/pyvenv.cfg', 'connector/build/lib/agentrun_cli/cli.py', 'connector/.agentrun/remote.json', 'connector/dist/receipt.json', 'connector/src/agentrun_cli/__pycache__/cli.pyc'];
+  const sources = ['connector/pyproject.toml', 'connector/README.md', 'connector/LICENSE', 'connector/NOTICE', 'connector/src/agentrun_cli/remote.py'];
+  const privateFiles = ['connector/.venv/pyvenv.cfg', 'connector/build/lib/agentrun_cli/remote.py', 'connector/.agentrun/remote.json', 'connector/dist/receipt.json', 'connector/src/agentrun_cli/__pycache__/remote.pyc'];
   for (const path of sources) await f.write(path, '# Connector source fixture\n');
   for (const path of privateFiles) await f.write(path, 'PRIVATE_CONNECTOR_STATE\n');
   await f.run();

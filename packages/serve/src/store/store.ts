@@ -914,8 +914,8 @@ export interface Settings {
   removeIf(key: string, was: unknown): Promise<boolean>;
   /** The key's row goes; a key with no row is left as it is. */
   remove(key: string): Promise<void>;
-  /** Every setting, by key. */
-  all(): Promise<SettingRow[]>;
+  /** Settings by key, optionally selecting a namespace and native connector owner before values are read. */
+  all(filter?: { readonly prefix: string; readonly connectorId?: string }): Promise<SettingRow[]>;
 }
 
 /** A sealed key as a row (store schema `sealed_keys`): its name and the bytes the server sealed (store/seal.ts, AAD

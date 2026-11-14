@@ -412,13 +412,14 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
 export function agentView(
   entry: AgentEntry,
   origin: string,
-  extra: { signIns?: readonly object[]; learning?: { pending: number }; runs?: { count: number; live: number }; ownComputer?: Record<string, unknown> | null } = {},
+  extra: { nativeStatus?: import("./native/types.js").NativeBinding; signIns?: readonly object[]; learning?: { pending: number }; runs?: { count: number; live: number }; ownComputer?: Record<string, unknown> | null } = {},
 ) {
   const { agent, revision } = entry;
   const body = (revision?.body ?? {}) as Body;
   const external = externalOf(agent, revision);
   return {
     agent_id: agent.id,
+    ...(extra.nativeStatus ? { native_status: extra.nativeStatus } : {}),
     // Only on an agent another system owns (POST /runs): read-only here.
     ...(external ? { external } : {}),
     definition: revision ? definitionOf(agent, revision, entry.version) : null,

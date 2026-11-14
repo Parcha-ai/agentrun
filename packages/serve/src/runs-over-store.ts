@@ -678,7 +678,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.
   const effort = native ? undefined : typeof body.effort === "string" ? body.effort : (thinkingLevel(rbody.thinking) ?? thinkingLevel(deps.planeEnv().AGENT_THINKING));
-  const nativeLaunch = native ? await launchNative(native) : undefined;
+  const nativeLaunch = native?.remote ? native : native ? await launchNative(native) : undefined;
   // The repository a person's run reaches (run-repo.ts): the one the body names when the agent is bound to it, else the
   // agent's one repository when the first message names none. A trigger's run takes its repository from its event.
   const namedRepo = typeof body.repo === "string" ? body.repo : undefined;

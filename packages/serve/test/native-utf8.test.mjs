@@ -112,4 +112,33 @@ for (const runtime of ['claude-code', 'codex']) {
     assert.equal((await f.calls()).filter(call => call.args.includes('--print') || call.args.includes('exec')).length, 1);
   });
 
+  test(`remote ${runtime} preserves byte-split UTF-8 through the source JSONL bridge`, async t => {
+    const f = await fixture(t, runtime), events = [], waiting = new Map();
+    const child = spawn(process.execPath, ['--import', f.splitter, fileURLToPath(new URL('../dist/native/remote-worker-bridge.js', import.meta.url))], { env: f.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let next = 0, diagnostics = '';
+    child.stderr.on('data', chunk => { diagnostics += chunk; });
+    createInterface({ input: child.stdout }).on('line', line => {
+      const message = JSON.parse(line);
+      if (message.event) { events.push(message.event); return; }
+      const entry = waiting.get(message.id);
+      if (entry) { waiting.delete(message.id); clearTimeout(entry.timer); message.error ? entry.reject(new Error(message.error)) : entry.resolve(message.result); }
+    });
+    child.on('exit', code => { for (const entry of waiting.values()) { clearTimeout(entry.timer); entry.reject(new Error(`Bridge exited ${code}: ${diagnostics}`)); } waiting.clear(); });
+    t.after(async () => {
+      child.stdin.end();
+      if (child.exitCode !== null) return;
+      await new Promise(resolve => { const timer = setTimeout(() => child.kill('SIGTERM'), 3000); child.once('exit', () => { clearTimeout(timer); resolve(); }); });
+    });
+    const call = (type, body = {}) => new Promise((resolve, reject) => {
+      const id = `utf8-${++next}`;
+      const timer = setTimeout(() => { waiting.delete(id); reject(new Error(`Bridge ${type} timed out`)); }, 10_000);
+      waiting.set(id, { resolve, reject, timer }); child.stdin.write(JSON.stringify({ id, type, ...body }) + '\n');
+    });
+    const target = (await call('discover', { payload: { project: f.project, runtime } })).targets[0];
+    const prepared = await call('prepare', { target });
+    await call('open', { target, session_key: 'utf8-session', payload: { expected_fingerprint: prepared.target.fingerprint } });
+    const result = await call('send', { target, session_key: 'utf8-session', payload: { prompt: 'Synthetic UTF-8 task', timeout_ms: 3000 } });
+    assertPreserved({ result, events });
+    await call('close', { target, session_key: 'utf8-session' });
+  });
 }

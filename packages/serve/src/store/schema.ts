@@ -30,6 +30,9 @@ export const SCHEMA_VERSION = 11;
 /** One unrefused answer per approval of a run: an answer the runner refused (its run could not resume) holds no place, so
  *  the person can answer again. */
 export const ONE_ANSWER_INDEX = "commands_one_answer";
+/** The connector's own command rows, without parsing another connector's events on every heartbeat. */
+export const NATIVE_COMMANDS_INDEX = `CREATE INDEX IF NOT EXISTS settings_native_commands ON settings (connector_id, key) WHERE key >= 'native.remote.command.' AND key < 'native.remote.command/'`;
+
 export const COMMANDS_ONE_ANSWER = `CREATE UNIQUE INDEX IF NOT EXISTS ${ONE_ANSWER_INDEX} ON commands (run_id, json_extract(body, '$.approval')) WHERE kind IN ('approve', 'deny') AND refused IS NULL`;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
@@ -322,8 +325,10 @@ export const STORE_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     ${json("value")},
+    connector_id TEXT,
     updated_at INTEGER NOT NULL
   ) STRICT`,
+  NATIVE_COMMANDS_INDEX,
   `CREATE TABLE IF NOT EXISTS sealed_keys (
     name TEXT PRIMARY KEY,
     sealed BLOB NOT NULL,

@@ -7,10 +7,11 @@
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } from '../native-command-owner.js';
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, SCHEMA_VERSION } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, NATIVE_COMMANDS_INDEX, SCHEMA_VERSION } from "../schema.js";
 import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -285,6 +286,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       found = await versionOf(connection);
     }
     if (found !== SCHEMA_VERSION) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
+    const nativeOwners=(await connection.all<{name:string}>("PRAGMA table_info(settings)")).some(column=>column.name==='connector_id');
+    if(!nativeOwners){
+      if(role==='runner')throw new Error('Native command ownership metadata is not prepared. Start this build’s server before its runners.');
+      await connection.write([{sql:'ALTER TABLE settings ADD COLUMN connector_id TEXT'}],{full:true});
+    }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
     // An earlier build of this version made no one-answer index on commands (schema.ts COMMANDS_ONE_ANSWER), or one that
@@ -299,7 +305,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: COMMANDS_ONE_ANSWER },
         // An earlier build of this version kept no imported template packages (schema.ts IMPORTED_TEMPLATES).
         { sql: IMPORTED_TEMPLATES },
+        { sql: NATIVE_COMMANDS_INDEX },
       ], { full: true });
+      await backfillNativeCommandOwners(connection);
     }
   } catch (error) {
     await connection.close().catch(() => undefined);
@@ -1254,16 +1262,19 @@ class SqliteStore implements Store {
         return row === undefined ? undefined : JSON.parse(row.value);
       },
       put: async (key, value) => {
-        await db.write([{ sql: "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at", params: [key, json(value), now()] }]);
+        const encoded=json(value);
+        await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, connector_id = excluded.connector_id, updated_at = excluded.updated_at", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
       },
       putIfAbsent: async (key, value) => {
-        await db.write([{ sql: "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO NOTHING", params: [key, json(value), now()] }]);
+        const encoded=json(value);
+        await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
         const row = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
         return row === undefined ? undefined : JSON.parse(row.value);
       },
       // `was` is compared as the JSON text put wrote: a row read and parsed gives the same text back, its keys in order.
       replaceIf: async (key, was, value) => {
-        const [result] = await db.write([{ sql: "UPDATE settings SET value = ?, updated_at = ? WHERE key = ? AND value = ?", params: [json(value), now(), key, json(was)] }]);
+        const encoded=json(value);
+        const [result] = await db.write([{ sql: "UPDATE settings SET value = ?, connector_id = ?, updated_at = ? WHERE key = ? AND value = ?", params: [encoded, nativeCommandOwner(key,encoded), now(), key, json(was)] }]);
         return result!.changes === 1;
       },
       removeIf: async (key, was) => {
@@ -1273,7 +1284,25 @@ class SqliteStore implements Store {
       remove: async (key) => {
         await db.write([{ sql: "DELETE FROM settings WHERE key = ?", params: [key] }]);
       },
-      all: async () => (await db.all<SettingRecord>("SELECT key, value, updated_at FROM settings ORDER BY key")).map(settingOf),
+      all: async (filter) => {
+        const clauses:string[]=[],params:string[]=[];
+        if(filter?.connectorId!==undefined&&!validConnectorId(filter.connectorId))return [];
+        if(filter){
+          // Both stores order keys by bytes (Postgres settings.key is COLLATE C). This range also enables namespace indexes.
+          const points=Array.from(filter.prefix);let upper:string|undefined;
+          for(let i=points.length-1;i>=0;i--){const cp=points[i]!.codePointAt(0)!;if(cp<0x10ffff){upper=points.slice(0,i).join("")+String.fromCodePoint(cp+1);break;}}
+          clauses.push("key >= ?");params.push(filter.prefix);
+          if(upper!==undefined){clauses.push("key < ?");params.push(upper);}
+          clauses.push("substr(key, 1, length(?)) = ?");params.push(filter.prefix,filter.prefix);
+        }
+        const selection=`SELECT key, value, updated_at FROM settings${clauses.length?` WHERE ${clauses.join(" AND ")}`:""}`;
+        // Disjoint indexed branches: an OR lets SQLite choose a namespace scan over every connector's payload.
+        // Null metadata is a legacy write racing setup; strict JS verification below never widens its owner.
+        const query=filter?.connectorId===undefined?`${selection} ORDER BY key`:`${selection} AND connector_id = ? UNION ALL ${selection} AND connector_id IS NULL ORDER BY key`;
+        const values=filter?.connectorId===undefined?params:[...params,filter.connectorId,...params];
+        const rows=await db.all<SettingRecord>(query,...values);
+        return rows.filter(row=>filter?.connectorId===undefined||nativeCommandOwner(row.key,row.value)===filter.connectorId).map(settingOf);
+      },
     };
 
     this.sealedKeys = {

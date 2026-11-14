@@ -286,6 +286,10 @@ def connect(args, state):
 
 
 def main(argv=None):
+    incoming = sys.argv[1:] if argv is None else argv
+    if incoming and incoming[0] == "remote":
+        from .remote import main as remote_main
+        return remote_main(incoming[1:])
     parser = argparse.ArgumentParser(prog="agentrun")
     parser.add_argument("command", choices=["setup", "hook", "discover", "connect", "status", "daemon", "disconnect", "startup"])
     parser.add_argument("action", nargs="?", choices=["start", "stop", "enable", "disable", "status"])
