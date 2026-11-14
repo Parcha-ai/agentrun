@@ -56,12 +56,13 @@ test("tools_search answers only the run's tools it may call: a tool set to deny 
 });
 
 test("tools_call refuses, in words, a call of itself, of the other two, and of a name the run has no tool by: nothing runs", async () => {
-  for (const name of [TOOLS_CALL, CODEMODE, TOOLS_SEARCH, "mcp__hands__codemode"]) assert.match(refusedName(TOOLS_CALL, name, TOOLS), /are called by the model itself, never through each other\. Nothing was run\./, name);
+  const hostName = (given) => given.replace(/^hands_/, "");
+  for (const name of [TOOLS_CALL, CODEMODE, TOOLS_SEARCH, "hands_codemode"]) assert.match(refusedName(TOOLS_CALL, name, TOOLS, hostName), /are called by the model itself, never through each other\. Nothing was run\./, name);
   assert.match(refusedName(TOOLS_CALL, "no_such_tool", TOOLS), /this run has no tool by that name.*Nothing was run\./);
-  assert.equal(refusedName(TOOLS_CALL, "mcp__hands__write_file", TOOLS), undefined, "a harness's name for a run's tool is that tool");
+  assert.equal(refusedName(TOOLS_CALL, "hands_write_file", TOOLS, hostName), undefined, "a harness's name for a run's tool is that tool");
   const calls = [];
   const nested = { call: async (name, args, key) => (calls.push([name, key]), { text: "ran", fresh: true }), memo: async (_key, value) => value };
-  const [, call] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const [, call] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true }, hostName });
   const refused = await call.call({ name: CODEMODE, args: {} }, { signal: new AbortController().signal, nested });
   assert.equal(refused.isError, true);
   assert.deepEqual(calls, [], "nothing was called");
@@ -423,7 +424,6 @@ test("the gate: each of the three allows unless its own setting is deny, then a 
     const denied = gate({ [name]: { permission: "deny" } });
     assert.equal(await denied.policy(name), "deny", `${name}: its setting is read`);
     assert.match(await verdictOf(denied, name), /denied|not run|refused|deny/i, `${name}: a call is refused`);
-    assert.equal(await verdictOf(denied, `mcp__hands__${name}`), await verdictOf(denied, name), `${name}: claude-agent's name for it reads the same key`);
     const others = [CODEMODE, TOOLS_SEARCH, TOOLS_CALL].filter((one) => one !== name);
     for (const other of others) assert.equal(await verdictOf(denied, other), "allow", `${name}'s setting does not hold ${other}`);
   }

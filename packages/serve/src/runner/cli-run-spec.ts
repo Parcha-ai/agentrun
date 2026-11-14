@@ -52,7 +52,6 @@ import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capMod
 import { openTierProxies, type TierProxies } from "./adapters/pi.js";
 import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
-import { mcpServersOf } from "../tool-gate.js";
 import { isWebHostTool } from "../tool-list.js";
 import { hostToolOf } from "../host-tools.js";
 import { ASK_TOOL, askPerson } from "../tools.js";
@@ -501,10 +500,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
 
   // The gate before a call's intent, the same as the pi spec: the revision's tool settings over the store's, read from the
   // store at each decide — adapterRunGate (RunGate.decide: deny with its words, a pin, allow, ask). The end-of-run turn's
-  // refusal of writes under .learning/ is the adapter loop's own (it knows the turn), never a file's. The run's MCP servers
-  // (mcpServersOf its grants) hold a harness's own name for an MCP tool to that tool's settings.
+  // refusal of writes under .learning/ is the adapter loop's own (it knows the turn), never a file's.
   // A pinned MCP tool is held to the arguments its listing in the run's pin declares (mcp.argumentsOf).
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted), mcp ? { argumentsOf: (name: string) => mcp.argumentsOf(name) } : {});
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcp ? { argumentsOf: (name: string) => mcp.argumentsOf(name) } : {});
   // What a script's shell and files are held to: this gate's settings, decided as on the run's computer (gate.script), so a
   // denied bash or write holds inside computer_script too.
   tools.computer?.guard.install(gate.script);

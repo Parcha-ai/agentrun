@@ -279,7 +279,7 @@ test("pi: an approved MCP call whose runner goes after the call is sent and befo
   t.after(() => closeSecond());
   const { rows, last } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 150_000 });
   assert.equal(last.status, "completed", `the run goes on to its answer: ${JSON.stringify(rows.at(-1))}`);
-  const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__slow_write");
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === "mcp:fake/slow_write");
   assert.match(`${result?.summary} ${result?.tool_result_preview}`, /interrupted/i, JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
   assert.match((await answerOf(api, runId)) ?? "", /interrupted/i, "the model is told the call was interrupted");
   assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
@@ -398,7 +398,7 @@ test("claude-agent: with no setting the CLI's MCP call asks once (exactly one ap
   assert.match(await answerOf(server.api, runId) ?? "", /^Resumed: 5\b/);
   assert.equal(calls(fake, "add").length, 1, "run once, by the gate");
   // Answered and run, the call's result row is its outcome.
-  const results = done.rows.filter((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__add");
+  const results = done.rows.filter((row) => row.kind === "tool_result" && row.tool_name === "mcp:fake/add");
   assert.equal(results.length, 1, `one result row for the call: ${JSON.stringify(results.map((row) => row.tool_result_preview ?? row.text))}`);
   assert.doesNotMatch(results[0].tool_result_preview ?? results[0].text ?? "", /waits for a person's approval/, "its outcome, never the waiting words");
   await resumeRowIsAgentRuns(server.api, runId, pending.call_id, "mcp:fake/add", "claude-agent");

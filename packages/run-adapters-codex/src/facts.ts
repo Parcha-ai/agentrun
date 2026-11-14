@@ -31,5 +31,7 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   schemaProblems: codexSchemaProblems,
   // Codex's own tools, each the host's table tool it is.
   nativeTools: Object.freeze({ web_search: "web_search", shell: "bash" }),
+  // A run's MCP tool reaches Codex as `mcp_<server>__<tool>` (adapter.ts codexToolName): the host's is `mcp__<server>__<tool>`.
+  hostName: (given: string) => given.replace(/^mcp_(?!_)/, "mcp__"),
   policy: (options) => codexPolicy({ model: options.model, tools: options.tools, ...(options.webSearch === "live" ? { webSearch: "live" as const } : {}), ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
 });

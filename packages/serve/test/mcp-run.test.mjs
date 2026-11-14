@@ -112,7 +112,7 @@ test("pi: an agent granted mcp:fake/add calls it with the server's bearer; the t
   assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(view.result?.final_answer, "The tool said: 5");
-  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp__fake__add");
+  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp:fake/add");
   assert.equal(call?.summary, "fake · add", JSON.stringify(rows.filter((row) => row.kind === "tool_use")));
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
   // The token is in no file under the data directory: a pi run on the runner writes no folder of its own, and keeps what
@@ -242,7 +242,7 @@ test("pi: a run killed mid-call resumes with the call answered interrupted, and 
   t.after(() => closeSecond());
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
-  const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__slow_write");
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === "mcp:fake/slow_write");
   assert.match(`${result?.summary} ${result?.tool_result_preview}`, /interrupted/i, JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
   assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
 });
@@ -316,7 +316,7 @@ test("claude-agent: the Claude CLI calls mcp:fake/add as a host tool; the fake s
   assert.match(view.result?.final_answer ?? "", /^The tool said: 5\b/);
   assert.ok(anthropic.requests.some((request) => request.tools.includes("mcp__hands__mcp__fake__add")), "the model was offered the granted tool, as a host tool");
   assert.ok(!anthropic.requests.some((request) => request.tools.includes("mcp__fake__add")), "never through a client of the CLI's own");
-  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp__fake__add");
+  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp:fake/add");
   assert.equal(call?.summary, "fake · add", JSON.stringify(rows.filter((row) => row.kind === "tool_use")));
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
   // After the run's end (its runner let the claim go) and the CLI process's exit (no process works in the run's scratch any
@@ -368,7 +368,7 @@ test("claude-agent: a run killed mid-call resumes with the call reported interru
     await sleep(100);
   }
   // While the call runs, the Timeline has its row, as on codex.
-  const isCall = (row) => row.tool_name === "mcp__fake__slow_write";
+  const isCall = (row) => row.tool_name === "mcp:fake/slow_write";
   let running = [];
   for (let i = 0; i < 50 && !running.some((row) => row.kind === "tool_use" && isCall(row)); i++) {
     if (i) await sleep(100);
@@ -493,10 +493,10 @@ test("codex: an agent granted mcp:fake/add calls it as a host tool, mcp_fake__ad
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind.startsWith("tool"))));
   assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "mcp_fake__add returned: 5", "the stand-in answered with the tool's result");
-  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp__fake__add");
+  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp:fake/add");
   assert.equal(call?.summary, "fake · add", JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
   // The call is keyed by Codex's own id for it (its dynamicToolCall item's id), under the host's name for the tool.
-  const ids = rows.filter((row) => row.tool_name === "mcp__fake__add").map((row) => [row.kind, row.tool_use_id]);
+  const ids = rows.filter((row) => row.tool_name === "mcp:fake/add" && row.kind.startsWith("tool")).map((row) => [row.kind, row.tool_use_id]);
   assert.deepEqual(ids.map(([kind]) => kind), ["tool_use", "tool_result"], JSON.stringify(ids));
   assert.match(ids[0][1], /^call_[0-9a-f]{20}$/);
   assert.equal(ids[1][1], ids[0][1]);
@@ -523,7 +523,7 @@ test("codex: a run killed mid-call shows the call's row while it runs and its in
     await sleep(100);
   }
   // While the call runs, the Timeline has its row: the call's intent is in the session before it is sent.
-  const isCall = (row) => row.tool_name === "mcp__fake__slow_write";
+  const isCall = (row) => row.tool_name === "mcp:fake/slow_write";
   let running = [];
   for (let i = 0; i < 50 && !running.some((row) => row.kind === "tool_use" && isCall(row)); i++) {
     if (i) await sleep(100);
@@ -559,7 +559,7 @@ test("codex: a call refused before anything is sent lists its call row before it
   const runId = await runOf(api, "codex-refused", 'call mcp_fake__add {"a":2,"b":3}');
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
-  const call = rows.filter((row) => row.tool_name === "mcp__fake__add").map((row) => [row.kind, row.seq]);
+  const call = rows.filter((row) => row.tool_name === "mcp:fake/add" && row.kind.startsWith("tool")).map((row) => [row.kind, row.seq]);
   assert.deepEqual(call.map(([kind]) => kind), ["tool_use", "tool_result"], JSON.stringify(call));
   assert.ok(call[0][1] < call[1][1], `the call row first: ${JSON.stringify(call)}`);
 });

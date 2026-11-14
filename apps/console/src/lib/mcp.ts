@@ -156,13 +156,12 @@ export function signInOf(query: string | undefined): { server: string; ok: boole
   return { server, ok: how === "ok", ...(how === "failed" ? { error: q.get("error") ?? "sign_in_failed" } : {}) };
 }
 
-/** An MCP server's tool as the harnesses call it, `mcp__<server>__<tool>`, read `<server> · <tool>` (the harness's own
- *  `hands` server is not one); null for any other name. */
 /** An MCP server's tool as a workflow's call node names it (`tool: "mcp:<server>/<tool>"`, the tool settings' key): its
  *  server and its tool, or null for any other tool. */
 export const mcpCallTool = grantOf;
 
+/** A row's MCP tool, `mcp:<server>/<tool>` (the name the server's rows carry), read `<server> · <tool>`; null for any other name. */
 export function mcpToolLabel(name: string): string | null {
-  const m = /^mcp__([a-z][a-z0-9-]{0,31})__(.+)$/.exec(name);
-  return m && m[1] !== "hands" ? `${m[1]} · ${m[2]}` : null;
+  const grant = grantOf(name);
+  return grant ? `${grant.server} · ${grant.tool}` : null;
 }

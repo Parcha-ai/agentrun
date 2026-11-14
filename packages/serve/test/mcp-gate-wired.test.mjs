@@ -161,7 +161,7 @@ const answerOf = async (api, runId) => (await api("GET", `/runs/${runId}`)).body
  *  under that id. Every other harness's model answers from the result. */
 async function answered(api, runId, rows, callId) {
   if (callId === undefined) return assert.match(await answerOf(api, runId), /5/);
-  const results = rows.filter((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__add");
+  const results = rows.filter((row) => row.kind === "tool_result" && row.tool_name === "mcp:fake/add");
   assert.deepEqual(results.map((row) => [row.tool_use_id, row.tool_result_preview]), [[callId, "5"]], JSON.stringify(results));
 }
 
@@ -186,7 +186,7 @@ for (const harness of HARNESSES) {
     if (harness === "codex") {
       // What parks is Codex's own call id (its dynamicToolCall item's id), the one its Timeline rows carry, by the host's name.
       assert.match(pending.call_id, /^call_[0-9a-f]{20}$/);
-      assert.deepEqual([...new Set(rows.filter((row) => row.tool_name === "mcp__fake__add").map((row) => row.tool_use_id))], [pending.call_id], JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
+      assert.deepEqual([...new Set(rows.filter((row) => row.tool_name === "mcp:fake/add").map((row) => row.tool_use_id))], [pending.call_id], JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
       // The turn ended at the parked result: the stand-in's next request (its answer after the call) never left.
       assert.deepEqual(model.seen, ["Calling mcp_fake__add."]);
     }
