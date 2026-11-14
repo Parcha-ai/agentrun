@@ -110,7 +110,19 @@ export type ClaimSide = {
    *  and its image, when it names one, is the computer's. `gpu`: a sandbox's GPUs, held to that configuration.
    *  `persistent`: the agent's own computer, which that configuration keeps (and which mounts no run's folder). */
   launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly configuration: KindCapabilities; readonly mount?: MountSpec; readonly gpu?: GpuSpec; readonly persistent?: true; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
+  /** The providers a computer of `provider` fails over to, in order, when its launch fails transiently (the server's
+   *  AGENTRUN_COMPUTER_FAILOVER, failoverOrder): none, or absent, and a failed launch fails the run as before. */
+  failoverOf?(provider: string): readonly string[];
+  /** Told once a launch on `from` failed transiently and the run's computer is being started on `to` instead: the claim
+   *  says it on the run's timeline and lets go of whatever `from` may have made for the run, once `from` answers again.
+   *  `keys` and `configuration` are `from`'s, as its launch had them. */
+  failedOver?(said: { readonly from: ProviderEntry; readonly to: ProviderEntry; readonly kind: ComputerSettingKind; readonly reason: string; readonly keys: Readonly<Record<string, string>>; readonly configuration: KindCapabilities }): void;
 };
+
+/** Whether a launch's failure is the vendor's passing trouble (a 429 or 5xx, no answer in time, not reached), as the
+ *  computer package marks it (ComputerError.transient) and the claim passes it on: the one kind a failover follows.
+ *  A refusal of the call itself (a key, a quota, a spec) never is. */
+export const transientLaunch = (error: unknown): boolean => (error as { transient?: unknown } | null)?.transient === true;
 
 /** A narrow port of the kernel's hands a computer fills: files, exec and processes where the folder is mounted; a
  *  desktop's screen and input; a phone; a browser. */
@@ -363,7 +375,8 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     provider: entry.id,
     mounts,
     ports,
-    async start({ workspace, check, signal }) {
+    async start(run) {
+      const { workspace, check, signal } = run;
       const mount = mounts ? await workspace.mountSpec() : undefined;
       let launched: LaunchedComputer;
       try {
@@ -372,7 +385,12 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
         // A provider that binds a folder of this machine (Docker) whose daemon does not answer: the one wording.
         const said = entry.mounts.includes("bind") && side.daemon ? await side.daemon(entry.id).catch(() => undefined) : undefined;
         if (said && !said.up && said.absent) throw unavailable(noDockerWords(kind, registry.PROVIDERS, mode));
-        throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
+        const words = `${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`;
+        // An agent's own computer is that provider's: it never moves. A refusal of the call never fails over either.
+        if (persistent || !transientLaunch(error) || signal?.aborted) throw unavailable(words);
+        const moved = await failover(words, run);
+        if ("started" in moved) return moved.started;
+        throw unavailable(moved.refused.length > 0 ? `${words}; no failover took it: ${moved.refused.join("; ")}` : words);
       }
       const computer = runComputerOf(kind, launched, mounts ? check : undefined, { ...(setting.surface ? { surface: setting.surface } : {}), ...(noPrograms(setting) ? { exec: false as const } : {}) });
       if (typeof computer === "string") {
@@ -382,6 +400,30 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       return { computer, release: () => launched.release() };
     },
   };
+
+  /** The run's computer on the next provider of the failover order that takes this setting as it is (its kind, its
+   *  GPUs, its surface and exec, the same mount of the run's folder), each resolved by the rules above with its own
+   *  default image and keys, and none failing over again; or why each refused. The first that resolves is started, and
+   *  its own failure is the run's. */
+  async function failover(reason: string, run: Parameters<ResolvedComputer["start"]>[0]): Promise<{ started: StartedComputer } | { refused: string[] }> {
+    const refused: string[] = [];
+    for (const id of side.failoverOf?.(entry!.id) ?? []) {
+      if (id === entry!.id) continue;
+      const next = await resolveComputer({ kind, provider: id, ...(gpu ? { gpu } : {}), ...(setting.surface ? { surface: setting.surface } : {}), ...(setting.exec === false ? { exec: false } : {}) }, mode, registry, { ...side, failoverOf: () => [] });
+      const label = registry.PROVIDERS.find((one) => one.id === id)?.label ?? id;
+      if ("refused" in next) {
+        refused.push(`${label}: ${next.refused}`);
+        continue;
+      }
+      if (next.mounts !== mounts) {
+        refused.push(`${label} ${next.mounts ? "mounts" : "does not mount"} the run's folder, and ${entry!.label} ${mounts ? "does" : "does not"}`);
+        continue;
+      }
+      side.failedOver?.({ from: entry!, to: registry.PROVIDERS.find((one) => one.id === id)!, kind, reason, keys, configuration: configuration! });
+      return { started: await next.start(run) };
+    }
+    return { refused };
+  }
 }
 
 /** The started computer as runTools takes it, or what it lacks, in words. `agent`: a desktop's or a phone's surface and

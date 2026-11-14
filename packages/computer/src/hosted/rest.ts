@@ -105,13 +105,15 @@ export function rest(options: RestOptions): Rest {
 				const text = decoder.decode(bytes).replace(/\s+/g, " ").slice(0, 300);
 				const said = options.explain?.({ status: response.status, bytes, text, what }) ?? {};
 				failure = errorOf(said.code ?? httpCode(response.status), said.message ?? `${what}: ${response.status} ${text}`, options.vendor);
+				// A 429 or a 5xx is the vendor's own trouble, not the call's: transient, whatever the vendor's words made its code.
+				if (response.status === 429 || response.status >= 500) failure.transient = true;
 			} catch (cause) {
 				if (signal?.aborted) return fail("aborted", `${what} was aborted`);
 				// No answer: the request may have reached the vendor, so only a call that may run twice is sent again.
 				retryable = init.retry === true;
-				if (timeout.aborted) failure = { code: "timeout", message: `${what} did not answer within ${timeoutMs / 1000} s` };
+				if (timeout.aborted) failure = { code: "timeout", message: `${what} did not answer within ${timeoutMs / 1000} s`, transient: true };
 				else if (redirected(cause)) return vendorFail(options.vendor, `${what}: the API answered with a redirect, which is never followed: it would carry the key`);
-				else failure = { code: "vendor", vendor: options.vendor, message: `${what}: ${(cause as Error).message}` };
+				else failure = { code: "vendor", vendor: options.vendor, message: `${what}: ${(cause as Error).message}`, transient: true };
 			}
 			if (!retryable || attempt >= attempts) return { ok: false, error: failure };
 			await wait((options.retry?.baseMs ?? 0) * 2 ** (attempt - 1), signal);

@@ -29,7 +29,7 @@ import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
 import { boxAllowOf, boxAllowSetIn } from "../box-settings.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
-import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type OpenComputerView } from "./computer-for-claim.js";
+import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type FailoverSaid, type OpenComputerView } from "./computer-for-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 import { type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
@@ -249,6 +249,31 @@ export const computerStartingWords = ({ provider, kind }: Pick<ComputerSaid, "pr
 export const computerReadyWords = ({ provider, kind, hello }: ComputerSaid): string =>
   `The ${kind} is ready: ${[OS_NAMES[hello.os] ?? hello.os, hello.osVersion].filter(Boolean).join(" ")} (${hello.arch}), from ${provider}.`;
 
+/** The server's failover order of computer providers: a comma list of provider ids, such as "daytona,kubernetes". A
+ *  run whose computer's launch on one of them fails transiently (a 429 or 5xx, no answer in time, the API not reached)
+ *  goes on to the next that takes the agent's setting, in order; a provider not listed never fails over. */
+export const COMPUTER_FAILOVER_ENV = "AGENTRUN_COMPUTER_FAILOVER";
+
+/** `env`'s AGENTRUN_COMPUTER_FAILOVER as the providers it names, in order, each once; [] when unset. An id `registry`
+ *  does not know, or a list of one, throws in words naming the setting: the server's start reads it, so no run meets one. */
+export function failoverOrder(env: KeyEnv, registry: Pick<KindRegistry, "PROVIDERS">): readonly string[] {
+  const value = envValue(env, COMPUTER_FAILOVER_ENV)?.trim();
+  if (value === undefined || value === "") return [];
+  const ids = [...new Set(value.split(",").map((one) => one.trim()).filter((one) => one !== ""))];
+  const unknown = ids.filter((id) => !registry.PROVIDERS.some((entry) => entry.id === id));
+  if (unknown.length > 0) throw new Error(`${COMPUTER_FAILOVER_ENV} names ${unknown.map((id) => JSON.stringify(id)).join(", ")}, which no computer provider is: it is a comma list of provider ids in the order a run fails over, such as daytona,kubernetes (${registry.PROVIDERS.map((entry) => entry.id).join(", ")})`);
+  if (ids.length < 2) throw new Error(`${COMPUTER_FAILOVER_ENV} names one provider, ${ids[0]}: a failover needs two or more, in order, such as daytona,kubernetes`);
+  return ids;
+}
+
+/** The run's timeline phase at a failover (computerForClaim's onFailover): the provider left and why, the one gone to;
+ *  later, what became of whatever the left one may have made for the run. */
+export const computerFailoverWords = (said: FailoverSaid): string => {
+  if ("to" in said) return `${said.from} could not start the ${said.kind}, so it is starting on ${said.to} instead. ${said.from} said: ${said.reason.replace(/[.!?]+$/, "")}.`;
+  if ("released" in said) return `${said.from} answers again: ${said.released === 0 ? "it had made no computer for this run" : `the ${said.released === 1 ? "computer" : `${said.released} computers`} it made for this run ${said.released === 1 ? "was" : "were"} deleted`}.`;
+  return `What ${said.from} may have made for this run could not be deleted (${said.failed.replace(/[.!?]+$/, "")}): it ends at its deadline.`;
+};
+
 /** The claim's computer as the runner's specs call it: what the run's launch lets the computer reach (its box_allow),
  *  read from the launch row when the store has one and the claim does not say, then computerForClaim. */
 export const claimComputer = async (
@@ -285,6 +310,8 @@ const dockerDaemonOf = (env: KeyEnv): NonNullable<ComputerForClaimDeps["daemon"]
 export function computerDepsFrom(options: ComputerDepsOptions): { computerForClaim: typeof claimComputer; computerDeps: ComputerDeps; factories: ProviderFactories } {
   const { env, store, sealKey, faux } = options;
   const kinds = claimKinds(options);
+  // Checked here, at the server's start: an id no provider is never meets a run.
+  const failover = failoverOrder(env, kinds);
   // A provider that prepares its own image (its descriptor's prepareImage) is given that image's source, which its
   // prepareImage() makes ready (built from the recipe when the engine lacks it, or pulled by name): the owner's
   // AGENTRUN_DOCKER_IMAGE, else the package's recipe. Never the recipe's bare tag, which no registry has.
@@ -335,6 +362,7 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     spec: computerSpecOf(env),
     check: { readBackOf },
     keyOf: keyReader(store, sealKey, env),
+    ...(failover.length > 0 ? { failover } : {}),
     // Under --faux, its launch makes a faux provider's computer, its keys beside the package's: any other provider's is
     // made as without it.
     ...(faux ? {

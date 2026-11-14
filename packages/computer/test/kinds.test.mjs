@@ -104,7 +104,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual([extra.docker.prepareImage, extra.docker.local], [true, true]);
 	// Daytona's image is the operator's snapshot when the server names one (an Archil mount needs box/Dockerfile's); no
 	// other provider declares one.
-	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"]]);
+	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"], ["kubernetes", "AGENTRUN_KUBERNETES_IMAGE"]]);
 	assert.deepEqual(extra["phone-harness"].ledger, { option: "ledger" });
 	assert.deepEqual(extra.orgo.ledger, { option: "ledger" });
 	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then PATH.
@@ -112,6 +112,8 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// The cloud browsers read the gateway a server reaches them through.
 	assert.deepEqual(extra.browserbase.hostEnv, ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"]);
 	assert.deepEqual(extra.kernel.hostEnv, ["KERNEL_BASE_URL"]);
+	// Kubernetes reads where its cluster is from inside a pod (in-cluster), and the server's Google credentials (gke-adc).
+	assert.deepEqual(extra.kubernetes.hostEnv, ["KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT", "GOOGLE_APPLICATION_CREDENTIALS"]);
 	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
 	// configuration.
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
@@ -121,7 +123,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 		if (id !== "modal") assert.equal(fields.settings, undefined, id);
 		if (id !== "docker") assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
-		if (!["local-chrome", "browserbase", "kernel"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
+		if (!["local-chrome", "browserbase", "kernel", "kubernetes"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
 	}
 	// Kinds are derived by serves() (the test below); every kind but none has a provider that serves it.

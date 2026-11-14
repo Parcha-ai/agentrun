@@ -452,6 +452,52 @@ test("a create whose answer is lost or broken is swept by its name: the machine 
 	await nothingLeft(lost.fake, "a lost create");
 });
 
+test("an outage met after the machine was made (a 503 on the first readiness read, on the daemon's upload, a start that never ends) keeps its transient mark through the delete, so a caller may fail over", async () => {
+	for (const call of ["get", "upload"]) {
+		const { provider, fake } = setup();
+		const real = fake.host[call].bind(fake.host);
+		let failed = false;
+		fake.host[call] = async (...args) => {
+			if (failed) return real(...args);
+			failed = true;
+			return { ok: false, error: { code: "vendor", vendor: fake.host.id, message: `${call}: 503 upstream unavailable`, transient: true } };
+		};
+		const outage = await create(provider);
+		assert.equal(outage.ok, false, call);
+		assert.match(outage.error.message, /was deleted: .*503 upstream unavailable/, call);
+		assert.equal(outage.error.transient, true, `a 503 on ${call} stays transient`);
+		await nothingLeft(fake, `a 503 on ${call}`);
+	}
+	// A machine still starting when createMs ends is an outage too: transient, and deleted. One the vendor reads as failed is not.
+	const stuck = setup({ timeouts: { ...TIMEOUTS, createMs: 200 } }, { starting: 1_000_000 });
+	const slow = await create(stuck.provider);
+	assert.equal(slow.error?.code, "timeout");
+	assert.match(slow.error.message, /did not start within/);
+	assert.equal(slow.error.transient, true, "a start that never ends stays transient");
+	await nothingLeft(stuck.fake, "a machine that never started");
+	// A refusal after the machine was made carries no mark.
+	const refused = await create(setup({}, { install: 5 }).provider);
+	assert.equal(refused.error.transient, undefined);
+});
+
+test("the daemon's bridge and a run to exit keep an outage's transient mark: an exec the vendor answers 503, and one that never ends", async () => {
+	const { openBridge, runToExit } = await import("../dist/hosted/process.js");
+	const outage = { code: "vendor", vendor: "fakehost", message: "exec: 503 upstream unavailable", transient: true };
+	const host = { id: "fakehost", errorCode: () => "vendor", exec: async () => ({ ok: false, error: outage }) };
+	const bridge = await openBridge(host, "m", { argv: ["computerd", "stdio"], name: "computer-x", version: VERSION, requestMs: 200, helloMs: 200 });
+	assert.equal(bridge.ok, false);
+	assert.match(bridge.error.message, /503 upstream unavailable/);
+	assert.equal(bridge.error.transient, true, "the bridge's failed exec stays transient");
+	const refused = await openBridge({ ...host, exec: async () => ({ ok: false, error: { code: "denied", message: "exec: 403" } }) }, "m", { argv: ["computerd", "stdio"], name: "computer-x", version: VERSION, requestMs: 200, helloMs: 200 });
+	assert.equal(refused.error.transient, undefined, "a refusal carries no mark");
+	// A process that never ends (its exec stream stalled) is a timeout, transient.
+	const never = { stdout: (async function* () {})(), stderr: (async function* () {})(), write: async () => {}, end: async () => {}, wait: () => new Promise(() => {}), kill: async () => {} };
+	const stalled = await runToExit({ ...host, exec: async () => ({ ok: true, value: never }) }, "m", ["true"], { ms: 50, what: "the install" });
+	assert.equal(stalled.error?.code, "timeout");
+	assert.match(stalled.error.message, /the install did not end within/);
+	assert.equal(stalled.error.transient, true);
+});
+
 test("a create that lands after an abort is deleted as it lands", async () => {
 	const { provider, fake } = setup({}, { create: "hold" });
 	const controller = new AbortController();

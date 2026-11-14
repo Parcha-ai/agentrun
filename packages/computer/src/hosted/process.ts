@@ -71,6 +71,10 @@ export const failOf =
 	(host: Pick<MachineHost, "id">) =>
 	(code: ComputerErrorCode, message: string): Result<never> => ({ ok: false, error: errorOf(code, message, host.id) });
 
+/** A failure in new words that keeps its cause's transient mark: an outage stays one a caller may fail over on. */
+export const marked = (failed: Result<never>, cause: { transient?: true }): Result<never> =>
+	cause.transient === true && !failed.ok ? { ok: false, error: { ...failed.error, transient: true } } : failed;
+
 /**
  * Settles with the promise's result, or a timeout or abort in words once ms pass or signal aborts. A host call that
  * answers a Result is passed on as it answers; one that throws is read through the host's errorCode.
@@ -82,7 +86,8 @@ export function race<T>(host: Pick<MachineHost, "id" | "errorCode">, promise: Pr
 		return Promise.resolve(fail("aborted", `${what} was aborted`));
 	}
 	return new Promise((settle) => {
-		const timer = setTimeout(() => done(fail("timeout", `${what} did not answer within ${seconds(ms)}`)), ms);
+		// A call that does not answer in time is the vendor's trouble, not the call's: transient.
+		const timer = setTimeout(() => done({ ok: false, error: { code: "timeout", message: `${what} did not answer within ${seconds(ms)}`, transient: true } }), ms);
 		const onAbort = () => done(fail("aborted", `${what} was aborted`));
 		signal?.addEventListener("abort", onAbort, { once: true });
 		let settled = false;
@@ -170,7 +175,7 @@ export async function runToExit(host: MachineHost, id: string, argv: readonly st
 		// up the caller, which may be a create on its way to deleting the whole machine.
 		const killing = Promise.resolve().then(() => proc.kill());
 		await race(host, killing, `${what}'s kill`, Math.min(ms, CALL_SLACK_MS));
-		return result.error.code === "timeout" ? fail("timeout", `${what} did not end within ${seconds(ms)}`) : result;
+		return result.error.code === "timeout" ? marked(fail("timeout", `${what} did not end within ${seconds(ms)}`), result.error) : result;
 	}
 	return result;
 }
@@ -228,11 +233,11 @@ export async function openBridge(
 				(late) => (late.ok ? late.value.kill() : undefined),
 				() => {},
 			);
-			return fail(raced.error.code, `${raced.error.message}; a bridge that starts after this is killed`);
+			return marked(fail(raced.error.code, `${raced.error.message}; a bridge that starts after this is killed`), raced.error);
 		}
 		return raced;
 	}
-	if (!raced.value.ok) return fail(raced.value.error.code, `${what} failed: ${raced.value.error.message}`);
+	if (!raced.value.ok) return marked(fail(raced.value.error.code, `${what} failed: ${raced.value.error.message}`), raced.value.error);
 	const proc = raced.value.value;
 	const readable = new PassThrough();
 	let stderr = "";
