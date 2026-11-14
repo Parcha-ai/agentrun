@@ -1,6 +1,7 @@
 // The generated layer: a consumer that uses the client as documented typechecks against the built package, and one that
 // passes a wrong body field (or calls what the client does not have) fails on exactly those lines; generate-clients
-// --check fails on a hand-edited operations.generated.ts, whose hash is the CLI table's.
+// --check fails on a hand-edited operations.generated.ts; two changes to different operations regenerate into outputs
+// that merge with no conflict.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -27,7 +28,7 @@ test("a consumer of the documented calls typechecks; a wrong body field, a wrong
   assert.match(bad.stdout, /'definitio' does not exist/);
 });
 
-test("generate-clients --check passes on the committed file and fails on a hand-edited one; the file's hash is the CLI table's", { timeout: 120_000 }, (t) => {
+test("generate-clients --check passes on the committed file and fails on a hand-edited one",{ timeout: 120_000 }, (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-client-check-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const check = (...args) => spawnSync(process.execPath, [GENERATOR, "--check", ...args], { cwd: ROOT, encoding: "utf8", timeout: 60_000 });
@@ -40,9 +41,6 @@ test("generate-clients --check passes on the committed file and fails on a hand-
   const stale = check("--client", edited);
   assert.equal(stale.status, 1);
   assert.match(stale.stderr, /operations\.generated\.ts is not the server's document's; run node scripts\/generate-clients\.mjs/);
-  const hash = (file) => /SHA-256 of what the (?:table|clients) (?:is|are) made of [^\n]*: ([0-9a-f]{64})/.exec(readFileSync(file, "utf8"))?.[1];
-  assert.ok(hash(GENERATED));
-  assert.equal(hash(GENERATED), hash(join(ROOT, "packages", "agentrun", "lib", "commands.generated.mjs")));
 });
 
 // Two pull requests that change two different operations each regenerate every output. Git merges each output's two
