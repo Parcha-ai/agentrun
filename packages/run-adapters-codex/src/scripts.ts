@@ -118,6 +118,10 @@ export interface NestedFact {
   rollout?: RolloutNested;
   /** The host parked the call for a person's approval (`parkedKey`'s record): it did not run, whatever its record says. */
   parked?: true;
+  /** Asked again on this resume (code-mode.ts recoverItems): it never reached its intent before, as a park at the host's gate
+   *  leaves a call, and went through the gate now, the person's answer on it: what it answered, and whether it ran (a refusal
+   *  never does). */
+  resumed?: { text: string; isError: boolean; ran: boolean };
 }
 
 export type Settled = { kind: "completed"; text: string } | { kind: "failed"; text: string } | { kind: "interrupted" } | { kind: "parked" };
@@ -168,6 +172,10 @@ export function recoveryFacts<T>(execs: readonly string[], ties: readonly Nested
 const describeCall = (fact: NestedFact, label: string): string => {
   const settled = settle(fact);
   if (settled.kind === "parked") return `${label} was waiting for a person's approval and did not run; it was not run again.`;
+  const again = fact.resumed;
+  if (again && !again.ran) return `${label} waited for a person's approval, then: ${quoted(again.text)}. It did not run.`;
+  if (again && again.isError) return `${label} waited for a person's approval, then ran and failed: ${quoted(again.text)}. It was not run again.`;
+  if (again) return `${label} waited for a person's approval, then ran: ${quoted(again.text)}. Its effect is done; it was not run again.`;
   if (settled.kind === "completed") return `${label} completed: ${quoted(settled.text)}. Its effect is done; it was not run again.`;
   if (settled.kind === "failed") return `${label} failed: ${quoted(settled.text)}. It was not run again.`;
   // Told as the recovery note of the same turn tells it, which reaches the model with this output: a safe tool's call a crash cut off.

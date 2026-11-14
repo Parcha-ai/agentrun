@@ -184,3 +184,17 @@ test("a nested call the gate parked and the person denied is never run: the exec
   assert.deepEqual(ran, [], 'never run');
   assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then: "Denied: not now\."\. It did not run\./);
 });
+
+test("a nested call's tie keeps the call itself (Codex's name for its tool, its arguments), written before it runs, so a resume can ask about it again", async () => {
+  const store = memorySessionStore();
+  const drive = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
+  const appended = [];
+  const journal = { append: (stream, data) => appended.push([stream, data]), flush: async () => {}, read: async () => [] };
+  const bridge = { get: (name) => (name === 'mcp_fake__add' ? { name, replay: 'safe' } : undefined), take: () => undefined };
+  const mode = codeMode({ ctx: drive, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge, log() {}, lines: [], rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
+  let seen;
+  await mode.request(async () => { seen = appended.length; return { contentItems: [], success: true }; })({ method: 'item/tool/call', params: { callId: 'exec-00000000-0000-0000-0000-000000000001', tool: 'mcp_fake__add', arguments: { a: 2, b: 3 } } });
+  const ties = appended.filter(([stream]) => stream === NESTED_STREAM).map(([, data]) => data);
+  assert.equal(seen, 1, 'written before the call runs');
+  assert.deepEqual(ties.map(({ callId, tool, args }) => ({ callId, tool, args })), [{ callId: 'exec-00000000-0000-0000-0000-000000000001', tool: 'mcp_fake__add', args: { a: 2, b: 3 } }]);
+});
