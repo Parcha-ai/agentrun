@@ -2,10 +2,18 @@
 // high (October's receipt hold: 46 of 54 revisions held) or too low is moved to where the rows say it belongs. Each guarded
 // step's threshold becomes the cheapest one (the fewest hand-backs) that keeps the workflow's accuracy over the rows within
 // PROMOTE_BAR of the agent's; a `both` guard's fit (logistic over [self, jev], Platt-style) is refit first when the rows
-// hold at least FIT_MIN_ROWS with at least FIT_MIN_WRONG wrong, else kept. Pure: the rows in, the new workflow text and
-// what changed out; runner/promotion.ts reads the rows (replays and graded served runs) and writes the revision.
+// hold at least FIT_MIN_ROWS with at least FIT_MIN_WRONG wrong, else kept. A guard may also be switched off (OFF: it never
+// hands back, and the revision drops it): the cheapest setting of all, so a guard whose p says nothing of right and wrong
+// goes. So may an escalate node a replay recorded instead of obeying (learn/promote.ts softEscalatesOf), on the same rule:
+// one that stops right drafts is dropped from its chain, one that stops wrong ones stays. Pure: the rows in, the new
+// workflow text and what changed out; runner/promotion.ts reads the rows (replays and graded served runs) and writes the
+// revision.
 import type { GuardRow } from "../learned-nodes.js";
-import { PROMOTE_BAR, type RefitGuard, walkGuards } from "./promote.js";
+import { PROMOTE_BAR, type RefitGuard, SOFT_ESCALATE_THRESHOLD, softEscalatesOf, walkGuards } from "./promote.js";
+import { workflowNodes } from "./workflow-nodes.js";
+
+/** A switch set off: the guard or the escalate never hands back. Never a threshold the DSL takes (one is in (0, 1)). */
+export const OFF = 0;
 
 export const FIT_MIN_ROWS = 30;
 /** The lowest and highest threshold a refit writes: the DSL takes a threshold in (0, 1), exclusive. */
@@ -90,14 +98,16 @@ function solve(a: number[][], b: number[]): number[] | undefined {
  *  it back (one of its guards escalated) and that no guard would hand back at `thresholds` would have answered with an
  *  answer nobody read: counted wrong, so a threshold never comes down past hand-backs with no evidence of what the
  *  workflow says there. One that did not answer for another reason (a step failed, an escalate node) takes the agent's
- *  answer at every threshold. */
+ *  answer at every threshold. A switch OFF never hands back, a missing p or not. */
 function scoreAt(rows: readonly RefitRow[], pOf: (row: GuardRow) => number | null, thresholds: ReadonlyMap<string, number>) {
   let [wf, agent, handed] = [0, 0, 0];
   for (const row of rows) {
     agent += row.agentCorrect;
     const under = row.guards.some((guard) => {
+      const at = thresholds.get(guard.node) ?? guard.threshold;
+      if (at === OFF) return false;
       const p = pOf(guard);
-      return p === null || p < (thresholds.get(guard.node) ?? guard.threshold);
+      return p === null || p < at;
     });
     const known = row.answered && row.wfCorrect !== null;
     if (under || (!known && !row.guards.some((guard) => guard.escalated))) {
@@ -117,8 +127,23 @@ const rankAbove = (a: readonly number[], b: readonly number[]): boolean => {
   return false;
 };
 
-/** The workflow `text`'s guards refit over `rows` (`now`: the fit's fitted_at). A guard whose step no row reached keeps
- *  what it has. Nothing changes (no `text`) when every guard keeps its threshold and fit. */
+/** The escalates of `doc` a refit may switch off: each a replay records (softEscalatesOf) that is a step of a chain with
+ *  a step that is no escalate, so the chain keeps a step once they are dropped. */
+function switchableEscalates(doc: unknown): Set<string> {
+  const soft = softEscalatesOf(doc);
+  const out = new Set<string>();
+  for (const { node, prefix } of workflowNodes(doc)) {
+    if (node.node !== "chain" || !Array.isArray(node.steps)) continue;
+    const steps = node.steps as Record<string, unknown>[];
+    if (!steps.some((step) => step?.node !== "escalate")) continue;
+    for (const step of steps) if (step?.node === "escalate" && soft.has(`${prefix}${step.label}`)) out.add(`${prefix}${step.label}`);
+  }
+  return out;
+}
+
+/** The workflow `text`'s guards, and the escalates its replay recorded, refit over `rows` (`now`: the fit's fitted_at). A
+ *  guard whose step no row reached keeps what it has, and so does an escalate no row recorded. Nothing changes (no
+ *  `text`) when every guard keeps its threshold and fit and every escalate stays. */
 export function refitGuards(text: string, rows: readonly RefitRow[], now: string): Refit {
   let doc: unknown;
   try {
@@ -126,8 +151,10 @@ export function refitGuards(text: string, rows: readonly RefitRow[], now: string
   } catch {
     return { guards: [], n: rows.length, agent_acc: 0, wf_acc: 0, delta: 0, handed_back: 0 };
   }
-  const guards: { label: string; guard: Record<string, unknown> }[] = [];
-  walkGuards(doc, (label, guard) => guards.push({ label, guard }));
+  const guards: { label: string; guard: Record<string, unknown>; node: Record<string, unknown> }[] = [];
+  walkGuards(doc, (label, guard, node) => guards.push({ label, guard, node }));
+  const recorded = new Set(rows.flatMap((row) => row.guards.filter((g) => g.signal === "escalate").map((g) => g.node)));
+  const escalates = [...switchableEscalates(doc)].filter((label) => recorded.has(label));
   const fits = new Map<string, { w: number[]; b: number; n: number; fitted_at: string }>();
   for (const { label, guard } of guards) {
     if (guard.signal !== "both" || fits.has(label)) continue;
@@ -145,18 +172,20 @@ export function refitGuards(text: string, rows: readonly RefitRow[], now: string
     if (typeof row.self !== "number" || typeof row.jev !== "number") return null;
     return sigmoid(fit.b + fit.w[0]! * row.self + fit.w[1]! * row.jev);
   };
-  const was = new Map(guards.map(({ label, guard }) => [label, typeof guard.threshold === "number" ? guard.threshold : 0]));
-  const thresholds = new Map(was);
+  const was = new Map(guards.map(({ label, guard }) => [label, typeof guard.threshold === "number" ? guard.threshold : OFF]));
+  const thresholds = new Map([...was, ...escalates.map((label) => [label, SOFT_ESCALATE_THRESHOLD] as const)]);
   const agentAcc = scoreAt(rows, pOf, thresholds).agent_acc;
   const meets = (at: ReadonlyMap<string, number>) => scoreAt(rows, pOf, at).wf_acc >= agentAcc - PROMOTE_BAR - 1e-9;
-  // Each guard's candidates: THRESHOLD_MIN (hands back nothing but a p under it), each p its rows read within the DSL's
-  // range, its own threshold, and THRESHOLD_MAX; a step no row reached keeps its own.
-  const candidatesOf = new Map<string, number[]>();
+  // Each guard's candidates: OFF (hands back nothing), THRESHOLD_MIN (nothing but a missing p or one under it), each p its
+  // rows read within the DSL's range, its own threshold, and THRESHOLD_MAX; a step no row reached keeps its own. Each
+  // recorded escalate's: off or on.
+  const candidatesOf = new Map<string, number[]>(escalates.map((label) => [label, [OFF, SOFT_ESCALATE_THRESHOLD]]));
   for (const [label, own] of was) {
     const seen = rows.flatMap((row) => row.guards.filter((g) => g.node === label).map(pOf)).filter((p): p is number => p !== null);
     const at = (p: number) => Math.min(THRESHOLD_MAX, Math.max(THRESHOLD_MIN, round(p, 6)));
-    if (seen.length) candidatesOf.set(label, [...new Set([THRESHOLD_MIN, ...seen.map(at), ...(own > 0 && own < 1 ? [own] : []), THRESHOLD_MAX])].sort((a, b) => a - b));
+    if (seen.length) candidatesOf.set(label, [...new Set([OFF, THRESHOLD_MIN, ...seen.map(at), ...(own > 0 && own < 1 ? [own] : []), THRESHOLD_MAX])].sort((a, b) => a - b));
   }
+  const kept = new Map(thresholds);
   // Up from the bottom: while the bar is not met, the one raise (a guard to a higher candidate) that buys the most accuracy
   // per input it hands back. Taking the steps in order instead traps the refit: the first step alone meets the bar only by
   // handing back every input, and the step whose guard tells right from wrong is then never raised.
@@ -174,7 +203,7 @@ export function refitGuards(text: string, rows: readonly RefitRow[], now: string
     thresholds.set(best.label, best.at);
     now = best.next;
   }
-  if (!meets(thresholds)) for (const [label, at] of was) thresholds.set(label, at);
+  if (!meets(thresholds)) for (const [label, at] of kept) thresholds.set(label, at);
   // Then down: each step in turn, twice over, the lowest threshold (the fewest hand-backs) that keeps the bar, the others held.
   for (let pass = 0; pass < 2; pass++) {
     for (const [label, candidates] of candidatesOf) {
@@ -183,13 +212,25 @@ export function refitGuards(text: string, rows: readonly RefitRow[], now: string
     }
   }
   const changed: RefitGuard[] = [];
-  for (const { label, guard } of guards) {
+  for (const { label, guard, node } of guards) {
     const threshold = thresholds.get(label)!;
     const fit = fits.get(label);
     if (threshold === was.get(label) && !fit) continue;
+    if (threshold === OFF) {
+      delete node.guard;
+      changed.push({ node: label, was: was.get(label)!, threshold: null });
+      continue;
+    }
     guard.threshold = threshold;
     if (fit) guard.fit = fit;
     if (!changed.some((one) => one.node === label)) changed.push({ node: label, was: was.get(label)!, threshold, ...(fit ? { fit } : {}) });
+  }
+  const off = new Set(escalates.filter((label) => thresholds.get(label) === OFF));
+  if (off.size) {
+    for (const { node, prefix } of workflowNodes(doc)) {
+      if (node.node === "chain" && Array.isArray(node.steps)) node.steps = (node.steps as Record<string, unknown>[]).filter((step) => !(step?.node === "escalate" && off.has(`${prefix}${step.label}`)));
+    }
+    for (const label of off) changed.push({ node: label, was: null, threshold: null, escalate: true });
   }
   const score = scoreAt(rows, pOf, thresholds);
   return {

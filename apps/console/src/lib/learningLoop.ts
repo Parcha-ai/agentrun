@@ -62,8 +62,8 @@ export const recordOf = (records: readonly Promotion[], workflow: string, digest
  *  running first (`stopped`, the digest the cost read says `needs_revision`: stoppedOf); no promotion record says so.
  *  `proof`: what a promoted or held revision was decided on (proofOf), said beside its word; a revision serving with no
  *  replay behind it (a dry-run promote) is never green. */
-export type Standing = { word: "Serving" | "Stopped" | "Served" | "Refit" | "Held" | "Replaying" | "Superseded" | "Not decided"; tone: "success" | "warning" | "active" | "muted" | "plain"; proof?: string };
-export function standingOf(record: Promotion | undefined, { serving = null, refit, stopped = null }: { serving?: string | null; refit?: Promotion; stopped?: string | null } = {}): Standing {
+export type Standing = { word: "Serving" | "Stopped" | "Served" | "Refit" | "Held" | "Replaying" | "Superseded" | "Not decided"; tone: "success" | "warning" | "active" | "muted" | "plain"; proof?: string; text: string };
+function standingBase(record: Promotion | undefined, { serving = null, refit, stopped = null }: { serving?: string | null; refit?: Promotion; stopped?: string | null } = {}): Omit<Standing, "text"> {
   if (refit) return { word: "Refit", tone: "muted" };
   if (!record) return { word: "Not decided", tone: "muted" };
   const proof = proofOf(record);
@@ -72,6 +72,11 @@ export function standingOf(record: Promotion | undefined, { serving = null, refi
   if (record.decided === "hold") return { word: "Held", tone: "warning", ...said };
   if (record.decided === "superseded") return { word: "Superseded", tone: "muted" };
   return { word: "Replaying", tone: "active" };
+}
+/** The standing with its chip text: the word, then " · " and its proof. Every chip of a standing says `text`. */
+export function standingOf(...args: Parameters<typeof standingBase>): Standing {
+  const base = standingBase(...args);
+  return { ...base, text: base.proof ? `${base.word} · ${base.proof}` : base.word };
 }
 
 /** The digest of `workflow` the money rule stopped running first (the cost read's `needs_revision`: over its last runs it
@@ -83,46 +88,35 @@ export const stoppedOf = (cost: Pick<LearningCost, "workflows"> | null, workflow
 export const refitOf = (records: readonly Promotion[], workflow: string, digest: string | null): Promotion | undefined =>
   digest === null ? undefined : [...records].reverse().find((r) => r.workflow === workflow && r.source === "refit" && r.decided === "promote" && r.refit?.from === digest);
 
-/** What a promotion record was decided on, in a few words beside "Promoted" or "Serving": "replayed 18/20" (graded inputs
- *  its replay answered or handed back, of those it ran on), "0 replays answered" (every one failed or was skipped), "not
- *  replayed" (promoted on its passing dry run: too few graded inputs to replay), "refit on 25 rows"; null for one still
- *  replaying, superseded, or held on its served runs (its reason says). Owner approval of the file is never proof. */
+/** What a promotion record was decided on, in a few words beside "Promoted" or "Serving": "replayed 18/20 · 9 alone"
+ *  (graded inputs its replay answered or handed back, of those it ran on, and how many of them it answered alone), "0
+ *  replays answered" (every one failed or was skipped), "not replayed" (promoted on its passing dry run: too few graded
+ *  inputs to replay), "refit on 25 rows · 22 alone"; null for one still replaying, superseded, or held on its served runs
+ *  (its reason says). Owner approval of the file is never proof. */
 export function proofOf(record: Promotion): string | null {
   const r = record.replay;
+  // Answered alone: what it did not hand back. Counted here, never kept on the record.
+  const alone = r ? ` · ${r.n - r.handed_back} alone` : "";
   if (record.source === "dry_run") return "not replayed";
-  if (record.source === "refit") return r ? `refit on ${r.n} ${r.n === 1 ? "row" : "rows"}` : null;
+  if (record.source === "refit") return r ? `refit on ${r.n} ${r.n === 1 ? "row" : "rows"}${alone}` : null;
   if (record.source !== "replay" || !r || record.decided === "replaying" || record.decided === "superseded") return null;
-  return r.n ? `replayed ${r.n}${r.of?.length ? `/${r.of.length}` : ""}` : "0 replays answered";
+  return r.n ? `replayed ${r.n}${r.of?.length ? `/${r.of.length}` : ""}${alone}` : "0 replays answered";
 }
 
 /** Whether a record was decided on evidence: a replay or a refit that scored at least one graded input. */
 export const proven = (record: Promotion): boolean => (record.source === "replay" || record.source === "refit") && (record.replay?.n ?? 0) > 0;
 
-const WRITE_SKIP = "needs a write the recording doesn't have";
-
-/** Why a replay skipped inputs, short: how many the MCP tools with no readOnlyHint stopped, naming them (serve names them
- *  in the record's reason too), and how many a write the recording doesn't have stopped, each part only when it has any. */
-function skippedWhy(r: NonNullable<Promotion["replay"]>): string {
-  const unmarked = (r.skipped_tools ?? []).filter((one) => one.no_read_only_hint);
-  const byUnmarked = Math.min(r.skipped_write ?? 0, unmarked.reduce((sum, one) => sum + one.inputs, 0));
-  const byWrite = (r.skipped_write ?? 0) - byUnmarked;
-  const names = unmarked.map((one) => one.tool.replace(/^mcp:[^/]+\//, ""));
-  const list = names.length <= 3 ? names.join(", ").replace(/, ([^,]*)$/, " and $1") : `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
-  const parts = [byUnmarked ? `${byUnmarked} skipped: ${list} ${names.length === 1 ? "has" : "have"} no readOnlyHint` : "", byWrite ? `${byWrite} skipped: ${WRITE_SKIP}` : ""];
-  return parts.filter(Boolean).join(", ");
-}
-
 const pctOf = (v: number) => `${Math.round(v * 100)}%`;
 const pts = (delta: number) => `${delta >= 0 ? "+" : ""}${Math.round(delta * 1000) / 10} pts`;
 
 /** A record's numbers in one line: "Replay on 20 graded inputs: workflow 95% vs agent 94% (+1 pts), 2 handed back", and
- *  how many inputs were skipped for a write the graded run's recording doesn't have, when any were (a replay never runs a
- *  write). A record without a replay (a dry run), or whose every input was skipped, says its reason. */
+ *  how many inputs were skipped, when any were (the record's reason says why). A record without a replay (a dry run),
+ *  or whose every input was skipped, says its reason. */
 export function replayLine(record: Promotion): string {
   const r = record.replay;
   if (!r || !r.n) return record.reason;
   const how = record.source === "refit" ? "Refit on" : record.source === "graded" ? "Checked on" : "Replay on";
-  return `${how} ${r.n} graded ${r.n === 1 ? "input" : "inputs"}: workflow ${pctOf(r.wf_acc)} vs agent ${pctOf(r.agent_acc)} (${pts(r.delta)}), ${r.handed_back} handed back${r.skipped_write ? `, ${skippedWhy(r)}` : ""}`;
+  return `${how} ${r.n} graded ${r.n === 1 ? "input" : "inputs"}: workflow ${pctOf(r.wf_acc)} vs agent ${pctOf(r.agent_acc)} (${pts(r.delta)}), ${r.handed_back} handed back${r.skipped_write ? `, ${r.skipped_write} skipped` : ""}`;
 }
 
 /** A guarded step as a workflow's JSON says it: its `label`; its `node`, the name the runner gives it on its guard rows
@@ -231,7 +225,7 @@ export function storyOf(input: {
   if (s?.takeover) {
     stages.push({ key: "took_over", title: "Took over", value: `Run ${s.takeover.n}`, detail: servingLine ?? (newest?.replay?.n ? replayLine(newest) : newest ? newest.reason : "the first run a learned workflow finished alone"), state: stopped || (newest?.decided === "hold" && !champion) ? "warn" : "done" });
   } else if (newest) {
-    if (servingLine) stages.push({ key: "took_over", title: "Take over", value: stopped ? "Stopped" : "Serving", detail: servingLine, state: stopped ? "warn" : "done" });
+    if (servingLine) stages.push({ key: "took_over", title: "Take over", value: standingOf(recordOf(promotions, newest.workflow, champion) ?? newest, { serving: champion, stopped: stopped ? champion : null }).word, detail: servingLine, state: stopped ? "warn" : "done" });
     else {
       const st = standingOf(newest, { serving: champion });
       stages.push({ key: "took_over", title: "Take over", value: st.word, detail: newest.decided === "replaying" ? "replaying on graded inputs before it serves; the agent takes the runs meanwhile" : replayLine(newest), state: newest.decided === "hold" ? "warn" : "now" });

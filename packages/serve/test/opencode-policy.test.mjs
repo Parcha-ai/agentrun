@@ -51,6 +51,12 @@ test("usage is the completed response's, cached tokens booked apart; none is an 
   assert.equal(usageOf(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "hi" })}\n\n`), undefined);
 });
 
+test("a completed event the proxy's 64 KiB window cut is read from its kept end whatever its JSON spacing (a Python gateway's `\"usage\": {`)", () => {
+  const line = `data: {"type": "response.completed", "response": {"output": [{"type": "message", "content": [{"type": "output_text", "text": "${"x".repeat(100 * 1024)}"}]}], "usage": {"input_tokens": 1000, "output_tokens": 50, "input_tokens_details": {"cached_tokens": 400}}, "user": null}}`;
+  // What the proxy reads of a long answer: its start and its last 64 KiB, the line's start cut away.
+  assert.deepEqual(usageOf(`${line.slice(0, 64 * 1024)}\n${line.slice(-64 * 1024)}\n\ndata: [DONE]\n\n`), { input: 600, output: 50, cacheRead: 400, cacheWrite: 0 });
+});
+
 test("the watch reads each function call of an answer, its call id, name and arguments, before OpenCode has it", () => {
   const seen = [];
   const watch = policy({ onCall: (call) => seen.push(call) }).watch();

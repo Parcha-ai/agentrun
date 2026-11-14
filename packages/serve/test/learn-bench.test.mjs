@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { metricsOf, packageOf, readJob, render, SCHEMA } from "../scripts/learn-bench.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const serve = dirname(dirname(fileURLToPath(import.meta.url)));
 const jobsDir = join(serve, "learn-bench");
@@ -182,7 +183,7 @@ test("a step whose learning had not settled stops its series, naming the step: n
 test("the owner's approve goes with the session cookie alone: the route refuses any request that carries a token", async () => {
   const { createServer } = await import("node:http");
   const seen = [];
-  const server = createServer((req, res) => { seen.push(req.headers); res.end("{}"); });
+  const server = createServer((req, res) => { if (stranger(req, res)) return; seen.push(req.headers); res.end("{}"); });
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   try {
     const api = bench.apiOf(`http://127.0.0.1:${server.address().port}`, "tok");

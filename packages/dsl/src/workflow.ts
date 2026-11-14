@@ -397,6 +397,11 @@ export type WorkflowDeps = {
    *  back: it escalates (kind `guard`, stage the step's label) with the step's state. A workflow that holds a guard is
    *  refused before any node runs on a host without it. */
   guardStep?: (params: GuardStepParams) => Promise<GuardVerdict>;
+  /** Escalate nodes the host records instead of obeying, by label (a child workflow's as its events name it,
+   *  `parent/child`): one it says true of evaluates its `when` as any does and says so in its `escalate.evaluated` event
+   *  (`soft: true`), and the run goes on past it whether it fired or not. A replay reads what the workflow would have
+   *  answered past a check it is measuring. Absent: every escalate that fires hands the job back. */
+  softEscalate?: (label: string) => boolean;
   /** Records one typed-question request and what its answers decide. It is awaited before the answers
    *  reach state, an event or a branch, so a durable recorder holds every decision the run acted on; a
    *  rejection fails the node. A request the judge could not answer, or one cancelled in flight, is
@@ -2671,6 +2676,7 @@ function scopeDepsToChild(deps: WorkflowDeps, invocation: WorkflowInvocation): W
     ...(deps.runEffect ? { runEffect: params => deps.runEffect!({ ...params, node: relabel(params.node) }) } : {}),
     ...(deps.runJudge ? { runJudge: params => deps.runJudge!({ ...params, label: `${prefix}/${params.label}` }) } : {}),
     ...(deps.guardStep ? { guardStep: params => deps.guardStep!({ ...params, label: `${prefix}/${params.label}` }) } : {}),
+    ...(deps.softEscalate ? { softEscalate: label => deps.softEscalate!(`${prefix}/${label}`) } : {}),
     ...(deps.recordDecision ? { recordDecision: (receipt, exchange) => deps.recordDecision!({ ...receipt, node: `${prefix}/${receipt.node}` }, { ...exchange, request: { ...exchange.request, label: `${prefix}/${exchange.request.label}` } }) } : {}),
     ...(deps.runCode ? { runCode: (node, state, ctx) => deps.runCode!(relabel(node), state, { ...ctx, label: `${prefix}/${ctx.label}` }) } : {}),
     ...(recovery ? { recovery: {
@@ -3261,8 +3267,9 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       const pathValue = (node.when as { path?: string })?.path
         ? String((node.when as { path?: string }).path).split(".").reduce<any>((acc, key) => (acc == null ? acc : acc[key]), state)
         : undefined;
-      deps.onEvent?.({ type: "escalate.evaluated", label: node.label, detail: { fired, path: (node.when as { path?: string })?.path ?? null, path_resolved: pathValue !== undefined, ...(evaluated.detail ?? {}) } });
-      if (fired) {
+      const soft = deps.softEscalate?.(node.label) === true;
+      deps.onEvent?.({ type: "escalate.evaluated", label: node.label, detail: { fired, path: (node.when as { path?: string })?.path ?? null, path_resolved: pathValue !== undefined, ...(evaluated.detail ?? {}), ...(soft ? { soft: true } : {}) } });
+      if (fired && !soft) {
         throw new EscalationSignal({ kind: node.kind, stage: node.stage, summary: interpolate(node.summary, state), state, label: node.label, executionPath: executionPath(deps) });
       }
       return state;

@@ -144,12 +144,12 @@ describe("the workflow card: standing, guards and where it is unsure", () => {
   ] } as LearningLoop;
 
   it("says where each revision stands, with its replay in one line; scrubbing moves it", () => {
-    const promotions = [record({}), record({ digest: "2".repeat(16), at: "2026-11-03T10:00:00Z", decided: "promote", source: "refit", refit: { from: "1".repeat(16), guards: [{ node: "classify", was: 0.7, threshold: 0.82 }] } })];
+    const promotions = [record({}), record({ digest: "2".repeat(16), at: "2026-11-03T10:00:00Z", decided: "promote", source: "refit", reason: "refit sorter's guards over 20 rows: classify 0.7 -> 0.82", refit: { from: "1".repeat(16), guards: [{ node: "classify", was: 0.7, threshold: 0.82 }] } })];
     const host = mount(createElement(Steps, { data: read(REVS2), promotions, serving: "2".repeat(16), loop }));
     const standing = () => host.querySelector('[data-testid="standing"]')?.textContent;
     expect(standing()).toContain("Serving");
     expect(standing()).toContain("Refit on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back");
-    expect(host.querySelector('[data-testid="refit"]')?.textContent).toBe("Thresholds refit from 1111111: classify 0.70 → 0.82");
+    expect(host.querySelector('[data-testid="refit"]')?.textContent).toBe("refit sorter's guards over 20 rows: classify 0.7 -> 0.82");
     act(() => (host.querySelector('button[aria-label="Previous revision"]') as HTMLButtonElement).click());
     expect(standing()).toBe("RefitIts thresholds were refit: revision 2222222 serves in its place.");
     expect(host.querySelector('[data-testid="refit"]')).toBeNull();
@@ -161,7 +161,7 @@ describe("the workflow card: standing, guards and where it is unsure", () => {
     const of = Array.from({ length: 20 }, (_, i) => `g${i}`);
     const replayed = mount(createElement(Steps, { data: read([rev(1, guarded(0.7))]), promotions: [record({ replay: { of, n: 18, agree: 17, agent_acc: 0.9, wf_acc: 0.9, delta: 0, handed_back: 1, skipped_write: 2 } })], serving: "1".repeat(16), loop }));
     const chip = (host: HTMLElement) => host.querySelector('[data-testid="standing"] span')!;
-    expect(chip(replayed).textContent).toBe("Serving · replayed 18/20");
+    expect(chip(replayed).textContent).toBe("Serving · replayed 18/20 · 17 alone");
     expect(chip(replayed).className).toMatch(/success/);
     const dry = mount(createElement(Steps, { data: read([rev(1, guarded(0.7))]), promotions: [record({ replay: undefined, source: "dry_run", reason: "no graded input it fits: promoted on its passing dry run" })], serving: "1".repeat(16), loop }));
     expect(chip(dry).textContent).toBe("Serving · not replayed");

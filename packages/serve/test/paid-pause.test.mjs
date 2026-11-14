@@ -2,7 +2,8 @@
 // result says so, and the model's next request is refused in the paid call's words, so the turn ends there and the run
 // waits on a raise (input_required, waiting, pending kind budget) with the call's figures: what was taken, and the
 // call's hold as what it needs. A raise sends the run on (#1642), and the model calls again: each call the model makes is
-// one call, none of ours on top. Faux model and harness, faux monid: no key, no network.
+// one call, none of ours on top. A call monid charges above its hold stops the run instead, on every harness.
+// Faux model and harness, faux monid: no key, no network.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { copyFile, readFile } from "node:fs/promises";
@@ -13,6 +14,7 @@ import { test } from "node:test";
 import { KEY } from "./fixtures/faux-monid.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -61,6 +63,26 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
   });
 }
 
+for (const harness of ["pi", "claude-agent", "codex"]) {
+  test(`${harness}: a paid call monid charges above its hold stops the run at once, failed in words naming both amounts, its charge booked as charged`, { timeout: 120_000 }, async (t) => {
+    const log = join(await scratch(t), "monid-calls.jsonl");
+    // Held at its $1 price and sent with it as maxCost; monid re-priced it after the read and charges $1.50.
+    withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log, AGENTRUN_TEST_FAUX_MONID_CHARGE: "1.5" });
+    const { api } = await serve(t, { fauxMonid: FAUX_MONID, ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS) }) });
+    const id = `over-hold-${harness}`;
+    // The model calls it, then answers (pi) or calls it again (the CLIs): the request after the call is refused.
+    assert.equal((await api("POST", "/agents", agent(id, { ...(harness === "pi" ? {} : { harness, instructions: ASK }), tools: [SEARCH], tool_settings: ALLOWED }))).status, 201);
+    const started = await api("POST", `/agents/${id}/runs`, { input: { content: ASK }, max_cost_usd: 5 });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const runId = started.body.run_id;
+    await follow(api, runId, ENDED, { deadlineMs: 60_000 });
+    const done = await view(api, runId);
+    assert.deepEqual([done.status, done.error?.message], ["failed", "monid charged $1.50, more than the $1 held; the run stopped"], JSON.stringify(done));
+    assert.ok(done.cost.usd >= 1.5, `booked as charged: ${JSON.stringify(done.cost)}`);
+    assert.equal(await monidRuns(log), 1, "no call after it");
+  });
+}
+
 test("pi: after a raise, a model that calls twice makes two calls: none is added, and none retried", { timeout: 120_000 }, async (t) => {
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
@@ -82,7 +104,7 @@ async function gateway(t, answers) {
   const seen = [];
   const outputs = [];
   const server = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     outputs.push((JSON.parse(body).input ?? []).filter((item) => item.type === "function_call_output").map((item) => item.output));

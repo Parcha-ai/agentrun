@@ -3,7 +3,9 @@
 //   - the first fitting run goes to the agent while the digest replays: one replay run per graded input, each the
 //     workflow alone at workflow cost (path `replay`, no agent request, no end-of-run turn);
 //   - a later run, every replay ended, is served first once the replay is within 2 points of the agent's graded answers;
-//   - a replay the workflow hands back on counts as the agent's recorded answer, never as a failure: it still promotes;
+//   - a replay the workflow hands back on counts as the agent's recorded answer, never as a failure; but one that hands
+//     back every input would never answer alone: held. An escalate on a judge's field is recorded in a replay, not
+//     obeyed, and the refit may switch it off; one on a draft's own field stays hard;
 //   - a replay whose answers are wrong holds the digest: the run after it is the agent's;
 //   - fewer than five graded inputs: promoted on its passing dry run, as before, and the record says so;
 //   - champion/challenger: a promoted digest (the champion) keeps serving while a newer revision of it replays, and after
@@ -35,6 +37,8 @@ const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { seedOf } = await import("../dist/learning.js");
+const { CANARY } = await import("./fixtures/faux-jev.mjs");
+const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const MODEL = "claude-sonnet-5-5";
@@ -100,7 +104,7 @@ async function holdingProxy(t, origin, held) {
 /** An agent that learned `answer` and `graded` graded runs (their grade's `expected` fields: `expected`), a runner
  *  claiming every run from its stored launch. The node submits `{answer: 42, sure}`. `hold`: a model request whose body
  *  it matches is held until its run is cancelled. */
-async function world(t, { graded = 6, expected = { answer: 42 }, sure = true, flows = FLOWS, submit, hold } = {}) {
+async function world(t, { graded = 6, expected = { answer: 42 }, sure = true, flows = FLOWS, submit, hold, env = {} } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-promote-replay-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -131,7 +135,7 @@ async function world(t, { graded = 6, expected = { answer: 42 }, sure = true, fl
   const proxy = hold ? await holdingProxy(t, gw.url, hold) : undefined;
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: proxy?.url ?? gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const logs = [];
-  const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store: depStore, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
+  const deps = { env, data: dir, journal: (claim) => store.journal(claim), store: depStore, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
   runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
   const ended = (id) => until(async () => {
@@ -186,7 +190,7 @@ test("a new digest with graded inputs replays before it serves: the agent takes 
   assert.equal(records[1].digest, DIGEST);
 });
 
-test("a replay the workflow hands back on counts as the agent's answer, never as a failure: it promotes, and no agent turn ran in it", { timeout: 180_000 }, async (t) => {
+test("a replay the workflow hands back on every input is held (it would never answer alone); its escalate on a draft stays hard in the replay, and no agent turn ran in it", { timeout: 180_000 }, async (t) => {
   const { server, gw, start, replays } = await world(t, { sure: false });
   await start("run-1", "What is six times seven");
   const agentAfterFirst = gw.requests.filter((request) => !isNode(request)).length;
@@ -197,11 +201,54 @@ test("a replay the workflow hands back on counts as the agent's answer, never as
   assert.deepEqual(runs.map((row) => [row.state, row.metrics?.replay?.outcome]), runs.map(() => ["ended", "handed_back"]));
   assert.equal(gw.requests.filter((request) => !isNode(request)).length, agentAfterFirst, "a hand-back in replay asks the agent nothing");
   const second = await start("run-2", "What is seven times six");
-  // Promoted (every input handed back: the agent's graded answers, all right); serving, it hands back to the agent.
-  assert.equal(second.metrics?.path, "handed_back", JSON.stringify(second.metrics));
-  const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
-  assert.equal(decided.decided, "promote");
-  assert.deepEqual({ wf_acc: decided.replay.wf_acc, agent_acc: decided.replay.agent_acc, handed_back: decided.replay.handed_back }, { wf_acc: 1, agent_acc: 1, handed_back: 6 });
+  // Every input handed back: within the bar on the agent's own answers, but it never answered alone: held, and its escalate
+  // (on the draft's own field, no judge's) is no switch a refit has, so nothing serves: the next run is the agent's.
+  assert.equal(second.metrics?.path, "agent", JSON.stringify(second.metrics));
+  const records = await promotionsOf(server.settings, "agent-1");
+  assert.deepEqual(records.map(({ decided, source }) => [decided, source]), [["replaying", "replay"], ["hold", "replay"]]);
+  const decided = records.at(-1);
+  assert.deepEqual({ wf_acc: decided.replay.wf_acc, agent_acc: decided.replay.agent_acc, n: decided.replay.n, handed_back: decided.replay.handed_back, alone: "alone" in decided.replay }, { wf_acc: 1, agent_acc: 1, n: 6, handed_back: 6, alone: false });
+  assert.match(decided.reason, /^it handed back every one of its 6 replayed inputs: it would never answer alone/);
+});
+
+/** answerFlow with a judge of its draft and an escalate on the judge's field (the MCC shape): the faux Jev says yes to
+ *  every question, so `unsupported` is true and the escalate fires on every input, the draft right or not. */
+const judgedFlow = {
+  ...answerFlow,
+  schemas: { ...answerFlow.schemas, Check: { type: "object", required: ["unsupported"], properties: { unsupported: { type: "boolean", description: "Is the answer unsupported by the question?" } } } },
+  root: { node: "chain", steps: [
+    answerFlow.root.steps[0],
+    { node: "judge", label: "check", state: { answer: "{answer.answer}", question: "{question}" }, out: "Check", as: "check" },
+    { node: "escalate", label: "unsupported", when: { predicate: "field_equals", path: "check.unsupported", value: true }, kind: "unsupported", stage: "check", summary: "the check says {answer.answer} is unsupported" },
+  ] },
+};
+
+test("a judge-driven escalate is recorded in the replay, not obeyed: held for never answering alone, the refit switches it off, and the new revision promotes and answers alone", { timeout: 180_000 }, async (t) => {
+  const env = { TYPESAFE_API_KEY: CANARY, AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV };
+  const { server, start, replays, logs } = await world(t, { flows: [{ name: "answer", description: "Answers a question as a number", workflow: judgedFlow }], env });
+  const first = await start("run-1", "What is six times seven");
+  assert.equal(first.metrics?.path, "agent");
+  const runs = await until(async () => {
+    const all = await replays();
+    return all.length === 6 && all.every((row) => ["ended", "failed", "stopped"].includes(row.state) && row.runner === null) && all;
+  }, "the six replay runs ended");
+  // Recorded, not obeyed: each replay went on to its draft, the escalate's row saying it fired.
+  for (const row of runs) {
+    assert.equal(row.metrics?.replay?.outcome, "answered", JSON.stringify(row.metrics));
+    assert.deepEqual(row.metrics.guards.map(({ node, signal, p, escalated }) => [node, signal, p, escalated]), [["unsupported", "escalate", 0, false]]);
+  }
+  const second = await start("run-2", "What is seven times six");
+  const records = await promotionsOf(server.settings, "agent-1");
+  const held = records.find((one) => one.decided === "hold");
+  assert.equal(held.digest, workflowDigest({ workflow: JSON.stringify(judgedFlow) }));
+  assert.deepEqual({ n: held.replay.n, handed_back: held.replay.handed_back }, { n: 6, handed_back: 6 });
+  assert.match(held.reason, /it would never answer alone/);
+  const refit = records.at(-1);
+  assert.deepEqual({ decided: refit.decided, source: refit.source, from: refit.refit.from, guards: refit.refit.guards }, { decided: "promote", source: "refit", from: held.digest, guards: [{ node: "unsupported", was: null, threshold: null, escalate: true }] });
+  assert.deepEqual({ wf_acc: refit.replay.wf_acc, delta: refit.replay.delta, n: refit.replay.n, handed_back: refit.replay.handed_back, alone: "alone" in refit.replay }, { wf_acc: 1, delta: 0, n: 6, handed_back: 0, alone: false });
+  assert.ok(logs.some((line) => /refit answer's guards over its replay held it \(6 rows\): unsupported escalate off/.test(line)), logs.join("\n"));
+  // The refit serves this same run, alone: no escalate left to hand it back.
+  assert.deepEqual([second.metrics?.path, second.metrics?.workflow_digest], ["workflow", refit.digest], JSON.stringify(second.metrics));
 });
 
 test("a replay more than 2 points under the agent holds the digest: the next run is the agent's", { timeout: 180_000 }, async (t) => {

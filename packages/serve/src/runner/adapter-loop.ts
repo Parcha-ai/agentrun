@@ -1479,7 +1479,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // What was spent beside them on the run's behalf (its spec's runCap.beside) is read with them at each admission
         // (runBooking), the spec's once it is known.
         const besideNow = async (): Promise<number | null> => (specNow?.runCap?.beside ? await specNow.runCap.beside() : 0);
-        const sessions = Object.assign(journalSessions(harness, context, { flush: () => deps.flush() }), { beside: besideNow });
+        const sessions = Object.assign(journalSessions(harness, context, { flush: () => deps.flush(), claim }), { beside: besideNow });
         let capBuilt: RunCap | undefined;
         /** The session's recent requests, as the cap's `expected` pricing reads them (the kernel's recentAfter and
          *  warmFrom): the harness's own requests that answered under CACHE_WARM_MS ago, each one's input as its usage
@@ -1684,8 +1684,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // prices it (RunCap.asked), which a CLI's request names as its provider does, so the next request finds it.
           askedFor.set(request.turn, { model: specNow?.runCap ? theCap().asked(request).model.id : request.model, ...(request.inputTokensMax === undefined ? {} : { bound: request.inputTokensMax }), counted: request.inputTokensCounted === true, own: request.host === undefined && !request.side && !request.unanswered });
           // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused,
-          // whatever else would pause it (a paid call's refusal, pendingPause).
-          const over = await overCap();
+          // whatever else would pause it (a paid call's refusal, pendingPause). One a paid call stopped for good
+          // (paid-calls.ts stopRun) ends in that call's words, which say why, past its cap too.
+          const over = pendingPause?.forGood ? undefined : await overCap();
           if (!over && pendingPause) {
             pendingPause = await landing(pendingPause);
             // Fits now: dropped for good, on the root too, so a later claim never revives the old refusal.
@@ -1963,6 +1964,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // from that end, never run again.
             const ended = tool.nests ? undefined : record?.endOf(toolContext.callId);
             if (ended) return endedAnswer(tool.name, ended);
+            // A run a paid call stopped for good (paid-calls.ts stopRun) runs no tool after it, a script's own calls
+            // included: each is refused in the stop's words, never run.
+            if (pendingPause?.forGood) return { text: pendingPause.refuse, isError: true };
             // A call run again after an earlier attempt (the harness's rerun of a replay-safe call after a crash: its
             // attempt above 0) never passed the gate before its intent this time: the gate is asked again here, so a deny
             // set since the first attempt refuses the rerun, in words saying the earlier attempt may have taken effect.
@@ -2605,7 +2609,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // A turn whose booked spend passed the run's cap ends the run failed in the cap's words (overCap), its crossing
           // answer booked: main's end of a run over its cap, before any pause (a question to the person, a cap refusal).
           await bookingsSettled();
-          const over = cutOff ? undefined : await overCap();
+          // A run a paid call stopped for good (paid-calls.ts stopRun) ends in that call's words, past its cap too.
+          const stoppedBy = pendingPause?.forGood ? pendingPause : undefined;
+          const over = cutOff || stoppedBy ? undefined : await overCap();
           // A failed CLI turn: a message the person sent while it ran may not have reached the loop yet (the runner's next
           // poll), and the run's status is its last turn's end, so it is handed on now (bounded), as a finished turn's is.
           if (!cutOff && !over && !refused && outcome.status === "failed" && spec.record === "loop" && afterTurn.length === 0 && steeredIn.length === 0 && deps.deliverNow && !stopReason) {
@@ -2620,6 +2626,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
           if (cutOff) data = { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` };
           else if (over) data = { state: "failed", summary: over };
+          else if (stoppedBy) data = { state: "failed", summary: stoppedBy.refuse };
           else if (outcome.status !== "completed" && refused) {
             // A turn the host's check refused: what that does to the run is the cap's rule (parkOf), as on main. A refusal a
             // raise could fix parks the run on a raise; one no raise could fix (or a check with no cap) fails it, in the
@@ -2837,7 +2844,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await beforeAsk?.(call);
       // Its price on the card: a catalog tool's (an MCP tool's, a monid endpoint's pinned price), else none.
       const price = mcp?.priceOf(tool) ?? null;
-      const answer = bySetting ? await allowedBySetting({ ...call, tool, args }, price, asked) : await answerOf({ ...call, tool, args }, price, asked);
+      // Marked destructive when the tool is, or when any MCP tool the one allow lets run is (the gate's `mcp_calls`, a
+      // learned workflow's MCP calls set to ask): that allow takes the second confirm too.
+      const covered = Array.isArray(shown?.mcp_calls) ? shown.mcp_calls.filter((name): name is string => typeof name === "string") : [];
+      const destructive = [asked, ...covered].some((name) => mcp?.effectOf(name) === "destructive");
+      const answer = bySetting ? await allowedBySetting({ ...call, tool, args }, price, asked) : await answerOf({ ...call, tool, args }, price, asked, destructive);
       if (answer === "park") return { park: true };
       // A call a person approved: what it runs inside its own call (a learned workflow's MCP nodes set to ask) runs as
       // approved with it (host-calls.ts), as far as the card they approved named it: its ask as journaled, the card they
@@ -2854,7 +2865,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** An ask's answer: one in the journal stands; else the approve or deny the runner hands over on a resume; else ask and
    *  park (the ask entry with the run parked, in one commit). The ask is main's approval card: the call's input, when it
    *  was asked and its `price`; asked again on a resume, it is the same request. */
-  async function answerOf(call: PreIntentCall, price: ApprovalPrice | null, asked: string = call.tool): Promise<AnswerData | "park"> {
+  async function answerOf(call: PreIntentCall, price: ApprovalPrice | null, asked: string = call.tool, destructive = mcp?.effectOf(asked) === "destructive"): Promise<AnswerData | "park"> {
     const conversation = await harness!.root(context);
     const entries = await entriesOf(gate!.journal, conversation.id, context);
     const first = findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId);
@@ -2864,7 +2875,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (known) return known;
     // The ask names the call as the person is asked about it (`asked`: its settings key), so every reader of the ask (the
     // run's pending approval, its approval row, an "always" answer pinned by it) has the one name main gives it.
-    const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, requestedAt: isoNow(), price };
+    // An MCP tool its run's pin marks destructive (ClaimMcp.effectOf), or a call whose allow covers one (`destructive`):
+    // its card asks a second confirm of an allow.
+    const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, requestedAt: isoNow(), price, ...(destructive ? { destructive: true as const } : {}) };
     const entryLands = (kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]) => landEntry(conversation, kind, data, staged);
     if (first === undefined) {
       // Asked and parked; or held as the parked call is, when another call of the round parked the run first.

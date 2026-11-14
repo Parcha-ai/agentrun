@@ -7,14 +7,17 @@
 // named by its catalog name: held at the pinned price (a fixed one: the save pins no endpoint priced by usage), refused
 // unsent when that does not fit the cap, then its price read again from monid and the call answered uncharged, unsent,
 // unless monid still fixes it (fixedThenRun: one re-priced by usage since the save would pass any maxCost), sent with
-// that hold as monid's maxCost (so monid refuses it unrun if it now prices it higher), and settled at what monid says it charged. With no run's ledger to book it on, it is never sent. Its key is the
+// that hold as monid's maxCost (so monid refuses it unrun if it now prices it higher), and settled at what monid says it charged. maxCost
+// checks only monid's estimate: a charge above the hold (monid re-priced it between the read and the run) is booked as
+// charged, logged, and stops the run at once in words naming both (stopRun). With no run's ledger to book it on, it is never sent. Its key is the
 // claim's (claim-secrets.ts: a run that grants a monid endpoint, and no other, is handed MONID_API_KEY), read at the call
 // and sent to monid alone: never in the tool's input, its answer, or the run's computer.
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { fauxFetch } from "../decisions.js";
 import { chargeOf, FAUX_MONID_ENV, heldOf, MONID_KEY_ENV, type MonidAnswer, monidClient, type MonidPin, monidText, priceWords, uncharged } from "../monid.js";
-import { paidLedger, paidStep, unbookedRefusal } from "../paid-calls.js";
+import { money } from "../cap.js";
+import { paidLedger, paidStep, stopRun, unbookedRefusal } from "../paid-calls.js";
 import { monidNameOf, parseToolName } from "../tool-names.js";
 import type { Json } from "../validate.js";
 import type { Workspace } from "../workspace/index.js";
@@ -24,8 +27,8 @@ import type { ClaimMcp } from "./mcp-run.js";
 export type ClaimMonid = Pick<ClaimMcp, "tools" | "catalogOf" | "priceOf">;
 
 /** One host tool per endpoint of `pin`, on the claim's environment `env` (its key, and the tests' fake under faux), an
- *  answer too long for the model filed in `work()`; undefined when the pin holds none. */
-export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv, work: () => Workspace): ClaimMonid | undefined {
+ *  answer too long for the model filed in `work()`; undefined when the pin holds none. `runId` names the run in the log. */
+export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv, work: () => Workspace, runId?: string): ClaimMonid | undefined {
   const names = Object.keys(pin ?? {});
   if (!pin || !names.length) return undefined;
   const catalog = new Map<string, string>();
@@ -53,6 +56,12 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
           return usd === undefined ? 0 : usd;
         });
         if ("refused" in paid) return { text: JSON.stringify({ error: paid.refused }), isError: true };
+        const charged = chargeOf(paid.result);
+        if (typeof charged === "number" && Math.round(charged * 1e6) > Math.round(pinned.usd * 1e6)) {
+          const words = `monid charged ${money(charged)}, more than the ${money(pinned.usd)} held; the run stopped`;
+          console.error(`[runner] run ${runId ?? "(unnamed)"}: ${name}: ${words}`);
+          await stopRun(words);
+        }
         return { text: await monidText(paid.result, work(), at.provider), ...(paid.result.error !== undefined ? { isError: true } : {}) };
       },
     } satisfies HostTool];
@@ -67,13 +76,15 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
 
 /** The claim's MCP with the run's monid endpoints beside it: the one catalog seam the loop reads (AdapterRunSpec.mcp).
  *  Its credentials' hooks are MCP's alone, and so is the closure of a pinned tool's arguments (argumentsOf: the gate's
- *  settings pins are on MCP tools; a monid endpoint's input is held to its pinned schema by the harness). */
+ *  settings pins are on MCP tools; a monid endpoint's input is held to its pinned schema by the harness), and so is each
+ *  tool's effect (effectOf: Allow reads and the destructive confirm read an MCP tool's annotations; an endpoint has none). */
 export function withMonid(mcp: ClaimMcp | undefined, monid: ClaimMonid | undefined): ClaimMcp | undefined {
   if (!monid) return mcp;
   return {
     tools: [...(mcp?.tools ?? []), ...monid.tools],
     catalogOf: (tool) => mcp?.catalogOf(tool) ?? monid.catalogOf(tool),
     argumentsOf: (name) => mcp?.argumentsOf(name),
+    effectOf: (name) => mcp?.effectOf(name),
     priceOf: (name) => mcp?.priceOf(name) ?? monid.priceOf(name),
     fresh: async () => mcp?.fresh(),
     release: () => mcp?.release(),
