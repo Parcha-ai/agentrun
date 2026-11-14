@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
+import { observed, queue, recorder, release, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -413,4 +413,79 @@ test("a CLI run whose one answer asks for two calls at once: the run completes, 
   // Ported from harness-close.test.mjs: the harness's session is closed once its run is let go, so none of the CLI's own
   // processes outlives the claim.
   assert.equal(closes.count, 1, "the CLI session closed once at the run's release");
+});
+
+// The output contract's retry on a CLI harness: the loop writes it on the run's record, then sends it. A runner lost between
+// the two (here, killed while the retry's first send hangs) leaves the retry written and never answered; the claim that
+// opens the session again sends it then, once, and the run ends on the corrected answer, never on the one that missed.
+test("an output retry written on the record but never sent is sent by the next claim, once, and the run ends on its answer", async (t) => {
+  const opened = await stores({ runners: 2 });
+  await queue(opened.server, "run-1");
+  const sent = [];
+  let lost = 0;
+  const SHORT = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+  const adapter = {
+    id: "stand-in-cli",
+    capabilities: () => ({}),
+    check: () => [],
+    async open(_spec, io) {
+      let state = (await io.writer.read()).some((record) => record.kind === "stand-in.sent") ? "idle" : "new";
+      let turn;
+      return {
+        get state() { return state; },
+        async send(text) {
+          if (text.startsWith("Your final JSON") && lost++ === 0) return new Promise(() => {});
+          sent.push(text);
+          await io.writer.append([{ kind: "stand-in.sent", data: null }]);
+          state = "idle";
+          turn = (async () => {
+            io.onEvent({ type: "text", delta: text.startsWith("Your final JSON") ? 'Fixed.\n\n```json\n{"ok": true}\n```' : "Hello in prose." });
+            io.onEvent({ type: "turn_end", status: "completed" });
+            return { status: "completed" };
+          })();
+        },
+        async recover() {},
+        async settleOpenTurn() { state = "idle"; },
+        turnEnd: () => turn,
+        async interrupt() {},
+        async close() {},
+      };
+    },
+  };
+  const createLoop = createAdapterLoop(() => ({
+    adapter,
+    session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },
+    input: "Say hello.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
+    record: "loop",
+    hooks: quiet,
+    gate: () => "allow",
+    outputSchema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
+  }));
+  const first = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...SHORT });
+  const journalOf = async (row) => journalRecords(opened.server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+  await until(async () => {
+    const now = await opened.server.runs.get("run-1");
+    return lost === 1 && messagesOf(await journalOf(now)).length === 3;
+  }, "the retry on the record, its send never done", 10_000);
+  first.kill();
+  const next = startRunner({ store: observed(opened.runners[1], recorder()), createLoop, name: "runner-b", ...STEADY });
+  // Its three stores' connections go when the case ends, never held to the file's end beside the other files' on Postgres.
+  t.after(async () => {
+    await next.close();
+    await release(opened);
+  });
+  const row = await until(async () => {
+    const now = await opened.server.runs.get("run-1");
+    return ["ended", "failed"].includes(now.state) && now.runner === null && now;
+  }, "the run ended and released", 10_000);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const retry ="Your final JSON did not match the output schema: the answer has no fenced json block. Reply again, ending with the corrected json block.";
+  assert.deepEqual(sent, ["Say hello.", retry], "the retry reached the session once, after the claim that lost it");
+  assert.deepEqual(messagesOf(await journalOf(row)).map((message) => [message.role, message.text]), [
+    ["person", "Say hello."],
+    ["model", "Hello in prose."],
+    ["person", retry],
+    ["model", 'Fixed.\n\n```json\n{"ok": true}\n```'],
+  ], "written once, answered once");
 });
