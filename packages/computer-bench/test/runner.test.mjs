@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { FAKE_AGENTS, FakeWorld, fakeBackend, helper, pngOf } from "../dist/fake-world.js";
-import { ENTRY, runBench, runChecks } from "../dist/index.js";
+import { ENTRY, ranProgram, runBench, runChecks } from "../dist/index.js";
 import { arm, fakeTasks, jsonl, recordOf, store, withSpec } from "./support.mjs";
 
 test("the fake agents: right passes every fake task, wrong and null fail every task whose checks are sufficient", async () => {
@@ -363,6 +363,25 @@ test("exec deny: the agent's grant has no exec or processes, the record and resu
 	assert.equal(allowed.outcome, "pass", "exec allow: the agent may use the shell");
 	assert.equal(allowed.exec_calls, 1);
 	assert.equal(allowed.platform, "macos desktop");
+});
+
+test("a program ran when it started: a command cut by its timeout or a failed shell tool call counts, a call refused before it started does not", () => {
+	const step = (fields) => ({ n: 1, phase: "agent", method: "exec.run", params: {}, t_ms: 0, ms: 1, ok: true, ...fields });
+	const cases = [
+		[step({}), true],
+		[step({ ok: false, error: { code: "timeout", message: "ran past 30 s" } }), true],
+		[step({ method: "process.wait", ok: false, error: { code: "aborted", message: "stopped" } }), true],
+		[step({ phase: "tool", method: "bash", ok: false, error: { code: "tool_failed", message: "exit 1" } }), true],
+		[step({ ok: false, error: { code: "denied", message: "no exec group" } }), false],
+		[step({ ok: false, error: { code: "limit", message: "budget" } }), false],
+		[step({ ok: false, error: { code: "not_found", message: "no such program" } }), false],
+		[step({ method: "ui.act" }), false],
+		[step({ phase: "tool", method: "web_search" }), false],
+	];
+	assert.deepEqual(
+		cases.map(([one]) => ranProgram(one)),
+		cases.map(([, ran]) => ran),
+	);
 });
 
 test("parallel episodes give the same verdicts as one at a time", async () => {

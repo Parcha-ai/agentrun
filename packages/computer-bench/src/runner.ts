@@ -375,8 +375,17 @@ async function readTree(wire: Wire, hello: Hello, signal: AbortSignal): Promise<
 /** The tools that are a shell: a call of one that answered ran a program. */
 const SHELL_TOOLS = new Set(["bash", "bash_background", "shell"]);
 
-/** Whether an agent's step ran a program: exec.run, a process method, or a shell tool's call, answered. */
-export const ranProgram = (step: Step): boolean => step.ok && (step.phase === "agent" ? step.method === "exec.run" || step.method.startsWith("process.") : step.phase === "tool" && SHELL_TOOLS.has(step.method));
+/** A computer call that failed with one of these started its program and was cut: it ran one. Any other failure (denied,
+ *  limit, invalid, not_found, ...) refused it before it started. */
+const CUT_CODES = new Set(["timeout", "aborted"]);
+
+/** Whether an agent's step ran a program: exec.run or a process method that answered or was cut once started, or any
+ *  shell tool call (a command that failed still ran). */
+export const ranProgram = (step: Step): boolean => {
+	if (step.phase === "tool") return SHELL_TOOLS.has(step.method);
+	if (step.phase !== "agent" || !(step.method === "exec.run" || step.method.startsWith("process."))) return false;
+	return step.ok || CUT_CODES.has(step.error?.code ?? "");
+};
 
 /** A run's tallies from its agent steps. */
 function tally(steps: readonly Step[]) {

@@ -85,7 +85,18 @@ export interface Report {
 	/** The tasks that denied the agent exec (done through the UI alone), and those that allowed it. */
 	exec: { deny: string[]; allow: string[] };
 	/** How the run was measured, for its paragraph. */
-	measured: { tasks: number; by_platform: Record<string, number>; seeds: number[]; judge: string | null; retries?: number };
+	measured: {
+		tasks: number;
+		by_platform: Record<string, number>;
+		seeds: number[];
+		/** The grader bench.json configured, whether or not it graded anything. */
+		judge: string | null;
+		/** The runs a grader did grade (their result has a grade), out of the scored, and the graders that did. */
+		graded: number;
+		scored: number;
+		graders: string[];
+		retries?: number;
+	};
 }
 
 const pct = (x: number | undefined) => (x === undefined ? "-" : `${(100 * x).toFixed(1)}%`);
@@ -247,12 +258,15 @@ export function buildReport(all: readonly Result[], labels: readonly Label[] = [
 		};
 	});
 	const exec = { deny: taskIds.filter((task) => execByTask.get(task) === "deny"), allow: taskIds.filter((task) => execByTask.get(task) !== "deny") };
-	const judges = [...new Set(finals.flatMap((result) => (result.grade ? [result.grade.judge] : [])))];
+	const scoredFinals = finals.filter((result) => result.scored);
 	const measured = {
 		tasks: taskIds.length,
 		by_platform: Object.fromEntries(platforms.map((one) => [one.platform, one.tasks.length])),
 		seeds: options.bench?.seeds ?? [...new Set(finals.map((result) => result.seed))].sort((a, b) => a - b),
-		judge: options.bench?.judge ?? judges[0] ?? null,
+		judge: options.bench?.judge ?? null,
+		graded: scoredFinals.filter((result) => result.grade).length,
+		scored: scoredFinals.length,
+		graders: [...new Set(scoredFinals.flatMap((result) => (result.grade ? [result.grade.judge] : [])))],
 		...(typeof options.bench?.retries === "number" ? { retries: options.bench.retries } : {}),
 	};
 	return { bench: all[0]?.bench ?? "", generated_at: new Date().toISOString(), splits: [...new Set(finals.map((result) => result.split))].sort(), arms, paired, tasks, platforms, exec, measured };
@@ -266,7 +280,14 @@ function measuredParagraph(report: Report): string {
 	const platforms = Object.entries(measured.by_platform)
 		.map(([platform, n]) => `${platform} ${n}`)
 		.join(", ");
-	const grader = measured.judge ? `the grader (${measured.judge}) read the run's record where the checks are not sufficient` : "no grader ran: the checks alone decided";
+	// What graded, from the results' own grades: a configured grader that graded nothing (--grade never, every request
+	// failed) is no grading.
+	const grader =
+		measured.graded > 0
+			? `the grader (${measured.graders.join(", ")}) read the record of ${measured.graded} of the ${measured.scored} scored runs, where the checks were not sufficient`
+			: measured.judge
+				? `no run was graded (the grader ${measured.judge} was configured): the checks alone decided`
+				: "no grader ran: the checks alone decided";
 	const reruns = measured.retries === undefined ? "re-run" : `re-run up to ${measured.retries} times`;
 	return [
 		`We ran ${measured.tasks} tasks (${platforms}) on seeds ${measured.seeds.join(", ")}, every arm on the same task and seed, so the arms are paired.`,

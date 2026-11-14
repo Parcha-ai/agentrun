@@ -182,7 +182,10 @@ test("the report for the blog: a table per platform with the paired difference, 
 	const measured = markdown.slice(markdown.indexOf("## How we measured"));
 	assert.match(measured, /3 tasks \(android phone 2, linux desktop 1\)/);
 	assert.match(measured, /seeds 1, 2/);
-	assert.match(measured, /anthropic:claude-opus-5-5/);
+	assert.match(measured, /no run was graded \(the grader anthropic:claude-opus-5-5 was configured\): the checks alone decided/, "a configured grader that graded nothing is no grading");
+	const graded = results.map((one, i) => (i === 0 ? { ...one, grade: { verdict: "pass", locus: "none", by: "grader", confidence: "high", judge: "anthropic:claude-opus-5-5" } } : one));
+	const gradedText = reportMarkdown(buildReport(graded, labels, { bench }));
+	assert.match(gradedText.slice(gradedText.indexOf("## How we measured")), /the grader \(anthropic:claude-opus-5-5\) read the record of 1 of the 9 scored runs, where the checks were not sufficient/);
 	assert.match(measured, /infra/);
 	assert.match(measured, /re-run up to 2 times/);
 	assert.match(measured, /deny exec \(1\): a1/);
