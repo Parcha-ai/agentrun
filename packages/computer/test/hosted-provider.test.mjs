@@ -844,7 +844,7 @@ test("a desktop's window manager starts once the display answers, with DISPLAY; 
 	const m = only(managed.fake);
 	const [server, manager, ...more] = starts(managed.fake, m.id);
 	assert.equal(server.argv[0], "Xvfb", "the X server first");
-	assert.deepEqual(manager, { argv: ["xfwm4", "--compositor=off"], env: { DISPLAY: ":0" } }, "then the window manager, on the display");
+	assert.deepEqual(manager, { argv: ["xfwm4", "--compositor=off"], env: { DISPLAY: ":0", NO_AT_BRIDGE: "1" } }, "then the window manager, on the display, with no accessibility bus");
 	assert.deepEqual(more, []);
 	const order = managed.fake.requests.filter(({ machine }) => machine === m.id).map(({ method, params }) => (method === "process.start" ? params.argv[0] : method));
 	const between = order.slice(order.indexOf("Xvfb") + 1, order.indexOf("xfwm4"));
