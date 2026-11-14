@@ -1,0 +1,107 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.contacts.work-email",
+  "version": 1,
+  "title": "Add an email address with a given label to a contact in Contacts",
+  "split": "heldout",
+  "tags": ["contacts", "edit", "form", "decoy"],
+  "needs": { "os": "android", "kind": "phone", "apps": [["com.google.android.contacts", "com.android.contacts", "com.samsung.android.app.contacts"]] },
+  "params": {
+    "p": {
+      "pick": [
+        { "decoy": "Nora Kim", "target": "Noah Kim", "user": "noah.kim" },
+        { "decoy": "Eva Lund", "target": "Erik Lund", "user": "erik.lund" },
+        { "decoy": "Tara Shah", "target": "Theo Shah", "user": "theo.shah" },
+        { "decoy": "Gina Rossi", "target": "Gabe Rossi", "user": "gabe.rossi" }
+      ]
+    },
+    "e": {
+      "pick": [
+        { "label": "Work", "type": "2", "domain": "acme-corp.com" },
+        { "label": "Other", "type": "3", "domain": "fastmail.com" },
+        { "label": "Work", "type": "2", "domain": "northwind.io" }
+      ]
+    }
+  },
+  "exec": "deny",
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No contact with this run's nonce is left from an earlier try.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "purge", "{{nonce}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Two contacts with the same surname and initial, neither with an email address: a decoy and the one to edit.",
+      "params": { "argv": ["sh", "-c", "sh -c \"$1\" sh add computer-bench-{{nonce}}-1 \"$2 {{nonce}}\" '415 555 0131' && sh -c \"$1\" sh add computer-bench-{{nonce}}-2 \"$3 {{nonce}}\" '415 555 0157'", "sh", "{{file:contacts.sh}}", "{{p.decoy}}", "{{p.target}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open the contacts app on its list, with its permissions granted.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "open"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "In Contacts, give \"{{p.target}} {{nonce}}\" the email address {{p.user}}.{{nonce}}@{{e.domain}}, labelled {{e.label}}. Don't change anything else.",
+  "budget": { "steps": 30, "usd": 1.5, "wall_s": 360 },
+  "checks": [
+    {
+      "id": "email",
+      "kind": "exec",
+      "why": "The target's email rows by exact display name: one, the asked address, of type {{e.type}} ({{e.label}}; ContactsContract's Email.TYPE). Setup gave it none, so an agent that does nothing fails, and so does one that left the default Home label.",
+      "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "emails", "{{p.target}} {{nonce}}"],
+      "stdout": { "matches": "^Row: 0 data1={{p.user}}\\.{{nonce}}@{{e.domain}}, data2={{e.type}}\\s*$" }
+    },
+    {
+      "id": "decoy",
+      "kind": "exec",
+      "why": "The decoy still has no email address.",
+      "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "emails", "{{p.decoy}} {{nonce}}"],
+      "stdout": { "matches": "^\\s*(No result found\\.)?\\s*$" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete every contact holding the nonce.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "purge", "{{nonce}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "why": "Wait for the contact list: on a fresh phone it shows a moment after am start -W returns.",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [], "expect": { "text": "{{p.target}} {{nonce}}", "timeoutMs": 10000 } }
+    },
+    {
+      "method": "ui.act",
+      "why": "The second row under a letter is named by its contact (the first by the letter), which is why the target sorts after the decoy.",
+      "params": { "target": { "app": "com.android.contacts" }, "foreground": true, "steps": [{ "press": { "find": { "name": { "equals": "{{p.target}} {{nonce}}" } } } }], "expect": { "text": "Add to favorites", "timeoutMs": 8000 } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Edit" } } } }], "expect": { "window": { "title": "Edit contact" } } }
+    },
+    {
+      "method": "ui.act",
+      "why": "The email field is below the fold of the editor.",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [{ "scroll": { "find": { "role": "scrollarea" } }, "dy": 400 }], "expect": { "text": "Email" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [{ "set": { "find": { "role": "textbox", "name": { "equals": "Email" } } }, "value": "{{p.user}}.{{nonce}}@{{e.domain}}" }] }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [{ "press": { "find": { "role": "combobox", "name": { "equals": "Email" } } } }], "expect": { "text": "Other" } }
+    },
+    {
+      "method": "ui.act",
+      "why": "The label list is a popup window, frontmost, so this act names no target.",
+      "params": { "steps": [{ "press": { "find": { "name": { "equals": "{{e.label}}" } } } }] }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "SAVE" } } } }], "expect": { "text": "Add to favorites" } }
+    }
+  ]
+}

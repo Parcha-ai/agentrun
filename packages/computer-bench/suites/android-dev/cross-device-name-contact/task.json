@@ -1,0 +1,89 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.cross.device-name-contact",
+  "version": 1,
+  "title": "Read the device name in Settings and save a contact named after it in Contacts",
+  "split": "heldout",
+  "tags": ["cross-app", "settings", "contacts", "create", "long"],
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", ["com.google.android.contacts", "com.android.contacts", "com.samsung.android.app.contacts"]] },
+  "params": {
+    "d": {
+      "pick": [
+        { "name": "Den Tablet", "num": "415-555-0147", "set": "(415) 555-0147", "digits": "4155550147" },
+        { "name": "Studio Phone", "num": "628-555-0182", "set": "(628) 555-0182", "digits": "6285550182" },
+        { "name": "Garage Spare", "num": "510-555-0135", "set": "(510) 555-0135", "digits": "5105550135" },
+        { "name": "Lab Handset", "num": "415-555-0196", "set": "(415) 555-0196", "digits": "4155550196" }
+      ]
+    }
+  },
+  "exec": "deny",
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep the phone's own device name once, so teardown puts it back.",
+      "params": { "argv": ["sh", "-c", "{{file:save.sh}}", "sh", "global device_name"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "A device name with the run's nonce in it, so the agent can only learn it from Settings.",
+      "params": { "argv": ["settings", "put", "global", "device_name", "{{d.name}} {{nonce}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "No contact with this run's nonce is left from an earlier try; grant the contacts app its permissions (its open verb also starts it, behind Settings below).",
+      "params": { "argv": ["sh", "-c", "sh -c \"$1\" sh purge {{nonce}} && sh -c \"$1\" sh open > /dev/null", "sh", "{{file:contacts.sh}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open Settings at its home page.",
+      "params": { "argv": ["am", "start", "-W", "--activity-clear-task", "-a", "android.settings.SETTINGS"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "Find this phone's device name in Settings. Then, in Contacts, create a new contact whose name is exactly that device name, with the phone number {{d.num}}.",
+  "budget": { "steps": 35, "usd": 2, "wall_s": 420 },
+  "checks": [
+    {
+      "id": "contact",
+      "kind": "exec",
+      "why": "Lists this run's contacts by name and the new one's phone digits: one contact named \"{{d.name}} {{nonce}}\" with the number {{d.num}} in any format. Setup left no contact holding the nonce, so an agent that does nothing fails.",
+      "argv": ["sh", "-c", "sh -c \"$1\" sh list {{nonce}}; sh -c \"$1\" sh phones '{{d.name}} {{nonce}}' | sed -n 's/.*data1=\\([^,]*\\),.*/\\1/p' | sed 's/[^0-9]//g'", "sh", "{{file:contacts.sh}}"],
+      "stdout": { "matches": "^Row: 0 display_name={{d.name}} {{nonce}}, starred=0\\s*{{d.digits}}\\s*$" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete every contact holding the nonce.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "purge", "{{nonce}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Put the phone's own device name back, and drop the saved copy.",
+      "params": { "argv": ["sh", "-c", "{{file:restore.sh}}"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "why": "Wait for Settings: on a fresh phone its window shows a moment after am start -W returns. The oracle knows the name; an agent reads it under About phone or by searching \"device name\".",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "text": "Search settings" } }
+    },
+    {
+      "method": "apps.launch",
+      "params": { "id": "com.android.contacts" }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Create new contact" } } } }], "expect": { "window": { "title": "Create new contact" } } }
+    },
+    {
+      "method": "ui.act",
+      "why": "The whole name in the first-name field makes the display name; the number is set as the field formats it, so the set reads back the same.",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [{ "set": { "find": { "role": "textbox", "name": { "equals": "First name" } } }, "value": "{{d.name}} {{nonce}}" }, { "set": { "find": { "role": "textbox", "name": { "equals": "Phone" } } }, "value": "{{d.set}}" }] }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "SAVE" } } } }], "expect": { "text": "Add to favorites" } }
+    }
+  ]
+}

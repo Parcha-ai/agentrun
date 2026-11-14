@@ -1,0 +1,87 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.settings.text-size-bold",
+  "version": 1,
+  "title": "Set the font size and turn on bold text in Settings",
+  "split": "heldout",
+  "tags": ["settings", "slider", "toggle", "search"],
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "params": {
+    "x": {
+      "pick": [
+        { "say": "115%", "start": "1.0", "button": "Make larger", "re": "^1\\.150*" },
+        { "say": "100%", "start": "1.15", "button": "Make smaller", "re": "^1(?:\\.0*)?" },
+        { "say": "130%", "start": "1.15", "button": "Make larger", "re": "^1\\.30*" },
+        { "say": "115%", "start": "1.3", "button": "Make smaller", "re": "^1\\.150*" }
+      ]
+    }
+  },
+  "exec": "deny",
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep the phone's own font scale and weight once (a retried setup keeps the first copy), so teardown puts them back.",
+      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; [ -e $f ] || { echo \"system font_scale $(settings get system font_scale)\"; echo \"secure font_weight_adjustment $(settings get secure font_weight_adjustment)\"; } > $f"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Start two font-size steps away from the asked size, with bold text off.",
+      "params": { "argv": ["sh", "-c", "settings put system font_scale {{x.start}} && settings put secure font_weight_adjustment 0"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open Settings at its home page, whatever screen an earlier run left it on.",
+      "params": { "argv": ["am", "start", "-W", "--activity-clear-task", "-a", "android.settings.SETTINGS"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "Using the Settings app, set the font size to {{x.say}} and turn on bold text. Leave the display size as it is.",
+  "budget": { "steps": 30, "usd": 1.5, "wall_s": 360 },
+  "checks": [
+    {
+      "id": "size-and-bold",
+      "kind": "exec",
+      "why": "Prints system/font_scale, then secure/font_weight_adjustment. Font size {{x.say}} is a font_scale of {{x.say}} / 100; bold text on is a weight adjustment of 300. Setup left {{x.start}} and 0, so an agent that does nothing fails.",
+      "argv": ["sh", "-c", "echo \"$(settings get system font_scale) $(settings get secure font_weight_adjustment)\""],
+      "stdout": { "matches": "{{x.re}} 300\\s*$" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Put the phone's own font scale and weight back (deleted when it had none), and drop the saved copy.",
+      "params": { "argv": ["sh", "-c", "{{file:restore.sh}}"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "why": "Wait for Settings' window: on a fresh phone it shows a moment after am start -W returns.",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "window": { "role": "window" } } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Search settings" } } } }], "expect": { "text": "Search…" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "foreground": true, "target": { "app": "com.android.settings.intelligence" }, "steps": [{ "type": "bold", "into": { "find": { "role": "searchbox" } } }], "expect": { "text": "Bold text" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings.intelligence" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Bold text" } } } }], "expect": { "text": "Bold text" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "window": { "title": "Display size and text" } } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Bold text" } } } }] }
+    },
+    {
+      "method": "ui.act",
+      "why": "Every size is one step from where setup left it: a press re-renders the button, so a second press in the same act would hold a stale ref, and the \"Font size added to Quick Settings\" popup the first press shows would cover a second act's look.",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "{{x.button}}" } } } }] }
+    }
+  ]
+}

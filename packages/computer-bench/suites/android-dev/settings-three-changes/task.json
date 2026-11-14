@@ -1,0 +1,137 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.settings.three-changes",
+  "version": 1,
+  "title": "Change notification history, the time format and animations in Settings",
+  "split": "dev",
+  "tags": ["settings", "toggle", "search", "multi", "long"],
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "params": {
+    "s": {
+      "pick": [
+        { "say": "turn on notification history, show the time in 24-hour format, and remove animations", "hist0": "0", "hist": "1", "fmt0": "12", "fmt": "24", "anim0": "1.0", "anim": "0(?:\\.0)?" },
+        { "say": "turn on notification history, show the time in 12-hour format (AM/PM), and make sure animations are not removed", "hist0": "0", "hist": "1", "fmt0": "24", "fmt": "12", "anim0": "0.0", "anim": "1(?:\\.0)?" },
+        { "say": "turn off notification history, show the time in 24-hour format, and make sure animations are not removed", "hist0": "1", "hist": "0", "fmt0": "12", "fmt": "24", "anim0": "0.0", "anim": "1(?:\\.0)?" },
+        { "say": "turn off notification history, show the time in 12-hour format (AM/PM), and remove animations", "hist0": "1", "hist": "0", "fmt0": "24", "fmt": "12", "anim0": "1.0", "anim": "0(?:\\.0)?" }
+      ]
+    }
+  },
+  "exec": "deny",
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep the phone's own values once (a retried setup keeps the first copy), so teardown puts them back.",
+      "params": { "argv": ["sh", "-c", "{{file:save.sh}}", "sh", "secure notification_history_enabled", "system time_12_24", "global animator_duration_scale", "global transition_animation_scale", "global window_animation_scale"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Start each of the three the other way from the goal.",
+      "params": { "argv": ["sh", "-c", "settings put secure notification_history_enabled {{s.hist0}} && settings put system time_12_24 {{s.fmt0}} && for k in animator_duration_scale transition_animation_scale window_animation_scale; do settings put global $k {{s.anim0}}; done"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open Settings at its home page, whatever screen an earlier run left it on.",
+      "params": { "argv": ["am", "start", "-W", "--activity-clear-task", "-a", "android.settings.SETTINGS"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "Using the Settings app, {{s.say}}.",
+  "budget": { "steps": 45, "usd": 2, "wall_s": 540 },
+  "checks": [
+    {
+      "id": "three-settings",
+      "kind": "exec",
+      "why": "Prints secure/notification_history_enabled (1 on, 0 off), system/time_12_24 (24 or 12) and global/animator_duration_scale (0 when \"Remove animations\" is on, 1 when off). Setup left each the other way ({{s.hist0}} {{s.fmt0}} {{s.anim0}}), so an agent that does nothing, or only part of it, fails.",
+      "argv": ["sh", "-c", "echo \"$(settings get secure notification_history_enabled) $(settings get system time_12_24) $(settings get global animator_duration_scale)\""],
+      "stdout": { "matches": "^{{s.hist}} {{s.fmt}} {{s.anim}}\\s*$" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Put the phone's own values back, and drop the saved copy.",
+      "params": { "argv": ["sh", "-c", "{{file:restore.sh}}"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "why": "Wait for Settings' window: on a fresh phone it shows a moment after am start -W returns.",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "window": { "role": "window" } } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Search settings" } } } }], "expect": { "text": "Search…" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "foreground": true, "target": { "app": "com.android.settings.intelligence" }, "steps": [{ "type": "notification history", "into": { "find": { "role": "searchbox" } } }], "expect": { "text": "Show recent and snoozed notifications" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings.intelligence" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Notification history" } } } }], "expect": { "text": "Notification history" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "window": { "title": "Notifications" } } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Notification history" } } } }], "expect": { "text": "Use notification history" } }
+    },
+    {
+      "method": "ui.act",
+      "why": "The switch starts the other way, so one press of its bar flips it to the goal.",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Use notification history" } } } }] }
+    },
+    {
+      "method": "ui.act",
+      "why": "Back twice, to the search results the result press left behind.",
+      "params": { "foreground": true, "steps": [{ "nav": "back" }, { "nav": "back" }], "expect": { "text": "Search…" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings.intelligence" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Clear query" } } } }] }
+    },
+    {
+      "method": "ui.act",
+      "params": { "foreground": true, "target": { "app": "com.android.settings.intelligence" }, "steps": [{ "type": "24-hour", "into": { "find": { "role": "searchbox" } } }], "expect": { "text": "Use 24-hour format" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings.intelligence" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Use 24-hour format" } } } }], "expect": { "text": "Use 24-hour format" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "window": { "title": "Date" } } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Use 24-hour format" } } } }] }
+    },
+    {
+      "method": "ui.act",
+      "params": { "foreground": true, "steps": [{ "nav": "back" }], "expect": { "text": "Search…" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings.intelligence" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Clear query" } } } }] }
+    },
+    {
+      "method": "ui.act",
+      "why": "A search for \"animations\" found nothing on these phones; \"Color inversion\" opens the same Color and motion page.",
+      "params": { "foreground": true, "target": { "app": "com.android.settings.intelligence" }, "steps": [{ "type": "inversion", "into": { "find": { "role": "searchbox" } } }], "expect": { "text": "Color inversion", "timeoutMs": 10000 } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings.intelligence" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Color inversion" } } } }], "expect": { "text": "Color inversion" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "window": { "title": "Color and motion" } } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Remove animations" } } } }] }
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.files.largest-file",
+  "version": 1,
+  "title": "Find the largest file in a folder in the Files app",
+  "split": "heldout",
+  "tags": ["files", "read", "answer", "compare"],
+  "needs": { "os": "android", "kind": "phone", "apps": [["com.google.android.documentsui", "com.android.documentsui"]] },
+  "params": {
+    "f": {
+      "pick": [
+        { "big": "site-backup", "a": "photo-index", "b": "readme", "c": "song-list", "kb": "48" },
+        { "big": "song-list", "a": "site-backup", "b": "photo-index", "c": "readme", "kb": "61" },
+        { "big": "photo-index", "a": "readme", "b": "song-list", "c": "site-backup", "kb": "37" },
+        { "big": "readme", "a": "song-list", "b": "site-backup", "c": "photo-index", "kb": "55" }
+      ]
+    }
+  },
+  "exec": "deny",
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "A fresh folder for this run in Download with four text files of different sizes; the largest is {{f.kb}} kB, the others 3 to 21 kB, and none sorts first by name for being largest.",
+      "params": { "argv": ["sh", "-c", "d=/sdcard/Download/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d && head -c {{f.kb}}000 /dev/zero > $d/{{f.big}}-{{nonce}}.txt && head -c 21000 /dev/zero > $d/{{f.a}}-{{nonce}}.txt && head -c 3000 /dev/zero > $d/{{f.b}}-{{nonce}}.txt && head -c 12000 /dev/zero > $d/{{f.c}}-{{nonce}}.txt"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open the system file manager (DocumentsUI) on the run's folder.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.VIEW", "-t", "vnd.android.document/directory", "-d", "content://com.android.externalstorage.documents/document/primary%3ADownload%2Fcomputer-bench-{{nonce}}"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "Using the Files app, which file in Download/computer-bench-{{nonce}} is the largest? Give its file name in your final answer. Don't change anything.",
+  "budget": { "steps": 15, "usd": 1, "wall_s": 180 },
+  "checks": [
+    {
+      "id": "name",
+      "kind": "answer",
+      "why": "The final answer names {{f.big}}, the largest file, before any of the other three (an answer may go on to list the rest). An agent that answers nothing fails, and so does one that names a smaller file first.",
+      "text": { "matches": "^(?:(?!{{f.a}}|{{f.b}}|{{f.c}})[\\s\\S])*{{f.big}}" }
+    },
+    {
+      "id": "unchanged",
+      "kind": "exec",
+      "why": "The folder still holds the four files: the agent read it and changed nothing.",
+      "argv": ["sh", "-c", "ls -1 /sdcard/Download/computer-bench-{{nonce}} | sort"],
+      "stdout": { "matches": "^(?:\\S+-{{nonce}}\\.txt\\n){3}\\S+-{{nonce}}\\.txt$" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the run's folder and everything in it.",
+      "params": { "argv": ["rm", "-rf", "/sdcard/Download/computer-bench-{{nonce}}"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "why": "Wait for the folder's listing: on a fresh phone it shows a moment after am start -W returns.",
+      "params": { "target": { "app": "com.android.documentsui" }, "steps": [], "expect": { "text": "{{f.big}}-{{nonce}}.txt" } }
+    },
+    {
+      "method": "ui.act",
+      "why": "The list view shows each file's size. The answer itself is the agent's to give; verify leaves answer checks out of the oracle's run.",
+      "params": { "target": { "app": "com.android.documentsui" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "List view" } } } }], "expect": { "text": "{{f.kb}}.00 kB" } }
+    }
+  ]
+}
