@@ -45,5 +45,5 @@ test("refusals: an unknown provider is not_found; a body that is not an object, 
 
 test("capabilities.computers: the kinds this server offers, in the registry's order", async (t) => {
   assert.deepEqual(await computerCapabilities(await routes(t)), { kinds: ["none", "sandbox", "desktop", "phone", "browser"] });
-  assert.deepEqual(await computerCapabilities(await routes(t, "disk")), { kinds: ["none", "desktop", "phone", "browser"] }, "Mode 2: no sandbox can start here (Docker and Daytona mount no Archil disk; Modal's, E2B's and Agent37's stock images have no Archil client)");
+  assert.deepEqual(await computerCapabilities(await routes(t, "disk")), { kinds: ["none", "desktop", "phone", "browser"] }, "Mode 2: no sandbox can start here (Docker and Daytona mount no Archil disk; Modal's, E2B's and Agent37's need Archil's image in the owner's account)");
 });

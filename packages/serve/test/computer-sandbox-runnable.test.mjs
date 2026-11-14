@@ -75,16 +75,16 @@ async function saveAndStart(api, id, setting) {
 }
 
 for (const [provider, keys] of [["e2b", { E2B_API_KEY: "fake-test-key" }], ["modal", { MODAL_TOKEN_ID: "fake-test-id", MODAL_TOKEN_SECRET: "fake-test-key" }]]) {
-  test(`an agent whose computer is a ${provider} sandbox, its key saved in Settings → Computers, is never refused for its place in Mode 2 (AGENTRUN_BOXES unset); it is not ready, its stock image having no Archil client`, async (t) => {
+  test(`an agent whose computer is a ${provider} sandbox, its key saved in Settings → Computers, is never refused for its place in Mode 2 (AGENTRUN_BOXES unset); it is not ready, needing Archil's image in the owner's account`, async (t) => {
     const api = await server(t, { archil: true });
     const saved = await api("PUT", `/computers/${provider}/keys`, keys);
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
-    assert.deepEqual([saved.body.ready, saved.body.why?.match(/stock image .*, which has no Archil client/) !== null], [false, true], `${provider} is not ready with its key saved: ${JSON.stringify(saved.body)}`);
+    assert.deepEqual([saved.body.ready, /needs Archil's image in your (E2B|Modal) account/.test(saved.body.why ?? "")], [false, true], `${provider} is not ready with its key saved: ${JSON.stringify(saved.body)}`);
 
     // Its computer, not its place: a warning at the save, and the run refused at its start (409) before any computer is
     // made, in the words Settings says.
     const said = await saveAndStart(api, `remote-${provider}`, { computer: { kind: "sandbox", provider } });
-    const words = /^An? (E2B|Modal) sandbox can't mount the owner's disk this server keeps run folders on yet: it would start from (E2B|Modal)'s stock image \([^)]+\), which has no Archil client, and this server can't name another\. Set this agent's computer to none in Settings → Computers\.$/;
+    const words = /^An? (E2B|Modal) sandbox can't start in Mode 2 yet: it needs Archil's image in your \1 account, and this server can't put it there yet\. Set this agent's computer to none \(Settings → Computers\)\.$/;
     for (const [field, reason, message] of [...said.saved, ...said.refused]) {
       assert.deepEqual([field, reason], ["definition.computer", "not_set_up_here"], JSON.stringify(said));
       assert.match(message, words);
