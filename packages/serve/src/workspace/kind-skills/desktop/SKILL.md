@@ -79,8 +79,9 @@ file from Finder into a Mail message), or anything outside every window.
 
 **Only the tools you were given.** An agent's computer setting may leave some out: a code-only agent has its script
 tool and no `computer_observe`, `computer_act` or `computer_screenshot`; a tools-only agent has those and no script
-tool; an agent whose exec is off has no `computer.shell`, no `computer.processes` and no bash, so it opens apps with
-`computer.apps` and works through the screen. Use what your tool list shows.
+tool; an agent whose exec is off has no `computer.shell`, no `computer.processes` and no bash. Where the desktop has
+the `apps` group it opens apps with `computer.apps`; otherwise it uses the desktop's own launcher through the screen.
+Use what your tool list shows.
 
 ## How to work: observe, then act by ref, then check
 
