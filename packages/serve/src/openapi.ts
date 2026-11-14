@@ -936,8 +936,14 @@ const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
 const TEMPLATE_COMPUTER_MARK = { "x-agentrun-serve": "template-computer/1" };
 const NULLABLE_STRING = { type: ["string", "null"] };
 const TEMPLATE_PARAMETER = closedWith({ type: { enum: [...PARAMETER_TYPES, "array"] }, required: { type: "boolean" }, description: { type: "string" } }, { items: { type: "object", additionalProperties: true, description: "A list parameter's items (type: array): the JSON Schema of one scalar (type, and its pattern, enum, format, minimum/maximum, minLength/maxLength), as an input's list. A trigger's target.input value that is its placeholder alone takes the list; in text it fills as its items joined by \", \"." }, pattern: { type: "string", description: "A regular expression (Unicode) a string's value matches." }, enum: { type: "array", minItems: 1, items: { type: ["string", "number", "boolean"] }, description: "The values it may take, a closed set (a form shows a choice); never beside a pattern." }, format: { enum: ["cron", "timezone"], description: "What a string's value is, for a form to ask for it as such: `cron`, a schedule's cron line (a schedule picker); `timezone`, an IANA time zone. The value is the same text either way." }, default: { type: ["string", "number", "boolean", "array"], items: { type: ["string", "number", "boolean"] }, description: "Its value when apply leaves it out (of its type, a list for a list; never on a required one). A parameter that sets a schedule's cron or timezone has one, and the package's own schedule is checked with it." } });
+const TEMPLATE_ORIGIN_MARK = { "x-agentrun-serve": "template-import/1" };
 const TEMPLATE = closed({
-  name: { type: "string", description: "Its folder's name, the one apply takes." },
+  id: { type: "string", description: "Its id here, the one apply and delete take: a bundled package's name (`kyb`), or an imported one's source without its ref (`github:<owner>/<repo>[/<path>]`), so a bundled package and an imported one of the same name are two packages.", ...TEMPLATE_ORIGIN_MARK },
+  bundled: { type: "boolean", description: "True for a package this server ships; false for one imported (POST /templates/import).", ...TEMPLATE_ORIGIN_MARK },
+  source: { type: ["string", "null"], description: "An imported package's source as it was given, normalized: `github:<owner>/<repo>[/<path>][@<ref>]`. Null for a bundled one.", ...TEMPLATE_ORIGIN_MARK },
+  sha: { type: ["string", "null"], pattern: "^[0-9a-f]{40}$", description: "The full commit SHA an imported package was read at: its ref resolved before anything was read. Null for a bundled one.", ...TEMPLATE_ORIGIN_MARK },
+  publisher: { type: ["string", "null"], description: "The GitHub account an imported package comes from (its source's owner). Null for a bundled one.", ...TEMPLATE_ORIGIN_MARK },
+  name: { type: "string", description: "Its folder's name (agent.md's `name`)." },
   display_name: { type: ["string", "null"], description: "The agent's name, its `${parameters.<name>}` filled at apply; null: the package's name." },
   version: { type: "string", description: "SemVer." },
   description: { type: "string" },
@@ -987,6 +993,23 @@ const TEMPLATE = closed({
   triggers: { type: "array", items: { type: "object" }, description: "The triggers apply makes on its agent: POST /triggers bodies with no agent_id, placeholders unfilled." },
   skills: { type: "array", items: { type: "string" } },
   evals: { type: "array", items: { type: "string" }, description: `Its eval cases (evals/<case>/: prompt.md and graders of ${GRADER_TYPES.join(", ")}); none runs here.` },
+});
+const TEMPLATE_IMPORT = {
+  type: "object", additionalProperties: false, required: ["source"],
+  properties: {
+    source: { type: "string", minLength: 1, maxLength: 1024, description: "Where the package is: `github:<owner>/<repo>[/<path>][@<ref>]` (the ref, a branch, tag or commit, defaults to the default branch), or the folder's https://github.com/<owner>/<repo>/tree/<ref>/<path> URL. A public repository on github.com alone." },
+    dry_run: { type: "boolean", description: "True: read and check the package and answer it, storing nothing (the install preview). Absent or false: store it, listed by GET /templates." },
+    trust_publisher: { type: "boolean", description: "The owner's \"I trust <publisher>\": needed (true) for the first import this server stores from a GitHub account, and remembered for that account. Never needed for a dry run." },
+  },
+};
+const TEMPLATE_IMPORTED = closed({
+  template: { ...TEMPLATE, description: "The package, as GET /templates lists it." },
+  instructions: { type: "string", description: "The agent's instructions in full (agent.md's body), placeholders unfilled: what a third party's package would tell the agent." },
+  skill_files: { type: "object", additionalProperties: { type: "string" }, description: "Every skill file the agent would be given, by path under its skills folder (`<skill>/SKILL.md`, the rules and the answer's schema beside each), in full." },
+  publisher_trusted: { type: "boolean", description: "Whether this server's owner has said they trust the publisher (an earlier import with `trust_publisher`)." },
+  stored: { type: "boolean", description: "True when the package was stored (listed by GET /templates); false for a dry run." },
+  replaced: { type: ["string", "null"], pattern: "^[0-9a-f]{40}$", description: "The SHA of the package of the same id this import replaced (or, on a dry run, would replace); null when there was none." },
+  console_url: { type: "string", format: "uri", description: "The console page to go on from: the package's apply page once stored; for a dry run, its install page, which shows it whole before it is stored." },
 });
 const TEMPLATE_APPLY = {
   type: "object", additionalProperties: false,
@@ -2182,8 +2205,26 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/templates": {
     get: {
-      operationId: "listTemplates", tags: ["local"], summary: "The template packages this server ships: each makes an agent, its skills and its triggers",
-      responses: { "200": json(closed({ templates: { type: "array", items: TEMPLATE } }), "Each package, by name."), ...errors(401, 429, 500) },
+      operationId: "listTemplates", tags: ["local"], summary: "The template packages this server ships, and those imported here: each makes an agent, its skills and its triggers",
+      responses: { "200": json(closed({ templates: { type: "array", items: TEMPLATE } }), "Each bundled package, by name, then each imported one, by id."), ...errors(401, 429, 500) },
+      ...TEMPLATE_MARK,
+    },
+  },
+  "/templates/import": {
+    post: {
+      operationId: "importTemplate", tags: ["local"], summary: "Import a template package from a public GitHub repository, or preview it (dry_run)",
+      description: "The source's ref is resolved to a full commit SHA first (GitHub's answer), then the repository's tarball at that SHA is read from GitHub's own hosts alone (github.com, api.github.com, codeload.github.com; a redirect anywhere else is refused), within size and time limits, and the package's folder taken out of it in memory: a symbolic or hard link, or any entry that is not a regular file or a folder, refuses the import (422). The package is checked as the packages this server ships are (`agentrun template validate`), each problem a 422 field under `package`. Nothing in it runs. GitHub is read with this server's GitHub App token when it has one, else anonymously, whose rate limit (60 an hour) a 502 github_failed names. A dry run stores nothing and answers 200; otherwise the package is stored (201), listed by GET /templates under its id, and loaded again at each start; one already stored under the id (an earlier SHA) is replaced. The first import stored from a GitHub account needs `trust_publisher: true` (422 on `trust_publisher` without it), remembered for that account.",
+      requestBody: { required: true, content: { "application/json": { schema: TEMPLATE_IMPORT } } },
+      responses: { "200": json(TEMPLATE_IMPORTED, "The dry run: the package, checked, stored nowhere."), "201": json(TEMPLATE_IMPORTED, "Imported: stored and listed."), ...errors(400, 401, 413, 415, 422, 429, 500), "502": { description: "`github_failed`: GitHub refused or did not answer (its rate limit, a redirect off its hosts, the time limit, a tarball that does not read); the message says which, and whether the server read it anonymously or with its GitHub App.", headers: { "X-Request-Id": ref("headers/RequestId") }, content: { "application/json": { schema: ref("schemas/Error") } } } },
+      ...TEMPLATE_MARK,
+    },
+  },
+  "/templates/{template}": {
+    delete: {
+      operationId: "deleteTemplate", tags: ["local"], summary: "Remove an imported template package",
+      description: "The package is no longer listed or applied here. Agents applied from it stay as they are. A bundled package is 403 forbidden: it ships with this server.",
+      parameters: [{ name: "template", in: "path", required: true, schema: { type: "string" }, description: "The package's id (GET /templates `id`), URL-encoded: `github%3Aacme%2Fagents%2Fkyb`." }],
+      responses: { "204": { description: "Removed." }, ...errors(401, 403, 404, 429, 500) },
       ...TEMPLATE_MARK,
     },
   },
@@ -2191,7 +2232,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     post: {
       operationId: "applyTemplate", tags: ["local"], summary: "Apply a template package: make its agent, with its skills, then its triggers",
       description: "The package's parameters are checked (422 naming each, nothing made), then the secrets and required MCP servers it names: one this server does not have is `409 agent_not_runnable`, each a field with reason `not_set_up_here`, and nothing is made. An MCP server it can do without that is not saved here is skipped, a warning under `mcp.<server>`; one saved has the package's tools of it granted and set to allow. Then its agent is made as POST /agents makes one, on the first harness of its list this server runs and the model its tier and preference pick here (`overrides.model` wins); then each trigger on it as POST /triggers makes one. A trigger refused deletes the triggers made before it and archives the agent, and its refusal is the answer, a 422's fields under `triggers.<i>`; but a github trigger on a server GitHub is not connected to is skipped, the agent and the rest made, with a warning under `triggers.<i>` (`not_set_up_here`: connect GitHub and apply again), and one made adds a note there saying what it runs on. A webhook trigger's secret is not in the answer: POST /triggers/{trigger_id}/secret makes one. The same Idempotency-Key and body answers the first apply again and makes nothing.",
-      parameters: [{ name: "template", in: "path", required: true, schema: { type: "string" }, description: "The package's name (GET /templates)." }, ref("parameters/IdempotencyKey")],
+      parameters: [{ name: "template", in: "path", required: true, schema: { type: "string" }, description: "The package's id (GET /templates `id`), URL-encoded: a bundled one's name, or an imported one's `github%3A<owner>%2F<repo>…`." }, ref("parameters/IdempotencyKey")],
       requestBody: { required: true, content: { "application/json": { schema: TEMPLATE_APPLY } } },
       responses: { "201": json(TEMPLATE_APPLIED, "Applied: the agent and its triggers made."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
       ...TEMPLATE_MARK,
@@ -2653,6 +2694,18 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       ],
       description: "The agent's own computer, kept between its runs where its `computer.persistent` is true: what this server records of it. Null when it has none (no persistent setting, or no run has made one yet).",
       "x-agentrun-serve": "computer/1",
+    },
+    template: {
+      oneOf: [
+        closed({
+          id: { type: "string", description: "The package's id (GET /templates `id`): a bundled one's name, or an imported one's `github:<owner>/<repo>[/<path>]`." },
+          version: { type: "string", description: "The package's SemVer version when it was applied." },
+          sha: { type: ["string", "null"], pattern: "^[0-9a-f]{40}$", description: "The commit an imported package was read at; null for a bundled one." },
+        }),
+        { type: "null" },
+      ],
+      description: "The template package the agent was applied from (POST /templates/{template}/apply), as its first revision keeps it; null for an agent made otherwise.",
+      ...TEMPLATE_MARK,
     },
     warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as a create (POST /agents) or a commit (PUT .../definition) answers it, the same shape apply's warnings take. Absent from every other answer (GET and list never send it).", "x-agentrun-serve": "warnings/1" },
   },

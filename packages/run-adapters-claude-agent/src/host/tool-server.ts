@@ -40,9 +40,13 @@ export const RESULT_SIZE_KEY = "anthropic/maxResultSizeChars";
  */
 export const MCP_OUTPUT_TOKENS = HOST_RESULT_MAX_CHARS;
 
+/** The `_meta` key of a listed tool by which the CLI never defers it behind its tool search. */
+export const ALWAYS_LOAD_KEY = "anthropic/alwaysLoad";
+
 /** `tools` as the server lists them to the CLI (`tools/list`): each as the host gave it, with the host's result bound as
- *  its result size. */
-export const listedTools = (tools: readonly ServedTool[]) => tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, _meta: { [RESULT_SIZE_KEY]: HOST_RESULT_MAX_CHARS } }));
+ *  its result size. With the CLI's tool search on (harness.ts claudeToolSearch), only a run's MCP servers' tools
+ *  (`mcp__<server>__<tool>`) wait behind it: every other tool of the session is listed to load always. */
+export const listedTools = (tools: readonly ServedTool[]) => tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, _meta: { [RESULT_SIZE_KEY]: HOST_RESULT_MAX_CHARS, ...(t.name.startsWith("mcp__") ? {} : { [ALWAYS_LOAD_KEY]: true }) } }));
 
 /** The MCP library the server is built with, as a host loaded it from where it installed the Agent SDK (its peer):
  *  `@modelcontextprotocol/sdk`'s `server/mcp.js` and `types.js`. */
