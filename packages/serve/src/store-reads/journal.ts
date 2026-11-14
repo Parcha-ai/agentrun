@@ -58,7 +58,8 @@ export function piShaped(entries: readonly EntryLike[]): EntryLike[] {
     const timestamp = typeof data.at === "number" ? { timestamp: data.at } : {};
     if (entry.kind === KINDS.message) {
       const text = typeof data.text === "string" ? data.text : "";
-      if (data.role === "person") return { ...entry, kind: "pi.user", model: [{ role: "user", content: text, ...timestamp }] };
+      // The person's message, and one they steered into a turn in flight (claude-agent's), as pi writes both: a user turn.
+      if (data.role === "person" || data.role === "steer") return { ...entry, kind: "pi.user", model: [{ role: "user", content: text, ...timestamp }] };
       // A model turn's text; its stop reason is the answer's (a cut at the output limit reads "length", as pi's does).
       const stopReason = data.stopReason === "length" ? "length" : "stop";
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason, content: [{ type: "text", text }], ...(typeof data.outputTokens === "number" ? { usage: { output: data.outputTokens } } : {}), ...timestamp }] };

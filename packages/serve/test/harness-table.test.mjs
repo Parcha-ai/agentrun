@@ -53,7 +53,7 @@ test("production code never builds a stand-in harness: serve/src imports no @par
 test("each adapter package exports its facts, and the table's entry for each id reads them: wire, steer, memory, thinking, search, own model, tool alias", async () => {
   const [{ facts: claude }, { facts: codex }, { facts: opencode }, { builtinHarness }] = await Promise.all([import("@parcha/agentrun-harness-claude/facts"), import("@parcha/agentrun-harness-codex/facts"), import("../dist/harness-opencode/facts.js"), import("../dist/harness-table.js")]);
   const shape = (f) => ({ id: f.id, wire: f.wire, steer: f.steer, runMib: f.runMib, thinking: [...f.thinking], webSearch: f.webSearch, ownModel: f.ownModel, alias: Boolean(f.toolAlias), schema: typeof f.schemaProblems });
-  assert.deepEqual(shape(claude), { id: "claude-agent", wire: "anthropic-messages", steer: false, runMib: 288, thinking: ["low", "medium", "high", "xhigh", "max"], webSearch: "native", ownModel: true, alias: false, schema: "function" });
+  assert.deepEqual(shape(claude), { id: "claude-agent", wire: "anthropic-messages", steer: true, runMib: 288, thinking: ["low", "medium", "high", "xhigh", "max"], webSearch: "native", ownModel: true, alias: false, schema: "function" });
   assert.deepEqual(shape(codex), { id: "codex", wire: "openai-responses", steer: false, runMib: 192, thinking: ["low", "medium", "high", "xhigh"], webSearch: "live", ownModel: false, alias: false, schema: "function" });
   assert.deepEqual(shape(opencode), { id: "opencode", wire: "openai-responses", steer: false, runMib: 704, thinking: ["low", "medium", "high", "xhigh"], webSearch: undefined, ownModel: false, alias: true, schema: "undefined" });
   for (const facts of [claude, codex, opencode]) {
