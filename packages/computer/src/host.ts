@@ -205,10 +205,10 @@ export interface HostFacts {
 	/** The spec's size and place fields the vendor takes, passed in MachineRequest; any other is refused. */
 	specFields?: Array<"cpus" | "memoryMb" | "workdir" | "user">;
 	/**
-	 * The vendor's label rules: how many labels a machine takes, the names it takes, and the bytes they come to, the
-	 * adapter's own at their longest with them: every name and value ("pairs", the default), or their JSON ("json").
+	 * The vendor's label rules: how many labels a machine takes, and the bytes they come to, the adapter's own at their
+	 * longest with them: every name and value ("pairs", the default), or their JSON ("json").
 	 */
-	labelRules?: { max?: number; key?: RegExp; maxBytes?: number; measure?: "pairs" | "json" };
+	labelRules?: { max?: number; maxBytes?: number; measure?: "pairs" | "json" };
 	/** The runtime a machine of this request runs: "gvisor" only where the vendor runs one (a pid1 host's GPU). */
 	runtime?(req: MachineRequest): "vm" | "gvisor";
 }

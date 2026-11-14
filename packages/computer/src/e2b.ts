@@ -9,7 +9,8 @@ import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, timeoutsOf } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
-import { dateOf, DOMAIN, driftOf, isWhole, show } from "./hosted/values.js";
+import { show } from "./drift.js";
+import { dateOf, DOMAIN, driftOf, isWhole } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";

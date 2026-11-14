@@ -6,13 +6,13 @@
 import { randomBytes } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, DAYTONA_NO_ARCHIL, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./descriptors/daytona.js";
-import { COMPUTER_LABEL, DEADLINE_LABEL } from "./drift.js";
+import { COMPUTER_LABEL, DEADLINE_LABEL, show } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, timeoutsOf } from "./hosted/provider.js";
 import { boundOf, pause as sleep } from "./hosted/process.js";
 import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
-import { dateOf, driftOf, isWhole, show, sizeOf } from "./hosted/values.js";
+import { dateOf, driftOf, isWhole, sizeOf } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import { MAX_LINE_BYTES } from "./protocol.js";

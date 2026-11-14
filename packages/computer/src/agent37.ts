@@ -11,12 +11,12 @@
 import { createHash } from "node:crypto";
 import { Duplex } from "node:stream";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
-import { DEADLINE_LABEL } from "./drift.js";
+import { DEADLINE_LABEL, show } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
 import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh.js";
-import { dateOf, DOMAIN, driftOf, isWhole, show, sizeOf } from "./hosted/values.js";
+import { dateOf, DOMAIN, driftOf, isWhole, sizeOf } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";

@@ -3,8 +3,6 @@
 import { show } from "../drift.js";
 import type { Machine } from "../host.js";
 
-export { show };
-
 /** A host name, as a vendor's domain option is one: DNS labels and a top-level name of letters. */
 export const DOMAIN = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 

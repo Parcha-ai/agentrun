@@ -204,7 +204,7 @@ one `list` by AgentRun's label, so a `list` must never create anything.
 ### Wire it up
 
 Your provider class hands the host to `HostedProvider`, which turns it into a whole `ComputerProvider`, the interface
-the rest of AgentRun calls. The function `hostedProvider(host, options)` does the same.
+the rest of AgentRun calls.
 
 ```ts
 export class E2BProvider extends HostedProvider {

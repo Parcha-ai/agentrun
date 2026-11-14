@@ -1,4 +1,4 @@
-// The shared machine-host adapter: hostedProvider(host, options) is a whole ComputerProvider over a vendor's
+// The shared machine-host adapter: new HostedProvider(host, options) is a whole ComputerProvider over a vendor's
 // MachineHost (../host.ts). The vendor answers create, get, list, delete and exec about its own machines; everything a
 // computer is beyond that is here, once, for every vendor: the spec's check, the computer's name from its create's
 // request id (one create per request: a retry finds the first), the daemon's upload, install and sha256 read-back,
@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
-import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "../drift.js";
+import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, show, WORK } from "../drift.js";
 import type { HostCall, Machine, MachineHost, MachineRequest } from "../host.js";
 import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "../isolation.js";
 import { releaseOlder } from "../janitor.js";
@@ -59,12 +59,12 @@ import {
 	type ReleaseHow,
 	runLifetimeMs,
 } from "../provider.js";
-import { type ComputerError, ok, type Result } from "../result.js";
+import { type ComputerError, failFor, ok, type Result } from "../result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "../screen-watch.js";
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
-import { bounded, CALL_SLACK_MS, codeOfError, failOf, hostCall, type Opened, openBridge, pause, race, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
-import { isWhole, show } from "./values.js";
+import { bounded, CALL_SLACK_MS, codeOfError, hostCall, type Opened, openBridge, pause, race, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
+import { isWhole } from "./values.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf } from "./scripts.js";
 
 /** The longest each kind of call may take, and the pauses between polls. */
@@ -249,7 +249,7 @@ interface Made {
 
 type Extend = (ref: ComputerRef, ttlMs: number, context?: CallContext) => Promise<Result<{ deadline: Date }>>;
 
-/** hostedProvider's provider: a ComputerProvider whose vendor is host. */
+/** The shared adapter's provider: a ComputerProvider whose vendor is host. */
 export class HostedProvider implements ComputerProvider {
 	readonly id: string;
 	readonly version = VERSION;
@@ -257,7 +257,7 @@ export class HostedProvider implements ComputerProvider {
 	readonly host: MachineHost;
 	readonly extend?: Extend;
 	readonly #label: string;
-	readonly #fail: ReturnType<typeof failOf>;
+	readonly #fail: ReturnType<typeof failFor>;
 	readonly #daemonPath: string;
 	readonly #kind: "desktop" | "linux";
 	readonly #desktop: Required<DesktopOptions> | undefined;
@@ -290,7 +290,7 @@ export class HostedProvider implements ComputerProvider {
 		this.id = host.id;
 		this.host = host;
 		this.#label = label;
-		this.#fail = failOf(host);
+		this.#fail = failFor(host.id);
 		this.#onNote = onNote;
 		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
 		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
@@ -379,7 +379,7 @@ export class HostedProvider implements ComputerProvider {
 		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
 		else if (network !== "none") refuse("network", 'network is required: "none"');
 		const entries = labels === undefined ? [] : typeof labels === "object" && labels !== null && !Array.isArray(labels) ? Object.entries(labels) : undefined;
-		const bad = entries === undefined ? "labels must map names to strings" : (entries.map(([key, value]) => labelProblem(key, value, this.host.facts.labelRules?.key)).find(Boolean) ?? this.#labelCount(entries.length, given));
+		const bad = entries === undefined ? "labels must map names to strings" : (entries.map(([key, value]) => labelProblem(key, value)).find(Boolean) ?? this.#labelCount(entries.length, given));
 		if (bad) refuse("labels", bad);
 		else if (typeof image === "string" && (!archil || ["disk", "region", "folder"].every((key) => typeof (mount as Record<string, unknown>)[key] === "string"))) {
 			const over = this.#labelBytes(given as unknown as ComputerSpec);
@@ -1379,7 +1379,7 @@ export async function settle(
 		ask,
 	}: Pick<HostedTimeouts, "requestMs" | "listMs" | "pollMs" | "goneMs"> & { signal?: AbortSignal; want?: "gone" | "stopped"; ask?: (signal: AbortSignal) => Promise<Result<void>> },
 ): Promise<Result<void>> {
-	const fail = failOf(host);
+	const fail = failFor(host.id);
 	const doing = ask === undefined ? "release" : "the stop";
 	type Read = { failed: Result<never> } | { settled: true } | { last: string };
 	let agreed = 0;
@@ -1453,22 +1453,16 @@ function runtimeDrift(runtime: "vm" | "gvisor", kernel: string): string[] {
 	return [];
 }
 
-function labelProblem(key: string, value: unknown, rule?: RegExp): string | undefined {
+function labelProblem(key: string, value: unknown): string | undefined {
 	if (typeof value !== "string") return `the label ${key} must be a string`;
 	if (key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)}: a NUL byte cannot be sent to the vendor`;
 	if (key === "") return "a label name must be non-empty";
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
 	if (key === ARCHIL_MOUNT_LABEL) return `the label ${key} is the provider's own: it records an Archil computer's mount`;
-	if (rule !== undefined && !rule.test(key)) return `the label name ${JSON.stringify(key)} is not one the vendor takes (${rule.source})`;
 	return undefined;
 }
 
 /** "a" or "an" before a vendor's name, by its first letter. */
 function a(label: string): string {
 	return `${/^[AEIOU]/i.test(label) ? "an" : "a"} ${label}`;
-}
-
-/** The shared machine-host adapter: host's machines as a ComputerProvider (see HostedProvider). */
-export function hostedProvider(host: MachineHost, options: HostedOptions): HostedProvider {
-	return new HostedProvider(host, options);
 }
