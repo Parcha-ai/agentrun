@@ -222,7 +222,7 @@ async function runScript(script: string, tools: readonly HostTool[], nested: Nes
           break;
         }
         seq += 1;
-        const outcome: CodemodeOutcome = result.isError ? { ok: false, message: result.text } : { ok: true, value: result.structured !== undefined ? result.structured : result.text };
+        const outcome: CodemodeOutcome = result.isError ? { ok: false, message: result.text } : { ok: true, value: scriptValue(result) };
         if (!run.finished) run.deliver(seq, start.startedAt, call.id, outcome);
       }
     })().catch((error: unknown) => {
@@ -243,6 +243,21 @@ async function runScript(script: string, tools: readonly HostTool[], nested: Nes
     return { text: shown.text || "(the script returned nothing and showed nothing)", ...(shown.images.length ? { images: shown.images } : {}), ...(result.value !== undefined ? { structured: result.value as JsonValue } : {}) };
   } finally {
     await sandbox.close();
+  }
+}
+
+/** A nested call's value in a script: its structured value (an MCP result's structuredContent) when it has one; else, when
+ *  its answer is one text part (no image beside it) whose text parses as a JSON object or array, that value (a Composio
+ *  answer comes as one); else its text. The text the model reads of the call is its text either way. */
+function scriptValue(result: NestedResult): unknown {
+  if (result.structured !== undefined) return result.structured;
+  const text = result.text.trim();
+  if (result.images?.length || !(text.startsWith("{") || text.startsWith("["))) return result.text;
+  try {
+    const value: unknown = JSON.parse(text);
+    return value !== null && typeof value === "object" ? value : result.text;
+  } catch {
+    return result.text;
   }
 }
 

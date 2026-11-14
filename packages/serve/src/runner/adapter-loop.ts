@@ -563,8 +563,9 @@ interface CliRecord {
 /** The record on `root` of the run's Harness: what the journal holds already read once, and every call a crash or a
  *  fault left with a start and no end ended interrupted (the CLI never runs it again: its own resume says so). Each entry
  *  it writes carries when it was written (`at`, ms, from the loop's clock `now`), as pi's own entries carry their
- *  message's timestamp: the Timeline dates its rows by them. */
-async function openCliRecord(harness: Harness, journal: Gate["journal"], context: Context, now: () => number, cwd?: string): Promise<CliRecord> {
+ *  message's timestamp: the Timeline dates its rows by them. `endsItsCalls`: a harness that says each call's end itself
+ *  (pi, of the calls its tools nest: it reruns a replay-safe one a crash cut), so none is ended interrupted here. */
+async function openCliRecord(harness: Harness, journal: Gate["journal"], context: Context, now: () => number, cwd?: string, endsItsCalls = false): Promise<CliRecord> {
   const root = await harness.root(context);
   const append = async (kind: string, data: CallStartData | CallEndData | MessageData): Promise<void> => {
     await harness.commit((tx) => tx.appendEntry(root.id, { kind, data: { ...data, at: now() } as unknown as JsonValue }), context);
@@ -622,7 +623,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     if ((entry.kind === KINDS.message || entry.kind === KINDS.input) && typeof data.requestId === "string") followUps.add(data.requestId);
   }
   for (const [callId, ended] of started) {
-    if (ended || (parked.has(callId) && !sent.has(callId)) || nesting.has(callId)) continue;
+    if (endsItsCalls || ended || (parked.has(callId) && !sent.has(callId)) || nesting.has(callId)) continue;
     await append(KINDS.callEnd, { callId, status: "interrupted" });
     started.set(callId, true);
     ends.set(callId, { status: "interrupted" });
@@ -2081,6 +2082,27 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // (unsentParked). A start refused because another call of the round parked the run first (the journal sealed) leaves
         // this call held as that one is.
         const replaySafe = (name: string) => tools.find((one) => one.name === name)?.replay === "safe";
+        // A call a tool of pi's nests (a script's, tools_call's) is pi's own tool task, of which pi's record keeps no row: it
+        // goes on the loop's record as a CLI's call does, so the Timeline shows it as its own call, and an ask for it beside
+        // it. Its start at its gate (marked parked while it waits for a person; refused, with its end, in the gate's words),
+        // its end once pi has its outcome (nestedEnded). The record opens at the claim's first such call, and never ends a
+        // call itself: pi says each one's end, a replay-safe one a crash cut run again first (endsItsCalls).
+        const [nestedOn, nestedJournal] = [harness, gate.journal];
+        let nestedOpen: Promise<CliRecord> | undefined;
+        const nestedRecord = () => (nestedOpen ??= openCliRecord(nestedOn, nestedJournal, context, now, undefined, true));
+        const unlessSealed = (error: unknown) => {
+          if (!gate?.sealed) throw error;
+        };
+        const nestedAsking = preIntentGate(spec, hooks, wrapUp, async (call) => (await nestedRecord()).park(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool)).catch(unlessSealed));
+        const nestedGate: typeof gateOf = async (call, hookContext) => {
+          if (call.nested !== true) return gateOf(call, hookContext);
+          const answer = await nestedAsking(call, hookContext);
+          const nests = await nestedRecord();
+          if (answer === "allow") await nests.start(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool)).catch(unlessSealed);
+          else if ("deny" in answer) await nests.refused(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool), answer.deny).catch(unlessSealed);
+          return answer;
+        };
+        const nestedEnded: PiSessionIO["nestedEnded"] = async (callId, status, output) => (await nestedRecord()).end(callId, status, output).catch(unlessSealed);
         const askingGate = record
           ? preIntentGate(spec, hooks, wrapUp, (call) =>
               record.park(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool)).catch((error: unknown) => {
@@ -2107,7 +2129,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               else if (answer === "allow" && approvedCalls.has(call.callId) && !tools.some((one) => one.name === call.tool)) await record.end(call.callId, "done", OWN_TOOL_RELEASED);
               return answer;
             }
-          : gateOf;
+          : nestedGate;
         // A tool no call of which reaches the gate before it runs (Codex's live search, inside its model requests): its
         // setting now, read again at each request, so a deny or ask set mid-run reaches the next one.
         const permission = spec.gate?.permission;
@@ -2118,7 +2140,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (askCut.armed && event.type === "tool_start") askCut.disarm();
           theRecord.onEvent(event);
         };
-        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? onEvent(record) : () => {}, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, bookedCost, keepCalls };
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? onEvent(record) : () => {}, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };
         // The MCP tools are host tools like any other (mcp.tools, wrapped above): every harness gets them on its own channel
         // for host tools, each call through the gate before its intent.
         session = await spec.adapter.open({ ...spec.session, tools }, io);
