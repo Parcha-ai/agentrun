@@ -13,7 +13,7 @@ import { harnessOfBody } from "./harness.js";
 import { storedHarness } from "./harness-table.js";
 import {
   AgentBodyInvalid, type AgenticBody, RevisionMoved, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
-  type ModelTiers, type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type ToolSettings, type WorkflowBody,
+  type ModelTiers, type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type TemplatePackage, type ToolSettings, type WorkflowBody,
 } from "./store/index.js";
 import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
 import { computerOfPlace, type PlaceView, settingOfDefinition } from "./computer-setting.js";
@@ -61,6 +61,8 @@ export type AgentEntry = {
   version: number;
   revisions: number;
   sizes: Map<string, number>;
+  /** The template package it was applied from, as its first revision keeps it; absent or null for one made otherwise. */
+  template?: TemplatePackage | null;
 };
 
 /** A store refusal as the request's answer: a duplicate name (agent exists) and a constraint map the right way. */
@@ -196,7 +198,7 @@ export async function getAgent(store: AgentsStore, id: string): Promise<AgentEnt
   const revisions = await store.agents.revisions(id); // oldest first (created_at, id)
   const at = agent.currentRevision === null ? -1 : revisions.findIndex((r) => r.id === agent.currentRevision);
   const revision = at < 0 ? null : revisions[at]!;
-  return { agent, revision, version: at < 0 ? 0 : at + 1, revisions: revisions.length, sizes: sizesOf(revision) };
+  return { agent, revision, version: at < 0 ? 0 : at + 1, revisions: revisions.length, sizes: sizesOf(revision), template: revisions[0]?.package ?? null };
 }
 
 /** Every agent here, newest first (its creation, then its id). Archived agents are left out by default. */
@@ -213,7 +215,7 @@ export async function listAgents(store: AgentsStore, options: { archived?: boole
 export async function createAgent(
   store: AgentsStore,
   { definition, skills = {}, note }: DefinitionBody,
-  options: { check?: (revision: NewRevision) => Promise<void>; fresh?: { place: RevisionPlace; tools: readonly string[] } } = {},
+  options: { check?: (revision: NewRevision) => Promise<void>; fresh?: { place: RevisionPlace; tools: readonly string[] }; template?: TemplatePackage } = {},
 ): Promise<AgentEntry> {
   const given = typeof definition.id === "string" ? definition.id : undefined;
   if (given !== undefined && !ID_PATTERN.test(given)) throw invalid([{ field: "definition.id", reason: "invalid", message: `definition.id does not match ${ID_PATTERN.source}` }]);
@@ -222,7 +224,9 @@ export async function createAgent(
   const stamped = options.fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow)
     ? { place: options.fresh.place, ...(definition.tools === undefined ? { tools: [...options.fresh.tools] } : {}) }
     : {};
-  const revision = makeRevision({ ...definition, ...stamped }, skills, note);
+  // A template's agent keeps the package it was applied from on its first revision (store `revisions.package`).
+  const made = makeRevision({ ...definition, ...stamped }, skills, note);
+  const revision = options.template ? { ...made, package: options.template } : made;
   checkVersion(definition, 1);
   await options.check?.(revision);
   const id = given ?? uuidv7();
@@ -423,6 +427,9 @@ export function agentView(
     revision: revision?.id ?? null,
     revisions: entry.revisions,
     source: null,
+    // The template package it was applied from (its first revision keeps it): the package's id, version and the commit an
+    // imported one was read at (null for a bundled one). Null for an agent made otherwise.
+    template: entry.template ? { id: entry.template.id, version: entry.template.version, sha: entry.template.sha ?? null } : null,
     skills: Object.entries(body.skills ?? {}).map(([path, sha]) => ({ path, sha256: sha, size_bytes: entry.sizes.get(sha) ?? null })),
     sign_ins: extra.signIns ?? [],
     runs: extra.runs ?? { count: 0, live: 0 },
