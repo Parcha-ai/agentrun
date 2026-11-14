@@ -26,6 +26,24 @@ export type GithubSource = { owner: string; repo: string; path: string | null; r
 
 const refused = (message: string) => invalid([{ field: "source", reason: "bad_format", message, expected: "github:<owner>/<repo>[/<path>][@<ref>]", example: "github:Parcha-ai/agentrun/packages/serve/templates/kyb@main" }]);
 
+/** A % in a source's path part, refused by name, never as a folder name's wrong letter: one that starts no escape; else,
+ *  in a github: source (`escapes` false), any escape. A github: source is stored and linked as written, so an escaped @
+ *  or / in it would read back as another package. */
+function percentRefused(part: string, escapes: boolean) {
+  const bad = /%(?![0-9A-Fa-f]{2}).{0,2}/s.exec(part)?.[0];
+  if (bad) return refused(`${JSON.stringify(part)} has ${JSON.stringify(bad)}, which is no percent escape: a % is followed by two hex digits (%25 is a % itself).`);
+  return refused(escapes ? `${JSON.stringify(part)} has percent escapes that spell no text.` : `${JSON.stringify(part)} has ${JSON.stringify(/%../.exec(part)?.[0])}, a percent escape: a github: source names each folder as it is, unescaped.`);
+}
+
+/** A tree URL's path part with its percent escapes read. */
+function unescaped(part: string): string {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    throw percentRefused(part, true);
+  }
+}
+
 /** `text` read as a package's source: `github:<owner>/<repo>[/<path>][@<ref>]`, or a GitHub web URL of the repository or of
  *  a folder in it (`https://github.com/<owner>/<repo>/tree/<ref>/<path>`, its ref the one segment after tree), made into
  *  the first form. Anything else is a 422 on `source`. */
@@ -42,13 +60,7 @@ export function parseSource(text: unknown): GithubSource {
     }
     if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password) throw refused(`A package is imported from github.com alone, over https: ${url.protocol}//${url.host} is not.`);
     if (url.search || url.hash) throw refused("A package's GitHub URL has no query or fragment.");
-    const parts = url.pathname.split("/").filter(Boolean).map((part) => {
-      try {
-        return decodeURIComponent(part);
-      } catch {
-        throw refused(`${given} has a % that is not an escape: it is not a GitHub URL.`);
-      }
-    });
+    const parts = url.pathname.split("/").filter(Boolean).map(unescaped);
     [owner = "", repo = ""] = parts;
     repo = repo.replace(/\.git$/, "");
     if (parts.length > 2 && parts[2] !== "tree") throw refused("A package's GitHub URL is the repository's, or a folder's: https://github.com/<owner>/<repo>/tree/<ref>/<path>.");
@@ -62,6 +74,8 @@ export function parseSource(text: unknown): GithubSource {
     const body = given.slice("github:".length);
     const at = body.lastIndexOf("@");
     const parts = (at < 0 ? body : body.slice(0, at)).split("/");
+    const escaped = parts.find((part) => part.includes("%"));
+    if (escaped !== undefined) throw percentRefused(escaped, false);
     [owner = "", repo = ""] = parts;
     rest = parts.slice(2);
     ref = at < 0 ? null : body.slice(at + 1);

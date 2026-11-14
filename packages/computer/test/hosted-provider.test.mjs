@@ -824,6 +824,54 @@ test("Archil: install, then preflight, mount with the token on stdin alone, and 
 	noToken(info, "the listing");
 });
 
+test("Archil: the mount's label records the folder's agent alone, since agentrun.run holds its run; list and attach read the whole folder back", async () => {
+	const { provider, fake } = setup({}, { box: { reached: [] } });
+	const ref = made(await create(provider, ARCHIL_SPEC));
+	const m = only(fake);
+	assert.equal(m.labels["agentrun.mount"], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }));
+	const [info] = made(await provider.list({ "agentrun.run": "r1" }));
+	assert.deepEqual({ ...info.mount, exclusive: undefined, epoch: undefined }, { kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder, exclusive: undefined, epoch: undefined });
+	const attached = made(await provider.attach({ id: ref.id }));
+	assert.equal(attached.spec.mount.folder, MOUNT.folder);
+	noToken(attached.spec.mount, "the attached spec's mount");
+});
+
+/** The adapter's own labels at their longest: a name of its making, and a deadline and its cap as ISO times. */
+const ownLongest = (image, more = {}) => ({ [COMPUTER]: "1", [NAME]: "computer-000000000000", [DEADLINE]: new Date(0).toISOString(), "agentrun.computer.image": image, [MAX]: new Date(0).toISOString(), ...more });
+const pairBytes = (labels) => Object.entries(labels).reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
+
+test("labelRules.maxBytes: the adapter prices the caller's labels with its own at their longest, names and values (pairs) or the JSON of them (json), at check() and at create, before any host call", async () => {
+	const own = pairBytes(ownLongest(SPEC.image));
+	const pairs = setup({}, { facts: { labelRules: { maxBytes: own + 10, measure: "pairs" } } });
+	assert.deepEqual(pairs.provider.check({ ...SPEC, labels: { a: "123456789" } }), [], "10 bytes fit");
+	const over = pairs.provider.check({ ...SPEC, labels: { a: "1234567890" } });
+	assert.deepEqual(over.map(({ field }) => field), ["labels"]);
+	assert.match(over[0].message, new RegExp(`a Fakehost computer's labels come to at most ${own + 10} bytes, names and values together, and this computer's would come to ${own + 11} \\(.*\\ba 11\\b.*\\): give a shorter image, mount folder or labels`));
+	assert.deepEqual(pairs.provider.check({ ...SPEC, image: "img2", labels: { a: "123456789" } }).map(({ field }) => field), ["labels"], "the image is one of the adapter's own labels");
+	const refused = await create(pairs.provider, { ...SPEC, labels: { a: "1234567890" } });
+	assert.equal(refused.error?.code, "refused");
+	assert.match(refused.error.message, /labels: .*come to at most/);
+	assert.deepEqual(pairs.fake.calls, [], "no host call");
+	// Archil: the mount's own label is priced too, and the mount is the field.
+	const archilOwn = pairBytes(ownLongest(ARCHIL_SPEC.image, { "agentrun.mount": JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }) })) + pairBytes(ARCHIL_SPEC.labels);
+	const archil = setup({}, { facts: { labelRules: { maxBytes: archilOwn, measure: "pairs" } } });
+	assert.deepEqual(archil.provider.check(ARCHIL_SPEC), [], "an Archil computer's labels at the bound fit");
+	const long = archil.provider.check({ ...ARCHIL_SPEC, mount: { ...MOUNT, folder: "agents/a12/runs/r1/work" } });
+	assert.deepEqual(long.map(({ field }) => field), ["mount"]);
+	assert.match(long[0].message, /agentrun\.mount \d+/);
+	noToken(long, "the refusal of the labels' size");
+	// json: the caller's and the adapter's labels as one JSON object.
+	const json = JSON.stringify({ a: "x", ...ownLongest(SPEC.image) }).length;
+	const asJson = setup({}, { facts: { labelRules: { maxBytes: json, measure: "json" } } });
+	assert.deepEqual(asJson.provider.check({ ...SPEC, labels: { a: "x" } }), []);
+	const jsonOver = asJson.provider.check({ ...SPEC, labels: { a: "xx" } });
+	assert.deepEqual(jsonOver.map(({ field }) => field), ["labels"]);
+	assert.match(jsonOver[0].message, new RegExp(`come to at most ${json} bytes, as JSON, and this computer's would come to ${json + 1}`));
+	// The count of labels takes the adapter's own from the same labels: five, and the mount's.
+	const counted = setup({}, { facts: { labelRules: { max: 8 } } });
+	assert.match(counted.provider.check({ ...ARCHIL_SPEC, labels: { ...ARCHIL_SPEC.labels, x: "1" } })[0].message, /takes 8 labels, 6 of them the provider's own: 3 is 1 too many/);
+});
+
 test("Archil: a higher epoch fences the create: nothing mounted, init never starts, and the machine is deleted", async () => {
 	const { provider, fake } = setup({}, { box: { reached: [] } });
 	made(await create(provider, { ...ARCHIL_SPEC, labels: { "agentrun.run": "r1", "agentrun.epoch": "5" } }));
