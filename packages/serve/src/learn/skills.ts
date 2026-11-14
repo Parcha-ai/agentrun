@@ -603,7 +603,8 @@ export function synthesisProblems(doc: unknown, dsl: SchemaResolver): string[] {
  *  at run time (the state each step reads, its output's path and schema), never the answers. With `outputSchema` (the
  *  agent's), the output of a run that passed is held to it as a run serving the draft serves it (answer-json.ts
  *  answerAsServed over the tool's text, learned-workflow.ts learnedOutput): one that can't be shaped to it fails, in the
- *  schema's words, since every run it served would go back to the agent. */
+ *  schema's words, since every run it served would go back to the agent. A text answer is synthetic here, and serving
+ *  takes text whose json block meets the schema, so text fails only against a schema that does not compile. */
 export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunWorkflow } & SchemaResolver, json: string, example?: string, outputSchema?: unknown): Promise<DraftDryRun> {
   let doc: unknown;
   let input: Record<string, unknown> | undefined;
@@ -637,9 +638,14 @@ export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunW
   if (result.ok && result.status === "passed" && outputSchema !== undefined && output) {
     // The serving path's own two functions, loaded only for an agent with an output schema (learned-workflow.ts reads
     // this module).
-    const [{ answerAsServed }, { learnedOutput }] = await Promise.all([import("../answer-json.js"), import("../learned-workflow.js")]);
-    const served = answerAsServed(learnedOutput(output.value), outputSchema);
-    if ("why" in served) return { status: "failed", detail: `${DRY_RUN_FAILED}: ${served.why}`.slice(0, 600) };
+    const [{ answerAsServed, schemaCheck }, { learnedOutput }] = await Promise.all([import("../answer-json.js"), import("../learned-workflow.js")]);
+    const text = learnedOutput(output.value);
+    const served = answerAsServed(text, outputSchema);
+    // A text answer (learnedOutput hands one back as it is, any other as its JSON) is the model's own words, here a
+    // synthetic placeholder: serving reads a real one's fenced json block first, so text may carry the whole answer. It
+    // fails here only where serving would refuse every text: an output schema that does not compile.
+    const isText = text !== JSON.stringify(output.value ?? null);
+    if ("why" in served && (!isText || "why" in schemaCheck(outputSchema))) return { status: "failed", detail: `${DRY_RUN_FAILED}: ${served.why}`.slice(0, 600) };
   }
   if (result.ok) return result.status === "passed" ? { status: "passed" } : { status: "not_run", detail: (result.skipped ?? []).join("; ").slice(0, 300) || "a check could not run" };
   return { status: "failed", detail: `${DRY_RUN_FAILED}${result.stage ? ` at "${result.stage.slice(0, 64)}"` : ""}: ${result.problems.join("; ").slice(0, 300)}` };

@@ -534,13 +534,14 @@ test("compile: a draft that never passes is never silent: its errors go with the
 
 // The agent's output schema (answer-json.ts answerAsServed): a learned workflow's answer is served shaped to it, else the
 // run goes back to the agent, so the compile turn is told the schema, and the dry run holds the draft's answer to it with
-// that same function. A one-field draft for a multi-field schema fails its dry run in the schema's words and goes back
-// to the model; the retry that answers the whole object is kept. An agent with no output schema is held to none.
+// that same function. A draft whose object misses the schema's fields fails its dry run in the schema's words and goes
+// back to the model (a text answer may carry the whole object as a json block, so text is never refused for its shape);
+// the retry that answers the whole object is kept. An agent with no output schema is held to none.
 const MCC_SCHEMA = {
   type: "object", additionalProperties: false, required: ["mcc", "description", "confidence", "reasoning", "sources"],
   properties: { mcc: { type: "string" }, description: { type: "string" }, confidence: { type: "number" }, reasoning: { type: "string" }, sources: { type: "array", items: { type: "string" } } },
 };
-const ONE_FIELD = { type: "object", properties: { mcc: { type: "string" } }, required: ["mcc"] };
+const PART = { type: "object", properties: { mcc: { type: "string" }, confidence: { type: "number" } }, required: ["mcc", "confidence"] };
 const shapedBlock = (out) => `\`\`\`\`workflow answer\n---\ndescription: Picks a merchant's category code; use when asked for one\nexample: {"content":"Acme Hardware, Austin"}\nfrom_notes: [rule-1.md]\n---\n${JSON.stringify({
   v: 2, name: "answer",
   schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Out: out },
@@ -548,10 +549,10 @@ const shapedBlock = (out) => `\`\`\`\`workflow answer\n---\ndescription: Picks a
   root: { node: "chain", steps: [{ node: "extract", label: "pick", instructions: "Pick the merchant's category code.", out: "Out", as: "answer", tier: "fast" }] },
 })}\n\`\`\`\``;
 
-test("compile against the agent's output schema: a one-field draft fails its dry run in the schema's words and the retry that answers the whole object is kept; with no output schema the one-field draft is kept at once", async (t) => {
+test("compile against the agent's output schema: a draft answering part of the object fails its dry run in the schema's words and the retry that answers the whole object is kept; with no output schema the partial draft is kept at once", async (t) => {
   for (const schema of [MCC_SCHEMA, undefined]) {
     const w = await world(t, { instructions: "Pick the code.", tools: ["read"], learning: true, ...(schema ? { outputSchema: schema } : {}) }, compiling());
-    await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: REFLECTED }, { say: shapedBlock(ONE_FIELD) }, { say: shapedBlock(MCC_SCHEMA) }] });
+    await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: REFLECTED }, { say: shapedBlock(PART) }, { say: shapedBlock(MCC_SCHEMA) }] });
     const row = await w.ended();
     const { users } = await w.turnOf(row);
     const prompt = compileAskIn(users);

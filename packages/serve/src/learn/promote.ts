@@ -76,7 +76,10 @@ export interface PromotionRecord {
   readonly reason: string;
   readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_write?: number };
   readonly runs?: readonly string[];
-  readonly refit?: { readonly from: string; readonly guards: readonly RefitGuard[] };
+  /** A replaying record's graded runs, one per `runs` entry in order: the input each reserved replay run replays, so a
+   *  launch interrupted after the reservation is finished by a later claim (runner/promotion.ts relaunch). */
+  readonly inputs?: readonly string[];
+  readonly refit?:{ readonly from: string; readonly guards: readonly RefitGuard[] };
   readonly checked?: number;
   /** A superseded revision's newer one: the digest whose claim cancelled its replay. */
   readonly superseded_by?: string;
