@@ -1877,8 +1877,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const bridgeGate: typeof gateOf = record
           ? async (call, hookContext) => {
               // An MCP call is on the record before its gate answers, its start marked parked (once per call id), so its
-              // sent mark is committed before it is sent: a fault between its start and its send leaves it unsent, and the
-              // CLI's re-issue sends it once, never answered interrupted.
+              // sent mark is committed before it is sent. A fault before the bridge writes its intent leaves no intent: the
+              // CLI's re-issue asks again and sends it once. One after the intent is any bridged host tool's: told interrupted,
+              // never run twice.
               if (mcp?.catalogOf(call.tool) !== undefined) {
                 await record.park(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool)).catch((error: unknown) => {
                   if (!gate?.sealed) throw error;

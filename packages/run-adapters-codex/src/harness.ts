@@ -39,6 +39,7 @@ import { danglingCalls, settleCall } from './transcript.js';
 import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.js';
 import {
   callIdOf,
+  type DynamicTool,
   endsTurn,
   isRolloutPath,
   isSessionMeta,
@@ -49,7 +50,11 @@ import {
   summarizeRollout,
   THREAD_STREAM,
   type ThreadRecord,
+  withMcpTools,
 } from './rollout.js';
+
+/** A host tool as thread/start gives it to Codex: one of its dynamic tools. */
+const dynamicTool = (t: { name: string; description: string; inputSchema: unknown }): DynamicTool => ({ type: 'function', name: t.name, description: t.description, inputSchema: t.inputSchema });
 
 /**
  * Codex on harness-world: a kernel `Harness` that drives `codex app-server
@@ -451,6 +456,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
           await journal.flush();
           lines = settled;
         });
+        // A thread an earlier version started without its MCP tools as dynamic tools gets them on its resume.
+        lines = [...withMcpTools(lines, bridge.tools.map(dynamicTool))];
         rolloutBytes = new TextEncoder().encode(rolloutText(lines));
       }
       // The log wins: the VM's cache dirs are wiped, and CODEX_HOME rebuilt from the log.
@@ -891,7 +898,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         const started = await guard(
           rpc.request('thread/start', {
             ...threadParams,
-            dynamicTools: bridge.tools.map((t) => ({ type: 'function', name: t.name, description: t.description, inputSchema: t.inputSchema })),
+            dynamicTools: bridge.tools.map(dynamicTool),
           })
         );
         const id = String(started?.thread?.id ?? '');
