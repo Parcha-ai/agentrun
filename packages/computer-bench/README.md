@@ -32,7 +32,8 @@ check ids are unique, regexes compile, `exit` only on `exec.run`, a task whose c
 | `params` | per-seed perturbations: `{pick: [...]}` (scalars, or objects read as `{{name.field}}`) or `{int: [lo, hi]}`; each param is picked from sha256(task, seed, name), so every arm sees the same values |
 | `setup`, `teardown`, `oracle` | protocol calls: `{method, params, why, allow (error kinds that count as done), exit (exec.run's good exit codes)}` |
 | `instruction` | what the agent is told |
-| `budget` | `steps` (computer calls), `usd`, `wall_s` |
+| `exec` | `allow` (default) or `deny`: a task done through the UI. The agent gets no `exec` or `processes` group and no shell (on serve, its own agent with `computer.exec: false`). Every "In the X app, ..." task says deny |
+| `budget` | `steps` (computer calls, not tool calls: a code-mode script of six calls spends six), `usd`, `wall_s` |
 | `checks` | stage 1 (below) |
 | `sufficient` | default true: the checks decide alone. False: the grader decides, and `rubric` is required |
 | `source` | a ported task's suite, id, revision, licence and changes |
@@ -76,7 +77,8 @@ under the same conditions):
    refused without opening a computer. An `apps.list` or a probe that could not run is infra;
 4. runs setup; a setup that fails is infra;
 5. runs the agent under its budget: the step budget answers `limit` past it and stops the agent, the wall budget aborts
-   it, and a run that spent more than `usd` counts as `budget` whatever its checks say;
+   it, and a run that spent more than `usd`, or made more computer calls than `steps` (on serve, which runs a script's
+   calls before the bench reads them), counts as `budget` whatever its checks say;
 6. pings the computer on the bench's channel (phase `ping`, 15 s). No answer means it died during the agent's turn: the
    run is infra ("the computer stopped answering during the agent's turn") and runs again, before any check can
    score a dead computer as wrong. After a stop the bench made (the step or wall budget) a failed ping is expected,
@@ -106,10 +108,20 @@ computer, as `not verified for seed N` (with what verify found, or that it prove
 the CLI says how many it left out.
 
 The agent's calls go through a tap (`src/tap.ts`) that records them, keeps the budget, and denies a method outside the
-groups the agent is given (exec on a phone is the bench's, not the agent's). After each act it takes a frame on the
-bench's channel: the whole screen where the computer has the screen group, else the front window's image through
-`ui.observe` where `ui.image` is on. A backend whose agent's calls are recorded elsewhere (serve's Timeline) reports
-them as steps instead.
+groups the agent is given (exec on a phone is the bench's, not the agent's; on a task that says `exec: "deny"`, exec and
+processes are taken out on every backend). After each act it takes a frame on the bench's channel: the whole screen
+where the computer has the screen group, else the front window's image through `ui.observe` where `ui.image` is on. A
+backend whose agent's calls are recorded elsewhere (serve's Timeline) reports them as steps instead.
+
+Steps and turns. A step is one computer call; a turn is one tool call of the model's. A tools agent spends a turn per
+call; a code-mode agent's script of six calls is six steps and one turn; a tool call that makes no computer call (a
+search) is a turn and no step, recorded with phase `tool`. The step budget counts computer calls. Each result has
+`steps` and `tool_calls`, and each agent step its `turn`.
+
+Surfaces. The arm's `surface` is what its agent is given, not a label. On serve it is the agent's `computer.surface`
+(see [Arms](#arms)). On the fake backend the tap is the surface: `tools` makes every call its own tool call, and `code`
+offers `wire.script(fn)`, one tool call however many calls `fn` makes, and refuses a bare call (a code-mode agent has no
+per-step tool). The fake agents play a task as one script when given code, and call by call when given tools.
 
 ## The run record
 
@@ -118,16 +130,17 @@ move into a run's journal once serve writes computer steps itself:
 
 | kind | data |
 | --- | --- |
-| `agentrun.bench.run` | the header: task (id, version, sha256, split, seed, nonce, params, instruction), arm, attempt, budget, what the agent was given (sha256s), the computer's identity and its whole hello |
-| `agentrun.computer.step` | one protocol call: `n`, phase (precondition, setup, agent, frame, ping, check, observe, teardown, oracle), method, params without bytes (`{bytes, sha256}` in their place), timings, ok or error, routes and verified (ui.act), changed, expect, state before and after, stale, and images (`got`, `pre`, `post`) by sha256 |
+| `agentrun.bench.run` | the header: task (id, version, sha256, split, seed, nonce, params, instruction), arm, attempt, budget, what the agent was given (`agent`: its surface, exec allow or deny, the groups it may use, and on serve its agent id; `given`: sha256s), the computer's identity and its whole hello |
+| `agentrun.computer.step` | one protocol call: `n`, phase (precondition, setup, agent, tool, frame, ping, check, observe, teardown, oracle), method, params without bytes (`{bytes, sha256}` in their place), timings, ok or error, routes and verified (ui.act), changed, expect, state before and after, stale, images (`got`, `pre`, `post`) by sha256, and on an agent step its `turn` and `tool`. Phase `tool` is a tool call that made no computer call |
 | `agentrun.bench.checks` | stage 1: each check's status, what it read, and why it failed |
 | `agentrun.bench.grade` | stage 2's verdict and the judge's id, or its error |
 | `agentrun.bench.verdict` | the result line (below) |
 | `agentrun.bench.cleanup` | a teardown or release that failed after the verdict |
 
-Images are kept once under `<out>/blobs/<sha256>`. Beside the runs: `bench.json` (the bench run's arms, seeds, tasks
-and judge), `results.jsonl` (one line per attempt: outcome, scored, rerun, stage 1, the grade, steps, cost, wall,
-routes, stale, no-op acts, verified steps), `human-queue.jsonl`, and the person's `labels.jsonl`. One bench run per
+Images are kept once under `<out>/blobs/<sha256>`. Beside the runs: `bench.json` (the bench run's arms in their order,
+seeds, tasks, judge and re-runs), `results.jsonl` (one line per attempt: platform, exec, outcome, scored, rerun, stage 1,
+the grade, steps, tool calls, exec calls, cost, wall, routes, stale, no-op acts, verified steps), `human-queue.jsonl`,
+and the person's `labels.jsonl`. One bench run per
 folder: a run refuses a folder that already holds `results.jsonl`, so a report never pools two.
 
 ## The grader
@@ -156,12 +169,22 @@ isn't the JSON, then says unknown.
 
 ## The report
 
-`computer-bench report <out>` writes `report.md` and `report.json`: per arm, success with a 95% interval clustered by
-task (the task is the unit; never narrower than Wilson's at the task count), tasks passed on every seed (pass^k), mean
-steps, $ per run and per success, wall time, budget stops, infra re-runs and final, refusals, the queue, the route mix
-(semantic, page, background, foreground, raw input, error), stale steps per run, no-op acts and verified steps; each
-arm's paired difference against the first, over the task × seed pairs both arms scored; the failure loci; and a table
-per task.
+`computer-bench report <out>` writes `report.md` and `report.json`. Arms are in bench.json's order (the arms file's): the
+first is the baseline every other is compared against, in every table.
+
+For a reader first, one table per platform (the tasks' os and kind: android phone, linux desktop, macos desktop), a row
+per arm: passed / scored, success, the paired difference against the first arm with its 95% CI and the tasks it pairs
+over, median computer steps, median model turns, median wall seconds, and $ per pass; then that platform's tasks (exec
+allow or deny, passed / scored per arm). Then "How we measured", a paragraph made from the run: how many tasks on which
+platforms, the seeds, the grader, what counts as infra and how often it is re-run, and which tasks deny exec.
+
+Then per arm: success with a 95% interval clustered by task (the task is the unit; never narrower than Wilson's at the
+task count), tasks passed on every seed (pass^k), mean steps and turns, $ per run and per success, wall time, budget
+stops, infra re-runs and final, refusals, the queue, the route mix (semantic, page, background, foreground, raw input,
+error), stale steps per run, no-op acts and verified steps; the passes that ran a program (exec.run, a process, a
+shell tool, counted once it started: a command its timeout cut or a shell call that failed ran one, a call refused or
+stopped before it started did not); each arm's paired difference against the first, over the task × seed pairs both arms scored; the failure
+loci; and a table per task.
 
 ## Suites
 
@@ -178,16 +201,20 @@ Each suite's README says which tasks are proven only on the fake and which wait 
 
 ## Arms
 
-`arms.json` is a list of `{id, harness, surface, model, effort?, options?}`. On serve, the arm is an agent definition:
-`harness` and `model` as they are, `effort` as its `thinking` level, `computer.kind` from the task, `options.provider` the provider that serves
-it, and `options.definition` any other field of the definition as it is, such as the tools that make the surface:
+`arms.json` is a list of `{id, harness, surface, model, effort?, options?}`, in the order the report compares them: the
+first is the baseline. On serve, the arm is an agent definition: `harness` and `model` as they are, `effort` as its
+`thinking` level, `computer: {kind, provider?, surface, exec?}` (`kind` from the task, `provider` from
+`options.provider`, `surface` the arm's: "code", the harness's script tool alone; "tools", the per-step computer tools
+alone; and `exec: false` for a task that denies exec), and `options.definition` any other field of the definition as it
+is. Its `computer` may pin more (a provider, say) but never `kind`, `surface` or `exec`: the bench sets those. One agent per bench run, arm, kind and exec (and step budget, on pi): its id is
+`<bench>-<arm>-<kind>-<surface>[-ui][-s<steps>]`, `-ui` where exec is denied.
 
 ```json
 [
-  { "id": "pi-code-sonnet", "harness": "pi", "surface": "code", "model": "claude-sonnet-5-5",
-    "options": { "provider": "<a provider GET /computers lists>", "definition": { "tools": ["computer_script"] } } },
-  { "id": "pi-tools-sonnet", "harness": "pi", "surface": "tools", "model": "claude-sonnet-5-5",
-    "options": { "provider": "<a provider GET /computers lists>", "definition": { "tools": ["computer_observe", "computer_act", "computer_screenshot"] } } }
+  { "id": "sonnet-5.5", "harness": "pi", "surface": "code", "model": "openrouter/anthropic/claude-sonnet-5.5",
+    "options": { "provider": "<a provider GET /computers lists>" } },
+  { "id": "gpt-6.1-terra", "harness": "pi", "surface": "code", "model": "openrouter/openai/gpt-6.1-terra",
+    "options": { "provider": "<a provider GET /computers lists>" } }
 ]
 ```
 
@@ -208,16 +235,20 @@ missing.
    (404 `not_found` once let go, a message other than "no route"), or until `hold_minutes` pass with no call. Released
    after the agent's end, the run ends as its agent did; released before the start, it ends cancelled.
 4. The agent's steps come from `GET /runs/{run_id}/timeline`: each `tool_use` and its `tool_result` row (the tool's
-   name, its input preview, success or failure). No journal route. The rows carry no protocol detail, so a serve run's
-   steps have no ui.act routes or verified counts; a `computer_calls` field on a tool_result row would carry them.
+   name, its input preview, success or failure), and on the tool_result row the computer calls the tool call made
+   (`computer_calls`: method, ok, ms, the error's code, ui.act's steps with their routes and readbacks, its expect, and
+   where serve has them `at` and `words`; `computer_calls_dropped` past serve's bound). Each computer call is a step;
+   each tool call is a turn. No journal route.
 5. `GET /runs/{run_id}` answers `computer {state, provider, why, held {state, minutes, until, why}}`, `cost {usd,
    so_far_usd}`, `result {final_answer}` once the run completed, and `error {code}`; a platform failure's code is one of
    `computer_unavailable`, `provider_error`, `model_unavailable`, `upstream_error`, `internal`, `runner_lost`. The
    answer the checks read is the Timeline's `final_answer` row, there once the agent ends, before the release.
-6. Budgets: the money budget is the run's `max_cost_usd`. The step budget is the agent's `max_tool_calls` on pi (one
-   agent per arm, kind and budget there); on every harness the bench counts the Timeline's tool calls and cancels the
-   run past it, which lets the computer go, so the checks after a cancel find it gone. Labels are gone: the bench's
-   agent ids say which bench run made them.
+6. Budgets: the money budget is the run's `max_cost_usd`. The step budget is computer calls: on every harness the bench
+   counts the computer calls on the Timeline's tool rows and cancels the run past it, which lets the computer go, so the
+   checks after a cancel find it gone. On pi the agent's `max_tool_calls` is the budget too, a backstop (one agent per
+   budget there). Labels are gone: the bench's agent ids say which bench run made them.
+7. An agent's computer takes `surface` ("code" or "tools") and `exec: false` (no exec or processes group, no shell),
+   which the bench sets from the arm and the task.
 
 When serve lacks one, `--backend serve` stops before it claims any computer, with one error that names each route serve
 lacks (a 404 "no route" or a 405), what its OpenAPI document leaves out (`RunCreate.hold`, `Run.computer.held`), and
@@ -235,8 +266,10 @@ the dev split; then the held-out split once, for the numbers a report states.
 
 `npm test` runs `test/*.test.mjs` against `dist` at $0: the schema and every suite; the runner on the fake world
 (passes and fails, the record, checks before release, infra re-runs, refusals, grants, the three budgets, images,
-stale steps, null and oracle, parallel); the grader with fake judges and a fake fetch; the statistics, the report,
-labels, verify and the command line; the serve backend on a fake serve, and its preflight on this repository's serve;
+stale steps, null and oracle, parallel, both surfaces, exec deny); the grader with fake judges and a fake fetch; the
+statistics, the report (arms in their order, the per-platform tables), labels, verify and the command line; the serve
+backend on a fake serve (a script row of six computer calls, the budget in computer calls, surfaces and exec deny in
+the agent's definition), and its preflight on this repository's serve;
 and the runner on the protocol's own fake ui driver over its line stream (the fixture suite's verify, right and wrong
 agents, each act's routes, verified count, states and window frames, a stale ref, and oracles that fail in words).
 Those two need `@parcha/agentrun-serve` and `@parcha/agentrun-computer` built: they are dev dependencies, and the

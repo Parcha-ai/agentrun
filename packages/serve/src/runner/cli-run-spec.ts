@@ -65,6 +65,8 @@ import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { bookedSpend, cliModelWorked, cliRunMetrics, runEndCost } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
+import { pathMetrics, workflowFirstOf } from "./workflow-first.js";
+import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { heldSpecOf } from "./held-run.js";
@@ -574,6 +576,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // answers what pi's does; the loop then cuts the CLI's turn at the question (adapter-loop.ts, turn-ending host tools),
   // so the run parks on the person or waits for them in its claim exactly as a pi run does.
   const askTool = granted.includes(ASK_TOOL) ? hostToolOf(ASK_TOOL, askPerson as never, ctx) : undefined;
+  // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts).
+  // Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
+  const { serve: workflowFirst, revise: workflowRevise } = learnedTool ? await workflowFirstOf(revision.kind, workflows, launch, log, () => pastRunsOverStore(deps.store, runRow.agentId), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
@@ -627,6 +632,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // The run's end-of-run step, when it learns (the spec's, preferred over the loop's deps': adapter-loop.ts stepOf).
     ...(endOfRun ? { endOfRun } : {}),
     ...(start ? { learningLaid: laidOf(seedLaid) } : {}),
+    ...(workflowFirst ? { workflowFirst } : {}),
+    ...(workflowRevise ? { workflowRevise } : {}),
     // The web tools' install lifecycle, run by the adapter loop, as the pi spec's (they register none today).
     ...(life ? { lifecycle: life } : {}),
     agentId: runRow.agentId,
@@ -656,7 +663,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // session, and its decisions (a learned workflow's decision nodes) are the run's cost too, as the pi spec's.
       const total = runEndCost({ model, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
       // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
-      return { costUsd: total, metrics };
+      return { costUsd: total, metrics: { ...metrics, ...pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning) : undefined) } };
     },
     // A run started with hold: true holds its computer for its owner (computer-held.ts), as the pi spec's.
     ...(heldComputer ? { held: heldComputer } : {}),

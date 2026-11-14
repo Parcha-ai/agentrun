@@ -51,6 +51,15 @@ final class FakeOS: @unchecked Sendable {
 	var front = "com.apple.Safari"
 	var frameHash = 0
 	var maxNodes: Int?
+	/// Walks of the tree, and the elements whose actions and settable were read: on a Mac, those two reads cost as much
+	/// as the rest of a node.
+	var snapshots = 0
+	var detailReads = 0
+	/// What one walk costs on the clock: System Settings' took 250 to 700 ms on CI.
+	var walkMs: Double = 0
+	/// Run at the start of every walk, as an app that rebuilds part of its tree each time it is read (System Settings'
+	/// sidebar rows scrolled out of view).
+	var onSnapshot: ((FakeOS) -> Void)?
 	/// Called on every perform, set and post, so a test makes the UI react.
 	var react: ((String, FakeOS) -> Void)?
 	var log: [String] = []
@@ -123,9 +132,12 @@ struct FakeAX: Accessibility {
 		}
 	}
 
-	func snapshot(_ target: ResolvedTarget, maxNodes: Int) throws -> Snapshot {
+	func snapshot(_ target: ResolvedTarget, maxNodes: Int, details: Bool) throws -> Snapshot {
 		try os.with { os in
 			if target.window.id != os.window.id { throw RPCError.notFound("\(os.app.id) has no window \(target.window.id) any more: observe again") }
+			os.snapshots += 1
+			os.now += os.walkMs
+			os.onSnapshot?(os)
 			let cap = min(maxNodes, os.maxNodes ?? maxNodes)
 			var index: [Int: Int] = [:]
 			var nodes: [RawNode] = []
@@ -134,9 +146,18 @@ struct FakeAX: Accessibility {
 				var flags = e.flags
 				if os.focusedID == id { flags.insert(.focused) }
 				index[id] = nodes.count
-				nodes.append(RawNode(handle: ElementHandle(id), role: e.role, name: e.name, value: e.value, desc: e.desc, frame: e.frame, parent: e.parent.flatMap { index[$0] }, flags: flags, actions: e.actions, settable: e.settable, textInput: e.textInput, keysFirst: e.keysFirst))
+				nodes.append(RawNode(handle: ElementHandle(id), role: e.role, name: e.name, value: e.value, desc: e.desc, frame: e.frame, parent: e.parent.flatMap { index[$0] }, flags: flags, actions: details ? e.actions : [], settable: details && e.settable, textInput: e.textInput, keysFirst: e.keysFirst))
 			}
+			if details { os.detailReads += nodes.count }
 			return Snapshot(nodes: nodes, truncated: os.order.count > cap)
+		}
+	}
+
+	func details(_ element: ElementHandle) -> (actions: [String], settable: Bool) {
+		os.with { os in
+			os.detailReads += 1
+			let e = os.elements[id(element)]
+			return (e?.actions ?? [], e?.settable == true)
 		}
 	}
 
@@ -180,7 +201,7 @@ struct FakeAX: Accessibility {
 	func select(_ element: ElementHandle) throws -> ElementHandle {
 		let ok = os.with { $0.elements[id(element)]?.selectable == true }
 		guard ok else { throw RouteUnavailable("not selectable") }
-		os.with { $0.elements[id(element)]?.flags.insert(.selected) }
+		_ = os.with { $0.elements[id(element)]?.flags.insert(.selected) }
 		os.record("ax.select \(id(element))")
 		return element
 	}

@@ -3,9 +3,9 @@
 // composes it (runner/main.ts runnerComputers), whose provider loader makes a fake desktop (its frames PNGs, its input
 // recorded; no vendor, no network). The run's second model turn waits until this script lets it go, so the desktop is up
 // and its view open (computer-live.ts openClaimView) while the console frames the viewer on the run's page (GET /computer:
-// live, kind desktop). In the framed viewer, Take over is a take-over row the runner applies to the run's hold, a click
-// and a key typed reach the desktop's watch, the page losing focus lets go of a held button, and Hand back gives the
-// desktop back; let go, the run ends, and the viewer says its computer went. Headless Chrome; nothing leaves loopback. Every wait is for a condition, with a bound. Exits 0
+// live, kind desktop). The Screen tab's header has the one Take over (the framed viewer shows none of its own): it is a
+// take-over row the runner applies to the run's hold; in the framed viewer a click and a key typed reach the desktop's
+// watch, the page losing focus lets go of a held button, and the header's Hand back gives the desktop back; let go, the run ends, and the viewer says its computer went. Headless Chrome; nothing leaves loopback. Every wait is for a condition, with a bound. Exits 0
 // when every check holds, else 1.
 //   CHROME_PATH=<chrome> node apps/console/e2e/computer-live.e2e.mjs [--tap FILE]
 // Needs the repository built (npm run build).
@@ -89,27 +89,20 @@ try {
   const src = await iframe.getAttribute("src");
   check("the console frames the viewer under /computer/live", new URL(src).pathname.startsWith(`/v2/runs/${encodeURIComponent(runId)}/computer/live/v/`));
   const viewer = page.frameLocator('section[aria-label="Screen"] iframe');
-  const hands = viewer.locator("#hands");
-  await hands.waitFor({ timeout: 20_000 });
-  check("the viewer's button reads Take over", (await hands.innerText()) === "Take over");
-  check("a desktop shows no phone buttons", await viewer.locator("#phone").isHidden());
+  // One Take over: the Screen tab's header's. The viewer framed there (hands=page) shows none of its own, nor who drives,
+  // and a desktop's bar goes.
+  const header = page.locator('section[aria-label="Screen"] header');
+  const take = header.getByRole("button", { name: "Take over" });
+  await take.waitFor({ timeout: 20_000 });
+  const viewerFrameOf = () => page.frames().find((f) => URL.canParse(f.url()) && new URL(f.url()).pathname.includes("/computer/live/v/"));
+  await until(async () => (await viewerFrameOf()?.evaluate(() => document.body.dataset.kind ?? "").catch(() => "")) === "desktop", "the viewer is ready");
+  check("the viewer shows no Take over of its own", await viewer.locator("#hands").isHidden());
+  check("the viewer shows no second line of who drives", await viewer.locator("#drive").isHidden());
+  check("a desktop's viewer has no bar", await viewer.locator("#bar").isHidden());
+  check("one Take over on the page", (await page.getByRole("button", { name: "Take over" }).count()) === 1);
   // The token leaves the viewer's address at once: its fragment is gone after load.
-  const viewerFrame = page.frames().find((f) => new URL(f.url()).pathname.includes("/computer/live/v/"));
+  const viewerFrame = viewerFrameOf();
   check("the viewer's location.hash is empty after load", (await viewerFrame.evaluate(() => location.hash)) === "");
-  // Framed as narrow as the Screen tab frames a phone (about 217 px), with a phone's three buttons shown, the bar keeps
-  // who drives in view: it wraps, never clipping the words at the frame's edge.
-  await until(async () => (await viewer.locator("#drive").innerText()) !== "", "the viewer says who drives");
-  await iframe.evaluate((frame) => { frame.style.width = "217px"; });
-  const narrow = await viewerFrame.evaluate(() => {
-    const phone = document.getElementById("phone");
-    phone.hidden = false;
-    const drive = document.getElementById("drive").getBoundingClientRect();
-    const said = { right: drive.right, left: drive.left, width: document.documentElement.clientWidth };
-    phone.hidden = true;
-    return said;
-  });
-  check("at a phone's width the viewer's bar keeps who drives in view", narrow.left >= 0 && narrow.right <= narrow.width + 0.5, JSON.stringify(narrow));
-  await iframe.evaluate((frame) => { frame.style.width = ""; });
 
   // The desktop's frame: drawn, and acked by the page once drawn.
   await until(() => desktop.record.acks === 1, "the page drew the frame and acked it").catch(() => {});
@@ -117,9 +110,11 @@ try {
   check("the canvas has the frame's size", await viewer.locator("#screen").evaluate((c) => c.width === 64 && c.height === 40));
 
   // Take over: a take-over row the runner applies to the run's hold.
-  await hands.click();
-  await viewer.locator("#hands", { hasText: "Hand back" }).waitFor({ timeout: 20_000 });
-  check("the person holds the desktop", (await viewer.locator("#drive").innerText()) === "you have the computer");
+  await take.click();
+  await header.getByText("You drive").waitFor({ timeout: 20_000 });
+  const hand = header.getByRole("button", { name: "Hand back" });
+  await hand.waitFor({ timeout: 20_000 });
+  check("the person holds the desktop", (await viewer.locator("#drive").textContent()) === "you have the computer");
   await viewer.locator("#screen").click({ position: { x: 5, y: 5 } });
   await page.keyboard.type("q");
   const typed = (actions) => actions.some((a) => a.type === "type" && a.text === "q");
@@ -138,7 +133,7 @@ try {
   await page.mouse.up();
 
   // Hand back: the agent drives again; let go, the run ends, which ends the view.
-  await hands.click();
+  await hand.click();
   await viewer.locator("#notice", { hasText: "You handed the desktop back" }).waitFor({ timeout: 20_000 }).catch(() => {});
   check("the viewer says the desktop went back, once", (await viewer.locator("#notice").innerText()) === "You handed the desktop back.");
   letGo();
