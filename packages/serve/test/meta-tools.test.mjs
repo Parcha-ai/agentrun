@@ -301,7 +301,7 @@ test("the three are offered only when they earn their tokens: a catalog tool amo
   assert.equal(offersMetaTools(["read", "write", "edit", "bash", "web_fetch"]), false, "built-in tools only: none of the three");
   assert.equal(offersMetaTools([]), false);
   assert.equal(offersMetaTools(["read", "mcp__github__get_issue"]), true, "one MCP tool: all of them");
-  assert.equal(offersMetaTools(["read", "monid.discover"]), true, "one monid tool: all of them");
+  assert.equal(offersMetaTools(["read", "monid_discover"]), true, "one monid tool: all of them");
   assert.equal(offersMetaTools(names(META_TOOLS_OVER)), false, "exactly the threshold: not yet");
   assert.equal(offersMetaTools(names(META_TOOLS_OVER + 1)), true, "past it: offered");
   assert.equal(offersMetaTools([...names(META_TOOLS_OVER), ...META_TOOLS]), false, "the three are never counted toward it");

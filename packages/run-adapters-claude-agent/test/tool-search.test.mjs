@@ -32,7 +32,7 @@ const refused = (fn, status, words) => assert.throws(fn, (error) => error instan
 test('tool search is on exactly when the session has an MCP server\'s tools, and only those wait behind it', () => {
   assert.equal(claudeToolSearch(['lookup', 'mcp__github__get_issue']), 'true');
   assert.equal(claudeToolSearch(['lookup', 'tools_search']), 'false');
-  assert.equal(claudeToolSearch(['lookup', 'monid.discover']), 'true', 'a monid tool is a catalog tool too');
+  assert.equal(claudeToolSearch(['lookup', 'monid_discover']), 'true', 'a monid tool is a catalog tool too');
   const many = Array.from({ length: 21 }, (_, index) => `tool_${index}`);
   assert.equal(claudeToolSearch(many.slice(0, 20)), 'false', 'the threshold itself: not yet');
   assert.equal(claudeToolSearch(many), 'true', 'past the threshold: on, as the host\'s three are offered');
