@@ -1567,6 +1567,14 @@ data directory's store, which holds no value in the clear. The server does not s
 sends no `token` (or no `headers`) keeps the sealed credential, as long as the auth type and the URL's origin stay the
 same: a saved credential never goes to another origin unless you send it again.
 
+Each saved server records where its tools come from, `source` and `toolkit`, which a template's `mcp` needs are matched
+on at apply ([templates](templates/README.md#agentmd)). The source is what made the server, recorded when it is saved
+and never read off its address or its name: the Composio preset records `composio` and its toolkit, a `github_app`
+server is `github`/`github`, and any other is `url` with no toolkit until you set one (`toolkit` in the `PUT`, in
+`POST .../oauth/start` for a server you sign in to, or Settings → MCP servers). A `PUT` with no `toolkit` keeps the
+record, and `DELETE` removes it with the server. A record counts only for the server it was saved with: a server saved
+again under the same name after a `DELETE` starts afresh.
+
 `GET /v2/settings/mcp-servers` and `GET .../{name}` show each server with `credential`: `sealed`, `unreadable` (sealed
 under another key, or damaged: a `PUT` with the credential seals it again) or `expired` (an OAuth sign-in whose refresh
 its authorization server refused: sign in again), null for `auth.type` none. No read, log line or error shows a
