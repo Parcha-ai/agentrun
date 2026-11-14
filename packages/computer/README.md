@@ -500,7 +500,7 @@ provider declares, either way.
 
 | group | methods |
 | --- | --- |
-| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. `screen.watch({ after, waitMs?, maxWidth?, quality? })`: the live view's frames, paced by the caller's ack (`after`, the seq of the last frame it has whole; an older one gets the newest frame at once): the next frame once the screen or the pointer changed, else `changed: false` when `waitMs` (default 2000, at most 10000) is over. A frame is `{ seq, changed, format, frameWidth, frameHeight, width, height, cursor? }` and its bytes as a shot's (`data`, `id` and `screen.read`); `format` is `jpeg` from computerd (scaled to `maxWidth`, default 1280, at `quality`, default 60) and `png` from the phone client. One watch per connection. |
+| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. `screen.watch({ after, waitMs?, maxWidth?, quality? })`: the live view's frames, paced by the caller's ack (`after`, the seq of the last frame it has whole; an older one gets the newest frame at once; on a computer whose hello lists `screen.ahead`, one past the newest waits as the newest does, so two asks can be in flight): the next frame once the screen or the pointer changed, else `changed: false` when `waitMs` (default 2000, at most 10000) is over. Computerd on a desktop learns what changed from the X server's DAMAGE extension and gives at most 15 frames a second. A frame is `{ seq, changed, format, frameWidth, frameHeight, width, height, cursor? }` and its bytes as a shot's (`data`, `id` and `screen.read`); `format` is `jpeg` from computerd (scaled to `maxWidth`, default 1280, at `quality`, default 60) and `png` from the phone client. One watch per connection. |
 | `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
@@ -520,7 +520,9 @@ provider declares, either way.
 `daemonWatch` is the one implementation behind every provider's `watch()` (Docker, Daytona, Modal, E2B, Orgo, the
 phone harness): a computer whose hello has no `screen` is refused as `unsupported`. It adapts the internal seam,
 `watchScreen(connection, options)`: pull-paced `frames` (each `next()` the ack), `act(actions)` and `close()`, whose
-failures are `ScreenWatchError`s. `toAction(event, kind)` maps the viewer's `ViewerEvent`s, in the screen's upright
+failures are `ScreenWatchError`s. On a computer that lists `screen.ahead` it keeps a second ask in flight, one frame
+ahead, so frames come at the screen's pace and not one each round trip; a frame bettered before `next()` asked for it
+is dropped. `toAction(event, kind)` maps the viewer's `ViewerEvent`s, in the screen's upright
 pixels, to input actions, or to a `Refusal` (`{ field, message }`) for what a kind cannot take:
 - a desktop takes the mouse (a move, and a button down or up at a point; with a modifier held, the up is one click
   with its keys and the down only moves; each up is one click, so a double-click is two and never a `count`), the
@@ -1998,7 +2000,7 @@ names the API key by its sha256 prefix alone.
 | `list` | `GET /v1/instances`, the whole workspace in one answer (`{ data }`, no paging keys, seen live), matched on the labels here. An answer that says it has more is refused, never read as all |
 | `delete` | `DELETE /v1/instances/{id}`, never signalled; a repeat's 404 is done |
 | `setLabels` | `GET`, then `PATCH` of the whole `metadata`, which a PATCH replaces |
-| `exec` | SSH as root over a binary WebSocket to `wss://{id}-22022.agent37.app/`, one connection per process (below) |
+| `exec` | SSH as root over a binary WebSocket to `wss://{id}-22022.agent37.app/`, one channel per process on the instance's shared connection (below) |
 | `errorCode` | the envelope's `error.code` (or a flat `error` string), then the HTTP status; ssh2's `client-authentication` is `denied` |
 | `check` | a template name with an optional `@version`; one of Agent37's four shapes; at most 4 CPUs; metadata within 4096 bytes with the provider's own labels |
 
@@ -2015,8 +2017,20 @@ stdin, end of file is sent at once. `wait()` answers at the channel's close with
 signal or none; its listeners go on inside ssh2's callback, since one read off the tunnel can hold the open, the exit
 and the close together (seen live: a listener added after an `await` missed the exit). `kill()` runs a second command
 on the same connection that kills the pid's process group (the sshd starts each command as a session and group leader,
-seen live), then closes the channel and the connection. An SSH signal request is not used: ssh2 sends one only while
-stdin is open (`ssh2@1.17.0` `lib/Channel.js:237-246`), and it reaches one process, not its children.
+seen live), then closes the exec's channel, never a connection. An SSH signal request is not used: ssh2 sends one only
+while stdin is open (`ssh2@1.17.0` `lib/Channel.js:237-246`), and it reaches one process, not its children.
+
+Every exec on an instance is a channel on one SSH connection that the provider shares: the daemon's upload, its install,
+init's start, the stdio bridge and the live view's watch take one WebSocket and one handshake between them (a tunnel and
+its handshake take about 0.35 s over Agent37's edge, seen live). Execs that start together wait for one handshake, each
+within its own bound: one with time left when a shared handshake runs out of its opener's opens its own. The connection
+opens at the first exec (the four tries below), and a connection that closed or failed is never handed out again; a
+channel that fails to open (the connection died under it, or its sshd took no more sessions) is opened once more on a
+fresh connection. One connection carries at most 10 channels at once, execs and kills alike, and the next opens a second:
+OpenSSH's sshd takes 10 sessions on a connection (`MaxSessions`). A kill's channel goes on any connection with room, since
+the pid file is the instance's. With no channel left, a connection waits 2 s for the next exec, then ends: an open one
+keeps the process alive (ssh2's keepalive timer and the WebSocket's socket), so a process done with its computers exits
+at most that late. `delete` ends every connection to the instance at once, a retired one still carrying channels too.
 
 ### Capabilities
 

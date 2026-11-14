@@ -54,6 +54,8 @@ import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
 import { mcpServersOf } from "../tool-gate.js";
 import { isWebHostTool } from "../tool-list.js";
+import { hostToolOf } from "../host-tools.js";
+import { ASK_TOOL, askPerson } from "../tools.js";
 import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
@@ -63,6 +65,8 @@ import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { bookedSpend, cliModelWorked, cliRunMetrics, runEndCost } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
+import { pathMetrics, workflowFirstOf } from "./workflow-first.js";
+import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { heldSpecOf } from "./held-run.js";
@@ -568,13 +572,20 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}), workspace: ws.workspace, modelName: () => chosen.model.modelId });
     }
   }
+  // ask_person, when granted: pi's own tool (tools.ts askPerson), bound as a host tool the way the web tools are. Its call
+  // answers what pi's does; the loop then cuts the CLI's turn at the question (adapter-loop.ts, turn-ending host tools),
+  // so the run parks on the person or waits for them in its claim exactly as a pi run does.
+  const askTool = granted.includes(ASK_TOOL) ? hostToolOf(ASK_TOOL, askPerson as never, ctx) : undefined;
+  // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts).
+  // Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
+  const { serve: workflowFirst, revise: workflowRevise } = learnedTool ? await workflowFirstOf(revision.kind, workflows, launch, log, () => pastRunsOverStore(deps.store, runRow.agentId), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
     system: [environmentLine(), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
     // redactor, as pi's do. Listed in the order the agent grants them, as main lists a CLI run's tools.
-    tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
+    tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
     context: "fresh",
     ...(thinking ? { thinking } : {}),
   };
@@ -621,6 +632,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // The run's end-of-run step, when it learns (the spec's, preferred over the loop's deps': adapter-loop.ts stepOf).
     ...(endOfRun ? { endOfRun } : {}),
     ...(start ? { learningLaid: laidOf(seedLaid) } : {}),
+    ...(workflowFirst ? { workflowFirst } : {}),
+    ...(workflowRevise ? { workflowRevise } : {}),
     // The web tools' install lifecycle, run by the adapter loop, as the pi spec's (they register none today).
     ...(life ? { lifecycle: life } : {}),
     agentId: runRow.agentId,
@@ -650,7 +663,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // session, and its decisions (a learned workflow's decision nodes) are the run's cost too, as the pi spec's.
       const total = runEndCost({ model, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
       // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
-      return { costUsd: total, metrics };
+      return { costUsd: total, metrics: { ...metrics, ...pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning) : undefined, entries as never) } };
     },
     // A run started with hold: true holds its computer for its owner (computer-held.ts), as the pi spec's.
     ...(heldComputer ? { held: heldComputer } : {}),

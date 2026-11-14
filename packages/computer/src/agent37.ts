@@ -15,6 +15,7 @@ import { WINDOW_MANAGER } from "./desktop.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { bounded } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
+import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
@@ -61,7 +62,7 @@ export interface Ssh2Client {
 	once(event: "ready", listener: () => void): unknown;
 	once(event: "error", listener: (error: Error) => void): unknown;
 	on(event: "error", listener: (error: Error) => void): unknown;
-	on(event: "close", listener: () => void): unknown;
+	on(event: "close" | "end", listener: () => void): unknown;
 	removeListener(event: "error", listener: (error: Error) => void): unknown;
 }
 
@@ -179,8 +180,25 @@ const TUNNEL_TRIES = 4;
 const TUNNEL_RETRY_MS = 500;
 /** ssh2's keepalive: the CLI's ServerAliveInterval is 60 s (cli.js:32); the edge never sees an idle tunnel. */
 const KEEPALIVE_MS = 30_000;
-/** How long a kill waits for its own kill command, then for the SSH connection to close before it drops the tunnel. */
+/**
+ * How long a kill waits for its own kill command, then for its channel to close before wait() answers -1 anyway; and
+ * how long an ended SSH connection has to close before its tunnel is dropped.
+ */
 const KILL_GRACE_MS = 2_000;
+/**
+ * How many channels (execs and kills) one SSH connection carries at once; the next opens a second connection. OpenSSH's
+ * sshd takes MaxSessions (default 10) sessions on one connection and refuses the next. Agent37 does not say which sshd
+ * it runs, so OpenSSH's default is held to; an sshd that takes fewer refuses a channel, which is opened once more on a
+ * fresh connection.
+ */
+const CHANNELS_PER_CONNECTION = 10;
+/**
+ * How long a connection with no channel stays open for the next exec. The adapter's steps (the upload, the install,
+ * init's start, the bridge, connect after create) come one after another, each an exec, and the live view's watch
+ * opens beside the bridge. An open connection keeps the process alive (ssh2's keepalive timer and the WebSocket's
+ * socket are both referenced), so the wait is short: a process that is done with its computers exits at most this late.
+ */
+const IDLE_MS = 2_000;
 /**
  * Every command runs under this sh, which writes its pid to $0 first and removes the file when the command ends. The
  * instance's sshd starts each command as a session and group leader (seen live: sh's PID, PGID and SID are one), so
@@ -210,14 +228,12 @@ export const CAPABILITIES: readonly KindCapabilities[] = AGENT37.capabilities;
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 
-/** An answer of Agent37's REST API that is not a success: its HTTP status and the envelope's stable code (docs: errors). */
+/** An answer of Agent37's REST API that is not a success, as the code its status and the envelope's stable code (docs: errors) make. */
 export class Agent37Error extends Error {
 	override name = "Agent37Error";
-	readonly status: number;
-	readonly code: string | undefined;
-	constructor(status: number, code: string | undefined, message: string) {
+	readonly code: ComputerErrorCode;
+	constructor(code: ComputerErrorCode, message: string) {
 		super(message);
-		this.status = status;
 		this.code = code;
 	}
 }
@@ -255,18 +271,10 @@ const CODES: Record<string, ComputerErrorCode> = {
 };
 
 function codeOf(error: unknown): ComputerErrorCode {
-	const { name, code, status, level } = (error ?? {}) as { name?: unknown; code?: unknown; status?: unknown; level?: unknown };
+	const { name, level } = (error ?? {}) as { name?: unknown; level?: unknown };
 	if (name === "AbortError") return "aborted";
 	if (name === "TimeoutError") return "timeout";
-	if (error instanceof Agent37Error) {
-		const known = typeof code === "string" ? CODES[code] : undefined;
-		if (known !== undefined) return known;
-		if (status === 401 || status === 403) return "denied";
-		if (status === 404) return "not_found";
-		if (status === 400) return "invalid";
-		if (status === 402 || status === 429) return "limit";
-		return "vendor";
-	}
+	if (error instanceof Agent37Error) return error.code;
 	// ssh2 names the stage that failed (lib/client.js): the instance's sshd refused the key, or the handshake timed out.
 	if (level === "client-authentication") return "denied";
 	if (level === "client-timeout") return "timeout";
@@ -419,6 +427,31 @@ function deadline(ms: number, signal: AbortSignal | undefined, what: string): { 
 	return { promise, clear: () => bound.removeEventListener("abort", onAbort) };
 }
 
+/** A bound's own error (deadline's): the call ran out of time or was aborted, so nothing is tried again. */
+const isBound = (error: unknown) => {
+	const name = (error as { name?: unknown } | null)?.name;
+	return name === "TimeoutError" || name === "AbortError";
+};
+
+/**
+ * One SSH connection to an instance, shared by its execs: each exec, and each kill, is a channel on it. It counts its
+ * holders (an exec waiting for the handshake, an open exec channel, a kill's channel), and is done once it closes,
+ * fails, ends or takes no more: a done link is never handed to another exec, and it ends once its last holder lets go.
+ */
+interface Link {
+	readonly id: string;
+	/** The handshake (TUNNEL_TRIES tries), then the client. */
+	readonly ready: Promise<Ssh2Client>;
+	/** Gives up the handshake once nobody waits for it. */
+	readonly stop: AbortController;
+	client?: Ssh2Client;
+	holders: number;
+	done: boolean;
+	/** Its client has been ended. */
+	ended: boolean;
+	idle?: ReturnType<typeof setTimeout>;
+}
+
 /** Agent37's instances as a MachineHost (../host.ts). */
 class Agent37Host implements MachineHost {
 	readonly id = "agent37";
@@ -426,19 +459,33 @@ class Agent37Host implements MachineHost {
 	readonly #apiKey: string;
 	readonly #sshKey: string;
 	readonly #ssh2: Ssh2Module;
-	readonly #fetch: typeof fetch;
+	readonly #client: Rest;
 	readonly #WebSocket: WebSocketClass;
-	readonly #apiUrl: string;
 	readonly #proxyDomain: string;
 	readonly #declared: Declared;
+	/**
+	 * The SSH connections to each instance, opening, open, or done and still held, until each ends: one, and a second
+	 * past CHANNELS_PER_CONNECTION channels. A done one takes no new channel; delete ends them all.
+	 */
+	readonly #links = new Map<string, Link[]>();
 
 	constructor(options: { apiKey: string; sshKey: string; ssh2: Ssh2Module; fetch: typeof fetch; WebSocket: WebSocketClass; apiUrl: string; proxyDomain: string; type: Agent37Type; region: Agent37Region }) {
 		this.#apiKey = options.apiKey;
 		this.#sshKey = options.sshKey;
 		this.#ssh2 = options.ssh2;
-		this.#fetch = options.fetch;
+		this.#client = rest({
+			base: options.apiUrl,
+			headers: () => ({ Authorization: `Bearer ${options.apiKey}`, Accept: "application/json" }),
+			vendor: "agent37",
+			fetch: options.fetch,
+			timeoutMs: 30_000, // every call gives its own: ctx.timeoutMs
+			explain: ({ status, bytes, what }) => {
+				const { code, message } = envelopeOf(jsonOf(bytes));
+				const known = code === undefined ? undefined : CODES[code];
+				return { ...(known === undefined ? {} : { code: known }), message: `${what} answered ${status}${code ? ` ${code}` : ""}${message ? `: ${message}` : ""}` };
+			},
+		});
 		this.#WebSocket = options.WebSocket;
-		this.#apiUrl = options.apiUrl;
 		this.#proxyDomain = options.proxyDomain;
 		this.#declared = { type: options.type, region: options.region };
 		const runtime = options.type === "vm" ? "vm" : "gvisor";
@@ -463,32 +510,18 @@ class Agent37Host implements MachineHost {
 		return codeOf(error);
 	}
 
-	/** One REST call: the key as a Bearer token, JSON both ways, bounded by ctx; a failure throws Agent37Error in Agent37's words. */
+	/** One REST call, bounded by ctx; a failure throws Agent37Error in Agent37's words. */
 	async #rest<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body: object | undefined, ctx: HostCall): Promise<T> {
-		const response = await this.#fetch(`${this.#apiUrl}${path}`, {
-			method,
-			headers: { Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
-			...(body === undefined ? {} : { body: JSON.stringify(body) }),
-			signal: bounded(ctx.timeoutMs, ctx.signal),
-		});
-		const text = await response.text();
-		let parsed: unknown;
-		try {
-			parsed = text === "" ? null : JSON.parse(text);
-		} catch {
-			parsed = undefined;
-		}
-		if (!response.ok) {
-			const { code, message } = envelopeOf(parsed);
-			throw new Agent37Error(response.status, code, `${method} ${path} answered ${response.status}${code ? ` ${code}` : ""}${message ? `: ${message}` : ""}`);
-		}
-		if (parsed === undefined || parsed === null) throw new Agent37Error(response.status, undefined, `${method} ${path} answered ${response.status} with no JSON body`);
+		const answer = await this.#client.call(method, this.#client.url(path), { ...(body === undefined ? {} : { json: body }), timeoutMs: ctx.timeoutMs }, ctx.signal);
+		if (!answer.ok) throw new Agent37Error(answer.error.code, answer.error.message);
+		const parsed = jsonOf(answer.value.bytes);
+		if (parsed === null) throw new Agent37Error("vendor", `${method} ${path} answered ${answer.value.status} with no JSON body`);
 		return parsed as T;
 	}
 
 	/** An instance's REST path, its id held to Agent37's form first: an id is also a DNS label here. */
 	#path(id: string): string {
-		if (!INSTANCE_ID.test(id)) throw new Agent37Error(404, "not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
+		if (!INSTANCE_ID.test(id)) throw new Agent37Error("not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
 		return `/v1/instances/${id}`;
 	}
 
@@ -531,7 +564,7 @@ class Agent37Host implements MachineHost {
 			},
 			ctx,
 		);
-		if (typeof made?.id !== "string" || !INSTANCE_ID.test(made.id)) throw new Agent37Error(201, undefined, `POST /v1/instances answered no instance id: ${show(made?.id)}`);
+		if (typeof made?.id !== "string" || !INSTANCE_ID.test(made.id)) throw new Agent37Error("vendor", `POST /v1/instances answered no instance id: ${show(made?.id)}`);
 		return ok({ id: made.id });
 	}
 
@@ -551,9 +584,9 @@ class Agent37Host implements MachineHost {
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
 		const listed = await this.#rest<{ data?: unknown; has_more?: unknown; next_cursor?: unknown }>("GET", "/v1/instances", undefined, ctx);
-		if (!Array.isArray(listed.data)) throw new Agent37Error(200, undefined, "GET /v1/instances answered no data list");
+		if (!Array.isArray(listed.data)) throw new Agent37Error("vendor", "GET /v1/instances answered no data list");
 		if (listed.has_more === true || (listed.next_cursor !== undefined && listed.next_cursor !== null)) {
-			throw new Agent37Error(200, undefined, "GET /v1/instances answered a page with more after it, which Agent37 documents none of: this provider would miss machines");
+			throw new Agent37Error("vendor", "GET /v1/instances answered a page with more after it, which Agent37 documents none of: this provider would miss machines");
 		}
 		const wanted = Object.entries(labels);
 		const machines: Machine[] = [];
@@ -565,13 +598,17 @@ class Agent37Host implements MachineHost {
 		return ok(machines);
 	}
 
-	/** DELETE /v1/instances/{id}, never signalled; a repeat answers 404, read as done (docs: instances/delete). */
+	/**
+	 * DELETE /v1/instances/{id}, never signalled; a repeat answers 404, read as done (docs: instances/delete). Once taken,
+	 * this host's SSH connections to the instance are ended, channels and all.
+	 */
 	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
 		try {
 			await this.#rest("DELETE", this.#path(id), undefined, { timeoutMs: ctx.timeoutMs });
 		} catch (error) {
 			if (codeOf(error) !== "not_found") throw error;
 		}
+		for (const link of [...(this.#links.get(id) ?? [])]) this.#end(link);
 		return ok(undefined);
 	}
 
@@ -590,7 +627,7 @@ class Agent37Host implements MachineHost {
 	 * run before a handshake, so a retry repeats nothing. A refused key or a handshake past its bound is not retried.
 	 */
 	async #ssh(id: string, ctx: HostCall): Promise<Ssh2Client> {
-		if (!INSTANCE_ID.test(id)) throw new Agent37Error(404, "not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
+		if (!INSTANCE_ID.test(id)) throw new Agent37Error("not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
 		const host = `${id}-${AGENT37_SSH_PORT}.${this.#proxyDomain}`;
 		const bound = deadline(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
 		// Ends the handshake in flight when this call gives up on it (its bound passed, or the caller aborted).
@@ -660,17 +697,132 @@ class Agent37Host implements MachineHost {
 	}
 
 	/**
+	 * A connection to id with one more holder, its handshake within ctx: a link of the instance's that is not done and
+	 * has room, or a new one. Execs that come together share one handshake, each waiting within its own bound; the
+	 * handshake is given up once none waits. A link that closed as its handshake ended is let go, and another taken.
+	 */
+	async #lease(id: string, ctx: HostCall): Promise<{ link: Link; client: Ssh2Client }> {
+		const bound = deadline(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
+		const end = Date.now() + ctx.timeoutMs;
+		try {
+			for (;;) {
+				const link = this.#links.get(id)?.find((one) => !one.done && one.holders < CHANNELS_PER_CONNECTION) ?? this.#open(id, end - Date.now());
+				this.#hold(link);
+				let got: { client: Ssh2Client } | { error: unknown };
+				try {
+					got = await Promise.race([link.ready.then((client) => ({ client }), (error: unknown) => ({ error })), bound.promise]);
+				} catch (error) {
+					this.#letGo(link);
+					throw error;
+				}
+				if (!("error" in got) && !link.done) return { link, client: got.client };
+				this.#letGo(link);
+				if ("error" in got) {
+					// A shared handshake is bound by the call that opened it: a call with time of its own left opens another.
+					if ((got.error as { name?: unknown } | null)?.name === "TimeoutError" && end - Date.now() > TUNNEL_RETRY_MS) continue;
+					throw got.error;
+				}
+			}
+		} finally {
+			bound.clear();
+		}
+	}
+
+	/** A new link to id, its handshake started within timeoutMs, listed for the instance's next execs until it is done. */
+	#open(id: string, timeoutMs: number): Link {
+		const stop = new AbortController();
+		const link: Link = {
+			id,
+			stop,
+			holders: 0,
+			done: false,
+			ended: false,
+			ready: this.#ssh(id, { timeoutMs, signal: stop.signal }).then(
+				(client) => {
+					link.client = client;
+					const gone = () => this.#retire(link);
+					client.on("close", gone);
+					client.on("end", gone);
+					client.on("error", gone);
+					// Deleted as it opened.
+					if (link.done) this.#end(link);
+					return client;
+				},
+				(error: unknown) => {
+					this.#retire(link);
+					throw error;
+				},
+			),
+		};
+		link.ready.catch(() => {});
+		this.#links.set(id, [...(this.#links.get(id) ?? []), link]);
+		return link;
+	}
+
+	#hold(link: Link): void {
+		link.holders++;
+		clearTimeout(link.idle);
+		link.idle = undefined;
+	}
+
+	/**
+	 * One holder lets go of link. Once none holds it, a done link ends, a handshake no one waits for is given up, and an
+	 * open connection waits IDLE_MS for the next exec, then ends.
+	 */
+	#letGo(link: Link): void {
+		link.holders--;
+		if (link.holders > 0) return;
+		if (link.done || link.client === undefined) return this.#retire(link);
+		link.idle = setTimeout(() => this.#retire(link), IDLE_MS);
+		link.idle.unref();
+	}
+
+	/** link takes no new channel; it ends at once if none holds it, else when the last lets go (or delete ends it). */
+	#retire(link: Link): void {
+		link.done = true;
+		clearTimeout(link.idle);
+		if (link.holders <= 0) this.#end(link);
+	}
+
+	/**
+	 * Ends link, whoever holds it, and drops it from the instance's list: its handshake given up, its client ended (ssh2
+	 * closes every channel on it), and the tunnel dropped if the connection has not closed within KILL_GRACE_MS. Neither
+	 * timer keeps the process alive.
+	 */
+	#end(link: Link): void {
+		link.done = true;
+		clearTimeout(link.idle);
+		const left = (this.#links.get(link.id) ?? []).filter((one) => one !== link);
+		if (left.length > 0) this.#links.set(link.id, left);
+		else this.#links.delete(link.id);
+		link.stop.abort();
+		const { client } = link;
+		if (client === undefined || link.ended) return;
+		link.ended = true;
+		client.end();
+		const dropped = setTimeout(() => client.destroy(), KILL_GRACE_MS);
+		dropped.unref();
+		client.on("close", () => clearTimeout(dropped));
+	}
+
+	/**
 	 * One exec channel on client, opened within ms and signal, and its close: the exit-status, or -1 for an exit by
 	 * signal or none. Its listeners go on inside ssh2's callback, as it opens: one read off the tunnel can hold the open,
-	 * the exit and the close together (seen live), and they are emitted before an await after it would resume.
+	 * the exit and the close together (seen live), and they are emitted before an await after it would resume. A channel
+	 * that opens after its bound passed is closed: the connection is shared, so nothing else would close it.
 	 */
 	async #channel(client: Ssh2Client, command: string, ms: number, signal: AbortSignal | undefined, what: string): Promise<{ channel: Ssh2Channel; closed: Promise<number> }> {
 		const bound = deadline(ms, signal, what);
+		let late = false;
 		try {
 			return await Promise.race([
 				new Promise<{ channel: Ssh2Channel; closed: Promise<number> }>((resolve, reject) => {
 					client.exec(command, (error, channel) => {
 						if (error) return reject(error);
+						if (late) {
+							channel.on("error", () => {});
+							return channel.close();
+						}
 						let code = -1;
 						channel.on("exit", (status) => {
 							code = typeof status === "number" ? status : -1;
@@ -681,28 +833,44 @@ class Agent37Host implements MachineHost {
 				}),
 				bound.promise,
 			]);
+		} catch (error) {
+			late = true;
+			throw error;
 		} finally {
 			bound.clear();
 		}
 	}
 
 	/**
-	 * argv as root over SSH, one connection per process, under WRAPPER. stdout and stderr are the channel's, piped; with
-	 * no stdin, end of file is sent at once, and end sends it later. wait answers once the channel closes, with the
-	 * exit-status, or -1 for an exit by signal or none. kill ends the process group over a second channel of the same
-	 * connection, then closes the channel and the connection, and drops the tunnel if the close does not come.
+	 * command as one channel on a connection to id with room (#lease), within ctx; the channel holds its connection until
+	 * the caller lets go. A channel that fails to open (the connection died under it, or its sshd took no more sessions)
+	 * retires that connection and is opened once more on a fresh one.
+	 */
+	async #start(id: string, command: string, ctx: HostCall, what: string): Promise<{ link: Link; channel: Ssh2Channel; closed: Promise<number> }> {
+		for (let attempt = 1; ; attempt++) {
+			const { link, client } = await this.#lease(id, ctx);
+			try {
+				return { link, ...(await this.#channel(client, command, ctx.timeoutMs, ctx.signal, what)) };
+			} catch (error) {
+				// A channel open that timed out leaves a connection that may be stuck: the next channel takes another.
+				if ((error as { name?: unknown } | null)?.name !== "AbortError") this.#retire(link);
+				this.#letGo(link);
+				if (isBound(error) || attempt >= 2) throw error;
+			}
+		}
+	}
+
+	/**
+	 * argv as root over SSH, under WRAPPER, as one channel on the instance's shared connection (#start). stdout and
+	 * stderr are the channel's, piped; with no stdin, end of file is sent at once, and end sends it later. wait answers
+	 * once the channel closes, with the exit-status, or -1 for an exit by signal or none. kill ends the process group
+	 * over a channel of its own (on a connection with room), then closes the exec's channel, never a connection; if the
+	 * close does not come, wait answers -1 and the connection takes no new channel.
 	 */
 	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
-		const client = await this.#ssh(id, ctx);
 		const pidFile = `/tmp/.agentrun-exec-${randomBytes(8).toString("hex")}`;
-		let opened: { channel: Ssh2Channel; closed: Promise<number> };
-		try {
-			opened = await this.#channel(client, shellLine(["sh", "-c", WRAPPER, pidFile, ...argv]), ctx.timeoutMs, ctx.signal, `the exec in ${id}`);
-		} catch (error) {
-			client.destroy();
-			throw error;
-		}
-		const { channel } = opened;
+		const opened = await this.#start(id, shellLine(["sh", "-c", WRAPPER, pidFile, ...argv]), ctx, `the exec in ${id}`);
+		const { link: held, channel } = opened;
 		const stdout = new PassThrough();
 		const stderr = new PassThrough();
 		channel.pipe(stdout);
@@ -710,12 +878,17 @@ class Agent37Host implements MachineHost {
 		let ended = !stdin;
 		if (!stdin) channel.eof();
 		let closed = false;
+		let done: (code: number) => void = () => {};
 		// ssh2 closes every channel when the connection goes (utils.js, ChannelManager.cleanup), so the close is enough.
-		const exited = opened.closed.then((code) => {
-			closed = true;
-			client.end();
-			return code;
+		const exited = new Promise<number>((resolve) => {
+			done = (code) => {
+				if (closed) return;
+				closed = true;
+				this.#letGo(held);
+				resolve(code);
+			};
 		});
+		void opened.closed.then(done);
 		return ok({
 			stdout,
 			stderr,
@@ -732,23 +905,39 @@ class Agent37Host implements MachineHost {
 			wait: () => exited,
 			kill: async () => {
 				if (closed) return;
+				// The pid file is the instance's, so the kill's channel goes on any connection with room, counted like an exec's.
 				try {
-					const killer = await this.#channel(client, shellLine(["sh", "-c", KILL_SCRIPT, pidFile]), KILL_GRACE_MS, undefined, `the kill in ${id}`);
+					const killer = await this.#start(id, shellLine(["sh", "-c", KILL_SCRIPT, pidFile]), { timeoutMs: KILL_GRACE_MS }, `the kill in ${id}`);
 					killer.channel.resume();
 					killer.channel.stderr.resume();
 					killer.channel.eof();
 					const grace = deadline(KILL_GRACE_MS, undefined, `the kill in ${id}`);
-					await Promise.race([killer.closed, grace.promise]).finally(grace.clear);
+					try {
+						await Promise.race([killer.closed, grace.promise]);
+					} catch {
+						try {
+							killer.channel.close();
+						} catch {
+							// Closed already.
+						}
+					} finally {
+						grace.clear();
+						this.#letGo(killer.link);
+					}
 				} catch {
-					// The connection is gone, or the kill did not answer in time: closing it below is what is left.
+					// No connection took the kill in time: closing the channel below is what is left.
 				}
 				try {
 					channel.close();
 				} catch {
 					// Closed already.
 				}
-				client.end();
-				const dropped = setTimeout(() => client.destroy(), KILL_GRACE_MS);
+				// A close that never comes is a connection that is stuck: it takes no more execs, and wait answers.
+				const dropped = setTimeout(() => {
+					if (closed) return;
+					this.#retire(held);
+					done(-1);
+				}, KILL_GRACE_MS);
 				dropped.unref();
 				void exited.then(() => clearTimeout(dropped));
 			},

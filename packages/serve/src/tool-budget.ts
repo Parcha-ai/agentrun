@@ -10,6 +10,15 @@
 // counts as made: a round's calls are counted in the order the model gave them, so a round that crosses the line runs
 // its first calls up to it and the rest are refused.
 //
+// A nested call (one a running tool makes: a codemode or tools_call call's, pi's code mode script's) counts as a call the
+// model made, and the call that made it counts as one too. The gate counts every call itself (withinBudget), whoever asks
+// it, so no harness's hook can leave a call uncounted: the model's calls from the conversation's entries, the nested ones
+// from the ids the budget let through (NestedToolCalls), each written in the commit that lets it through. A nested call
+// counts every call the model has made in its conversation, its own caller and the rest of that round among them; a
+// model's call counts the calls before it and every nested call let through so far. So whichever runs first, no more
+// calls than the budget run. A nested call asked about again (its script run again after a crash, before its intent) is
+// the call let through already, never counted twice; one answered from its record is never asked about again.
+//
 // The cap's wrap-up, the same refusal for money: a run with a cap whose spend, plus what its requests and paid steps
 // still out hold at their worst case, leaves too little to keep back one typical step and one final answer (reserveFor)
 // has every model-issued tool call refused before
@@ -18,7 +27,10 @@
 // cap, which stays the last line. The figure is read from the run's committed booking records at each call (the cap's
 // own: a request still out counts at its hold and bound, one a lost claim cut the same), so a restart or a moved claim
 // reads the same figure, and a raise of the cap ends the wrap-up from its next call.
-import { AssistantEntry, defineDoc, type EntryRecord } from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord/context";
+import { AssistantEntry, type ConversationId, type Cursor, defineDoc, type EntryRecord, type Harness } from "@earendil-works/pi-durable";
+import { KINDS } from "./runner/journal-kinds.js";
+import { WORKFLOW_FIRST_CALL } from "./runner/workflow-first.js";
 
 /** A conversation's own budget, narrower than the run's (a subagent call's `max_tool_calls`, runner/subagent.ts): written
  *  in the commit that makes the conversation, so a restart reads the same one, and held by the gate with the run's. */
@@ -34,9 +46,16 @@ export const TOOL_BUDGET_TEXT = "Tool budget spent: this conversation has made e
 type Part = { readonly type?: unknown; readonly id?: unknown };
 
 /** The tool calls before `callId` once one more page of a conversation's entries (`entries`, oldest first) is read, from
- *  `count`, the earlier pages': `done` once the call is reached or the count is `upTo`, where a reader stops. */
+ *  `count`, the earlier pages': `done` once the call is reached or the count is `upTo`, where a reader stops. The run's
+ *  learned workflow, run first (runner/workflow-first.ts), is one of them: its call is the loop's, kept as a call start
+ *  of its own on the root (no model content), before the agent's first turn, and counts as any call the model made. */
 export function countCalls(entries: readonly EntryRecord[], callId: string, upTo: number, count = 0): { count: number; done: boolean } {
   for (const entry of entries) {
+    if (entry.kind === KINDS.callStart && (entry.data as { callId?: unknown } | undefined)?.callId === WORKFLOW_FIRST_CALL) {
+      if (callId === WORKFLOW_FIRST_CALL || count >= upTo) return { count, done: true };
+      count++;
+      continue;
+    }
     if (!AssistantEntry.is(entry)) continue;
     const content = (entry.model?.[0] as { content?: unknown } | undefined)?.content;
     if (!Array.isArray(content)) continue;
@@ -47,6 +66,39 @@ export function countCalls(entries: readonly EntryRecord[], callId: string, upTo
     }
   }
   return { count, done: count >= upTo };
+}
+
+/** The nested calls a conversation's budget let through, by call id (`<callId>/<key>`). At most the budget's count. */
+export const NestedToolCalls = defineDoc<{ calls?: string[] }>({ kind: "agentrun.tool-budget.nested", version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({}), checkpointWhen: () => false });
+
+/** Whether `call` fits its conversation's tool-call budget (the run's, `runBudget`, narrowed by the conversation's own),
+ *  counted from the journal: the model's calls before it, and every nested call let through. A nested call that fits is
+ *  written as let through in the same commit, so two at once never both take the last one. `conversationId`: the call's
+ *  conversation (a subagent's child, say); none, the run's root. */
+export async function withinBudget(harness: Harness, conversationId: ConversationId | undefined, call: { readonly callId: string; readonly nested?: true }, runBudget: number | undefined, context: Context): Promise<boolean> {
+  const conversation = conversationId === undefined ? await harness.root(context) : await harness.conversation(conversationId, context);
+  if (!conversation) throw new Error(`The tool-call budget has no conversation ${String(conversationId)} to count ${call.callId} in.`);
+  const own = await harness.commit(async (tx) => (await tx.doc(ConversationToolBudget, conversation.id)).toolCalls, context);
+  const budget = budgetOf(runBudget, own);
+  if (budget === undefined) return true;
+  // The model's calls, a page at a time, only as far as the count needs. A nested call's id is never a model's, so it
+  // counts them all.
+  let counted = { count: 0, done: budget <= 0 };
+  let cursor: Cursor | undefined;
+  while (!counted.done) {
+    const page = await conversation.entries({ order: "ascending" }, 100, cursor, context);
+    counted = countCalls(page.items, call.callId, budget, counted.count);
+    cursor = page.next;
+    if (cursor === undefined) break;
+  }
+  return harness.commit(async (tx) => {
+    const nested = await tx.doc(NestedToolCalls, conversation.id);
+    const calls = nested.calls ?? [];
+    if (call.nested && calls.includes(call.callId)) return true;
+    if (counted.count + calls.length >= budget) return false;
+    if (call.nested) nested.calls = [...calls, call.callId];
+    return true;
+  }, context);
 }
 
 /** What a call reads once its run's cap is nearly taken: the same words every time, as the tool-call budget's. */

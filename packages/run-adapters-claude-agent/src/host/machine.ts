@@ -56,6 +56,8 @@ export interface LocalMachineOptions {
     webSearch?: boolean;
     /** The input a request carrying it may read in beyond its body, for its input bound (anthropicPolicy). */
     webSearchAllowance?: number;
+    /** The CLI's own tool search is on: its beta, its tools and its tool references pass (anthropicPolicy). */
+    toolSearch?: boolean;
     /** The tokens' price; each web search a response reports is added to it (`withWebSearches`). */
     price?: ModelProxyOptions["price"];
     maxOutputTokens?: number;
@@ -186,6 +188,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
         ...(options.proxy.webSearch ? { webSearch: true, ...(options.proxy.webSearchAllowance !== undefined ? { webSearchAllowance: options.proxy.webSearchAllowance } : {}) } : {}),
         ...(options.proxy.auth ? { auth: options.proxy.auth } : {}),
+        ...(options.proxy.toolSearch ? { toolSearch: true } : {}),
         onThinkingDisabled: ({ model: main }) => options.proxy.log?.("claude-agent: thinking.disabled", { model: main }),
       }),
       hooks: options.proxy.hooks,

@@ -8,6 +8,7 @@
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
+import { capped, MAX_RESPONSE, mcpClient, scrub } from "./mcp-wire.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject, unknownFields } from "./validate.js";
 
@@ -49,7 +50,6 @@ export function tokenLeftOf(credential: { readonly type: string; readonly set?: 
 const SCOPE = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
 const REQUEST_MS = 15_000;
 const PREVIEW_MS = 30_000;
-const MAX_RESPONSE_BYTES = 4 * 2 ** 20;
 const MAX_URL = 2048;
 const MAX_VALUE_BYTES = 8192;
 const MAX_HEADERS = 8;
@@ -90,18 +90,14 @@ export function pricesListed(prices: McpPrices | undefined, listed: readonly { n
   return Object.assign(Object.create(null), Object.fromEntries(Object.entries(prices ?? {}).filter(([tool]) => listed.some((t) => t.name === tool)))) as McpPrices;
 }
 
-/** `listed` with each known meta tool (mcp-meta.ts) marked `grantable: false` with its reason. */
-export function marked<T extends { tools: McpTool[] }>(url: string, listed: T): T & { tools: (McpTool & { grantable?: false; reason?: string })[] } {
+/** `listed` with each known meta tool (mcp-meta.ts) marked `grantable: false` with its reason: the one place a listing is
+ *  marked, in the registry's shape of a tool or the harnesses' (a saved server's tools read by blockersOf). */
+export function marked<Tool extends { name: string }, T extends { tools: Tool[] }>(url: string, listed: T): T & { tools: (Tool & { grantable?: false; reason?: string })[] } {
   return { ...listed, tools: listed.tools.map((tool) => {
     const meta = metaToolOf(url, tool.name);
     return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool;
   }) };
 }
-
-/** `text` with every credential value cut out: each header's value, and a bearer's token alone, which a server may
- *  echo without its scheme. */
-export const scrub = (text: string, headers: HeaderMap): string =>
-  Object.values(headers).flatMap((value) => [value, /^Bearer\s+(.+)$/i.exec(value)?.[1]]).filter((value): value is string => !!value).sort((a, b) => b.length - a.length).reduce((cut, value) => cut.split(value).join("[credential]"), text);
 
 /** JSON with sorted keys, so two listings of one tool compare equal whatever order the server sends its fields in. */
 export const canonical = (value: unknown): string =>
@@ -261,7 +257,7 @@ export const oauthValueValid = (text: unknown): boolean => typeof text === "stri
 type Seen = { status: number; headers: globalThis.Headers; rpc: Promise<boolean> };
 
 /** Connect to `url`, agree a protocol revision, and list every tool (all pages), each request held to REQUEST_MS and
- *  MAX_RESPONSE_BYTES and the whole to PREVIEW_MS. A failure is an ApiError: 422 auth_required (with the auth the
+ *  MAX_RESPONSE and the whole to PREVIEW_MS. A failure is an ApiError: 422 auth_required (with the auth the
  *  server asks for), 422 not_mcp, 422 input_invalid for a redirect, else 424 upstream_failed. `send`: how each request
  *  goes, the store-backed registry's dialled at the address its check let through (mcp-oauth.ts mcpServerAt, dialAt). */
 export async function listServer(url: URL, headers: HeaderMap, version: string, stop?: AbortSignal, send: typeof fetch = fetch): Promise<Listed> {
@@ -276,8 +272,7 @@ export async function listServer(url: URL, headers: HeaderMap, version: string, 
     seen.push({ status: res.status, headers: res.headers, rpc: type.startsWith("text/event-stream") ? Promise.resolve(true) : type.includes("json") ? speaksJsonRpc(res.clone()) : Promise.resolve(false) });
     return capped(res, () => (overflow = true));
   };
-  const transport = new sdk.StreamableHTTPClientTransport(url, { fetch: watched, requestInit: { headers, redirect: "manual" } });
-  const client = new sdk.Client({ name: "agentrun-serve", version }, { versionNegotiation: { mode: "auto" } });
+  const { client, transport } = mcpClient(sdk, { name: "agentrun-serve", version, url, fetch: watched, requestInit: { headers, redirect: "manual" } });
   try {
     await client.connect(transport, { timeout: REQUEST_MS, signal: deadline });
     // Paged here rather than by listTools(), which reads every page before answering: a snapshot past its caps
@@ -323,7 +318,7 @@ export async function listServer(url: URL, headers: HeaderMap, version: string, 
 
 async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL, headers: HeaderMap, deadline: AbortSignal, sdk: typeof import("@modelcontextprotocol/client"), send: typeof fetch): Promise<ApiError> {
   const upstream = (message: string, status?: number) => new ApiError("upstream_failed", message, status ? { details: { status } } : {});
-  if (overflow) return upstream(`The MCP server answered more than ${MAX_RESPONSE_BYTES / 2 ** 20} MiB in one response.`);
+  if (overflow) return upstream(`The MCP server answered more than ${MAX_RESPONSE / 2 ** 20} MiB in one response.`);
   const redirect = seen.find((one) => one.status >= 300 && one.status < 400);
   if (redirect) {
     const to = redirect.headers.get("location");
@@ -331,7 +326,7 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
     try {
       if (to) where = new URL(to, url).href;
     } catch {}
-    return invalid([{ field: "url", reason: "redirect", message: scrub(`The MCP server answered ${redirect.status}${where ? `, pointing to ${where}` : ""}. Redirects are not followed, so a credential goes only where you send it: use the address it points to.`, headers) }]);
+    return invalid([{ field: "url", reason: "redirect", message: scrub(`The MCP server answered ${redirect.status}${where ? `, pointing to ${where}` : ""}. Redirects are not followed, so a credential goes only where you send it: use the address it points to.`, Object.values(headers)) }]);
   }
   const denied = seen.find((one) => one.status === 401 || one.status === 403);
   if (denied) {
@@ -350,7 +345,7 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
   // The listing's own limit when it was the one that ran out, else one request's.
   if (deadline.aborted || timedOut(error)) return upstream(deadline.aborted ? `The MCP server did not finish listing its tools within ${PREVIEW_MS / 1000} s.` : `The MCP server did not answer a request within ${REQUEST_MS / 1000} s.`);
   // Cut every credential value from the SDK's words: a server may echo what it was sent.
-  const said = scrub(error instanceof Error ? error.message : String(error), headers);
+  const said = scrub(error instanceof Error ? error.message : String(error), Object.values(headers));
   return upstream(`The MCP server failed to list its tools: ${said.slice(0, 300)}`);
 }
 
@@ -379,22 +374,6 @@ async function speaksJsonRpc(res: Response): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-/** `res` with its body cut off at MAX_RESPONSE_BYTES, `over` told when it is. */
-function capped(res: Response, over: () => void): Response {
-  if (!res.body || [101, 204, 205, 304].includes(res.status)) return res;
-  let bytes = 0;
-  const body = res.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, out) {
-      bytes += chunk.byteLength;
-      if (bytes > MAX_RESPONSE_BYTES) {
-        over();
-        out.error(new Error(`response over ${MAX_RESPONSE_BYTES} bytes`));
-      } else out.enqueue(chunk);
-    },
-  }));
-  return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
 }
 
 const timedOut = (error: unknown): boolean => {

@@ -44,7 +44,7 @@ export type ScreenView = Exclude<RunComputer, { state: "off" }> | { state: "sign
  *  opened (none, opening), a take-over waiting for the agent's step (pending), and for HURRY_MS after the page's own
  *  take-over or hand-back, whose answer is read right after its row is written, before the run applies it. So the first
  *  frame and who drives show when they happen, not up to a whole `every` later. */
-export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000, soon = Math.min(every, SOON_MS)): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
+export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000, soon = Math.min(every, SOON_MS), starting = false): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
   const [now, setNow] = useState<ScreenView | null>(null);
   // A caller the route refuses (401, 403) is read no more, whatever the run does.
   const [refused, setRefused] = useState(false);
@@ -61,9 +61,16 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
   // next one forward (none while no read is waiting).
   const hurryUntil = useRef(0);
   const hurry = useRef<(() => void) | null>(null);
+  // The desktop or phone this page saw live while the run goes. Its claim holds it from the run's start to its end, so
+  // once it was live, an answer of opening (its viewer gone, the run not yet read as ended) is the one that was let go:
+  // released, never one to wait for. A new turn opens a new one, which is waited for: the memory goes when the run ends,
+  // and when a turn's claim is `starting` it (the run queued: a follow-up after the run completed or was stopped).
+  const wasLive = useRef<RunMachine["kind"] | null>(null);
+  useEffect(() => { if (starting) wasLive.current = null; }, [starting]);
   const has = !!read;
   useEffect(() => {
     if (!has || refused) return;
+    if (!going) wasLive.current = null;
     if (!going && answered.current && !unopened.current) { setNow((prev) => (prev ? closed(prev) : prev)); return; }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -72,9 +79,11 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
     let onItsWay = false;
     const once = async () => {
       try {
-        const next = await reader.current!();
+        const read = await reader.current!();
         if (!alive) return;
         answered.current = true;
+        if (read.state === "live") wasLive.current = read.kind;
+        const next: RunComputer = read.state === "none" && read.session === "opening" && read.kind !== "browser" && read.kind === wasLive.current ? { ...read, session: "closed" } : read;
         unopened.current = next.state === "none" && next.session === "unopened";
         onItsWay = (next.state === "none" && next.session === "opening") || (next.state === "live" && next.hold === "pending");
         if (next.state === "off") setNow(null);
@@ -145,8 +154,11 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   // Each viewer gets an iframe of its own (a new session is a new page); the key is a count, never the viewer itself.
   const session = useRef({ viewer: "", n: 0 });
   if (screen?.state === "live" && screen.viewer !== session.current.viewer) session.current = { viewer: screen.viewer, n: session.current.n + 1 };
-  const src = screen?.state === "live" ? framedViewer(screen.viewer, runId) : undefined;
   const kind: Kind = screen && screen.state !== "signed_out" ? screen.kind : machine?.kind ?? "browser";
+  // A desktop's or a phone's Take over and Hand back are this header's: the viewer is told so (hands=page, in the
+  // fragment beside its token), and its own bar shows neither, nor who drives. A browser's are its viewer's own.
+  const framed = screen?.state === "live" ? framedViewer(screen.viewer, runId) : undefined;
+  const src = framed && kind !== "browser" ? `${framed}${framed.includes("#") ? "&" : "#"}hands=page` : framed;
   const Icon = ICONS[kind];
   const live = screen?.state === "live" ? screen : null;
   // Take over and Hand back, here for a desktop or a phone up now (a browser's are its viewer's own): one in flight at a
@@ -282,8 +294,9 @@ function words(kind: Kind, screen: ScreenView | null, machine: RunMachine | unde
     if (!opens) return `This run didn't open its ${kind}.${followUp ? " A follow-up opens one if the agent needs it." : ""}`;
     return kind === "browser" ? "This run hasn't opened its browser. The agent's page shows here if it opens one." : `This run hasn't opened its ${kind}. Its screen shows here if the agent opens one.`;
   }
-  // Opened, and not up now, while the run goes on: nothing is opening one until the agent asks again.
-  if (opens && session === "closed") return kind === "browser" ? "The run's browser isn't open now. The agent's page shows here if it opens one again." : `The run's ${kind} isn't up now. Its screen shows here when it comes up again.`;
+  // Opened, and not up now, while the run goes on: a browser opens again when the agent asks; a desktop or a phone, held
+  // to the run's end, was let go (useRunScreen reads it so once it was live), and the run is ending.
+  if (opens && session === "closed") return kind === "browser" ? "The run's browser isn't open now. The agent's page shows here if it opens one again." : `This ${kind} has been released.`;
   // Being opened (or no answer read yet).
   if (opens) return kind === "browser" ? "Waiting for the browser. The agent's page shows here once it opens one." : `Waiting for the ${kind}. Its screen shows here once it is up.`;
   return `The ${kind} closed when the run ended.${followUp ? " A follow-up opens a new one if the agent needs it." : ""}`;
