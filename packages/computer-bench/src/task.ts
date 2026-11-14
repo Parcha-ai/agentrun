@@ -61,7 +61,10 @@ export interface Needs {
 	kind: string;
 	/** Groups the computer must have because the task can't be done without them; never which tools the agent uses. */
 	groups?: string[];
-	apps?: string[];
+	/** Each entry must be installed; a list is alternatives, any one will do. A precondition, read once per computer. */
+	apps?: (string | string[])[];
+	/** Probes (checks on the bench's channel) of what the computer must be able to do; the check's id names it. */
+	capabilities?: Check[];
 	osVersion?: string;
 }
 
@@ -77,6 +80,8 @@ export interface TaskSpec {
 	params?: Record<string, ParamSpec>;
 	setup?: Call[];
 	instruction: string;
+	/** deny: done through the UI; the agent gets no shell or exec, and the oracle only the agent's groups. Default allow. */
+	exec?: "allow" | "deny";
 	budget: Budget;
 	checks: Check[];
 	sufficient?: boolean;
