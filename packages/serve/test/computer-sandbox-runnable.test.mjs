@@ -81,9 +81,15 @@ for (const [provider, keys] of [["e2b", { E2B_API_KEY: "fake-test-key" }], ["mod
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     assert.deepEqual([saved.body.ready, saved.body.why?.match(/stock image .*, which has no Archil client/) !== null], [false, true], `${provider} is not ready with its key saved: ${JSON.stringify(saved.body)}`);
 
+    // Its computer, not its place: a warning at the save, and the run refused at its start (409) before any computer is
+    // made, in the words Settings says.
     const said = await saveAndStart(api, `remote-${provider}`, { computer: { kind: "sandbox", provider } });
-    assert.deepEqual(said.saved, [], `the agent is saved with a warning on its computer or place: ${JSON.stringify(said)}`);
-    assert.deepEqual(said.refused, [], `the run is refused for its computer or place: ${JSON.stringify(said)}`);
+    const words = /^An? (E2B|Modal) sandbox can't mount the owner's disk this server keeps run folders on yet: it would start from (E2B|Modal)'s stock image \([^)]+\), which has no Archil client, and this server can't name another\. Set this agent's computer to none in Settings → Computers\.$/;
+    for (const [field, reason, message] of [...said.saved, ...said.refused]) {
+      assert.deepEqual([field, reason], ["definition.computer", "not_set_up_here"], JSON.stringify(said));
+      assert.match(message, words);
+    }
+    assert.deepEqual([said.saved.length, said.refused.length, said.started[0], said.started[1]], [1, 1, 409, "agent_not_runnable"], JSON.stringify(said));
     assert.doesNotMatch(said.started[2] ?? "", PLACE_WORDS, `the run is refused for its place: ${JSON.stringify(said)}`);
   });
 }

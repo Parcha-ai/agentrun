@@ -742,7 +742,7 @@ passes the binding's conformance cases (below) needs no change here.
   the run's folder from its disk with a mount credential minted for that run alone, but only from an image with Archil's
   client and helper (the computer package's box recipe). This server names a vendor's image only through its
   descriptor's `imageEnv`, which none of the three declares, so each would start from its vendor's stock image: Settings
-  shows them not ready, and a run's claim refuses them before any computer is made. Docker's sandbox is refused, since
+  shows them not ready, an agent's save warns, and a run's start refuses them (409) before any computer is made. Docker's sandbox is refused, since
   it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes. So in Mode 2 no sandbox
   runs for now.
 

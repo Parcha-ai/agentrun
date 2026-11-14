@@ -133,18 +133,16 @@ test("Mode 2 today: no sandbox is ready. Docker's can't mount the owner's disk, 
   for (const [id, article, label] of [["modal", "A", "Modal"], ["e2b", "An", "E2B"], ["agent37", "An", "Agent37"]]) {
     const image = PROVIDERS.find((one) => one.id === id).defaultImage.sandbox;
     assert.deepEqual([providerOf(view, "sandbox", id).ready, providerOf(view, "sandbox", id).why], [false, NO_ARCHIL_IMAGE(article, label, image)], `${id}: its keys are saved, and still not ready`);
-    assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: id }), NO_ARCHIL_IMAGE(article, label, image), `${id}: refused at the claim, before a computer is made`);
+    assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: id }), NO_ARCHIL_IMAGE(article, label, image), `${id}: claimRefusal says the same`);
   }
   assert.deepEqual([kindOf(view, "sandbox").offered, kindOf(view, "sandbox").why], [false, "no provider of a sandbox computer can reach this server's run folders"]);
   assert.equal(providerOf(view, "desktop", "docker").ready, true, "a desktop holds no folder unless its provider mounts it");
   assert.equal(kindOf(view, "phone").offered, true);
 });
 
-test("Mode 2 where the owner names a sandbox's image (its descriptor's imageEnv): a sandbox that mounts the disk is offered, waiting only on its keys", async (t) => {
+test("Mode 2 where a sandbox's descriptor lets this server name its image (imageEnv): a sandbox that mounts the disk is offered, waiting only on its keys", async (t) => {
   const kinds = { ...KINDS, PROVIDERS: KINDS.PROVIDERS.map((one) => (one.id === "e2b" ? { ...one, imageEnv: "AGENTRUN_E2B_IMAGE" } : one)) };
-  const unnamed = await (await setup(t, { mode: "disk", kinds })).routes.view();
-  assert.match(providerOf(unnamed, "sandbox", "e2b").why, /^An E2B sandbox can't mount the owner's disk/, "its imageEnv unset: the stock image");
-  const { routes } = await setup(t, { mode: "disk", kinds, env: { AGENTRUN_E2B_IMAGE: "agentrun-archil-0123456789ab" } });
+  const { routes } = await setup(t, { mode: "disk", kinds });
   const view = await routes.view();
   assert.match(providerOf(view, "sandbox", "docker").why, /Docker can't mount the owner's disk/);
   assert.equal(providerOf(view, "sandbox", "e2b").why, "E2B needs E2B_API_KEY saved: save it in Settings → Computers");
@@ -422,9 +420,9 @@ test("a sandbox provider's GPUs show on GET /v2/computers as its configuration d
   for (const gpu of [{ type: "T4", count: 1 }, undefined]) {
     assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "modal", ...(gpu ? { gpu } : {}) }), /^A Modal sandbox can't mount the owner's disk this server keeps run folders on yet/, JSON.stringify(gpu));
   }
-  // Where the owner names its image, the GPU's own reason.
+  // Where this server could name its image, the GPU's own reason.
   const named = { ...KINDS, PROVIDERS: KINDS.PROVIDERS.map((one) => (one.id === "modal" ? { ...one, imageEnv: "AGENTRUN_MODAL_IMAGE" } : one)) };
-  const imaged = (await setup(t, { mode: "disk", kinds: named, env: { AGENTRUN_MODAL_IMAGE: "im-archil", MODAL_TOKEN_ID: "good-i", MODAL_TOKEN_SECRET: "good-s" } })).routes;
+  const imaged = (await setup(t, { mode: "disk", kinds: named, env: { MODAL_TOKEN_ID: "good-i", MODAL_TOKEN_SECRET: "good-s" } })).routes;
   assert.equal(await imaged.claimRefusal({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }), `${noFolder("Modal")} (Settings → Computers)`);
   assert.equal(await imaged.claimRefusal({ kind: "sandbox", provider: "modal" }), undefined, "a Modal sandbox with no GPU, from an image named here");
   const local = (await setup(t)).routes;
