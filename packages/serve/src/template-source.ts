@@ -164,17 +164,23 @@ async function untarPackage(body: ReadableStream<Uint8Array>, source: GithubSour
   let found = false;
   const gunzip = createGunzip();
   const reader = body.getReader();
-  // The gzip stream fed from the download, counted against its limit as it comes.
+  // The gzip stream fed from the download, counted against its limit as it comes. A full gzip waits for its drain, or for
+  // its close: once the reader below stops (a refusal), it is destroyed and drains no more, and the pump ends there.
   const pump = (async () => {
     try {
       for (;;) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done || gunzip.destroyed) break;
         sent += value.byteLength;
         if (sent > limits.downloadBytes) throw new ImportRefused("source", `${source.owner}/${source.repo}'s tarball is over the ${limits.downloadBytes} bytes an import reads.`);
-        if (!gunzip.write(value)) await new Promise((go) => gunzip.once("drain", go));
+        if (!gunzip.write(value)) await new Promise<void>((go) => {
+          const on = () => { gunzip.off("drain", on); gunzip.off("close", on); go(); };
+          gunzip.on("drain", on);
+          gunzip.on("close", on);
+        });
+        if (gunzip.destroyed) break;
       }
-      gunzip.end();
+      if (!gunzip.destroyed) gunzip.end();
     } catch (error) {
       gunzip.destroy(error as Error);
     }

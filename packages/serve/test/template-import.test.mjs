@@ -11,6 +11,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { gzipSync } from "node:zlib";
+import { randomBytes } from "node:crypto";
 import { storeOn } from "./store-helpers.mjs";
 import { serve } from "./support.mjs";
 
@@ -169,8 +170,11 @@ test("an import from GitHub: a dry run shows the package whole and stores nothin
 });
 
 test("an import is refused, storing nothing: a source off GitHub, a ref GitHub does not have, a redirect off GitHub's hosts, a symbolic or hard link in the package, a special file, and a package that does not check", { timeout: 60_000 }, async (t) => {
-  const github = await fauxGitHub(t, { refs: { main: SHA_A, HEAD: SHA_A, link: SHA_B, hard: "c".repeat(40), fifo: "d".repeat(40), broken: "e".repeat(40) } });
+  const github = await fauxGitHub(t, { refs: { main: SHA_A, HEAD: SHA_A, link: SHA_B, hard: "c".repeat(40), fifo: "d".repeat(40), broken: "e".repeat(40), linkfirst: "f".repeat(40) } });
   github.tarballs[SHA_B] = tarball([["skills/kyb/escape.md", { type: "2", link: "../../../../../etc/passwd" }]]);
+  // A link early in a large tarball (GitHub's are megabytes): the refusal comes while the download is still arriving,
+  // and the import answers at once, never waiting on a download nothing reads any more.
+  github.tarballs["f".repeat(40)] = tarball([["skills/kyb/escape.md", { type: "2", link: "/etc/passwd" }], ["skills/kyb/zz-big.bin", { data: randomBytes(4 << 20) }]]);
   github.tarballs["c".repeat(40)] = tarball([["rules/HARD.md", { type: "1", link: "acme-agents-aaaaaaa/README.md" }]]);
   github.tarballs["d".repeat(40)] = tarball([["rules/pipe.md", { type: "6" }]]);
   github.tarballs["e".repeat(40)] = tarball([["extra/x.md", { data: Buffer.from("x") }]]);
@@ -184,6 +188,9 @@ test("an import is refused, storing nothing: a source off GitHub, a ref GitHub d
   await refused({ source: "https://gitlab.com/acme/agents/-/tree/main/kyb" }, "source", /github\.com alone/);
   await refused({ source: `${ID}@nope` }, "source", /has no ref nope in acme\/agents/);
   await refused({ source: `${ID}@link` }, "package", /skills\/kyb\/escape\.md is a symbolic link/);
+  const began = Date.now();
+  await refused({ source: `${ID}@linkfirst`, dry_run: true }, "package", /skills\/kyb\/escape\.md is a symbolic link/);
+  assert.ok(Date.now() - began < 10_000, `refused at once, in ${Date.now() - began} ms`);
   await refused({ source: `${ID}@hard` }, "package", /rules\/HARD\.md is a hard link/);
   await refused({ source: `${ID}@fifo` }, "package", /rules\/pipe\.md is not a regular file or a folder/);
   await refused({ source: `${ID}@broken` }, "package", /a package's folders are skills\/, rules\/ and evals\//);
