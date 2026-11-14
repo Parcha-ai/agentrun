@@ -271,8 +271,10 @@ public struct Platform: Sendable {
 	/// A person's keyboard and mouse, for the take-over check of a ui act that takes the foreground route.
 	public var person: any PersonInput
 	public var clock: any Clock
+	/// Where ui.act last acted, for the live view's frames (Marks): on clock's time.
+	public var marks: Marks
 
-	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, raw: any RawInput, person: any PersonInput, clock: any Clock = SystemClock()) {
+	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, raw: any RawInput, person: any PersonInput, clock: any Clock = SystemClock(), marks: Marks = Marks()) {
 		self.accessibility = accessibility
 		self.capture = capture
 		self.workspace = workspace
@@ -283,6 +285,7 @@ public struct Platform: Sendable {
 		self.raw = raw
 		self.person = person
 		self.clock = clock
+		self.marks = marks
 	}
 }
 

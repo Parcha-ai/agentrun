@@ -170,6 +170,58 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(os.entries, ["ax.AXPress 3"])
 	}
 
+	/// A step by the semantic or background route moves no real pointer: the live view's marks show where it acted.
+	func testEachStepMarksItsPlaceForTheLiveView() async throws {
+		let platform = os.platform()
+		let engine = UIEngine(platform: platform, policy: Policy())
+		let r = try await engine.observe(UiObserveParams())
+		XCTAssertNil(platform.marks.scene(now: os.with { $0.now }), "no step, no mark")
+		_ = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		var scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(160, 85), "a press marks its element's middle, in screen points")
+		XCTAssertNotNil(scene.ring, "a press rings")
+		_ = try await engine.act(UiActParams(steps: [.type("Milk", into: ref(r, "Title"))]))
+		scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(270, 135), "typing into an element marks it")
+		XCTAssertEqual(scene.box, Rect(120, 120, 300, 30), "and boxes it")
+		XCTAssertNil(scene.ring)
+		_ = try await engine.act(UiActParams(steps: [.key("super+s")]))
+		scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(270, 135), "a key to the focus leaves the pointer where it was")
+		_ = try await engine.act(UiActParams(state: r.state, steps: [.click(.point(Point(10, 20)), button: nil, count: nil)]))
+		scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(110, 70), "a click at a window point marks it on screen")
+		XCTAssertNil(platform.marks.scene(now: os.with { $0.now } + Marks.pointerMs + Marks.fadeMs), "the pointer fades")
+	}
+
+	func testAClickScrolledIntoViewMarksWhereItLanded() async throws {
+		let platform = os.platform()
+		let engine = UIEngine(platform: platform, policy: Policy())
+		let r = try await engine.observe(UiObserveParams())
+		// Hello sits below the window's visible area until it is scrolled to.
+		os.with { $0.elements[5]!.frame = Rect(120, 700, 100, 20) }
+		os.react = { entry, os in
+			if entry == "ax.scrolltovisible 5" { os.with { $0.elements[5]!.frame = Rect(120, 300, 100, 20) } }
+		}
+		_ = try await engine.act(UiActParams(steps: [.click(.ref(ref(r, "Hello")), button: nil, count: nil)]))
+		XCTAssertTrue(os.entries.contains("ax.scrolltovisible 5"), "\(os.entries)")
+		let scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(170, 310), "the mark is where the click landed, after the scroll")
+		XCTAssertNotNil(scene.ring)
+	}
+
+	func testAStepMovesOnlyItsOwnMark() {
+		let marks = Marks()
+		let mine = marks.mark(.press, at: Point(10, 10), now: 0)
+		marks.mark(.press, at: Point(50, 50), now: 1)
+		marks.move(mine, to: Point(20, 20), box: nil)
+		XCTAssertEqual(marks.lastPoint, Point(50, 50), "another connection's newer mark stays where it was")
+		let newest = marks.mark(.type, at: Point(60, 60), box: Rect(40, 50, 40, 20), now: 2)
+		marks.move(newest, to: Point(70, 70), box: Rect(50, 60, 40, 20))
+		XCTAssertEqual(marks.lastPoint, Point(70, 70))
+		XCTAssertEqual(marks.scene(now: 2)?.box, Rect(50, 60, 40, 20))
+	}
+
 	func testPressWithoutAnActionClicksInTheBackground() async throws {
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())

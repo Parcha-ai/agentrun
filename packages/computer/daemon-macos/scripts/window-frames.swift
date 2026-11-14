@@ -2,14 +2,20 @@
 // process a run; it reads a request a line on stdin and answers a line on stdout, both JSON:
 //
 //   {"op": "where", "window": "1234"}
-//     -> {"bounds": [x, y, w, h], "above": [[x, y, w, h], ...], "changes": N}   the window on screen, in points, and
-//        every window in front of it that overlaps it: another app's, or one of its own app's ordinary windows (not its
-//        menus or popovers, which are the demo's own). {"bounds": null, ...} when the window is not on screen. From the
+//     -> {"bounds": [x, y, w, h], "above": [[x, y, w, h], ...], "who": [...], "changes": N}   the window on screen, in
+//        points, and every window in front of it that overlaps it: another app's, or one of its own app's ordinary
+//        windows (not its menus, popovers or field editors, which are the demo's own; not the pointer). "who" names each
+//        one painted, by owner, layer and size. {"bounds": null, ...} when the window is not on screen. From the
 //        first where on, the window list is read every 10 ms for that window, and changes counts each time what it
 //        answers changed: a window that came and went between two wheres shows there, though the two answers match.
 //   {"op": "crop", "jpeg": BASE64, "bounds": [...], "above": [...], "out": PATH, "quality": 70}
 //     -> {"width": W, "height": H}   the screen frame cut to the bounds, each overlapping window painted black, written
 //        to PATH as a JPEG. The frame covers the main display, at any scale.
+//   {"op": "front", "owner": "TextEdit"} -> {"window": "1234"}   the app's frontmost ordinary window on screen (layer 0,
+//        200 by 150 points or more), by its owner name; {"window": null} when it shows none. An agent's task names no
+//        window: its movie follows this one.
+//   {"op": "park"} -> {"parked": [x, y]}   the real pointer moved to the main display's bottom right corner, out of
+//        the demo's window (a demo machine's pointer is no one's; the demo's steps are drawn by Computerd's live view).
 //
 // The window list gives bounds and ids without Screen Recording, so this needs no grant of its own.
 //
@@ -34,6 +40,7 @@ func list(_ r: CGRect) -> [Double] { [r.minX, r.minY, r.width, r.height] }
 func number(_ info: [String: Any], _ key: CFString) -> Int? { (info[key as String] as? NSNumber)?.intValue }
 
 let dockLevel = Int(CGWindowLevelForKey(.dockWindow))
+let cursorLevel = Int(CGWindowLevelForKey(.cursorWindow))
 
 /// The window and what is in front of it, from the window server's list (front to back).
 func locate(_ id: Int) -> [String: Any] {
@@ -44,21 +51,31 @@ func locate(_ id: Int) -> [String: Any] {
 	else { return ["bounds": NSNull()] }
 	let owner = number(windows[index], kCGWindowOwnerPID)
 	var above: [[Double]] = []
+	var who: [String] = []
 	for info in windows[..<index] {
 		// A window drawn with nothing (alpha 0) hides nothing.
 		if let alpha = info[kCGWindowAlpha as String] as? NSNumber, alpha.doubleValue == 0 { continue }
-		// The demo app's own menus and popovers belong in its movie; its other ordinary windows may be a person's.
-		if number(info, kCGWindowOwnerPID) == owner && number(info, kCGWindowLayer) != 0 { continue }
+		// The demo app's own menus and popovers belong in its movie; its other ordinary windows may be a person's. An
+		// ordinary window of its that lies inside the demo's window and is small beside it is the window's own: Finder's
+		// name field while it renames, Calendar's quick event and event inspector.
+		guard let d = info[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: d as CFDictionary) else { continue }
+		if number(info, kCGWindowOwnerPID) == owner {
+			if number(info, kCGWindowLayer) != 0 { continue }
+			if bounds.contains(r) && r.width * r.height * 4 < bounds.width * bounds.height { continue }
+		}
+		// The pointer is drawn in its own window at the cursor's level: it belongs in the movie.
+		if info[kCGWindowOwnerName as String] as? String == "Window Server" && number(info, kCGWindowLayer) == cursorLevel { continue }
 		// The Dock's window at the Dock's level covers the whole display and is clear but for the Dock itself, which shows
 		// app icons: painting it blacked out every frame (CI, macOS 26). A window of its at any other level is painted.
 		if info[kCGWindowOwnerName as String] as? String == "Dock" && number(info, kCGWindowLayer) == dockLevel { continue }
-		guard let d = info[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: d as CFDictionary) else { continue }
 		let overlap = r.intersection(bounds)
 		if !overlap.isNull && overlap.width > 0 && overlap.height > 0 {
 			above.append(list(overlap))
+			let name = info[kCGWindowOwnerName as String] as? String ?? "?"
+			who.append("\(name) layer \(number(info, kCGWindowLayer) ?? 0) \(Int(r.width))x\(Int(r.height))")
 		}
 	}
-	return ["bounds": list(bounds), "above": above]
+	return ["bounds": list(bounds), "above": above, "who": who]
 }
 
 func crop(_ request: [String: Any]) throws -> [String: Any] {
@@ -160,6 +177,27 @@ while let line = readLine(strippingNewline: true) {
 		var place = locate(id)
 		place["changes"] = changes
 		answer(place)
+	case "front":
+		// An agent's task names no window: the app's frontmost ordinary window (layer 0) on screen that is at least a
+		// window's size (not a sheet's sliver or a field editor), by the app's owner name in the window list.
+		guard let owner = request["owner"] as? String else {
+			answer(["error": "front needs an owner"])
+			continue
+		}
+		let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+		let front = windows.first { info in
+			guard info[kCGWindowOwnerName as String] as? String == owner, number(info, kCGWindowLayer) == 0,
+				let d = info[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: d as CFDictionary)
+			else { return false }
+			return r.width >= 200 && r.height >= 150
+		}
+		if let id = front.flatMap({ number($0, kCGWindowNumber) }) { answer(["window": String(id)]) } else { answer(["window": NSNull()]) }
+	case "park":
+		// The real pointer, out of the movie: to the main display's bottom right corner, where no demo window is. The
+		// demo's own steps are drawn by Computerd's live view (its marks); this pointer is no one's on a demo machine.
+		let display = CGDisplayBounds(CGMainDisplayID())
+		CGWarpMouseCursorPosition(CGPoint(x: display.maxX - 2, y: display.maxY - 2))
+		answer(["parked": [display.maxX - 2, display.maxY - 2]])
 	case "crop":
 		do {
 			answer(try crop(request))
@@ -169,6 +207,6 @@ while let line = readLine(strippingNewline: true) {
 			answer(["error": "\(error)"])
 		}
 	default:
-		answer(["error": "op is where or crop"])
+		answer(["error": "op is where, front, park or crop"])
 	}
 }

@@ -61,19 +61,21 @@ for target in /System/Applications/Calendar.app /System/Applications/Notes.app /
 	fi
 done
 
-# The capture alert (macOS 15 and later) keeps its schedule in replayd's approvals, by bundle id: a next-alert date far
-# ahead means it never shows. (Learned from Cua Driver's test runners; see NOTICE.)
+# The capture alert (macOS 15 and later) keeps its schedule in replayd's approvals: a next-alert date far ahead means
+# it never shows. (Learned from Cua Driver's test runners; see NOTICE.) On macOS 26 an ad hoc signed app's entry is
+# keyed by its bundle's file URL ("file:///…/Computerd.app/"), not its bundle id: an entry by bundle id left the alert
+# up on CI (it read the URL's entry, which replayd made when it first alerted).
 approvals="$HOME/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist"
 mkdir -p "$(dirname "$approvals")"
-python3 -I - "$approvals" "$id" <<'PY' && echo "marked the capture alert answered" || echo "could not mark the capture alert"
-import datetime, os, plistlib, sys
-path, bundle = sys.argv[1], sys.argv[2]
+python3 -I - "$approvals" "$app" <<'PY' && echo "marked the capture alert answered" || echo "could not mark the capture alert"
+import datetime, os, pathlib, plistlib, sys
+path, app = sys.argv[1], sys.argv[2]
 data = {}
 if os.path.exists(path):
     with open(path, "rb") as f:
         data = plistlib.load(f)
 far = datetime.datetime(3024, 1, 1)
-data[bundle] = {
+data[pathlib.Path(app).resolve().as_uri() + "/"] = {
     "kScreenCaptureAlertableUsageCount": 0,
     "kScreenCaptureApprovalLastAlerted": far,
     "kScreenCaptureApprovalLastUsed": far,
