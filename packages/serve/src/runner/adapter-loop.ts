@@ -2366,8 +2366,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // stopped with a follow-up after it is not: the open turn is the follow-up's, recovered as the job's. It is settled, never recovered:
         // recovered, it ran as the job's turn, its answer lost, and the end-of-run step then asked the CLI again, a paid
         // look-back twice on one claim. The step asks it again once, under the run's cap (an earlier request of it booked
-        // at its hold, bookCut), or skips it, reading what the first ask kept (EndOfRunTurn ask's `kept`).
-        if (!followedUp && !firstUnplaced && session!.state === "open_turn" && (await record?.lookingBack())) await session!.settleOpenTurn();
+        // at its hold, bookCut), or skips it, reading what the first ask kept (EndOfRunTurn ask's `kept`). A feedback round
+        // (feedbackNow) sends no turn of its own before its look-back, so its open look-back is settled the same way.
+        if ((!followedUp || feedbackNow !== undefined) && !firstUnplaced && session!.state === "open_turn" && (await record?.lookingBack())) await session!.settleOpenTurn();
         /** The run's learned workflow, run first (AdapterRunSpec.workflowFirst), once for the run: the person's input on the
          *  record, then the workflow's call through the session's own learned_workflow tool as the loop wrapped it (its gate
          *  with its ask, its record, its flush and booking, the stop's abort), under one call id (replay never: a call a
