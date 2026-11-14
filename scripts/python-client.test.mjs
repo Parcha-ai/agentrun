@@ -189,3 +189,28 @@ test('an operation the document marks x-agentrun-browser-only gets no method in 
     assert.ok(!generated.includes(`._call("${id}"`) && !generated.includes(`._operation("${id}"`), `${id} has no committed method`);
   }
 });
+
+test('an operation that documents 204 beside a 2xx body returns the body or nothing, in both clients: `X | undefined` and `X | None`, never a bare X', () => {
+  const body = { type: 'object', required: ['deleted'], properties: { deleted: { const: true } } };
+  const doc = {
+    openapi: '3.1.0', components: { schemas: {} },
+    paths: {
+      '/things/{thing_id}': {
+        parameters: [{ name: 'thing_id', in: 'path', required: true, schema: { type: 'string' } }],
+        delete: { operationId: 'deleteThing', summary: 'Delete a thing', responses: { 200: json(body), 204: { description: 'deleted' } } },
+        get: { operationId: 'getThing', summary: 'Read a thing', responses: { 200: json(body) } },
+        put: { operationId: 'saveThing', summary: 'Save a thing', responses: { 204: { description: 'saved' } } },
+      },
+    },
+  };
+  const map = { secretBody: [], publicFields: {}, multiSegment: {}, commands: { deleteThing: ['things', 'delete'], getThing: ['things', 'get'], saveThing: ['things', 'save'] } };
+  const ops = operationsOf(doc);
+  const ts = clientText(ops, map, commandOf, 'h'.repeat(64));
+  assert.ok(ts.includes('delete: (thingId: string, options?: RequestOptions): Promise<DeleteThingResponse | undefined> =>'), ts.match(/delete: .*/)?.[0]);
+  assert.ok(ts.includes('get: (thingId: string, options?: RequestOptions): Promise<GetThingResponse> =>'), 'a 200 alone is the body');
+  assert.ok(ts.includes('save: (thingId: string, options?: RequestOptions): Promise<void> =>'), 'a 204 alone is void');
+  const py = pythonText(ops, map, commandOf, 'h'.repeat(64));
+  assert.ok(py.includes('    def delete(self, thing_id: str, *, timeout: float | None = None) -> DeleteThingResponse | None:'), py.match(/def delete.*/)?.[0]);
+  assert.ok(py.includes('    def get(self, thing_id: str, *, timeout: float | None = None) -> GetThingResponse:'), 'a 200 alone is the body');
+  assert.ok(py.includes('    def save(self, thing_id: str, *, timeout: float | None = None) -> None:'), 'a 204 alone is None');
+});

@@ -21,7 +21,7 @@ async function setup(t, options = {}) {
   const server = await serve(t, { composioControl: { baseUrl: composio.baseUrl } });
   const saved = await server.api("PUT", "/settings/mcp-servers/hn/composio", { api_key: composio.apiKey, toolkit: "hackernews", tools: ["HACKERNEWS_GET_FRONTPAGE"] });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
-  return { composio, log, api: server.api };
+  return { composio, log, api: server.api, store: server.store };
 }
 const deleted = (s) => s.composio.to(`/api/v3.1/mcp/${s.composio.mcpId}`, "DELETE");
 
@@ -69,4 +69,18 @@ test("a server the preset did not make sends Composio nothing", async (t) => {
   const res = await server.api("DELETE", "/settings/mcp-servers/plain");
   assert.equal(res.status, 204, JSON.stringify(res.body));
   assert.equal(composio.calls.length, 0, "Composio was never called");
+});
+
+test("a preset whose saved key does not open here: our row is forgotten, nothing is sent to Composio, and the answer says to remove it there", async (t) => {
+  const s = await setup(t);
+  const row = await s.store.mcp.server("hn");
+  // The row's address moved to another origin (a direct edit): its sealed key is bound to the old one, so it does not open.
+  await s.store.mcp.put({ ...row, url: row.url.replace(new URL(row.url).origin, "http://127.0.0.1:1") });
+  const res = await s.api("DELETE", "/settings/mcp-servers/hn");
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.deleted, true);
+  assert.equal(res.body.composio.removed, false);
+  assert.match(res.body.composio.note, /Remove hn in Composio yourself: https:\/\/platform\.composio\.dev/);
+  assert.equal(deleted(s).length, 0, "no DELETE was sent");
+  assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "our row is gone");
 });

@@ -207,3 +207,14 @@ test("picked actions Composio serves none of: 422 in words naming them, never a 
   assert.equal(s.composio.to(`/api/v3.1/mcp/${s.composio.mcpId}`, "DELETE").length, 1, "the server Composio made is deleted");
   holdsNoKey(s, res.body);
 });
+
+test("Composio's MCP server down while its tools are listed is the 424 it is, not 'none served': the server it made is still deleted", async (t) => {
+  const s = await setup(t, { listStatus: 500 });
+  const res = await s.api("PUT", "/settings/mcp-servers/hn/composio", { api_key: s.composio.apiKey, toolkit: "hackernews", tools: ["GITHUB_STAR_REPO"] });
+  assert.equal(res.status, 424, JSON.stringify(res.body));
+  assert.equal(res.body.error.code, "upstream_failed");
+  assert.doesNotMatch(res.body.error.message, /doesn't serve/);
+  assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "nothing is saved");
+  assert.equal(s.composio.to(`/api/v3.1/mcp/${s.composio.mcpId}`, "DELETE").length, 1, "the server Composio made is deleted");
+  holdsNoKey(s, res.body);
+});
