@@ -7,6 +7,8 @@ export const OFFERED_ENV = "FAUX_MCP_OFFERED";
 
 export default function offered(context, faux) {
   const file = process.env[OFFERED_ENV];
-  if (file) appendFileSync(file, `${JSON.stringify((context.tools ?? []).map((tool) => tool.name))}\n`);
+  // Offered in the request's tools, or added along the way by a system message (pi's toolsAdded).
+  const tools = [...(context.tools ?? []), ...(context.messages ?? []).flatMap((m) => (m.role === "system" ? (m.toolsAdded ?? []) : []))];
+  if (file) appendFileSync(file, `${JSON.stringify([...new Set(tools.map((tool) => tool.name))])}\n`);
   return reply(context, faux);
 }
