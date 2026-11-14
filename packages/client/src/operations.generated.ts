@@ -794,6 +794,7 @@ export type Capabilities = {
     nodes: boolean;
     calls: boolean;
     call_only?: boolean;
+    meta?: boolean;
     sandbox_only?: boolean;
     available: boolean;
     reason?: string;
@@ -1127,6 +1128,11 @@ export type ListLearningPromotionsResponse = {
       of?: Array<string>;
       cost_usd?: number | null;
       skipped_write?: number;
+      skipped_tools?: Array<{
+        tool: string;
+        inputs: number;
+        no_read_only_hint: boolean;
+      }>;
     };
     runs?: Array<string>;
     inputs?: Array<string>;
@@ -2962,7 +2968,9 @@ export type ImportTemplateResponse = {
         name: string;
         tool: string;
         asks: "allow" | "ask";
-        pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null>>;
+        pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | {
+          keys: Array<string>;
+        }>;
       }>;
     }>;
     parameters: Record<string, unknown>;
@@ -3041,7 +3049,9 @@ export type ListTemplatesResponse = {
         name: string;
         tool: string;
         asks: "allow" | "ask";
-        pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null>>;
+        pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | {
+          keys: Array<string>;
+        }>;
       }>;
     }>;
     parameters: Record<string, unknown>;

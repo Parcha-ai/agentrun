@@ -140,6 +140,7 @@ export interface components {
       nodes: boolean;
       calls: boolean;
       call_only?: boolean;
+      meta?: boolean;
       sandbox_only?: boolean;
       available: boolean;
       reason?: string;
@@ -299,7 +300,9 @@ export interface components {
       };
       [key: string]: {
         permission?: "allow" | "ask" | "deny";
-        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[]>;
+        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
+          keys: string[];
+        }>;
         pin_broken?: true;
       } | {
         permission?: "allow" | "ask" | "deny";
@@ -2353,7 +2356,9 @@ export interface operations {
       };
       [key: string]: {
         permission?: "allow" | "ask" | "deny";
-        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[]>;
+        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
+          keys: string[];
+        }>;
         pin_broken?: true;
         allow_reads?: true;
       } | {
@@ -2617,7 +2622,9 @@ export interface operations {
             name: string;
             tool: string;
             asks: "allow" | "ask";
-            pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[]>;
+            pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
+              keys: string[];
+            }>;
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -2957,6 +2964,11 @@ export interface operations {
           of?: string[];
           cost_usd?: number | null;
           skipped_write?: number;
+          skipped_tools?: {
+            tool: string;
+            inputs: number;
+            no_read_only_hint: boolean;
+          }[];
         };
         runs?: string[];
         inputs?: string[];
@@ -3108,7 +3120,9 @@ export interface operations {
             name: string;
             tool: string;
             asks: "allow" | "ask";
-            pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[]>;
+            pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
+              keys: string[];
+            }>;
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -3446,7 +3460,9 @@ export interface operations {
       };
       [key: string]: {
         permission?: "allow" | "ask" | "deny";
-        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[]>;
+        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
+          keys: string[];
+        }>;
         pin_broken?: true;
         allow_reads?: boolean;
       } | {
@@ -3479,7 +3495,9 @@ export interface operations {
       };
       [key: string]: {
         permission?: "allow" | "ask" | "deny";
-        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[]>;
+        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
+          keys: string[];
+        }>;
         pin_broken?: true;
         allow_reads?: true;
       } | {

@@ -35,6 +35,10 @@ export const TOOL_LIST: Readonly<Record<string, ToolRow>> = Object.freeze({
   "monid.inspect": { replay: "safe", host: true, blurb: "Check a monid source's input and price" },
   "monid.run": { replay: "never", host: true, blurb: "Get paid data from a monid source" },
   learned_workflow: { askable: true, replay: "never", blurb: "Run a workflow this agent learned" },
+  // The host tools over a run's own tools (runner/meta-tools.ts): no table entry and never granted, a settings key each.
+  tools_search: { blurb: "Find a tool by what it does, in a long list" },
+  tools_call: { blurb: "Call a tool the run does not list" },
+  codemode: { blurb: "Run a script that calls the run's tools" },
 });
 
 const rowOf = (name: string): ToolRow | undefined => (Object.hasOwn(TOOL_LIST, name) ? TOOL_LIST[name] : undefined);

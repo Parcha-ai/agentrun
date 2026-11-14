@@ -739,8 +739,12 @@ passes the binding's conformance cases (below) needs no change here.
   `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
   because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
   git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Modal, E2B or Agent37 sandbox mounts
-  the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
-  it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes.
+  the run's folder from its disk with a mount credential minted for that run alone, but only from an image with Archil's
+  client and helper (the computer package's box recipe). This server names a vendor's image only through its
+  descriptor's `imageEnv`, which none of the three declares, so each would start from its vendor's stock image: Settings
+  shows them not ready, an agent's save warns, and a run's start refuses them (409) before any computer is made. Docker's sandbox is refused, since
+  it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes. So in Mode 2 no sandbox
+  runs for now.
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
   `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
@@ -1745,7 +1749,17 @@ tool names share), or under a harness id when that harness's own MCP client woul
   list of 1 to 16 of them, the argument one of the list, compared strictly:
   `{"mcp:slack/slack_send_message": {"permission": "allow", "pin": {"channel_id": "C0123"}}}`,
   `{"mcp:github/pull_request_review_write": {"pin": {"event": [null, "COMMENT"], "method": ["create", "delete_pending", "submit_pending"]}}}`
-  (the `code-review` template's pin). The gate checks a pinned
+  (the `code-review` template's pin). An object argument may be pinned to its keys instead: `{"keys": [...]}`, 1 to 16
+  key names, holds a call whose argument, when given, is an object of those keys alone, any values (left out or `null`
+  holds too), so `{"mcp:hubspot/HUBSPOT_UPDATE_CONTACT": {"pin": {"properties": {"keys": ["hs_lead_score"]}}}}` lets a
+  write set that one field and no other, and refuses one that sets another with "properties keys in (hs_lead_score)".
+  Two layers' keys pins of one argument hold as the keys in both. A pinned tool takes only its listed arguments: a
+  call of a tool with a pin in either layer may carry only the top-level arguments its listing declares under its
+  inputSchema's `properties` (the listing the run pinned when it started, the one its model is offered), beside the
+  pinned ones. So an alias a server takes for a pinned argument, one its listing does not declare (Gmail's `to` for
+  `recipient_email`, Slack's `channel_id` for `channel`), is refused with "`to` is not an argument of
+  GMAIL_SEND_EMAIL; a pinned tool takes only its listed arguments (recipient_email is pinned)", and a pin need not
+  null aliases by hand. A listing with no `properties` object closes nothing, and a tool with no pin is not closed. The gate checks a pinned
   tool's call before it runs or asks anyone, whatever the permission (an allow, an ask, a grant): a call whose arguments
   are not as pinned is refused, never sent and never asked about, and the model reads "mcp:slack/slack_send_message may
   only be called with channel_id = C0123: its destination is fixed by the agent's settings". The run's process logs a

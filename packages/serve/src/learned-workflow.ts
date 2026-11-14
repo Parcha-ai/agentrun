@@ -50,7 +50,7 @@ import type { Refusal } from "@parcha/agentrun-kernel";
 import type { RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { hostCalls } from "./host-calls.js";
 import { workflowNodes } from "./model.js";
-import { type ReplayCalls, SKIPPED_WRITE } from "./learn/replay-calls.js";
+import { type ReplayCalls, SKIPPED_WRITE, toolWord, unmarkedWords } from "./learn/replay-calls.js";
 
 /** What a learned_workflow call's approval card says of its MCP calls' arguments: the workflow decides them as it runs. */
 export const LEARNED_MCP_ARGUMENTS = "decided by the workflow while it runs, from its input and its earlier steps";
@@ -462,7 +462,8 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const stopped = replay ? (signal ? AbortSignal.any([signal, replay.stop]) : replay.stop) : signal;
   const skippedWords = () => {
     const skipped = replay?.skipped;
-    return skipped ? { text: `The learned workflow ${flow.name} was not replayed on this input: its step "${skipped.step}" calls ${skipped.tool}, a write, and the graded run's recording has no call of it with these arguments, so it ${SKIPPED_WRITE}. Nothing was sent.${stepsLine(nodes, guards)}`, isError: true, nodes, ended: "failed" as const } : undefined;
+    const why = skipped?.unmarked ? `${unmarkedWords([toolWord(skipped.tool)])}; the graded run's recording has no call of it with these arguments` : `a write, and the graded run's recording has no call of it with these arguments, so it ${SKIPPED_WRITE}`;
+    return skipped ? { text: `The learned workflow ${flow.name} was not replayed on this input: its step "${skipped.step}" calls ${skipped.tool}, ${why}. Nothing was sent.${stepsLine(nodes, guards)}`, isError: true, nodes, ended: "failed" as const } : undefined;
   };
   // Its step guards (runner/step-guard.ts): a guard's Jev is a decision of the call, on the run's decisions (its judge,
   // its gate, its one cap); a run with no Jev provider has no Jev signal, so a guard that reads one hands back.

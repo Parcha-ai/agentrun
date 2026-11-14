@@ -32,7 +32,7 @@ import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
 import { NEEDS_A_COMPUTER, NO_SHELL, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { canonicalPin, defaultPermission, isCatalogTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SETTINGS_UNREAD, SHELL_FAMILY, type ToolEffect } from "./tool-gate.js";
+import { canonicalPin, defaultPermission, isCatalogTool, isPinKeys, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SETTINGS_UNREAD, SHELL_FAMILY, type ToolEffect } from "./tool-gate.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { isMcpName, mcpNameOf, parseToolName } from "./tool-names.js";
 
@@ -109,8 +109,9 @@ const PIN_ARG = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
 /** The one check of a pin, every place that takes one calls it (the server's settings, an agent's, a template's mcp
  *  entry, the store's revision bodies at the cutover): `pin` under `at`, an object of 1 to MAX_PIN_ARGS of a tool's
  *  top-level arguments (PIN_ARG), each to a JSON scalar (a string of at most MAX_PIN_TEXT characters, a finite number,
- *  true or false, or null: left out) or a list of 1 to MAX_PIN_CHOICES of them, the argument one of the list (sortedPin
- *  is its one form). With
+ *  true or false, or null: left out) or a list of 1 to MAX_PIN_CHOICES of them, the argument one of the list, or
+ *  `{keys: [...]}`, 1 to MAX_PIN_CHOICES key names (text of 1 to MAX_PIN_TEXT characters) an object argument may hold,
+ *  nothing else in it (sortedPin is its one form). With
  *  `key`, the settings key it is set on, which is one MCP tool's own (`mcp:<server>/<tool>`), never a server's wildcard,
  *  whose tools take other arguments, nor any other tool's. */
 export function pinIssues(pin: unknown, at: string, key?: string): InputIssue[] {
@@ -120,11 +121,16 @@ export function pinIssues(pin: unknown, at: string, key?: string): InputIssue[] 
   const scalar = (value: unknown) => value === null || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)) || (typeof value === "string" && value.length <= MAX_PIN_TEXT);
   return entries.flatMap(([arg, value]): InputIssue[] => {
     if (!PIN_ARG.test(arg)) return [{ field: `${at}.${arg}`, reason: "bad_format", message: `${at} names a top-level argument of the tool (${PIN_ARG.source}); ${JSON.stringify(arg).slice(0, 60)} is none` }];
-    const held = Array.isArray(value) ? value.length >= 1 && value.length <= MAX_PIN_CHOICES && value.every(scalar) : scalar(value);
-    return held ? [] : [{ field: `${at}.${arg}`, reason: "wrong_type", message: `${at}.${arg} is a JSON scalar (a string of at most ${MAX_PIN_TEXT} characters, a number, true or false, or null: the argument left out) or a list of 1 to ${MAX_PIN_CHOICES} of them, the argument one of the list` }];
+    const held = Array.isArray(value) ? value.length >= 1 && value.length <= MAX_PIN_CHOICES && value.every(scalar) : isPinKeys(value) ? keysRead(value) : scalar(value);
+    return held ? [] : [{ field: `${at}.${arg}`, reason: "wrong_type", message: `${at}.${arg} is a JSON scalar (a string of at most ${MAX_PIN_TEXT} characters, a number, true or false, or null: the argument left out) or a list of 1 to ${MAX_PIN_CHOICES} of them, the argument one of the list; or {keys: [<key>, ...]}: 1 to ${MAX_PIN_CHOICES} names (each text of 1 to ${MAX_PIN_TEXT} characters) of the keys an object argument may hold, any values, nothing else beside keys` }];
   });
 }
 
+/** Whether a keys pin's object reads: `keys` alone, a list of 1 to MAX_PIN_CHOICES non-empty texts of at most MAX_PIN_TEXT. */
+const keysRead = (value: object): boolean => {
+  const { keys, ...rest } = value as { keys?: unknown };
+  return !Object.keys(rest).length && Array.isArray(keys) && keys.length >= 1 && keys.length <= MAX_PIN_CHOICES && keys.every((key) => typeof key === "string" && key.length >= 1 && key.length <= MAX_PIN_TEXT);
+};
 /** `pin` in the one form a revision's body keeps (tool-gate.ts canonicalPin): its arguments sorted, each one-of list
  *  de-duplicated and sorted, null first, then by each value's JSON text. Equal meanings are one text, so one revision. */
 export const sortedPin = (pin: Pin): Pin => canonicalPin(pin);
