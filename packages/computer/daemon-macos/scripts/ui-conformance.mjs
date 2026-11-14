@@ -22,7 +22,9 @@ process.env.COMPUTERD_HOME = home;
 const out = "/tmp/computerd-ci/ui-conformance.json";
 mkdirSync("/tmp/computerd-ci", { recursive: true });
 const fixture = "/Applications/UIFixture.app";
-const options = existsSync(fixture) ? ["--only", "health,ui,input", "--fixture", fixture] : ["--only", "health,ui"];
+// Two passes: the input cases launch their own instance of the fixture (--input-log), and a ui case launched right after
+// one never saw the fixture come to the front on the runner, so the ui cases go first.
+const passes = [["--only", "health,ui"], ...(existsSync(fixture) ? [["--only", "input", "--fixture", fixture]] : [])];
 const ended = new Map();
 let last = Date.now();
 let json = "";
@@ -49,13 +51,20 @@ const stdout = {
 	},
 };
 const module = fileURLToPath(new URL("./conformance.mjs", import.meta.url));
-await main(["--provider", module, ...options, "--json"], { stdout, stderr: progress, progress: true });
-const report = JSON.parse(json);
-const results = report.results ?? [];
+const results = [];
+const reports = [];
+for (const options of passes) {
+	json = "";
+	await main(["--provider", module, ...options, "--json"], { stdout, stderr: progress, progress: true });
+	const report = JSON.parse(json);
+	reports.push(report);
+	results.push(...(report.results ?? []));
+}
 for (const result of results) {
 	if (ended.has(result.id)) result.ms = ended.get(result.id);
 }
-writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
+// Each pass's own report (its only, coreNotRun, cleanup), and every case in order.
+writeFileSync(out, `${JSON.stringify({ passes: reports, results }, null, 2)}\n`);
 
 const marks = { pass: "✅", fail: "❌", skip: "⏭️" };
 const lines = ["| | Case | Level | ms | Detail |", "| --- | --- | --- | ---: | --- |"];
