@@ -1,9 +1,9 @@
-// Build the box image (this folder's Dockerfile, plus Xvfb, xfwm4 and apps for a desktop) as a template of an Agent37 workspace, through
+// Build the box image (this folder's Dockerfile, its desktop included) as a template of an Agent37 workspace, through
 // Agent37's cloud build, with the workspace's key in AGENT37_API_KEY, and print the template's name: an Agent37 desktop
 // starts from it (src/descriptors/agent37.ts AGENT37_BOX_TEMPLATE), and so can an Archil computer.
 //
 // Agent37 keeps a template's revisions under one name (docs: agents-api/templates), so the name is fixed, agentrun-box,
-// and the recipe's hash (the Dockerfile, the files it copies and DESKTOP below) goes in the template's description: a
+// and the recipe's hash (recipe.mjs: the Dockerfile and the files it copies) goes in the template's description: a
 // workspace whose template already names this hash is built nothing, and a changed recipe publishes a new revision,
 // which every instance made after it starts from. Builds are free, at most three at once per workspace and 45 minutes
 // each. The calls, in order (docs: templates, "Build an image in the cloud"):
@@ -15,51 +15,26 @@
 //   GET  /v1/template-builds/{id}/logs?offset=N    until status succeeded or failed (a poll registers the template)
 //
 //   AGENT37_API_KEY=... node packages/computer/box/build-agent37.mjs
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
-import { RECIPE } from "./recipe.mjs";
+import { RECIPE, recipeHash } from "./recipe.mjs";
 
 /** The template's name in every workspace: AGENT37_BOX_TEMPLATE. */
 export const NAME = "agentrun-box";
 export const API_URL = "https://api.agent37.com";
-/** Every file the image is made of besides DESKTOP: the Dockerfile and what it copies (recipe.mjs). */
+/** Every file the image is made of: the Dockerfile (its desktop included) and what it copies (recipe.mjs). */
 export { RECIPE };
-/**
- * What a desktop adds to box/Dockerfile: Xvfb, xfwm4 (with dbus-run-session, which xfconf's packages bring) and
- * xsetroot (x11-xserver-utils, the desktop's background), which the provider starts through computerd as the tool user on :0 (src/desktop.ts), and the apps E2B Desktop has that are cheap to carry: Xfce's terminal and text editor, Firefox
- * ESR, and xdotool. computerd's apps group lists and opens them by their desktop files. Nothing starts here, and no VNC
- * server or sudo comes with it.
- */
-export const DESKTOP_PACKAGES = ["xvfb", "xfwm4", "x11-xserver-utils", "xfce4-terminal", "mousepad", "firefox-esr", "xdotool", "fonts-dejavu-core", "adwaita-icon-theme"];
-export const DESKTOP = `
-# A desktop (build-agent37.mjs): Xvfb and xfwm4, which the provider starts through computerd as the tool user on :0, and
-# the apps an agent opens.
-RUN set -eu; \\
-    apt-get update -qq; \\
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ${DESKTOP_PACKAGES.join(" ")} >/dev/null; \\
-    rm -rf /var/lib/apt/lists/*; \\
-    for x in Xvfb xfwm4 dbus-run-session xsetroot xfce4-terminal mousepad firefox-esr xdotool; do command -v "$x" >/dev/null || { echo "the image has no $x" >&2; exit 1; }; done; \\
-    for app in org.xfce.mousepad xfce4-terminal firefox-esr; do [ -f "/usr/share/applications/$app.desktop" ] || { echo "the image has no desktop file $app.desktop" >&2; exit 1; }; done; \\
-    ! command -v sudo >/dev/null 2>&1 || { echo "the image has sudo" >&2; exit 1; }
-`;
 /** How often a build's log is read, and the longest a build is waited for: Agent37's 45 minutes, and some. */
 const POLL_MS = 5_000;
 const BUILD_MS = 50 * 60_000;
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** The recipe's files, read from dir, with the context's Dockerfile (box/Dockerfile and DESKTOP), and its 12-hex hash. */
+/** The recipe's files, read from dir, and its 12-hex hash: recipe.mjs's, the one every build and the published image carry. */
 export function recipeOf(dir = here) {
-	const files = Object.fromEntries(RECIPE.map((name) => [name, readFileSync(join(dir, name))]));
-	const dockerfile = Buffer.concat([files.Dockerfile, Buffer.from(DESKTOP)]);
-	const hash = createHash("sha256")
-		.update(Buffer.concat([...RECIPE.map((name) => files[name]), Buffer.from(DESKTOP)]))
-		.digest("hex")
-		.slice(0, 12);
-	return { hash, files: { ...files, Dockerfile: dockerfile } };
+	return { hash: recipeHash(dir), files: Object.fromEntries(RECIPE.map((name) => [name, readFileSync(join(dir, name))])) };
 }
 
 /** The template's description: the recipe's hash is how a later build knows this one is current. */
