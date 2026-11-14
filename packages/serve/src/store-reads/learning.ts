@@ -20,7 +20,7 @@ import type { NoteRuns } from "../learning.js";
 import { type NoteFiles, notesOf } from "../usage.js";
 import type { RunRow } from "../agent-rows.js";
 import type { EntryLike, TimelineEvent } from "../timeline/index.js";
-import { runEntries, runReflect, runTimeline } from "./journal.js";
+import { runEntries, runReflect, runTimeline, withoutFeedbackRounds } from "./journal.js";
 import { FINAL_STATES } from "../store/store.js";
 import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
@@ -333,24 +333,27 @@ export async function pastRunsOverStore(store: Store, agentId: string, known?: R
  *  answered and its answer is still the run's last (servedAnswerStands), `handed_back` when it handed back or a follow-up's
  *  new answer is the agent's, with its digest. Else, for a run its launch offered a learned workflow, its timeline
  *  (runner/learning-end.ts runPathOf, the agent calling the tool itself): `workflow` when its job did only that,
- *  `handed_back` when the agent went on, with the workflow its job called last. Any other run's path is `agent`. */
+ *  `handed_back` when the agent went on, with the workflow its job called last. Any other run's path is `agent`. Both
+ *  read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's round never moves the path. */
 export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string): Promise<{ path: RunPath; workflow: string | null; digest?: string }> {
   const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
   const served = servedOf(entries);
-  // The path is who wrote the run's final answer. One the workflow answered stays `workflow` while that answer is the
-  // run's last (servedAnswerStands): a follow-up that ended with no new answer of the agent's (a grade's feedback round,
-  // which asks the agent no turn of the job's) keeps it; one the agent answered anew is `handed_back`.
+  if (!served && !started?.workflows?.length) return { path: "agent", workflow: null };
+  // The path is who wrote the run's final answer, read on the job's own rows: a grade's feedback round asks the agent no
+  // turn of the job's, so its words (a second message) and its rows never change it (withoutFeedbackRounds).
+  const rows = withoutFeedbackRounds(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false, caps: { text: Number.POSITIVE_INFINITY } }), entries);
+  // One the workflow answered stays `workflow` while that answer is the run's last (servedAnswerStands): a follow-up that
+  // ended with no new answer of the agent's keeps it; one the agent answered anew is `handed_back`.
   if (served) {
     // The workflow's answer as it produced it (its journal's), and as a follow-up showed it to the agent (cut by the
     // runner's `redact`, adapter-loop.ts servedAnswerText): an agent that says it again leaves the path the workflow's.
     const answer = servedAnswerOf(entries)?.answer ?? "";
-    const alone = served.outcome === "answered" && servedAnswerStands(answer, await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false, caps: { text: Number.POSITIVE_INFINITY } }), redact ? redact(answer) : undefined);
+    const alone = served.outcome === "answered" && servedAnswerStands(answer, rows, redact ? redact(answer) : undefined);
     return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}) };
   }
-  if (!started?.workflows?.length) return { path: "agent", workflow: null };
-  const path = runPathOf(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false }));
+  const path = runPathOf(rows);
   // Only a name the launch offered: a call's raw `name` (a failed call's included) is the model's text, never shown.
-  return { path, workflow: path === "agent" ? null : offeredName(workflowNameOf([...callArgsOf(entries).values()]), started.workflows) };
+  return { path, workflow: path === "agent" ? null : offeredName(workflowNameOf([...callArgsOf(entries).values()]), started?.workflows) };
 }
 
 /** A run's path and learned workflow as its record keeps them (`metrics`: runPathOverStore at its end); `agent` for a run

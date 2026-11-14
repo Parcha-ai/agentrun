@@ -268,6 +268,19 @@ test("a run whose agent called learned_workflow itself, graded wrong: its feedba
   assert.ok(cost.learning_usd >= two.proposal.look_back_usd - 1e-9, `the round's look-back is in its learning: ${JSON.stringify([cost, two.proposal])}`);
 });
 
+test("withoutFeedbackRounds: a round's words and every row up to the run's next other message are left out; a person's follow-up after it still counts", async () => {
+  const { withoutFeedbackRounds } = await import("../dist/store-reads/journal.js");
+  const { runPathOf } = await import("../dist/runner/learning-end.js");
+  const entries = [{ kind: "pi.user", id: 1 }, { kind: "agentrun.feedback", id: 7 }];
+  const row = (id, kind, extra = {}) => ({ id, kind, agent_label: null, parent_tool_use_id: null, ...extra });
+  const job = [row("0:1", "user_message"), row("0:2", "tool_use", { tool_name: "learned_workflow", tool_use_id: "c1" }), row("0:3", "tool_result", { tool_name: "learned_workflow", tool_use_id: "c1", tool_status: "success" }), row("0:4", "final_answer", { text: "42" })];
+  const round = [row("0:7", "user_message", { text: "Review: wrong." }), row("0:8", "error"), row("0:9", "final_answer", { text: "NOTES", agent_label: "learning" })];
+  assert.equal(runPathOf([...job, ...round]), "handed_back", "read whole, the round's words are a second message");
+  assert.equal(runPathOf(withoutFeedbackRounds([...job, ...round], entries)), "workflow", "the round is left out");
+  assert.equal(runPathOf(withoutFeedbackRounds([...job, ...round, row("0:17", "user_message"), row("0:18", "final_answer", { text: "41" })], entries)), "handed_back", "a person's follow-up after the round is the job's");
+  assert.deepEqual(withoutFeedbackRounds(job, []), job, "a run with no round reads as it is");
+});
+
 test("a grade of an archived run, or of a run of an archived agent, is kept and opens no round: closed history starts no paid learning (#2648 review)", { timeout: 120_000 }, async (t) => {
   const { server, start, grade } = await world(t);
   const archived = await start("run-archived", 1, { byHand: true });

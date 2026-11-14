@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
-import { CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
+import { CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, isMessageRow, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -175,6 +175,19 @@ export function withFeedback(entries: readonly EntryLike[]): EntryLike[] {
     if (entry.kind !== KINDS.feedback) return entry;
     const data = (entry.data ?? {}) as { text?: unknown; at?: unknown };
     return { ...entry, model: [{ role: "user", content: typeof data.text === "string" ? data.text : "", ...(typeof data.at === "number" ? { timestamp: data.at } : {}) }] } as EntryLike;
+  });
+}
+
+/** A run's timeline `rows` (runTimeline's, over its root `entries`) with every grade's feedback round left out: from its
+ *  words' row (withFeedback, the row of its FEEDBACK entry) up to the run's next message of any other kind. A round asks
+ *  the agent no turn of the job's, so what the job did is what is left (a follow-up's turns, a person's, included). */
+export function withoutFeedbackRounds<Row extends { readonly id: string; readonly kind: string; readonly origin?: string }>(rows: readonly Row[], entries: readonly EntryLike[]): Row[] {
+  const words = new Set(entries.filter((entry) => entry.kind === KINDS.feedback && entry.id !== undefined).map((entry) => `:${entry.id}`));
+  if (!words.size) return [...rows];
+  let inRound = false;
+  return rows.filter((row) => {
+    if (isMessageRow(row)) inRound = words.has(row.id.slice(row.id.lastIndexOf(":")));
+    return !inRound;
   });
 }
 
