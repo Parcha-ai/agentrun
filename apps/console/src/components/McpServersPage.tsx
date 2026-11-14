@@ -207,11 +207,19 @@ function PrivateHosts({ v2 }: { v2: Client }) {
   );
 }
 
-/** `name` if no server of `servers` has it, else the first `<name>-<n>` none has (n from 2). */
+/** A saved MCP server's name: at most this many characters (the server's MCP_SERVER_NAME). */
+const MAX_SERVER_NAME = 32;
+
+/** `name` if no server of `servers` has it, else the first `<name>-<n>` none has (n from 2), `name` cut (and any dash it
+ *  then ends on dropped) so the whole stays within MAX_SERVER_NAME. */
 export function freeName(name: string, servers: readonly Pick<McpServer, "name">[]): string {
   const taken = new Set(servers.map((s) => s.name));
   if (!taken.has(name)) return name;
-  for (let n = 2; ; n++) if (!taken.has(`${name}-${n}`)) return `${name}-${n}`;
+  for (let n = 2; ; n++) {
+    const suffix = `-${n}`;
+    const free = `${name.slice(0, MAX_SERVER_NAME - suffix.length).replace(/-+$/, "")}${suffix}`;
+    if (!taken.has(free)) return free;
+  }
 }
 
 /** Settings → MCP servers → Add from Composio: Composio is an MCP server like any other. The key and a toolkit load that
