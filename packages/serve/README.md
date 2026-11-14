@@ -7,6 +7,19 @@ runner starts beside the server. The capabilities document (`GET /v2/capabilitie
 
 `npx @parcha/agentrun` starts it, with its console, on your machine; the container image runs it on a server (below).
 
+Already use Claude Code or Codex? Choose **Connect agent** in the console and select your coding agent from the
+dropdown. Its skill asks whether to connect for future jobs, import past history, or both, then confirms the source
+project and machine. No destination model key is needed for this connection: a live agent uses its existing native
+sign-in and configuration. Turn **Self-improving** On separately to supply checked notes and skills to later runs;
+imported history stays historical and does not automatically train the agent.
+
+For a source on a different laptop, VM or container, choose **Connection setup → Another machine** and use the
+matching [Python source connector](../../connector/README.md). Remote execution currently needs the server and
+connector from the same reviewed development checkout; the published observation-only CLI does not include it.
+The source worker must stay online. See [Native agents](../../docs/native-agents.md) for setup, history scopes and
+runtime limits. Connected agents use ordinary agent revisions and the existing checked learning pipeline; managed
+adapter isolation is unchanged.
+
 ## Quick start (no key, no network)
 
 Node 24.22.3 or later. In a checkout of this repository:
@@ -2457,12 +2470,10 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
 Open the link the server prints, once, in a browser. `/` is the console (`apps/console` in the repository), on the
 server's own origin, under a CSP that allows that origin only, but for the provider icons on the Keys page (below):
 
-- **Mission Control**: the store's counts and the latest runs.
-- **Agents**: each agent with its kind and harness, archived ones behind **Archived**. **New agent** and an agent's page:
-  a name, a description, a prompt (with its model, thinking level and tools) or a workflow, sent to `POST /v2/agents`;
-  an edit is `PUT /v2/agents/{id}/definition` with `If-Match` set to the revision it started from (412 when another came
-  first). Its revisions, with **Make current** (`POST /v2/agents/{id}/current`), and **Archive** or **Unarchive**.
-- **Playground**: a run of an agent, on the revision you pick, with its input, followed as it goes.
+- **Mission Control**: the store's counts and latest runs, available without a model-provider key.
+- **Agents**: Build opens a brief and template catalog; Connected agents includes existing local or remote native
+  setups. Build, edit and run share the remembered coding-agent dropdown and API playground.
+- **API playground**: prepare create, edit, query and run requests, or hand the same request to your coding agent.
 - **Runs**: every run, newest first, filtered by agent and by state, archived runs behind **Archived**; the address
   keeps the filters. A run's page follows `GET /v2/runs/{id}/timeline` with a long poll, sends messages (an answer while
   it waits on `ask_person`), stops or cancels the run, shows its files and a workflow's graph, and has **Archive** or

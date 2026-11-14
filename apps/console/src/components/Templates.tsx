@@ -1,3 +1,4 @@
+import { agentHash } from "@/components/AgentPage";
 import { ArrowLeft, Check, LayoutTemplate } from "lucide-react";
 import { FieldInput, FieldIssues as Issues } from "@/components/FieldInput";
 import { Picker } from "@/components/ui/picker";
@@ -307,7 +308,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
       // Otherwise the agent opens at once, unless a schedule's next run is there to show first.
       const scheduled = done.trigger_ids.length ? await schedulesOf() : [];
       if (!shown.current) return;
-      if (!scheduled.length) { go(`#/agents/${encodeURIComponent(done.agent_id)}`); return; }
+      if (!scheduled.length) { go(agentHash(done.agent_id)); return; }
       setSentValues(sending);
       setSchedules(scheduled);
       setMade(done);
@@ -374,7 +375,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
           </ul>
         )}
         <div className="mt-5" />
-        <a href={`#/agents/${encodeURIComponent(made.agent_id)}`} className="inline-flex border px-3 py-2 font-mono text-body font-semibold hover:bg-accent">Open the agent</a>
+        <a href={agentHash(made.agent_id)} className="inline-flex border px-3 py-2 font-mono text-body font-semibold hover:bg-accent">Open the agent</a>
       </section>
     );
   }

@@ -1,9 +1,12 @@
+import { NativeAgent, NativeMutationProvider, useNativeReadiness } from "@/components/NativeAgent";
+import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
+import { CodingAgentAction } from "@/components/CodingAgentAction";
+import { editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { workflowGraph } from "@dsl/graph";
 import { ArrowLeft, Bot, ChevronRight, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
 import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
-import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { LatestRun } from "@/components/LatestRun";
 import type { UploadLimits } from "@/components/FilePicker";
 import { NotHere, ProblemCard } from "@/components/Problem";
@@ -19,7 +22,6 @@ import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Tabs } from "@/components/ui/tabs";
 import { type Agent, runsWhere } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
-import { runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { cost, runEnded, soFar, when, runTitle } from "@/lib/format";
 import { waitingOf } from "@/lib/learning";
 import { appendRuns } from "@/lib/idempotency";
@@ -53,9 +55,9 @@ const TABS: { id: string; label: string; shows: (a: Agent, server: Server & Lear
   { id: "analytics", label: "Analytics", shows: (_, server) => server.analytics, Body: AnalyticsTab },
 ];
 
-/** An agent's address: its page, one of its tabs, or `edit` for its editor. `#/agents/new` is the create form, so an
- *  agent whose id is "new" is given its Runs tab's address instead. */
-export const agentHash = (id: string, view?: string) => `#/agents/${encodeURIComponent(id)}${view ? `/${view}` : id === "new" ? "/runs" : ""}`;
+/** An agent's address: its page, one of its tabs, or `edit` for its editor. `#/agents/new` and `#/agents/connect` are setup forms,
+ *  so agents with those ids are given their Runs tab's address instead. */
+export const agentHash = (id: string, view?: string) => `#/agents/${encodeURIComponent(id)}${view ? `/${view}` : id === "new" || id === "connect" ? "/runs" : ""}`;
 
 /** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, a run bar (none for an archived
  *  agent, which takes no runs), and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`).
@@ -112,11 +114,13 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
   // The agent read again after a Forget: through the same guarded read, and quiet, since the Forget says a failed one itself.
   const afterForget = () => reread(true, true);
   const analytics = stats === undefined ? undefined : stats !== null;
+  const { native, refresh: refreshNative } = useNativeReadiness(agent, v2);
   if (error) return error.cause instanceof ClientError && error.cause.status === 404
     ? <NotHere what="agent" id={agentId} list={{ href: "#/agents", label: "Open the agents list" }} />
     : <ProblemCard problem={problem(error.cause, "the agent")} onRetry={() => setTries((n) => n + 1)} />;
   if (!agent) return <AgentSkeleton />;
   const d = agent.definition;
+  const sdk = backendSdkOf(d);
   const workflow = agent.kind === "workflow";
   const Icon = workflow ? Workflow : Bot;
   // A workflow revision has no harness, model or thinking of its own (the server refuses them beside a workflow).
@@ -127,13 +131,13 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
     : fallback ? (({ text, title }) => ({ text: `${text} (default)`, title }))(modelLabel(fallback, routePrefix))
     : { text: NO_MODEL_YET };
   // A harness the server can't run: why, where its Run would fail (capabilities' harnesses[].reason).
-  const off = workflow ? undefined : harnesses?.find((h) => h.id === (d.harness ?? "pi") && h.available === false);
+  const off = workflow || native || sdk ? undefined : harnesses?.find((h) => h.id === (d.harness ?? "pi") && h.available === false);
   const offText = off ? `${off.id} doesn't run on this server${off.reason ? `: ${off.reason}` : "."}` : undefined;
   // Where it runs: its own place, else the server's default place for it, marked as such (#1790: resolved at each run).
   const where = runsWhere(agent, places);
   const runsLabel = `${placeLabel(where?.place)}${where?.byDefault ? " (server default)" : ""}`;
   const facts: [string, string, string?][] = [
-    ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", runsLabel]] as [string, string, string?][]),
+    ...(sdk ? [["Runtime", backendSdkLabel(sdk.runtime)], ["Model", "Reported per run"], ["Execution", "Your backend"]] as [string, string, string?][] : native ? [["Runtime", native.runtime], ["Model", native.model ?? "Native default"], ["Selector", native.selector.kind === "project" ? "Project default" : native.selector.name ?? native.selector.kind], ["Machine", native.machine_id]] as [string, string, string?][] : workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", runsLabel]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
   ];
   // Until the server's capabilities are read, the Learning tab shows only on its own address, which opens it at once (a
@@ -143,7 +147,7 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
   // An address on a tab the server may still give: wait for its answer rather than open another tab meanwhile.
   const waiting = tab === "analytics" && analytics === undefined;
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <NativeMutationProvider native={native}><div className="flex h-full min-h-0 flex-col">
       <header className="border-b px-5 py-4 max-sm:py-3 md:px-8">
         {/* On a phone the back button joins the name row (its word read, not shown), and Edit shows its icon alone. */}
         <div data-phone-row className="flex flex-col gap-3 max-sm:flex-row max-sm:items-center">
@@ -157,8 +161,8 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
             {agent.archived_at && <Chip tone="muted">Archived</Chip>}
             {d.approvals === "never" && <Chip tone="warning" title="Never ask: a call of this agent never waits for you. A tool set to deny, and a template's pins, still hold.">Unattended</Chip>}
             <span className="flex-1" />
-            <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))} title="Edit" className="max-sm:w-8 max-sm:shrink-0 max-sm:px-0"><Pencil aria-hidden /> <span className="max-sm:sr-only">Edit</span></Button>
-            <CodingAgentHandoff context={{ kind: "edit", agentId: agent.agent_id, revision: agent.revision }} label="Edit with your coding agent" iconOnPhone />
+            {!native && !sdk && <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))} title="Edit" className="max-sm:w-8 max-sm:shrink-0 max-sm:px-0"><Pencil aria-hidden /> <span className="max-sm:sr-only">Edit</span></Button>}
+            <CodingAgentAction compact compactIcon={<Pencil aria-hidden />} label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, !!native, sdk?.runtime)} playgroundHref={native || sdk ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(agent.agent_id)}`} />
           </div>
         </div>
         {/* On a phone a long description is cut at two lines until the facts' line is opened, which shows it whole. */}
@@ -176,7 +180,7 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
           {/* The tools the current revision grants, as GET /v2/agents/{id} serves them (the provider and permission in force,
               the agent's own setting over the server's): the name (its line for people as its title), the provider where
               it has a choice of one, the permission. A workflow's tools are its call nodes', which its editor shows. */}
-          {!workflow && (
+          {!workflow && !native && !sdk && (
             <div className="flex items-baseline gap-2">
               <dt className="caps text-micro text-muted-foreground">Tools</dt>
               <dd className="font-mono text-small">
@@ -205,13 +209,14 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
         {offText && <p className="mt-3 font-mono text-small text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
         <SignIns agent={agent} v2={v2} onAgent={setAgent} poll={poll} refresh={afterForget} />
       </header>
-      {!agent.archived_at && <div className="px-5 pt-4 md:px-8"><CodingAgentAction label="Run agent" prompt={runAgentPrompt(location.origin, agent.agent_id)} playgroundHref={`#/playground?agent=${encodeURIComponent(agent.agent_id)}`} /></div>}
-      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} />}
+      {native && <NativeAgent agent={agent} v2={v2} learning={learning} onAgent={onAgent} onChanged={async () => { refreshNative(); await reread(); }} />}
+      {!agent.archived_at && <div className="p-4"><CodingAgentAction variant={native || sdk ? "primary" : "outline"} label="Run agent" disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, agent.agent_id, sdk?.runtime)} playgroundHref={sdk ? undefined : `#/playground?agent=${encodeURIComponent(agent.agent_id)}`} /></div>}
+      {!agent.archived_at && !native && !sdk && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} />}
       <Tabs tabs={tabs.map((t) => (t.id === "learning" ? { ...t, label: <>{t.label}<WaitingCount n={itemsWaiting} className="ml-1.5" /></> } : t))} value={at.id} onChange={(id) => go(agentHash(agent.agent_id, id))} />
       <div role="tabpanel" aria-label={waiting ? undefined : at.label} className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
         {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} focus={notes} learning={learning} onAgent={onAgent} onChanged={onChanged} places={places} />}
       </div>
-    </div>
+    </div></NativeMutationProvider>
   );
 }
 

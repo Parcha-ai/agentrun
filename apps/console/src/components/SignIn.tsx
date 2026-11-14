@@ -71,16 +71,20 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, proble
                 <Input name="setup-code" value={setupCode} onChange={(e) => setSetupCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} className="text-lead" />
               </Field>
             )}
-            <Field label={FIELD[mode].label} hint={setup ? "12 characters or more." : undefined}>
-              <span className={cn("flex items-center gap-3 px-3", fieldBoxClass)}>
-                <KeyRound className="size-4 text-muted-foreground" aria-hidden />
+            <Field label={FIELD[mode].label} note={setup ? "12 characters or more." : undefined}>
+              <span className={cn(fieldBoxClass, "flex items-center gap-3 bg-card px-3")}>
+                <KeyRound className="size-4 shrink-0 text-muted-foreground" aria-hidden />
                 <Input bare type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={FIELD[mode].autocomplete} autoFocus
-                  aria-label={FIELD[mode].label} className="h-control-md flex-1 text-lead" />
+                  aria-label={FIELD[mode].label} className="h-10 min-w-0 flex-1 bg-transparent font-mono text-lead" />
               </span>
             </Field>
             {setup && (
-              <Field label="Again" hint={again && again !== password ? "The two passwords differ." : undefined}>
-                <Input type="password" value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" aria-label="Password again" className="text-lead" />
+              <Field label="Again" note={again && again !== password ? "The two passwords differ." : undefined}>
+                <span className={cn(fieldBoxClass, "flex items-center gap-3 bg-card px-3")}>
+                  <KeyRound className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <Input bare type="password" value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" aria-label="Password again"
+                    className="h-10 min-w-0 flex-1 bg-transparent font-mono text-lead" />
+                </span>
               </Field>
             )}
             {offered && (
