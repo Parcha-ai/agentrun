@@ -6,14 +6,14 @@
 import { randomBytes } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, DAYTONA_NO_ARCHIL, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./descriptors/daytona.js";
+import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU, DAYTONA_GPU_REGION, DAYTONA_NO_ARCHIL, type DaytonaGpuSnapshot, daytonaGpuSnapshot } from "./descriptors/daytona.js";
 import { COMPUTER_LABEL } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
 import { boundOf, orThrow, pause as sleep } from "./hosted/process.js";
 import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
-import { dateOf, isWhole } from "./hosted/values.js";
+import { dateOf, isWhole, sizeRefusals } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
@@ -33,7 +33,7 @@ export type WebSocketFactory = (url: string, init: { headers: Record<string, str
 export type DaytonaTimeouts = HostedTimeouts & { retryMs: number };
 
 /** The Daytona provider's options: the key and Daytona's own settings, then the shared adapter's (HostedOptions). */
-export interface DaytonaProviderOptions extends Omit<HostedOptions, "label" | "kind" | "desktop" | "maxLifetimeMs" | "timeouts" | "archilEgress"> {
+export interface DaytonaProviderOptions extends Omit<HostedOptions, "descriptor" | "kind" | "desktop" | "maxLifetimeMs" | "timeouts" | "archilEgress"> {
 	/** The Daytona API key. The caller passes it; this provider never reads the environment and never puts it in a computer. */
 	apiKey: string;
 	/** Default https://app.daytona.io/api. */
@@ -123,11 +123,6 @@ const MAX_PAGES = 1000;
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 /** The toolbox's port, on every interface of the sandbox (daytonaio/daytona@b5a5d9e7 apps/daemon/pkg/toolbox/config/config.go:6). */
 const TOOLBOX_PORT = 2280;
-/**
- * Daytona's own path sockets outside /run: its D-Bus session bus, /tmp/dbus-<10 characters> (the live baseline's
- * isolation.vendor-agent connected to /tmp/dbus-Y8OW6E3FDx as the tool user). Create closes them to the tool user.
- */
-export const DAYTONA_SOCKETS: readonly string[] = ["/tmp/dbus-*"];
 const QUOTA = /quota|capacity|limit exceeded|too many/i;
 const STARTING = new Set(["creating", "restoring", "starting", "pending_build", "building_snapshot", "pulling_snapshot", "resizing", "snapshotting", "forking", "resuming", "unknown"]);
 const GONE = new Set(["destroyed", "destroying"]);
@@ -225,8 +220,8 @@ class DaytonaHost implements MachineHost {
 		// daemon child: Daytona's toolbox daemon is the sandbox's first process, and init a command started through it.
 		// maxLifetimeMs is the 30 days check() has always given; Daytona's TTL is in whole minutes and documents no cap of
 		// its own. The toolbox listens on 2280 on every interface and runs commands for whoever reaches it, so init starts
-		// with --own-network, and network none is all a computer takes. Its D-Bus session bus in /tmp, which no network
-		// namespace cuts, is closed to the tool user before init starts (vendorSockets).
+		// with --own-network, and network none is all a computer takes. Its D-Bus session bus in /tmp (/tmp/dbus-*), which
+		// no network namespace cuts, is closed to the tool user before init starts, as on every child host.
 		this.facts = {
 			daemon: "child",
 			isolation: options.sandboxClass === "linux-vm" ? "vm" : "container",
@@ -234,28 +229,21 @@ class DaytonaHost implements MachineHost {
 			maxLifetimeMs: MAX_LIFETIME_MS,
 			arch: options.arch,
 			vendorAgentPorts: [TOOLBOX_PORT],
-			vendorSockets: [...DAYTONA_SOCKETS],
-			// get reads sb.gpu and sb.gpuType back: a sandbox with none reads none.
-			gpuReadBack: true,
-			network: [...DAYTONA.network],
-			mounts: [...MOUNT],
-			unmounted: { ...DAYTONA.unmounted },
-			// A GPU sandbox's limits are stated in gpu: its stop deletes it, it runs in region earth, its size is per GPU.
-			gpu: daytonaGpu(options.gpu.snapshot === DAYTONA_GPU_SNAPSHOT ? undefined : options.gpu.snapshot),
 		};
 	}
 
 	/**
-	 * A snapshot name has no control characters; a GPU computer is made from the provider's GPU snapshot, which a spec
-	 * names, or Daytona's default, never another. No call.
+	 * A snapshot name has no control characters, and its size is the snapshot's; a GPU computer is made from the
+	 * provider's GPU snapshot, which a spec names, or Daytona's default, never another. No call.
 	 */
 	check(given: Partial<ComputerSpec>): Refusal[] {
 		const { image } = given;
-		const refusals: Refusal[] = [];
+		const refusals = sizeRefusals(given, "a Daytona computer", "snapshot");
 		if (typeof image === "string" && image !== "" && image.trim() === "") refusals.push({ field: "image", message: `an image is the id or name of a Daytona snapshot, or "${DAYTONA_DEFAULT_SNAPSHOT}" for Daytona's default snapshot` });
 		else if (typeof image === "string" && /[\x01-\x1f]/.test(image)) refusals.push({ field: "image", message: "a snapshot name has no control characters" });
 		const gpuSnapshot = this.#gpu.snapshot;
-		if (given.gpu !== undefined && checkGpu(given.gpu, this.facts, given.mount).length === 0 && typeof image === "string" && image !== DAYTONA_DEFAULT_SNAPSHOT && image !== gpuSnapshot) {
+		const offered = { gpu: { ...DAYTONA_GPU, types: [this.#gpu.type], max: this.#gpu.count } };
+		if (given.gpu !== undefined && checkGpu(given.gpu, offered, given.mount).length === 0 && typeof image === "string" && image !== DAYTONA_DEFAULT_SNAPSHOT && image !== gpuSnapshot) {
 			refusals.push({
 				field: "image",
 				message: `a Daytona GPU computer here is made from the GPU snapshot ${gpuSnapshot} alone, not ${JSON.stringify(image)}: give "${gpuSnapshot}" or "${DAYTONA_DEFAULT_SNAPSHOT}"; no other snapshot is proven to give a GPU computer`,
@@ -264,7 +252,7 @@ class DaytonaHost implements MachineHost {
 		return refusals;
 	}
 
-	/** A sandbox as the adapter reads a machine: its state, labels, start, end, GPUs, and Daytona's words for a failure. */
+	/** A sandbox as the adapter reads a machine: its state, labels, start, end, and Daytona's words for a failure. */
 	#machineOf(sb: Sandbox): Machine {
 		const endsAt = dateOf(sb.autoDestroyAt);
 		const made = dateOf(sb.createdAt);
@@ -274,7 +262,6 @@ class DaytonaHost implements MachineHost {
 			state: stateOf(sb),
 			...(made ? { createdAt: made } : {}),
 			...(endsAt ? { endsAt } : {}),
-			...(isWhole(sb.gpu) && sb.gpu > 0 ? { gpu: { type: String(sb.gpuType), count: sb.gpu } } : {}),
 			// A failed sandbox always carries a why, Daytona's or ours, so create stops on it as vendor, never as gone.
 			...(typeof sb.errorReason === "string" && sb.errorReason !== "" ? { why: sb.errorReason } : FAILED.has(sb.state ?? "") ? { why: `Daytona reads the sandbox ${sb.state}, with no reason given` } : {}),
 		};
@@ -297,15 +284,15 @@ class DaytonaHost implements MachineHost {
 			public: false,
 			// A GPU sandbox runs in region earth alone, whatever the provider's target.
 			...(gpu ? { target: DAYTONA_GPU_REGION } : this.#target === undefined ? {} : { target: this.#target }),
-			ttlMinutes: Math.max(1, Math.ceil((req.lifetimeMs ?? 0) / 60_000)),
+			ttlMinutes: Math.max(1, Math.ceil(req.lifetimeMs / 60_000)),
 			autoStopInterval: this.#autoStop,
 			// A GPU sandbox's stop deletes it (no pause, no snapshot): autoDeleteInterval 0 is Daytona's ephemeral (its SDK's
 			// ephemeral sets it; CreateSandbox has no ephemeral field).
 			autoDeleteInterval: gpu ? 0 : this.#autoDelete,
-			networkBlockAll: req.network === "none",
+			networkBlockAll: !req.egress,
 			// No resource field (cpu, gpu, gpuType, memory, disk): a snapshot carries its own, and Daytona refuses a create that
 			// names a snapshot and sends any (400 "Cannot specify Sandbox resources when using a snapshot"). A GPU computer's
-			// GPU is the snapshot's, held in the read-back.
+			// GPU is the snapshot's, held by the adapter's GPU label.
 		};
 		const posted = await this.#rest.json("POST", this.#rest.sandbox(), { json: body, timeoutMs: ctx.timeoutMs });
 		if (!posted.ok && /: 409 /.test(posted.error.message)) throw new HostError("exists", `Daytona already has a sandbox named ${req.name}: ${posted.error.message}`);
@@ -612,6 +599,6 @@ export class DaytonaProvider extends HostedProvider {
 			autoDelete: autoDeleteMinutes ?? NO_AUTO_DELETE,
 			pollMs: hostedTimeouts.pollMs ?? DEFAULT_POLL_MS,
 		});
-		super(host, { ...rest, label: "Daytona", kind: "linux", timeouts: hostedTimeouts, daemonPath: daemonPath || fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url)) });
+		super(host, { ...rest, descriptor: DAYTONA, kind: "linux", timeouts: hostedTimeouts, daemonPath: daemonPath || fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url)) });
 	}
 }

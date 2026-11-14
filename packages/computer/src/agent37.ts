@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import { Duplex } from "node:stream";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
+import { DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
@@ -61,7 +62,7 @@ export type Agent37Type = "vm" | "default";
 export type Agent37Region = "us" | "eu" | "ap-south";
 
 /** The Agent37 provider's options: the key, the SSH key and ssh2, then the shared adapter's (HostedOptions). */
-export interface Agent37ProviderOptions extends Omit<HostedOptions, "label" | "maxLifetimeMs"> {
+export interface Agent37ProviderOptions extends Omit<HostedOptions, "descriptor" | "maxLifetimeMs"> {
 	/** The workspace's API key (sk_live_...). The caller passes it; this provider never reads it from the environment. */
 	apiKey: string;
 	/**
@@ -120,7 +121,10 @@ const SHAPES: ReadonlyArray<{ cpu: number; memory: number }> = [
 	{ cpu: 4, memory: 32 },
 ];
 const MAX_CPUS = 4;
-/** metadata's cap, serialized (docs: instances/edit, "up to 4 KB serialized"). */
+/**
+ * metadata's cap, serialized (docs: instances/edit, "up to 4 KB serialized"): check() holds the names and values to it,
+ * and create the JSON, its quotes and commas too.
+ */
 const METADATA_MAX_BYTES = 4096;
 /** A VM boots inside the create's POST, which answers once it runs (docs: instances/create, Defaults). */
 const DEFAULT_CREATE_MS = 300_000;
@@ -309,21 +313,17 @@ class Agent37Host implements MachineHost {
 		this.#WebSocket = options.WebSocket;
 		this.#proxyDomain = options.proxyDomain;
 		this.#declared = { type: options.type, region: options.region };
-		const runtime = options.type === "vm" ? "vm" : "gvisor";
 		this.facts = {
 			daemon: "child",
-			isolation: runtime,
+			// The adapter holds the probe's kernel to it: gVisor's for type default, never for a VM.
+			isolation: options.type === "vm" ? "vm" : "gvisor",
 			lifetime: "janitor",
 			maxLifetimeMs: DAY_MS,
 			arch: "amd64",
 			vendorAgentPorts: [AGENT37_SSH_PORT, AGENT37_TTYD_PORT],
 			// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
 			windowManager: true,
-			network: [...AGENT37.network],
-			mounts: [...MOUNT],
-			specFields: ["cpus", "memoryMb"],
-			labelRules: { maxBytes: METADATA_MAX_BYTES, measure: "json" },
-			runtime: () => runtime,
+			labelBytes: METADATA_MAX_BYTES,
 		};
 	}
 
@@ -360,7 +360,7 @@ class Agent37Host implements MachineHost {
 		return `/v1/instances/${id}`;
 	}
 
-	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes. The adapter holds metadata to 4 KB (labelRules). */
+	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes. The adapter holds metadata to 4 KB (labelBytes). */
 	check(given: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = [];
 		const { image, cpus, memoryMb } = given;
@@ -381,6 +381,8 @@ class Agent37Host implements MachineHost {
 	 * no public port. It answers once the instance runs (docs: instances/create, Defaults).
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
+		const bytes = Buffer.byteLength(JSON.stringify(req.labels));
+		if (bytes > METADATA_MAX_BYTES) throw new Agent37Error("invalid", `Agent37 holds an instance's metadata to ${METADATA_MAX_BYTES} bytes as JSON, and this one's would be ${bytes}: give shorter labels`);
 		const shape = req.cpus !== undefined || req.memoryMb !== undefined ? shapeOf(req.cpus, req.memoryMb) : undefined;
 		const made = await this.#rest<Agent37Instance>(
 			"POST",
@@ -392,7 +394,7 @@ class Agent37Host implements MachineHost {
 				...(shape === undefined ? {} : { resources: { cpu: shape.cpu, memory: shape.memory } }),
 				name: req.name,
 				metadata: req.labels,
-				network: req.network === "open" ? "allow-all" : "deny-all",
+				network: req.egress ? "allow-all" : "deny-all",
 				auto_sleep: false,
 				public_ports: [],
 			},
@@ -436,11 +438,11 @@ class Agent37Host implements MachineHost {
 		this.#ssh.closeAll(id);
 	}
 
-	/** The janitor's deadline label: GET, then PATCH of the whole metadata, which replaces the stored object (docs: instances/edit). */
-	async setLabels(id: string, labels: Record<string, string>, ctx: HostCall): Promise<void> {
+	/** The janitor's deadline label moved: GET, then PATCH of the whole metadata, which replaces the stored object (docs: instances/edit). */
+	async extend(id: string, endsAt: Date, ctx: HostCall): Promise<void> {
 		const path = this.#path(id);
 		const instance = await this.#rest<Agent37Instance>("GET", path, undefined, ctx);
-		await this.#rest("PATCH", path, { metadata: { ...(instance.metadata ?? {}), ...labels } }, ctx);
+		await this.#rest("PATCH", path, { metadata: { ...(instance.metadata ?? {}), [DEADLINE_LABEL]: endsAt.toISOString() } }, ctx);
 	}
 }
 
@@ -506,7 +508,7 @@ export class Agent37Provider extends HostedProvider {
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);
 		if (region !== "us" && type !== "vm") throw new Error(`Agent37 runs type default in us alone: ${region} takes type vm`);
 		const host = new Agent37Host({ apiKey, sshKey: privateKey, ssh2, fetch: fetcher, WebSocket, apiUrl: api.href.replace(/\/+$/, ""), proxyDomain, type, region });
-		super(host, { ...rest, label: "Agent37", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
+		super(host, { ...rest, descriptor: AGENT37, maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
 	}
 }
 

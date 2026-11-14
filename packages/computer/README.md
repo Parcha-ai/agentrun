@@ -1264,9 +1264,9 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
   `memoryMb` becomes `memoryLimitMiB`, each with Modal's default request (0.125 cores, 128 MiB) or less. `pids` and
   `workdir` are refused: Modal has no pids limit, and a computer works in `/work`, its home.
 - **Tags.** A sandbox's tags are the adapter's labels (`agentrun.computer`, its name, deadline, image and the most its
-  deadline may reach) and the caller's, so a computer takes at most 5 labels of its caller's (Modal's 10 tags). Modal
-  holds a sandbox's tags to 512 bytes, names and values together (`labelRules.maxBytes`): the adapter's `check()`
-  counts them, its own at their longest, and refuses past it in words. An Archil computer's mount label records the
+  deadline may reach, and a GPU computer's GPUs) and the caller's. Modal takes 10 tags: its create refuses more, in
+  words, before `sandboxes.create`. Modal holds a sandbox's tags to 512 bytes, names and values together (the host's
+  `labelBytes`): the adapter's `check()` counts them, its own at their longest, and refuses past it in words. An Archil computer's mount label records the
   folder's agent alone, as on every host: the folder's run is the `agentrun.run` label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal still
   lists after its terminate is polled and left out once `poll()` reads it finished.
 - **release** `delete` is `terminate()`, and the adapter waits until the sandbox reads gone.
@@ -1275,8 +1275,8 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
   `A100` (40 GB), `A100-40GB`, `A100-80GB`, `RTX-PRO-6000`, `H100`, `H200`, `B200`, `B300`, at most 8 to a computer.
   `spec.gpu: { type, count }` becomes the SDK's `gpu` (`"T4"`, `"A100-80GB:2"`), and since Modal offers GPUs on gVisor
   only, such a sandbox runs with `runtime: "gvisor"`; every other computer stays on the VM runtime. The probe's kernel
-  is held to it at create: gVisor's on a GPU computer, a VM's on any other. Modal reads no GPU back, so attach reports
-  none. `gpu.mounts` is `[]`: a GPU with an Archil mount is refused (checkGpu).
+  is held to it at create: gVisor's on a GPU computer, a VM's on any other. Modal reads no GPU back: the adapter's
+  `agentrun.computer.gpu` label records them, and attach and a retry read them there. `gpu.mounts` is `[]`: a GPU with an Archil mount is refused (checkGpu).
 - **The loopback fence on gVisor.** Modal's gVisor gives root no CAP_SYS_ADMIN, so init, given the same
   `--own-network`, makes its programs' network namespace inside a user namespace (the daemon's fallback, any vendor).
   Declared: `gpu.fence: "userns-netns"`; read back: hello's `fence`, and create notes it. Proven in Docker
@@ -1477,8 +1477,8 @@ from (the loopback block):
   isolation.vendor-agent probes it from a program of the computer's user, on both loopbacks. Init takes others' access
   off every socket under `/run`; Daytona's D-Bus session bus sits in `/tmp` (`/tmp/dbus-<10 characters>`, which a
   program of the computer's user could connect to in the live baseline), so create, as root and before init starts,
-  takes others' access off each socket `/tmp/dbus-*` names (the host's `vendorSockets`), and its notes name the ones
-  it closed. A runner whose root may
+  takes others' access off each socket `/tmp/dbus-*` names (as on every child host), and its notes name the ones it
+  closed. A runner whose root may
   not make a network namespace (no CAP_SYS_ADMIN: a container class on a runner that is not privileged) fails closed:
   init refuses to start, in words, and create deletes the sandbox.
 - The provider still installs and starts the daemon through that toolbox, as root or through passwordless `sudo`, and
@@ -1564,8 +1564,8 @@ the TTL.
 
 ### The daemon check
 
-Daytona's create options are not read back: what create sent is what the sandbox has. The GPU is the one read-back
-(`gpu`, `gpuType`: `spec.gpu`'s count and type). From the daemon, over one connection: hello (the provider's version, `linux`, the `arch` option, every daemon
+Daytona's create options are not read back: what create sent is what the sandbox has. A GPU computer's GPUs are the
+adapter's `agentrun.computer.gpu` label, as on every host. From the daemon, over one connection: hello (the provider's version, `linux`, the `arch` option, every daemon
 capability), `/proc/self/status` (Uid and Gid the daemon user's four times, no groups, `NoNewPrivs: 1`, `CapInh`,
 `CapPrm`, `CapEff`, `CapBnd` and `CapAmb` all zero), `/proc/self/cwd` (`/work`) and `/proc/self/exe`
 (`/opt/agentrun/computerd`); its own network (loopback alone), and the probe: no target answers a computer with
@@ -1980,10 +1980,10 @@ names the API key by its sha256 prefix alone.
 | `get` | `GET /v1/instances/{id}`; 404 is none |
 | `list` | `GET /v1/instances`, the whole workspace in one answer (`{ data }`, no paging keys, seen live), matched on the labels here. An answer that says it has more is refused, never read as all |
 | `delete` | `DELETE /v1/instances/{id}`, never signalled; a repeat's 404 is done |
-| `setLabels` | `GET`, then `PATCH` of the whole `metadata`, which a PATCH replaces |
+| `extend` | `GET`, then `PATCH` of the whole `metadata` with the deadline label moved, since a PATCH replaces it |
 | `exec` | SSH as root over a binary WebSocket to `wss://{id}-22022.agent37.app/`, one channel per process on the instance's shared connection (below) |
 | `errorCode` | the envelope's `error.code` (or a flat `error` string), then the HTTP status; ssh2's `client-authentication` is `denied` |
-| `check` | a template name with an optional `@version`; one of Agent37's four shapes; at most 4 CPUs; metadata within 4096 bytes with the provider's own labels |
+| `check` | a template name with an optional `@version`; one of Agent37's four shapes; at most 4 CPUs; metadata within 4096 bytes with the provider's own labels (the host's `labelBytes`; create holds the JSON, quotes and commas too, to it) |
 
 Agent37 has no request id and no unique name, so a retried POST makes a second instance: the adapter lists the name
 label and keeps the oldest by `created` (whole seconds; ties go to the lowest id), as it does for every vendor.
@@ -2027,7 +2027,7 @@ at most that late. `delete` ends every connection to the instance at once, a ret
 | `vendorAgentPorts` | `[22022, 7681]` | the platform's sshd (root for whoever holds the key) and its web terminal (ttyd), both seen listening on every VM |
 | `mount` | `archil` | the run's folder on an Archil disk; `/dev/fuse` is there on both types (live), and the mount needs the box template |
 | `release` | `delete` | `DELETE`; no release maps to Agent37's stop here |
-| `specFields` | `cpus`, `memoryMb` | 2/4, 4/8, 4/16 or 4/32 (CPUs/GB); more than 4 CPUs is refused, since Agent37 gives 4 without saying so |
+| sizes | `cpus`, `memoryMb` | 2/4, 4/8, 4/16 or 4/32 (CPUs/GB); more than 4 CPUs is refused, since Agent37 gives 4 without saying so |
 
 Every instance is made with `auto_sleep: false`: a VM that sleeps wakes cold, its daemon gone. What create sent is not
 read back.

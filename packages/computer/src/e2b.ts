@@ -10,7 +10,7 @@ import { DEADLINE_LABEL } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
-import { dateOf, isWhole } from "./hosted/values.js";
+import { dateOf, isWhole, sizeRefusals } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
@@ -55,7 +55,7 @@ interface ProcessRpc {
 }
 
 /** The E2B provider's options: the key and the SDK, then the shared adapter's (HostedOptions). */
-export interface E2BProviderOptions extends Omit<HostedOptions, "label" | "maxLifetimeMs"> {
+export interface E2BProviderOptions extends Omit<HostedOptions, "descriptor" | "maxLifetimeMs"> {
 	/** The E2B API key. The caller passes it; this provider never reads it from the environment or puts it in a computer. */
 	apiKey: string;
 	/** The SDK's Sandbox class: the host's `e2b` package's. */
@@ -174,7 +174,7 @@ const clearOf = (created: number) => created + END_SLACK_MS + 1_000;
 
 /**
  * A sandbox as the adapter reads a machine, from getInfo or the listing alike: E2B's state (a paused one is stopped), its
- * start, its end. E2B keeps no metadata change, so once an extend moved its timer clear of create's end (setTimer), the
+ * start, its end. E2B keeps no metadata change, so once an extend moved its timer clear of create's end (extend), the
  * deadline label reads that end, up to the most the computer may live: a restarted provider reads the extend all the same.
  */
 function machineOf(info: SandboxInfo): Machine {
@@ -206,8 +206,6 @@ class E2BHost implements MachineHost {
 		vendorAgentPorts: [ENVD_PORT],
 		// E2B Desktop's template has xfwm4, which its own desktop runs: the apps an agent opens are framed and focused.
 		windowManager: true,
-		network: [...E2B.network],
-		mounts: [...MOUNT],
 	};
 	readonly #Sandbox: SdkSandboxClass;
 	readonly #connection: E2BConnectionOptions;
@@ -230,28 +228,29 @@ class E2BHost implements MachineHost {
 		return { ...this.#connection, requestTimeoutMs: ms, ...(signal ? { signal } : {}) };
 	}
 
-	/** An E2B template is a name or id: letters, digits and ._:/- (no shell word, no path out). */
-	check({ image }: Partial<ComputerSpec>): Refusal[] {
-		if (typeof image === "string" && image !== "" && !TEMPLATE.test(image)) {
-			return [{ field: "image", message: `an image is the name or id of an E2B template, such as "${E2B_DESKTOP_TEMPLATE}" (E2B Desktop) or "${E2B_BASE_TEMPLATE}"` }];
+	/** An E2B template is a name or id: letters, digits and ._:/- (no shell word, no path out); its size is the template's. */
+	check(spec: Partial<ComputerSpec>): Refusal[] {
+		const refusals = sizeRefusals(spec, "an E2B computer", "template");
+		if (typeof spec.image === "string" && spec.image !== "" && !TEMPLATE.test(spec.image)) {
+			refusals.push({ field: "image", message: `an image is the name or id of an E2B template, such as "${E2B_DESKTOP_TEMPLATE}" (E2B Desktop) or "${E2B_BASE_TEMPLATE}"` });
 		}
-		return [];
+		return refusals;
 	}
 
 	/**
 	 * Sandbox.create with the lifetime as its timeout in the whole seconds E2B takes (index.mjs:502-504), recorded in a
-	 * label for its end's arithmetic; no internet access unless the adapter asks open (an Archil computer's root), no
+	 * label for its end's arithmetic; no internet access unless the adapter asks egress (an Archil computer's root), no
 	 * public traffic (a project's default may let it in: E2B docs, network/restrict-public-access), and kill at the
 	 * timeout, never a pause that keeps the computer (index.mjs:5674-5699).
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
-		const timeoutMs = Math.ceil((req.lifetimeMs ?? 0) / 1000) * 1000;
+		const timeoutMs = Math.ceil(req.lifetimeMs / 1000) * 1000;
 		const options: SandboxOpts = {
 			...this.#api(ctx.timeoutMs),
 			timeoutMs,
 			metadata: { ...req.labels, [TIMEOUT_LABEL]: String(timeoutMs) },
 			envs: {},
-			allowInternetAccess: req.network === "open",
+			allowInternetAccess: req.egress,
 			network: { allowPublicTraffic: false },
 			lifecycle: { onTimeout: "kill" },
 		};
@@ -390,13 +389,15 @@ class E2BHost implements MachineHost {
 
 	/**
 	 * Moves E2B's timer (setTimeout, index.mjs:5529-5541) in the whole seconds E2B takes: up to clear create's end, so
-	 * the end reads as moved (deadlineOf), and down at the most the computer may live, so E2B's timer never passes it by
-	 * this machine's clock. A timer that would end before the deadline held now, or within create's rounding, is refused
-	 * as limit, and nothing moves.
+	 * the end reads as moved (deadlineOf), and down at the most the computer may live (its max-deadline label), so E2B's
+	 * timer never passes it by this machine's clock. A timer that would end before the deadline held now, or within
+	 * create's rounding, is refused as limit, and nothing moves.
 	 */
-	async setTimer(id: string, { end, most }: { end: Date; most: Date }, ctx: HostCall): Promise<void> {
+	async extend(id: string, end: Date, ctx: HostCall): Promise<void> {
 		const info = await this.#Sandbox.getInfo(id, this.#api(ctx.timeoutMs, ctx.signal));
 		const machine = machineOf(info);
+		const most = isoOf(machine.labels[MAX_LABEL]);
+		if (most === undefined) throw new HostError("refused", `${id}'s label ${MAX_LABEL} reads no time, so the most it may live is unknown`);
 		const now = Date.now();
 		const target = end.getTime();
 		const created = createdEnd(info);
@@ -435,6 +436,6 @@ export class E2BProvider extends HostedProvider {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 h (${PRO_MAX_MS} ms), E2B Pro's longest sandbox; Hobby's is 1 h`);
 		}
 		const requestMs = rest.timeouts?.requestMs ?? DEFAULT_REQUEST_MS;
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, label: "E2B", kind, maxLifetimeMs });
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, descriptor: E2B, kind, maxLifetimeMs });
 	}
 }

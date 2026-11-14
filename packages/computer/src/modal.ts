@@ -7,7 +7,7 @@
 // machine-host adapter's (./hosted/provider.ts). Every SDK fact below is cited in the README's Modal section, from
 // modal-client@64880502 (js/src) and Modal's docs.
 import type { App, Image, ModalClient, Sandbox, SandboxCreateParams } from "modal";
-import { MODAL, MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./descriptors/modal.js";
+import { MODAL, MODAL_DEFAULT_IMAGE } from "./descriptors/modal.js";
 import { DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
@@ -15,7 +15,7 @@ import { words } from "./hosted/process.js";
 import { isWhole } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
-import type { ComputerSpec, GpuCapability, GpuSpec, Refusal } from "./provider.js";
+import type { ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import type { ComputerErrorCode } from "./result.js";
 
 /**
@@ -26,7 +26,7 @@ export type ModalSdk = object;
 type SdkClient = ModalClient;
 
 /** The Modal provider's options: the client and the app, then the shared adapter's (HostedOptions). */
-export interface ModalProviderOptions extends Omit<HostedOptions, "label" | "kind" | "desktop" | "maxLifetimeMs"> {
+export interface ModalProviderOptions extends Omit<HostedOptions, "descriptor" | "kind" | "desktop" | "maxLifetimeMs"> {
 	/** The host's Modal client. */
 	sdk: ModalSdk;
 	/** The Modal App the sandboxes live in; made when missing. */
@@ -39,11 +39,6 @@ export interface ModalProviderOptions extends Omit<HostedOptions, "label" | "kin
 /** The mount kinds a Modal computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
 export const MOUNT: readonly MountKind[] = MODAL.mounts;
 
-/** The runtime a Modal sandbox runs under: vm, or gvisor for a GPU computer (Modal offers GPUs on gVisor only). */
-export type ModalRuntime = "vm" | "gvisor";
-
-/** A copy of its descriptor's MODAL_GPU, so no caller can change the provider's own. */
-const modalGpuCapability = (): GpuCapability => ({ ...MODAL_GPU, types: [...MODAL_GPU.types], mounts: [] });
 /** A GPU as the SDK takes it: the type, then :count past one ("T4", "H100:8"). */
 const modalGpu = ({ type, count }: GpuSpec) => (count === 1 ? type : `${type}:${count}`);
 
@@ -190,7 +185,7 @@ class ModalHost implements MachineHost {
 			// The sandbox's command is the entrypoint, which becomes init: Modal finishes the sandbox when that main process
 			// exits (sandbox.ts:384-388), so init's exit ends the computer.
 			daemon: "pid1",
-			// A GPU computer runs on gVisor, Modal's one GPU runtime (gpu.isolation): vm is every other computer's.
+			// A GPU computer runs on gVisor, Modal's one GPU runtime (its descriptor's gpu.isolation): vm is every other computer's.
 			isolation: "vm",
 			lifetime: "vendor",
 			maxLifetimeMs: MAX_LIFETIME_MS,
@@ -198,14 +193,9 @@ class ModalHost implements MachineHost {
 			arch: "amd64",
 			// No listener of Modal's own inside a sandbox is documented, so none is declared.
 			vendorAgentPorts: [],
-			network: [...MODAL.network],
-			mounts: [...MOUNT],
-			gpu: modalGpuCapability(),
 			// Never root: each connection is Modal's exec of the stdio bridge, as Modal's root, outside the daemon.
 			user: ["uid"],
-			specFields: ["cpus", "memoryMb", "user"],
-			labelRules: { max: MAX_TAGS, maxBytes: MAX_TAG_BYTES, measure: "pairs" },
-			runtime: (req) => (req.gpu === undefined ? "vm" : "gvisor"),
+			labelBytes: MAX_TAG_BYTES,
 		};
 	}
 
@@ -226,7 +216,7 @@ class ModalHost implements MachineHost {
 
 	/**
 	 * Modal's own rules of a spec, over the adapter's: an image Modal can pull or holds (no option, no space), sizes in
-	 * the units Modal takes. No call; the adapter holds the tags to Modal's 512 bytes (labelRules).
+	 * the units Modal takes. No call; the adapter holds the tags to Modal's 512 bytes (labelBytes).
 	 */
 	check(spec: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = [];
@@ -245,12 +235,14 @@ class ModalHost implements MachineHost {
 	/**
 	 * sandboxes.create in the app: the request's image (an im- id opened by fromId, else a registry tag) with HOME and the
 	 * workdir the computer's home, the entrypoint as its command, the lifetime as its timeout in the whole seconds the
-	 * SDK takes, the spec's sizes as limits over Modal's small default request, no network unless the adapter asks open
-	 * (an Archil computer's root, to reach Archil), and the labels as its tags.
+	 * SDK takes, the spec's sizes as limits over Modal's small default request, no network unless the adapter asks egress
+	 * (an Archil computer's root, to reach Archil), and the labels as its tags, on gVisor for a GPU computer.
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		void ctx;
 		if (req.command === undefined) throw new HostError("invalid", "a Modal sandbox's command is the entrypoint the adapter gives a pid1 host, and the request has none");
+		const tags = Object.keys(req.labels).length;
+		if (tags > MAX_TAGS) throw new HostError("invalid", `Modal takes at most ${MAX_TAGS} tags on a sandbox, and this one's would be ${tags}: give fewer labels`);
 		let base: Image;
 		if (MODAL_IMAGE_ID.test(req.image)) {
 			const fromId = this.#sdk.images.fromId;
@@ -261,16 +253,15 @@ class ModalHost implements MachineHost {
 		const memoryMb = req.memoryMb ?? DEFAULT_MEMORY_MB;
 		const cpuLimit = cpus / CPUS_PER_CORE;
 		const params: SandboxCreateParams = {
-			runtime: this.facts.runtime?.(req) ?? "vm",
-			...(req.gpu === undefined ? {} : { gpu: modalGpu(req.gpu) }),
+			...(req.gpu === undefined ? { runtime: "vm" } : { runtime: "gvisor", gpu: modalGpu(req.gpu) }),
 			command: [...req.command],
-			timeoutMs: Math.ceil((req.lifetimeMs ?? 0) / 1000) * 1000,
+			timeoutMs: Math.ceil(req.lifetimeMs / 1000) * 1000,
 			workdir: WORK,
 			cpu: Math.min(CPU_REQUEST, cpuLimit),
 			cpuLimit,
 			memoryMiB: Math.min(MEMORY_REQUEST_MIB, memoryMb),
 			memoryLimitMiB: memoryMb,
-			...(req.network === "none" ? { blockNetwork: true as const } : {}),
+			...(req.egress ? {} : { blockNetwork: true as const }),
 			tags: req.labels,
 		};
 		const image = base.dockerfileCommands([`ENV HOME=${WORK}`, `WORKDIR ${WORK}`]);
@@ -401,6 +392,6 @@ export class ModalProvider extends HostedProvider {
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_LIFETIME_MS) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 hours (${MAX_LIFETIME_MS} ms), Modal's longest timeout`);
 		}
-		super(new ModalHost(sdk as SdkClient, app), { ...rest, label: "Modal", kind: "linux", maxLifetimeMs, timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
+		super(new ModalHost(sdk as SdkClient, app), { ...rest, descriptor: MODAL, kind: "linux", maxLifetimeMs, timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
 	}
 }

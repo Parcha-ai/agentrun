@@ -4,8 +4,7 @@
 // bridge, the read-back and the probe, labels, list and attach, the deadline and extend, the wait after a delete, the
 // sweep of a lost create, the Archil mount, and the words of every refusal. These doc comments are the
 // contract a new vendor reads (PROVIDERS.md, "The eight members").
-import type { MountKind, Unmounted } from "./mount.js";
-import type { ComputerCapabilities, ComputerSpec, GpuCapability, GpuSpec, NetworkForm, Refusal } from "./provider.js";
+import type { ComputerCapabilities, ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import type { ComputerErrorCode } from "./result.js";
 
 /**
@@ -69,14 +68,12 @@ export interface MachineHost {
 	 */
 	errorCode?(error: unknown): ComputerErrorCode;
 	/**
-	 * Moves the vendor's own timer (facts.lifetime "vendor") so the machine ends at want.end, never past want.most, the
-	 * most it may live. A refusal (a HostError limit, in words) when no timer the vendor takes lands there without moving
-	 * the end earlier than it is or past want.most: nothing moves then. The adapter reads the end back with get, and get
-	 * reads the deadline label as the moved end where the vendor keeps no label change.
+	 * Moves the machine's end to endsAt: the vendor's own timer (facts.lifetime "vendor"), or the deadline label the
+	 * janitor reads (DEADLINE_LABEL, facts.lifetime "janitor"). After it, get reads the moved end back as the deadline
+	 * label. A refusal (a HostError limit, in words) when the vendor cannot end it there: nothing moves then. Optional: a
+	 * host without it has no extend.
 	 */
-	setTimer?(id: string, want: { end: Date; most: Date }, ctx: HostCall): Promise<void>;
-	/** Replaces some labels of a machine (the janitor's deadline label, at extend); facts.lifetime "janitor". */
-	setLabels?(id: string, labels: Record<string, string>, ctx: HostCall): Promise<void>;
+	extend?(id: string, endsAt: Date, ctx: HostCall): Promise<void>;
 	/**
 	 * The vendor's own rules of a spec, over the adapter's shared ones: an image name it takes, a GPU's image. No call. The
 	 * spec is an object, as the caller gave it: its fields are not checked yet (an image may be a number).
@@ -101,7 +98,10 @@ export interface HostCall {
 	timeoutMs: number;
 }
 
-/** What create asks of the vendor: the adapter fills every field but the ones facts.specFields leaves out. */
+/**
+ * What create asks of the vendor. A size (cpus, memoryMb) is passed whenever the spec gives one: a vendor whose size is
+ * its image's refuses it in its own check.
+ */
 export interface MachineRequest {
 	/** computer-<12 hex digits>, from the create's request id: the vendor's native name, or a label it lists by. */
 	name: string;
@@ -109,19 +109,20 @@ export interface MachineRequest {
 	image: string;
 	/** The caller's labels and the adapter's own (agentrun.computer*, the Archil mount's), every one to be read back. */
 	labels: Record<string, string>;
-	/** With facts.lifetime "vendor": the vendor's timer, the spec's lifetime. Absent for a janitor's machine. */
-	lifetimeMs?: number;
+	/** The spec's lifetime: the vendor's timer (facts.lifetime "vendor"); a janitor's host may leave it. */
+	lifetimeMs: number;
 	/**
-	 * The vendor's network for the machine: "open" only for an Archil computer's root, which reaches Archil; its tools'
-	 * network is init's own, none, read from inside.
+	 * Whether the machine reaches out: true only for an Archil computer's root, which reaches Archil. Its tools'
+	 * network is init's own, none, read from inside, either way.
 	 */
-	network: "none" | "open";
+	egress: boolean;
 	/** facts.daemon "pid1" alone: the machine's main process (the entrypoint that waits for the daemon, then becomes init). */
 	command?: readonly string[];
+	/** A GPU computer's GPUs; the adapter records them in a label too, so no vendor reads them back. */
 	gpu?: GpuSpec;
 	cpus?: number;
 	memoryMb?: number;
-	workdir?: string;
+	/** With facts.user: the spec's user, uid:gid. */
 	user?: string;
 }
 
@@ -145,8 +146,6 @@ export interface Machine {
 	 * make a machine before either is listed: the oldest is kept, by this, or by the lowest id where a machine has none.
 	 */
 	createdAt?: Date;
-	/** With facts.gpuReadBack: the GPUs the vendor reads back, absent for a machine with none. A retry is held to them. */
-	gpu?: GpuSpec;
 	/** The vendor's words for a machine that is gone because it failed: a create stops in them. */
 	why?: string;
 }
@@ -165,9 +164,16 @@ export interface MachineProcess {
 	kill(): Promise<void>;
 }
 
-/** What a vendor's machines are, static: with the adapter's options, capabilities() is built from these alone. */
+/**
+ * What a vendor's machines are, static: with its descriptor (network, mounts, each kind's groups and GPUs) and the
+ * adapter's options, capabilities() is built from these alone.
+ */
 export interface HostFacts {
-	/** child: the vendor's agent is the machine's first process and starts init; pid1: init is the machine's main process. */
+	/**
+	 * child: the vendor's agent is the machine's first process and starts init, after the adapter closes the session
+	 * buses in /tmp (/tmp/dbus-*) to the computer's user, since a network namespace does not cut a path socket. pid1:
+	 * init is the machine's main process (Modal's, whose sandbox ends when it does), started by request.command.
+	 */
 	daemon: "child" | "pid1";
 	isolation: ComputerCapabilities["isolation"];
 	/** Who ends a machine at its deadline: the vendor's timer, or the janitor by label. */
@@ -177,35 +183,13 @@ export interface HostFacts {
 	arch: "amd64" | "arm64";
 	/** The TCP ports the vendor's own agent listens on inside the machine (E2B's envd 49983). */
 	vendorAgentPorts: number[];
-	/**
-	 * The vendor's own path unix sockets outside /run, as shell patterns with no space (Daytona's D-Bus session bus,
-	 * /tmp/dbus-*). Init takes others' access off every socket under /run itself; a child host's create does the same
-	 * for each socket these name, as root, before init starts, since a network namespace does not cut a path socket.
-	 */
-	vendorSockets?: string[];
 	/** Whether its desktops run WINDOW_MANAGER (xfwm4, which its image has) once the display answers. Default none. */
 	windowManager?: boolean;
-	/**
-	 * Whether get reads a machine's GPUs back from the vendor (Machine.gpu, absent for a machine with none): a retry of a
-	 * request is held to them only then. A vendor that reads none back (Modal) answers the request's computer as made.
-	 */
-	gpuReadBack?: boolean;
-	/** The network forms its computers take: of its descriptor's. */
-	network: NetworkForm[];
-	/** The mount kinds it takes: of its descriptor's. */
-	mounts?: MountKind[];
-	/** Why it takes none of these mount kinds, each in check()'s words: of its descriptor's. */
-	unmounted?: Unmounted;
-	gpu?: GpuCapability;
-	/** What spec.user may ask for, beside the daemon user. */
+	/** What spec.user may ask for, beside the daemon user: with it, the spec's user goes in MachineRequest.user. */
 	user?: Array<"root" | "uid">;
-	/** The spec's size and place fields the vendor takes, passed in MachineRequest; any other is refused. */
-	specFields?: Array<"cpus" | "memoryMb" | "workdir" | "user">;
 	/**
-	 * The vendor's label rules: how many labels a machine takes, the names it takes, and the bytes they come to, the
-	 * adapter's own at their longest with them: every name and value ("pairs", the default), or their JSON ("json").
+	 * The most bytes a machine's labels come to, every name and value together, the adapter's own at their longest with
+	 * the caller's: past it check() refuses. Absent: no bound.
 	 */
-	labelRules?: { max?: number; key?: RegExp; maxBytes?: number; measure?: "pairs" | "json" };
-	/** The runtime a machine of this request runs: "gvisor" only where the vendor runs one (a pid1 host's GPU). */
-	runtime?(req: MachineRequest): "vm" | "gvisor";
+	labelBytes?: number;
 }
