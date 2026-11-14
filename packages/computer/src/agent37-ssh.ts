@@ -7,7 +7,6 @@ import { Duplex, PassThrough } from "node:stream";
 import type { HostCall, MachineProcess } from "./host.js";
 import { boundOf } from "./hosted/process.js";
 import { shellLine } from "./hosted/scripts.js";
-import { type Result, ok } from "./result.js";
 
 /** A readable side of an ssh2 channel, as this provider uses it: piped, or drained. */
 export interface Ssh2Readable {
@@ -38,6 +37,7 @@ export interface Ssh2ConnectConfig {
 	privateKey: string;
 	readyTimeout: number;
 	keepaliveInterval: number;
+	keepaliveCountMax: number;
 }
 
 /** The slice of an ssh2 Client this provider uses. */
@@ -58,8 +58,15 @@ export interface Ssh2Module {
 	Client: new () => Ssh2Client;
 }
 
-/** ssh2's keepalive: the CLI's ServerAliveInterval is 60 s (cli.js:32); the edge never sees an idle tunnel. */
-const KEEPALIVE_MS = 30_000;
+/**
+ * ssh2's keepalive, which also keeps the edge from seeing an idle tunnel (the CLI's ServerAliveInterval is 60 s, cli.js:32).
+ * ssh2 pings every KEEPALIVE_MS and ends the connection at the tick after KEEPALIVE_COUNT_MAX pings went unanswered
+ * (ssh2@1.17.0 lib/client.js sendKA), so a dead tunnel is noticed at most KEEPALIVE_MS × (KEEPALIVE_COUNT_MAX + 1) =
+ * 15 s after its last answer, and every channel on it (the daemon's bridge among them) ends. ssh2's default count of 3
+ * with a 30 s interval took 97 s on a deleted instance. Both are set: the bound never rests on ssh2's default.
+ */
+const KEEPALIVE_MS = 5_000;
+const KEEPALIVE_COUNT_MAX = 2;
 /**
  * How long a kill waits for its own kill command, then for its channel to close before wait() answers -1 anyway; and
  * how long an ended SSH connection has to close before its tunnel is dropped.
@@ -229,7 +236,7 @@ export class SshExec {
 				new Promise<void>((resolve, reject) => {
 					client.once("ready", resolve);
 					client.once("error", reject);
-					client.connect({ sock: duplex, username: "root", privateKey: this.#privateKey, readyTimeout: timeoutMs, keepaliveInterval: KEEPALIVE_MS });
+					client.connect({ sock: duplex, username: "root", privateKey: this.#privateKey, readyTimeout: timeoutMs, keepaliveInterval: KEEPALIVE_MS, keepaliveCountMax: KEEPALIVE_COUNT_MAX });
 				}),
 				quitted,
 			]);
@@ -414,12 +421,12 @@ export class SshExec {
 
 	/**
 	 * argv as root over SSH, under WRAPPER, as one channel on the machine's shared connection (#start). stdout and
-	 * stderr are the channel's, piped; with no stdin, end of file is sent at once, and end sends it later. wait answers
-	 * once the channel closes, with the exit-status, or -1 for an exit by signal or none. kill ends the process group
-	 * over a channel of its own (on a connection with room), then closes the exec's channel, never a connection; if the
-	 * close does not come, wait answers -1 and the connection takes no new channel.
+	 * stderr are the channel's, piped; end sends end of file. wait answers once the channel closes, with the
+	 * exit-status, or -1 for an exit by signal or none. kill ends the process group over a channel of its own (on a
+	 * connection with room), then closes the exec's channel, never a connection; if the close does not come, wait
+	 * answers -1 and the connection takes no new channel.
 	 */
-	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
+	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		const pidFile = `/tmp/.agentrun-exec-${randomBytes(8).toString("hex")}`;
 		const opened = await this.#start(id, shellLine(["sh", "-c", WRAPPER, pidFile, ...argv]), ctx, `the exec in ${id}`);
 		const { link: held, channel } = opened;
@@ -427,8 +434,7 @@ export class SshExec {
 		const stderr = new PassThrough();
 		channel.pipe(stdout);
 		channel.stderr.pipe(stderr);
-		let ended = !stdin;
-		if (!stdin) channel.eof();
+		let ended = false;
 		let closed = false;
 		// ssh2 closes every channel when the connection goes (utils.js, ChannelManager.cleanup), so the close is enough.
 		let done: (code: number) => void = () => {};
@@ -441,7 +447,7 @@ export class SshExec {
 			};
 		});
 		void opened.closed.then(done);
-		return ok({
+		return {
 			stdout,
 			stderr,
 			write: (bytes) =>
@@ -493,7 +499,7 @@ export class SshExec {
 				dropped.unref();
 				void exited.then(() => clearTimeout(dropped));
 			},
-		});
+		};
 	}
 }
 

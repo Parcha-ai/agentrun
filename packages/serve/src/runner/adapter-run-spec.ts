@@ -26,7 +26,7 @@ import { firstMessage, inputMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isWebHostTool } from "../tool-list.js";
-import { type ArgumentsOf, deniedText, mcpServersOf, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom } from "../tool-gate.js";
+import { type ArgumentsOf, deniedText, mcpServersOf, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom, type ToolEffect } from "../tool-gate.js";
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
 import { ASK_TOOL, askPerson, type ToolHost, toolOf } from "../tools.js";
@@ -282,7 +282,7 @@ export type RunPermissions = {
   readonly decide: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace, mcpServers: readonly string[] = [], options: { readonly computerCodemode?: boolean; readonly argumentsOf?: ArgumentsOf } = {}): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly script: ScriptDecide; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace, mcpServers: readonly string[] = [], options: { readonly computerCodemode?: boolean; readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf } = {}): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly script: ScriptDecide; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
@@ -291,8 +291,9 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // default (tool-gate.ts defaultPermission): bash asks first, the background tools are refused. The run's MCP servers
   // (mcpServersOf its grants), so a harness naming an MCP tool its own way (OpenCode's `<server>_<tool>`) is held to that
   // tool's settings, never to a table tool's of the same shape.
+  // An MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf): what "allow reads" lifts an ask by.
   // pi's code mode on a desktop or a phone (pi-computer.ts) owns the name `codemode` there: held to the kind's setting.
-  const where = { root: folder, work: folder, mcpServers, ...(options.computerCodemode ? { computerCodemode: true } : {}), ...(options.argumentsOf ? { argumentsOf: options.argumentsOf } : {}) };
+  const where = { root: folder, work: folder, mcpServers, ...(options.computerCodemode ? { computerCodemode: true } : {}), ...(options.effectOf ? { effectOf: options.effectOf } : {}), ...(options.argumentsOf ? { argumentsOf: options.argumentsOf } : {}) };
   const gate = runGate({ ...where, ...(shell === undefined ? {} : { computer: shell === "computer" }) }, claim.runId, revision, () => current, approvers);
   // A script's computer calls (computer_script, pi's code mode) run on the run's computer, a desktop that mounts no folder
   // too: decided as on a computer, so its shell.run and processes.start follow bash's one setting alike. The run's own
@@ -539,7 +540,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The gate names the run's folder by its Workspace (Mode 2: its folder on the run's disk, never this machine's folder at
   // the same path), for its path checks; it reads nothing in it.
   // A pinned MCP tool is held to the arguments its listing in the run's pin declares (mcp.argumentsOf).
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted), { computerCodemode: Boolean(tools.computer), ...(mcp ? { argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}) });
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted), { computerCodemode: Boolean(tools.computer), ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}) });
   // What a script's shell and files are held to: this gate's settings, decided as on the run's computer (gate.script), so a
   // denied bash or write holds inside computer_script and codemode.
   tools.computer?.guard.install(gate.script);
@@ -670,7 +671,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   gate.learn(workflows);
   // The run's monid endpoints (monid-run.ts), one host tool each from its revision's pin, on the claim's keys and beside
   // its MCP tools in the loop's one catalog seam; their answers pass the run's one redactor as the other non-hand tools'.
-  const monid = monidForClaim(body.monidPin, toolEnv, () => ws.workspace);
+  const monid = monidForClaim(body.monidPin, toolEnv, () => ws.workspace, claim.runId);
   const catalog = withMonid(mcp, monid && { ...monid, tools: monid.tools.map((tool) => answersCut(tool, cut)) });
   const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, catalog, () => route.model, replay)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
@@ -785,7 +786,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       const entries = await agentEntriesOf(deps.journal(claim), context);
       // The path it took and the learned revision it ran on, for a run that learns (workflow-first.ts pathMetrics), by the
       // one classifier the cost per run reads back (runPathOverStore).
-      const path = pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning) : undefined, entries as never);
+      const path = pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning, run.redact) : undefined, entries as never);
       // Its cost is its booking's, as a CLI run's is (metrics.ts bookedSpend, the one reader): every model request its
       // session's proxy booked, pi's own answers and its side calls (a learned workflow's nodes, web_search's hosted search
       // with its fee) alike, and its decisions (a learned workflow's decision nodes, LS-07; one that reported none is

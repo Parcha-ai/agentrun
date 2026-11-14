@@ -120,9 +120,9 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
 
   // An answer to the call the run waits on the owner's approval of: what the run does next is the server's to say, so the
   // run and its timeline are read again after it, a refused one too (a stop, a cancel or another tab answered first).
-  const approve = async (approvalId: string, decision: "allow" | "deny", note?: string) => {
+  const approve = async (approvalId: string, decision: "allow" | "deny", note?: string, confirmed?: true) => {
     let refused: string | null = null;
-    try { await v2.answerApproval(runId, approvalId, decision, note); } catch (e) { refused = approvalRefusal(e); }
+    try { await v2.answerApproval(runId, approvalId, decision, note, confirmed); } catch (e) { refused = approvalRefusal(e); }
     await refresh(); setFollows((n) => n + 1);
     return refused;
   };

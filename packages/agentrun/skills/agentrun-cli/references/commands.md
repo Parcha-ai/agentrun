@@ -520,6 +520,7 @@ Route: `PUT /runs/{run_id}/grade`.
 
 - `--correct` (boolean, required)
 - `--source feedback|eval` (string, one of these)
+- `--label STRING` (string): The grade's words (a teacher's label, a reviewer's note): what the run's look-back or its workflow's revision ask reads.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 

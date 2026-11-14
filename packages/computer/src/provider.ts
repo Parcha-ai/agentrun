@@ -174,8 +174,8 @@ export interface ComputerCapabilities {
 	isolation: "container" | "gvisor" | "microvm" | "vm" | "machine" | "host";
 	os: ComputerOs;
 	/**
-	 * With release "stop": true when a stop ends in deletion (Daytona with autoDeleteMinutes 0), so release(ref, "stop")
-	 * leaves no computer, listed or attachable. Absent or false: a stopped computer is kept, listed stopped, until deleted.
+	 * With release "stop": true when a stop ends in deletion, so release(ref, "stop") leaves no computer, listed or
+	 * attachable. Absent or false: a stopped computer is kept, listed stopped, until deleted.
 	 */
 	stopDeletes?: boolean;
 	daemon: DaemonMode;

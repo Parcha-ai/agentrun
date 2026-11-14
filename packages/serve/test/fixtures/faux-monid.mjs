@@ -9,7 +9,8 @@
 // is $1 a call. A run sent with a maxCost below its estimate is refused as monid refuses it (400 MAX_COST_EXCEEDED). With AGENTRUN_TEST_FAUX_MONID_DOWN set, every call is filed and then
 // fails as a fetch to a host that can't be reached does; with AGENTRUN_TEST_FAUX_MONID_STATUS, it answers that status;
 // with AGENTRUN_TEST_FAUX_MONID_STALL, it is held, its signal ignored as a provider answering late, until release(), and
-// stalled() gives the held call's signal once one is held.
+// stalled() gives the held call's signal once one is held; with AGENTRUN_TEST_FAUX_MONID_CHARGE, a run its maxCost lets
+// through completes charged that many dollars, whatever its estimate (monid re-priced it between the read and the run).
 import { createHash } from "node:crypto";
 import { appendFileSync } from "node:fs";
 
@@ -99,6 +100,8 @@ export default async function fakeMonid(url, init = {}) {
   const estimate = LISTING.find((one) => one.provider === body.provider && one.endpoint === body.endpoint)?.price.amount?.value ?? 0;
   if (typeof body.maxCost === "number" && estimate > body.maxCost) return json(400, { code: 400, errorCode: "MAX_COST_EXCEEDED", message: `Run not started: estimated cost ~$${estimate} is above maxCost $${body.maxCost}. Raise maxCost to at least ${estimate} or choose a cheaper endpoint.` });
   const runId = `run${String(++next).padStart(4, "0")}`;
+  const charge = process.env.AGENTRUN_TEST_FAUX_MONID_CHARGE;
+  if (charge) return json(200, { ...done(runId, body.endpoint, { person: body.input?.body?.name ?? null }), provider: body.provider, billing: { reportedCost: { value: Math.round(Number(charge) * 1e6), unit: "MICRO_DOLLAR", currency: "USD" } } });
   switch (body.endpoint) {
     case "/person/enrich": return json(200, { ...done(runId, body.endpoint, { full_name: body.input?.body?.name ?? null }), billing: { reportedCost: { value: 3000, unit: "MICRO_DOLLAR", currency: "USD" } } });
     case "/tweets": case "/slow": case "/broken": return (runs.set(runId, { endpoint: body.endpoint, status: "RUNNING", reads: 0 }), json(202, { runId, provider: "faux", endpoint: body.endpoint, status: "READY", price: PRICE }));

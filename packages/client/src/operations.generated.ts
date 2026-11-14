@@ -299,6 +299,7 @@ export type RunSummary = {
     args_preview: string;
     requested_at: string;
     price?: number | "not metered";
+    destructive?: true;
   } | {
     kind: "budget";
     cap_usd: number;
@@ -545,6 +546,7 @@ export type Run = {
     args_preview: string;
     requested_at: string;
     price?: number | "not metered";
+    destructive?: true;
   } | {
     kind: "budget";
     cap_usd: number;
@@ -2085,8 +2087,11 @@ export type SaveComposioServerResponse = {
       annotations?: Record<string, unknown>;
       grantable?: false;
       reason?: string;
+      effect?: "read" | "write" | "destructive";
       grant_problems?: Record<string, string>;
       permission?: "allow" | "ask" | "deny";
+      allow_reads?: true;
+      fallback_allow_reads?: true;
       default_permission?: "allow" | "ask" | "deny";
       permissions?: Array<"allow" | "ask" | "deny">;
     }>;
@@ -2210,8 +2215,11 @@ export type GetMcpServerResponse = {
     annotations?: Record<string, unknown>;
     grantable?: false;
     reason?: string;
+    effect?: "read" | "write" | "destructive";
     grant_problems?: Record<string, string>;
     permission?: "allow" | "ask" | "deny";
+    allow_reads?: true;
+    fallback_allow_reads?: true;
     default_permission?: "allow" | "ask" | "deny";
     permissions?: Array<"allow" | "ask" | "deny">;
   }>;
@@ -2252,8 +2260,11 @@ export type ListMcpServersResponse = {
       annotations?: Record<string, unknown>;
       grantable?: false;
       reason?: string;
+      effect?: "read" | "write" | "destructive";
       grant_problems?: Record<string, string>;
       permission?: "allow" | "ask" | "deny";
+      allow_reads?: true;
+      fallback_allow_reads?: true;
       default_permission?: "allow" | "ask" | "deny";
       permissions?: Array<"allow" | "ask" | "deny">;
     }>;
@@ -2293,8 +2304,11 @@ export type PreviewMcpServerResponse = {
     annotations?: Record<string, unknown>;
     grantable?: false;
     reason?: string;
+    effect?: "read" | "write" | "destructive";
     grant_problems?: Record<string, string>;
     permission?: "allow" | "ask" | "deny";
+    allow_reads?: true;
+    fallback_allow_reads?: true;
     default_permission?: "allow" | "ask" | "deny";
     permissions?: Array<"allow" | "ask" | "deny">;
   }>;
@@ -2338,8 +2352,11 @@ export type RefreshMcpServerResponse = {
       annotations?: Record<string, unknown>;
       grantable?: false;
       reason?: string;
+      effect?: "read" | "write" | "destructive";
       grant_problems?: Record<string, string>;
       permission?: "allow" | "ask" | "deny";
+      allow_reads?: true;
+      fallback_allow_reads?: true;
       default_permission?: "allow" | "ask" | "deny";
       permissions?: Array<"allow" | "ask" | "deny">;
     }>;
@@ -2390,8 +2407,11 @@ export type SaveMcpServerResponse = {
     annotations?: Record<string, unknown>;
     grantable?: false;
     reason?: string;
+    effect?: "read" | "write" | "destructive";
     grant_problems?: Record<string, string>;
     permission?: "allow" | "ask" | "deny";
+    allow_reads?: true;
+    fallback_allow_reads?: true;
     default_permission?: "allow" | "ask" | "deny";
     permissions?: Array<"allow" | "ask" | "deny">;
   }>;
@@ -2486,6 +2506,7 @@ export type GradeRunBody = {
   correct: boolean;
   expected?: Record<string, unknown>;
   source?: "feedback" | "eval";
+  label?: string;
 };
 export type GradeRunResponse = {
   run_id: string;
@@ -2495,6 +2516,7 @@ export type GradeRunResponse = {
   path: "agent" | "handed_back" | "workflow" | "replay";
   workflow: string | null;
   workflow_digest: string | null;
+  feedback: "revise" | "look_back" | null;
   expected?: Record<string, unknown>;
 };
 

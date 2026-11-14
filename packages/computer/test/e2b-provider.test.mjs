@@ -91,12 +91,12 @@ async function withProcessEnv(values, fn) {
 	}
 }
 
-test("an E2B desktop is kind desktop with daemon child, the desktop groups, network none read back, envd's port, and Hobby's 1 h cap", () => {
+test("an E2B desktop is kind desktop with daemon child, the desktop groups, network none probed from inside, envd's port, and Hobby's 1 h cap", () => {
 	const { provider } = setup();
 	const caps = provider.capabilities();
 	assert.deepEqual(
 		{ kind: caps.kind, os: caps.os, daemon: caps.daemon, lifetime: caps.lifetime, isolation: caps.isolation, network: caps.network, networkReadBack: caps.networkReadBack, release: caps.release, vendorAgentPorts: caps.vendorAgentPorts },
-		{ kind: "desktop", os: "linux", daemon: "child", lifetime: "vendor", isolation: "microvm", network: ["none"], networkReadBack: true, release: ["delete"], vendorAgentPorts: [49983] },
+		{ kind: "desktop", os: "linux", daemon: "child", lifetime: "vendor", isolation: "microvm", network: ["none"], networkReadBack: false, release: ["delete"], vendorAgentPorts: [49983] },
 	);
 	assert.deepEqual(caps.groups, DESKTOP_GROUPS);
 	assert.equal(caps.maxLifetimeMs, HOUR, "E2B Hobby caps a sandbox at 1 h");

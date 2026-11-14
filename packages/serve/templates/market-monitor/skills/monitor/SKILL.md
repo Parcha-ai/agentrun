@@ -63,7 +63,9 @@ So:
 
 1. **Window.** `to` is today; `from` is today minus the lookback (7 days when blank). The window is half-open: an
    event on `from` belongs to the previous digest, one on `to` to this one (`from` < date <= `to`), so two runs a
-   lookback apart never share a day. An event is a candidate only when it **happened** inside the window: the launch
+   lookback apart never share a day. Fired 2026-11-09 with lookback 7: `from` is 2026-11-02, the header says
+   `2026-11-02 to 2026-11-09`, and the days that count are 2026-11-03 to 2026-11-09. The header names `from` itself,
+   never the first day that counts. An event is a candidate only when it **happened** inside the window: the launch
    shipped, the price changed, the hire was made, the round closed. The date that counts is the event's, never the
    article's: a story published this week about a launch from before `from` is old news, a repeat.
 

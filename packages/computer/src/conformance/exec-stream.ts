@@ -210,29 +210,31 @@ class Session {
 		return this.#signal;
 	}
 
-	/** exec(argv), answered within the step's bound; any failure is a Problem naming the command. */
+	/**
+	 * exec(argv), answered within the step's bound; any failure (a throw) is a Problem naming the command. Without stdin,
+	 * end() is called at once, as the adapter does.
+	 */
 	async start(argv: readonly string[], stdin: boolean): Promise<Run> {
 		const what = `exec of ${shown(argv)}`;
-		let answer: Promise<Awaited<ReturnType<MachineHost["exec"]>>>;
+		let answer: Promise<MachineProcess>;
 		try {
-			answer = Promise.resolve(this.#host.exec(this.#machine, argv, { stdin }, { timeoutMs: this.#stepMs, ...(this.#signal ? { signal: this.#signal } : {}) }));
+			answer = Promise.resolve(this.#host.exec(this.#machine, argv, { timeoutMs: this.#stepMs, ...(this.#signal ? { signal: this.#signal } : {}) }));
 		} catch (error) {
 			throw new Problem(`${what} threw: ${words(error)}`);
 		}
-		let answered: Awaited<typeof answer> | typeof LATE;
+		let answered: MachineProcess | typeof LATE;
 		try {
 			answered = await within(answer, this.#stepMs + 5_000, LATE, this.#signal);
 		} catch (error) {
-			throw new Problem(`${what} threw: ${words(error)}`);
+			throw new Problem(`${what} failed: ${words(error)}`);
 		}
 		if (answered === LATE) {
 			// One that answers after this gave up is killed as it lands.
-			answer.then((late) => (late?.ok ? late.value.kill() : undefined)).catch(() => {});
+			answer.then((late) => late?.kill?.()).catch(() => {});
 			throw new Problem(`${what} did not answer within ${secondsOf(this.#stepMs)}: exec answers once the process has started, not when it ends`);
 		}
-		if (answered === undefined || typeof answered !== "object" || !("ok" in answered)) throw new Problem(`${what} answered ${String(answered)}, not a Result: answer ok(process) or a failure`);
-		if (!answered.ok) throw new Problem(`${what} failed: ${answered.error.message}`);
-		const proc = answered.value;
+		if (answered === undefined || answered === null || typeof answered !== "object") throw new Problem(`${what} answered ${String(answered)}, not a process: answer the MachineProcess or throw`);
+		const proc = answered;
 		const lacks = ["write", "end", "wait", "kill"].filter((name) => typeof (proc as unknown as Record<string, unknown>)?.[name] !== "function");
 		if (proc?.stdout?.[Symbol.asyncIterator] === undefined) lacks.unshift("stdout");
 		if (proc?.stderr?.[Symbol.asyncIterator] === undefined) lacks.unshift("stderr");
@@ -246,6 +248,8 @@ class Session {
 			});
 		run.exited.catch(() => {});
 		this.#runs.push(run);
+		// Not awaited: a command that reads no input runs on whether or not the vendor answers the close.
+		if (!stdin) Promise.resolve().then(() => proc.end()).catch(() => {});
 		return run;
 	}
 

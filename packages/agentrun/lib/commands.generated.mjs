@@ -1850,6 +1850,12 @@ export const COMMANDS = [
         ],
         "required": false,
         "description": ""
+      },
+      {
+        "name": "label",
+        "type": "string",
+        "required": false,
+        "description": "The grade's words (a teacher's label, a reviewer's note): what the run's look-back or its workflow's revision ask reads."
       }
     ],
     "hasBody": true,

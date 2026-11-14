@@ -86,10 +86,20 @@ export const KINDS = {
    *  same submission pi's adapter writes, so the step reads both alike. Neither a call nor a message: the reader passes
    *  over it, and the turn is never on the run's visible record. */
   endOfRunTurn: "agentrun.end-of-run.turn",
+  /** What an end-of-run turn kept as it was first asked (its `keep`, by its `requestId`), for a harness that keeps its own
+   *  record (pi; a CLI's record keeps it on its endOfRunTurn prompt): written once, before the turn's first request, so a
+   *  later claim that asks the same turn again reads the first ask's (the commit of main a compile turn was asked at among
+   *  them), never its own. Neither a call nor a message: the reader passes over it. */
+  endOfRunKept: "agentrun.end-of-run.kept",
   /** What a learning run's claim laid of its seed: the learned skills it was given (`skills`, by name) and the learned
    *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
    *  what the run was given. Neither a call nor a message. */
   learningLaid: "agentrun.learning.laid",
+  /** A grade's feedback round (runner/feedback-round.ts): the run opened again on a grade's words, asked no turn of the
+   *  job's; its next end's end-of-run turn reads them (`text`, the `round`, whether the grade said right, the workflow a
+   *  revision is asked of). Written on the root by the commit that takes the round's steer row. Neither a call nor a
+   *  message: pi never reads it, and the Timeline shows its words as the reviewer's. */
+  feedback: "agentrun.feedback",
   /** A workflow run's model node's execution, as the runner kept it before running it (workflow-spec.ts onModelNode):
    *  `{ path, tier?, model }`, its execution path, the tier it asked for (absent for none) and the model id the run's route
    *  sent it to. On the node log (NODE_LOG_SESSION), for GET /runs/{id}/graph's nodes' `model` (graph-view.ts). Neither a
@@ -258,6 +268,8 @@ export interface AskData {
   readonly requestedAt?: string;
   /** Its approval price (a catalog tool's, the spec's mcp priceOf); null when it has none. */
   readonly price?: ApprovalPrice | null;
+  /** An MCP tool its run's pin marks destructive (tool-gate.ts toolEffect): an allow of it needs confirm_destructive. */
+  readonly destructive?: true;
 }
 
 /** How an ask was answered: approved, denied, withdrawn (a stop while the call waited) or canceled (a cancel). */

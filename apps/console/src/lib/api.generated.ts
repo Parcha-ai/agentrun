@@ -738,6 +738,7 @@ export interface components {
       args_preview: string;
       requested_at: string;
       price?: number | "not metered";
+      destructive?: true;
     } | {
       kind: "budget";
       cap_usd: number;
@@ -915,6 +916,7 @@ export interface components {
       args_preview: string;
       requested_at: string;
       price?: number | "not metered";
+      destructive?: true;
     } | {
       kind: "budget";
       cap_usd: number;
@@ -1104,6 +1106,7 @@ export interface operations {
     body: {
       decision: "allow" | "deny";
       note?: string;
+      confirm_destructive?: true;
     };
     answer: never;
   };
@@ -2036,8 +2039,11 @@ export interface operations {
         annotations?: Record<string, unknown>;
         grantable?: false;
         reason?: string;
+        effect?: "read" | "write" | "destructive";
         grant_problems?: Record<string, string>;
         permission?: "allow" | "ask" | "deny";
+        allow_reads?: true;
+        fallback_allow_reads?: true;
         default_permission?: "allow" | "ask" | "deny";
         permissions?: ("allow" | "ask" | "deny")[];
       }[];
@@ -2396,6 +2402,7 @@ export interface operations {
           keys: string[];
         }>;
         pin_broken?: true;
+        allow_reads?: true;
       } | {
         provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
@@ -2567,6 +2574,7 @@ export interface operations {
       correct: boolean;
       expected?: Record<string, unknown>;
       source?: "feedback" | "eval";
+      label?: string;
     };
     answer: {
       run_id: string;
@@ -2576,6 +2584,7 @@ export interface operations {
       path: "agent" | "handed_back" | "workflow" | "replay";
       workflow: string | null;
       workflow_digest: string | null;
+      feedback: "revise" | "look_back" | null;
       expected?: Record<string, unknown>;
     };
   };
@@ -3060,8 +3069,11 @@ export interface operations {
           annotations?: Record<string, unknown>;
           grantable?: false;
           reason?: string;
+          effect?: "read" | "write" | "destructive";
           grant_problems?: Record<string, string>;
           permission?: "allow" | "ask" | "deny";
+          allow_reads?: true;
+          fallback_allow_reads?: true;
           default_permission?: "allow" | "ask" | "deny";
           permissions?: ("allow" | "ask" | "deny")[];
         }[];
@@ -3425,8 +3437,11 @@ export interface operations {
         annotations?: Record<string, unknown>;
         grantable?: false;
         reason?: string;
+        effect?: "read" | "write" | "destructive";
         grant_problems?: Record<string, string>;
         permission?: "allow" | "ask" | "deny";
+        allow_reads?: true;
+        fallback_allow_reads?: true;
         default_permission?: "allow" | "ask" | "deny";
         permissions?: ("allow" | "ask" | "deny")[];
       }[];
@@ -3505,6 +3520,7 @@ export interface operations {
           keys: string[];
         }>;
         pin_broken?: true;
+        allow_reads?: boolean;
       } | {
         permission?: "allow" | "ask" | "deny";
       } | {
@@ -3539,6 +3555,7 @@ export interface operations {
           keys: string[];
         }>;
         pin_broken?: true;
+        allow_reads?: true;
       } | {
         provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
@@ -3757,8 +3774,11 @@ export interface operations {
           annotations?: Record<string, unknown>;
           grantable?: false;
           reason?: string;
+          effect?: "read" | "write" | "destructive";
           grant_problems?: Record<string, string>;
           permission?: "allow" | "ask" | "deny";
+          allow_reads?: true;
+          fallback_allow_reads?: true;
           default_permission?: "allow" | "ask" | "deny";
           permissions?: ("allow" | "ask" | "deny")[];
         }[];
@@ -3839,8 +3859,11 @@ export interface operations {
           annotations?: Record<string, unknown>;
           grantable?: false;
           reason?: string;
+          effect?: "read" | "write" | "destructive";
           grant_problems?: Record<string, string>;
           permission?: "allow" | "ask" | "deny";
+          allow_reads?: true;
+          fallback_allow_reads?: true;
           default_permission?: "allow" | "ask" | "deny";
           permissions?: ("allow" | "ask" | "deny")[];
         }[];
@@ -3935,8 +3958,11 @@ export interface operations {
         annotations?: Record<string, unknown>;
         grantable?: false;
         reason?: string;
+        effect?: "read" | "write" | "destructive";
         grant_problems?: Record<string, string>;
         permission?: "allow" | "ask" | "deny";
+        allow_reads?: true;
+        fallback_allow_reads?: true;
         default_permission?: "allow" | "ask" | "deny";
         permissions?: ("allow" | "ask" | "deny")[];
       }[];
