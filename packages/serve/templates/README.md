@@ -200,6 +200,7 @@ A package on GitHub installs beside the bundled ones: `POST /v2/templates/import
 `{source, dry_run?, trust_publisher?}`, `agentrun template install <source> [--dry-run] [--trust]`, or the console's
 "Add from URL" box on Templates. The source is `github:<owner>/<repo>[/<path>][@<ref>]` (the package's folder at
 `<path>`, the default branch without a ref), or the folder's `https://github.com/<owner>/<repo>/tree/<ref>/<path>`.
+The ref follows the last `@`, so a path with an `@` in it (`packages/@acme/kyb`) names its ref.
 
 1. The ref is resolved to a full commit SHA, then that commit's tarball is read from GitHub (github.com,
    api.github.com and codeload.github.com, no redirect elsewhere), with the server's GitHub App token when it has one,

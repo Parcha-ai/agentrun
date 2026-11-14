@@ -50,12 +50,16 @@ export function parseSource(text: unknown): GithubSource {
     if (parts[2] === "tree" && !ref) throw refused("A /tree/ URL names its ref: https://github.com/<owner>/<repo>/tree/<ref>/<path>.");
     rest = parts.slice(4);
   } else {
-    const match = /^github:([^@]+?)(?:@([^@]+))?$/.exec(given);
-    if (!match) throw refused(`${given} is not a package source: github:<owner>/<repo>[/<path>][@<ref>].`);
-    const parts = match[1]!.split("/");
+    if (!given.startsWith("github:")) throw refused(`${given} is not a package source: github:<owner>/<repo>[/<path>][@<ref>].`);
+    // The ref follows the last @ (a ref holds none), so a folder with an @ in its name (packages/@acme/kyb) still reads,
+    // given a ref, as the source every install of the console pins to a commit is (<id>@<sha>).
+    const body = given.slice("github:".length);
+    const at = body.lastIndexOf("@");
+    const parts = (at < 0 ? body : body.slice(0, at)).split("/");
     [owner = "", repo = ""] = parts;
     rest = parts.slice(2);
-    ref = match[2] ?? null;
+    ref = at < 0 ? null : body.slice(at + 1);
+    if (ref === "") throw refused(`${given} names no ref after its @.`);
   }
   if (!OWNER.test(owner)) throw refused(`${JSON.stringify(owner)} is not a GitHub account's name.`);
   if (!REPO.test(repo) || repo === "." || repo === "..") throw refused(`${JSON.stringify(repo)} is not a GitHub repository's name.`);

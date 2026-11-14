@@ -102,7 +102,12 @@ test("a source reads as github:<owner>/<repo>[/<path>][@<ref>], or a github.com 
   assert.deepEqual(parseSource("github:Parcha-ai/agentrun/packages/serve/templates/kyb@main"), { owner: "Parcha-ai", repo: "agentrun", path: "packages/serve/templates/kyb", ref: "main", id: "github:Parcha-ai/agentrun/packages/serve/templates/kyb", source: "github:Parcha-ai/agentrun/packages/serve/templates/kyb@main" });
   assert.deepEqual(parseSource("github:acme/agents"), { owner: "acme", repo: "agents", path: null, ref: null, id: "github:acme/agents", source: "github:acme/agents" });
   assert.deepEqual(parseSource("https://github.com/acme/agents/tree/v1.2.0/templates/kyb"), { owner: "acme", repo: "agents", path: "templates/kyb", ref: "v1.2.0", id: ID, source: `${ID}@v1.2.0` });
-  assert.deepEqual(parseSource("https://github.com/acme/agents.git"), { owner: "acme", repo: "agents", path: null, ref: null, id: "github:acme/agents", source: "github:acme/agents" });
+  // A folder with an @ in its path: its tree URL, and the source pinned to a commit that Install sends after reading it.
+  const AT = "github:acme/agents/foo@bar/kyb";
+  assert.deepEqual(parseSource("https://github.com/acme/agents/tree/main/foo@bar/kyb"), { owner: "acme", repo: "agents", path: "foo@bar/kyb", ref: "main", id: AT, source: `${AT}@main` });
+  assert.deepEqual(parseSource(`${AT}@${"a".repeat(40)}`), { owner: "acme", repo: "agents", path: "foo@bar/kyb", ref: "a".repeat(40), id: AT, source: `${AT}@${"a".repeat(40)}` });
+  assert.deepEqual(parseSource("github:acme/agents/packages/@acme/kyb@main"), { owner: "acme", repo: "agents", path: "packages/@acme/kyb", ref: "main", id: "github:acme/agents/packages/@acme/kyb", source: "github:acme/agents/packages/@acme/kyb@main" });
+  assert.deepEqual(parseSource("https://github.com/acme/agents.git"),{ owner: "acme", repo: "agents", path: null, ref: null, id: "github:acme/agents", source: "github:acme/agents" });
   for (const bad of ["", "kyb", "gitlab:acme/agents", "https://gitlab.com/acme/agents", "http://github.com/acme/agents", "https://github.com.evil.example/acme/agents", "https://user@github.com/acme/agents", "https://github.com/acme/agents/blob/main/x", "https://github.com/acme/agents?x=1", "github:acme/agents/../secrets", "github:acme/agents//kyb", "github:acme", "github:-acme/agents", "github:acme/agents@main@dev", "github:acme/agents@../x"]) {
     assert.throws(() => parseSource(bad), (error) => error.code === "input_invalid" && error.extra.fields[0].field === "source", `refused: ${JSON.stringify(bad)}`);
   }
