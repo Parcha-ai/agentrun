@@ -3,7 +3,7 @@
 // start as Codex 0.164 does (#1586). Codex is given it as `mcp_<server>__<tool>`; the host's gate and the session's events
 // name the call by the host's own name. No key, no network, no Codex.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test as nodeTest } from 'node:test';
@@ -56,4 +56,35 @@ test('two tools that would reach Codex by one name are refused when the session 
   const tool = (name) => ({ name, description: 'A tool.', inputSchema: schema, replay: 'safe', call: async () => ({ text: '' }) });
   const problems = adapter.check({ key: 's', label: 'root', system: [], tools: [tool('mcp__fake__add'), tool('mcp_fake__add')], context: 'fresh' });
   assert.deepEqual(problems, ['the tools mcp__fake__add and mcp_fake__add both reach Codex as mcp_fake__add']);
+});
+
+test("a thread an earlier version started (its MCP tools on Codex's own MCP client, not its dynamic tools) is resumed with them as dynamic tools", async (t) => {
+  // Codex keeps a thread's dynamic tools in its rollout's session_meta and resumes with those (thread/resume sends none):
+  // a thread started before MCP tools were host tools would otherwise never be offered them again.
+  const dir = scratch();
+  const store = memorySessionStore();
+  const add = { name: 'add', description: 'Adds two numbers.', inputSchema: schema, replay: 'safe', call: async (args) => ({ text: String(args.a + args.b) }) };
+  const sub = { name: 'mcp__fake__sub', description: 'Subtracts.', inputSchema: schema, replay: 'never', call: async (args) => ({ text: String(args.a - args.b) }) };
+  const io = () => ({ writer: undefined, models: { beforeRequest: async () => ({ turn: 0 }), afterRequest: async () => {} }, signal: new AbortController().signal, onEvent: () => {}, gate: async () => 'allow' });
+  // The earlier version's session: the host tools without the MCP one.
+  const first = adapterIn(dir, ['hello']);
+  const before = await first.open({ key: 's1', label: 'root', system: [], tools: [add], context: 'fresh' }, { ...io(), writer: await store.open('s1') });
+  await before.send('hello');
+  assert.equal((await before.turnEnd()).status, 'completed');
+  await before.close();
+  const metaOf = () => {
+    const rollouts = readdirSync(join(dir, 'sessions'), { recursive: true }).filter((file) => /rollout-.*\.jsonl$/.test(String(file)));
+    assert.equal(rollouts.length, 1, JSON.stringify(rollouts));
+    return JSON.parse(readFileSync(join(dir, 'sessions', String(rollouts[0])), 'utf8').split('\n')[0]).payload;
+  };
+  assert.deepEqual(metaOf().dynamic_tools.map((tool) => tool.name), ['add']);
+  // This version: the MCP tool is a host tool. The thread is resumed with it.
+  const next = adapterIn(dir, ['call mcp_fake__sub {"a":5,"b":3}']);
+  const after = await next.open({ key: 's1', label: 'root', system: [], tools: [add, sub], context: 'fresh' }, { ...io(), writer: await store.open('s1') });
+  t.after(() => after.close());
+  await after.send('go');
+  assert.equal((await after.turnEnd()).status, 'completed');
+  const tools = metaOf().dynamic_tools;
+  assert.deepEqual(tools.map((tool) => tool.name), ['add', 'mcp_fake__sub'], 'the MCP tool joins the thread\'s dynamic tools');
+  assert.deepEqual(tools[1], { type: 'function', name: 'mcp_fake__sub', description: 'Subtracts.', inputSchema: schema }, 'as thread/start gives a dynamic tool');
 });
