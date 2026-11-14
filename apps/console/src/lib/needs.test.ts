@@ -76,6 +76,25 @@ describe("rerunBody", () => {
   });
 });
 
+// A typed agent's first message is the server's: its message, then its other fields as an `Input:` JSON block. Run again
+// reads them back out, so the run starts with the same typed input; one it can't read back is refused, plainly.
+describe("rerunBody, a typed agent's run", () => {
+  const base = run("t1", { title: "Research Acme" });
+  const schema = { type: "object", properties: { company: { type: "string" }, limit: { type: "integer" } }, required: ["company"] };
+  it("reads the message and the Input block back into the typed input", () => {
+    const first = 'Look into them.\n\nInput:\n```json\n{\n  "company": "Acme",\n  "limit": 5\n}\n```';
+    expect(rerunBody(base, first, schema)).toEqual({ body: { input: { content: "Look into them.", company: "Acme", limit: 5 } } });
+  });
+  it("reads a block with no message before it, and one in a longer fence", () => {
+    expect(rerunBody(base, 'Input:\n```json\n{\n  "company": "Acme"\n}\n```', schema)).toEqual({ body: { input: { company: "Acme" } } });
+    expect(rerunBody(base, 'Go.\n\nInput:\n````json\n{\n  "company": "A ``` B"\n}\n````', schema)).toEqual({ body: { input: { content: "Go.", company: "A ``` B" } } });
+  });
+  it("refuses one whose typed fields can't be read back, when its schema requires a field other than content", () => {
+    expect(rerunBody(base, "Look into them.", schema)).toEqual({ refusal: `"Research Acme": its typed input could not be read back from its first message; start it again from its agent's page` });
+    expect(rerunBody(base, "Just a message.", { type: "object", properties: { company: { type: "string" } } })).toEqual({ body: { input: { content: "Just a message." } } });
+  });
+});
+
 // The strip's three reads land apart: one that fails keeps what that section showed, and says so.
 describe("mergeNeeds", () => {
   const ok = <T,>(value: T) => ({ status: "fulfilled" as const, value });

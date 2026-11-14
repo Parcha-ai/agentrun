@@ -1,13 +1,9 @@
 ---
 description: "Repeat. Cedarline Software Corp.: active, filings filed, the help pop-ups on the page."
 max_cost_usd: 1.50
+input: { company: Cedarline Software Corp., website: cedarline.example, country: CA, reason: vendor }
 ---
-Run KYB on this company: we're about to sign a vendor agreement with them.
-
-- Company: Cedarline Software Corp.
-- Domain: cedarline.example
-- Country of incorporation: Canada
-- Why we're checking: vendor
+We're about to sign a vendor agreement with them.
 
 The web is not reachable from this run: the material below is everything there is, so cite it and don't fetch.
 

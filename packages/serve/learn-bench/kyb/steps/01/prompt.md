@@ -1,15 +1,11 @@
 ---
 description: "Teach. The boilerplate-flag lesson, with Maplestone Logistics Inc.: active, filings filed, the help pop-ups on the page."
 max_cost_usd: 1.50
+input: { company: Maplestone Logistics Inc., website: maplestone.example, country: CA, reason: vendor }
 ---
 Feedback from our compliance lead on your last Corporations Canada check, for this check and every one from now on: you raised RF09 and RF10 on Northgate Freight Inc. because its record page carried the help pop-ups about a notice of intent to dissolve and about overdue filings. Those pop-ups are on every Corporations Canada record: they are the page's own text, never a finding. The same goes for a year in the filings table marked "Due by" a date still ahead: that is not overdue. Raise RF09 or RF10 only when this record's own Status line or filings table says so (a status naming a notice of intent to dissolve, a year marked Overdue).
 
-Run KYB on this company: we're about to sign a vendor agreement with them.
-
-- Company: Maplestone Logistics Inc.
-- Domain: maplestone.example
-- Country of incorporation: Canada
-- Why we're checking: vendor
+We're about to sign a vendor agreement with them.
 
 The web is not reachable from this run: the material below is everything there is, so cite it and don't fetch.
 
