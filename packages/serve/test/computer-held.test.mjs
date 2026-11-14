@@ -26,7 +26,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { heldField, heldRoute, runComputerRead } = await import("../dist/computer-held-routes.js");
 const { HOLD_MAX_MINUTES, HOLD_MINUTES, heldIn, holdIssues, holdOf } = await import("../dist/computer-held.js");
 const { CALL_KIND, PROTOCOL_METHODS } = await import("../dist/computer-channel.js");
-const { callRecordOf, MAX_RECORDED_CALLS, recordedClient, recordingCalls, unrecorded } = await import("../dist/computer-calls.js");
+const { callRecordOf, keptChord, MAX_KEPT_NAME, MAX_RECORDED_CALLS, MAX_TARGET_NAME, recordedClient, recordingCalls, shownName, unrecorded } = await import("../dist/computer-calls.js");
 const { entriesOf } = await import("../dist/computer-commands.js");
 const { journalHeld } = await import("../dist/runner/held-run.js");
 const { runChannelCall } = await import("../dist/runner/computer-channel.js");
@@ -148,7 +148,7 @@ test("a held run: the owner's calls set the computer up before the start, the ag
   const records = await world.callEntries();
   assert.deepEqual(records.map((one) => [one.method, one.ok, one.code]), [["hello", true, undefined], ["exec.run", true, undefined], ["files.read", false, "not_found"], ["screen.shot", true, undefined]]);
   for (const one of records) {
-    assert.deepEqual(Object.keys(one).sort(), ["at", "by", "method", "ms", "ok", ...(one.ok ? [] : ["code"])].sort(), JSON.stringify(one));
+    assert.deepEqual(Object.keys(one).sort(), ["at", "by", "method", "ms", "ok", "started_at", ...(one.ok ? [] : ["code"])].sort(), JSON.stringify(one));
   }
   // A settled call's row keeps its method and no params: what an owner typed or wrote never stays in the store.
   const rows = (await world.server.commands("run-1", 0)).filter((one) => one.kind === "computer_call");
@@ -242,7 +242,7 @@ test("the agent's computer calls are kept on its tool call's result row: methods
   const rows = await runTimeline(world.server, "run-1", ctx);
   const result = rows.find((row) => row.kind === "tool_result" && row.computer_calls);
   assert.ok(result, `a tool_result row carries computer_calls: ${JSON.stringify(rows.map((row) => row.kind))}`);
-  assert.deepEqual(result.computer_calls.map(({ ms, ...rest }) => (assert.equal(typeof ms, "number"), rest)), [
+  assert.deepEqual(result.computer_calls.map(({ ms, started_at, ...rest }) => (assert.equal(typeof ms, "number"), assert.ok(Date.parse(started_at) > 0, started_at), rest)), [
     { method: "ui.act", ok: true, steps: [{ do: "set", route: "ax", verified: true }, { do: "press", error: "not_found" }], expect: "unmet" },
     { method: "files.read", ok: false, code: "not_found" },
   ]);
@@ -252,11 +252,65 @@ test("the agent's computer calls are kept on its tool call's result row: methods
 });
 
 test("a call's record: ui.act steps by kind, an error by its code, the most a tool call keeps, and the channel's calls on no tool call", async () => {
-  assert.deepEqual(callRecordOf("ui.act", { steps: [{ type: { text: "x" } }, { key: { keys: "Enter" } }] }, { ok: true, value: { steps: [{ route: "keys", verified: false }, { route: "keys" }], expect: "met" } }, 12.6), {
-    method: "ui.act", ok: true, ms: 13, steps: [{ do: "type", route: "keys", verified: false }, { do: "key", route: "keys" }], expect: "met",
+  const T = Date.UTC(2026, 10, 14, 12, 0, 0);
+  const at = new Date(T).toISOString();
+  assert.deepEqual(callRecordOf("ui.act", { steps: [{ type: "x" }, { key: "Enter" }] }, { ok: true, value: { steps: [{ route: "keys", verified: false }, { route: "keys" }], expect: "met" } }, 12.6, T), {
+    method: "ui.act", started_at: at, ok: true, ms: 13, steps: [{ do: "type", route: "keys", verified: false }, { do: "key", keys: "Enter", route: "keys" }], expect: "met",
   });
-  assert.deepEqual(callRecordOf("exec.run", { argv: ["rm"] }, { ok: false, error: { code: "denied", message: "no" } }, 1), { method: "exec.run", ok: false, ms: 1, code: "denied" });
-  assert.deepEqual(callRecordOf("screen.shot", {}, { ok: true, value: { data: "iVBOR" } }, 3), { method: "screen.shot", ok: true, ms: 3 }, "no bytes");
+  assert.deepEqual(callRecordOf("exec.run", { argv: ["rm"] }, { ok: false, error: { code: "denied", message: "no" } }, 1, T), { method: "exec.run", started_at: at, ok: false, ms: 1, code: "denied" });
+  assert.deepEqual(callRecordOf("screen.shot", {}, { ok: true, value: { data: "iVBOR" } }, 3, T), { method: "screen.shot", started_at: at, ok: true, ms: 3 }, "no bytes");
+  assert.deepEqual(callRecordOf("apps.launch", { id: "com.apple.TextEdit", url: "file:///private/tmp/secret-name.txt" }, { ok: true, value: {} }, 3, T), { method: "apps.launch", started_at: at, app: "com.apple.TextEdit", ok: true, ms: 3 }, "the app, never its url");
+
+  // A key step's chord is kept when it is a command or named keys only; a lone character, or shift and one, is typing.
+  assert.deepEqual(["super+s", "ctrl+shift+t", "enter", "shift+tab", "alt++", "a", "A", "shift+a", "4", "shift++"].map((chord) => keptChord(chord) ?? null),
+    ["super+s", "ctrl+shift+t", "enter", "shift+tab", "alt++", null, null, null, null, null]);
+
+  // The client's call keeps its receiver: a provider's DaemonClient reads its own fields through `this`.
+  class Daemon {
+    #answer = { ok: true, value: { pong: true } };
+    async call() { return this.#answer; }
+    close() {}
+  }
+  const daemon = recordedClient(new Daemon());
+  assert.deepEqual(await daemon.call("ping", {}), { ok: true, value: { pong: true } }, "outside a tool call");
+  assert.deepEqual(await recordingCalls(() => daemon.call("ping", {}), async () => undefined), { ok: true, value: { pong: true } }, "inside one");
+
+  // An element's name is kept whole: the run's redaction reads it whole at the read, and only then is it cut for the
+  // row (shownName). A held secret across the cut is redacted whole, never shown in part.
+  const secret = "s3cr3t-held-token-value";
+  const crossing = `${"N".repeat(MAX_TARGET_NAME - 5)}${secret}`;
+  const redact = (text) => text.replaceAll(secret, "[redacted]");
+  assert.equal(shownName(crossing, redact), `${"N".repeat(MAX_TARGET_NAME - 5)}[redacted]`.slice(0, MAX_TARGET_NAME - 1) + "…");
+  assert.doesNotMatch(shownName(crossing, redact), /s3cr/);
+  assert.equal(shownName("Save", redact), "Save");
+  assert.equal(shownName("L".repeat(80)), `${"L".repeat(MAX_TARGET_NAME - 1)}…`, "no redactor: only the cut");
+
+  // A step's element by the names the client's observes gave its ref: role and name, never a value; the name whole
+  // (normalized), and none at all past MAX_KEPT_NAME, which no element's name on a screen reaches.
+  const long = "L".repeat(80);
+  const huge = "H".repeat(MAX_KEPT_NAME + 1);
+  const named = recordedClient({
+    call: async (method, params) => (method === "ui.observe"
+      ? { ok: true, value: { state: "s1", nodes: [{ ref: "@e1", role: "textbox", name: "Password", value: "hunter2-secret", flags: ["secure"] }, { ref: "@e2", role: "button", name: "Sign  in\n" }, { ref: "@e3", role: "text", name: long }, { ref: "@e4", role: "text", name: huge }] } }
+      : { ok: true, value: { steps: params.steps.map(() => ({ route: "semantic", verified: true })) } }),
+    close() {},
+  });
+  await named.call("ui.observe", { target: { app: "com.example.Mail" } });
+  const acted = [];
+  await recordingCalls(
+    () => named.call("ui.act", { target: { app: "com.example.Mail" }, steps: [{ type: "hunter2-secret", into: "@e1" }, { press: "@e2" }, { click: "@e3" }, { click: "@e4" }, { click: [4, 5] }, { set: "@e9", value: "x" }, { nav: "back" }] }),
+    async (calls) => void acted.push(...calls),
+  );
+  assert.deepEqual(acted.map(({ ms, started_at, ...rest }) => rest), [{ method: "ui.act", app: "com.example.Mail", ok: true, steps: [
+    { do: "type", on: { role: "textbox", name: "Password" }, route: "semantic", verified: true },
+    { do: "press", on: { role: "button", name: "Sign in" }, route: "semantic", verified: true },
+    { do: "click", on: { role: "text", name: long }, route: "semantic", verified: true },
+    { do: "click", on: { role: "text" }, route: "semantic", verified: true },
+    { do: "click", route: "semantic", verified: true },
+    { do: "set", route: "semantic", verified: true },
+    { do: "nav", nav: "back", route: "semantic", verified: true },
+  ] }], "an observe outside a tool call still names the refs a later step acts on");
+  assert.doesNotMatch(JSON.stringify(acted), /hunter2-secret/);
 
   const client = recordedClient(fakeClient());
   const kept = [];

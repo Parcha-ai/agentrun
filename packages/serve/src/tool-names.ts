@@ -7,6 +7,8 @@
 // `mcp__<server>__<tool>` splits one way). An MCP tool's own name is letters, digits, `_` and `-`, at most 64: the
 // characters the model APIs take in a tool's name, so there is one charset, and a name one place takes no other refuses.
 
+import { WIRE_NAME } from "./catalog.js";
+
 const SERVER = "[a-z][a-z0-9-]{0,31}";
 const TOOL = "[A-Za-z0-9_-]{1,64}";
 const PLAIN = `[a-z][a-z0-9_-]{0,63}(?:\\.${TOOL})?`;
@@ -60,3 +62,19 @@ export function mcpServerOf(name: string): string | undefined {
 
 /** Whether `name` is an MCP server's wildcard, `mcp:<server>/*`. */
 export const isMcpWildcard = (name: string): boolean => parseToolName(name)?.kind === "mcp-server";
+
+/** Why a grant of an MCP server's tool is refused by its name alone, said after the grant (`mcp:<server>/<tool> ...`): the
+ *  one place the console's picker and the save's blockers (runnable.ts) both read it. `hands` is the harnesses' own tools'
+ *  server. */
+export const MCP_HANDS_WORDS = "names the MCP server hands, a name the harnesses keep for their own tools: save the server under another name.";
+/** Why `mcp__<server>__<tool>`, the name every harness calls the tool by, is not within the budget their names share
+ *  (52 characters of letters, digits, `_` and `-`), or undefined when it is. */
+export function mcpWireProblem(server: string, tool: string): string | undefined {
+  const wire = `mcp__${server}__${tool}`;
+  return WIRE_NAME.test(wire) ? undefined : `is too long: ${wire} must be at most 52 characters, the budget every harness's tool names share.`;
+}
+/** MCP_HANDS_WORDS or mcpWireProblem's, whichever refuses the name; undefined when neither does. */
+export const mcpGrantNameProblem = (server: string, tool: string): string | undefined => (server === "hands" ? MCP_HANDS_WORDS : mcpWireProblem(server, tool));
+/** Why a harness's own MCP client drops or retypes `tool` of `server` (its facts' schemaProblems, `dropped` the first):
+ *  the words a save's blocker and a saved server's read both say. */
+export const mcpDroppedWords = (server: string, tool: string, harness: string, dropped: string): string => `The MCP server ${server}'s tool ${tool} cannot be offered on ${harness}: ${dropped.replace(/^mcp__\S+: /, "")}.`;

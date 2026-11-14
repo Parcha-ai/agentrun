@@ -255,6 +255,7 @@ const MCP_TOOL = {
     annotations: { type: "object", description: "The server's own claims about the tool (read-only, destructive, and so on): the server's word, not checked." },
     grantable: { const: false, description: "Present, and false, on a known meta tool: one that runs other actions by name (Composio's COMPOSIO_MULTI_EXECUTE_TOOL, Klavis Strata's execute_action, Zapier's execute actions, Arcade's UseTool, Docker's mcp-exec, Cloudflare's portal_execute and code mode). A grant of it could not name the real action, so none is granted: a save that grants it is 422 with `reason`, and a run that pinned one is refused at its launch. Absent on every other tool.", "x-agentrun-serve": "mcpservers/1" },
     reason: { type: "string", description: "Beside `grantable: false`: why the tool can't be granted.", "x-agentrun-serve": "mcpservers/1" },
+    grant_problems: { type: "object", additionalProperties: { type: "string" }, description: "On a saved server's read: why a grant of the tool is refused, where it would run, in the words the save's 422 says. `*` is a refusal on every harness (the server is named hands, or `mcp__<server>__<tool>` is past the 52 characters every harness's tool names share); a harness id is that harness alone, whose own MCP client would drop or retype the tool's schema. Absent when nothing refuses the grant. A known meta tool is `grantable: false` instead.", "x-agentrun-serve": "mcpservers/1" },
     permission: { enum: [...PERMISSIONS], description: "On a saved server's read: the permission this server applies to the tool for an agent that sets none, under its tool settings (`mcp:<server>/<tool>`, else `mcp:<server>/*`, else `default_permission`). The same as an agent's read gives as its `default_permission` once it grants the tool. Absent on a preview.", "x-agentrun-serve": "mcpservers/1" },
     default_permission: { enum: [...PERMISSIONS], description: "On a saved server's read: the owner's default for the tool (ask, as for any catalog tool), the one that applies when the server's tool settings set none.", "x-agentrun-serve": "mcpservers/1" },
     permissions: { type: "array", items: { enum: [...PERMISSIONS] }, description: "On a saved server's read: the permissions the tool may be set to.", "x-agentrun-serve": "mcpservers/1" },
@@ -1062,9 +1063,10 @@ const COST_RUN = closed({
 });
 const LEARNING_COST = closed({
   agent: { type: "string" },
-  runs: { type: "array", items: COST_RUN, description: "The agent's agentic runs that ended (completed, stopped or failed), oldest first: the last `limit` of them, each keeping its number. A run still at work, an imported or archived run and a workflow revision's run are left out; a run's grade is no run here, and its cost is that run's `learning_usd`." },
+  runs: { type: "array", items: COST_RUN, description: "The agent's agentic runs that ended (completed, stopped or failed), oldest first: the last `limit` of them, each keeping its number. A run still at work, an imported or archived run, a workflow revision's run and a run whose path is not known (`unknown_path_runs`) are left out; a run's grade is no run here, and its cost is that run's `learning_usd`." },
   total_runs: { ...COUNT, description: "How many runs the series counts in all, `limit` aside." },
   unknown_cost_runs: { ...COUNT, description: "How many of them have no known all-in cost (`total_usd` null)." },
+  unknown_path_runs: { ...COUNT, description: "How many runs that learn ended with no path on their record (their end could not read their cost and path in time, or no runner wrote their end): left out of `runs`, `total_runs` and `summary`, never counted as `agent` runs at $0." },
   workflows: { type: "array", items: closed({
     workflow: { type: "string", description: "The learned workflow, by name." },
     digest: { type: "string", description: "The version of it its newest run served first ran: the first 16 hex characters of its workflow.json's sha256. A new version starts its count from zero." },
@@ -2506,21 +2508,34 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     computer_calls: {
       type: "array",
       items: {
-        type: "object", additionalProperties: false, required: ["method", "ok", "ms"],
+        type: "object", additionalProperties: false, required: ["method", "started_at", "ok", "ms"],
         properties: {
           method: { type: "string", description: "The computer protocol method (spec/computer)." },
+          started_at: { type: "string", format: "date-time", description: "When the call started: a code-mode script's calls each at its own time, inside its one tool call." },
+          app: { type: "string", description: "The app it named: apps.launch's or apps.terminate's id, a ui call's target app." },
           ok: { type: "boolean" },
           ms: { type: "number" },
           code: { type: "string", description: "The error's code, when the call failed." },
           steps: {
             type: "array",
-            items: { type: "object", additionalProperties: false, required: ["do"], properties: { do: { type: "string", description: "The step's kind: press, set, perform, click, type, key, nav, scroll or drag." }, route: { type: "string", description: "The route it ran by." }, verified: { type: "boolean", description: "Whether a readback showed it took." }, error: { type: "string", description: "The kind of error that refused it." } } },
+            items: {
+              type: "object", additionalProperties: false, required: ["do"],
+              properties: {
+                do: { type: "string", description: "The step's kind: press, set, perform, click, type, key, nav, scroll or drag." },
+                on: { type: "object", additionalProperties: false, required: ["role"], properties: { role: { type: "string" }, name: { type: "string" } }, description: "The element it acted on (a type step's: the one it typed into), as the run's own ui.observe answers showed it: its role and name, never its value. The name is cut at 60 characters and through the run's redaction. Absent when the step named no element the run observed." },
+                keys: { type: "string", description: "A key step's chord, when it has a command modifier (ctrl, alt, super) or only named keys: never a lone character, which may be part of a password." },
+                nav: { type: "string", description: "A nav step's place: back, home or app_switch." },
+                route: { type: "string", description: "The route it ran by." },
+                verified: { type: "boolean", description: "Whether a readback showed it took." },
+                error: { type: "string", description: "The kind of error that refused it." },
+              },
+            },
             description: "A ui.act call's steps, in order.",
           },
           expect: { enum: ["met", "unmet"], description: "A ui.act call's expect: whether it held." },
         },
       },
-      description: "On a tool call's `tool_result` row alone: each computer protocol call the tool made, in order, at most 200. Never a param's value or an answer's bytes: no screenshot, and no text a step set or typed. Absent on a call that made none.",
+      description: "On a tool call's `tool_result` row alone (a codemode script's included): each computer protocol call the tool made, in order, at most 200. Never a typed or set value or an answer's bytes: no screenshot, and no text a step set or typed. Absent on a call that made none.",
       "x-agentrun-serve": "computercalls/1",
     },
     computer_calls_dropped: {
