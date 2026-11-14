@@ -1006,6 +1006,23 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(sound.flags, [.offscreen])
 	}
 
+	/// Two looks are a quiet apart from the start of one to the start of the next: each node is read that far apart. A
+	/// look that itself takes longer than the quiet (System Settings on CI: 250 to 700 ms) needs no sleep after it.
+	func testALookThatTakesLongerThanTheQuietIsFollowedByNoSleep() async throws {
+		os.walkMs = 400
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let (start, walks) = (os.now, os.snapshots)
+		_ = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(os.snapshots - walks, 3)
+		XCTAssertEqual(os.now - start, 1200, "three walks, and no sleep between them")
+		// A quick look still waits out the quiet.
+		os.walkMs = 10
+		let quick = os.now
+		_ = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(os.now - quick, 10 + 150 + 10, "the first look, then two 150 ms apart")
+	}
+
 	/// A node's actions and whether its value can be set cost a Mac two reads more, as much as the rest of the node
 	/// (System Settings on CI: 168 nodes, 300 ms a walk, half of it on those two). An observe shows them for every node;
 	/// an act's looks need them only for the elements its steps act on, read when the step runs.

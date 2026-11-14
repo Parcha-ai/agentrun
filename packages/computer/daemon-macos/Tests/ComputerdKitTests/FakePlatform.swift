@@ -55,6 +55,8 @@ final class FakeOS: @unchecked Sendable {
 	/// as the rest of a node.
 	var snapshots = 0
 	var detailReads = 0
+	/// What one walk costs on the clock: System Settings' took 250 to 700 ms on CI.
+	var walkMs: Double = 0
 	/// Run at the start of every walk, as an app that rebuilds part of its tree each time it is read (System Settings'
 	/// sidebar rows scrolled out of view).
 	var onSnapshot: ((FakeOS) -> Void)?
@@ -134,6 +136,7 @@ struct FakeAX: Accessibility {
 		try os.with { os in
 			if target.window.id != os.window.id { throw RPCError.notFound("\(os.app.id) has no window \(target.window.id) any more: observe again") }
 			os.snapshots += 1
+			os.now += os.walkMs
 			os.onSnapshot?(os)
 			let cap = min(maxNodes, os.maxNodes ?? maxNodes)
 			var index: [Int: Int] = [:]
