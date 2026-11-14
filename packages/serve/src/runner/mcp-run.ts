@@ -81,8 +81,9 @@ export interface ClaimMcp {
    *  a pin in any layer to (tool-gate.ts pinRefusal). Undefined for a listing with no `properties` object, and for any
    *  other tool. */
   argumentsOf(name: string): ReadonlySet<string> | undefined;
-  /** What an asked call of a pinned tool costs on its card (main's: its price, else "not metered"); undefined otherwise. */
-  priceOf(name: string): ApprovalPrice | undefined;
+  /** What an asked call of a pinned tool costs on its card (main's: its price, else "not metered"; a monid endpoint
+   *  priced by usage, monid's estimate for `call`'s input, read from monid); undefined otherwise. */
+  priceOf(name: string, call?: { callId: string; args: unknown }): ApprovalPrice | undefined | Promise<ApprovalPrice | undefined>;
   /** The claim step's credentials opened again on the same pin (an expired OAuth token refreshed), then the claim
    *  confirmed: before a resumed loop's next model request. */
   fresh(): Promise<void>;

@@ -41,7 +41,7 @@ test("a named grant of an endpoint priced by usage saves, pinned, with a warning
   const pin = await pinOf(store, "usage-named");
   assert.deepEqual(Object.fromEntries(Object.entries(pin).map(([name, one]) => [name, one.usd])), { "monid:apollo/news_articles/search": null, "monid:faux/person/enrich": 0.003 }, "pinned, with no fixed price: each call is held at monid's estimate");
   const usage = (named.body.warnings ?? []).filter((warning) => warning.message.includes("priced by usage"));
-  assert.deepEqual(usage.map(({ field, message }) => ({ field, message })), [{ field: "definition.tools[1]", message: USAGE("monid:apollo/news_articles/search") }], JSON.stringify(named.body.warnings));
+  assert.deepEqual(usage.map(({ field, reason, message }) => ({ field, reason, message })), [{ field: "definition.tools[1]", reason: "priced_by_usage", message: USAGE("monid:apollo/news_articles/search") }], JSON.stringify(named.body.warnings));
 });
 
 test("a provider's wildcard keeps its endpoints priced by usage, each named in a warning at the wildcard's grant; a provider priced only by usage saves too", async (t) => {

@@ -570,6 +570,7 @@ __all__ = [
     "RunList",
     "RunPending1",
     "RunPending2",
+    "RunPending2Price",
     "RunPending3",
     "RunPending4",
     "RunPending5",
@@ -590,6 +591,7 @@ __all__ = [
     "RunSummaryLearningWorkflowsItem",
     "RunSummaryPending1",
     "RunSummaryPending2",
+    "RunSummaryPending2Price",
     "RunSummaryPending3",
     "RunSummaryPending4",
     "RunSummaryPending5",
@@ -1182,7 +1184,7 @@ class AgentTemplate(TypedDict):
 
 class _InputIssueRequired(TypedDict):
     field: str
-    reason: Literal["missing", "wrong_type", "not_allowed", "not_an_option", "too_short", "too_long", "too_few", "too_many", "bad_format", "duplicate", "invalid", "not_set_up_here", "redirect", "not_https", "too_many_tools", "tools_too_large", "reserved", "expired", "registration_unavailable"]
+    reason: Literal["missing", "wrong_type", "not_allowed", "not_an_option", "too_short", "too_long", "too_few", "too_many", "bad_format", "duplicate", "invalid", "not_set_up_here", "redirect", "not_https", "too_many_tools", "tools_too_large", "reserved", "expired", "registration_unavailable", "priced_by_usage"]
     message: str
 
 
@@ -1621,7 +1623,11 @@ class _RunSummaryPending2Required(TypedDict):
 
 
 class RunSummaryPending2(_RunSummaryPending2Required, total=False):
-    price: float | Literal["not metered"]
+    price: float | Literal["not metered"] | RunSummaryPending2Price
+
+
+class RunSummaryPending2Price(TypedDict):
+    estimate_usd: float
 
 
 class _RunSummaryPending3Required(TypedDict):
@@ -3530,7 +3536,11 @@ class _RunPending2Required(TypedDict):
 
 
 class RunPending2(_RunPending2Required, total=False):
-    price: float | Literal["not metered"]
+    price: float | Literal["not metered"] | RunPending2Price
+
+
+class RunPending2Price(TypedDict):
+    estimate_usd: float
 
 
 class _RunPending3Required(TypedDict):

@@ -39,6 +39,7 @@ import { DEFINITION_FIELDS, EXTERNAL_NAME, MODEL_REF } from "./validate.js";
 import { CATEGORIES, COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS } from "./templates.js";
 import { MCP_SOURCES } from "./mcp-sources.js";
 import { NOT_SET_UP } from "./runnable.js";
+import { PRICED_BY_USAGE } from "./monid.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
 import { BROWSER_VENDOR_IDS, DECISION_PROVIDER_KEYS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS } from "./tool-plane.js";
 import { tableTools } from "./tool-list.js";
@@ -2473,7 +2474,7 @@ const PENDING: Json = {
         call_id: { type: "string", description: "The call's id, as its tool_result row's tool_use_id." },
         args_preview: { type: "string", maxLength: ARGS_PREVIEW_BYTES, description: `The call's arguments as JSON, cut at ${ARGS_PREVIEW_BYTES} bytes.` },
         requested_at: { type: "string", format: "date-time" },
-        price: { oneOf: [{ type: "number", minimum: 0 }, { const: "not metered" }], description: "What the call costs, in USD, where its tool declares a price; \"not metered\" for an unpriced MCP call. Absent when the tool names none." },
+        price: { oneOf: [{ type: "number", minimum: 0 }, { const: "not metered" }, { type: "object", additionalProperties: false, required: ["estimate_usd"], properties: { estimate_usd: { type: "number", minimum: 0, description: "monid's estimate for this call's input, in USD." } } }], description: "What the call costs, in USD, where its tool declares a price; \"not metered\" for an unpriced MCP call; `{estimate_usd}` for a monid endpoint priced by usage: monid's estimate for this call's input, which its charge can pass (the call is held at it, and a charge above it stops the run). Absent when the tool names none." },
       },
       description: "A tool call set to ask waits for the owner's approval (status input_required, state waiting): POST /runs/{run_id}/approvals/{id} answers it.",
       "x-agentrun-serve": "approvals/1",
@@ -3386,6 +3387,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     if (!Array.isArray(issueReason.enum) || issueReason.enum.includes(reason)) continue;
     issueReason.enum = [...issueReason.enum, reason];
     fields.push(`InputIssue.reason.${reason}`);
+  }
+  // A save's warning for each monid endpoint priced by usage it pins (monid.ts usageWords).
+  if (Array.isArray(issueReason.enum) && !issueReason.enum.includes(PRICED_BY_USAGE)) {
+    issueReason.enum = [...issueReason.enum, PRICED_BY_USAGE];
+    fields.push(`InputIssue.reason.${PRICED_BY_USAGE}`);
   }
   // A paid tool's charges (monid's) are a meter of their own on /usage, beside the model's tokens.
   const meter = schemas.Meter as Json & { enum?: string[] };

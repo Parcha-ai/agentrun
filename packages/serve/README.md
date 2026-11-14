@@ -1414,12 +1414,13 @@ An agent is granted [monid](https://monid.ai)'s data endpoints on one key, `MONI
 `monid:<provider>/<endpoint>` (one, such as `monid:apollo/people/match`) or `monid:<provider>/*` (every endpoint monid
 lists for the provider, at most 50). Each grant is read against monid's listing when the agent is saved, and pinned on
 that revision with the endpoint's description, its input schema (`pathParams`, `queryParams`, `body`) and its price; a
-provider or endpoint monid does not list, or a grant saved with no monid key, is refused at the save in words. Only an
-endpoint with a fixed price is pinned: one monid prices by usage (per result, per unit, metered) costs what it used,
-known only after it has run, and monid bounds no such call's charge (its `maxCost` checks only its estimate, which such
-a call can pass), so no hold could keep a run's cap. It is refused at the save as a named grant, naming the endpoint
-and why, and a provider's wildcard leaves it out, each left-out endpoint named in the save's `warnings`; a wildcard that
-leaves every endpoint out is refused. An edit pins again. A workflow's nodes do not bind monid endpoints yet. Each pinned endpoint is a tool of its own on every
+provider or endpoint monid does not list, or a grant saved with no monid key, is refused at the save in words. An
+endpoint monid prices by usage (per result, per unit, metered, or a matrix or tier with a usage part) is pinned too,
+named or from a wildcard, and the save's `warnings` name each one (`reason` `priced_by_usage`): "monid:<provider>/<endpoint>
+is priced by usage: monid can't cap what it charges, so a call can cost more than its estimate and more than the run's
+cap allows." What one such call costs is known only after it has run, and monid's `maxCost` checks only its estimate,
+which such a call can pass. Which endpoints an agent may call is the control: grant them by name or by provider, and
+set each to deny or ask in tool settings. An edit pins again. A workflow's nodes do not bind monid endpoints yet. Each pinned endpoint is a tool of its own on every
 harness, named on the wire with `__` for `:` and `/` (`monid__apollo__people__match`), asked about by default, and set by
 its own name or its provider's wildcard in tool settings.
 Each run is paid per call from the monid workspace's wallet, and is sent once, never retried. An async provider's
@@ -1435,8 +1436,14 @@ Each run is marked in the run's records before it is sent, held at its pinned pr
 variant of a matrix; a tiered price's default and every tier), and its approval card shows that hold; its charge
 settles the mark. It is sent with that hold as monid's `maxCost`, so an endpoint monid prices higher now than when the
 agent was saved is refused by monid unrun and uncharged, never booked past its hold. Before it is sent, its price is
-read again from monid (an inspect, which monid does not charge): one monid now prices by usage, whose estimate could
-pass that `maxCost` while its charge does not, is refused unsent, in words naming how monid prices it now. A mark a crash left unsettled leaves the run's cost unknown, as a
+read again from monid (an inspect, which monid does not charge). A call of an endpoint priced by usage (or one monid
+has re-priced by usage since the save) is held at monid's estimate for the call's own input instead: the call is first
+sent with `maxCost` 0, which monid refuses unrun and uncharged, naming its estimate; that estimate is the hold, and the
+call is sent with it as `maxCost`. Its approval card reads "Priced by usage, about $X (monid's estimate), can cost
+more" (`pending.price` `{estimate_usd}`). Its charge can pass the estimate: then it is booked as charged, and the run
+stops at once, failed, in the words "monid charged $X, more than the $Y held; the run stopped". A run's spend cap is a
+hard stop for everything but that one charge. A call monid estimates at $0 is a free run, which `maxCost` 0 lets
+through: the estimate's read runs it (on its card, before the person answers), and it is held at $0. A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
 never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as
@@ -1444,7 +1451,7 @@ a crash-cut mark does, so the run goes on while its cap allows, in its process a
 one monid says it did not charge (refused as sent, `BLOCKED`, `STOPPED`, the provider's error) books nothing. Under a
 cap, each endpoint's call is held as a model request is: unless what the run has spent plus what the call is held at
 fits its `max_cost_usd`, or when the spend is unknown, the call is refused with a `spend_cap_reached` error the model
-reads, naming the endpoint, its hold and the cap, the run pauses on its cap, and monid is never called. Runs go one at a time under a cap, and on
+reads, naming the endpoint, its hold and the cap, the run pauses on its cap, and the call is never sent (one priced by usage has had only its estimate read). Runs go one at a time under a cap, and on
 claude-agent and codex the check holds each model request still in flight at its worst case. A run sent holds its
 figure until its charge is in, on every harness: a model request checked meanwhile counts it beside what the run has
 spent, and a run that fails without an answer counts at it. Every harness calls an endpoint as a host tool in the run's
@@ -2989,7 +2996,9 @@ leaves the field out keeps the agent's default, as it keeps its harness and plac
 spend limit. A workflow definition keeps one the same way. The cap is checked in the run's own process
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 what each request still in flight is held at, plus what this request is expected to cost must stay within it, or the
-request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). A request costs its input, plus the output it
+request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). The cap is a hard stop for everything but
+the charge of a monid call priced by usage, which can pass the estimate it was held at: when it does, the run stops at
+once ([monid](#monid)). A request costs its input, plus the output it
 is sent with at the output price, plus any fee its tokens do not show (below). How its input is priced is the run's
 `cap_mode`: the run's own (`POST /agents/{id}/runs` with `cap_mode`), else its agent's (a definition's `cap_mode`, kept by
 an edit that leaves it out), else `expected`; only a run with a cap takes one (`422 not_allowed` otherwise).

@@ -330,8 +330,9 @@ function settingFrom(name: string, server: PermissionSettings, agent: Permission
 export const permissionOf = (name: string, server: PermissionSettings, agent: PermissionSettings = {}, approvals: Approvals = "ask"): Permission => permissionFrom(name, server, agent, approvals).permission;
 
 /** An approval's price for the person who answers it: USD where the tool declares one (booked through the spend cap's
- *  paidCall), else "not metered" (an unpriced MCP call, the owner's ruling of 11-04). */
-export type ApprovalPrice = number | "not metered";
+ *  paidCall), else "not metered" (an unpriced MCP call, the owner's ruling of 11-04), or `estimate_usd` for a monid
+ *  endpoint priced by usage: monid's estimate for this call's input, which its charge can pass (monid.ts). */
+export type ApprovalPrice = number | "not metered" | { readonly estimate_usd: number };
 
 /** One pending approval, as the run's view shows it (`pending`) and the console's approval card reads it. */
 export type PendingApproval = {
