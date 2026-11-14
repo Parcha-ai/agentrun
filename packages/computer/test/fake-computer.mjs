@@ -55,7 +55,7 @@ function catOf(argv, cwd, computer) {
 const UNPRIVILEGED = { CapInh: NO_CAPABILITIES, CapPrm: NO_CAPABILITIES, CapEff: NO_CAPABILITIES, CapBnd: NO_CAPABILITIES, CapAmb: NO_CAPABILITIES, NoNewPrivs: "1" };
 
 /** What exec.run of argv prints in a computer whose user is uid, as `user` (a name in users, or a uid) when given. */
-function output(argv, { uid, status, users, user, probe, pathSockets = [], socketSearchIncomplete = [] }) {
+function output(argv, { uid, status, users, user, probe, pathSockets = [], socketSearchIncomplete = [], listeners = [], listenerSearchIncomplete = [] }) {
 	const who = user === undefined ? uid : String(users[user] ?? user);
 	if (argv[0] === "id" && argv[1] === "-u") return `${who}\n`;
 	if (argv[0] === "/opt/agentrun/computerd" && argv[1] === "probe") {
@@ -70,7 +70,10 @@ function output(argv, { uid, status, users, user, probe, pathSockets = [], socke
 		// the roots the search could not cover whole.
 		const listed = pathSockets === "no list" ? [] : pathSockets.map((socket) => (typeof socket === "string" ? { path: socket, type: "stream" } : socket));
 		const sockets = !asked || pathSockets === "no list" ? {} : { sockets: { sockets: listed, incomplete: socketSearchIncomplete } };
-		return `${JSON.stringify({ uid: Number(who), gid: Number(who), kernel: "6.8.0", interfaces: probe.interfaces, quiet: probe.quiet ?? [], raised: probe.raised ?? [], ...sockets, reached: answered, accepted: [], results })}\n`;
+		// And the TCP and UDP listeners of the programs' own network, as computerd reports them (none listed when listeners
+		// is "no list"), and the tables it could not read.
+		const listening = !asked || listeners === "no list" ? {} : { listeners: { listeners, incomplete: listenerSearchIncomplete } };
+		return `${JSON.stringify({ uid: Number(who), gid: Number(who), kernel: "6.8.0", interfaces: probe.interfaces, quiet: probe.quiet ?? [], raised: probe.raised ?? [], ...sockets, ...listening, reached: answered, accepted: [], results })}\n`;
 	}
 	if (argv[0] === "cat" && argv[1] === "/proc/self/status") {
 		const lines = Object.entries(status).filter(([, value]) => value !== undefined);
@@ -214,6 +217,9 @@ function fakeDaemon(hello, computer) {
  * - `failRelease`: labels; a release of a computer that carries all of them fails ("refused", in words) and leaves it.
  * - `vendorAgentPorts`: capabilities().vendorAgentPorts, left out unless given. `probeInterfaces`: the interfaces
  *   `computerd probe` reports (default the loopback alone); `agentAnswers`: the probe targets that answer (default none).
+ *   `listeners`: the TCP and UDP listeners `computerd probe --sockets` reports in the programs' own network, as computerd
+ *   writes them (default none; "no list": a daemon that lists none); `listenerSearchIncomplete`: the tables it could not
+ *   read.
  * - `persistence`: capabilities().persistence ({ keepsState: true, resume }), left out unless given. With it, check()
  *   takes spec.owner with no lifetime, create labels the computer with its owner, release "detach" stops an agent's
  *   computer with its files kept (and, with resume, its processes), and attach with a claim brings it back under the
@@ -271,6 +277,8 @@ export function fakeComputers({
 	toolCannotWrite = false,
 	pathSockets = [],
 	socketSearchIncomplete = [],
+	listeners = [],
+	listenerSearchIncomplete = [],
 	display,
 	persistence,
 	brokenPersistence,
@@ -377,6 +385,8 @@ export function fakeComputers({
 					toolCannotWrite,
 					pathSockets,
 					socketSearchIncomplete,
+					listeners,
+					listenerSearchIncomplete,
 					display,
 					...(spec.gpu && !gpuUnseen ? { gpus: spec.gpu } : {}),
 					probe: { interfaces: probeInterfaces, quiet: probeQuiet, raised: probeRaised, answers: agentAnswers },

@@ -11,8 +11,8 @@ import { codexPolicy } from '../dist/host/policy.js';
 const { startModelProxy } = host;
 const KEY = 'session-key-for-tests';
 const fixture = (name) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
-const RECORDED_REQUEST = JSON.parse(fixture('responses-request-gpt-5.4-mini.json'));
-const RECORDED_STREAM = fixture('responses-stream-gpt-5.4-mini.sse');
+const RECORDED_REQUEST = JSON.parse(fixture('responses-request-recorded.json'));
+const RECORDED_STREAM = fixture('responses-stream-recorded.sse');
 
 function send(url, body) {
   const { hostname, port } = new URL(url);

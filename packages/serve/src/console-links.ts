@@ -4,3 +4,6 @@ export const runLink = (origin: string, runId: string): string => `${origin}/#/r
 // `#/agents/new` is the console's new-agent form, so an agent whose id is "new" gets its Runs tab, as the console's own
 // agentHash gives it (apps/console AgentPage.tsx).
 export const agentLink = (origin: string, agentId: string): string => `${origin}/#/agents/${encodeURIComponent(agentId)}${agentId === "new" ? "/runs" : ""}`;
+// A template package's apply page; for a package not stored (a dry run), the install page, which shows it whole first.
+export const templateLink = (origin: string, id: string): string => `${origin}/#/templates/${encodeURIComponent(id)}`;
+export const templateInstallLink = (origin: string, source: string): string => `${origin}/#/templates/install?src=${encodeURIComponent(source)}`;

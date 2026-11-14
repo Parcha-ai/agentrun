@@ -5,15 +5,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, computerNameFor as nameOf } from "../dist/index.js";
-import { DAEMON, DESKTOP_GROUPS, deferred, fakeHost, LINUX_GROUPS, VERSION } from "./fake-host.mjs";
+import { DAEMON, DESKTOP_GROUPS, deferred, fakeHost, LINUX_GROUPS, NotFound, VERSION } from "./fake-host.mjs";
 
 const { hostedProvider } = await import("../dist/hosted/provider.js");
 const { hostedCommands } = await import("../dist/hosted/scripts.js");
+const { WINDOW_MANAGER } = await import("../dist/desktop.js");
 
 const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
@@ -110,6 +111,8 @@ test("a host's own rules (check), label budget and label names are held at check
 	const fake = fakeHost();
 	const strict = hostedProvider({ ...fake.host, check: (spec) => (spec.image === "bad" ? [{ field: "image", message: "not a vendor image" }] : []) }, { label: "Fakehost", daemonPath: DAEMON_PATH });
 	assert.deepEqual(strict.check({ ...SPEC, image: "bad" }), [{ field: "image", message: "not a vendor image" }]);
+	// The host's check is given an object, whatever the caller gave: it reads the fields with no check of its own.
+	for (const given of [null, undefined, "img", 7]) assert.deepEqual(strict.check(given).find(({ field }) => field === "image")?.message, "an image is required: the name of a Fakehost image", String(given));
 });
 
 // --- create ---
@@ -152,6 +155,61 @@ test("create names the computer from its request id, makes the machine with the 
 	assert.ok(runs.includes("daemon process.start"), "the X server started through the daemon");
 	assert.ok(runs.includes("daemon exec.run"), "the probe ran");
 	assert.deepEqual(fake.uploads.map(({ through }) => through), ["upload"], "the daemon went in through the host's file API");
+});
+
+test("a child host's own sockets (vendorSockets) are closed to the computer's user before init starts, and said in the notes; one that will not close refuses the computer", async () => {
+	const sockets = ["/tmp/dbus-Y8OW6E3FDx", "/tmp/dbus-AAAAAAAAAA", "/tmp/.X11-unix/X0", "/tmp/sub/dbus-nested"];
+	const { provider, fake } = setup({}, { facts: { vendorSockets: ["/tmp/dbus-*"] }, sockets });
+	const ref = made(await create(provider));
+	assert.deepEqual(ref.notes, [INSTALLER_NOTE, "Fakehost's own sockets closed to the computer's user: /tmp/dbus-AAAAAAAAAA, /tmp/dbus-Y8OW6E3FDx", ACCEPTED_NOTE]);
+	const runs = runsOf(fake, only(fake).id);
+	assert.deepEqual(runs.slice(0, 4), ["run install", "run sockets", "run start", "run stdio"], "closed after the install, before init starts");
+	assert.deepEqual(hostedCommands({ vendorSockets: ["/tmp/dbus-*"] }).sockets?.slice(4), ["/tmp/dbus-*"], "each pattern one argument, as given");
+	const none = setup({}, { facts: { vendorSockets: ["/tmp/dbus-*"] } });
+	assert.equal(made(await create(none.provider)).notes[1], "Fakehost's own sockets closed to the computer's user: none found (/tmp/dbus-*)");
+	const failing = setup({}, { facts: { vendorSockets: ["/tmp/dbus-*"] }, sockets, socketsFail: "/tmp/dbus-Y8OW6E3FDx" });
+	const refused = await create(failing.provider);
+	assert.equal(refused.error?.code, "refused");
+	assert.match(refused.error.message, /closing Fakehost's own sockets to the computer's user failed \(exit 1\): closed \/tmp\/dbus-AAAAAAAAAA\nfailed \/tmp\/dbus-Y8OW6E3FDx/);
+	assert.ok(!failing.fake.events.some(({ what }) => what === "run start"), "init never started");
+	await nothingLeft(failing.fake, "a computer whose vendor sockets would not close");
+	const plain = setup();
+	made(await create(plain.provider));
+	assert.ok(!runsOf(plain.fake, only(plain.fake).id).includes("run sockets"), "a host that names none runs no sockets script");
+	assert.equal(hostedCommands().sockets, undefined);
+	const pid1 = setup({}, { facts: { ...USER_FACTS, vendorSockets: ["/tmp/dbus-*"] }, sockets });
+	made(await create(pid1.provider));
+	assert.ok(!runsOf(pid1.fake, only(pid1.fake).id).includes("run sockets"), "a pid1 host's init is its main process: no sockets script");
+});
+
+test("the sockets script, run by sh: each socket a pattern names loses others' access (owner and group keep theirs), a link or a file is left alone, and it says each", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-sockets-"));
+	try {
+		// Not root here: the script reaches root through sudo -n, which this stand-in runs as it is.
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		writeFileSync(join(bin, "sudo"), '#!/bin/sh\n[ "$1" = -n ] && shift\nexec "$@"\n', { mode: 0o755 });
+		const bind = (path) => {
+			execFileSync("python3", ["-I", "-c", "import socket, sys\ns = socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])", path]);
+			chmodSync(path, 0o777);
+		};
+		const bus = join(root, "dbus-Y8OW6E3FDx");
+		const other = join(root, "agentrun.sock");
+		const target = join(root, "target.sock");
+		for (const path of [bus, other, target]) bind(path);
+		symlinkSync(target, join(root, "dbus-link"));
+		writeFileSync(join(root, "dbus-file"), "");
+		chmodSync(join(root, "dbus-file"), 0o666);
+		const argv = hostedCommands({ vendorSockets: [`${root}/dbus-*`, `${root}/absent-*`] }).sockets;
+		const out = execFileSync(argv[0], argv.slice(1), { env: { PATH: `${bin}:${process.env.PATH}` }, encoding: "utf8" });
+		assert.equal(out, `closed ${bus}\n`);
+		assert.equal(statSync(bus).mode & 0o777, 0o770, "others lose read, write and search; the owner and group keep theirs");
+		assert.equal(statSync(other).mode & 0o777, 0o777, "a socket no pattern names is left alone");
+		assert.equal(statSync(target).mode & 0o777, 0o777, "a link is never followed");
+		assert.equal(statSync(join(root, "dbus-file")).mode & 0o777, 0o666, "a file that is not a socket is left alone");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("a host with no file API gets the daemon through exec's stdin", async () => {
@@ -300,6 +358,42 @@ test("a retry is held to the size its computer reads back where the vendor takes
 	assert.match(bigger.error.message, new RegExp(`${ref.name} was made for this request with another spec, so it is not returned: cpus: asked 4, read back 2`));
 	assert.equal(made(await provider.create(spec, { requestId: "sized" })).id, ref.id, "the same spec gets the same computer");
 	assert.equal(made(await provider.create(SPEC, { requestId: "sized" })).id, ref.id, "a size the spec leaves out is the vendor's default");
+	assert.equal(fake.creates(), 1, "never a second machine under one name");
+});
+
+test("a retry is held to the GPUs its computer reads back: a GPU request that finds its computer made without one, or the other way round, is refused as exists", async () => {
+	const H100 = { type: "H100", count: 1 };
+	const { provider, fake } = setup({}, { facts: { gpu: { types: ["H100"], max: 1 } } });
+	const plain = made(await provider.create(SPEC, { requestId: "cpu-first" }));
+	const gpu = await provider.create({ ...SPEC, gpu: H100 }, { requestId: "cpu-first" });
+	assert.equal(gpu.error?.code, "exists", "a GPU request never gets the computer made without one");
+	assert.match(gpu.error.message, new RegExp(`${plain.name} was made for this request with another spec, so it is not returned: gpu: asked \\{"type":"H100","count":1\\}, read back nothing`));
+	const withGpu = made(await provider.create({ ...SPEC, gpu: H100 }, { requestId: "gpu-first" }));
+	const none = await provider.create(SPEC, { requestId: "gpu-first" });
+	assert.equal(none.error?.code, "exists", "a request without a GPU never gets the GPU computer");
+	assert.match(none.error.message, /gpu: asked nothing, read back \{"type":"H100","count":1\}/);
+	assert.equal(made(await provider.create({ ...SPEC, gpu: H100 }, { requestId: "gpu-first" })).id, withGpu.id, "the same spec gets the same computer");
+	assert.equal(made(await provider.create(SPEC, { requestId: "cpu-first" })).id, plain.id);
+	assert.equal(fake.creates(), 2, "never a second machine under one name");
+});
+
+test("a retry from a restarted provider, of a sized request on a host that takes sizes but reads none back (Modal), finds the computer the first made", async () => {
+	const fake = fakeHost({ facts: { specFields: ["cpus", "memoryMb"] } });
+	const spec = { ...SPEC, cpus: 4, memoryMb: 8192 };
+	const before = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const ref = made(await before.create(spec, { requestId: "sized-unread" }));
+	const after = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	assert.equal(made(await after.create(spec, { requestId: "sized-unread" })).id, ref.id, "a size read back as nothing is not a drift");
+	assert.equal(fake.creates(), 1, "never a second machine under one name");
+});
+
+test("a retry from a restarted provider, of a GPU request on a host that reads no GPUs back (Modal), finds the computer the first made", async () => {
+	const H100 = { type: "H100", count: 1 };
+	const fake = fakeHost({ facts: { gpu: { types: ["H100"], max: 1 }, gpuReadBack: false } });
+	const before = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const ref = made(await before.create(SPEC, { requestId: "gpu-unread" }));
+	const after = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	assert.equal(made(await after.create({ ...SPEC, gpu: H100 }, { requestId: "gpu-unread" })).id, ref.id, "GPUs the vendor reads none of are not a drift");
 	assert.equal(fake.creates(), 1, "never a second machine under one name");
 });
 
@@ -501,6 +595,71 @@ test("release never touches a machine that is not this provider's, and refuses s
 	assert.equal((await provider.connect({ id: stranger.id, name: "computer-0123456789ab" })).error?.code, "not_found");
 });
 
+test("release stop, where the host declares it: the host only asks, and the adapter waits until get and the listing read it stopped, asking again while it reads running; it keeps the machine; never another's; no stop hook is unsupported", async () => {
+	const { provider, fake } = setup({}, { facts: { release: ["stop", "delete"], stopDeletes: false } });
+	const asks = [];
+	let lost = 1;
+	fake.host.stop = async (id, ctx) => {
+		asks.push([id, ctx.timeoutMs]);
+		// The first ask is lost: the machine reads running still, so the adapter asks again.
+		if (lost-- <= 0) Object.assign(fake.machines.get(id), { state: "stopping", stoppingReads: 3 });
+		return { ok: true, value: undefined };
+	};
+	const reading = fake.host.get;
+	fake.host.get = async (id, ctx) => {
+		const m = fake.machines.get(id);
+		if (m?.state === "stopping" && --m.stoppingReads <= 0) m.state = "stopped";
+		return reading(id, ctx);
+	};
+	assert.deepEqual(provider.capabilities().release, ["stop", "delete"]);
+	const ref = made(await create(provider));
+	assert.deepEqual(await provider.release(ref, "stop"), { ok: true, value: undefined });
+	assert.equal(fake.machines.get(ref.id).state, "stopped", "answered once the machine read stopped, not once the host took the ask");
+	assert.deepEqual(asks, [[ref.id, TIMEOUTS.requestMs], [ref.id, TIMEOUTS.requestMs]], "asked again while it read running, each ask bounded by requestMs");
+	assert.equal(fake.live().length, 1, "a stop keeps the machine");
+	assert.deepEqual(await provider.release(ref, "stop"), { ok: true, value: undefined });
+	assert.equal(asks.length, 2, "a machine that reads stopped is not asked");
+	const stranger = fake.add({ labels: { team: "x" } });
+	assert.equal((await provider.release({ id: stranger.id, name: "computer-0123456789ab" }, "stop")).error?.code, "not_found");
+	assert.equal(asks.length, 2, "another's machine is never stopped");
+	// One that goes to failed ends the wait; one that never reads stopped is bounded by goneMs, saying what it last read.
+	fake.host.stop = async (id) => ((fake.machines.get(id).state = "failed"), { ok: true, value: undefined });
+	const failed = await provider.release(made(await create(provider)), "stop");
+	assert.equal(failed.error?.code, "vendor");
+	assert.match(failed.error.message, /went to failed/);
+	fake.host.stop = async (id) => (Object.assign(fake.machines.get(id), { state: "stopping", stoppingReads: Number.POSITIVE_INFINITY }), { ok: true, value: undefined });
+	const slow = await provider.release(made(await create(provider)), "stop");
+	assert.equal(slow.error?.code, "timeout");
+	assert.match(slow.error.message, /read it stopping/);
+	fake.host.stop = async () => ({ ok: false, error: { code: "denied", message: "the key may not stop it" } });
+	assert.equal((await provider.release(made(await create(provider)), "stop")).error?.code, "denied", "a stop the vendor refused is the answer");
+	delete fake.host.stop;
+	assert.equal((await provider.release(ref, "stop")).error?.code, "unsupported", "declared, but with no stop hook: unsupported");
+});
+
+test("release stop of a computer whose stop deletes it (stopDeletes, or a GPU's where gpu.stopDeletes) waits until it is gone", async () => {
+	const { provider, fake } = setup({}, { facts: { release: ["stop", "delete"], stopDeletes: false, gpu: { types: ["H100"], max: 1, stopDeletes: true } } });
+	fake.host.stop = async (id) => ((fake.machines.get(id).state = "stopped"), { ok: true, value: undefined });
+	const reading = fake.host.get;
+	fake.host.get = async (id, ctx) => {
+		const m = fake.machines.get(id);
+		// The vendor deletes a GPU machine a few reads after it stops.
+		if (m?.request?.gpu !== undefined && m.state === "stopped" && !m.deleted && (m.reads = (m.reads ?? 0) + 1) >= 3) m.deleted = true;
+		return reading(id, ctx);
+	};
+	const gpu = made(await create(provider, { ...SPEC, gpu: { type: "H100", count: 1 } }));
+	assert.deepEqual(await provider.release(gpu, "stop"), { ok: true, value: undefined });
+	assert.equal(fake.machines.get(gpu.id).deleted, true, "answered once the GPU computer was gone");
+	const plain = made(await create(provider));
+	assert.deepEqual(await provider.release(plain, "stop"), { ok: true, value: undefined });
+	assert.equal(fake.machines.get(plain.id).deleted, false, "a computer with no GPU is kept, stopped");
+	// A GPU computer that goes to failed on its stop ends the wait, as a kept one does, not at goneMs.
+	fake.host.stop = async (id) => ((fake.machines.get(id).state = "failed"), { ok: true, value: undefined });
+	const failed = await provider.release(made(await create(provider, { ...SPEC, gpu: { type: "H100", count: 1 } })), "stop");
+	assert.equal(failed.error?.code, "vendor");
+	assert.match(failed.error.message, /the stop of computer-[0-9a-f]{12}: it went to failed/);
+});
+
 // --- connect, list, attach, network ---
 
 test("connect checks hello against the provider: one that drifted is refused; a stopped machine is refused without a bridge", async () => {
@@ -510,10 +669,27 @@ test("connect checks hello against the provider: one that drifted is refused; a 
 	assert.equal(connected.hello.version, VERSION);
 	await connected.close();
 	const m = only(fake);
+	// Exact match: a daemon of another version, older or newer, and a daemon one protocol step ahead are each refused.
 	m.box.helloPatch = { version: "0.0.0-other" };
-	assert.equal((await provider.connect(ref)).error?.code, "refused");
+	const older = await provider.connect(ref);
+	assert.equal(older.error?.code, "refused");
+	assert.match(older.error.message, new RegExp(`hello: the daemon reports version "?0\\.0\\.0-other"?, expected ${VERSION.replaceAll(".", "\\.")}`));
+	m.box.helloPatch = { protocol: "0.3" };
+	const ahead = await provider.connect(ref);
+	assert.equal(ahead.error?.code, "refused");
+	assert.match(ahead.error.message, /hello: the daemon speaks protocol 0\.3, expected exactly 0\.2/);
 	m.state = "stopped";
 	assert.equal((await provider.connect(ref)).error?.code, "refused");
+});
+
+test("connect to a machine the vendor reads as going (past its deadline or released, still being deleted) answers gone, not refused; releasing it again stays ok", async () => {
+	const { provider, fake } = setup();
+	const ref = made(await create(provider));
+	only(fake).state = "going";
+	const connected = await provider.connect(ref);
+	assert.equal(connected.error?.code, "gone");
+	assert.match(connected.error?.message ?? "", /going/);
+	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
 });
 
 test("list finds this provider's machines by labels; attach by id or labels reads the spec back; one that drifted is refused and left running", async () => {
@@ -587,6 +763,41 @@ test("testConnection lists by the adapter's label and counts this provider's mac
 	assert.match(made(await provider.testConnection()).detail, /^Fakehost answered: 1 computer of this provider$/);
 });
 
+test("a listing as the vendor reads it (no network, more machines than carry the labels): list reads each one it keeps by get, attach and a retry find theirs, and testConnection counts with no get", async () => {
+	const { provider, fake } = setup();
+	const a = made(await provider.create({ ...SPEC, labels: { team: "a" } }, { requestId: "listing-a" }));
+	made(await create(provider, { ...SPEC, labels: { team: "b" } }));
+	// The listing filters by the adapter's label alone, and carries no network and none of the vendor's drift or timer.
+	// stale: labels a listing older than get still shows.
+	const listing = fake.host.list;
+	const stale = new Map();
+	fake.host.list = async (labels, ctx) => {
+		const read = await listing({ [COMPUTER]: "1" }, ctx);
+		return read.ok ? { ok: true, value: read.value.map(({ id, labels: carried, state, createdAt }) => ({ id, labels: stale.get(id) ?? carried, state, createdAt })) } : read;
+	};
+	const gets = () => fake.calls.filter(([name]) => name === "get").length;
+	let before = gets();
+	const listed = made(await provider.list({ team: "a" }));
+	assert.deepEqual(listed.map((info) => [info.ref.id, info.network, info.state]), [[a.id, "none", "running"]]);
+	assert.equal(gets() - before, 1, "one get: of the one computer kept");
+	assert.equal(made(await provider.attach({ labels: { team: "a" } })).id, a.id);
+	assert.equal(made(await provider.create({ ...SPEC, labels: { team: "a" } }, { requestId: "listing-a" })).id, a.id, "a retry reads its computer by get");
+	before = gets();
+	assert.match(made(await provider.testConnection()).detail, /^Fakehost answered: 2 computers of this provider$/);
+	assert.equal(gets(), before, "Settings' test reads the listing alone");
+	assert.equal(fake.creates(), 2);
+	// A listing older than get: the labels get reads are the ones held to the filter.
+	stale.set(a.id, { ...fake.machines.get(a.id).labels });
+	fake.machines.get(a.id).labels.team = "c";
+	assert.deepEqual(made(await provider.list({ team: "a" })), [], "relabelled since the listing: not team a");
+	// A machine the vendor lost between the listing and the read (get is not_found) is left out, not a failed list.
+	stale.delete(a.id);
+	fake.machines.get(a.id).labels.team = "a";
+	const read = fake.host.get;
+	fake.host.get = async (id, ctx) => (id === a.id ? { ok: false, error: { code: "not_found", message: `${id} is gone` } } : read(id, ctx));
+	assert.deepEqual(made(await provider.list({ team: "a" })), [], "gone since the listing: left out");
+});
+
 // --- Archil ---
 
 const TOKEN = "tok-hosted-archil-0123456789abcdef";
@@ -611,6 +822,54 @@ test("Archil: install, then preflight, mount with the token on stdin alone, and 
 	assert.equal(info.network, "none", "the tools' network is init's own");
 	assert.equal(info.mount.kind, "archil");
 	noToken(info, "the listing");
+});
+
+test("Archil: the mount's label records the folder's agent alone, since agentrun.run holds its run; list and attach read the whole folder back", async () => {
+	const { provider, fake } = setup({}, { box: { reached: [] } });
+	const ref = made(await create(provider, ARCHIL_SPEC));
+	const m = only(fake);
+	assert.equal(m.labels["agentrun.mount"], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }));
+	const [info] = made(await provider.list({ "agentrun.run": "r1" }));
+	assert.deepEqual({ ...info.mount, exclusive: undefined, epoch: undefined }, { kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder, exclusive: undefined, epoch: undefined });
+	const attached = made(await provider.attach({ id: ref.id }));
+	assert.equal(attached.spec.mount.folder, MOUNT.folder);
+	noToken(attached.spec.mount, "the attached spec's mount");
+});
+
+/** The adapter's own labels at their longest: a name of its making, and a deadline and its cap as ISO times. */
+const ownLongest = (image, more = {}) => ({ [COMPUTER]: "1", [NAME]: "computer-000000000000", [DEADLINE]: new Date(0).toISOString(), "agentrun.computer.image": image, [MAX]: new Date(0).toISOString(), ...more });
+const pairBytes = (labels) => Object.entries(labels).reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
+
+test("labelRules.maxBytes: the adapter prices the caller's labels with its own at their longest, names and values (pairs) or the JSON of them (json), at check() and at create, before any host call", async () => {
+	const own = pairBytes(ownLongest(SPEC.image));
+	const pairs = setup({}, { facts: { labelRules: { maxBytes: own + 10, measure: "pairs" } } });
+	assert.deepEqual(pairs.provider.check({ ...SPEC, labels: { a: "123456789" } }), [], "10 bytes fit");
+	const over = pairs.provider.check({ ...SPEC, labels: { a: "1234567890" } });
+	assert.deepEqual(over.map(({ field }) => field), ["labels"]);
+	assert.match(over[0].message, new RegExp(`a Fakehost computer's labels come to at most ${own + 10} bytes, names and values together, and this computer's would come to ${own + 11} \\(.*\\ba 11\\b.*\\): give a shorter image, mount folder or labels`));
+	assert.deepEqual(pairs.provider.check({ ...SPEC, image: "img2", labels: { a: "123456789" } }).map(({ field }) => field), ["labels"], "the image is one of the adapter's own labels");
+	const refused = await create(pairs.provider, { ...SPEC, labels: { a: "1234567890" } });
+	assert.equal(refused.error?.code, "refused");
+	assert.match(refused.error.message, /labels: .*come to at most/);
+	assert.deepEqual(pairs.fake.calls, [], "no host call");
+	// Archil: the mount's own label is priced too, and the mount is the field.
+	const archilOwn = pairBytes(ownLongest(ARCHIL_SPEC.image, { "agentrun.mount": JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }) })) + pairBytes(ARCHIL_SPEC.labels);
+	const archil = setup({}, { facts: { labelRules: { maxBytes: archilOwn, measure: "pairs" } } });
+	assert.deepEqual(archil.provider.check(ARCHIL_SPEC), [], "an Archil computer's labels at the bound fit");
+	const long = archil.provider.check({ ...ARCHIL_SPEC, mount: { ...MOUNT, folder: "agents/a12/runs/r1/work" } });
+	assert.deepEqual(long.map(({ field }) => field), ["mount"]);
+	assert.match(long[0].message, /agentrun\.mount \d+/);
+	noToken(long, "the refusal of the labels' size");
+	// json: the caller's and the adapter's labels as one JSON object.
+	const json = JSON.stringify({ a: "x", ...ownLongest(SPEC.image) }).length;
+	const asJson = setup({}, { facts: { labelRules: { maxBytes: json, measure: "json" } } });
+	assert.deepEqual(asJson.provider.check({ ...SPEC, labels: { a: "x" } }), []);
+	const jsonOver = asJson.provider.check({ ...SPEC, labels: { a: "xx" } });
+	assert.deepEqual(jsonOver.map(({ field }) => field), ["labels"]);
+	assert.match(jsonOver[0].message, new RegExp(`come to at most ${json} bytes, as JSON, and this computer's would come to ${json + 1}`));
+	// The count of labels takes the adapter's own from the same labels: five, and the mount's.
+	const counted = setup({}, { facts: { labelRules: { max: 8 } } });
+	assert.match(counted.provider.check({ ...ARCHIL_SPEC, labels: { ...ARCHIL_SPEC.labels, x: "1" } })[0].message, /takes 8 labels, 6 of them the provider's own: 3 is 1 too many/);
 });
 
 test("Archil: a higher epoch fences the create: nothing mounted, init never starts, and the machine is deleted", async () => {
@@ -665,6 +924,18 @@ test("Archil: release stop lets the folder go (the final sync, then checkin as r
 	assert.match(notes[0].note, /was stopped, and/);
 });
 
+test("Archil: archilEgress (a documentation address here, RFC 5737) goes to the helper's mount as its last word; unset, the mount names no gateway; a malformed one is refused at construction", async () => {
+	const { provider, fake } = setup({ archilEgress: "192.0.2.40:18100:42050" }, { box: { reached: [] } });
+	made(await create(provider, ARCHIL_SPEC));
+	const mount = fake.rootRuns.find(({ verb }) => verb === "mount");
+	assert.equal(mount.argv.at(-1), "egress=192.0.2.40:18100:42050");
+	noToken(mount.argv, "the mount's argv");
+	const plain = setup({}, { box: { reached: [] } });
+	made(await create(plain.provider, ARCHIL_SPEC));
+	assert.ok(!plain.fake.rootRuns.find(({ verb }) => verb === "mount").argv.some((word) => word.startsWith("egress=")));
+	assert.throws(() => setup({ archilEgress: "192.0.2.40:8100:42050" }), /the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>/);
+});
+
 test("Archil: connect gives a client that syncs after each call that may change the folder", async () => {
 	const { provider, fake } = setup({}, { box: { reached: [] } });
 	const ref = made(await create(provider, ARCHIL_SPEC));
@@ -692,6 +963,49 @@ test("pid1: the machine's command is the entrypoint; the daemon goes in beside i
 	assert.notEqual([...fake.machines.values()][1].request.command[8], m.request.command[8], "each create its own");
 	assert.ok(!runsOf(fake, m.id).includes("run start"));
 	assert.equal(provider.capabilities().daemon, "pid1");
+});
+
+test("a desktop's window manager starts once the display answers, with DISPLAY, where the host's facts say so; one that cannot start or ends at once fails create, and nothing is left", async () => {
+	const starts = (fake, id) => fake.requests.filter(({ machine, method }) => machine === id && method === "process.start").map(({ params }) => params);
+	const managed = setup({ kind: "desktop" }, { facts: { windowManager: true } });
+	made(await create(managed.provider));
+	const m = only(managed.fake);
+	const [server, manager, ...more] = starts(managed.fake, m.id);
+	assert.equal(server.argv[0], "Xvfb", "the X server first");
+	assert.deepEqual(manager, { argv: [...WINDOW_MANAGER], env: { DISPLAY: ":0", NO_AT_BRIDGE: "1" } }, "then the window manager, on the display, with no accessibility bus");
+	assert.deepEqual(more, []);
+	const order = managed.fake.requests.filter(({ machine }) => machine === m.id).map(({ method, params }) => (method === "process.start" ? params.argv[0] : method));
+	const between = order.slice(order.indexOf("Xvfb") + 1, order.indexOf(WINDOW_MANAGER[0]));
+	assert.ok(between.filter((method) => method === "hello").length >= 2, `the window manager starts after a hello saw the display, not before: ${order.join(", ")}`);
+
+	const bare = setup({ kind: "desktop" });
+	made(await create(bare.provider));
+	assert.deepEqual(starts(bare.fake, only(bare.fake).id).map(({ argv }) => argv[0]), ["Xvfb"], "no window manager unless the host's facts say so");
+
+	const missing = setup({ kind: "desktop" }, { facts: { windowManager: true }, display: "manager missing", lingers: { reads: 1, lists: 1 } });
+	const failed = await create(missing.provider);
+	assert.equal(failed.error?.code, "not_found");
+	assert.match(failed.error.message, /the window manager \(dbus-run-session .*xfwm4.*\) did not start on :0: dbus-run-session: executable file not found/);
+	await nothingLeft(missing.fake, "a window manager that cannot start");
+
+	const ends = setup({ kind: "desktop" }, { facts: { windowManager: true }, display: "manager dies", lingers: { reads: 1, lists: 1 } });
+	const ended = await create(ends.provider);
+	assert.equal(ended.error?.code, "vendor");
+	assert.match(ended.error.message, /the window manager \(dbus-run-session .*xfwm4.*\) ended with exit code 1 within 1 s of starting on :0: Xfconf could not be initialized/);
+	await nothingLeft(ends.fake, "a window manager that ends at once");
+	assert.ok(
+		managed.fake.requests.some(({ machine, method, params }) => machine === m.id && method === "process.wait" && params.timeoutMs === 1000),
+		"create watches the window manager for a second",
+	);
+
+	// The watch has its own bound: a display with a short timeoutMs that came up with less than a second of it left still
+	// gets a healthy manager, whose process.wait computerd holds the whole second.
+	let held;
+	held = setup(
+		{ kind: "desktop", desktop: { timeoutMs: 700 } },
+		{ facts: { windowManager: true }, onStep: async (name) => (name === "process.wait" && held.fake.requests.at(-1).params.timeoutMs === 1000 ? new Promise((done) => setTimeout(done, 1000)) : undefined) },
+	);
+	made(await create(held.provider));
 });
 
 test("pid1 desktop: the entrypoint carries the display, and init starts with it", async () => {
@@ -914,4 +1228,35 @@ test("a conformance run of a hosted provider sweeps its label through the host a
 	assert.deepEqual(report.cleanup.sweep, { swept: 0, gone: 0, stillThere: [], leftAlone: 0 });
 	assert.deepEqual(report.cleanup.errors, []);
 	assert.deepEqual(report.cleanup.left, []);
+});
+
+test("a host's get that answers not_found, by a throw or by a result, is a machine that is gone", async () => {
+	for (const style of ["throw", "result"]) {
+		const { provider, fake } = setup({}, { starting: 2 });
+		const made = fake.host.create;
+		fake.host.create = async (...args) => {
+			const result = await made(...args);
+			fake.host.get = async () => {
+				if (style === "throw") throw new NotFound("no such machine");
+				return { ok: false, error: { code: "not_found", vendor: "fakehost", message: "no such machine" } };
+			};
+			return result;
+		};
+		const result = await create(provider);
+		assert.equal(result.error?.code, "gone", style);
+		assert.match(result.error.message, /was gone before it ran/, style);
+	}
+});
+
+test("the adapter reads AbortError and TimeoutError by name; a host with no errorCode answers vendor for the rest", async () => {
+	for (const [name, code] of [["TimeoutError", "timeout"], ["AbortError", "aborted"], ["Whatever", "vendor"]]) {
+		const { provider, fake } = setup();
+		const ref = made(await create(provider));
+		delete fake.host.errorCode;
+		fake.host.get = async () => {
+			throw Object.assign(new Error("boom"), { name });
+		};
+		const result = await provider.connect(ref);
+		assert.equal(result.error?.code, code, name);
+	}
 });

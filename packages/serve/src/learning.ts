@@ -34,7 +34,7 @@ import { lstat, readFile, rm } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { bm25, queryOf } from "./learn/relevance.js";
-import { decodedStrings, type DraftDryRun, frontMatter, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, learnedStatus, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, learnedSecretShapes, redactLearned, servedSkill, servedSkills, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
+import { decodedStrings, type DraftDryRun, frontMatter, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, learnedStatus, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, learnedSecretShapes, redactLearned, servedSkill, servedSkills, SKILL_NAME, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { learningInit, type LearningFolder, learningWorkspace, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { readSeed as readFolderSeed } from "./learn/seed-check.js";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
@@ -331,8 +331,6 @@ function compactSchema(schema: unknown, schemas: Record<string, unknown>, depth 
 export const LEARNED_SKILLS_BUDGET = 256 * 1024;
 /** Where a run's harness finds its skills in its work: the revision's, and the learned ones laid beside them. */
 const RUN_SKILLS = [".agents", "skills"] as const;
-/** A learned skill's folder: the shared skills convention's name (lowercase letters, digits and single dashes). */
-const SKILL_NAME = /^(?=.{1,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
 /** A file's path inside a learned skill, as every adapter takes one (agentrun-kernel skillProblems). */
 const SKILL_FILE_PATH = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\/){0,4}[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
 /** A skill the agent wrote, as a seed holds it: its name, its files' bytes together, and each file's text by its path
@@ -791,6 +789,12 @@ export async function chooseSkills(work: Workspace, seed: Seed, own: readonly st
  *  either way it is never chosen. */
 const readsHeld = (decoded: string[] | "too_deep", shown: Shown): boolean => decoded === "too_deep" || decoded.some(shown.holds);
 
+/** Whether `text` holds a host secret (`shown`): as written, or, read as JSON, in any string it decodes to (its escapes
+ *  decoded), or nested past the bound. The one check a learned workflow's text passes at a run's start (chooseWorkflows)
+ *  and every text its compile turn is told (runner/learning-end.ts compileAskOf); a text that is not JSON is read as
+ *  written. */
+export const holdsSecret = (text: string, shown: Shown): boolean => shown.holds(text) || readsHeld(decodedStrings(text), shown);
+
 /** Which of `seed`'s learned workflows a run may run (its `learned_workflow` tool), in the seed's order: each while its
  *  line (workflowLine) fits what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET). One that does not,
  *  or holds a host secret (`shown`), is left out and named in `left`, but for one whose name is itself a secret, never
@@ -801,7 +805,7 @@ export function chooseWorkflows(seed: Seed, shown: Shown): { flows: LearnedWorkf
   let room = LEARNED_WORKFLOWS_BUDGET;
   for (const flow of seed.workflows ?? []) {
     // Its JSON read as JSON reads it too (decodedStrings: its escapes decoded, as its learned call's run reads it).
-    if (shown.holds(flow.workflow) || shown.holds(flow.description) || shown.holds(flow.name) || readsHeld(decodedStrings(flow.workflow), shown)) {
+    if (holdsSecret(flow.workflow, shown) || shown.holds(flow.description) || shown.holds(flow.name)) {
       // Named, but for a name that is itself a secret.
       if (!shown.holds(flow.name)) left.push(flow.name);
       continue;

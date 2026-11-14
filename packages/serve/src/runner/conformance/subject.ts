@@ -2,13 +2,13 @@
 // suite owns the store, the runners, the tools, the crash and the checks; a harness brings loops whose model plays the
 // suite's script through the kernel, and the kernel's two hook points. Its journal is read with the kernel's one reader
 // (runner/journal-reader.ts), the same for every harness.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { CallRecord } from "../journal-reader.js";
 import type { Journal, LoopFactory } from "../loop-contract.js";
 
 /** One step of the model's script: call a tool, say a text, or say the text of the last steer it was given. */
 export type ScriptStep =
-  | { readonly call: ToolName; readonly args?: Record<string, unknown> }
+  | { readonly call: ToolName | MetaToolName; readonly args?: Record<string, unknown> }
   /** `cut`: the model stops at its output limit as it says it (stopReason "length"): the text is unfinished. */
   | { readonly say: string; readonly cut?: true }
   | { readonly sayLastSteer: true }
@@ -18,9 +18,11 @@ export type ScriptStep =
 /** The suite's tools. effect changes something outside the run; read does not; slow runs until the suite lets it go
  *  (or its signal is aborted); asked is one the gate asks a person about. */
 export type ToolName = "effect" | "read" | "slow" | "asked";
+/** The host's tools over the suite's (runner/meta-tools.ts), which the adapter loop gives every session beside them. */
+export type MetaToolName = "tools_search" | "tools_call" | "codemode";
 
 export interface SuiteTool {
-  readonly name: ToolName;
+  readonly name: string;
   /** May run again after a crash: it changes nothing outside the run. */
   readonly replaySafe: boolean;
   /** The gate asks a person before it runs: the run parks. */
@@ -54,7 +56,7 @@ export interface KernelHooks {
 
 export interface ConformanceSetup {
   readonly script: readonly ScriptStep[];
-  readonly tools: Readonly<Record<ToolName, SuiteTool>>;
+  readonly tools: Readonly<Record<string, SuiteTool>>;
   readonly hooks: KernelHooks;
   /** The run's agent, for the subject's spec to name (AdapterRunSpec.agentId): the end-of-run step is asked with it. */
   readonly agentId?: string;
@@ -84,7 +86,13 @@ export type ConformanceCase =
   | "fault-effects-once"
   | "fault-restarts-bounded"
   | "length-ends-failed"
-  | "length-mid-run";
+  | "length-mid-run"
+  | "meta-search"
+  | "meta-call-park"
+  | "meta-call-deny"
+  | "meta-codemode-park"
+  | "meta-codemode-stop"
+  | "meta-codemode-crash";
 
 export interface ConformanceSubject {
   /** The harness's name, as the suite's tests are titled. */
@@ -96,7 +104,10 @@ export interface ConformanceSubject {
   readonly process?: { readonly module: string; readonly export: string };
   /** The facts its adapter declares (AdapterFacts), the cases they rule out derived from them (harness.ts, `factsRuleOut`):
    *  a fact the adapter changes moves its cases with it, never a list kept by hand. */
-  readonly facts?: { readonly id: string; readonly steer: boolean; readonly rerunsStarted?: false; readonly recoversCutAnswers?: number };
+  readonly facts?: { readonly id: string; readonly steer: boolean; readonly rerunsStarted?: false; readonly recoversCutAnswers?: number; readonly ownCodemode?: true; readonly ownToolSearch?: true };
+  /** False for a loop that gives its sessions no tools_search, tools_call or codemode (they are the adapter loop's,
+   *  runner/meta-tools.ts): their cases are skipped, saying so. */
+  readonly metaTools?: false;
   /** Cases this harness cannot model yet, each with why: reported as skipped with that reason, never as passed. */
   readonly unsupported?: Partial<Record<ConformanceCase, string>>;
   /** How the suite reads this subject's calls, when they are not the kernel's call records: a workflow's calls are the DSL

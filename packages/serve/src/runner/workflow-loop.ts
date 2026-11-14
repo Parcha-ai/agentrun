@@ -18,7 +18,7 @@
 // `agentrun.raise` entry and the next claim resumes the workflow from its journal with the raised cap. A lost claim or a
 // shutdown writes nothing more and the next claim resumes.
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { createRegistry, type EntryRecord, type Extension, Harness, ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai";
 import type { Workflow } from "@parcha/agentrun-dsl";
@@ -400,11 +400,20 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     return { state: "parked" };
   }
 
-  async function writeEnd(journal: Journal, context: Context, carry: { state: "completed" | "failed" | "stopped" | "escalated"; summary: string; output?: unknown; review?: EndReview; outcome?: "stopped" | "cancelled" }): Promise<LoopEnd> {
+  type Carry = { state: "completed" | "failed" | "stopped" | "escalated"; summary: string; output?: unknown; review?: EndReview; outcome?: "stopped" | "cancelled" };
+  const endOf = (carry: Carry) => {
     const state: EndData["state"] = carry.state === "failed" ? "failed" : carry.state === "stopped" ? "stopped" : "ended";
     const outcome: RunOutcome | undefined = carry.state === "escalated" ? "escalated" : carry.state === "stopped" ? carry.outcome : undefined;
     const base: EndData = { state, summary: carry.summary, ...(outcome ? { outcome } : {}), ...(carry.output !== undefined ? { output: carry.output } : {}), ...(carry.review ? { review: carry.review } : {}) };
-    const patch = await endPatchOf(spec!, base);
+    return { state, outcome, base };
+  };
+
+  async function writeEnd(journal: Journal, context: Context, ended: Carry): Promise<LoopEnd> {
+    const patch = await endPatchOf(spec!, endOf(ended).base);
+    // A person's stop that came while the end waited on its patch (up to END_PATCH_MS on a busy store) is this end's, as a
+    // stop before it is: the run ends stopped whatever the workflow's own outcome, never completed with the stop taken.
+    const carry: Carry = stopReason?.kind === "command" && ended.state !== "stopped" ? stopEnd(stopReason.cancel) : ended;
+    const { state, outcome, base } = endOf(carry);
     const data: EndData = { ...base, ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}) };
     const runPatch: RunPatch = {
       state, summary: carry.summary,

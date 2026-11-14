@@ -611,9 +611,11 @@ test("connect unlocks the phone, pushes phoned to it, starts it over exec: and a
 	// its transport id.
 	const endpoint = `${ADB_HOST}:${22220 + 1}`;
 	// connect asks first (shell:echo ph-ok), unlocks only a transport that answers locked, then probes; then phoned: the
-	// phone lacks its jar, so it is pushed beside its name, checked, moved there, and started.
+	// phone lacks its jar, so it is pushed beside its name, checked, moved there, and started; its pid and start time,
+	// which sh wrote to a file of this start's own before app_process took its place, are read back after hello, for the
+	// next start's wait.
 	const calls = fake.serverCalls();
-	assert.deepEqual(calls.slice(0, 8), [
+	assert.deepEqual(calls.slice(0, 7), [
 		`host:connect:${endpoint}`,
 		"host:devices-l",
 		"host:transport-id:1 shell:echo ph-ok",
@@ -621,9 +623,13 @@ test("connect unlocks the phone, pushes phoned to it, starts it over exec: and a
 		`host:transport-id:1 shell:sha256sum ${REMOTE} 2>/dev/null`,
 		`host:transport-id:1 shell:sha256sum ${REMOTE}.part`,
 		`host:transport-id:1 shell:mv ${REMOTE}.part ${REMOTE} && echo moved`,
-		`host:transport-id:1 exec:CLASSPATH=${REMOTE} app_process / ai.agentrun.phoned.android.Main 2>${REMOTE.replace(/\.jar$/, ".log")}`,
 	]);
+	const base = REMOTE.replace(/\.jar$/, "");
+	const started = new RegExp(`^host:transport-id:1 exec:s=\\$\\(cat /proc/\\$\\$/stat\\); s=\\$\\{s##\\*"\\) "\\}; set -- \\$s; echo \\$\\$ \\$\\{20\\} >(${base}-[0-9a-f]{8}\\.pid); CLASSPATH=${REMOTE} exec app_process / ai\\.agentrun\\.phoned\\.android\\.Main 2>${base}\\.log$`).exec(calls[7]);
+	assert.ok(started, calls[7]);
 	assert.match(calls[7].slice("host:transport-id:1 ".length), PHONED_SERVICE);
+	assert.equal(calls[8], `host:transport-id:1 shell:cat ${started[1]} && rm -f ${started[1]}`);
+	assert.equal(fake.phone.text.size, 0, "and the pid file is gone from the phone");
 	assert.deepEqual(fake.adbCalls(), [
 		["-t", "1", "shell", "echo ph-ok"],
 		["-t", "1", "push", PHONED_JAR, `${REMOTE}.part`],
@@ -820,6 +826,113 @@ test("a phoned that ends on its own fails its connections' calls with gone, and 
 	await second.value.close();
 	assert.equal(fake.phone.connected.size, 0);
 	assert.deepEqual(fake.running(), []);
+});
+
+test("the next phoned on a phone starts once the last is gone: one that outstays its bound is killed first, and one a kill does not end fails the connect in words", async () => {
+	const waits = (fake) => fake.shells().filter((command) => /^p=\d+; t=\d+; alive\(\)/.test(command));
+	const starts = (fake) => fake.serverCalls().filter((call) => / exec:/.test(call)).length;
+
+	// Exits once its stdin closes: the wait finds it gone and kills nothing.
+	const plain = await setup();
+	const plainRef = (await plain.provider.create(SPEC, req())).value;
+	await (await plain.provider.connect(plainRef)).value.close();
+	const next = await plain.provider.connect(plainRef);
+	assert.equal(next.ok, true, JSON.stringify(next));
+	assert.deepEqual(waits(plain.fake).map((command) => command.slice(0, command.indexOf(";"))), ["p=4000"], "the second start waited for the first phoned's pid");
+	assert.deepEqual(plain.fake.phone.killed, []);
+	await next.value.close();
+
+	// Ignores its stdin's end: killed past the bound, and the next phoned starts after it.
+	const lingering = await setup({ phonedExits: (index) => (index === 0 ? "kill" : "eof") });
+	const lingeringRef = (await lingering.provider.create(SPEC, req())).value;
+	await (await lingering.provider.connect(lingeringRef)).value.close();
+	assert.equal(lingering.fake.phone.phoned[0].gone, false, "its connection closed, and the first phoned still runs");
+	const after = await lingering.provider.connect(lingeringRef);
+	assert.equal(after.ok, true, JSON.stringify(after));
+	assert.deepEqual(lingering.fake.phone.killed, [4000]);
+	assert.equal(lingering.fake.phone.phoned[0].gone, true);
+	assert.equal(lingering.fake.phone.phoned.length, 2, "then the next phoned started");
+	await after.value.close();
+
+	// Not even a kill ends it: no phoned starts beside it, in words, until a later connect finds it gone.
+	const stuck = await setup({ phonedExits: (index) => (index === 0 ? "never" : "eof") });
+	const stuckRef = (await stuck.provider.create(SPEC, req())).value;
+	await (await stuck.provider.connect(stuckRef)).value.close();
+	const refused = await stuck.provider.connect(stuckRef);
+	assert.equal(refused.ok, false);
+	assert.deepEqual([refused.error.code, refused.error.vendor], ["vendor", "phone-harness"]);
+	assert.equal(refused.error.message, "the phoned of this phone's last connection (pid 4000) did not exit within 10 s, nor 2 s after a kill, and it holds the phone's accessibility: no phoned starts beside it; release this phone and create another");
+	assert.equal(starts(stuck.fake), 1, "no second phoned started");
+	assert.equal(stuck.fake.phone.connected.size, 0, "and the failed connect let the transport go");
+	// The phone ends it after all (a later kill took): the next connect waits for the same pid, and starts.
+	stuck.fake.phone.phoned[0].gone = true;
+	const later = await stuck.provider.connect(stuckRef);
+	assert.equal(later.ok, true, JSON.stringify(later));
+	assert.deepEqual(waits(stuck.fake).map((command) => command.slice(0, command.indexOf(";"))), ["p=4000", "p=4000"]);
+	assert.equal(starts(stuck.fake), 2);
+	await later.value.close();
+
+	// The wait names the process by its pid and start time: once the pid is another process's, the phoned is gone, and
+	// that process is never killed.
+	const reused = await setup({ phonedExits: (index) => (index === 0 ? "never" : "eof") });
+	const reusedRef = (await reused.provider.create(SPEC, req())).value;
+	await (await reused.provider.connect(reusedRef)).value.close();
+	reused.fake.phone.phoned[0].start = "9999";
+	const fresh = await reused.provider.connect(reusedRef);
+	assert.equal(fresh.ok, true, JSON.stringify(fresh));
+	assert.match(waits(reused.fake)[0], /^p=4000; t=7000; /, "the wait carries the start time read back at its start");
+	assert.deepEqual(reused.fake.phone.killed, [], "the process that took the pid is not killed");
+	await fresh.value.close();
+});
+
+test("a phoned that ends while its start reads its pid back: no other phoned starts until that read is done, and the next start waits for it", async () => {
+	const hold = gate();
+	let held = false;
+	const { provider, fake } = await setup({
+		onServer: (service, stage) => {
+			if (held || stage !== "before" || !/^shell:cat \S+\.pid /.test(service)) return undefined;
+			held = true;
+			return hold.promise;
+		},
+	});
+	const ref = (await provider.create(SPEC, req())).value;
+	const first = provider.connect(ref);
+	while (!held) await new Promise((resolve) => setImmediate(resolve));
+	// It said hello, and the phone ends it while its pid is read back.
+	fake.phone.phoned[0].stream.destroy();
+	await new Promise((resolve) => setImmediate(resolve));
+	const second = provider.connect(ref);
+	for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(fake.phone.phoned.length, 1, "no phoned starts while the first start still reads its pid back");
+	hold.open();
+	for (const connection of [await first, await second]) {
+		assert.equal(connection.ok, true, JSON.stringify(connection));
+		assert.equal((await connection.value.client.call("ping", {})).error.code, "gone", "both share the phoned that ended");
+		await connection.value.close();
+	}
+	const third = await provider.connect(ref);
+	assert.equal(third.ok, true, JSON.stringify(third));
+	assert.deepEqual(
+		fake.shells().filter((command) => /^p=\d+; /.test(command)).map((command) => command.slice(0, command.indexOf("; alive"))),
+		["p=4000; t=7000"],
+		"the next start waited for the phoned that ended, by the pid its own start read back",
+	);
+	assert.equal(fake.phone.phoned.length, 2);
+	await third.value.close();
+});
+
+test("a phoned whose pid cannot be read back is ended, and connect fails in words: without it the next start could not wait for it", async () => {
+	const { provider, fake } = await setup({
+		onServer: (service, stage) => {
+			// The pid file is gone before it is read.
+			if (stage === "before" && /^shell:cat \S+\.pid /.test(service)) fake.phone.text.clear();
+		},
+	});
+	const refused = await provider.connect((await provider.create(SPEC, req())).value);
+	assert.equal(refused.ok, false);
+	assert.match(refused.error.message, /^phoned said hello, and its process id could not be read back from the phone \(it read ""\): without it the next phoned could start before this one lets go of the phone's accessibility$/);
+	assert.deepEqual(fake.running(), [], "the phoned it started is ended");
+	assert.equal(fake.phone.connected.size, 0);
 });
 
 /** A promise and its resolve: a gate a test opens. */

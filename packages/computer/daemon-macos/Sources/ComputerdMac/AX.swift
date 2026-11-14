@@ -226,7 +226,7 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 		kAXSelectedAttribute, kAXChildrenAttribute, kAXPlaceholderValueAttribute, kAXHelpAttribute,
 	]
 
-	func snapshot(_ target: ResolvedTarget, maxNodes: Int) throws -> Snapshot {
+	func snapshot(_ target: ResolvedTarget, maxNodes: Int, details: Bool) throws -> Snapshot {
 		let root = try window(target)
 		let until = Date().addingTimeInterval(walkSeconds)
 		let bounds = target.window.bounds
@@ -241,6 +241,10 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 			}
 			let v = AX.copy(element, Self.walked)
 			let axRole = AX.string(v[0])
+			// A scroll bar is left out with its parts: their size is the app's guess at its content's height, which a
+			// lazy list makes anew on every read (System Settings' sidebar), so no two looks were the same. A scroll
+			// step takes the scroll area.
+			if axRole == kAXScrollBarRole as String { continue }
 			let subrole = AX.string(v[1])
 			let parentRole = parent.map { nodes[$0].role }
 			let role = Roles.map(role: axRole, subrole: subrole, parentRole: parentRole)
@@ -257,10 +261,10 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 				if value == "on" { flags.insert(.checked) }
 				value = nil
 			}
-			if let frame, !frame.overlaps(bounds) { flags.insert(.offscreen) }
+			if let frame, !frame.intersects(bounds) { flags.insert(.offscreen) }
 			let title = AX.string(v[2])
 			let description = AX.string(v[3])
-			var name = title ?? description
+			var name = Roles.name(title: title, description: description, subrole: subrole)
 			if role == "text", name == nil {
 				name = value
 				value = nil
@@ -269,10 +273,9 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 			// desc: what it says beside its name. A description that is not already the name, else its help tag.
 			let desc = [description, AX.string(v[13])].compactMap { $0 }.first { !$0.isEmpty && $0 != name }
 			let textInput = axRole.map { Roles.textInput.contains($0) } == true || subrole == "AXSearchField"
-			let actions = AX.actions(element)
-			// An item that opens (a Finder file's name in a list) says its value is settable, takes a set value into the
-			// field and renames nothing: on the mini, three runs. Its name changes only by its own rename, by keys.
-			let settable = !actions.contains("AXOpen") && AX.settable(element, kAXValueAttribute)
+			// Each is one more call to the app, as long as the attributes' (System Settings on CI: 168 nodes, 300 ms a
+			// walk, half of it on these two): read only when asked.
+			let (actions, settable) = details ? self.details(ElementHandle(ax: element)) : ([], false)
 			nodes.append(RawNode(
 				handle: ElementHandle(ax: element), role: role, name: name, value: value, desc: desc, identifier: AX.string(v[5]), frame: frame,
 				parent: parent, flags: flags, actions: actions, settable: settable, textInput: textInput,
@@ -284,6 +287,13 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 		}
 		if !stack.isEmpty { truncated = true }
 		return Snapshot(nodes: nodes, truncated: truncated)
+	}
+
+	func details(_ element: ElementHandle) -> (actions: [String], settable: Bool) {
+		let actions = AX.actions(element.ax)
+		// An item that opens (a Finder file's name in a list) says its value is settable, takes a set value into the
+		// field and renames nothing: on the mini, three runs. Its name changes only by its own rename, by keys.
+		return (actions, !actions.contains(openAction) && AX.settable(element.ax, kAXValueAttribute))
 	}
 
 	func exists(_ element: ElementHandle) -> Bool {
@@ -340,12 +350,12 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 			guard let parent = AX.element(AX.copy(chain[chain.count - 1], kAXParentAttribute)) else { break }
 			chain.append(parent)
 		}
-		for e in chain where Self.settable(e, kAXSelectedAttribute) {
+		for e in chain where AX.settable(e, kAXSelectedAttribute) {
 			try AX.check(AXUIElementSetAttributeValue(e, kAXSelectedAttribute as CFString, kCFBooleanTrue), "select")
 			return ElementHandle(ax: e)
 		}
 		for e in chain {
-			guard let parent = AX.element(AX.copy(e, kAXParentAttribute)), Self.settable(parent, kAXSelectedChildrenAttribute) else { continue }
+			guard let parent = AX.element(AX.copy(e, kAXParentAttribute)), AX.settable(parent, kAXSelectedChildrenAttribute) else { continue }
 			try AX.check(AXUIElementSetAttributeValue(parent, kAXSelectedChildrenAttribute as CFString, [e] as CFArray), "select")
 			return ElementHandle(ax: e)
 		}
@@ -356,11 +366,6 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 		if AX.bool(AX.copy(element.ax, kAXSelectedAttribute)) == true { return true }
 		guard let parent = AX.element(AX.copy(element.ax, kAXParentAttribute)) else { return false }
 		return AX.elements(AX.copy(parent, kAXSelectedChildrenAttribute)).contains { CFEqual($0, element.ax) }
-	}
-
-	static func settable(_ e: AXUIElement, _ attribute: String) -> Bool {
-		var settable: DarwinBoolean = false
-		return AXUIElementIsAttributeSettable(e, attribute as CFString, &settable) == .success && settable.boolValue
 	}
 
 	func scrollToVisible(_ element: ElementHandle) throws {
@@ -417,12 +422,6 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 		}
 		log("menu item for \(chord.text) in \(target.app.id): none of \(seen) elements matched; items on \(key): \(near.isEmpty ? "none" : near.joined(separator: "; "))")
 		return nil
-	}
-}
-
-extension Rect {
-	func overlaps(_ other: Rect) -> Bool {
-		x < other.x + other.w && other.x < x + w && y < other.y + other.h && other.y < y + h
 	}
 }
 #endif

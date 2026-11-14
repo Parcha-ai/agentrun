@@ -17,6 +17,10 @@ import { localMachine } from '../dist/host/machine.js';
 import { CODEX_ROUTES, gatewayHandler } from '../dist/host/process.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 
+/** An id no Codex catalog lists, so Codex sends the classic shape this test reads (`tools`), and that the policy's search
+ *  price covers (its GPT-6 rule), so the search is booked at $0.01. `classic-test` has no search price: its cost is unknown. */
+const PRICED_CLASSIC_MODEL = 'gpt-6-classic-test';
+
 const binary = verifyCodexBinary(findCodex());
 const problem = binary instanceof Error ? binary.message : undefined;
 const skip = problem && process.env.AGENTRUN_CODEX_REQUIRE_BINARY !== '1' ? problem : false;
@@ -35,7 +39,7 @@ const SUBMIT = { type: 'function_call', name: 'submit', arguments: JSON.stringif
 const SAY = { type: 'message', role: 'assistant', id: 'msg_2', status: 'completed', content: [{ type: 'output_text', text: 'done', annotations: [] }] };
 
 test("the machine sets Codex's web search to live only when asked, and a caller still may not set web_search itself", async () => {
-  const route = { routes: CODEX_ROUTES, models: { model: 'gpt-5.4-mini' }, credential: () => 'provider-secret', target: 'https://provider.invalid' };
+  const route = { routes: CODEX_ROUTES, models: { model: 'gpt-6-luna' }, credential: () => 'provider-secret', target: 'https://provider.invalid' };
   const base = { model: 'm', baseUrl: 'http://127.0.0.1:1/v1', envKey: 'KEY', contextWindow: 1000 };
   /** The config.toml the harness writes on a machine with `webSearch`: its config, through the machine's configure hook. */
   const written = async (webSearch) => {
@@ -64,7 +68,7 @@ test("the machine sets Codex's web search to live only when asked, and a caller 
 
 test('webSearch is "live" or absent', () => {
   for (const webSearch of ['cached', 'indexed', true]) {
-    assert.throws(() => codexAdapter({ model: 'gpt-5.4-mini', webSearch, provider: { origin: 'https://provider.invalid', credential: () => '' } }), /^TypeError: agentrun-harness-codex: webSearch is "live" or absent/);
+    assert.throws(() => codexAdapter({ model: 'gpt-6-luna', webSearch,provider: { origin: 'https://provider.invalid', credential: () => '' } }), /^TypeError: agentrun-harness-codex: webSearch is "live" or absent/);
   }
 });
 
@@ -76,7 +80,7 @@ test('web search live through the pinned binary: the run completes past a web_se
     return new Response(sse(seen.length, first ? [SEARCH, SUBMIT] : [SAY], first ? 1 : 0), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   const events = [];
-  const codex = codexAdapter({ model: 'gpt-5.4-mini', webSearch: 'live', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(ROOT, 'sessions'), fetch, price: (_model, u) => (u.input * 2 + u.output * 8) / 1e6 });
+  const codex = codexAdapter({ model: PRICED_CLASSIC_MODEL, webSearch: 'live', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(ROOT, 'sessions'), fetch, price: (_model, u) => (u.input * 2 + u.output * 8) / 1e6 });
   const runNode = createHarnessRunner(codex, { store: memorySessionStore(), timeoutMs: 90_000, onEvent: (e) => events.push(e) });
   const output = await runNode({ kind: 'agent', label: 'search', system: ['Answer.'], user: 'What is the capital of France?', schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] }, tools: [] });
 

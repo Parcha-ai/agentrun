@@ -549,7 +549,7 @@ test("create() on a host with AppArmor expects Docker's default profile", async 
 	assert.deepEqual(drifted.names(), []);
 });
 
-const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
+const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"];
 const XVFB = ["Xvfb", ":0", "-screen", "0", "1280x800x24", "-nolisten", "tcp"];
 
 test("desktop: a desktop computer declares kind desktop and the display's groups; the default stays linux", () => {

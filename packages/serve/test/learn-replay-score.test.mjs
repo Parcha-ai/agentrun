@@ -4,8 +4,10 @@
 // `both` guard only on 30 rows with 5 wrong.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answerCorrect, championOf, clears, escalates, GRADES_KEPT, putGrade, PROMOTIONS_KEPT, servingOf, gradesOf, promotionOf, recordOnly, recordPromotion, promotionsOf, replayScore, sameAnswer, thresholdsOf } from "../dist/learn/promote.js";
+import { answerCorrect, championOf, clears, escalates, GRADES_KEPT, putGrade, PROMOTIONS_KEPT, servingOf, gradesOf, promotionOf, recordOnly, recordPromotion, promotionsOf, replayScore, sameAnswer, thresholdsOf, trimPromotions } from "../dist/learn/promote.js";
 import { FIT_MIN_ROWS, fitLogistic, refitGuards } from "../dist/learn/refit.js";
+import * as dsl from "@parcha/agentrun-dsl";
+import { draftProblems } from "../dist/learn/skills.js";
 
 const guard = (node, p, threshold = 0) => ({ node, signal: "self", self: p ?? undefined, p, threshold, escalated: false });
 const row = (of, { answer, recorded = answer, correct = true, outcome = "answered", guards = [], expected } = {}) => ({ of, recorded: { answer: recorded, correct, ...(expected ? { expected } : {}) }, outcome, answer: outcome === "answered" ? answer : null, guards });
@@ -55,7 +57,7 @@ test("a hand-back in replay is the agent's recorded answer, never a failure: esc
   assert.equal(escalates(row("r6", { answer: "a", guards: [guard("pick", null)] }), new Map([["pick", 0]])), true);
 });
 
-const FLOW = { v: 2, name: "pick", schemas: {}, input: { schemaId: "In" }, output: { schemaId: "Out", path: "r" }, root: { node: "seq", label: "all", steps: [
+const FLOW = { v: 2, name: "pick", schemas: {}, input: { schemaId: "In" }, output: { schemaId: "Out", path: "r" }, root: { node: "chain", steps: [
   { node: "extract", label: "read", guard: { signal: "self", threshold: 0.7 } },
   { node: "agent", label: "pick", guard: { signal: "both", threshold: 0.6 } },
 ] } };
@@ -236,6 +238,56 @@ test("the promotion history trim never drops a champion: newer revisions replayi
   assert.deepEqual(records.at(-1), rec(`c${PROMOTIONS_KEPT - 1}`, "hold"), "the newest kept");
 });
 
+// Review on #2644 (round 4): the champion never depends on which records the trim keeps. A late graded check of an
+// older champion (A promoted, B promoted, A checked) must not make A the champion once A's first promote record is trimmed;
+// nor may a held last revision's records trimmed away hand the champion back to the one before it.
+test("the promotion history trim never changes the champion: an older revision's late check, or a held last revision, survive any trim", () => {
+  const rec = (workflow, digest, decided, extra = {}) => ({ workflow, digest, at: "t", decided, source: "replay", reason: "r", ...extra });
+  const filler = (n) => Array.from({ length: n }, (_, i) => rec("other", `o${i}`, "replaying"));
+  // A promoted, B promoted, then A's graded check (still promote): B is the champion, before and after the trim.
+  let items = [rec("answer", "A", "promote"), rec("answer", "B", "promote"), rec("answer", "A", "promote", { checked: 20 }), ...filler(PROMOTIONS_KEPT - 2)];
+  assert.equal(championOf(items, "answer")?.digest, "B");
+  assert.equal(championOf(trimPromotions(items), "answer")?.digest, "B", "the older revision's late check never makes it champion");
+  // D promoted, L promoted then held by its graded runs, then D's late check: no champion, before and after the trim.
+  items = [rec("answer", "D", "promote"), rec("answer", "L", "promote"), rec("answer", "L", "hold", { source: "graded" }), rec("answer", "D", "promote", { checked: 20 }), ...filler(PROMOTIONS_KEPT - 1)];
+  assert.equal(championOf(items, "answer"), undefined);
+  assert.equal(championOf(trimPromotions(items), "answer"), undefined, "a held last revision trimmed away never hands the champion back");
+  // Any order of promotes, checks, replays and holds over a few revisions: the trim keeps the champion, and the cap.
+  let seed = 7;
+  const next = (n) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31), seed % n);
+  for (let round = 0; round < 40; round++) {
+    items = Array.from({ length: PROMOTIONS_KEPT + 1 + next(60) }, () => rec(next(4) ? "answer" : "other", `d${next(6)}`, ["promote", "promote", "hold", "replaying", "superseded"][next(5)], { checked: next(9) }));
+    const kept = trimPromotions(items);
+    assert.ok(kept.length <= PROMOTIONS_KEPT, `round ${round}: ${kept.length} kept`);
+    for (const workflow of ["answer", "other"]) assert.equal(championOf(kept, workflow)?.digest, championOf(items, workflow)?.digest, `round ${round} ${workflow}`);
+  }
+});
+
+// Review on #2644 (r6, tool data shaped like a guard): only the workflow's node positions hold guards. A call's args, a
+// schema or a node's metadata shaped `{label, guard: {threshold}}` is data: the record-only replay and the refit leave it
+// byte-identical, or a write's changed args miss the recording (the input skipped) and a refit saves them promoted.
+test("a call's args shaped like a guard are data: record-only and the refit leave them as they are", () => {
+  const args = { label: "check", guard: { threshold: 0.8 } };
+  const flow = { v: 2, name: "answer", schemas: { Args: { type: "object", properties: { label: { const: "check" }, guard: { type: "object", properties: { threshold: { const: 0.8 } } } } } }, output: { schemaId: "Args" }, root: { node: "chain", steps: [
+    { node: "call", label: "send", via: "tool", tool: "mcp:crm/update", args, as: "sent", metadata: { label: "check", guard: { threshold: 0.8 } } },
+    { node: "agent", label: "check", guard: { signal: "self", threshold: 0.7 } },
+  ] } };
+  const text = JSON.stringify(flow);
+  assert.deepEqual([...thresholdsOf(text)], [["check", 0.7]], "only the step's guard");
+  const replayed = JSON.parse(recordOnly(text));
+  assert.equal(replayed.root.steps[1].guard.threshold, 1e-9, "the step's guard reads record-only");
+  assert.equal(JSON.stringify(replayed.root.steps[0]), JSON.stringify(flow.root.steps[0]), "the call node (args, metadata) byte-identical");
+  assert.deepEqual(replayed.schemas, flow.schemas, "the schemas unchanged");
+  // The refit moves the step `check` (wrong exactly under 0.5); the arg labelled "check" keeps its 0.8.
+  const rows = Array.from({ length: 20 }, (_, i) => { const p = i / 20; return { guards: [{ node: "check", signal: "self", self: p, p, threshold: 0, escalated: false }], answered: true, wfCorrect: p >= 0.5, agentCorrect: 1 }; });
+  const refit = refitGuards(text, rows, "2026-11-14T00:00:00.000Z");
+  assert.deepEqual(refit.guards.map(({ node, was, threshold }) => [node, was, threshold]), [["check", 0.7, 0.5]]);
+  const saved = JSON.parse(refit.text);
+  assert.equal(saved.root.steps[1].guard.threshold, 0.5);
+  assert.equal(JSON.stringify(saved.root.steps[0]), JSON.stringify(flow.root.steps[0]), "the call node byte-identical in the promoted workflow");
+  assert.deepEqual(saved.schemas, flow.schemas);
+});
+
 // Review on #2644 (child guard names): the DSL names a step of a child workflow `parent/child` (its guard row's `node`
 // too), so the serving thresholds, the record-only replay and the refit read a nested guard by that name.
 test("a guard in a child workflow is read by its prefixed name: served at its own threshold, and refit", () => {
@@ -254,4 +306,33 @@ test("a guard in a child workflow is read by its prefixed name: served at its ow
   const refit = refitGuards(text, rows, "2026-11-13T00:00:00.000Z");
   assert.deepEqual(refit.guards.map(({ node, was, threshold }) => [node, was, threshold]), [["sub/pick", 0.8, 0.5]]);
   assert.equal(JSON.parse(refit.text).root.steps[0].workflow.root.steps[0].guard.threshold, 0.5);
+});
+
+// Review on #2644 (r7, repeated labels): a guard row names its step by label, so two steps with one label would share a
+// threshold in the replay's score and the refit (a `check` at 0.2 passing p 0.5 read at the other `check`'s 0.9: a
+// hand-back credited the agent's answer, a wrong revision promoted). A label names one step, as the durable runner
+// already holds a saved workflow to (DUPLICATE_LABEL): a learned draft with a label on two nodes is refused at learn time
+// and before a call, so no run, replay or refit ever reads two steps as one.
+test("a learned draft with one label on two steps is refused; the same label in two child workflows is two steps", () => {
+  const schemas = {
+    In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+    Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } },
+  };
+  const step = (label, threshold, as) => ({ node: "agent", label, instructions: "Answer the question.", out: "Answer", as, tools: [], guard: { signal: "self", threshold } });
+  const flowOf = (root) => ({ v: 2, name: "answer", schemas, input: { schemaId: "In" }, output: { schemaId: "Answer", path: "second" }, root });
+  const twice = flowOf({ node: "chain", steps: [step("check", 0.2, "first"), step("check", 0.9, "second")] });
+  const problems = draftProblems(dsl, JSON.stringify(twice), []);
+  assert.equal(problems.length, 1, JSON.stringify(problems));
+  assert.match(problems[0].detail, /"check" names two steps/);
+  // Distinct labels: nothing to refuse.
+  assert.deepEqual(draftProblems(dsl, JSON.stringify(flowOf({ node: "chain", steps: [step("check", 0.2, "first"), step("verify", 0.9, "second")] })), []), []);
+  // A child workflow's step reads `parent/child`: `check` in two children is `a/check` and `b/check`, two steps.
+  const child = (label, threshold) => ({ node: "workflow", label, input: { question: "{input.question}" }, out: "Answer", as: label === "a" ? "first" : "second",
+    workflow: { v: 2, name: label, schemas, input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" }, root: step("check", threshold, "answer") } });
+  const nested = flowOf({ node: "chain", steps: [child("a", 0.2), child("b", 0.9)] });
+  assert.deepEqual(draftProblems(dsl, JSON.stringify(nested), []).filter((one) => /names two steps/.test(one.detail)), []);
+  assert.deepEqual([...thresholdsOf(JSON.stringify(nested))], [["a/check", 0.2], ["b/check", 0.9]]);
+  // The same child invoked twice under one label is one label on two nodes, its steps too.
+  const again = flowOf({ node: "chain", steps: [child("a", 0.2), { ...child("a", 0.9), as: "second" }] });
+  assert.match(draftProblems(dsl, JSON.stringify(again), []).map((one) => one.detail).join("\n"), /"a" names two steps/);
 });

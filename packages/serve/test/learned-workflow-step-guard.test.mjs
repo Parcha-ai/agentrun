@@ -14,7 +14,7 @@ import { CANARY } from "./fixtures/faux-jev.mjs";
 import { scratch, withEnv } from "./support.mjs";
 import { learnedWorkflowTool } from "../dist/learned-workflow.js";
 import { guardsOf, LEARNED_NODES } from "../dist/learned-nodes.js";
-import { guardP, JEV_GUARD_MODEL } from "../dist/runner/step-guard.js";
+import { GUARD_STATE_CAPS, guardP, JEV_GUARD_MODEL, stepGuard } from "../dist/runner/step-guard.js";
 import { pathMetrics } from "../dist/runner/workflow-first.js";
 import { decisionProvidersIn, providersNamed } from "../dist/decisions.js";
 
@@ -103,7 +103,7 @@ test("jev: one Jev decision over the step's input and output, on the pinned mode
   assert.equal(asked.model, JEV_GUARD_MODEL.typesafe);
   assert.equal(JEV_GUARD_MODEL.typesafe, "jev-1.14.0");
   assert.deepEqual({ label: asked.label, path: asked.executionPath }, { label: "answer guard", path: "/root#guard" });
-  assert.deepEqual(asked.state, { step: "answer", input: { question: "six times seven" }, output: { answer: 42 } });
+  assert.deepEqual(asked.state, { step: "answer", task: { instructions: "Answer the question.", schema: flowOf(undefined).schemas.Answer }, input: { question: "six times seven" }, output: { answer: 42 } });
   assert.deepEqual(Object.values(asked.questions).map(({ type, instructions }) => ({ type, instructions })), [{ type: "noul", instructions: "Is 42 the product asked for?" }]);
   assert.deepEqual(served.nodes[0]?.guard, { node: "answer", signal: "jev", jev: 0.92, p: 0.92, threshold: 0.9, escalated: false });
   // Admitted on the run's one cap before it was sent, settled at what Jev charged: the workflow's cost.
@@ -149,6 +149,30 @@ test("both: the lower of self and Jev with no fit; through the fitted logistic w
   assert.equal(guardP({ signal: "both" }, { self: 0.4, jev: null }), null);
   assert.equal(guardP({ signal: "self" }, { self: null, jev: 0.8 }), null);
   assert.ok(Math.abs(guardP({ signal: "jev", fit: { w: [4], b: -2, n: 30, fitted_at: "2026-11-13T05:02:00Z" } }, { self: null, jev: 0.5 }) - 0.5) < 1e-12, "a Platt fit on Jev alone");
+});
+
+// Review on #2639: Jev is asked what the step was for, not only what it saw and wrote. Two extract steps over the same
+// text asking for different facts send different requests; a judge's carries its questions; a long task is cut the way
+// the generality pre-check cuts its state (learn/general.ts), so the request stays bounded.
+test("a guard's Jev request carries the step's task: different instructions, different requests; a judge's question; long text cut", async () => {
+  const sent = [];
+  const guard = stepGuard(async (request) => { sent.push(request); return { answers: { right: { type: "noul", noul: 0.9 } } }; });
+  const same = { kind: "extract", guard: { signal: "jev", threshold: 0.5 }, input: { text: "Paid Acme 40 dollars." }, output: { name: "Acme", amount: 40 }, self: null, executionPath: "/root" };
+  await guard({ ...same, label: "name", task: { instructions: "Extract the payee name." } });
+  await guard({ ...same, label: "name", task: { instructions: "Extract the amount paid." } });
+  assert.notDeepEqual(sent[0].state, sent[1].state, "two extract steps asking for different facts send different requests");
+  assert.equal(sent[0].state.task.instructions, "Extract the payee name.");
+
+  const questions = { right: { type: "boolean", instructions: "Is the invoice paid in full?" } };
+  await guard({ ...same, kind: "judge", label: "check", task: { questions } });
+  assert.match(JSON.stringify(sent[2].state.task), /Is the invoice paid in full\?/, "a judge's guard request holds its question");
+
+  const long = "Extract the amount. ".repeat(2_000);
+  await guard({ ...same, label: "name", task: { instructions: long }, input: { text: "x".repeat(50_000) } });
+  assert.equal(typeof sent[3].state.task, "string", "a task past its cap goes as its first part");
+  assert.ok(sent[3].state.task.length <= GUARD_STATE_CAPS.task + " [cut]".length && sent[3].state.task.endsWith(" [cut]"));
+  assert.ok(sent[3].state.task.startsWith(`{"instructions":"Extract the amount.`), "its instructions first");
+  assert.ok(sent[3].state.input.length <= GUARD_STATE_CAPS.input + " [cut]".length && sent[3].state.input.endsWith(" [cut]"));
 });
 
 test("the run record keeps each guard's row as metrics.guards; a workflow whose guard reads Jev is handed the Jev key", () => {

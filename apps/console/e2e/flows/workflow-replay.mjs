@@ -7,7 +7,7 @@
 // each width and theme.
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { check, markExample } from "../harness.mjs";
+import { check, markExample, serverAnswer } from "../harness.mjs";
 
 export const WIDTHS = [1440, 820, 390];
 const step = (label, instructions) => ({ node: "extract", label, instructions, out: "Answer", as: label });
@@ -37,7 +37,7 @@ export default {
     const id = made.body.agent_id;
     const item = { name: "invoice-sorter", file: "workflows/invoice-sorter/workflow.json", readme: "workflows/invoice-sorter/README.md", description: "Sorts an invoice into its ledger account", status: "active", run: null, bytes: 900, etag: '"a"' };
     // The real view, with the learned workflow listed in it (a fresh agent's folder holds none).
-    await page.route(new RegExp(`/v2/agents/${encodeURIComponent(id)}/learning$`), async (route) => { const real = await route.fetch(); route.fulfill({ json: { ...(await real.json()), workflows: [item] } }); });
+    await page.route(new RegExp(`/v2/agents/${encodeURIComponent(id)}/learning$`), async (route) => { const real = await serverAnswer(route); await route.fulfill({ json: { ...(await real.json()), workflows: [item] } }); });
     await page.route(new RegExp(`/v2/agents/${encodeURIComponent(id)}/learning/workflows/invoice-sorter/revisions(\\?.*)?$`), (route) => route.fulfill({ json: { name: "invoice-sorter", revisions: REVISIONS, total: REVISIONS.length, truncated: false } }));
     const shots = process.env.E2E_SHOTS;
     if (shots) mkdirSync(shots, { recursive: true });

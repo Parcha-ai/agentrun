@@ -3,23 +3,23 @@
 // its own database file ("SELECT record FROM entries ORDER BY id") and fed the same pure renderer; these read the one store instead.
 // The renderer and the hearing keep their words; only where the entries come from changes.
 import { createHash } from "node:crypto";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
-import { CALL_REFUSED, CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
+import { CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
-import { computerCallsOf } from "../computer-calls.js";
-import { labelled, type Reflect } from "../reflect-range.js";
+import { type ComputerCallRecord, computerCallsOf, shownName } from "../computer-calls.js";
+import { labelled, type Reflect, reflects } from "../reflect-range.js";
 import { reflectRanges } from "../runner/end-of-run.js";
-import { journalEntries, journalRecords } from "../runner/journal-reader.js";
+import { journalEntries, journalRecords, recordOf } from "../runner/journal-reader.js";
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
 import { bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
-import { waitingText } from "../tool-gate.js";
+import { Turns } from "../turns.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
  *  entries ORDER BY id" read them for a settled run. A run with no journal reads as none. */
@@ -32,7 +32,13 @@ export async function runEntries(store: Store, runId: string, context: Context):
  *  `after`, the entry before its input, and `until`, the run's end entry once written; `earlier`, each earlier round's (a
  *  follow-up opened the run again after it). Undefined for a run that asked none. */
 export async function runReflect(store: Store, runId: string, context: Context): Promise<Pick<Reflect, "after" | "until" | "earlier"> | undefined> {
-  const records = await journalRecords(store.readJournal(runId), context);
+  return reflectOf(await journalRecords(store.readJournal(runId), context));
+}
+
+type Records = Awaited<ReturnType<typeof journalRecords>>;
+
+/** runReflect over records already read. */
+function reflectOf(records: Records): Pick<Reflect, "after" | "until" | "earlier"> | undefined {
   const ranges = reflectRanges(records.submissions ?? [], records.entries);
   const newest = ranges.at(-1);
   if (newest === undefined) return undefined;
@@ -45,38 +51,9 @@ export async function runReflect(store: Store, runId: string, context: Context):
  *  tool call its assistant tool-call and its result. So a claude-agent / codex / opencode run reads the same rows, words
  *  and final answer as a pi run of the same conversation. A run's own pi entries and its end-of-run turn (already model
  *  shaped) pass through unchanged, so a pi run is untouched. */
-/** The calls the CLI record holds parked at an MCP door (a start marked parked, not in its tool bridge) with no sent mark
- *  and no end. */
-function parkedUnsent(entries: readonly EntryLike[]): Set<string> {
-  const parked = new Set<string>();
-  const past = new Set<string>();
-  for (const entry of entries) {
-    const callId = (entry.data as { callId?: unknown } | undefined)?.callId;
-    if (typeof callId !== "string") continue;
-    const start = entry.data as { parked?: unknown; bridge?: unknown };
-    if (entry.kind === KINDS.callStart && start.parked === true && start.bridge !== true) parked.add(callId);
-    else if (entry.kind === KINDS.callSent || entry.kind === KINDS.callEnd) past.add(callId);
-  }
-  for (const callId of past) parked.delete(callId);
-  return parked;
-}
-
 export function piShaped(entries: readonly EntryLike[]): EntryLike[] {
-  const waiting = parkedUnsent(entries);
   return entries.flatMap((entry) => {
     const data = (entry.data ?? {}) as Record<string, unknown>;
-    // A call through a CLI's own MCP client that its gate parked (adapter-loop.ts park): the CLI was answered the gate's
-    // waiting words (mcp-run.ts), which the record never keeps as the call's end, since an end is its outcome and the call
-    // is answered from it. While the call is parked and unsent, those words show as its result row from its ask on, as pi's
-    // parked call shows them; its sent mark or its end (run, refused, withdrawn) ends that.
-    // Once per call, at its first ask: a call asked again (a resume, a raise while it waits) shows one waiting result.
-    if (entry.kind === KINDS.ask && typeof data.callId === "string" && waiting.delete(data.callId)) {
-      const tool = typeof data.tool === "string" ? data.tool : "tool";
-      const timestamp = typeof data.requestedAt === "string" && Number.isFinite(Date.parse(data.requestedAt)) ? { timestamp: Date.parse(data.requestedAt) } : {};
-      // Its own id (the ask's, marked), so the renderer never takes it for the ask entry seen twice.
-      const result = { ...entry, id: `${String(entry.id)}:parked`, kind: "pi.tool-result", data: {}, model: [{ role: "tool", toolCallId: data.callId, content: waitingText(tool), ...timestamp }] } as unknown as EntryLike;
-      return [entry, result];
-    }
     // When the record's entry was written (`at`), as pi's own message carries its timestamp: the Timeline dates the row by it.
     const timestamp = typeof data.at === "number" ? { timestamp: data.at } : {};
     if (entry.kind === KINDS.message) {
@@ -92,8 +69,9 @@ export function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       const text = typeof data.text === "string" ? data.text : "";
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text }] }] };
     }
+    // A call: shown as a model's call, never counted as a model request (the booking counts those: bookedUsage).
     if (entry.kind === KINDS.callStart) {
-      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
+      return { ...entry, kind: "pi.assistant", recordedCall: true, model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
     }
     if (entry.kind === KINDS.callEnd) {
       // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text. One
@@ -172,8 +150,16 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   return out;
 }
 
-/** Whether `entries` are a CLI harness's record (its loop's calls and messages). */
-export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
+/** Whether `entries` are a CLI harness's record (its loop's calls and messages). A nested call's (`<callId>/<key>`, a
+ *  script's or tools_call's) is the record of whichever harness made the call it nests in: on pi, the loop keeps it
+ *  beside pi's own record (adapter-loop.ts nestedGate), so it makes no run a CLI's. */
+export const isCliRecord = (entries: readonly EntryLike[]): boolean =>
+  entries.some((entry) => entry.kind === KINDS.message || ((entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd) && !String((entry.data as { callId?: unknown } | undefined)?.callId ?? "").includes("/")));
+
+/** The call a run's turn ended on waiting for a person (timeline endedOnTurnEndingTool), over its root's entries as the
+ *  run keeps them: a CLI harness's record read as pi's (piShaped), as its Timeline and its view read it, so the runner's
+ *  loop parks a CLI run on exactly the question the view calls waiting, as it does a pi run. */
+export const turnEndedOnAsk = (entries: readonly EntryLike[]): string | undefined => endedOnTurnEndingTool(isCliRecord(entries) ? piShaped(entries) : entries);
 
 /** A path as a run's rows name it, for a harness working in `cwd`: one under `cwd` by its name there (`hello.md`), any
  *  other as given. */
@@ -192,24 +178,44 @@ const inWorkspace = (cwd: string) => (path: string): string => {
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
   const cli = isCliRecord(entries);
+  const records = await journalRecords(store.readJournal(runId), context);
+  const reflect = reflectOf(records) as Reflect | undefined;
   // A CLI names a file by its absolute path under its working directory (CallStartData.cwd): the rows name it by its
   // name in the workspace, never a path on the runner's machine. Its arguments, as the harness sent them, stay.
   const cwd = cli && !options.path ? entries.find((entry) => entry.kind === KINDS.callStart && typeof (entry.data as { cwd?: unknown } | undefined)?.cwd === "string")?.data as { cwd: string } | undefined : undefined;
-  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), cwd ? { ...options, path: inWorkspace(cwd.cwd) } : options);
+  // A run whose newest turn a stop or a cancel cut reads it over (run-view.ts statusOf: input_required) from the moment pi
+  // settles that turn's message aborted, before the runner books what the abort cut (its request's end mark comes once the
+  // session's proxy sees its upstream end). Its cost reads that turn the same way, the request it cut a charge with no
+  // price, never one in flight: never the known sum as its cost while the run reads stopped.
+  const read = { ...options, ...(cwd ? { path: inWorkspace(cwd.cwd) } : {}), ...(!options.settled && turnCutOf(records, reflect) ? { turnCut: true } : {}) };
+  // Shaped on pi too: its own entries pass through as they are, and the calls its tools nested (on the loop's record) read
+  // as a CLI's calls do.
+  const rendered = timelineOf(withPaidCosts(piShaped(entries)), read);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
-  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries));
+  return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries, options.redact));
+}
+
+/** Whether the run's newest turn is over, cut (turns.ts: no message of the run's open, the newest one's end interrupted),
+ *  its end-of-run turn's entries apart, as the run's view reads its status. */
+function turnCutOf(records: Records, reflect: Reflect | undefined): boolean {
+  const turns = new Turns();
+  turns.note(recordOf(records.entries), records.submissions ?? [], reflect ? (id: number) => reflects(reflect, id) : undefined);
+  return turns.end()?.status === "interrupted";
 }
 
 /** `rows` with each tool call's result row carrying the computer protocol calls it made (`computer_calls`, and
  *  `computer_calls_dropped` past the record's bound), from the COMPUTER_CALLS entry the adapter loop kept beside the call
- *  (computer-calls.ts), joined by the call's id. A record holds no param's value and no answer's bytes, so it needs no cut.
- *  Rows of a run whose tools made none are as they were. */
-function withComputerCalls(rows: TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
+ *  (computer-calls.ts), joined by the call's id. A record holds no typed or set value and no answer's bytes; the names of
+ *  the elements its steps acted on (words on the screen) go through `redact` when given (the run's cut), as every text a
+ *  row shows, whole, and are cut for the row after (shownName). Rows of a run whose tools made none are as they were. */
+function withComputerCalls(rows: TimelineEvent[], entries: readonly EntryLike[], redact?: (text: string) => string): TimelineEvent[] {
   const made = computerCallsOf(entries);
   if (!made.size) return rows;
+  const cut = (calls: readonly ComputerCallRecord[]) =>
+    calls.map((call) => (call.steps?.some((step) => step.on?.name) ? { ...call, steps: call.steps.map((step) => (step.on?.name ? { ...step, on: { ...step.on, name: shownName(step.on.name, redact) } } : step)) } : call));
   return rows.map((row) => {
     const kept = row.kind === "tool_result" && row.tool_use_id ? made.get(row.tool_use_id) : undefined;
-    return kept ? { ...row, computer_calls: kept.calls, ...(kept.dropped > 0 ? { computer_calls_dropped: kept.dropped } : {}) } : row;
+    return kept ? { ...row, computer_calls: cut(kept.calls), ...(kept.dropped > 0 ? { computer_calls_dropped: kept.dropped } : {}) } : row;
   });
 }
 
@@ -280,11 +286,13 @@ function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike
   const unpriced = model.unpriced + paid.unpriced + (unbooked ? 1 : 0);
   const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
   const spent = usd !== null ? dollars(usd) : `${dollars(model.known + paid.known)} known, ${unpriced} not priced,`;
-  const charges = paid.requests ? ` and ${paid.requests} paid tool call${paid.requests === 1 ? "" : "s"}` : "";
+  // Its tool calls with no price as the renderer counted them from the journal (TOOL_UNMETERED), as on a pi run's row.
+  const notMetered = at >= 0 ? (rows[at]!.usage?.not_metered ?? 0) : 0;
+  const calls = toolCallWords(paid.requests, notMetered);
   const summary = unbooked
-    ? `${costLabel(options.ended === true)}: unknown, its model's requests were not metered${charges}`
-    : `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${charges}`;
-  const usage = { usd, requests: model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}) };
+    ? `${costLabel(options.ended === true)}: unknown, its model's requests were not metered${calls}`
+    : `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${calls}`;
+  const usage = { usd, requests: model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}), ...(notMetered ? { not_metered: notMetered } : {}) };
   const last = rows[rows.length - 1];
   const base: TimelineEvent = at >= 0 ? rows[at]! : {
     ...last!, id: `${last?.conversation_id ?? 0}:usage`, agent_label: null, text: null,

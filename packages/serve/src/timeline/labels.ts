@@ -1,3 +1,4 @@
+import { callWords, stepOf, type ComputerStepRow } from "./computer.js";
 import { cut, firstLine, json, list, obj, scrubUrls, str, where, type Obj } from "./util.js";
 
 /** A tool result as a label sees it: its text blocks joined, its `details`, its error flag. */
@@ -191,3 +192,90 @@ registerLabel("browser_relaunch", () => "Started a fresh browser session", undef
 registerLabel("submit", () => "Submitted the answer", undefined, { name: "Submit the answer" });
 registerLabel("codemode", () => "Ran a script", { many: (n) => `Ran ${n} scripts` }, { name: "Run scripts" });
 registerLabel("request_sign_in", () => "Asked you to sign in", undefined, { name: "Ask you to sign in" });
+
+// A desktop's or a phone's tools (the computer surface's), as what the agent did there, in the words of the call's own
+// record (computer.ts callWords): a person reads one step the same on its row, in its expanded call list and in a
+// movie's caption. An act's steps come from its arguments, and each element's role and name from its answer: the
+// answer's step line names the element it acted on as the outline does (`2. press @e31 generic "Display": semantic,
+// verified`, the surface's stepWords). Before the answer is in, an element is "an element". Once it is in, only the
+// steps that ran are said. No typed or set text is said, as the record keeps none.
+
+/** An act's answer, line by line: the element each step names (its role and name), and the first refused step. */
+const STEP_LINE = /^(\d+)\. [a-z_.]+(?: into)?(?: @\S+ ([a-z]+)(?: ("(?:[^"\\]|\\.)*"))?)?(?: \[secure\])?: (.*)$/;
+type ActLine = { on?: { role: string; name?: string }; refused?: string };
+/** A name in JSON's quotes, as the outline writes it. */
+const unquote = (quoted: string | undefined): string | undefined => {
+  if (quoted === undefined) return undefined;
+  try {
+    return str(JSON.parse(quoted));
+  } catch {
+    return undefined;
+  }
+};
+function actLines(text: string | undefined): Map<number, ActLine> {
+  const lines = new Map<number, ActLine>();
+  for (const line of (text ?? "").split("\n")) {
+    const match = STEP_LINE.exec(line);
+    if (!match) continue;
+    const name = unquote(match[3]);
+    const refused = /^refused \([^)]*\): (.*)$/.exec(match[4]!)?.[1];
+    const on = match[2] === undefined ? undefined : { role: match[2], ...(name ? { name } : {}) };
+    lines.set(Number(match[1]), { ...(on ? { on } : {}), ...(refused !== undefined ? { refused } : {}) });
+  }
+  return lines;
+}
+
+/** A step the model asked for as serve's record keeps it (stepOf, the element its answer's line names), and whether it
+ *  was refused. Its words are then the record's own, so the row reads as the step's expanded call and a movie's caption. */
+function stepRow(step: Obj, line: ActLine | undefined): ComputerStepRow {
+  return { ...stepOf(step, () => line?.on), ...(line?.refused !== undefined ? { error: "refused" } : {}) };
+}
+
+registerLabel(
+  "computer_act",
+  (a, result) => {
+    const steps: Obj[] = Array.isArray(a.steps) ? (a.steps as unknown[]).flatMap((step): Obj[] => { const given = obj(step); return given ? [given] : []; }) : [];
+    // The call as its record keeps it, said by the record's words (callWords): its app, whether it answered, the steps
+    // that ran, and whether its expect held.
+    const call = { method: "ui.act", started_at: "", ms: 0, ...(str(a.app) ? { app: str(a.app) } : {}) };
+    if (result?.isError) return callWords({ ...call, ok: false });
+    // While the call runs, the steps asked for, no element named yet; once its answer is in, the steps that ran (each
+    // has its line), a refused one as tried. An answer with steps asked and no step line ran none that is known.
+    const lines = result === undefined ? undefined : actLines(result.text);
+    const ran = lines === undefined ? steps : steps.filter((_, index) => lines.has(index + 1));
+    if (steps.length > 0 && ran.length === 0) return callWords({ ...call, ok: false });
+    const expect = result && /^expect: (met|unmet)$/m.exec(result.text)?.[1];
+    return callWords({ ...call, ok: true, steps: ran.map((step, index) => stepRow(step, lines?.get(index + 1))), ...(expect === "met" || expect === "unmet" ? { expect } : {}) });
+  },
+  { many: (n) => `Acted on the computer ${n} times` },
+  { name: "Act on the computer" },
+);
+// A step the computer refused ends the act there, the answer still a result: the act did not do what it was asked.
+registerOutcome("computer_act", (result) => {
+  for (const [index, line] of actLines(result.text)) if (line.refused !== undefined) return { failed: true, text: `step ${index} refused: ${line.refused}` };
+  return undefined;
+});
+
+/** An observation's head, naming the app's id: `state s8 · com.android.settings "Settings" · window "Display" 360×640 pt`. */
+const OBSERVED = /^state \S+ · (\S+)/;
+registerLabel(
+  "computer_observe",
+  (a, result) => {
+    // A computer with no ui group answers a screenshot, which its record keeps as one.
+    if (result && !result.isError && !OBSERVED.test(result.text)) return callWords({ method: "screen.shot", started_at: "", ms: 0, ok: true });
+    const app = str(a.app) ?? (result && OBSERVED.exec(result.text)?.[1]);
+    return callWords({ method: "ui.observe", started_at: "", ms: 0, ok: result?.isError !== true, ...(app ? { app } : {}) });
+  },
+  { many: (n) => `Looked at the screen ${n} times` },
+  { name: "Look at the computer" },
+);
+registerLabel("computer_screenshot", () => "Took a screenshot", { many: (n) => `Took ${n} screenshots` }, { name: "Take screenshots of the computer" });
+registerLabel(
+  "computer_script",
+  (a) => {
+    const title = str(a.title)?.replace(/\s+/g, " ").trim();
+    return title ? cut(title, 120) : "Ran a script on the computer";
+  },
+  { many: (n) => `Ran ${n} scripts on the computer` },
+  { name: "Run scripts on the computer" },
+);

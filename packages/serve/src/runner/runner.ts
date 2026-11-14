@@ -1,5 +1,6 @@
 // A runner: one long-lived process that carries many loops (design: "Runners carry many loops and hold the whole
-// kernel"). It polls the store for claimable runs and claims up to `loops` of them, renews its claims on one timer,
+// kernel"). It polls the store for claimable runs (and claims a run queued in this process at once, on the store's wake)
+// and claims up to `loops` of them, renews its claims on one timer,
 // hands each run's command rows to its loop, and at a run's end flushes and then releases the claim.
 //
 // Two guards keep a runner that lost a claim from writing (Solid Queue's rule, then the store's fence):
@@ -8,7 +9,7 @@
 // - the store refuses any write under an epoch another claim moved past (Fenced): the backstop for a runner that froze.
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, StorageWrite } from "@earendil-works/pi-durable";
 import { COMMAND_KINDS, endedReason } from "./commands.js";
@@ -923,22 +924,37 @@ export function startRunner(options: RunnerOptions): Runner {
   };
   /** The poll's claim in flight, if any: close() waits for it, so a runner whose close resolved claims nothing after it. */
   let claiming: Promise<void> | undefined;
+  /** A run was queued while a poll was in flight (claimNow): one more poll follows that poll's end at once. */
+  let pollAgain = false;
   const poll = () => {
     if (closed || killed) return;
+    clearTimeout(pollTimer);
+    pollAgain = false;
     beat();
     const claimed = claimMore();
     claiming = claimed;
     void claimed.finally(() => {
       if (claiming === claimed) claiming = undefined;
-      if (!closed && !killed) pollTimer = setTimeout(poll, pollMs);
+      if (closed || killed) return;
+      if (pollAgain) poll();
+      else pollTimer = setTimeout(poll, pollMs);
     });
+  };
+  /** A run queued through a store in this process (store.watchCommands' "queued"): claimed now, not up to a whole poll
+   *  later. A poll in flight may have read the runs before it was queued, so one more follows that poll's end. */
+  const claimNow = () => {
+    if (closed || killed) return;
+    if (claiming) pollAgain = true;
+    else poll();
   };
 
   poll();
   commandTimer = setTimeout(deliverAll, commandPollMs);
-  // A command written for a run this runner holds is handed on now, not at the next poll. A delivery already in flight
-  // marks the run, and one more delivery follows its end, so a row written mid-delivery is never left to the next poll.
+  // A run queued in this process is claimed now (claimNow). A command written for a run this runner holds is handed on
+  // now, not at the next poll. A delivery already in flight marks the run, and one more delivery follows its end, so a row
+  // written mid-delivery is never left to the next poll.
   unwatchCommands = store.watchCommands(({ runId, what }) => {
+    if (what === "queued") return claimNow();
     if (what !== "written" || !delivering()) return;
     const held = runs.get(runId);
     if (held === undefined) return;

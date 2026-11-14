@@ -209,9 +209,11 @@ export default function reply(context, faux) {
   })();
 }
 
-/** As a faux harness (claude-agent and codex): the job's answer, then the end-of-run turn's answer, its notes in it. */
+/** As a faux harness (claude-agent and codex): the job's answer, then the end-of-run turn's answer, its notes in it. With
+ *  "Follow up." in the instructions, one follow-up's answer ("Followed up.") and its end-of-run turn's (no note) after. */
 export function script(spec) {
   const system = spec.system.join("\n");
   const reads = readsOf(system).map((path) => ({ call: "read", args: { path }, usd: 0.001 }));
-  return [...reads, { say: answerOf(system), usd: 0.001 }, { end: true, usd: 0.001 }, { say: reflection(system, []), usd: 0.001 }, { end: true, usd: 0.001 }];
+  const followUp = /^Follow up\.$/m.test(system) ? [{ say: "Followed up.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: answerWith([]), usd: 0.001 }, { end: true, usd: 0.001 }] : [];
+  return [...reads, { say: answerOf(system), usd: 0.001 }, { end: true, usd: 0.001 }, { say: reflection(system, []), usd: 0.001 }, { end: true, usd: 0.001 }, ...followUp];
 }

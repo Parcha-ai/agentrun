@@ -48,6 +48,13 @@ Both carry an "Example data" badge on the picture itself, drawn by the flow's sh
 `tutorials/held-out-test.png` is the Learning tab's Held-out test card for the same invented agent, from a record the
 `cost-per-run` flow posts through the API (200 jobs, 188 right), captured by that flow at 1440 px in the light theme.
 
+`tutorials/composio-*.png` are the console on a local server for
+[Connect Composio tools and triggers](../tutorials/composio.md), captured with headless Chrome at 1280 px in the light
+theme and cropped to the panel. The toolkits' action lists and the saved servers are Composio's real answers for
+`hackernews` and `github`; the API key field holds a stand-in, never a key, and the connect link behind "Connect your
+github account" is not the real one. The trigger and run shots are from an event signed locally the way Composio signs
+one, with a made-up issue.
+
 ## Case study cards and charts
 
 `case-studies/` holds the cards the README's Case studies section shows and the charts on the pages under

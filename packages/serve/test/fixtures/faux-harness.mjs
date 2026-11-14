@@ -62,6 +62,18 @@ export function grown(k, { miss = false } = {}) {
   return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, tokens, usd };
 }
 
+/** Request `k` of a conversation shaped as Codex sends it: its input bound the body's bytes (4 a token, no provider count),
+ *  a 10,000-token prompt that grows 1,100 tokens a request, each request reading the previous one's whole prompt from the
+ *  cache; each asks 32,000 output tokens and needs 3,072 at least (1,024 for the answer and low effort's 2,048 for its
+ *  reasoning), and costs under a cent at Sonnet 5.5's prices (faux-sonnet55.mjs). */
+export function codexGrown(k) {
+  const prompt = (n) => 10_000 + 1_100 * n;
+  const cacheRead = k === 0 ? 0 : prompt(k - 1);
+  const tokens = { input: 3, output: 300, cacheRead, cacheWrite: prompt(k) - cacheRead - 3 };
+  const usd = (tokens.input * 2 + tokens.output * 10 + tokens.cacheRead * 0.1 + tokens.cacheWrite * 2.5) / 1e6;
+  return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, outputTokensAsked: 32_000, outputTokensLeast: 3_072, tokens, usd };
+}
+
 export function script(spec, session = {}) {
   const text = spec.system.join("\n");
   // The learned_workflow tool as the harness is given it (its description and input schema), when it is.
@@ -82,6 +94,10 @@ export function script(spec, session = {}) {
   // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then a closing answer.
   const learned = /Use the learned workflow (\S+) on (.+?)\./.exec(text);
   if (learned) return [{ call: "learned_workflow", args: { name: learned[1], input: { question: learned[2] } }, usd: 0.001 }, { say: "Ran the learned workflow.", usd: 0.001 }];
+  // "Ask the person: <question>": ask_person with the question, then, on the turn the person's answer starts, a closing
+  // answer. A CLI goes on to its next request after the call: that request is the one the run's loop cuts the turn at.
+  const ask = /Ask the person: (.+\?)/.exec(text);
+  if (ask) return [{ call: "ask_person", args: { question: ask[1] }, usd: 0.001 }, { say: "Going with your answer.", usd: 0.001 }];
   // A research turn: the session's web_search when it has one as a tool (its harness's own search is not one), then the
   // page with web_fetch, then report.md citing it.
   const research = /Research (.+?) on the web, read (\S+) and write report\.md\./.exec(text);
@@ -153,6 +169,27 @@ export function script(spec, session = {}) {
   // The wrap-up due after a $0.40 request; the next request, which takes the note, has a side call admitted and answered
   // between that take and its own admission; then one request more.
   if (/Wrap up with a side call in between\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4, outputTokensAsked: 1_024 }, { call: "read", args: { path: "b.txt" }, usd: 0.01, sideAfterNote: { usd: 0.0001 } }, { say: "Done.", usd: 0.01 }];
+  // A job of two requests ($0.001 each), then its end-of-run turn: a request admitted and never answered (`cut`) or one
+  // answered at $0.004 and the turn held after it (`answered`), writing the signal, until <file> exists; then the turn's
+  // answer, at $0.008, saying nothing to keep, and its end ($0.001). A runner killed in the hold leaves the turn sent and
+  // unfinished. Any turn after that one is a look-back asked twice: it says so, at $0.016.
+  const lookBack = /Look back, (cut|answered) and held until (\S+) \(signal (\S+)\)\./.exec(text);
+  if (lookBack) {
+    const [, how, until, signal] = lookBack;
+    // The answered request keeps its place (its faux.request): a later process goes on after it. A cut one has none.
+    const answered = how === "answered" ? [{ say: "Looking back.", usd: 0.004 }] : [];
+    const held = existsSync(until) ? answered : how === "cut" ? [cutSignalled(signal)] : [...answered, hangSignalled(signal)];
+    return [{ say: "Answered.", usd: 0.001 }, { end: true, usd: 0.001 }, ...held, { say: "Nothing new.", usd: 0.008 }, { end: true, usd: 0.001 }, { say: "Asked twice.", usd: 0.016 }];
+  }
+  // A job of two requests ($0.001 each), then a hold (writing the signal) until <file> exists: the end-of-run turn reaches
+  // it (a person stops the run there), and a hold keeps its place, so the follow-up that reopens the run reaches it too
+  // (its runner is lost there). Then the follow-up's answer ($0.002) and end ($0.001), and its round's look-back: an
+  // answer saying nothing to keep ($0.008) and its end ($0.001).
+  const stoppedLooking = /Look back, stopped, then a follow-up held until (\S+) \(signal (\S+)\)\./.exec(text);
+  if (stoppedLooking) {
+    const [, until, signal] = stoppedLooking;
+    return [{ say: "Answered.", usd: 0.001 }, { end: true, usd: 0.001 }, ...(existsSync(until) ? [] : [hangSignalled(signal)]), { say: "Followed.", usd: 0.002 }, { end: true, usd: 0.001 }, { say: "Nothing new.", usd: 0.008 }, { end: true, usd: 0.001 }];
+  }
   // One request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, then the answer.
   if (/Hold the request that carries the note\./.test(text)) return [{ say: "Done.", inputTokensMax: 1_000, usd: 0.01 }];
   // A request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, that the provider does not
@@ -316,6 +353,13 @@ export function script(spec, session = {}) {
     const answer = grown(4);
     const least = { outputTokensLeast: 10_240 };
     return [{ ...grown(0), outputTokensAsked: 1_024 }, ...[1, 2, 3].map((k) => ({ ...grown(k), ...least })), { say: "Done growing.", inputTokensMax: answer.inputTokensMax, tokens: answer.tokens, usd: answer.usd, ...least }];
+  }
+  // "Grow a Codex-shaped context for <n> requests.": n requests of codexGrown, each calling read, then its answer.
+  const codexShaped = /Grow a Codex-shaped context for (\d+) requests\./.exec(text)?.[1];
+  if (codexShaped) {
+    const n = Number(codexShaped);
+    const { inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd } = codexGrown(n);
+    return [...Array.from({ length: n }, (_, k) => codexGrown(k)), { say: "Grown, Codex-shaped.", inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd }];
   }
   // Two requests that each need and ask 10,240 output tokens ($1.024 on OUTPUT_PRICED), a cent each: a cap under that
   // pauses the run at its first, and a raise lets it go on in the process the raise opens.

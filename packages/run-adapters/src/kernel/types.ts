@@ -1,7 +1,7 @@
 // The kernel the harness code runs on: the slice of a durable driver's interface it calls, implemented over AgentRun's
 // own SessionStore (drive.ts). Written for AgentRun; no longer pinned to vercel-labs/durable-harness's types (its
 // process files, now AgentRun's own, read EffectRecord's fields as that file named them; see NOTICE).
-import type { JsonValue, SessionWriter, ToolImage } from "../types.js";
+import type { JsonValue, NestedCalls, SessionWriter, ToolImage } from "../types.js";
 
 export type ReplayPolicy = "safe" | "never";
 export type SubmissionKind = "prompt" | "steer" | "followUp" | "withdraw";
@@ -116,6 +116,11 @@ export interface HostTool<Input = any> {
   description: string;
   inputSchema: object;
   replay: ReplayPolicy;
+  /** It only calls the session's other tools, each a call of its own (HostToolIO `nested`): the bridge writes no effect
+   *  of its own for it, so a crash leaves it to run again, its nested calls answered from their records. */
+  nests?: true;
+  /** Callable by name (a nested call) but never listed to the model (the bridge leaves it out of `tools`). */
+  deferred?: true;
   /** Its answer: the text, or the text with the images it shows. Recorded as the call's outcome, so a call answered
    *  from the record answers with the same images. */
   execute(input: Input, io: HostToolIO): Promise<string | ToolOutput>;
@@ -133,6 +138,8 @@ export interface HostToolIO {
   progress(chunk: unknown): void;
   ctx: DriveContext;
   stepId?: string;
+  /** For a tool that `nests`: the session's other tools by their names on the bridge, each call one of its own. */
+  nested?: NestedCalls;
 }
 
 export type { JsonValue };

@@ -1,6 +1,7 @@
-import { Brain, ChevronRight, CircleAlert, CircleDollarSign, CirclePause, FileText, Flag, MessageCircleQuestion, MessageSquareText, Scale, ShieldQuestion, User, Workflow, Wrench } from "lucide-react";
+import { Brain, ChevronRight, CircleAlert, CircleDollarSign, CirclePause, FileText, Flag, MessageCircleQuestion, MessageSquareText, Monitor, Scale, ShieldQuestion, User, Workflow, Wrench } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
+import { callWords, type ComputerCallRow } from "@timeline/computer";
 import { nameOf } from "@timeline/labels";
 import { Chip } from "@/components/ui/chip";
 import { Spinner } from "@/components/ui/spinner";
@@ -161,8 +162,43 @@ function Row({ step, last, ended, waitingChip, files, onOpen }: { step: Step; la
         {open && detail && row.kind === "final_answer" && <article className="report mt-3 max-h-80 max-w-none overflow-auto border bg-card p-3" onClick={openLinkedFile((path) => { const f = files?.find((x) => x.path === path); if (f) onOpen?.(f); })} dangerouslySetInnerHTML={{ __html: markdown(detail, onOpen && files ? { paths: files.map((f) => f.path) } : undefined) }} />}
         {open && detail && row.kind !== "final_answer" && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-small leading-[1.7]">{detail}</pre>}
         {row.learned_nodes?.length ? <LearnedNodes nodes={row.learned_nodes} /> : null}
+        {row.computer_calls?.length ? <ComputerCalls calls={row.computer_calls} dropped={row.computer_calls_dropped ?? 0} /> : null}
       </div>
     </li>
+  );
+}
+
+/** A tool call's computer calls (its result row's `computer_calls`: a code-mode script's many, a computer tool's one):
+ *  closed, a line that says how many and how many failed; open, each call in the order it was made, how long after the
+ *  first it started, what it did in the words its step's row and a movie's caption use (callWords: "Opened TextEdit",
+ *  "Selected all (⌘A), typed into the text box"), a failed call's code, and how long it took. Never what was typed: the
+ *  server keeps none of it. */
+function ComputerCalls({ calls, dropped }: { calls: readonly ComputerCallRow[]; dropped: number }) {
+  const [open, setOpen] = useState(false);
+  const failed = calls.filter((call) => !call.ok).length;
+  const count = calls.length + dropped;
+  const said = [`${count} computer ${count === 1 ? "call" : "calls"}`, ...(failed ? [`${failed} failed`] : [])].join(" · ");
+  const first = Date.parse(calls[0]!.started_at);
+  return (
+    <div className="mt-2">
+      <button type="button" className="caps flex items-center gap-1 text-label text-muted-foreground hover:text-foreground" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        aria-label={`${open ? "Hide" : "Show"} the computer calls`}>
+        <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} aria-hidden /><Monitor className="size-3" aria-hidden />{said}
+      </button>
+      {open && (
+        <ol aria-label="The computer calls" className="mt-2 divide-y border bg-card">
+          {calls.map((call, i) => (
+            <li key={i} className="flex items-center gap-3 px-3 py-1.5">
+              <span className="w-14 shrink-0 font-mono text-label text-muted-foreground">+{took(Math.max(0, Date.parse(call.started_at) - first))}</span>
+              <span className={cn("min-w-0 flex-1 truncate text-body", !call.ok && "text-destructive-text")} title={callWords(call)}>{callWords(call)}</span>
+              {!call.ok && call.code && <span className="shrink-0 font-mono text-label text-destructive-text">{call.code}</span>}
+              <span className="w-14 text-right font-mono text-label text-muted-foreground">{took(call.ms)}</span>
+            </li>
+          ))}
+          {dropped > 0 && <li className="px-3 py-1.5 text-body text-muted-foreground">{dropped} more not kept</li>}
+        </ol>
+      )}
+    </div>
   );
 }
 

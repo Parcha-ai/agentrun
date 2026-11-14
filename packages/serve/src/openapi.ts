@@ -24,7 +24,8 @@ import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
 import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./place-offers.js";
 import { PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
-import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-probe.js";
+import { MCP_AUTH_TYPES } from "./mcp-probe.js";
+import { CATALOG_KEY_PATTERN, MCP_SERVER_NAME } from "./tool-names.js";
 import { MAX_PRIVATE_HOSTS } from "./mcp-private-hosts.js";
 // The predicate of MCP's fields this document marks x-agentrun-secret, registered with the one gate as it loads.
 import "./mcp-secret-writes.js";
@@ -33,11 +34,13 @@ import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signatures.js";
 import { HOOK_BODY_MS } from "./push-handler.js";
 import { CATCHUP_WINDOW_S, DUE_KEPT, MAX_ACTIVE_RUNS, SEEN_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
-import { DEFINITION_FIELDS, EXTERNAL_NAME, MAX_TOOL_CALLS, MODEL_REF, NOT_KEPT } from "./validate.js";
-import { COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
+import { DEFINITION_FIELDS, EXTERNAL_NAME, MODEL_REF } from "./validate.js";
+import { CATEGORIES, COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS } from "./templates.js";
+import { MCP_SOURCES } from "./mcp-sources.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
-import { BROWSER_VENDOR_IDS, DECISION_PROVIDER_KEYS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
+import { BROWSER_VENDOR_IDS, DECISION_PROVIDER_KEYS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS } from "./tool-plane.js";
+import { tableTools } from "./tool-list.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
 import { BASH_POLICIES } from "./bash-read-only.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
@@ -255,6 +258,7 @@ const MCP_TOOL = {
     annotations: { type: "object", description: "The server's own claims about the tool (read-only, destructive, and so on): the server's word, not checked." },
     grantable: { const: false, description: "Present, and false, on a known meta tool: one that runs other actions by name (Composio's COMPOSIO_MULTI_EXECUTE_TOOL, Klavis Strata's execute_action, Zapier's execute actions, Arcade's UseTool, Docker's mcp-exec, Cloudflare's portal_execute and code mode). A grant of it could not name the real action, so none is granted: a save that grants it is 422 with `reason`, and a run that pinned one is refused at its launch. Absent on every other tool.", "x-agentrun-serve": "mcpservers/1" },
     reason: { type: "string", description: "Beside `grantable: false`: why the tool can't be granted.", "x-agentrun-serve": "mcpservers/1" },
+    grant_problems: { type: "object", additionalProperties: { type: "string" }, description: "On a saved server's read: why a grant of the tool is refused, where it would run, in the words the save's 422 says. `*` is a refusal on every harness (the server is named hands, or `mcp__<server>__<tool>` is past the 52 characters every harness's tool names share); a harness id is that harness alone, whose own MCP client would drop or retype the tool's schema. Absent when nothing refuses the grant. A known meta tool is `grantable: false` instead.", "x-agentrun-serve": "mcpservers/1" },
     permission: { enum: [...PERMISSIONS], description: "On a saved server's read: the permission this server applies to the tool for an agent that sets none, under its tool settings (`mcp:<server>/<tool>`, else `mcp:<server>/*`, else `default_permission`). The same as an agent's read gives as its `default_permission` once it grants the tool. Absent on a preview.", "x-agentrun-serve": "mcpservers/1" },
     default_permission: { enum: [...PERMISSIONS], description: "On a saved server's read: the owner's default for the tool (ask, as for any catalog tool), the one that applies when the server's tool settings set none.", "x-agentrun-serve": "mcpservers/1" },
     permissions: { type: "array", items: { enum: [...PERMISSIONS] }, description: "On a saved server's read: the permissions the tool may be set to.", "x-agentrun-serve": "mcpservers/1" },
@@ -272,10 +276,18 @@ const MCP_PRICES = {
   type: "object", additionalProperties: { type: "number", minimum: 0 },
   description: "Each tool's price in USD a call, as the owner declared it, for tools the server lists (a refresh drops the price of a tool it no longer lists). A priced call is held at its price under a run's cap (refused unsent when the cap cannot take it) and booked as the run's tool cost, as any paid call; a tool with none runs, shown \"not metered\" on the run's timeline and in GET /usage, outside the run's cost and its cap. A run keeps the prices its first launch saw. On a PUT: no `prices` keeps the saved ones, for the tools the server still lists at the same URL (a new URL keeps none); `{}` clears them; any other value replaces them.",
 };
+const MCP_SOURCE = { enum: [...MCP_SOURCES] };
+/** A save's (and a sign-in's) `toolkit`: what the saved server is, for a template's apply to match. Its source is never
+ *  sent: it is what made the server. */
+const MCP_TOOLKIT_BODY = {
+  toolkit: { type: ["string", "null"], pattern: MCP_SERVER_NAME.source, description: "The toolkit its tools are, as a template names them (`mcp:<toolkit>/<tool>`): a template's MCP need of the server's `source` and this toolkit maps to it at apply. null clears it (not on a composio server, which names its toolkit); on the GitHub App's tokens it is `github` alone. Absent: what it was. The source is what made the server, never sent: `composio` from the Composio preset, `github` on the GitHub App's tokens, else `url`." },
+};
 const MCP_SERVER_VIEW = {
-  type: "object", additionalProperties: false, required: ["name", "url", "auth", "credential", "protocol", "server_info", "tools", "listed_at", "updated_at"],
+  type: "object", additionalProperties: false, required: ["name", "url", "source", "toolkit", "auth", "credential", "protocol", "server_info", "tools", "listed_at", "updated_at"],
   properties: {
     name: { type: "string" }, url: { type: "string", format: "uri" },
+    source: { ...MCP_SOURCE, description: "Where its tools come from, recorded when it was saved from what made it, which a template's MCP needs are matched on at apply: `composio` from the Composio preset, `github` on the GitHub App's tokens, else `url`." },
+    toolkit: { type: ["string", "null"], description: "The toolkit its tools are, as a template names them (`mcp:<toolkit>/<tool>`): the Composio preset's toolkit, `github` on the GitHub App's tokens, else what a PUT's (or a sign-in's) `toolkit` said; null: none, and no template's need maps to it." },
     auth: { type: "object", additionalProperties: false, required: ["type"], properties: { type: { enum: [...MCP_AUTH_TYPES] }, headers: { type: "array", items: { type: "string" }, description: "For `headers`: the names of the headers kept (lowercase), never a value." } } },
     credential: { enum: ["sealed", "unreadable", "expired", null], description: "`sealed`: kept sealed and opens here; `unreadable`: sealed under another seal key, or damaged: a PUT with the credential seals it again; `expired`: an OAuth sign-in whose refresh the authorization server refused (revoked or expired): sign in again. Null for `auth.type` none. Never a value." },
     oauth: {
@@ -323,9 +335,9 @@ const PERMISSION = {
 };
 /** The table's tools a setting may name, a computer kind's keys (desktop, phone), each holding its kind's tools, and a
  *  decision provider's key (jev, parallel, openrouter: what a learned workflow's decision nodes may ask; allow or deny). */
-const SETTINGS_TOOLS = [...TABLE_TOOLS, ...KIND_KEYS, ...DECISION_PROVIDER_KEYS];
+const SETTINGS_TOOLS = [...tableTools(), ...KIND_KEYS, ...DECISION_PROVIDER_KEYS];
 /** A catalog tool's settings key, or an MCP server's wildcard, which sets each of its tools. */
-const CATALOG_KEY = { type: "string", pattern: "^(monid\\.[^/]+|mcp:[^/]+/.+)$" };
+const CATALOG_KEY = { type: "string", pattern: CATALOG_KEY_PATTERN };
 /** A pinned scalar. */
 const PIN_SCALAR = [{ type: "string", maxLength: MAX_PIN_TEXT }, { type: "number" }, { type: "boolean" }, { type: "null" }];
 /** pins/1: an MCP tool's pin (tool-gate.ts pinRefusal), the top-level arguments its calls must carry. */
@@ -447,7 +459,7 @@ const LEARNING_REASON = {
   description: [
     "Set only when `state` is `dropped`, from a closed list; a new reason is announced before it ships.",
     "`seed_failed`: the agent's learning folder could not be read or made, or its notes copied, so the run started with nothing learned.",
-    "`no_budget`: the run's cap left no room for the end-of-run turn, or refused its request. `unknown_cost`: a capped run whose spend is unknown.",
+    "`no_budget`: the run's cap left no room for the end-of-run turn, or refused its request, or left none for the grade of what the turn kept, which is then never run (its `detail` says which). `unknown_cost`: a capped run whose spend is unknown.",
     "`cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_timeout`, `reflect_failed`: the end-of-run turn did not end in time, or ended on an error.",
     "`empty`: the turn's answer gave no note, or the run was not asked its end-of-run turn because its only tool work was its learned workflows, each answering, with nothing said after its first message (its `detail` says so). `unparsed`: it gave notes out of format (no ```note block, one not closed or named twice), and none was kept. `propose_failed`: what it answered could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git.",
     "`grader`: the grader's verdict was not to keep them. `grade_failed`: the grader gave no verdict, or the grade or the merge failed.",
@@ -925,9 +937,14 @@ const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
 /** template-computer/1: a package's computer preference list, and what this server would pick of it. */
 const TEMPLATE_COMPUTER_MARK = { "x-agentrun-serve": "template-computer/1" };
 const NULLABLE_STRING = { type: ["string", "null"] };
-const TEMPLATE_PARAMETER = closedWith({ type: { enum: [...PARAMETER_TYPES] }, required: { type: "boolean" }, description: { type: "string" } }, { pattern: { type: "string", description: "A regular expression (Unicode) a string's value matches." }, enum: { type: "array", minItems: 1, items: { type: ["string", "number", "boolean"] }, description: "The values it may take, a closed set (a form shows a choice); never beside a pattern." }, format: { enum: ["cron", "timezone"], description: "What a string's value is, for a form to ask for it as such: `cron`, a schedule's cron line (a schedule picker); `timezone`, an IANA time zone. The value is the same text either way." }, default: { type: ["string", "number", "boolean"], description: "Its value when apply leaves it out (of its type; never on a required one). A parameter that sets a schedule's cron or timezone has one, and the package's own schedule is checked with it." } });
+const TEMPLATE_ORIGIN_MARK = { "x-agentrun-serve": "template-import/1" };
 const TEMPLATE = closed({
-  name: { type: "string", description: "Its folder's name, the one apply takes." },
+  id: { type: "string", description: "Its id here, the one apply and delete take: a bundled package's name (`kyb`), or an imported one's source without its ref (`github:<owner>/<repo>[/<path>]`), so a bundled package and an imported one of the same name are two packages.", ...TEMPLATE_ORIGIN_MARK },
+  bundled: { type: "boolean", description: "True for a package this server ships; false for one imported (POST /templates/import).", ...TEMPLATE_ORIGIN_MARK },
+  source: { type: ["string", "null"], description: "An imported package's source as it was given, normalized: `github:<owner>/<repo>[/<path>][@<ref>]`. Null for a bundled one.", ...TEMPLATE_ORIGIN_MARK },
+  sha: { type: ["string", "null"], pattern: "^[0-9a-f]{40}$", description: "The full commit SHA an imported package was read at: its ref resolved before anything was read. Null for a bundled one.", ...TEMPLATE_ORIGIN_MARK },
+  publisher: { type: ["string", "null"], description: "The GitHub account an imported package comes from (its source's owner). Null for a bundled one.", ...TEMPLATE_ORIGIN_MARK },
+  name: { type: "string", description: "Its folder's name (agent.md's `name`)." },
   display_name: { type: ["string", "null"], description: "The agent's name, its `${parameters.<name>}` filled at apply; null: the package's name." },
   version: { type: "string", description: "SemVer." },
   description: { type: "string" },
@@ -954,29 +971,52 @@ const TEMPLATE = closed({
     description: "What this server would pick of `computer` now: its readiness, read on each listing. Null: the package names no list.",
     ...TEMPLATE_COMPUTER_MARK,
   },
+  category: { enum: [...CATEGORIES, null], description: "What it is for, for a list or marketplace page to file it under; display only. Null: none given." },
+  tags: { type: "array", maxItems: 8, items: { type: "string", pattern: "^[a-z0-9-]{1,32}$" }, description: "Its tags, display only." },
   mcp: {
     type: "array",
     items: closed({
-      server: { type: "string" },
+      source: { enum: [...MCP_SOURCES], description: "Where its tools come from: `composio` (a Composio toolkit, through Settings → MCP servers → Add from Composio), `github` (GitHub's MCP server) or `url` (any MCP server its owner marks with the toolkit)." },
+      toolkit: { type: "string", description: "The toolkit its tools are: the package names them `mcp:<toolkit>/<tool>`, and apply maps it to a saved MCP server whose `source` and `toolkit` match, rewriting the name to `mcp:<server>/<tool>` in the agent it makes." },
       required: { type: "boolean" },
-      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its gate name, `mcp:<server>/<tool>`: what apply's `grants` and the tool settings name." }, asks: { enum: ["allow", "ask"], description: "The permission the package asks the owner for: a consent screen shows it, and only the owner's `grants` at apply set it." } }, { pin: { type: "object", additionalProperties: { anyOf: [{ type: ["string", "number", "boolean", "null"] }, { type: "array", items: { type: ["string", "number", "boolean", "null"] } }] }, description: "The arguments (each a value, or a list one of which) each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning.", "x-agentrun-serve": "pins/1" } }) },
+      reason: { type: ["string", "null"], description: "Why the agent needs these tools, one line, for the apply screen." },
+      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its name in the package, `mcp:<toolkit>/<tool>`: what apply's `grants` name." }, asks: { enum: ["allow", "ask"], description: "Whether the package asks the owner to allow it (a consent screen shows it): only the owner's `grants` at apply grant it, set to allow; one left out is not granted." } }, { pin: { type: "object", additionalProperties: { anyOf: [{ type: ["string", "number", "boolean", "null"] }, { type: "array", items: { type: ["string", "number", "boolean", "null"] } }] }, description: "The arguments (each a value, or a list one of which) each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning.", "x-agentrun-serve": "pins/1" } }) },
     }),
-    description: "The MCP servers it uses, by the name this server saves them under, and the tools of each it grants: apply grants them when the server is saved here, each at the owner's own setting (a third-party tool asks by default), and sets to allow only those the apply's `grants` name; one not saved is skipped with a warning, or, `required`, refuses the apply (409, nothing made).",
+    description: "The MCP servers it uses, by source and toolkit, and the tools of each it may be granted: apply maps each to a saved server whose `source` and `toolkit` match (`servers` picks when several do) and grants there only those the apply's `grants` name, each set to allow; a tool left out of `grants` is not the agent's at all, whatever its approvals, and the owner can grant it later in the agent's tools. One no saved server matches is skipped with an `mcp.<toolkit>` warning saying how to set it up, or, `required`, refuses the apply (409, nothing made).",
   },
-  parameters: { type: "object", additionalProperties: TEMPLATE_PARAMETER, description: "What apply takes in `parameters`, by name, put where the package writes `${parameters.<name>}`." },
+  parameters: { type: "object", description: "What apply takes in `parameters`, put where the package writes `${parameters.<name>}`: the package's `parameters`, compiled as `inputs` are, a closed JSON Schema object (no properties when it names none). Apply fills a blank one with its `default` and checks them as a run's input is checked." },
+  input_schema: { type: ["object", "null"], description: "What each run of its agent takes as `input`: the package's `inputs`, compiled to the JSON Schema apply sets as the agent's `input_schema`. Null: the package names none, and a run takes `{content}`." },
   secrets: { type: "array", items: { type: "string" }, description: "The keys this server must have, by variable name (a saved key counts), before apply makes anything." },
-  budget: { type: ["object", "null"], additionalProperties: false, minProperties: 1, properties: { per_run_usd: { type: "number" }, tool_calls: { type: "integer", minimum: 1 } }, description: "Each run's limits: per_run_usd, its spend cap (the agent's max_cost_usd), required of a package with triggers; tool_calls, the tool calls each of its conversations may make (the agent's max_tool_calls)." },
+  budget: { type: ["object", "null"], additionalProperties: false, required: ["per_run_usd"], properties: { per_run_usd: { type: "number" } }, description: "Each run's limit: per_run_usd, its spend cap (the agent's max_cost_usd), required of a package with triggers." },
   learning: { type: "boolean" },
   approvals_default: { enum: ["ask", "never"], description: "What the package recommends for the agent's approvals: `ask`, the agent asks its person before a tool runs; `never`, it runs unattended (a template whose job runs on triggers). Deny settings and pins hold either way: a pinned write can only go where its pin says." },
   triggers: { type: "array", items: { type: "object" }, description: "The triggers apply makes on its agent: POST /triggers bodies with no agent_id, placeholders unfilled." },
   skills: { type: "array", items: { type: "string" } },
   evals: { type: "array", items: { type: "string" }, description: `Its eval cases (evals/<case>/: prompt.md and graders of ${GRADER_TYPES.join(", ")}); none runs here.` },
 });
+const TEMPLATE_IMPORT = {
+  type: "object", additionalProperties: false, required: ["source"],
+  properties: {
+    source: { type: "string", minLength: 1, maxLength: 1024, description: "Where the package is: `github:<owner>/<repo>[/<path>][@<ref>]` (the ref, a branch, tag or commit, defaults to the default branch), or the folder's https://github.com/<owner>/<repo>/tree/<ref>/<path> URL. A public repository on github.com alone." },
+    dry_run: { type: "boolean", description: "True: read and check the package and answer it, storing nothing (the install preview). Absent or false: store it, listed by GET /templates." },
+    trust_publisher: { type: "boolean", description: "The owner's \"I trust <publisher>\": needed (true) for the first import this server stores from a GitHub account, and remembered for that account. Never needed for a dry run." },
+  },
+};
+const TEMPLATE_IMPORTED = closed({
+  template: { ...TEMPLATE, description: "The package, as GET /templates lists it." },
+  instructions: { type: "string", description: "The agent's instructions in full (agent.md's body), placeholders unfilled: what a third party's package would tell the agent." },
+  skill_files: { type: "object", additionalProperties: { type: "string" }, description: "Every skill file the agent would be given, by path under its skills folder (`<skill>/SKILL.md`, the rules and the answer's schema beside each), in full." },
+  publisher_trusted: { type: "boolean", description: "Whether this server's owner has said they trust the publisher (an earlier import with `trust_publisher`)." },
+  stored: { type: "boolean", description: "True when the package was stored (listed by GET /templates); false for a dry run." },
+  replaced: { type: ["string", "null"], pattern: "^[0-9a-f]{40}$", description: "The SHA of the package of the same id this import replaced (or, on a dry run, would replace); null when there was none." },
+  console_url: { type: "string", format: "uri", description: "The console page to go on from: the package's apply page once stored; for a dry run, its install page, which shows it whole before it is stored." },
+});
 const TEMPLATE_APPLY = {
   type: "object", additionalProperties: false,
   properties: {
     parameters: { type: "object", description: "The package's parameters (GET /templates), by name, each of its type." },
-    grants: { type: "array", items: { type: "string" }, description: "The owner's answer to the consent screen: the package's MCP tools, by gate name (`mcp:<server>/<tool>`, GET /templates `mcp[].tools[].tool`), the agent is allowed to call unasked. Any other is 422. One the owner denies on this server stays denied, with a warning. A grant is written as the agent's own tool setting, which outranks the server's ask or allow; a deny set on this server, before or after the apply, still refuses the tool there, as a server deny is absolute (edit its `definition.tool_settings` to take a grant back). Absent, none: every tool keeps the owner's setting." },
+    servers: { type: "object", additionalProperties: { type: "string" }, description: "The owner's pick of a saved MCP server, by the package's toolkit, where several saved servers match its source and toolkit; one that does not match is 422. Absent for a toolkit: its one match; where several match, the apply is 422 under `servers.<toolkit>`, naming them (a server is never picked for the owner)." },
+    grants: { type: "array", items: { type: "string" }, description: "The owner's answer to the consent screen: the package's MCP tools, by the package's own names (`mcp:<toolkit>/<tool>`, GET /templates `mcp[].tools[].tool`; apply grants each as the tool of the server it maps the toolkit to), the agent is granted and allowed to call unasked: the only MCP tools the agent gets. Any other is 422. One the owner denies on this server stays denied, with a warning. A grant is written as the agent's own tool setting, which outranks the server's ask or allow; a deny set on this server, before or after the apply, still refuses the tool there, as a server deny is absolute (edit its `definition.tool_settings` to take a grant back). Absent, none: the agent gets no tool of the package's MCP servers." },
     overrides: { type: "object", additionalProperties: false, properties: { model: { type: "string", pattern: MODEL_REF.source, description: "The agent's model in place of the one the package's tier and preference pick, \"provider/model-id\"." }, approvals: { enum: ["ask", "never"], description: "The agent's approvals (its definition's): never runs it unattended (each tool that would ask allowed, a deny still refusing), ask makes it ask. Absent: the package's `approvals_default` (`ask` only when it names none).", "x-agentrun-serve": "unattended/1" } } },
   },
 };
@@ -984,6 +1024,7 @@ const TEMPLATE_APPLIED = closedWith({
   template: { type: "string" },
   version: { type: "string" },
   agent_id: { type: "string", description: "The agent made (GET /agents/{agent_id})." },
+  servers: { type: "object", additionalProperties: { type: ["string", "null"] }, description: "The saved MCP server each of the package's toolkits runs on, by toolkit; null: none here matches it (said under `mcp.<toolkit>`)." },
   trigger_ids: { type: "array", items: { type: "string" }, description: "Its triggers, in the package's order (GET /triggers/{trigger_id})." },
   warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as POST /agents answers it; a webhook trigger the apply made adds a warning pointing to the console for its signing secret, never the secret itself (the first answer to the owner's signed-in session shows it once, under `webhook_secrets`)." },
 }, {
@@ -1688,10 +1729,10 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/computer": {
     get: {
       operationId: "getRunComputer", tags: ["runs"], summary: "Watch the run's computer live and take it over: its viewer link, for the owner",
-      description: "The live view of the run's computer, one family for every kind (`browser`, `desktop`, `phone`: the run's agent's computer). `live` with `viewer`, a link on this server (`/v2/runs/{run_id}/computer/live/v/<id>#t=<token>`) to open, or frame, in the console, while a viewer is open; `none` when the run has a computer but no session is up (or it ended); `off` when there is no computer here (its agent has none, or its computer resolves unavailable here), with `why` in plain words. `kind` is the run's computer, on every answer but `off`. `hold` says who drives now: `agent`; `pending`, the person's Take over waits for the agent's step; `person`. The viewer watches until its Take over, then drives until its Hand back, both in the viewer's own bar: outside a hold the run drops its input. The token is in the link's fragment alone, never in a request line, a Referer or a log; the viewer's page sends it once, in its WebSocket hello. It opens that one session's view, and drives it once taken over: it dies with the computer (its release), the run's end, or the owner's sign-out (the socket closes), and a second viewer of the same session is refused (viewer_in_use). The viewer's page is served under the link's path with `frame-ancestors 'self'`, and its WebSocket is taken only from this server's own origin (or its public address, AGENTRUN_PUBLIC_URL) with the owner's cookie. It takes the owner's password session in the console: never a token, which a run's process, an MCP client or a script may hold (403); no credential is 401. The vendors' own live-view links never leave the run's process.",
+      description: "The live view of the run's computer, one family for every kind (`browser`, `desktop`, `phone`: the run's agent's computer). `live` with `viewer`, a link on this server (`/v2/runs/{run_id}/computer/live/v/<id>#t=<token>`) to open, or frame, in the console, while a viewer is open; `none` when the run has a computer but no session is up, with `session` saying whether the run hasn't opened it, is opening it, or opened one that closed; `off` when there is no computer here (its agent has none, or its computer resolves unavailable here), with `why` in plain words. `kind` is the run's computer, on every answer but `off`. `hold` says who drives now: `agent`; `pending`, the person's Take over waits for the agent's step; `person`. The viewer watches until its Take over, then drives until its Hand back, both in the viewer's own bar: outside a hold the run drops its input. The token is in the link's fragment alone, never in a request line, a Referer or a log; the viewer's page sends it once, in its WebSocket hello. It opens that one session's view, and drives it once taken over: it dies with the computer (its release), the run's end, or the owner's sign-out (the socket closes), and a second viewer of the same session is refused (viewer_in_use). The viewer's page is served under the link's path with `frame-ancestors 'self'`, and its WebSocket is taken only from this server's own origin (or its public address, AGENTRUN_PUBLIC_URL) with the owner's cookie. It takes the owner's password session in the console: never a token, which a run's process, an MCP client or a script may hold (403); no credential is 401. The vendors' own live-view links never leave the run's process.",
       parameters: [ref("parameters/RunId")],
       responses: {
-        "200": json({ oneOf: [closedWith({ state: { const: "off" }, hold: COMPUTER_HOLD }, { why: { type: "string", description: "Why there is no computer view here, in plain words." } }), closedWith({ state: { const: "none" }, kind: RUN_COMPUTER_KIND, hold: COMPUTER_HOLD }, { ended: { type: "object", additionalProperties: false, required: ["at", "why"], description: "A going run's browser let go while the run waited for its person (its window, AGENTRUN_BROWSER_PERSON_WAIT_MIN, ran out, the cap ended it, or its provider ended the session), with none opened since: the Timeline row's words and when. The next browser call, once the run goes on, opens a new one.", properties: { at: { type: "string", format: "date-time" }, why: { type: "string" } } } }), closed({ state: { const: "live" }, kind: RUN_COMPUTER_KIND, viewer: { type: "string", description: "The viewer's link on this server, `/v2/runs/{run_id}/computer/live/v/<id>#t=<token>`: its token in the fragment alone." }, hold: COMPUTER_HOLD })] }, "The run's live view, none open, or no computer here."),
+        "200": json({ oneOf: [closedWith({ state: { const: "off" }, hold: COMPUTER_HOLD }, { why: { type: "string", description: "Why there is no computer view here, in plain words." } }), closedWith({ state: { const: "none" }, kind: RUN_COMPUTER_KIND, hold: COMPUTER_HOLD, session: { type: "string", enum: ["unopened", "opening", "closed"], description: "Where the run's computer is, read from the run's journal: `unopened`, the run hasn't opened it so far (a browser opens at the agent's first browser step); `opening`, it is being opened now (a browser step that opens it has no result yet; a desktop or a phone from the run's start until it is up); `closed`, the run opened one, which is not up now (`ended` says why when it was let go while the run waited for its person)." } }, { ended: { type: "object", additionalProperties: false, required: ["at", "why"], description: "A going run's browser let go while the run waited for its person (its window, AGENTRUN_BROWSER_PERSON_WAIT_MIN, ran out, the cap ended it, or its provider ended the session), with none opened since: the Timeline row's words and when. The next browser call, once the run goes on, opens a new one.", properties: { at: { type: "string", format: "date-time" }, why: { type: "string" } } } }), closed({ state: { const: "live" }, kind: RUN_COMPUTER_KIND, viewer: { type: "string", description: "The viewer's link on this server, `/v2/runs/{run_id}/computer/live/v/<id>#t=<token>`: its token in the fragment alone." }, hold: COMPUTER_HOLD })] }, "The run's live view, none open, or no computer here."),
         ...errors(401, 403, 404, 429, 500),
       },
       "x-agentrun-serve": "computer/1",
@@ -1941,7 +1982,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "saveMcpServer", tags: ["local"], summary: "Preview a remote MCP server, then save it with the tools listed and its credential sealed",
       description: `The credential is sealed under the server's seal key, bound to the server's name and its URL's origin, and kept in the data directory as ciphertext alone. 403 forbidden to the API token for a save that sends a credential's value, or that would drop or change the credential the server holds (another \`auth.type\`, or none): the owner's signed-in session alone. 412 precondition_failed when a save that sends a new credential, or none, finds the server's credential changed while it listed its tools (another save, a sign-in or a removal landed): nothing is written over it. A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. A body with no \`prices\` keeps the saved ones for the tools still listed at the same URL, so a save from any client never leaves a paid tool unmetered; \`prices: {}\` clears them. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
       parameters: [MCP_NAME],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, prices: MCP_PRICES } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, prices: MCP_PRICES, ...MCP_TOOLKIT_BODY } } } } },
       responses: { "200": json(MCP_SERVER_VIEW, "The server, as saved."), ...errors(400, 401, 403, 409, 412, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
     },
@@ -1986,7 +2027,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "startMcpOAuth", tags: ["local"], summary: "Start signing in to an MCP server with OAuth: the page the owner opens",
       description: `Discovers the server's authorization server (RFC 9728, then RFC 8414) with the official MCP SDK, and its client: the \`client_id\` (and \`client_secret\`) given; else, signing in again to the same origin, the client kept from the last sign-in (its secret too); else this server's client metadata document, when this server's address is public https and the authorization server takes one; else dynamic registration. PKCE S256, and the RFC 8707 \`resource\` is the server's URL. Answers \`authorization_url\` for the owner to open; the authorization server sends the browser back to GET /settings/mcp-servers/oauth/callback within 10 minutes. 409 wrong_origin when the request came to another address than the one the callback is under (\`details.open\` says where to open the console); 424 when discovery or registration fails, or an MCP server off loopback names a private or plain-http endpoint. The answer sets a cookie (one per sign-in, \`SameSite=Lax\`, the callback's path, 10 minutes) that the callback requires.`,
       parameters: [MCP_NAME],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, scopes: { type: "array", minItems: 1, maxItems: 32, items: { type: "string" } }, client_id: { type: "string", minLength: 1 }, client_secret: { type: "string", minLength: 1, description: "Only with client_id; kept sealed with the token set.", "x-agentrun-secret": true } } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, scopes: { type: "array", minItems: 1, maxItems: 32, items: { type: "string" } }, client_id: { type: "string", minLength: 1 }, client_secret: { type: "string", minLength: 1, description: "Only with client_id; kept sealed with the token set.", "x-agentrun-secret": true }, ...MCP_TOOLKIT_BODY } } } } },
       responses: { "200": json(closed({ authorization_url: { type: "string", format: "uri" } }), "The page the owner opens."), ...errors(400, 401, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
       // Started anywhere but the owner's browser, the sign-in can never finish: the cookie its callback requires is set on
@@ -2080,7 +2121,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "putToolSettings", tags: ["capabilities"], summary: "Set the providers of web_search, web_fetch and browser, and each tool's permission",
-      description: "Replaces the settings: a tool the body leaves out takes its defaults. Kept in the data directory, and capabilities say so at once. A provider is read by every run launched from then on; a permission by the tool gate at each call, live runs' included (a claude-agent or codex run's own web search takes a change of web_search's at its next launch). An MCP server's wildcard, mcp:<server>/*, sets each of its tools, under a tool's own key. A pick of parallel without PARALLEL_API_KEY resolves unavailable, never to another provider, and so does a browser vendor picked without its key. An MCP tool's own key (never a wildcard) may carry `pin`, 1 to 8 of its top-level arguments to the JSON scalar each call must carry: the gate refuses any other call before it runs or asks anyone, whatever the permission, and a pin here and an agent's both hold. An unknown tool, a provider not offered for it, a permission not offered for it and a pin that is not one are refused.",
+      description: "Replaces the settings: a tool the body leaves out takes its defaults. Kept in the data directory, and capabilities say so at once. A provider is read by every run launched from then on; a permission by the tool gate at each call, live runs' included, and a run waiting on a person's approval of a call whose tool now reads allow for that run (its agent's own settings over these) goes on at once, the setting answering it (a claude-agent or codex run's own web search takes a change of web_search's at its next launch). An MCP server's wildcard, mcp:<server>/*, sets each of its tools, under a tool's own key. A pick of parallel without PARALLEL_API_KEY resolves unavailable, never to another provider, and so does a browser vendor picked without its key. An MCP tool's own key (never a wildcard) may carry `pin`, 1 to 8 of its top-level arguments to the JSON scalar each call must carry: the gate refuses any other call before it runs or asks anyone, whatever the permission, and a pin here and an agent's both hold. An unknown tool, a provider not offered for it, a permission not offered for it and a pin that is not one are refused.",
       requestBody: { required: true, content: { "application/json": { schema: TOOL_SETTINGS } } },
       responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider now."), ...errors(400, 401, 415, 422, 429, 500) },
       "x-agentrun-serve": "providers/1",
@@ -2268,8 +2309,26 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/templates": {
     get: {
-      operationId: "listTemplates", tags: ["local"], summary: "The template packages this server ships: each makes an agent, its skills and its triggers",
-      responses: { "200": json(closed({ templates: { type: "array", items: TEMPLATE } }), "Each package, by name."), ...errors(401, 429, 500) },
+      operationId: "listTemplates", tags: ["local"], summary: "The template packages this server ships, and those imported here: each makes an agent, its skills and its triggers",
+      responses: { "200": json(closed({ templates: { type: "array", items: TEMPLATE } }), "Each bundled package, by name, then each imported one, by id."), ...errors(401, 429, 500) },
+      ...TEMPLATE_MARK,
+    },
+  },
+  "/templates/import": {
+    post: {
+      operationId: "importTemplate", tags: ["local"], summary: "Import a template package from a public GitHub repository, or preview it (dry_run)",
+      description: "The source's ref is resolved to a full commit SHA first (GitHub's answer), then the repository's tarball at that SHA is read from GitHub's own hosts alone (github.com, api.github.com, codeload.github.com; a redirect anywhere else is refused), within size and time limits, and the package's folder taken out of it in memory: a symbolic or hard link, or any entry that is not a regular file or a folder, refuses the import (422). The package is checked as the packages this server ships are (`agentrun template validate`), each problem a 422 field under `package`. Nothing in it runs. GitHub is read with this server's GitHub App token when it has one, else anonymously, whose rate limit (60 an hour) a 502 github_failed names. A dry run stores nothing and answers 200; otherwise the package is stored (201), listed by GET /templates under its id, and loaded again at each start; one already stored under the id (an earlier SHA) is replaced. The first import stored from a GitHub account needs `trust_publisher: true` (422 on `trust_publisher` without it), remembered for that account.",
+      requestBody: { required: true, content: { "application/json": { schema: TEMPLATE_IMPORT } } },
+      responses: { "200": json(TEMPLATE_IMPORTED, "The dry run: the package, checked, stored nowhere."), "201": json(TEMPLATE_IMPORTED, "Imported: stored and listed."), ...errors(400, 401, 413, 415, 422, 429, 500), "502": { description: "`github_failed`: GitHub refused or did not answer (its rate limit, a redirect off its hosts, the time limit, a tarball that does not read); the message says which, and whether the server read it anonymously or with its GitHub App.", headers: { "X-Request-Id": ref("headers/RequestId") }, content: { "application/json": { schema: ref("schemas/Error") } } } },
+      ...TEMPLATE_MARK,
+    },
+  },
+  "/templates/{template}": {
+    delete: {
+      operationId: "deleteTemplate", tags: ["local"], summary: "Remove an imported template package",
+      description: "The package is no longer listed or applied here. Agents applied from it stay as they are. A bundled package is 403 forbidden: it ships with this server.",
+      parameters: [{ name: "template", in: "path", required: true, schema: { type: "string" }, description: "The package's id (GET /templates `id`), URL-encoded: `github%3Aacme%2Fagents%2Fkyb`." }],
+      responses: { "204": { description: "Removed." }, ...errors(401, 403, 404, 429, 500) },
       ...TEMPLATE_MARK,
     },
   },
@@ -2277,7 +2336,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     post: {
       operationId: "applyTemplate", tags: ["local"], summary: "Apply a template package: make its agent, with its skills, then its triggers",
       description: "The package's parameters are checked (422 naming each, nothing made), then the secrets and required MCP servers it names: one this server does not have is `409 agent_not_runnable`, each a field with reason `not_set_up_here`, and nothing is made. An MCP server it can do without that is not saved here is skipped, a warning under `mcp.<server>`; one saved has the package's tools of it granted and set to allow. Then its agent is made as POST /agents makes one, on the first harness of its list this server runs and the model its tier and preference pick here (`overrides.model` wins); then each trigger on it as POST /triggers makes one. A trigger refused deletes the triggers made before it and archives the agent, and its refusal is the answer, a 422's fields under `triggers.<i>`; but a github trigger on a server GitHub is not connected to is skipped, the agent and the rest made, with a warning under `triggers.<i>` (`not_set_up_here`: connect GitHub and apply again), and one made adds a note there saying what it runs on. A webhook trigger's secret is not in the answer: POST /triggers/{trigger_id}/secret makes one. The same Idempotency-Key and body answers the first apply again and makes nothing.",
-      parameters: [{ name: "template", in: "path", required: true, schema: { type: "string" }, description: "The package's name (GET /templates)." }, ref("parameters/IdempotencyKey")],
+      parameters: [{ name: "template", in: "path", required: true, schema: { type: "string" }, description: "The package's id (GET /templates `id`), URL-encoded: a bundled one's name, or an imported one's `github%3A<owner>%2F<repo>…`." }, ref("parameters/IdempotencyKey")],
       requestBody: { required: true, content: { "application/json": { schema: TEMPLATE_APPLY } } },
       responses: { "201": json(TEMPLATE_APPLIED, "Applied: the agent and its triggers made."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
       ...TEMPLATE_MARK,
@@ -2517,6 +2576,13 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "While a message the run took is still open (an agentic run, working or queued): when its turn last wrote anything, a request's start included; it holds still while a tool or a model request runs, and moves as the turn writes. Null once every message has had its turn, and on a workflow run.",
       "x-agentrun-serve": "turnend/1",
     },
+    input: {
+      type: ["object", "null"],
+      additionalProperties: true,
+      description: "On the run read (GET /v2/runs/{run_id}), never a list's: the input the run was started with, whole and exactly as given (`content` and its typed fields, or a workflow's input): what starting it again sends. Null when serving it would change it (it holds a value this server keeps, or a run of text the run's words are cut of), and for a run whose words are withheld.",
+      "x-agentrun-serve": "runinput/1",
+    },
+    file_ids: { type: "array", items: { type: "string" }, description: "On the run read, never a list's: the uploaded files the run was started with (RunCreate `file_ids`), in order; empty for none.", "x-agentrun-serve": "runinput/1" },
     claim: {
       type: ["object", "null"],
       additionalProperties: false,
@@ -2565,6 +2631,13 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     trigger: RUN_TRIGGER,
   },
+  RunResult: {
+    output_error: {
+      type: "string",
+      description: "Why `output` is null on an agentic run whose agent has an `output_schema`: the final answer still had no json block meeting it after the one retry. Absent when the output met the schema, the agent has none, or the run is a workflow's.",
+      "x-agentrun-serve": "outputcontract/1",
+    },
+  },
   RunError: {
     details: {
       type: "object", additionalProperties: false, required: ["reason"],
@@ -2603,21 +2676,34 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     computer_calls: {
       type: "array",
       items: {
-        type: "object", additionalProperties: false, required: ["method", "ok", "ms"],
+        type: "object", additionalProperties: false, required: ["method", "started_at", "ok", "ms"],
         properties: {
           method: { type: "string", description: "The computer protocol method (spec/computer)." },
+          started_at: { type: "string", format: "date-time", description: "When the call started: a code-mode script's calls each at its own time, inside its one tool call." },
+          app: { type: "string", description: "The app it named: apps.launch's or apps.terminate's id, a ui call's target app." },
           ok: { type: "boolean" },
           ms: { type: "number" },
           code: { type: "string", description: "The error's code, when the call failed." },
           steps: {
             type: "array",
-            items: { type: "object", additionalProperties: false, required: ["do"], properties: { do: { type: "string", description: "The step's kind: press, set, perform, click, type, key, nav, scroll or drag." }, route: { type: "string", description: "The route it ran by." }, verified: { type: "boolean", description: "Whether a readback showed it took." }, error: { type: "string", description: "The kind of error that refused it." } } },
+            items: {
+              type: "object", additionalProperties: false, required: ["do"],
+              properties: {
+                do: { type: "string", description: "The step's kind: press, set, perform, click, type, key, nav, scroll or drag." },
+                on: { type: "object", additionalProperties: false, required: ["role"], properties: { role: { type: "string" }, name: { type: "string" } }, description: "The element it acted on (a type step's: the one it typed into), as the run's own ui.observe answers showed it: its role and name, never its value. The name is cut at 60 characters and through the run's redaction. Absent when the step named no element the run observed." },
+                keys: { type: "string", description: "A key step's chord, when it has a command modifier (ctrl, alt, super) or only named keys: never a lone character, which may be part of a password." },
+                nav: { type: "string", description: "A nav step's place: back, home or app_switch." },
+                route: { type: "string", description: "The route it ran by." },
+                verified: { type: "boolean", description: "Whether a readback showed it took." },
+                error: { type: "string", description: "The kind of error that refused it." },
+              },
+            },
             description: "A ui.act call's steps, in order.",
           },
           expect: { enum: ["met", "unmet"], description: "A ui.act call's expect: whether it held." },
         },
       },
-      description: "On a tool call's `tool_result` row alone: each computer protocol call the tool made, in order, at most 200. Never a param's value or an answer's bytes: no screenshot, and no text a step set or typed. Absent on a call that made none.",
+      description: "On a tool call's `tool_result` row alone (a codemode script's included): each computer protocol call the tool made, in order, at most 200. Never a typed or set value or an answer's bytes: no screenshot, and no text a step set or typed. Absent on a call that made none.",
       "x-agentrun-serve": "computercalls/1",
     },
     computer_calls_dropped: {
@@ -2658,15 +2744,16 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         image: { type: "string", minLength: 1, description: "The image the computer starts from: one the provider offers for the kind (GET /computers lists them as the provider's `images`), such as Orgo's `windows` desktop. Absent, the kind's default. One the provider does not offer saves with a warning naming the ones it does, and its runs are refused at their start in the same words. Absent for `none`." },
         gpu: COMPUTER_GPU,
         persistent: { type: "boolean", description: "Whether the agent keeps its own computer between runs: true makes one at its first run, detaches it (not deletes it) at each run's end, and attaches it again at the next, with what was on it; false or absent, a fresh computer for each run. Only where the provider keeps one for the kind and image (GET /computers: the provider's `persistent`), else 422 not_allowed; never one that mounts the run's folder. One run at a time: a run that finds the computer held by another run still going is refused at its start, naming that run. Archiving the agent, turning this off, or a setting on another provider or image deletes the computer (GET /agents/{agent_id}'s `own_computer` shows it)." },
+        surface: { enum: ["code", "tools"], description: "How the agent drives a desktop or a phone. `code`: by scripts alone, its harness's script tool (pi's `codemode`, else `computer_script`) with `computer` bound, and the hand-over (`computer_request_handoff`); no `computer_observe`, `computer_act` or `computer_screenshot`. `tools`: by the step tools alone (`computer_observe`, `computer_act`, `computer_screenshot`) and the hand-over; no `computer_script` and no pi `codemode`. Absent, both. Only a desktop or a phone takes it (422 not_allowed on another kind)." },
+        exec: { type: "boolean", description: "`false`: the agent gets no shell and starts no program on its desktop or phone. Its computer's `exec` and `processes` groups are taken out of what its tools and scripts see (no `computer.shell`, no `computer.processes`; a script that reaches for one is refused in words), no folder is mounted in the computer, and the run gets no `bash` or background tool, wherever its folder is. The run's own computer channel (`POST /runs/{run_id}/computer/call`, the owner's) keeps every group. `true` or absent: as the computer offers. Only a desktop or a phone takes it (422 not_allowed on another kind)." },
       },
-      description: "The computer the revision's runs are given (Settings → Computers): its kind, the provider that serves it, the image it starts from, a sandbox's GPUs, and whether the agent keeps it between runs. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
+      description: "The computer the revision's runs are given (Settings → Computers): its kind, the provider that serves it, the image it starts from, a sandbox's GPUs, whether the agent keeps it between runs, and, for a desktop or a phone, how the agent drives it and whether it may run programs on it. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
       "x-agentrun-serve": "computer/1",
     },
     tool_settings: { ...AGENT_TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin, bash's policy), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     approvals: { enum: ["ask", "never"], default: "ask", description: "Whether the agent's runs ask a person or run unattended. `ask`, the default: a tool set to ask parks the run for an approval, as its tool settings say. `never`: the agent runs unattended, and each tool that would ask is allowed instead, decided by the tool gate at each call, so a tool granted later and an MCP tool (`mcp:<server>/<tool>`, which asks by default) are covered on every harness. It never lifts a deny, whether set on this server or in the agent's own tool_settings, nor a pin, nor anything else the gate refuses before it decides between running and asking. A workflow's call node on a tool set to ask runs under `never`. Absent on a request: ask. An edit that leaves it out asks, so no edit makes an agent unattended by saying nothing. Every answer names it.", "x-agentrun-serve": "unattended/1" },
     learning: { enum: [true, false, "notes"], default: false, description: "Whether an agentic revision's runs learn, and what: `true`, notes, skills and learned workflows; `\"notes\"`, notes and skills alone (a run is never given a learned workflow nor asked to draft one); `false`, nothing. A run that learns starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true, false or `\"notes\"`; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
     checkout: { enum: ["pull_request", "none"], description: "What the server checks out in each run's folder before its first turn, an agentic definition's alone. `pull_request`: the pull request the run's GitHub event names (a GitHub trigger's firing: its repository, number, head and base), at its head, detached, in `repo/`, with its base and their merge base fetched beside it (refs `pr/head`, `pr/base`, `pr/merge-base`). The fetch is the server's own, one command on the run's folder, with an installation token of the server's GitHub App narrowed to that repository and `contents: read`, which the agent never holds: it is never in the folder, the checkout's git config, its remote's URL, the agent's environment or the log. With no App, or one not installed there, the fetch is anonymous, which a public repository answers. The run's system prompt says what was checked out, or why nothing was (no pull request named, the fetch failed), so it can read the change another way, such as the GitHub MCP. The checkout is removed when the run's claim ends. An edit that leaves it out keeps the agent's; `none` clears it. A template sets it from its manifest's `checkout`.", "x-agentrun-serve": "checkout/1" },
-    max_tool_calls: { type: "integer", minimum: 0, maximum: MAX_TOOL_CALLS, description: "An agentic revision's tool-call budget, on pi: the tool calls each conversation of its runs may make (the run's own, and each one a tool opens, counted apart). Past it, every call is refused before it runs with words that tell the model to answer now from what it has; that refusal is not counted, and the run is never ended by it. Counted from the conversation's journal, so a restart or a moved claim keeps the count. Above 0 sets it, 0 clears it, and an edit that leaves it out keeps the agent's. On another harness it is refused: 422 `definition.max_tool_calls` at the save. A template's `budget.tool_calls` sets it at apply.", "x-agentrun-serve": "toolbudget/1" },
     cap_mode: { ...CAP_MODE, description: `The cap mode of each run of this agent that has a cap and names none of its own. ${CAP_MODE.description as string} An edit that leaves it out keeps the agent's. An agentic definition's or a workflow's alike.` },
   },
   AgentCreate: {
@@ -2718,6 +2805,18 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "The agent's own computer, kept between its runs where its `computer.persistent` is true: what this server records of it. Null when it has none (no persistent setting, or no run has made one yet).",
       "x-agentrun-serve": "computer/1",
     },
+    template: {
+      oneOf: [
+        closed({
+          id: { type: "string", description: "The package's id (GET /templates `id`): a bundled one's name, or an imported one's `github:<owner>/<repo>[/<path>]`." },
+          version: { type: "string", description: "The package's SemVer version when it was applied." },
+          sha: { type: ["string", "null"], pattern: "^[0-9a-f]{40}$", description: "The commit an imported package was read at; null for a bundled one." },
+        }),
+        { type: "null" },
+      ],
+      description: "The template package the agent was applied from (POST /templates/{template}/apply), as its first revision keeps it; null for an agent made otherwise.",
+      ...TEMPLATE_MARK,
+    },
     warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as a create (POST /agents) or a commit (PUT .../definition) answers it, the same shape apply's warnings take. Absent from every other answer (GET and list never send it).", "x-agentrun-serve": "warnings/1" },
   },
   Capabilities: {
@@ -2744,10 +2843,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     harnesses: {
       type: "array",
       description: "Each harness a revision may name, and whether this server runs it; when not, why. A harness whose one run needs more memory than this server has for runs is unavailable, its reason naming the numbers, and its runs are 409 agent_not_runnable.",
-      items: { type: "object", additionalProperties: false, required: ["id", "available", "steer", "default_model", "run_memory_mib", "max_concurrent_runs"], properties: { id: { enum: [...HARNESSES] }, available: { type: "boolean" }, run_memory_mib: { type: "integer", minimum: 1, description: "The memory a run of this harness reserves while its process lives, in MiB, measured. A start is admitted while the runs going and it fit in this server's memory less its own; over that, 429 rate_limited with retry-after, as over `limits.max_concurrent_runs`." }, max_concurrent_runs: { type: "integer", minimum: 0, description: "The most runs of this harness alone at once here: by memory and by the cap on the count, whichever is fewer. 0 when one never fits. `limits.max_concurrent_runs` is pi's, the smallest run." }, default_model: { type: ["string", "null"], description: "The model this server runs for the harness when a definition names none (provider/model-id), or null when it runs none: the harness does not run here, or no default model here runs on it." }, steer: { type: "boolean", description: "Whether a message sent while the run works lands mid-turn (`steer`); when false, it waits for the turn's end and the answer's mode is `follow_up`." }, reason: { type: "string" }, installs: { const: "on_first_use", description: "claude-agent and codex only, while that harness's CLI is not installed in this server's data: it installs on first use. The first run on it, or the first agent saved on it, installs the version AgentRun pins (claude-agent: the Claude Agent SDK; codex: Codex) from npm into `<data>/harnesses/<harness>`, by the lock AgentRun ships, once (every run that needs it waits for that one install); a run shows a `phase` row, `Installing Claude Code (first use)…` or `Installing Codex (first use)…`, while it does. When npm fails the run fails, and its error names the command that installs it by hand. Absent once it is installed.", "x-agentrun-serve": "firstuse/1" } } },
+      items: { type: "object", additionalProperties: false, required: ["id", "available", "steer", "default_model", "models", "run_memory_mib", "max_concurrent_runs"], properties: { id: { enum: [...HARNESSES] }, available: { type: "boolean" }, models: { type: "array", items: { type: "string" }, description: "The current models a person may pick for this harness, each in the exact form a definition's `model` takes on it here (`anthropic/claude-sonnet-5-5` on a provider's own key; `openrouter/anthropic/claude-sonnet-5.5` when OpenRouter's is the only key; behind a gateway, the host's own model ids that are `provider/model-id`, for the harnesses that go through it; the save takes no other form). Only those this harness runs here: a model its catalog does not know is not listed. Empty when the harness does not run here. Any other model a definition names is still saved if the harness runs it." }, run_memory_mib: { type: "integer", minimum: 1, description: "The memory a run of this harness reserves while its process lives, in MiB, measured. A start is admitted while the runs going and it fit in this server's memory less its own; over that, 429 rate_limited with retry-after, as over `limits.max_concurrent_runs`." }, max_concurrent_runs: { type: "integer", minimum: 0, description: "The most runs of this harness alone at once here: by memory and by the cap on the count, whichever is fewer. 0 when one never fits. `limits.max_concurrent_runs` is pi's, the smallest run." }, default_model: { type: ["string", "null"], description: "The model this server runs for the harness when a definition names none (provider/model-id), or null when it runs none: the harness does not run here, or no default model here runs on it." }, steer: { type: "boolean", description: "Whether a message sent while the run works lands mid-turn (`steer`); when false, it waits for the turn's end and the answer's mode is `follow_up`." }, reason: { type: "string" }, installs: { const: "on_first_use", description: "claude-agent and codex only, while that harness's CLI is not installed in this server's data: it installs on first use. The first run on it, or the first agent saved on it, installs the version AgentRun pins (claude-agent: the Claude Agent SDK; codex: Codex) from npm into `<data>/harnesses/<harness>`, by the lock AgentRun ships, once (every run that needs it waits for that one install); a run shows a `phase` row, `Installing Claude Code (first use)…` or `Installing Codex (first use)…`, while it does. When npm fails the run fails, and its error names the command that installs it by hand. Absent once it is installed.", "x-agentrun-serve": "firstuse/1" } } },
       // harness/2: each entry took on its memory and count (run_memory_mib, max_concurrent_runs). A client that validates
-      // against harness/1 refuses them, so it is a mark of its own.
-      "x-agentrun-serve": "harness/2",
+      // against harness/1 refuses them, so it is a mark of its own. harness/3: each entry also lists its `models`
+      // (required), which a harness/2 shape disallows.
+      "x-agentrun-serve": "harness/3",
     },
     tools: {
       type: "array",
@@ -3079,14 +3179,15 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const refused: string[] = [];
   for (const field of Object.keys(definition.properties)) {
     if (DEFINITION_FIELDS.includes(field)) continue;
-    definition.properties[field] = { ...definition.properties[field], "x-agentrun-serve-unsupported": { reason: NOT_KEPT[field] ?? `The definition keeps no field ${field}.` } };
+    definition.properties[field] = { ...definition.properties[field], "x-agentrun-serve-unsupported": { reason: `The definition keeps no field ${field}.` } };
     refused.push(`DefinitionInput.${field}`);
   }
   // A contract field this server takes with a meaning of its own, said on it.
   definition.properties.max_cost_usd = { ...definition.properties.max_cost_usd, "x-agentrun-serve-note": "The agent's default cap of each run started without a max_cost_usd of its own (a run's own wins), kept with its revision: above 0 sets it, 0 clears it (no default), and an edit that leaves the field out keeps the agent's, so leaving a field out never removes a spend limit. An agentic definition's or a workflow's alike." };
   definition.properties.output_schema = { ...definition.properties.output_schema, "x-agentrun-serve-note": "An agentic definition's alone (a workflow's output is its workflow's): the JSON Schema its final answer's last fenced json block meets, at most 64 KiB, refused at save when it does not compile. A completed run's result.output is that block's value when it meets the schema, else null. An edit that leaves the field out keeps the agent's. A template's answer schema (its manifest's `output`) is set here at apply." };
+  definition.properties.input_schema = { ...definition.properties.input_schema, "x-agentrun-serve-note": "An agentic definition's alone (a workflow's input is its workflow's own schema): a JSON Schema object schema (`type: object`), at most 64 KiB, refused at save when it does not compile. Every run's `input` is checked against it with the full compiler, by POST /agents/{agent_id}/runs, a trigger's start_run target (at save and when it fires) and a template's triggers, and refused 422 `input_invalid` with an issue at each path (`input.company`, `input.topics.1`). `content` is reserved: named, it is `{type: string}`; it is always taken as text (the run's message), and it stays required when the schema requires nothing else. The run's first message is `content`, then the other fields as one fenced json block under the line `Input:`. Absent: `{content: string}`. An edit that leaves the field out keeps the agent's. A template's `inputs` are set here at apply." };
   const runResult = schemas.RunResult as Json & { properties: Record<string, Json> };
-  runResult.properties.output = { ...runResult.properties.output, "x-agentrun-serve-note": "A workflow run's output, as its workflow ended; an agentic run's, its final answer's last fenced json block when it meets the agent's output_schema, else null (no schema, no block, not JSON, or a value the schema refuses)." };
+  runResult.properties.output = { ...runResult.properties.output, "x-agentrun-serve-note": "A workflow run's output, as its workflow ended; an agentic run's, its final answer's last fenced json block when it meets the agent's output_schema, else null (no schema, no block, not JSON, or a value the schema refuses). The runner gives the model the schema in its instructions on every harness, and asks once more, in the same session under the same cap, when the answer misses it; output_error says why one still missed." };
   // instructions XOR workflow (validate.ts): a workflow revision has none. version, skills and tools: this server
   // mints or keeps them when a write leaves them out (agents-store.ts definitionOf), so none of the four is required of a
   // write; only instructions ever misses from an answer (a workflow revision's), so Definition keeps the rest required.
@@ -3104,7 +3205,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // ErrorBody.fields beyond `input_invalid`: a 409 agent_not_runnable names each thing that keeps the run from starting.
   const errorBody = schemas.ErrorBody as Json & { properties: Record<string, Json> };
   errorBody.properties.fields = { ...errorBody.properties.fields, "x-agentrun-serve-note": "Also on `agent_not_runnable` (409) here: each thing that keeps the run from starting, by the field it is about, its reason, its message and the fix when there is one (such as AGENT_MODEL_PRICE for a capped run on a model with no price), as a 422 names each field." };
-  const noted = ["DefinitionInput.max_cost_usd", "DefinitionInput.output_schema", "RunResult.output", "DefinitionInput.instructions", "DefinitionInput.workflow", "DefinitionInput.version", "DefinitionInput.skills", "DefinitionInput.tools", "TimelineRow.usage", "ErrorBody.fields"];
+  const noted = ["DefinitionInput.max_cost_usd", "DefinitionInput.input_schema", "DefinitionInput.output_schema", "RunResult.output", "DefinitionInput.instructions", "DefinitionInput.workflow", "DefinitionInput.version", "DefinitionInput.skills", "DefinitionInput.tools", "TimelineRow.usage", "ErrorBody.fields"];
   // PUT .../definition takes the contract's body (the definition itself) or this server's own, POST /agents' body with a
   // note: exactly one, as only this server's holds `definition` and both are closed. If-Match is the contract's
   // precondition for its body; this server's own body may leave it out.

@@ -271,7 +271,7 @@ test("a note at the 4 KB cap a compiled workflow marks stays a note: the host's 
 });
 
 test("GET /runs/{id}/learning serves the compile record and a failed draft's errors, each cut of the host's secrets", () => {
-  const SECRET = "sk-test-0123456789abcdef0123456789";
+  const SECRET = ["sk", "test", "0123456789abcdef0123456789"].join("-"); // built at run time: the source export scans for literal keys
   const learning = { state: "proposed", reason: null, detail: said.proposed(1, 0, 0), at: new Date(0).toISOString(), compiled: { workflow: "answer", from_notes: ["rule-1.md"], attempts: [{ ok: false, errors: [`workflow: leaks ${SECRET}`] }] }, draft_errors: [`workflow: leaks ${SECRET}`] };
   const body = runLearningBody({ id: "run-1", learning, seed: null, settled: true }, secretsShown([SECRET]), [SECRET]);
   assert.deepEqual(body.compiled.from_notes, ["rule-1.md"]);
@@ -567,4 +567,90 @@ test("compileAskOf: a compile in an earlier run's first round holds the cooldown
   // No compile in any round: due, and the folder is read.
   await learningEnd.compileAskOf(deps({ "run-1": [rounds["run-1"][1]] }), ask).catch(() => undefined);
   assert.deepEqual(opened, ["agent-1"], "not compiled lately: the compile turn reads the folder");
+});
+
+// #2641 review r5 (P1): the dry run's answers are placeholders ("x" for a string), so it decides only the answer's shape
+// against the agent's output schema: its fields exist, their types can line up, every required one is produced. A value
+// constraint (a pattern, an enum, a bound, a format, a length) stays undecided on a placeholder, never refused, as a real
+// answer ("5251") would meet it. A value the dry run does hold for real (one its example hands straight through) is
+// still held to every constraint, and serving (answerAsServed) holds every real answer to the whole schema.
+test("a draft's dry run decides its answer's shape alone on placeholders: a 4-digit mcc pattern, an enum, a length and a bound stay undecided; a missing field, a type that can't line up, or a real value that misses still fails", async () => {
+  const input = JSON.stringify({ content: "Acme Hardware" });
+  const MCC = { type: "object", additionalProperties: false, required: ["mcc", "description", "confidence"], properties: {
+    mcc: { type: "string", pattern: "^[0-9]{4}$", minLength: 4, maxLength: 4 },
+    description: { type: "string", enum: ["Hardware", "Grocery"] },
+    confidence: { type: "number", minimum: 0.5, maximum: 1 },
+  } };
+  // The draft's own node schema is unconstrained: its placeholder answer is { mcc: "x", description: "x", confidence: 0 }.
+  assert.deepEqual(await draftDryRun(dsl, shapeDraft(SHAPE), input, MCC), { status: "passed" });
+  // Text answers stay as they were: undecided against an object schema that compiles.
+  assert.deepEqual(await draftDryRun(dsl, shapeDraft({ type: "string" }), input, MCC), { status: "passed" });
+  // Shape still decides: a missing required field fails.
+  const missing = await draftDryRun(dsl, shapeDraft({ type: "object", properties: { mcc: { type: "string" }, confidence: { type: "number" } }, required: ["mcc", "confidence"] }), input, MCC);
+  assert.equal(missing.status, "failed", JSON.stringify(missing));
+  assert.match(missing.detail, /^its dry run failed: its answer does not meet the agent's output schema: .*description/);
+  // A type that can't line up: the agent's enum holds strings, the draft answers a number.
+  const typed = await draftDryRun(dsl, shapeDraft({ ...SHAPE, properties: { ...SHAPE.properties, description: { type: "number" } } }), input, { ...MCC, properties: { ...MCC.properties, description: { enum: ["Hardware", "Grocery"] } } });
+  assert.equal(typed.status, "failed", JSON.stringify(typed));
+  // An extra field the agent's schema refuses (additionalProperties: false) is shape too.
+  const extra = await draftDryRun(dsl, shapeDraft({ ...SHAPE, properties: { ...SHAPE.properties, more: { type: "string" } }, required: [...SHAPE.required, "more"] }), input, MCC);
+  assert.equal(extra.status, "failed", JSON.stringify(extra));
+  // A schema that does not compile still fails, whatever the answer.
+  const broken = await draftDryRun(dsl, shapeDraft(SHAPE), input, { ...MCC, properties: { ...MCC.properties, mcc: { type: "string", pattern: "([" } } });
+  assert.equal(broken.status, "failed", JSON.stringify(broken));
+  assert.match(broken.detail, /^its dry run failed: the agent's output schema /);
+  // A real value: the example's own answer handed straight through (the workflow's output path reads its input), held to
+  // every constraint of the agent's schema: one that misses the enum fails, one that meets it passes.
+  const through = JSON.stringify({
+    v: 2, name: "pass",
+    schemas: { In: { type: "object", properties: { answer: SHAPE }, required: ["answer"] }, Out: SHAPE, Code: { type: "object", properties: { mcc: { type: "string" } }, required: ["mcc"] } },
+    input: { schemaId: "In" }, output: { schemaId: "Out", path: "answer" },
+    root: { node: "chain", steps: [{ node: "extract", label: "pick", instructions: "Pick the code.", out: "Code", as: "picked", tier: "fast" }] },
+  });
+  const real = await draftDryRun(dsl, through, JSON.stringify({ answer: { mcc: "5251", description: "Acme", confidence: 0.9 } }), MCC);
+  assert.equal(real.status, "failed", `the example's own value misses the enum: ${JSON.stringify(real)}`);
+  assert.match(real.detail, /\/description/);
+  assert.deepEqual(await draftDryRun(dsl, through, JSON.stringify({ answer: { mcc: "5251", description: "Hardware", confidence: 0.9 } }), MCC), { status: "passed" }, "the example's own value meets it");
+});
+
+// #2641 review r6 (P1): taking out the value constraints can leave a `oneOf`'s branches alike ({const: "ok"} and
+// {const: "error"} both read as a string), so a placeholder would match more than one branch and be refused where a real
+// answer matches exactly one. The shape reads a `oneOf` as `anyOf`: a branch the answer's shape can meet is enough. A
+// shape no branch can meet still fails.
+test("a draft's dry run reads the agent's oneOf as anyOf on placeholders: branches told apart only by value never refuse a draft; a type no branch takes still fails", async () => {
+  const input = JSON.stringify({ content: "Acme Hardware" });
+  const KIND = { type: "object", additionalProperties: false, required: ["mcc", "description", "confidence"], properties: {
+    mcc: { type: "string", pattern: "^[0-9]{4}$" },
+    description: { oneOf: [{ const: "Hardware" }, { const: "Grocery" }] },
+    confidence: { type: "number" },
+  } };
+  assert.deepEqual(await draftDryRun(dsl, shapeDraft(SHAPE), input, KIND), { status: "passed" });
+  // Beside an anyOf of its own, both still hold.
+  const both = { ...KIND, properties: { ...KIND.properties, mcc: { anyOf: [{ type: "string" }, { type: "null" }], oneOf: [{ pattern: "^5" }, { pattern: "^7" }] } } };
+  assert.deepEqual(await draftDryRun(dsl, shapeDraft(SHAPE), input, both), { status: "passed" });
+  // Shape still decides: the draft answers a number where every branch is a string.
+  const typed = await draftDryRun(dsl, shapeDraft({ ...SHAPE, properties: { ...SHAPE.properties, description: { type: "number" } } }), input, KIND);
+  assert.equal(typed.status, "failed", JSON.stringify(typed));
+});
+
+// #2641 review r5 (P2): a held revision's prompt offers no `No change.` (it stays held until a new revision). Answered so
+// anyway, the reply is refused as an unreadable one is: asked again, and every attempt recorded, so the once-per-hold
+// check sees the compile and later runs never pay for the same held revision again.
+test("a held revision answered `No change.` is refused, asked again and recorded; an unheld revision's `No change.` still ends the turn", async () => {
+  const held = { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "r" };
+  const heldAsk = ASK({ mode: "revise", workflow: "answer", current: "{}", held });
+  const read = compile.readCompile("No change.", heldAsk);
+  assert.equal(read.ok, false);
+  assert.ok(!("unchanged" in read), JSON.stringify(read));
+  assert.match(read.error, /held until a new revision/);
+  const prompts = [];
+  const result = await compile.compileTurn({ ask: async (prompt) => (prompts.push(prompt), { answer: "No change." }), compile: heldAsk, answer: "", check: async () => assert.fail("nothing to check") });
+  assert.equal(prompts.length, 1 + compile.COMPILE_RETRIES, "asked again up to the retries");
+  assert.equal(result.record?.workflow, "answer");
+  assert.equal(result.record.attempts.length, 1 + compile.COMPILE_RETRIES, JSON.stringify(result.record));
+  assert.ok(result.record.attempts.every((one) => !one.ok && /held until a new revision/.test(one.errors[0])), JSON.stringify(result.record));
+  assert.match(result.draftErrors[0], /held until a new revision/);
+  // Unheld: the model kept it as it is, and nothing is recorded.
+  const unheld = await compile.compileTurn({ ask: async () => ({ answer: "No change." }), compile: ASK({ mode: "revise", workflow: "answer", current: "{}" }), answer: "", check: async () => assert.fail("nothing to check") });
+  assert.deepEqual(unheld, { draftErrors: [] });
 });

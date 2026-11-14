@@ -222,6 +222,13 @@ describe("CostChart", () => {
     expect(text(host)).toContain("No run with a known cost yet.");
     expect(host.querySelector('[data-testid="execution-mix"]')).not.toBeNull();
   });
+  it("says how many runs were left out in the empty card too, when none has a known cost", () => {
+    const host = draw({ ...series([]), total_runs: 3, unknown_cost_runs: 1, unknown_path_runs: 2 });
+    expect(host.querySelector("svg[aria-hidden] path")).toBeNull();
+    expect(text(host)).toContain("No run with a known cost yet.");
+    expect(text(host)).toContain("2 runs' path and cost are not known: left out.");
+    expect(text(host)).toContain("1 run's cost is not known: left out.");
+  });
   it("keeps the level after the takeover when the takeover is older than the runs read, without its marker", () => {
     const host = draw({ ...sample, runs: sample.runs.slice(40), total_runs: 80 });
     expect(text(host)).toContain("After takeover $0.128 · 7.0x cheaper");

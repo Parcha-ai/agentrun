@@ -27,7 +27,7 @@ export const LAYERS = {
     'packages/dsl', 'packages/pi-browser',
   ],
   server: ['packages/serve'],
-  surface: ['apps/console', 'packages/agentrun', 'packages/client'],
+  surface: ['apps/console', 'packages/agentrun', 'packages/client', 'packages/computer-bench'],
 };
 
 /** The layers each layer may reach, besides its own package. */

@@ -13,13 +13,13 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   steer: false,
   // A call that started is never run again (the CLI answers it "[Tool call interrupted]"); only the model calls again.
   rerunsStarted: false,
+  // Its own tool search defers an MCP server's tools (ENABLE_TOOL_SEARCH, on under the kernel's defersCatalog), so the host offers no tools_search or tools_call beside it.
+  ownToolSearch: true,
   // An answer its output limit cut, the CLI resumes itself in the same turn ("Output token limit hit. Resume directly"),
   // up to 3 times; only a cut it no longer resumes ends the turn cut.
   recoversCutAnswers: 3,
   // One run's memory, measured with the server's (serve's host.ts): the CLI and its SDK beside the run's process.
   runMib: 288,
-  // Its own MCP client binds the session's remote MCP servers.
-  mcp: true,
   thinking: Object.freeze(["low", "medium", "high", "xhigh", "max"] as const),
   // Anthropic's web search, through the session's proxy, as the pinned CLI's WebSearch asks for it.
   webSearch: "native",
