@@ -248,9 +248,8 @@ export async function learningSpendOf(store: Pick<Store, "learning" | "runs">, r
   const rounds = await roundsOf(store, runId);
   if (!rounds.length) return { looked: null, grade: 0 };
   const spent = await roundsSpentOf(store, rounds);
-  const first = spent.first;
-  if (rounds.length > 1 && first && typeof first.answered_at === "string") return { looked: roundsLooked({ answered_at: first.answered_at, job_cost_usd: first.job_cost_usd ?? null, look_back_usd: spent.look, grade_usd: spent.grade }, rowUsd), grade: spent.grade };
-  return { looked: answeredOf((rounds.at(-1)!.proposal ?? {}) as KeptRow), grade: spent.grade };
+  const more = roundsSpendIn(rounds, spent);
+  return { looked: more ? roundsLooked(more, rowUsd) : answeredOf((rounds.at(-1)!.proposal ?? {}) as KeptRow), grade: spent.grade };
 }
 
 /** Every round run `runId` kept (one a follow-up opened again is a round past its first), oldest first: none when it kept
@@ -427,7 +426,7 @@ export function laidOf(entries: readonly EntryLike[]): Laid {
 /** What every round of a run that a follow-up opened again spent (undefined for a run with one round): when its first
  *  round's job answered and what the job cost to then, the look-backs of every round added up, and every round's grade. A
  *  figure that is unknown in any round is unknown (null). */
-export type RoundsSpend = { answered_at: string; job_cost_usd: number | null; look_back_usd: number | null; grade_usd: number | null };
+type RoundsSpend = { answered_at: string; job_cost_usd: number | null; look_back_usd: number | null; grade_usd: number | null };
 /** What a run with rounds (`rounds`) kept as it answered, as its cost per run and its impact both read it: its job is
  *  what it had cost when its first round answered; everything its row (`rowUsd`) spent after that (each later round's
  *  follow-up turn and every round's look-back: feedback the run was given is learning, never the job) is its look-back;
@@ -440,11 +439,12 @@ export function roundsLooked(rounds: RoundsSpend, rowUsd: number | null): { answ
 }
 export async function roundsSpendOf(store: Pick<Store, "learning" | "runs">, runId: string): Promise<RoundsSpend | undefined> {
   const rounds = await roundsOf(store, runId);
-  if (rounds.length < 2) return undefined;
-  const { first, look, grade } = await roundsSpentOf(store, rounds);
-  if (!first || typeof first.answered_at !== "string") return undefined;
-  return { answered_at: first.answered_at, job_cost_usd: first.job_cost_usd ?? null, look_back_usd: look, grade_usd: grade };
+  return rounds.length < 2 ? undefined : roundsSpendIn(rounds, await roundsSpentOf(store, rounds));
 }
+/** The one reader of a run's rounds' spend (roundsSpendOf, learningSpendOf): undefined for fewer than two rounds, or when
+ *  the first one's answer time is unknown. */
+const roundsSpendIn = (rounds: readonly unknown[], { first, look, grade }: Awaited<ReturnType<typeof roundsSpentOf>>): RoundsSpend | undefined =>
+  rounds.length > 1 && first && typeof first.answered_at === "string" ? { answered_at: first.answered_at, job_cost_usd: first.job_cost_usd ?? null, look_back_usd: look, grade_usd: grade } : undefined;
 
 /** What a run's learning end tells its impact, as ofAgent's learningOf read a held run: how it ended and when, the notes
  *  it started from; when its job answered and its costs once it looked back (a look-back of 0 for an ended one that did

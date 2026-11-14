@@ -49,7 +49,7 @@ import { FINAL_STATES, RunFinal, type RunRow, type Store, StoreConstraint } from
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/journal.js";
 import type { McpPin } from "../mcp-gateway.js";
-import { recordedCalls, type ReplayCalls, replayCalls, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
+import { recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
 import { answersAlone, championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, replayingOf, skippedToolsOf, thresholdsOf } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
@@ -431,7 +431,7 @@ async function answerOf(store: PromotionDeps["store"], runId: string, context: C
   }
 }
 
-const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ? (row!.metrics as { replay?: { outcome?: unknown; skipped?: { tool?: unknown; unmarked?: unknown } }; guards?: unknown; path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
+const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ? (row!.metrics as { replay?: { outcome?: unknown; skipped?: Skipped }; guards?: unknown; path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
 
 /** The replay's rows, once every replay run ended (or REPLAY_DEADLINE_MS passed: one not ended is failed, no evidence);
  *  undefined while one is at work or not created yet (its record is reserved before its runs are created: a run missing
@@ -462,7 +462,7 @@ async function replayRows(deps: PromotionDeps, record: PromotionRecord): Promise
       of,
       recorded: { answer: await answerOf(store, of, context), correct: grade.correct, ...(grade.expected ? { expected: grade.expected } : {}) },
       outcome,
-      ...(stoppedAt && typeof stoppedAt.tool === "string" ? { skipped: { tool: stoppedAt.tool, ...(stoppedAt.unmarked === true ? { unmarked: true as const } : {}) } } : {}),
+      ...(stoppedAt ? { skipped: stoppedAt } : {}),
       answer: outcome === "answered" ? await answerOf(store, run.id, context) : null,
       guards: Array.isArray(m.guards) ? (m.guards as GuardRow[]) : [],
     });

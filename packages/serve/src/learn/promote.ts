@@ -11,6 +11,7 @@ import type { RunPath } from "../learning-cost.js";
 import type { Settings } from "../store/store.js";
 import { answerJson } from "../answer-json.js";
 import { workflowNodes } from "./workflow-nodes.js";
+import type { Skipped } from "./replay-calls.js";
 
 /** How many of the agent's newest graded inputs a replay runs on. */
 export const REPLAY_INPUTS = 20;
@@ -24,7 +25,10 @@ export const REFIT_EVERY = 20;
 export const GRADES_KEPT = 500;
 export const PROMOTIONS_KEPT = 200;
 
-export const GRADE_SOURCES = ["feedback", "eval"] as const;
+/** The most characters a grade's words (`label`) may hold, and the most of them and of a wrong answer a revise ask shows. */
+export const LABEL_MAX = 4_000;
+
+export const GRADE_SOURCES =["feedback", "eval"] as const;
 export type GradeSource = (typeof GRADE_SOURCES)[number];
 
 /** One graded run: whether its answer was right (`correct`), the answer's expected fields when the grader knows them
@@ -294,7 +298,7 @@ export interface ReplayRow {
   readonly of: string;
   readonly recorded: { readonly answer: string | null; readonly correct: boolean; readonly expected?: Readonly<Record<string, unknown>> };
   readonly outcome: "answered" | "handed_back" | "failed" | "skipped_write";
-  readonly skipped?: { readonly tool: string; readonly unmarked?: true };
+  readonly skipped?: Skipped;
   readonly answer: string | null;
   readonly guards: readonly GuardRow[];
 }

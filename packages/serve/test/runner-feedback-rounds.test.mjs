@@ -26,7 +26,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { putGrade } = await import("../dist/learn/promote.js");
 const { openFeedbackRound, feedbackRoundOf } = await import("../dist/runner/feedback-round.js");
-const { servedAnswerStands, sameAnswer } = await import("../dist/runner/workflow-first.js");
+const { servedAnswerStands } = await import("../dist/runner/workflow-first.js");
 const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
 const { viewOverStore, answerOf } = await import("../dist/store-view.js");
 
@@ -228,9 +228,9 @@ test("servedAnswerStands: the path is who wrote the final answer; a follow-up wi
   assert.equal(servedAnswerStands("{\"mcc\": \"5812\"}", [served, label, { kind: "final_answer", text: "```json\n{\"mcc\":\"5812\"}\n```" }]), true, "the agent said the same answer again");
   assert.equal(servedAnswerStands("{\"mcc\": \"5812\"}", [served, label, { kind: "final_answer", text: "{\"mcc\": \"5814\"}" }]), false, "the agent changed the answer");
   assert.equal(servedAnswerStands("42", [served, label, { kind: "final_answer", text: "Noted, thanks." }]), false, "a new answer of the agent's is the run's last word");
-  assert.equal(sameAnswer(" 42 ", "42"), true);
-  assert.equal(sameAnswer("{\"a\":1,\"b\":2}", "{\"b\": 2, \"a\": 1}"), true);
-  assert.equal(sameAnswer("41", "42"), false);
+  const prose = "Here is the answer you asked for.\n\n```json\n{\"mcc\":\"5812\"}\n```\n\nTell me if you want anything else.";
+  assert.equal(servedAnswerStands("{\"mcc\": \"5812\"}", [served, label, { kind: "final_answer", text: prose }]), true, "the agent restated the workflow's JSON inside prose: the same answer, the path stays workflow");
+  assert.equal(servedAnswerStands("{\"mcc\": \"5812\"}", [served, label, { kind: "final_answer", text: prose.replace("5812", "5814") }]), false, "prose around a changed value is a new answer");
 });
 
 test("the path compares the workflow's answer as it produced it and as the agent was shown it: a held value the redactor cut does not make a restated answer look changed", async () => {
