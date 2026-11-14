@@ -1878,7 +1878,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (never.length) throw invalid(never.map(issueOf));
     // Its monid grants pinned against what monid lists now, on this server's monid key (monid.ts pinMonid): the pin is
     // stamped on the revision, and its runs read it, never monid's listing. A grant monid does not list is refused here.
-    // A revision already stored (`kept`: an inline agent's version already run) keeps the pin it was stamped with.
+    // A revision already stored (`kept`: an inline agent's version already run) keeps the pin it was stamped with. An
+    // endpoint a wildcard left out (priced by usage: monid.ts unboundedWords) is a warning at the wildcard's grant.
+    const leftOut: InputIssue[] = [];
     if (revision.kind === "agentic" && kept) {
       if (kept.monidPin) (revision.body as AgenticBody).monidPin = kept.monidPin;
     } else if (revision.kind === "agentic") {
@@ -1896,9 +1898,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const dropped = problems ? Object.entries(pinned.pin).flatMap(([tool, { input }]) => problems(wireName(tool), input).slice(0, 1).map((first) => ({ tool, first }))) : [];
         if (dropped.length) throw invalid(dropped.map(({ tool, first }) => ({ field: `definition.tools[${grantOf(tool)}]`, reason: "not_an_option", message: monidDroppedWords(tool, harness, first) })));
         (revision.body as AgenticBody).monidPin = pinned.pin;
+        leftOut.push(...pinned.leftOut.map(({ tool, message }) => ({ field: `definition.tools[${tools.indexOf(tool)}]`, reason: "not_an_option", message })));
       }
     }
-    return blockers.map(issueOf);
+    return [...blockers.map(issueOf), ...leftOut];
   }
 
   /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent

@@ -1,7 +1,8 @@
 // A monid grant is read against monid's listing at the save and pinned on the revision (monid.ts pinMonid, server.ts
 // saveable): a provider's wildcard as every endpoint monid lists for it, one endpoint as monid inspects it, each with its
 // input and what one call is held at. A grant monid does not list, or one saved with no monid key, is refused in words;
-// the pin is never shown in the definition. Faux monid's listing (fixtures/faux-monid.mjs LISTING), no network.
+// so is an endpoint priced by usage, which no hold can keep a cap for, and a wildcard leaves one out with the reason.
+// The pin is never shown in the definition. Faux monid's listing (fixtures/faux-monid.mjs LISTING), no network.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -29,7 +30,7 @@ test("monid:apollo/* resolves at the save to the endpoints monid lists for apoll
   assert.deepEqual(saved.body.tools ?? saved.body.definition?.tools, ["monid:apollo/*", "monid:faux/person/enrich"], "the grants as given");
   assert.doesNotMatch(JSON.stringify(saved.body), /monidPin|monid_pin/, "the pin is never shown");
   const pin = await pinOf(store, "apollo");
-  assert.deepEqual(Object.fromEntries(Object.entries(pin).map(([name, one]) => [name, one.usd])), { "monid:apollo/people/match": 0.026, "monid:faux/person/enrich": 0.003 });
+  assert.deepEqual(Object.fromEntries(Object.entries(pin).map(([name, one]) => [name, one.usd])), { "monid:apollo/organizations/enrich": 0.01, "monid:apollo/people/match": 0.026, "monid:faux/person/enrich": 0.003 });
   assert.deepEqual(pin["monid:apollo/people/match"].input, { type: "object", additionalProperties: false, properties: { body: { type: "object", required: ["name"], properties: { name: { type: "string" } } } }, required: ["body"] }, "its input, monid's $schema left out");
 });
 
@@ -68,7 +69,7 @@ test("(b) an endpoint priced by usage is refused at the save as a named grant, a
   // A wildcard: saved without it, the save's warnings naming it and why, at the wildcard's grant.
   const wild = await api("POST", "/agents", agent("usage-wild", { tools: ["monid:apollo/*"] }));
   assert.equal(wild.status, 201, JSON.stringify(wild.body));
-  assert.deepEqual(Object.keys(await pinOf(store, "usage-wild")), ["monid:apollo/people/match"], "the endpoint priced by usage is not pinned");
+  assert.deepEqual(Object.keys(await pinOf(store, "usage-wild")), ["monid:apollo/organizations/enrich", "monid:apollo/people/match"], "the endpoint priced by usage is not pinned");
   const left = (wild.body.warnings ?? []).filter((warning) => /monid:apollo\/news_articles\/search/.test(warning.message));
   assert.equal(left.length, 1, JSON.stringify(wild.body.warnings));
   assert.equal(left[0].field, "definition.tools[0]");

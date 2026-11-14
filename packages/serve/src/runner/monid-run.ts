@@ -4,14 +4,15 @@
 // hands them to every harness as it hands every host tool, asks the gate about a call by its catalog name
 // (`monid:<provider>/<endpoint>`, catalogOf), and shows the pinned price on its card (priceOf).
 // A call is a paid step on the run's one ledger (paid-calls.ts paidStep, the ledger the loop's bookedIn sets around it),
-// named by its catalog name: held at the pinned price (or the usage ceiling), refused unsent when that does not fit the
-// cap, and settled at what monid says it charged. With no run's ledger to book it on, it is never sent. Its key is the
+// named by its catalog name: held at the pinned price (a fixed one: the save pins no endpoint priced by usage), refused
+// unsent when that does not fit the cap, sent with that hold as monid's maxCost (so monid refuses it unrun if it now
+// prices it higher), and settled at what monid says it charged. With no run's ledger to book it on, it is never sent. Its key is the
 // claim's (claim-secrets.ts: a run that grants a monid endpoint, and no other, is handed MONID_API_KEY), read at the call
 // and sent to monid alone: never in the tool's input, its answer, or the run's computer.
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { fauxFetch } from "../decisions.js";
-import { chargeOf, FAUX_MONID_ENV, MONID_KEY_ENV, MONID_USAGE_CEILING_USD, type MonidAnswer, monidClient, type MonidPin, monidText } from "../monid.js";
+import { chargeOf, FAUX_MONID_ENV, MONID_KEY_ENV, type MonidAnswer, monidClient, type MonidPin, monidText } from "../monid.js";
 import { paidLedger, paidStep, unbookedRefusal } from "../paid-calls.js";
 import { monidNameOf, parseToolName } from "../tool-names.js";
 import type { Json } from "../validate.js";
@@ -33,9 +34,7 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
     const pinned = pin[name]!;
     const wire = wireName(name);
     catalog.set(wire, name);
-    const basis = pinned.usage
-      ? `monid prices ${name} by usage, so a call counts at the $${MONID_USAGE_CEILING_USD} ceiling until monid says what it charged`
-      : "the price monid listed for it when the agent was saved";
+    const basis = "the price monid listed for it when the agent was saved";
     return [{
       name: wire,
       description: pinned.description,
@@ -47,7 +46,7 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
         if (!ledger) return { text: JSON.stringify({ error: unbookedRefusal(name) }), isError: true };
         const faux = await fauxFetch(env, FAUX_MONID_ENV);
         const client = monidClient({ key: env[MONID_KEY_ENV] ?? "", ...(faux ? { fetch: faux } : {}) });
-        const paid = await paidStep<MonidAnswer>(ledger, context.callId, { name, holdUsd: pinned.usd, basis, by: "monid" }, () => client.run({ provider: at.provider, endpoint: `/${at.endpoint}`, input: (args ?? {}) as Json }, context.signal), (outcome) => {
+        const paid = await paidStep<MonidAnswer>(ledger, context.callId, { name, holdUsd: pinned.usd, basis, by: "monid" }, () => client.run({ provider: at.provider, endpoint: `/${at.endpoint}`, input: (args ?? {}) as Json, maxCost: pinned.usd }, context.signal), (outcome) => {
           if (!("result" in outcome)) return null;
           const usd = chargeOf(outcome.result);
           return usd === undefined ? 0 : usd;
@@ -60,7 +59,7 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
   return {
     tools,
     catalogOf: (tool) => catalog.get(tool),
-    // Its card shows what the call is held at: the pinned price, or the usage ceiling.
+    // Its card shows what the call is held at: the pinned price.
     priceOf: (name) => (Object.hasOwn(pin, name) ? pin[name]!.usd : undefined),
   };
 }

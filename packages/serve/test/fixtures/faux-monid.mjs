@@ -29,10 +29,12 @@ const json = (status, body) => new Response(JSON.stringify(body), { status, head
 const PRICE = { type: "PER_CALL", amount: { value: 0.003, currency: "USD" } };
 const done = (runId, endpoint, output) => ({ runId, provider: "faux", endpoint, status: "COMPLETED", output, providerResponse: { httpStatus: 200 }, price: PRICE, billedUnits: 1 });
 /** monid's listing as the fake gives it (GET /v1/endpoints, two to a page so a wildcard's read pages): faux's endpoints
- *  at PRICE, and apollo's, /people/match at $0.026 a call and /news_articles/search priced per result (by usage). */
+ *  at PRICE, and apollo's, /people/match at $0.026 a call, /organizations/enrich at $0.01 and /news_articles/search
+ *  priced per result (by usage). */
 export const LISTING = [
   ...["/person/enrich", "/tweets", "/slow", "/wallet", "/budget", "/broken", "/late", "/missing", "/huge"].map((endpoint) => ({ provider: "faux", endpoint, price: PRICE })),
   { provider: "apollo", endpoint: "/people/match", price: { type: "PER_CALL", amount: { value: 0.026, currency: "USD" } } },
+  { provider: "apollo", endpoint: "/organizations/enrich", price: { type: "PER_CALL", amount: { value: 0.01, currency: "USD" } } },
   { provider: "apollo", endpoint: "/news_articles/search", price: { type: "PER_RESULT", amount: { value: 0.001, currency: "USD" } } },
   // Priced by usage (per result): monid estimates one result ($0.001), and a call charges $1.42, as a real one asked for
   // 100 rows does. Nothing about the call bounds what it is charged.
@@ -108,6 +110,7 @@ export default async function fakeMonid(url, init = {}) {
     case "/people/match": return json(200, { ...done(runId, body.endpoint, { person: body.input?.body?.name ?? null }), provider: "apollo", billing: { reportedCost: { value: 26000, unit: "MICRO_DOLLAR", currency: "USD" } } });
     case "/person/search": return json(200, { ...done(runId, body.endpoint, [{ full_name: body.input?.body?.name ?? null }]), billing: { reportedCost: { value: 1_420_000, unit: "MICRO_DOLLAR", currency: "USD" } } });
     case "/person/lookup": return json(200, { ...done(runId, body.endpoint, { full_name: body.input?.body?.name ?? null }), billing: { reportedCost: { value: 1_000_000, unit: "MICRO_DOLLAR", currency: "USD" } } });
+    case "/organizations/enrich": return json(200, { ...done(runId, body.endpoint, { organization: body.input?.body?.name ?? null }), provider: "apollo", billing: { reportedCost: { value: 10000, unit: "MICRO_DOLLAR", currency: "USD" } } });
     case "/news_articles/search": return json(200, { ...done(runId, body.endpoint, [{ title: "news" }]), provider: "apollo", billing: { reportedCost: { value: 4000, unit: "MICRO_DOLLAR", currency: "USD" } } });
   }
   return json(404, { code: 404, message: `No endpoint ${body.endpoint}` });

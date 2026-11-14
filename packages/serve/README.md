@@ -1405,8 +1405,12 @@ An agent is granted [monid](https://monid.ai)'s data endpoints on one key, `MONI
 `monid:<provider>/<endpoint>` (one, such as `monid:apollo/people/match`) or `monid:<provider>/*` (every endpoint monid
 lists for the provider, at most 50). Each grant is read against monid's listing when the agent is saved, and pinned on
 that revision with the endpoint's description, its input schema (`pathParams`, `queryParams`, `body`) and its price; a
-provider or endpoint monid does not list, or a grant saved with no monid key, is refused at the save in words. An edit
-pins again. A workflow's nodes do not bind monid endpoints yet. Each pinned endpoint is a tool of its own on every
+provider or endpoint monid does not list, or a grant saved with no monid key, is refused at the save in words. Only an
+endpoint with a fixed price is pinned: one monid prices by usage (per result, per unit, metered) costs what it used,
+known only after it has run, and monid bounds no such call's charge (its `maxCost` checks only its estimate, which such
+a call can pass), so no hold could keep a run's cap. It is refused at the save as a named grant, naming the endpoint
+and why, and a provider's wildcard leaves it out, each left-out endpoint named in the save's `warnings`; a wildcard that
+leaves every endpoint out is refused. An edit pins again. A workflow's nodes do not bind monid endpoints yet. Each pinned endpoint is a tool of its own on every
 harness, named on the wire with `__` for `:` and `/` (`monid__apollo__people__match`), asked about by default, and set by
 its own name or its provider's wildcard in tool settings.
 Each run is paid per call from the monid workspace's wallet, and is sent once, never retried. An async provider's
@@ -1419,9 +1423,9 @@ charged (`cost`, in dollars), and that charge is the run's spend: booked once in
 own (`Tool cost: monid charged $0.0260 for monid:apollo/people/match`) and summed into its cost, the total its
 [spend cap](#spend-cap) reads, and `/usage` grouped by meter shows it as its own meter, `tools`, apart from `tokens`.
 Each run is marked in the run's records before it is sent, held at its pinned price (a per-call price; the dearest
-variant of a matrix; a tiered price's default and every tier), or, for an endpoint monid prices by usage, at a ceiling
-of $1, and its approval card shows that hold; its charge settles the mark. A usage-priced call monid charges more than
-the ceiling for is booked at its charge. A mark a crash left unsettled leaves the run's cost unknown, as a
+variant of a matrix; a tiered price's default and every tier), and its approval card shows that hold; its charge
+settles the mark. It is sent with that hold as monid's `maxCost`, so an endpoint monid prices higher now than when the
+agent was saved is refused by monid unrun and uncharged, never booked past its hold. A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
 never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as

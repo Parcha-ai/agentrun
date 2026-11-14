@@ -62,7 +62,7 @@ test("a paid tool call a crash cut (marked, never settled) counts at its held fi
   const marked = (heldUsd) => ({ kind: TOOL_STARTED, data: { tool: "monid:faux/person/enrich", charged_by: "monid", call: "c1", heldUsd } });
   const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid:faux/person/enrich", charged_by: "monid", call: "c1", usd } });
   const round = (usd) => Math.round(usd * 1e6) / 1e6;
-  // A monid call held at the $1 usage ceiling, cut, beside a model request of $0.002.
+  // A monid call held at its $1 price, cut, beside a model request of $0.002.
   const cut = [started, answer({ total: 0.002 }), marked(1)];
   assert.equal(round(spentFrom(rowsOf(cut))), 1.002, "the cap counts the held figure");
   assert.equal(timelineOf(cut, { settled: true }).at(-1).usage.usd, null, "the run's cost is unknown, never 1.002");

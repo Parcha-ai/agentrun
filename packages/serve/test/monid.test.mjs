@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { FAUX_ENV } from "../dist/model.js";
-import { chargeOf, CLIP, FAUX_MONID_ENV, heldOf, MONID_KEY_ENV, MONID_USAGE_CEILING_USD, monidClient, monidText, pinMonid } from "../dist/monid.js";
+import { chargeOf, CLIP, FAUX_MONID_ENV, heldOf, MONID_KEY_ENV, monidClient, monidText, pinMonid } from "../dist/monid.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { monidForClaim } from "../dist/runner/monid-run.js";
 import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
@@ -117,21 +117,33 @@ test("what a run charged: its cost; nothing when monid charged nothing; unknown,
   assert.equal(await charged("/person/enrich", { fetch: async () => { throw new Error("offline"); } }), null, "it may have gone ahead");
 });
 
-test("what one call is held at: a per-call price; a matrix's dearest variant; a tiered price's default and every tier; anything by usage at the ceiling", () => {
+test("what one call is held at: a per-call price; a matrix's dearest variant; a tiered price's default and every tier; nothing for a price by usage", () => {
   const usd = (value) => ({ value, currency: "USD" });
-  assert.deepEqual(heldOf({ type: "PER_CALL", amount: usd(0.026) }), { usd: 0.026 });
-  assert.deepEqual(heldOf({ type: "PER_UNIT_MATRIX", variants: [{ price: { type: "PER_CALL", amount: usd(0.01) } }, { price: { type: "PER_CALL", amount: usd(0.04) } }] }), { usd: 0.04 });
-  assert.deepEqual(heldOf({ type: "TIERED", default: { type: "PER_CALL", amount: usd(0.01) }, tiers: [{ price: { type: "PER_CALL", amount: usd(0.02) } }] }), { usd: 0.03 });
-  for (const price of [{ type: "PER_RESULT", amount: usd(0.001) }, { type: "PER_UNIT", amount: usd(0.5) }, { type: "PER_CALL", amount: { value: 1, currency: "EUR" } }, { type: "TIERED", default: { type: "PER_RESULT", amount: usd(0.1) }, tiers: [] }, undefined]) {
-    assert.deepEqual(heldOf(price), { usd: MONID_USAGE_CEILING_USD, usage: true }, JSON.stringify(price));
+  assert.equal(heldOf({ type: "PER_CALL", amount: usd(0.026) }), 0.026);
+  assert.equal(heldOf({ type: "PER_UNIT_MATRIX", variants: [{ price: { type: "PER_CALL", amount: usd(0.01) } }, { price: { type: "PER_CALL", amount: usd(0.04) } }] }), 0.04);
+  assert.equal(heldOf({ type: "TIERED", default: { type: "PER_CALL", amount: usd(0.01) }, tiers: [{ price: { type: "PER_CALL", amount: usd(0.02) } }] }), 0.03);
+  for (const price of [{ type: "PER_RESULT", amount: usd(0.001) }, { type: "PER_UNIT", amount: usd(0.5), per: 1, unit: "credit" }, { type: "METERED", amount: usd(0.1), per: { unit: "MINUTE", count: 1 } }, { type: "PER_CALL", amount: { value: 1, currency: "EUR" } }, { type: "TIERED", default: { type: "PER_RESULT", amount: usd(0.1) }, tiers: [] }, { type: "PER_UNIT_MATRIX", variants: [{ price: { type: "PER_CALL", amount: usd(0.01) } }, { price: { type: "PER_RESULT", amount: usd(0.001) } }] }, undefined]) {
+    assert.equal(heldOf(price), undefined, JSON.stringify(price));
   }
+});
+
+test("a call is sent with maxCost in whole micro-dollars, rounded down; monid's refusal for it is no charge", async () => {
+  const from = calls.length;
+  const refused = await monid().run({ provider: "faux", endpoint: "/person/enrich", input: { body: { name: "Ada" } }, maxCost: 0.0029999 });
+  assert.equal(calls[from].body.maxCost, 0.002999, "never more than it was given");
+  assert.match(refused.error, /monid answered 400: Run not started: estimated cost ~\$0\.003 is above maxCost \$0\.002999/);
+  assert.equal(chargeOf(refused), undefined, "refused as sent: charged nothing");
+  const ran = await monid().run({ provider: "faux", endpoint: "/person/enrich", input: { body: { name: "Ada" } }, maxCost: 0.01 + 0.02 });
+  assert.equal(calls.at(-1).body.maxCost, 0.03, "a sum's float noise is not a micro-dollar less");
+  assert.equal(chargeOf(ran), 0.003);
 });
 
 test("under a cap, a pinned endpoint is refused before it is sent unless the run's spend plus what it holds and what the call is held at fits, as a model request is; one held counts against the next; with no cap it runs", async (t) => {
   const work = await scratch(t);
   const env = { [FAUX_ENV]: "1", [FAUX_MONID_ENV]: FAUX_MONID, [MONID_KEY_ENV]: KEY };
-  // Priced by usage: held at the $1 ceiling.
-  const pin = { [ENRICH]: { description: "Enrich a person.", input: { type: "object" }, usd: MONID_USAGE_CEILING_USD, usage: true } };
+  // A dear endpoint, held at its $1 price.
+  const LOOKUP = "monid:faux/person/lookup";
+  const pin = { [LOOKUP]: { description: "Look a person up.", input: { type: "object" }, usd: 1 } };
   const { tools: [tool] } = monidForClaim(pin, env, () => localWorkspace(work));
   const from = calls.length;
   let ids = 0;
@@ -144,13 +156,13 @@ test("under a cap, a pinned endpoint is refused before it is sent unless the run
   await full.spend(1.5);
   const refused = await run(full);
   assert.equal(refused.isError, true);
-  assert.match(said(refused).error, /^spend_cap_reached: Not sent: this run has spent \$1\.50 of its \$2 cap, and the next step, monid:faux\/person\/enrich, could cost up to \$1 \(monid prices monid:faux\/person\/enrich by usage, so a call counts at the \$1 ceiling until monid says what it charged\)\. Raise the cap to at least \$2\.50 to continue\.$/);
+  assert.match(said(refused).error, /^spend_cap_reached: Not sent: this run has spent \$1\.50 of its \$2 cap, and the next step, monid:faux\/person\/lookup, could cost up to \$1 \(the price monid listed for it when the agent was saved\)\. Raise the cap to at least \$2\.50 to continue\.$/);
   assert.deepEqual(sent(from), [], "refused, not sent");
-  // $0.50 spent: the ceiling fits, it runs, and is booked at what monid charged ($0.003 for the faux /person/enrich).
+  // $0.50 spent: its price fits, it runs, and is booked at what monid charged ($1, its price).
   const room = await toolLedger(2);
   await room.spend(0.5);
   assert.equal(said(await run(room)).status, "COMPLETED", "0.5 + 1 fits: it runs");
-  assert.deepEqual([sent(from), Math.round((room.spentUsd() - 0.5) * 1e6) / 1e6, room.heldUsd()], [["POST /v1/run"], 0.003, 0]);
+  assert.deepEqual([sent(from), Math.round((room.spentUsd() - 0.5) * 1e6) / 1e6, room.heldUsd()], [["POST /v1/run"], 1, 0]);
   // Two at once: the first is held ($1), so the second is checked against it (0.5 + 1 + 1 > 2) and refused unsent.
   const both = await toolLedger(2);
   await both.spend(0.5);

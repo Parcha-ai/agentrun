@@ -22,7 +22,7 @@ const RUN = {};
 /** A revision's pin of two monid endpoints (monid.ts pinMonid, made at its save): each with the input monid lists. */
 const PIN = {
   "monid:faux/person/enrich": { description: "Enrich a person.", input: { type: "object", additionalProperties: false, properties: { body: { type: "object", required: ["name"], properties: { name: { type: "string" } } } }, required: ["body"] }, usd: 0.003 },
-  "monid:apollo/news_articles/search": { description: "Search news.", input: { type: "object", additionalProperties: false, properties: { queryParams: { type: "object", properties: { q: { type: "string" } } } } }, usd: 1, usage: true },
+  "monid:apollo/news_articles/search": { description: "Search news.", input: { type: "object", additionalProperties: false, properties: { queryParams: { type: "object", properties: { q: { type: "string" } } } } }, usd: 0.01 },
 };
 /** The run's monid endpoints, as the runner makes them from the pin (runner/monid-run.ts monidForClaim). */
 const monid = () => monidForClaim(PIN, {}, () => localWorkspace("/nonexistent/work")).tools;
