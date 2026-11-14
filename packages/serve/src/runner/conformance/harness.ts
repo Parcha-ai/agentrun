@@ -454,10 +454,9 @@ function saidTakenOver(rows: readonly TimelineEvent[], runner: string): void {
 }
 
 /** A crash at `point` during a call of `tool`, then a second runner's resume: the run ends. */
-async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks) {
+async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks, script: ScriptStep[] = [{ call: tool }, { say: "done" }]) {
   const w = await world(subject, t);
   const { tools, ran } = suiteTools();
-  const script: ScriptStep[] = [{ call: tool }, { say: "done" }];
   const holder: { runner?: Runner; crashed?: boolean } = {};
   await w.start("runner-a", { script, tools, hooks: crashAt(point, holder) }, holder);
   // An unanswered first claim is run out while it waits: it never reaches the crash point otherwise.
@@ -1070,7 +1069,88 @@ const CASES: readonly Case[] = [
       assert.deepEqual(messages.filter((message) => message.role === "model").map((message) => message.text), ["Part of it", "done"]);
     },
   },
+  {
+    id: "meta-search",
+    title: "tools_search finds the session's own tools by what they do, with their schemas, and never itself, tools_call or codemode",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "tools_search", args: { query: "asked" } }, { sayLastResult: true }], tools, hooks: quiet });
+      await w.ended("ended");
+      const said = await modelSaid(w);
+      const names = [...said.matchAll(/"name":\s*"([^"]+)"/g)].map((match) => match[1]);
+      assert.equal(names[0], "asked", `the tool named in the query ranks first: ${said}`);
+      assert.ok(names.every((name) => ["effect", "read", "slow", "asked"].includes(name!)), `only the session's own tools: ${said}`);
+      assert.match(said, /"input_schema"/, `each with its input schema: ${said}`);
+    },
+  },
+  {
+    id: "meta-call-park",
+    title: "tools_call is asked about as the tool it calls: an ask parks the run, and the approved call runs once",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "tools_call", args: { name: "asked", args: {} } }, { sayLastResult: true }], tools, hooks: quiet });
+      const parked = await w.ended("parked");
+      assert.equal(ran.asked, 0, "the asked tool waits for its answer");
+      const callId = await w.askedCall();
+      assert.match(callId, /\/call$/, `the ask is the nested call's own, under the calling one's id: ${callId}`);
+      await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
+      const row = await w.ended("ended");
+      assert.ok(row.epoch > parked.epoch, "resumed under a new claim");
+      assert.equal(ran.asked, 1, "approved, it ran once");
+      assert.match(await modelSaid(w), /asked done/, "its outcome is tools_call's answer");
+    },
+  },
+  {
+    id: "meta-call-deny",
+    title: "a person's deny of a call made through tools_call refuses it in the gate's words: it never runs",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "tools_call", args: { name: "asked", args: {} } }, { sayLastResult: true }], tools, hooks: quiet });
+      await w.ended("parked");
+      await sendCommand(w.server, RUN, { kind: "deny", body: { approval: await w.askedCall(), note: "not now" } });
+      await w.ended("ended");
+      assert.equal(ran.asked, 0, "denied, it never ran");
+      assert.match(await modelSaid(w), /The user denied this asked call\. It was not run: nothing was sent and nothing was charged\. Reason: not now/, "the model read the refusal of the tool it called");
+    },
+  },
+  {
+    id: "meta-codemode-park",
+    title: "a codemode script's ask parks the run; approved, the script runs again with its recorded calls answered from their records, the asked call runs once, its outcome is the answer, and the rest of the script never runs",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      const script = "const a = await tools.read({});\nconst b = await tools.asked({});\nawait tools.effect({});\nreturn [a, b];";
+      await w.start("runner-a", { script: [{ call: "codemode", args: { script } }, { sayLastResult: true }], tools, hooks: quiet });
+      await w.ended("parked");
+      assert.deepEqual([ran.read, ran.asked, ran.effect], [1, 0, 0], "the script's read ran, and its asked call waits");
+      await sendCommand(w.server, RUN, { kind: "approve", body: { approval: await w.askedCall() } });
+      await w.ended("ended");
+      assert.deepEqual([ran.read, ran.asked, ran.effect], [1, 1, 0], "the read was answered from its record, the asked call ran once, and the effect after it never ran");
+      const said = await modelSaid(w);
+      assert.match(said, /asked done/, `the asked call's outcome is the script's answer: ${said}`);
+      assert.match(said, /The rest of the script did not run/, `the answer says the rest did not run: ${said}`);
+    },
+  },
+  {
+    id: "meta-codemode-crash",
+    title: "a crash after a script's call's intent: the script runs again, the call is told interrupted, never run twice, and the script ends there",
+    async body(subject, t) {
+      const script = "await tools.effect({});\nawait tools.read({});\nreturn 'end';";
+      const { ran } = await crashThenResume(subject, t, "effect", "beforeResult", [{ call: "codemode", args: { script } }, { say: "done" }]);
+      assert.equal(ran.effect, 1, "the effect ran once, never again after the crash");
+      assert.equal(ran.read, 0, "the script ended at the interrupted call: nothing after it ran");
+    },
+  },
 ];
+
+/** What the model said, all of it, in order: a case that says its last result reads it here. */
+async function modelSaid(w: { read(): Promise<{ messages: MessageRecord[] }> }): Promise<string> {
+  const { messages } = await w.read();
+  return messages.filter((message) => message.role === "model").map((message) => message.text).join("\n");
+}
 
 
 const STEERS_IN_TURN = "it places a message sent mid-turn in the turn in flight, its row taken in its submission's commit, so it never sends one as a turn of its own (message-resent-after-crash)";
@@ -1090,8 +1170,14 @@ export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record
       ? { "length-ends-failed": `${facts.id} resumes an answer its output limit cut itself, up to ${facts.recoversCutAnswers} times in one turn (its adapter's facts: recoversCutAnswers ${facts.recoversCutAnswers})` }
       : {}),
     ...(facts.recoversCutAnswers === 0 ? { "length-mid-run": `a cut ends ${facts.id}'s turn, as pi's does (its adapter's facts: recoversCutAnswers 0)` } : {}),
+    ...(facts.ownCodemode ? { "meta-codemode-park": OWN_CODEMODE(facts.id), "meta-codemode-crash": OWN_CODEMODE(facts.id) } : {}),
   };
 }
+
+/** Why a harness that runs scripts itself has no case of the host's codemode. */
+const OWN_CODEMODE = (id: string) => `${id} runs the model's scripts in its own code mode (its adapter's facts: ownCodemode), so the host offers no codemode beside it`;
+/** The cases of the host's tools over a session's tools (runner/meta-tools.ts), which only the adapter loop gives. */
+const META_CASES: ReadonlySet<ConformanceCase> = new Set(["meta-search", "meta-call-park", "meta-call-deny", "meta-codemode-park", "meta-codemode-crash"]);
 
 /** What a run whose answer was cut at the model's output limit says (loop-contract.ts cutAtLimit). */
 const CUT_AT_LIMIT = /^the model stopped at its output limit( \(\d+ tokens\))? before finishing its answer$/;
@@ -1118,7 +1204,7 @@ export function registerHarnessConformance(given: ConformanceSubject, { test, st
     // A harness that steers (any whose facts do not say steer false, as message-mid-turn-kept reads them) places a message
     // in the turn in flight, its row taken in the commit of its submission: it never sends one as a turn of its own.
     const byFacts = ruledOut[entry.id] ?? (entry.id === "message-resent-after-crash" && subject.facts?.steer !== false ? STEERS_IN_TURN : undefined);
-    const notYet = subject.unsupported?.[entry.id] ?? (processCase && !subject.process ? "it names no module a runner process can load (subject.process)" : undefined);
+    const notYet = subject.unsupported?.[entry.id] ?? (processCase && !subject.process ? "it names no module a runner process can load (subject.process)" : undefined) ?? (subject.metaTools === false && META_CASES.has(entry.id) ? "its loop gives its sessions no tools_search, tools_call or codemode (they are the adapter loop's: runner/meta-tools.ts)" : undefined);
     const onPostgres = storeUrl ? POSTGRES_PENDING[entry.id] : undefined;
     const skip = byFacts ? `${subject.name} does not do this by design: ${byFacts}` : notYet ? `${subject.name} cannot model this yet: ${notYet}` : onPostgres ? `on Postgres, ${onPostgres}` : undefined;
     test(`${subject.name}: ${entry.title}`, { timeout: CASE_TIMEOUT_MS, ...(skip ? { skip } : {}) }, (t) => entry.body(subject, t));
