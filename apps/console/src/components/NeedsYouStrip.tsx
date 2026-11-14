@@ -30,7 +30,7 @@ export type NeedsYouProps = {
   onAnswer: (runId: string, text: string) => Promise<string | null>;
   /** Answers a run's tool call that waits for the owner's approval (`pending.id`); resolves with the refusal to show, in
    *  words, or null once it went. Without it, an approval links to its run. */
-  onApprove?: (runId: string, approvalId: string, decision: "allow" | "deny", note?: string) => Promise<string | null>;
+  onApprove?: (runId: string, approvalId: string, decision: "allow" | "deny", note?: string, confirmed?: true) => Promise<string | null>;
   /** Answers a run's ask for the person at its computer (`pending.kind` "browser" or "computer"): done or cancelled;
    *  resolves with the refusal to show, in words, or null once taken. Without it, the ask links to its run's screen alone. */
   onHandBack?: (runId: string, outcome: HandBackOutcome) => Promise<string | null>;
@@ -65,8 +65,8 @@ export function NeedsYouStrip({ asking, failed, failedAll, live, learning = [], 
     const title = asked ? runTitle(asked) : runId;
     setRefused((held) => [...held.filter((x) => x.runId !== runId), ...(said ? [{ runId, what, title, text: said }] : [])]);
   };
-  const approve = onApprove && (async (runId: string, approvalId: string, decision: "allow" | "deny", note?: string) => {
-    const said = await onApprove(runId, approvalId, decision, note);
+  const approve = onApprove && (async (runId: string, approvalId: string, decision: "allow" | "deny", note?: string, confirmed?: true) => {
+    const said = await (confirmed ? onApprove(runId, approvalId, decision, note, confirmed) : onApprove(runId, approvalId, decision, note));
     hold(runId, approvalId, said);
     return said;
   });
@@ -142,7 +142,7 @@ function Approval({ run, pending, agentName, at, onApprove }: { run: Run; pendin
     <li data-run={run.run_id} className="min-w-0">
       <ApprovalCard compact pending={pending}
         heading={<Head run={run} agentName={agentName} since={`asked ${ago(pending.requested_at, at)} ago`} />}
-        onAnswer={(decision, note) => (onApprove ? onApprove(run.run_id, pending.id, decision, note) : Promise.resolve("Open the run to answer it."))} />
+        onAnswer={(decision, note, confirmed) => (onApprove ? (confirmed ? onApprove(run.run_id, pending.id, decision, note, confirmed) : onApprove(run.run_id, pending.id, decision, note)) : Promise.resolve("Open the run to answer it."))} />
     </li>
   );
 }

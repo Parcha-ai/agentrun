@@ -153,6 +153,8 @@ test("a save that moves only a server wildcard from deny to ask wakes a run whos
   const store = {
     runs: { list: async () => [{ id: "r1", revisionId: "v1" }], wake: async () => { woken += 1; return true; } },
     agents: { revision: async () => ({ body: { approvals: "never" } }) },
+    // The run's MCP pin, which the wake reads for a waiting MCP call's effect (Allow reads): none here.
+    mcp: { pin: async () => undefined },
     readJournal: () => ({
       scanConversations: page([{ id: 1 }]),
       scanEntries: page([{ id: 1, conversationId: 1, kind: "agentrun.ask", data: { callId: "c1", tool: "mcp:fake/add", args: {}, requestedAt: "" } }]),

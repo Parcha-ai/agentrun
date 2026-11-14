@@ -51,7 +51,7 @@ function askingCli(tool) {
  *  catalogOf), as the spec builder joins it to the run's MCP. */
 const MONID_WIRE = "monid__faux__person__enrich";
 const MONID_NAME = "monid:faux/person/enrich";
-const catalogSeam = { tools: [], catalogOf: (name) => (name === MONID_WIRE ? MONID_NAME : undefined), priceOf: () => undefined, fresh: async () => {}, release: () => {} };
+const catalogSeam = { tools: [], catalogOf: (name) => (name === MONID_WIRE ? MONID_NAME : undefined), priceOf: () => undefined, effectOf: () => undefined, fresh: async () => {}, release: () => {} };
 
 /** One run whose call of `tool` (its wire name) is set to ask by its settings key; parked on it: the ask entry and what
  *  the run's view serves as its pending approval. `harness`: the revision's harness ("pi", or "codex" for the CLI). */

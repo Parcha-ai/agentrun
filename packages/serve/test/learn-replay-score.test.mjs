@@ -51,8 +51,8 @@ test("a hand-back in replay is the agent's recorded answer, never a failure: esc
   const loose = replayScore(rows, new Map([["pick", 0]]));
   assert.equal(loose.wf_acc, 0.6);
   assert.equal(clears(loose), false);
-  assert.equal(clears({ delta: -0.02 }), true, "exactly 2 points under clears");
-  assert.equal(clears({ delta: -0.0201 }), false);
+  assert.equal(clears({ delta: -0.02, n: 5, handed_back: 3 }), true, "exactly 2 points under clears");
+  assert.equal(clears({ delta: -0.0201, n: 5, handed_back: 3 }), false);
   // A guard that read no p hands back whatever its threshold.
   assert.equal(escalates(row("r6", { answer: "a", guards: [guard("pick", null)] }), new Map([["pick", 0]])), true);
 });
@@ -79,12 +79,13 @@ test("refit: each guard's cheapest threshold that keeps the bar; a too-high guar
   }
   const refit = refitGuards(text, rows, "2026-11-13T00:00:00.000Z");
   const by = Object.fromEntries(refit.guards.map((one) => [one.node, one]));
-  assert.equal(by.read.threshold, 0.001, "read never hurt: its guard goes to the least threshold the DSL takes");
+  assert.equal(by.read.threshold, null, "read never hurt: its guard is switched off");
   assert.equal(by.read.was, 0.7);
   assert.equal(by.pick.threshold, 0.4, "pick's wrong answers fall under 0.4: the lowest threshold that hands them all back");
   assert.equal(by.pick.fit, undefined, "20 rows: no fit");
   assert.equal(refit.delta, 0);
   const doc = JSON.parse(refit.text);
+  assert.equal("guard" in doc.root.steps[0], false, "the revision has no guard on read");
   assert.equal(doc.root.steps[1].guard.threshold, 0.4);
   // Rows that keep the thresholds as they are change nothing.
   const same = refitGuards(refit.text, rows, "2026-11-13T00:00:00.000Z");
@@ -105,7 +106,7 @@ test("refit raises the guard that catches the wrong answers, not the first one: 
   const refit = refitGuards(text, rows, "2026-11-13T00:00:00.000Z");
   const by = Object.fromEntries(refit.guards.map((one) => [one.node, one]));
   assert.equal(by.pick.threshold, 0.9, "pick goes up past its wrong rows' 0.3");
-  assert.equal(by.read.threshold, 0.001, "read never hurt: it comes down");
+  assert.equal(by.read.threshold, null, "read never hurt: it is switched off");
   assert.equal(refit.handed_back, 2, "only the two wrong rows go back");
   assert.equal(refit.delta, 0);
 });
@@ -201,7 +202,7 @@ test("a refit never brings a guard down past hand-backs whose answer nobody read
   // Rows that answered alone still bring it down where their answers say so.
   const right = Array.from({ length: 20 }, () => ({ guards: [{ node: "pick", signal: "self", self: 0.3, p: 0.3, threshold: 0.1, escalated: false }], answered: true, wfCorrect: true, agentCorrect: 1 }));
   const low = refitGuards(text, right, "t");
-  assert.equal(low.guards.find((one) => one.node === "pick")?.threshold, 0.001);
+  assert.equal(low.guards.find((one) => one.node === "pick")?.threshold, null, "every answer right: switched off");
 });
 
 test("each grade takes the next seq, a re-grade a new one, and the seq keeps climbing past the grades kept", async () => {

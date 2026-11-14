@@ -93,6 +93,8 @@ export type OpenComputerView = (args: {
   readonly watch: WatchOf;
   /** The run's hold (computer-hold.ts ComputerHold). */
   readonly hold: unknown;
+  /** Whether the computer is gone now, its provider no longer having it (goneOf): asked when its watch ends gone. */
+  readonly gone?: () => Promise<boolean>;
 }) => Promise<{ readonly ok: true; readonly view: { close(why: ViewEnd): unknown } } | { readonly ok: false; readonly refused: "fenced" | "bad_tag" | "kind" | "failed"; readonly message: string }>;
 
 export interface ComputerForClaimDeps {
@@ -229,6 +231,16 @@ async function readyImage(entry: ProviderEntry, provider: ComputerProvider, sign
 /** The provider's watch of a computer's screen on `ref` (ComputerProvider.watch), where it has one. */
 const watchOf = (provider: ComputerProvider, ref: { readonly id: string; readonly name: string }): WatchOf | undefined =>
   typeof provider.watch === "function" ? (handlers, options) => provider.watch!(ref, handlers, options) : undefined;
+
+/** Whether the computer `id` is gone now: its provider's listing under `labels` (the run's, or its owner's for the
+ *  agent's own) no longer shows it, deleted under the run (by the vendor's own API, say) or going. The listing is the
+ *  janitor's read: it starts nothing and leaves out a machine on its way out. A listing that failed is not gone. A
+ *  desktop listed stopped is still there. A phone is never stopped and kept (a phone provider has no stop), so one
+ *  listed stopped is ending (the phone harness lists a closing or errored session so) and counts as gone. */
+const goneOf = (provider: ComputerProvider, id: string, labels: Record<string, string>, kind: "desktop" | "phone") => async (): Promise<boolean> => {
+  const listed = await provider.list(labels);
+  return listed.ok && !listed.value.some((info) => info.ref.id === id && (kind === "desktop" || info.state === "running"));
+};
 
 /** The browser computer `ref`'s CDP URL now: the provider's connect (its signed URL), its words and code when the session
  *  has ended. The connection itself is let go once read. */
@@ -528,7 +540,7 @@ export async function computerForClaim(
   const paired = deps.attached ? await deps.attached.rows() : [];
   const kinds = withPaired(deps.kinds, paired);
   /** The computer this claim started (one per claim): its ref id tags its live view, and its watch feeds it. */
-  let made: { readonly id: string; readonly machine?: string; readonly watch?: WatchOf } | undefined;
+  let made: { readonly id: string; readonly machine?: string; readonly watch?: WatchOf; readonly gone?: () => Promise<boolean> } | undefined;
   /** The provider entry it was started from: a phone's platform where the computer did not say it. */
   let madeBy: ProviderEntry | undefined;
   /** A vendor's provider (or a local one's), made with the keys and the configuration the setting selected: that
@@ -587,9 +599,12 @@ export async function computerForClaim(
         return { id: entry.id, groups: ["cdp"], browser: opened.browser, release: opened.release };
       }
       let launched: Awaited<ReturnType<typeof providerLaunch>>;
+      /** The labels the provider lists this computer under: its owner's for the agent's own, else the run's. */
+      let listedUnder = spec.labels ?? {};
       if (persistent) {
         // The agent's own: its owner (this server and the agent), and no run deadline (it outlives the run).
         const owner: ComputerOwner = { agent: launch.agentId!, server: await serverIdOf({ settings: store.settings! }) };
+        listedUnder = ownerFilter(owner);
         const { lifetimeMs: _, ...owned } = spec;
         launched = await ownedLaunch(provider, launch, { ...owned, owner }, {
           store: { settings: store.settings!, agents: store.agents, ...(store.runs ? { runs: store.runs } : {}) },
@@ -603,7 +618,7 @@ export async function computerForClaim(
         deps.onStarting?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none"> });
         launched = await providerLaunch(provider, launch, spec, signal);
       }
-      made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
+      made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch, ...(kind === "desktop" || kind === "phone" ? { gone: goneOf(provider, launched.id, listedUnder, kind) } : {}) } : {}) };
       madeBy = entry;
       const { os, osVersion, arch } = launched.hello;
       deps.onConnected?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none">, hello: { os, ...(osVersion ? { osVersion } : {}), arch } });
@@ -643,7 +658,7 @@ export async function computerForClaim(
     if (deps.openComputerView && made?.watch) {
       const watch = made.watch;
       const input = computer.kind === "desktop" ? "desktop" : phonePlatform(made.machine, madeBy);
-      const opened = await deps.openComputerView({ store, sealKey: deps.sealKey, claim: launch.claim ?? { runId: launch.runId, epoch: launch.epoch }, kind: computer.kind, input, tag: made.id, watch, hold: theHold });
+      const opened = await deps.openComputerView({ store, sealKey: deps.sealKey, claim: launch.claim ?? { runId: launch.runId, epoch: launch.epoch }, kind: computer.kind, input, tag: made.id, watch, hold: theHold, ...(made.gone ? { gone: made.gone } : {}) });
       if (!opened.ok) {
         await started.release().catch(() => undefined);
         await revoke().catch(() => undefined);

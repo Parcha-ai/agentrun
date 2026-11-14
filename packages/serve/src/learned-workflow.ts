@@ -51,6 +51,7 @@ import type { RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { hostCalls } from "./host-calls.js";
 import { workflowNodes } from "./model.js";
 import { type ReplayCalls, SKIPPED_WRITE, toolWord, unmarkedWords } from "./learn/replay-calls.js";
+import { SOFT_ESCALATE_THRESHOLD, softEscalatesOf } from "./learn/promote.js";
 
 /** What a learned_workflow call's approval card says of its MCP calls' arguments: the workflow decides them as it runs. */
 export const LEARNED_MCP_ARGUMENTS = "decided by the workflow while it runs, from its input and its earlier steps";
@@ -472,8 +473,17 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   // Each guard's check by its step's execution path, as the DSL decided it: kept in `guards` at once (what the run's
   // metrics read), and its node.end (the same path) puts it on the step's trace, where the timeline and a hand-back say it.
   const guarded = new Map<string, GuardRow>();
+  // A replay records each escalate that reads a judge's field instead of obeying it (learn/promote.ts softEscalatesOf):
+  // the workflow goes on to its answer, and the escalate's row says whether it fired, for the replay's score at the
+  // serving setting (it hands back when it fired) and the refit (it may be switched off). Serving obeys every escalate.
+  const soft = replay ? softEscalatesOf(doc) : undefined;
   // Each node as it ends, by the DSL's own event: what the call's timeline row shows of it.
   const onEvent = (event: { type: string; label: string; detail?: unknown; executionPath?: string }) => {
+    if (event.type === "escalate.evaluated") {
+      const detail = (event.detail ?? {}) as { fired?: unknown; soft?: unknown };
+      if (detail.soft === true) guards.push({ node: String(event.label), signal: "escalate", p: detail.fired === true ? 0 : 1, threshold: SOFT_ESCALATE_THRESHOLD, escalated: false });
+      return;
+    }
     if (event.type === "guard.evaluated") {
       const row = rowOf(String(event.label), event.detail);
       if (row) {
@@ -490,7 +500,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   };
   try {
     const judging = runJudge && run.decisions ? { runJudge, decisionProviders: run.decisions.providers } : {};
-    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, guardStep, onEvent, ...judging, ...(stopped ? { signal: stopped } : {}) } as never);
+    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, guardStep, onEvent, ...judging, ...(soft?.size ? { softEscalate: (label: string) => soft.has(label) } : {}), ...(stopped ? { signal: stopped } : {}) } as never);
     const skipped = skippedWords();
     if (skipped) return skipped;
     if (result.status === "escalated") return { text: learnedText(handedBackText(flow.name, result.escalation, result.state, nodes, guards)), isError: true, nodes, ended: "escalated" };

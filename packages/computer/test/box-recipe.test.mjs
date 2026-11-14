@@ -1,11 +1,16 @@
-// The image a remote computer with an Archil mount starts from (box/Dockerfile, built by box/build-daytona.py and
-// box/build-modal.py), read as text: no network, no docker, no provider. It installs the root helper where the provider
+// The image a remote computer with an Archil mount starts from (box/Dockerfile, built by box/build-daytona.py,
+// box/build-modal.py, box/build-e2b.mjs and box/build-agent37.mjs, and published by release.yml's box job), read as
+// text: no network, no docker, no provider. It installs the root helper where the provider
 // runs it as root, the tool user computerd runs every tool as, and the archil client pinned by version and sha256. It
 // has no sudo and no sudoers file: the provider's own exec is root (the image's user is root), and the tool user has no
 // way to root at all.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { ARCHIL_HELPER, ARCHIL_SYNC_SOCKET, ARCHIL_TOOL_USER, ARCHIL_TOOL_UID, DAEMON_IN_COMPUTER } from "../dist/index.js";
 
@@ -109,11 +114,219 @@ test("the E2B build makes a template from the same Dockerfile, with the workspac
   assert.match(e2b, /fromDockerfile\(/);
   assert.match(e2b, /Template\.build\(/);
   assert.ok(e2b.includes("console.log(`template=${name}`)"), "it prints the template's name, as the other builds print theirs");
-  assert.ok(e2b.includes('"agentrun-archil-"'), "named agentrun-archil-<hash>, as the Daytona snapshot is");
+  assert.ok(e2b.includes('const name = "agentrun-archil-" + hash;') && e2b.includes("const hash = recipeHash(here);"), "named agentrun-archil-<the recipe's hash>, as the Daytona snapshot is");
+  assert.ok(!/process\.env\.\w*KEY/.test(e2b.replace(/process\.env\.E2B_API_KEY/g, "")), "the key comes from E2B_API_KEY, the SDK's own, set by the caller for this one command");
+});
+
+/** How release.yml's box job reads the recipe's hash, at the repository's root. */
+const RELEASE_RECIPE = "import { recipeHash } from './packages/computer/box/recipe.mjs'; console.log(recipeHash())";
+
+test("the recipe is the Dockerfile and every file it copies, and its hash is the one the Daytona snapshot is named by", async () => {
+  const { RECIPE, recipeHash } = await import("../box/recipe.mjs");
   const copied = INSTRUCTIONS.filter((line) => line.startsWith("COPY ")).map((line) => line.split(/\s+/)[1]);
-  const hashed = e2b.match(/const RECIPE = \[([^\]]*)\]/)?.[1].split(",").map((name) => name.trim().replace(/^"|"$/g, "")).filter(Boolean);
-  assert.deepEqual(hashed?.sort(), ["Dockerfile", ...copied].sort());
-  assert.ok(!/process\.env\.\w*KEY/.test(e2b) || e2b.includes("E2B_API_KEY"), "the key comes from E2B_API_KEY, the SDK's own, set by the caller for this one command");
+  assert.deepEqual([...RECIPE].sort(), ["Dockerfile", ...copied].sort());
+  // build-daytona.py hashes the same files the same way: sha256 of their bytes in RECIPE's order, its first 12 hex.
+  const daytona = read("build-daytona.py");
+  assert.ok(daytona.includes(`for name in (${RECIPE.map((name) => `"${name}"`).join(", ")})`), "the Daytona build hashes RECIPE, in its order");
+  assert.ok(daytona.includes("hashlib.sha256(recipe).hexdigest()[:12]"));
+  const hash = recipeHash();
+  assert.equal(hash, createHash("sha256").update(Buffer.concat(RECIPE.map((name) => readFileSync(box(name))))).digest("hex").slice(0, 12));
+  // What release.yml's box job runs, at the repository's root: the hash alone.
+  const printed = execFileSync(process.execPath, ["--input-type=module", "-e", RELEASE_RECIPE], { encoding: "utf8", cwd: fileURLToPath(new URL("../../../", import.meta.url)) });
+  assert.equal(printed, `${hash}\n`);
+});
+
+test("on the published image, the E2B template runs the Dockerfile's sudo guard again, as root, and keeps its USER and CMD; a tag that is not the recipe's is refused", async () => {
+  const { onImage, recipeHash } = await import("../box/recipe.mjs");
+  const image = `ghcr.io/parcha-ai/agentrun-box:${recipeHash()}`;
+  const dockerfile = onImage(image);
+  const lines = dockerfile.replace(/\\\n/g, " ").split("\n").filter(Boolean);
+  assert.equal(lines[0], `FROM ${image}`);
+  const guard = INSTRUCTIONS.find((line) => line.startsWith("RUN ") && line.includes("dpkg -s sudo"));
+  assert.deepEqual(lines.slice(1), [guard, "USER root", 'CMD ["sleep", "infinity"]'], "the guard as the Dockerfile has it, then root, then the same first process");
+  assert.ok(guard.includes("rm -rf /etc/sudoers /etc/sudoers.d") && guard.includes("! command -v sudo"), "the guard takes sudo away and checks it gone");
+  // Refused before the SDK or the key is read, so this runs with neither.
+  const script = fileURLToPath(box("build-e2b.mjs"));
+  const run = (args) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8", env: { PATH: process.env.PATH } });
+  const other = run(["--image", "ghcr.io/parcha-ai/agentrun-box:000000000000"]);
+  assert.equal(other.status, 2);
+  assert.match(other.stderr, new RegExp(`is not this recipe's image: its tag must be the recipe's hash, ${recipeHash()}`));
+  const keyless = run(["--image", image, "--public"]);
+  assert.equal(keyless.status, 2);
+  assert.match(keyless.stderr, /set E2B_API_KEY/);
+});
+
+/** A fake e2b package: records the template, the build and the PATCH in FAKE_E2B_LOG; FAKE_E2B_PATCH=fail refuses the PATCH. */
+const FAKE_E2B = `import { appendFileSync } from "node:fs";
+const log = (entry) => appendFileSync(process.env.FAKE_E2B_LOG, JSON.stringify(entry) + "\\n");
+export function Template(options) {
+  return { fromDockerfile(dockerfile) { log({ template: options, dockerfile }); return this; } };
+}
+Template.build = async (template, name, options) => { log({ build: name, cpuCount: options.cpuCount, memoryMB: options.memoryMB }); return { templateId: "tpl_0123", buildId: "b_1", name }; };
+export class ConnectionConfig { constructor(options) { this.apiKey = options.apiKey; } }
+export class ApiClient {
+  constructor(config) {
+    this.api = { PATCH: async (path, init) => {
+      log({ patch: path, init, apiKey: config.apiKey });
+      if (process.env.FAKE_E2B_PATCH === "fail") return { error: { message: "template not found" }, response: { status: 404 } };
+      return { data: { names: ["parcha/" + "agentrun-archil-x", "agentrun-archil-x"] }, response: { status: 200 } };
+    } };
+  }
+}
+`;
+
+test("build-e2b.mjs --image --public builds from the image, makes the template public by its id, prints the names E2B gives, and fails in E2B's words when the PATCH is refused", async (t) => {
+  const { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { recipeHash, onImage } = await import("../box/recipe.mjs");
+  // A copy of box/ beside a fake e2b package, which the script finds by its name, as it finds the root's.
+  const dir = mkdtempSync(join(tmpdir(), "box-e2b-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  for (const name of ["Dockerfile", "agentrun-archil", "build-e2b.mjs", "recipe.mjs"]) copyFileSync(box(name), join(dir, name));
+  mkdirSync(join(dir, "node_modules", "e2b"), { recursive: true });
+  writeFileSync(join(dir, "node_modules", "e2b", "package.json"), JSON.stringify({ name: "e2b", type: "module", exports: "./index.js" }));
+  writeFileSync(join(dir, "node_modules", "e2b", "index.js"), FAKE_E2B);
+  const image = `ghcr.io/parcha-ai/agentrun-box:${recipeHash()}`;
+  const run = (log, env = {}) => spawnSync(process.execPath, [join(dir, "build-e2b.mjs"), "--image", image, "--public"], { encoding: "utf8", env: { PATH: process.env.PATH, E2B_API_KEY: "fake-test-key", FAKE_E2B_LOG: join(dir, log), ...env } });
+  const entries = (log) => readFileSync(join(dir, log), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+
+  const ok = run("ok.log");
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.stdout, `public=parcha/agentrun-archil-x,agentrun-archil-x\ntemplate=agentrun-archil-${recipeHash()}\n`);
+  const [template, build, patch] = entries("ok.log");
+  assert.equal(template.dockerfile, onImage(image), "the template is the image with the Dockerfile's guard, USER and CMD");
+  assert.deepEqual(build, { build: `agentrun-archil-${recipeHash()}`, cpuCount: 2, memoryMB: 4096 });
+  assert.deepEqual(patch, { patch: "/v2/templates/{templateID}", init: { params: { path: { templateID: "tpl_0123" } }, body: { public: true } }, apiKey: "fake-test-key" });
+  assert.ok(!ok.stderr.includes("fake-test-key") && !ok.stdout.includes("fake-test-key"), "the key is never printed");
+
+  const refused = run("refused.log", { FAKE_E2B_PATCH: "fail" });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, new RegExp(`making agentrun-archil-${recipeHash()} public failed: 404 template not found`));
+  assert.doesNotMatch(refused.stdout, /public=|template=/, "a template that is not public is not reported as made");
+});
+
+test("the box job builds only on the registry's not found: a published recipe is tagged, and any other failed read stops the job", async (t) => {
+  const { mkdtempSync, writeFileSync, rmSync, chmodSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { parse } = await import("yaml");
+  const workflow = parse(readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"));
+  const step = workflow.jobs.box.steps.find((step) => step.id === "published");
+  const dir = mkdtempSync(join(tmpdir(), "box-published-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // A fake docker whose imagetools inspect prints what FAKE_DOCKER says, as buildx does, and exits with its code.
+  writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$FAKE_DOCKER_OUT" >&2\nexit "$FAKE_DOCKER_EXIT"\n');
+  chmodSync(join(dir, "docker"), 0o755);
+  const run = (exit, out) => {
+    const output = join(dir, `output-${exit}-${out.length}`);
+    writeFileSync(output, "");
+    const result = spawnSync("bash", ["-e", "-c", step.run], { encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH}`, GITHUB_OUTPUT: output, IMAGE: "ghcr.io/parcha-ai/agentrun-box", RECIPE: "0123456789ab", RELEASE_TAG: "v0.1.0-beta.1", FAKE_DOCKER_EXIT: String(exit), FAKE_DOCKER_OUT: out } });
+    return { ...result, output: readFileSync(output, "utf8") };
+  };
+  const published = run(0, "");
+  assert.equal(published.status, 0);
+  assert.equal(published.output, "published=true\n");
+  const absent = run(1, "ERROR: ghcr.io/parcha-ai/agentrun-box:0123456789ab: not found");
+  assert.equal(absent.status, 0);
+  assert.equal(absent.output, "published=false\n");
+  const flaky = run(1, "ERROR: failed to do request: Head \"https://ghcr.io/v2/parcha-ai/agentrun-box/manifests/0123456789ab\": dial tcp: i/o timeout");
+  assert.equal(flaky.status, 1, "a read that fails otherwise stops the job: no rebuild under a tag that may exist");
+  assert.equal(flaky.output, "");
+  assert.match(flaky.stderr, /::error::reading ghcr\.io\/parcha-ai\/agentrun-box:0123456789ab failed, so whether it is published is unknown: ERROR: failed to do request/);
+});
+
+// --- what a build of box/ can take in: no key, credential or build secret ---
+
+/** Every file under box/, by its path there. */
+const BOX_FILES = readdirSync(fileURLToPath(box("")), { recursive: true, withFileTypes: true })
+  .filter((entry) => entry.isFile())
+  .map((entry) => relative(fileURLToPath(box("")), join(entry.parentPath, entry.name)));
+/** Names a key or a credential goes by. */
+const CREDENTIAL_NAME = /(^|\/)(\.env(\..*)?|\.npmrc|\.netrc|\.pypirc|\.git-credentials|\.dockercfg|config\.json|credentials(\..*)?|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|.*\.(pem|key|p12|pfx|jks|keystore|crt|asc|gpg|kdbx)|.*(secret|token|passw|apikey|api_key|private).*)$/i;
+/** Key material in a file's text: a private key block, or a token in a vendor's own shape. */
+const KEY_MATERIAL = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}/,
+  /\bgithub_pat_[A-Za-z0-9_]{30,}/,
+  /\bsk-(ant-|proj-)?[A-Za-z0-9_-]{20,}/,
+  /\bsk_live_[A-Za-z0-9]{16,}/,
+  /\be2b_[0-9a-f]{20,}/,
+  /\bxox[abpr]-[A-Za-z0-9-]{10,}/,
+];
+
+test("a build's context is box/, the files the npm package ships there, and the image takes the helper alone from it", () => {
+  const copied = INSTRUCTIONS.filter((line) => /^(COPY|ADD) /.test(line)).map((line) => line.split(/\s+/).slice(1, -1));
+  assert.deepEqual(copied, [["agentrun-archil"]], "one COPY, of the helper, with no flags (no --from, no remote ADD)");
+  // No .dockerignore: everything here is public already (the package ships box/ whole), and the image copies the helper
+  // alone. A new file here is read for what it is before this list takes it.
+  assert.deepEqual(BOX_FILES.sort(), ["Dockerfile", "README.md", "agentrun-archil", "build-agent37.mjs", "build-daytona.py", "build-e2b.mjs", "build-modal.py", "recipe.mjs"]);
+});
+
+test("box/ holds no file named like a key or a credential and no key material, and the Dockerfile takes no secret", () => {
+  for (const file of BOX_FILES) {
+    assert.doesNotMatch(file, CREDENTIAL_NAME, `${file} is named like a key or a credential`);
+    const text = readFileSync(box(file), "utf8");
+    for (const pattern of KEY_MATERIAL) assert.doesNotMatch(text, pattern, `${file} holds key material`);
+  }
+  assert.doesNotMatch(DOCKERFILE, /--mount=[^\s]*type=(secret|ssh)/, "no build secret and no ssh agent");
+  for (const line of INSTRUCTIONS.filter((line) => /^(ARG|ENV) /.test(line))) {
+    assert.doesNotMatch(line.split(/\s+/)[1].split("=")[0], /KEY|TOKEN|SECRET|PASS|CRED|AUTH|PRIVATE/i, `${line}: a build argument or variable named like a secret`);
+  }
+  assert.deepEqual(INSTRUCTIONS.filter((line) => line.startsWith("ARG ")).map((line) => line.slice(4).split("=")[0]), ["ARCHIL_VERSION", "ARCHIL_SHA256_AMD64", "ARCHIL_SHA256_ARM64"]);
+  // The patterns catch what they are for.
+  assert.match("id_ed25519", CREDENTIAL_NAME);
+  assert.match("deploy.pem", CREDENTIAL_NAME);
+  assert.match("e2b-token.txt", CREDENTIAL_NAME);
+  assert.ok(KEY_MATERIAL.some((pattern) => pattern.test(["-----BEGIN OPENSSH", "PRIVATE KEY-----"].join(" "))));
+});
+
+// --- the release's box job and its E2B template (.github/workflows/release.yml) ---
+
+test("the release publishes the box image beside agentrun-server, amd64, by the recipe's hash, and builds the public E2B template from it under the release's approval", async () => {
+  const { parse } = await import("yaml");
+  const workflow = parse(readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"));
+  const { box: job, "box-e2b": e2b, image, publish } = workflow.jobs;
+  assert.equal(job.needs, "publish");
+  assert.equal(job.if, publish.if);
+  assert.deepEqual(job.permissions, image.permissions, "the image job's: read, and write packages");
+  assert.equal(job.environment, undefined, "no environment and no secret: this run's GITHUB_TOKEN alone");
+  const pinned = (steps) => {
+    for (const step of steps.filter((step) => step.uses)) assert.match(step.uses, /@[0-9a-f]{40}$/, `${step.uses} is pinned by commit`);
+  };
+  pinned(job.steps);
+  pinned(e2b.steps);
+  const buildx = job.steps.find((step) => /^docker\/setup-buildx-action@/.test(step.uses ?? ""));
+  assert.deepEqual(buildx, image.steps.find((step) => /^docker\/setup-buildx-action@/.test(step.uses ?? "")), "BuildKit by digest, as the image job runs it");
+  assert.match(buildx.with["driver-opts"], /@sha256:[0-9a-f]{64}$/);
+  const recipe = job.steps.find((step) => step.id === "recipe");
+  assert.ok(recipe.run.includes(`hash="$(node --input-type=module -e "${RELEASE_RECIPE}")"`), "the hash recipe.mjs gives, not one of the workflow's own");
+  assert.equal(job.outputs.recipe, "${{ steps.recipe.outputs.hash }}");
+  const build = job.steps.find((step) => /^docker\/build-push-action@/.test(step.uses ?? ""));
+  assert.equal(build.uses, image.steps.find((step) => /^docker\/build-push-action@/.test(step.uses ?? "")).uses);
+  assert.equal(build.with.context, "packages/computer/box");
+  assert.equal(build.with.file, "packages/computer/box/Dockerfile");
+  assert.equal(build.with.platforms, "linux/amd64");
+  assert.equal(build.with.provenance, "mode=max");
+  assert.equal(build.with.sbom, true);
+  assert.equal(build.with.push, true);
+  assert.equal(build.with["build-args"], undefined);
+  assert.equal(build.with.secrets, undefined);
+  assert.deepEqual(build.with.tags.trim().split("\n"), ["${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}", "${{ env.IMAGE }}:${{ inputs.tag }}"]);
+  assert.equal(job.env.IMAGE, "ghcr.io/parcha-ai/agentrun-box");
+  assert.equal(build.if, "steps.published.outputs.published != 'true'", "built once per recipe");
+  assert.match(job.steps.find((step) => step.if === "steps.published.outputs.published == 'true'").run, /imagetools create --tag "\$IMAGE:\$RELEASE_TAG" "\$IMAGE:\$RECIPE"/, "a published recipe is tagged with the release");
+
+  assert.equal(e2b.needs, "box");
+  assert.equal(e2b.if, publish.if);
+  assert.equal(e2b.environment, "npm-release", "under the release's own approval");
+  assert.deepEqual(e2b.permissions, { contents: "read" });
+  assert.equal(e2b.env.BOX_IMAGE, "ghcr.io/parcha-ai/agentrun-box:${{ needs.box.outputs.recipe }}");
+  const secrets = JSON.stringify(e2b).match(/secrets\.\w+/g);
+  assert.deepEqual([...new Set(secrets)], ["secrets.E2B_API_KEY"], "the E2B key is the one secret it reads");
+  assert.match(e2b.steps[0].run, /\[ -n "\$E2B_API_KEY" \] \|\| \{ echo "::error::needs secret E2B_API_KEY in the npm-release environment/, "first, a missing key stops it in words");
+  const at = (pattern) => e2b.steps.findIndex((step) => pattern.test(step.run ?? ""));
+  assert.ok(at(/manifests/) > 0 && at(/manifests/) < at(/build-e2b\.mjs/), "the image is checked public before E2B is asked to pull it");
+  assert.equal(e2b.steps[at(/build-e2b\.mjs/)].run, 'node packages/computer/box/build-e2b.mjs --image "$BOX_IMAGE" --public');
 });
 
 // --- the Agent37 build (build-agent37.mjs), on a fake Agent37 ---

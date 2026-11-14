@@ -504,7 +504,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // refusal of writes under .learning/ is the adapter loop's own (it knows the turn), never a file's. The run's MCP servers
   // (mcpServersOf its grants) hold a harness's own name for an MCP tool to that tool's settings.
   // A pinned MCP tool is held to the arguments its listing in the run's pin declares (mcp.argumentsOf).
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted), mcp ? { argumentsOf: (name: string) => mcp.argumentsOf(name) } : {});
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted), mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {});
   // What a script's shell and files are held to: this gate's settings, decided as on the run's computer (gate.script), so a
   // denied bash or write holds inside computer_script too.
   tools.computer?.guard.install(gate.script);

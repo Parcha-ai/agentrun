@@ -114,6 +114,7 @@ export function rowOf(label: string, detail: unknown): GuardRow | undefined {
 
 /** A guard row in words, for the hand-back: what it read and where p fell against its threshold. */
 export function guardLine(row: GuardRow): string {
+  if (row.signal === "escalate") return `escalate "${row.node}" ${row.p === 0 ? "fired" : "did not fire"}; recorded, not obeyed (a replay)`;
   const said = (n: number | undefined | null) => (typeof n === "number" ? n.toFixed(2) : "none");
   const read = [row.self !== undefined || row.signal !== "jev" ? `its own confidence ${said(row.self)}` : "", row.signal !== "self" ? `Jev ${said(row.jev)}` : ""].filter(Boolean).join(", ");
   return `guard on "${row.node}" (${row.signal}): p ${said(row.p)} against threshold ${row.threshold} (${read}); ${row.escalated ? "handed back" : "passed"}`;
