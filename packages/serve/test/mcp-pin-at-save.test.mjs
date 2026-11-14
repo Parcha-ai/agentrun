@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, follow, retried, serve, withEnv } from "./support.mjs";
+import { agent, follow, retried, serve, startInProcessRunner, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const ADD = "mcp:fake/add";
@@ -262,4 +262,51 @@ test("an edit while a granted server is down carries the pin of the revision it 
   assert.equal(now.revisions, 3, "the edit, on v2");
   assert.equal(now.definition.instructions, "Add the numbers, then say the sum.");
   assert.equal(now.mcp_pin.fake.tools[0].description, "Add two numbers, v2.", "the pin of the revision the edit is built on (v2), not the one it first read (v1)");
+});
+
+test("a run queued before the upgrade on a revision with no pin is pinned at its claim and completes", { timeout: 240_000 }, async (t) => {
+  const { api, data, store } = await setup(t, { serving: { runner: false } });
+  assert.equal((await retried(api)("POST", "/agents", agent("queued", { tools: [ADD], tool_settings: ALLOW }))).status, 201);
+  const started = await api("POST", "/agents/queued/runs", { input: ADD_CALL });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  // The upgrade: the run is queued, and its revision has no pin (a server open leaves an earlier one so).
+  unpin(data, started.body.revision);
+  const stopRunner = await startInProcessRunner(data, { faux: FAUX_MCP });
+  try {
+    await completes(api, started.body.run_id);
+  } finally {
+    await stopRunner();
+  }
+  assert.deepEqual((await store.agents.revision(started.body.revision))?.mcpPin?.fake?.tools?.map((tool) => tool.name), ["add"], "its claim pinned the revision");
+});
+
+test("a run queued before the upgrade whose server is down at its claim fails in the words it did, and its revision stays unpinned", { timeout: 240_000 }, async (t) => {
+  const { api, data, store, fake } = await setup(t, { serving: { runner: false } });
+  assert.equal((await retried(api)("POST", "/agents", agent("downed-queued", { tools: [ADD], tool_settings: ALLOW }))).status, 201);
+  const started = await api("POST", "/agents/downed-queued/runs", { input: ADD_CALL });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  unpin(data, started.body.revision);
+  await fake.close();
+  const stopRunner = await startInProcessRunner(data, { faux: FAUX_MCP });
+  try {
+    assert.equal((await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 180_000 })).last.status, "failed");
+  } finally {
+    await stopRunner();
+  }
+  assert.equal((await api("GET", `/runs/${started.body.run_id}`)).body.error?.message, "The MCP tool mcp:fake/add was not pinned when this agent's revision was saved, so this run cannot call it. Save the agent again to pin it. Nothing was sent.");
+  assert.equal((await store.agents.revision(started.body.revision))?.mcpPin ?? null, null);
+});
+
+test("a follow-up to a run that ended before the upgrade pins its revision at the claim and the run goes on", { timeout: 240_000 }, async (t) => {
+  const { api, data, store } = await setup(t);
+  assert.equal((await retried(api)("POST", "/agents", agent("followed", { tools: [ADD], tool_settings: ALLOW }))).status, 201);
+  const started = await api("POST", "/agents/followed/runs", { input: { content: "Say hello." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  assert.equal((await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 })).last.status, "completed");
+  unpin(data, started.body.revision);
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: ADD_CALL.content });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  await completes(api, runId);
+  assert.deepEqual((await store.agents.revision(started.body.revision))?.mcpPin?.fake?.tools?.map((tool) => tool.name), ["add"], "the follow-up's claim pinned the revision");
 });

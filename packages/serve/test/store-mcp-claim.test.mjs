@@ -479,3 +479,35 @@ test("M20: a revision with no pin is pinned once: the first write stands, a seco
   assert.deepEqual(both[1], both[0], "both read the one that stood");
   assert.equal(await store.agents.pinOnce("rev-missing", first), null, "no such revision: nothing written");
 });
+
+test("M21: a claim of a run whose revision has no pin (one that existed at the upgrade) lists its granted servers once, pins the revision and goes on; a later claim reads that pin; a server that can't be listed refuses in the words it did", async (t) => {
+  const { registryListing } = await import("../dist/mcp-pin-first.js");
+  const { store, clock } = await storeOn(t);
+  const fake = await startFakeMcp({ token: TOKEN });
+  t.after(() => fake.close());
+  await store.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools: [listed(ADD)], sealed: headersCredential(fake.url) });
+  // A revision saved before pins were made at save: no pin.
+  await queued(store, "run-1");
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: LEASE });
+  const pinListing = registryListing(store, KEY, { loopback: true });
+  const step = await claimOf(store, claim, ["mcp:fake/add"], { pinListing });
+  const expected = { fake: { url: fake.url, tools: [{ name: "add", title: "Add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } }] } };
+  assert.deepEqual(JSON.parse(JSON.stringify(step.pin)), expected, "the claim's pin, as a save would make it");
+  assert.deepEqual((await store.agents.revision("rev-1"))?.mcpPin, expected, "kept on the revision");
+  assert.equal(fake.log.filter((entry) => entry.method === "tools/list").length, 1, "listed once");
+  step.release();
+  // The next claim reads the revision's pin: nothing listed.
+  clock.now = T0 + LEASE + 1;
+  const next = await store.claim("run-1", "runner-b", { leaseMs: LEASE });
+  const again = await claimOf(store, next, ["mcp:fake/add"], { pinListing });
+  assert.deepEqual(JSON.parse(JSON.stringify(again.pin)), expected);
+  assert.equal(fake.log.filter((entry) => entry.method === "tools/list").length, 1, "not listed again");
+  again.release();
+  // Another revision with no pin, its server down: refused in the claim's words, nothing pinned.
+  await store.agents.create({ id: "agent-2", name: "agent-2" }, { id: "rev-2", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-2", agentId: "agent-2", revisionId: "rev-2" });
+  const other = await store.claim("run-2", "runner-c", { leaseMs: LEASE });
+  await fake.close();
+  await assert.rejects(claimOf(store, other, ["mcp:fake/add"], { pinListing }), (error) => error instanceof McpClaimRefused && error.message === "The MCP tool mcp:fake/add was not pinned when this agent's revision was saved, so this run cannot call it. Save the agent again to pin it. Nothing was sent.");
+  assert.equal((await store.agents.revision("rev-2"))?.mcpPin ?? null, null, "nothing pinned");
+});
