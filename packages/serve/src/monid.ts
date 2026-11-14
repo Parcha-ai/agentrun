@@ -227,7 +227,7 @@ export const heldOf = (price: unknown): number | undefined => fixedUsd(price);
 
 /** How monid prices `price`, in words: "per result (PER_RESULT)", "per 1 credit (PER_UNIT)". monid states every price
  *  in USD (its API reference). */
-function priceWords(price: unknown): string {
+export function priceWords(price: unknown): string {
   if (!isObject(price)) return "with no stated price";
   const type = typeof price.type === "string" ? price.type : "of no type";
   if (type === "PER_RESULT") return `per result (${type})`;
