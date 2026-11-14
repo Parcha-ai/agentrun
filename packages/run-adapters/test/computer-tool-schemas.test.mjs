@@ -86,6 +86,13 @@ test("computer_act offers an expect only where the ui group checks one: a deskto
   assert.deepEqual(openAiStrictProblems(strictOf(without)), []);
 });
 
+test("computer_observe is run again after a crash only where it changes nothing: a desktop with apps and no ui group opens the app it names", () => {
+  const safe = (groups) => computerToolDefs("desktop", groups).find((def) => def.name === "computer_observe").replaySafe;
+  assert.equal(safe(["screen", "ui", "apps"]), true);
+  assert.equal(safe(["screen", "input.pointer"]), true);
+  assert.equal(safe(["screen", "input.pointer", "apps"]), false);
+});
+
 for (const [tool, schema] of Object.entries(COMPUTER_TOOL_SCHEMAS)) {
   test(`${tool}'s schema is closed everywhere, and passes OpenAI's strict rules once a strict request makes its optionals nullable`, () => {
     for (const [path, node] of walk(schema)) if (node.type === "object") assert.equal(node.additionalProperties, false, `${tool} ${path}: closed`);

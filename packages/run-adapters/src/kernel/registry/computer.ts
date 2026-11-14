@@ -61,7 +61,8 @@ const def = (kind: CapabilityKind, name: (typeof COMPUTER_TOOLS)[number], descri
  *  hold only what they offer). A script and an act change the computer: never replayed. */
 export function computerToolDefs(kind: CapabilityKind, groups: readonly string[]): readonly ToolDef[] {
   return Object.freeze([
-    def(kind, "computer_observe", OBSERVE, true),
+    // With apps and no ui group, an observe that names an app opens it first: it changes the screen, so it never runs again.
+    def(kind, "computer_observe", OBSERVE, groups.includes("ui") || !groups.includes("apps")),
     def(kind, "computer_act", ACT, false, groups.includes("ui") ? undefined : ACT_WITHOUT_UI),
     def(kind, "computer_screenshot", SCREENSHOT, true),
     def(kind, "computer_script", scriptWords(groups), false),
