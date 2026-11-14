@@ -98,13 +98,18 @@ export function proofOf(record: Promotion): string | null {
 /** Whether a record was decided on evidence: a replay or a refit that scored at least one graded input. */
 export const proven = (record: Promotion): boolean => (record.source === "replay" || record.source === "refit") && (record.replay?.n ?? 0) > 0;
 
-/** Why a replay skipped inputs, short: the MCP tools with no readOnlyHint when any stopped one (serve names them in the
- *  record's reason too), else a write the recording doesn't have. */
+const WRITE_SKIP = "needs a write the recording doesn't have";
+
+/** Why a replay skipped inputs, short: how many the MCP tools with no readOnlyHint stopped, naming them (serve names them
+ *  in the record's reason too), and how many a write the recording doesn't have stopped, each part only when it has any. */
 function skippedWhy(r: NonNullable<Promotion["replay"]>): string {
-  const names = (r.skipped_tools ?? []).filter((one) => one.no_read_only_hint).map((one) => one.tool.replace(/^mcp:[^/]+\//, ""));
-  if (!names.length) return "needs a write the recording doesn't have";
+  const unmarked = (r.skipped_tools ?? []).filter((one) => one.no_read_only_hint);
+  const byUnmarked = Math.min(r.skipped_write ?? 0, unmarked.reduce((sum, one) => sum + one.inputs, 0));
+  const byWrite = (r.skipped_write ?? 0) - byUnmarked;
+  const names = unmarked.map((one) => one.tool.replace(/^mcp:[^/]+\//, ""));
   const list = names.length <= 3 ? names.join(", ").replace(/, ([^,]*)$/, " and $1") : `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
-  return `${list} ${names.length === 1 ? "has" : "have"} no readOnlyHint`;
+  const parts = [byUnmarked ? `${byUnmarked} skipped: ${list} ${names.length === 1 ? "has" : "have"} no readOnlyHint` : "", byWrite ? `${byWrite} skipped: ${WRITE_SKIP}` : ""];
+  return parts.filter(Boolean).join(", ");
 }
 
 const pctOf = (v: number) => `${Math.round(v * 100)}%`;
@@ -117,7 +122,7 @@ export function replayLine(record: Promotion): string {
   const r = record.replay;
   if (!r || !r.n) return record.reason;
   const how = record.source === "refit" ? "Refit on" : record.source === "graded" ? "Checked on" : "Replay on";
-  return `${how} ${r.n} graded ${r.n === 1 ? "input" : "inputs"}: workflow ${pctOf(r.wf_acc)} vs agent ${pctOf(r.agent_acc)} (${pts(r.delta)}), ${r.handed_back} handed back${r.skipped_write ? `, ${r.skipped_write} skipped: ${skippedWhy(r)}` : ""}`;
+  return `${how} ${r.n} graded ${r.n === 1 ? "input" : "inputs"}: workflow ${pctOf(r.wf_acc)} vs agent ${pctOf(r.agent_acc)} (${pts(r.delta)}), ${r.handed_back} handed back${r.skipped_write ? `, ${skippedWhy(r)}` : ""}`;
 }
 
 /** A guarded step as a workflow's JSON says it: its `label`; its `node`, the name the runner gives it on its guard rows

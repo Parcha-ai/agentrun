@@ -65,7 +65,9 @@ describe("a revision's standing and numbers", () => {
   });
   it("names the MCP tools with no readOnlyHint that skipped inputs; a destructive tool's skip keeps the write words", () => {
     const tools = [{ tool: "mcp:web/browse", inputs: 9, no_read_only_hint: true }, { tool: "mcp:web/fetch_page", inputs: 4, no_read_only_hint: true }, { tool: "mcp:web/wipe", inputs: 1, no_read_only_hint: false }];
-    expect(replayLine(record({ replay: { ...REPLAY, skipped_write: 14, skipped_tools: tools } }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back, 14 skipped: browse and fetch_page have no readOnlyHint");
+    expect(replayLine(record({ replay: { ...REPLAY, skipped_write: 14, skipped_tools: tools } }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back, 13 skipped: browse and fetch_page have no readOnlyHint, 1 skipped: needs a write the recording doesn't have");
+    // Every skip from unmarked tools: no write words.
+    expect(replayLine(record({ replay: { ...REPLAY, skipped_write: 13, skipped_tools: tools.slice(0, 2) } }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back, 13 skipped: browse and fetch_page have no readOnlyHint");
     expect(replayLine(record({ replay: { ...REPLAY, skipped_write: 1, skipped_tools: [tools[2]!] } }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back, 1 skipped: needs a write the recording doesn't have");
   });
   it("says what a promotion was decided on: replayed n/of, 0 replays answered, not replayed, refit rows; only a scored one is proven", () => {
