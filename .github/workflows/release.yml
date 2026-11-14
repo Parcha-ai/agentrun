@@ -232,3 +232,116 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ inputs.tag }}
             ${{ env.IMAGE }}:beta
+
+  # The box image (packages/computer/box): what a remote computer with an Archil mount starts from, published once per
+  # recipe as ghcr.io/parcha-ai/agentrun-box:<recipe hash> (box/recipe.mjs) and tagged with the release, for linux/amd64.
+  # Like `image`, it runs after the approved publish job with this run's GITHUB_TOKEN alone, every action pinned by commit
+  # and BuildKit by digest. Its context is box/, where .dockerignore lets the helper alone in; the build takes no secret.
+  box:
+    needs: publish
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/parcha-ai/agentrun-box
+      RELEASE_TAG: ${{ inputs.tag }}
+    outputs:
+      recipe: ${{ steps.recipe.outputs.hash }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Match the checkout to the provenance commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - name: The recipe's hash
+        id: recipe
+        run: |
+          hash="$(node packages/computer/box/recipe.mjs)"
+          [[ "$hash" =~ ^[0-9a-f]{12}$ ]] || { echo "box/recipe.mjs printed '$hash', not a recipe hash" >&2; exit 1; }
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver-opts: image=docker.io/moby/buildkit:buildx-stable-1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # A recipe is built once: a release whose recipe is published already tags that image, and the recipe's tag keeps
+      # its digest. A read that fails for any other reason builds it again, which is the same recipe.
+      - name: Is this recipe published already?
+        id: published
+        env:
+          RECIPE: ${{ steps.recipe.outputs.hash }}
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:$RECIPE" >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "$IMAGE:$RECIPE is published already: tagging it $RELEASE_TAG"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.published.outputs.published != 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: packages/computer/box
+          file: packages/computer/box/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}
+            ${{ env.IMAGE }}:${{ inputs.tag }}
+      - if: steps.published.outputs.published == 'true'
+        name: Tag the published recipe with the release
+        env:
+          RECIPE: ${{ steps.recipe.outputs.hash }}
+        run: docker buildx imagetools create --tag "$IMAGE:$RELEASE_TAG" "$IMAGE:$RECIPE"
+
+  # The box image as a public E2B template, agentrun-archil-<recipe hash>, built from the image the box job published, so
+  # an owner's E2B team starts from it with nothing built. It runs under the same approval as the packages (npm-release),
+  # whose E2B_API_KEY is the only secret it reads: the step stops, saying so, without it. E2B pulls the image with no
+  # credentials, so a private package stops the job before the build.
+  box-e2b:
+    needs: box
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: npm-release
+    permissions:
+      contents: read
+    env:
+      BOX_IMAGE: ghcr.io/parcha-ai/agentrun-box:${{ needs.box.outputs.recipe }}
+    steps:
+      - name: The npm-release environment has the E2B key
+        env:
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+        run: |
+          [ -n "$E2B_API_KEY" ] || { echo "::error::needs secret E2B_API_KEY in the npm-release environment: the key of the E2B team the public template agentrun-archil-<recipe> is built in" >&2; exit 1; }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Match the checkout to the provenance commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - name: The image is public
+        run: |
+          repo="${BOX_IMAGE#ghcr.io/}"; repo="${repo%:*}"
+          token="$(curl -fsS "https://ghcr.io/token?scope=repository:$repo:pull" | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>console.log(JSON.parse(s).token))')" || token=''
+          code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' "https://ghcr.io/v2/$repo/manifests/${BOX_IMAGE##*:}")"
+          [ "$code" = 200 ] || { echo "::error::$BOX_IMAGE can't be pulled with no credentials (HTTP $code): the package is private. An org admin makes ghcr.io/$repo public once, in the package's settings, then re-runs this job" >&2; exit 1; }
+      - run: npm ci --ignore-scripts
+      - name: Build the template from the image and make it public
+        env:
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+        run: node packages/computer/box/build-e2b.mjs --image "$BOX_IMAGE" --public
