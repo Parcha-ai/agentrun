@@ -1,0 +1,75 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "linux.terminal.git-email",
+  "version": 1,
+  "title": "Set a git repository's own user.email in the terminal",
+  "split": "heldout",
+  "tags": ["terminal", "xfce4-terminal", "git", "config"],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "capabilities": [
+      { "id": "xfce4-terminal", "kind": "exec", "why": "Xfce's terminal and git, and xdotool, which setup places the window with.", "argv": ["sh", "-c", "command -v xfce4-terminal && command -v git && command -v xdotool"] }
+    ]
+  },
+  "params": {
+    "who": {
+      "pick": [
+        { "old": "build-bot@old.example", "new": "maria.lopez@example.org" },
+        { "old": "ci@legacy.example", "new": "kenji.sato@example.net" },
+        { "old": "root@localhost.example", "new": "amara.okafor@example.com" },
+        { "old": "dev@temp.example", "new": "lukas.berg@example.io" },
+        { "old": "admin@box.example", "new": "sofia.rossi@example.eu" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Make a git repository whose own user.email is the old address.",
+      "params": { "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d && git init -q $d/repo-{{nonce}} && git -C $d/repo-{{nonce}} config user.email {{who.old}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "process.start",
+      "why": "Open Xfce's terminal in the run's folder.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && exec xfce4-terminal --disable-server --working-directory=/tmp/computer-bench-{{nonce}}"] }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait for the terminal's window (20 s at most), make it fill the screen, and put the pointer on it: with no window manager, keys go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class xfce4-terminal | head -n1); [ -n \"$w\" ] || { echo no terminal window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); sleep 1"], "timeoutMs": 30000 }
+    }
+  ],
+  "exec": "deny",
+  "instruction": "In the terminal window, set the user.email of the git repository /tmp/computer-bench-{{nonce}}/repo-{{nonce}} to {{who.new}}, for that repository only (not your global git config). This desktop has no window manager: keys go to the window under the mouse pointer.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "repo-email",
+      "kind": "exec",
+      "why": "The repository's own config (git config --local) says the new address. Setup set it to {{who.old}} there, which a global setting can't override, so an agent that does nothing fails, and so does one that sets it only globally.",
+      "argv": ["git", "-C", "/tmp/computer-bench-{{nonce}}/repo-{{nonce}}", "config", "--local", "--get", "user.email"],
+      "stdout": { "equals": "{{who.new}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the terminal and delete the run's folder.",
+      "params": { "argv": ["sh", "-c", "pkill -9 -x xfce4-terminal; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "input.actions",
+      "why": "Type the command into the terminal and run it.",
+      "params": {
+        "actions": [
+          { "type": "type", "text": "git -C /tmp/computer-bench-{{nonce}}/repo-{{nonce}} config user.email {{who.new}}" },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "wait", "ms": 1500 }
+        ]
+      }
+    }
+  ]
+}

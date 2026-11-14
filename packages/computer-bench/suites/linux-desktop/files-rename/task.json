@@ -1,0 +1,86 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "linux.files.rename",
+  "version": 1,
+  "title": "Rename a file in the Thunar file manager",
+  "split": "dev",
+  "tags": ["files", "thunar", "rename"],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "capabilities": [
+      { "id": "thunar", "kind": "exec", "why": "Thunar, and xdotool, which setup places its window with.", "argv": ["sh", "-c", "command -v thunar && command -v xdotool"] }
+    ]
+  },
+  "params": {
+    "f": {
+      "pick": [
+        { "old": "draft", "new": "final" },
+        { "old": "scan", "new": "receipt" },
+        { "old": "notes", "new": "minutes" },
+        { "old": "todo", "new": "done" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Make the run's folder holding only the file to rename.",
+      "params": { "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d && echo 'computer-bench {{nonce}}' > $d/{{f.old}}-{{nonce}}.txt"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "process.start",
+      "why": "Open Thunar on the run's folder.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && exec thunar /tmp/computer-bench-{{nonce}}"] }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait for Thunar's window (20 s at most), make it fill the screen, and put the pointer on it: with no window manager, keys go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class thunar | head -n1); [ -n \"$w\" ] || { echo no Thunar window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); sleep 1"], "timeoutMs": 30000 }
+    }
+  ],
+  "exec": "deny",
+  "instruction": "In the file manager, rename the file {{f.old}}-{{nonce}}.txt in /tmp/computer-bench-{{nonce}} to {{f.new}}-{{nonce}}.txt. This desktop has no window manager: keys go to the window under the mouse pointer.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "only-new-name",
+      "kind": "exec",
+      "why": "The folder lists exactly one file, named {{f.new}}-{{nonce}}.txt: the old name is gone and no copy was made. After setup it lists {{f.old}}-{{nonce}}.txt, so an agent that does nothing fails.",
+      "argv": ["ls", "-1", "/tmp/computer-bench-{{nonce}}"],
+      "stdout": { "equals": "{{f.new}}-{{nonce}}.txt" }
+    },
+    {
+      "id": "same-text",
+      "kind": "file",
+      "why": "The renamed file holds the text setup wrote, so it is the same file, not a new empty one with the name.",
+      "path": "/tmp/computer-bench-{{nonce}}/{{f.new}}-{{nonce}}.txt",
+      "text": { "equals": "computer-bench {{nonce}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close Thunar and delete the run's folder.",
+      "params": { "argv": ["sh", "-c", "pkill -9 -x thunar; pkill -9 -x Thunar; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "input.actions",
+      "why": "Select the folder's one file (Ctrl+A) and open Rename (F2): its dialog opens centred over Thunar, under the pointer. Select the whole name in its field (Ctrl+A), type the new name and press Enter.",
+      "params": {
+        "actions": [
+          { "type": "key", "keys": ["ctrl", "a"] },
+          { "type": "wait", "ms": 500 },
+          { "type": "key", "keys": ["f2"] },
+          { "type": "wait", "ms": 2000 },
+          { "type": "key", "keys": ["ctrl", "a"] },
+          { "type": "type", "text": "{{f.new}}-{{nonce}}.txt" },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "wait", "ms": 1500 }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "linux.terminal.count-errors",
+  "version": 1,
+  "title": "Count the ERROR lines of a log in the terminal and write the count to a file",
+  "split": "dev",
+  "tags": ["terminal", "xfce4-terminal", "shell"],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "capabilities": [
+      { "id": "xfce4-terminal", "kind": "exec", "why": "Xfce's terminal, and xdotool, which setup places its window with.", "argv": ["sh", "-c", "command -v xfce4-terminal && command -v xdotool"] }
+    ]
+  },
+  "params": {
+    "log": {
+      "pick": [
+        { "lines": 40, "every": 6, "at": 1, "want": "7" },
+        { "lines": 50, "every": 4, "at": 3, "want": "12" },
+        { "lines": 45, "every": 5, "at": 0, "want": "9" },
+        { "lines": 36, "every": 9, "at": 4, "want": "4" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Write the log: {{log.lines}} lines, {{log.want}} of them ERROR lines, and WARN lines that say \"error\" in lower case as decoys.",
+      "params": { "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d && awk -v T={{log.lines}} -v M={{log.every}} -v R={{log.at}} 'BEGIN { for (i = 1; i <= T; i++) { t = sprintf(\"2026-11-14 10:%02d:%02d\", int(i / 6), (i * 7) % 60); if (i % M == R) printf \"%s ERROR job %d failed: upstream timeout\\n\", t, i; else if (i % 5 == 2) printf \"%s WARN job %d: error budget at %d%%\\n\", t, i, 40 + i; else printf \"%s INFO job %d done in %d ms\\n\", t, i, 100 + 13 * i } }' > $d/server-{{nonce}}.log; [ \"$(grep -c ERROR $d/server-{{nonce}}.log)\" = {{log.want}} ] || { echo the log does not hold {{log.want}} ERROR lines >&2; exit 1; }"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "process.start",
+      "why": "Open Xfce's terminal in the run's folder.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && exec xfce4-terminal --disable-server --working-directory=/tmp/computer-bench-{{nonce}}"] }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait for the terminal's window (20 s at most), make it fill the screen, and put the pointer on it: with no window manager, keys go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class xfce4-terminal | head -n1); [ -n \"$w\" ] || { echo no terminal window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); sleep 1"], "timeoutMs": 30000 }
+    }
+  ],
+  "exec": "deny",
+  "instruction": "In the terminal window, count how many lines of /tmp/computer-bench-{{nonce}}/server-{{nonce}}.log contain ERROR (in capitals), and write just that number into a new file /tmp/computer-bench-{{nonce}}/errors-{{nonce}}.txt. This desktop has no window manager: keys go to the window under the mouse pointer.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "count",
+      "kind": "file",
+      "why": "The file holds the number of ERROR lines, {{log.want}}, and nothing else (blank space around it aside). Counting the lower-case \"error\" WARN lines too gives a larger number. After setup the file is not there, so an agent that does nothing fails.",
+      "path": "/tmp/computer-bench-{{nonce}}/errors-{{nonce}}.txt",
+      "text": { "equals": "{{log.want}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the terminal and delete the run's folder.",
+      "params": { "argv": ["sh", "-c", "pkill -9 -x xfce4-terminal; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "input.actions",
+      "why": "Type the command into the terminal and run it.",
+      "params": {
+        "actions": [
+          { "type": "type", "text": "grep -c ERROR /tmp/computer-bench-{{nonce}}/server-{{nonce}}.log > /tmp/computer-bench-{{nonce}}/errors-{{nonce}}.txt" },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "wait", "ms": 1500 }
+        ]
+      }
+    }
+  ]
+}
