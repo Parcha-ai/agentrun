@@ -25,7 +25,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { putGrade } = await import("../dist/learn/promote.js");
-const { openFeedbackRound, feedbackRoundOf } = await import("../dist/runner/feedback-round.js");
+const { openFeedbackRound, feedbackRoundOf, feedbackAsk, feedbackWords } =await import("../dist/runner/feedback-round.js");
 const { servedAnswerStands, sameAnswer } = await import("../dist/runner/workflow-first.js");
 const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
 const { viewOverStore, answerOf } = await import("../dist/store-view.js");
@@ -348,4 +348,15 @@ test("a grade of an archived run, or of a run of an archived agent, is kept and 
   const two = await grade(ofArchived, false, LABEL(2));
   assert.equal(two.round, null, "a run of an archived agent opens no round");
   assert.equal(two.row.endedAt, ofArchived.endedAt, "the run of the archived agent was never opened again");
+});
+
+test("a no-label wrong grade's ask says the verdict once: the steer's words carry only what a right answer holds, else '(no words)'", () => {
+  const verdicts = (ask) => ask.match(/graded .*wrong/g) ?? [];
+  const withExpected = feedbackAsk({ round: "revise", correct: false, workflow: "answer", text: feedbackWords(undefined, { total: 3 }) });
+  assert.equal(verdicts(withExpected).length, 1, withExpected);
+  assert.match(withExpected, /A right answer holds: \{"total":3\}/);
+  const bare = feedbackAsk({ round: "revise", correct: false, workflow: "answer", text: feedbackWords(undefined, undefined) });
+  assert.equal(verdicts(bare).length, 1, bare);
+  assert.match(bare, /\(no words\)/);
+  assert.equal(feedbackWords("  too slow  ", { total: 3 }), "too slow");
 });

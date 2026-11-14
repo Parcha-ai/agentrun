@@ -8,15 +8,15 @@ import { underWay } from "@/lib/learning";
 import { problem } from "@/lib/problem";
 import type { GradeAnswer, GradeBody, Run, RunGraded } from "@/lib/v2";
 
-/** The reviewer's words' longest, as the server takes them (`label`). */
+/** The reviewer's words' longest, as the server takes them (`label`). A copy of serve's LABEL_MAX (learn/promote.ts): the generated types carry no maxLength. */
 export const WORDS_MAX = 4000;
 
 /** Whether a grade teaches the run's agent: the run learns, and not as a run that only uses what was learned (`use`: it
  *  keeps nothing, so a grade opens no round on it). */
-export const gradable = (run: Pick<Run, "learning">): boolean => !!run.learning && run.learning.reason !== "use";
+const gradable = (run: Pick<Run, "learning">): boolean => !!run.learning && run.learning.reason !== "use";
 
 /** What "What was wrong?" is for, and the hint while it is empty: a look-back needs words. */
-export const WORDS_NOTE = "The agent looks back on your words: what was wrong, and what a right answer does.";
+const WORDS_NOTE = "The agent looks back on your words: what was wrong, and what a right answer does.";
 export const NO_WORDS = "A look-back needs words. Without them the grade is still kept.";
 const EXPECTED_NOTE = 'A JSON object of the fields a right answer holds, like {"total": 42}. Replays of a learned workflow are scored against it.';
 const NOT_AN_OBJECT = 'Write it as a JSON object, like {"total": 42}, or leave it empty.';
