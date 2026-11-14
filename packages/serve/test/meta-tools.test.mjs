@@ -231,3 +231,64 @@ test("under a cap with room for one paid search, a script's second search is ref
   assert.match(said[1] ?? "", /could cost up to \$0\.001/, `the second was refused in the cap's words: ${JSON.stringify(said)}`);
   assert.equal(row.state, "parked", `the run parked on the refused call: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
 });
+
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+/** A `harness` run of `script` over `tools` (each `{name, replaySafe, run, structured?, images?}`), uncapped, ended: what
+ *  the model said, in order, and the requests pi's provider got (pi only, `requests`). `native`: pi-native tools. */
+async function metaRun(t, harness, script, tools, { native } = {}) {
+  const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
+  const { journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  await queue(server, "run-1");
+  const requests = [];
+  const spec = harness.name === "pi" ? piAdapterSpec({ script, tools, hooks: quiet }, { requests, ...(native ? { native } : {}) }) : harness.specOf({ script, tools, hooks: quiet });
+  const runner = startRunner({ store, createLoop: createAdapterLoop(spec, { restartLimit: MAX_RESTARTS }), name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  const row = await until(async () => {
+    const now = await server.runs.get("run-1");
+    return (now.state === "ended" || now.state === "failed") && now.runner === null && now;
+  }, "the run ended", 30_000);
+  const { entries } = await journalRecords(server.journal({ runId: "run-1", runner: "test-reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
+  return { row, said: messagesOf(entries).filter((message) => message.role === "model").map((message) => message.text), requests };
+}
+
+for (const harness of HARNESSES.filter((one) => one.codemode)) {
+  test(`${harness.name}: a codemode script's call answers the tool's value, not its text`, async (t) => {
+    const shot = { name: "shot", replaySafe: true, structured: { n: 7, kind: "shot" }, run: async () => "a shot, as text" };
+    const script = [{ call: CODEMODE, args: { script: "const v = await tools.shot({}); return typeof v === 'object' && v !== null ? 'n=' + v.n : 'text:' + v;" } }, { sayLastResult: true }];
+    const { row, said } = await metaRun(t, harness, script, { shot });
+    assert.equal(row.state, "ended", JSON.stringify(row));
+    assert.match(said.join("\n"), /n=7/, `the script read the tool's value: ${JSON.stringify(said)}`);
+  });
+}
+
+test("pi: a tool's image called through tools_call reaches the model, as a direct call's does", async (t) => {
+  const shot = { name: "shot", replaySafe: true, images: [{ data: PNG, mimeType: "image/png" }], run: async () => "the screen" };
+  const { row, requests } = await metaRun(t, HARNESSES[0], [{ call: TOOLS_CALL, args: { name: "shot", args: {} } }, { say: "done" }], { shot });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const results = requests.flatMap((body) => (body.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : []))).filter((part) => part.type === "tool_result");
+  const parts = Array.isArray(results.at(-1)?.content) ? results.at(-1).content : [];
+  assert.ok(parts.some((part) => part.type === "image" && part.source?.data === PNG), `the image is in tools_call's result: ${JSON.stringify(parts).slice(0, 400)}`);
+  assert.ok(parts.some((part) => part.type === "text" && part.text === "the screen"), "with its text");
+});
+
+test("pi: a pi-native tool of the run (as the subagent tool is) is found by tools_search and called by tools_call", async (t) => {
+  const { defineTool } = await import("@earendil-works/pi-durable");
+  let ran = 0;
+  const helper = defineTool({
+    name: "helper_tool",
+    description: "A native helper that tallies the oranges in the basket.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute: async () => (ran++, { output: [{ type: "text", text: "helper ran" }] }),
+  });
+  const script = [{ call: TOOLS_SEARCH, args: { query: "tally oranges" } }, { call: TOOLS_CALL, args: { name: "helper_tool", args: {} } }, { sayLastResult: true }];
+  const { tools } = suiteTools();
+  const { row, said, requests } = await metaRun(t, HARNESSES[0], script, tools, { native: [helper] });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const results = requests.flatMap((body) => (body.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : []))).filter((part) => part.type === "tool_result");
+  const text = (part) => (typeof part?.content === "string" ? part.content : (part?.content ?? []).map((one) => one.text ?? "").join(""));
+  assert.match(text(results[0]), /"name":\s*"helper_tool"/, `tools_search found the native tool: ${text(results[0])}`);
+  assert.equal(ran, 1, "tools_call ran it once");
+  assert.match(said.join("\n"), /helper ran/, `its answer is tools_call's: ${JSON.stringify(said)}`);
+});
