@@ -203,7 +203,7 @@ test('an operation that documents 204 beside a 2xx body returns the body or noth
       },
     },
   };
-  const map = { secretBody: [], publicFields: {}, multiSegment: {}, commands: { deleteThing: ['things', 'delete'], getThing: ['things', 'get'], saveThing: ['things', 'save'] } };
+  const map = { secretBody: [], publicFields: {}, multiSegment: {}, omit: {}, commands: { deleteThing: ['things', 'delete'], getThing: ['things', 'get'], saveThing: ['things', 'save'] } };
   const ops = operationsOf(doc);
   const ts = clientText(ops, map, commandOf, 'h'.repeat(64));
   assert.ok(ts.includes('delete: (thingId: string, options?: RequestOptions): Promise<DeleteThingResponse | undefined> =>'), ts.match(/delete: .*/)?.[0]);
