@@ -28,11 +28,16 @@ const { putGrade } = await import("../dist/learn/promote.js");
 const { openFeedbackRound, feedbackRoundOf } = await import("../dist/runner/feedback-round.js");
 const { servedAnswerStands, sameAnswer } = await import("../dist/runner/workflow-first.js");
 const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+const { viewOverStore, answerOf } = await import("../dist/store-view.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const MODEL = "claude-sonnet-5-5";
 const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const AGENT_SAYS = "The agent's own answer: 42.";
+/** The agent's answer for an agent with an output schema (ANSWER_SCHEMA): its last fenced json block meets it. */
+const AGENT_JSON = "The agent's own answer:\n\n```json\n{\"answer\": 42}\n```";
+const ANSWER_SCHEMA = { type: "object", required: ["answer"], properties: { answer: { type: "number" } } };
+const VIEW_DEPS = { origin: "", serverSecrets: () => [] };
 const LABEL = (n) => `Review: the reference answer to question ${n} is 42.`;
 
 const answerFlow = {
@@ -71,7 +76,7 @@ const until = async (done, what, ms = 60_000) => {
 /** An agent that learned `answer`, a runner claiming every run from its stored launch. The node answers 41 to the
  *  questions in `wrong`, else 42, sure either way; the agent answers AGENT_SAYS, after calling learned_workflow `answer`
  *  itself first on the questions in `calls`. */
-async function world(t, { wrong = new Set(), calls = new Set() } = {}) {
+async function world(t, { wrong = new Set(), calls = new Set(), outputSchema } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-feedback-rounds-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -82,7 +87,7 @@ async function world(t, { wrong = new Set(), calls = new Set() } = {}) {
       if (offers(body, "learned_workflow") && !hasResult(body) && calls.has(question(body))) return { name: "learned_workflow", input: { name: "answer", input: { question: `Question ${question(body)}: what is six times seven?` } } };
       return undefined;
     },
-    text: ({ body }) => (offers(body, "submit") ? "submitted" : AGENT_SAYS),
+    text: ({ body }) => (offers(body, "submit") ? "submitted" : outputSchema ? AGENT_JSON : AGENT_SAYS),
   });
   let runner;
   t.after(async () => {
@@ -92,7 +97,7 @@ async function world(t, { wrong = new Set(), calls = new Set() } = {}) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true, ...(outputSchema ? { outputSchema } : {}) } });
   const seed = await landWorkflows(dir, "agent-1", FLOWS);
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
@@ -131,8 +136,9 @@ test("a 20-run labelled stream: right served runs cost $0 learning and stay work
     const first = await start(id, n, { byHand: n <= 3 });
     const servedRight = first.metrics?.path === "workflow" && n !== WRONG;
     const before = agentRequests().length;
+    const result = n === WRONG ? (await viewOverStore(server, id, VIEW_DEPS)).result : undefined;
     const { round, row } = await grade(first, n !== WRONG, LABEL(n));
-    rows.set(id, { n, first, row, round, asked: agentRequests().slice(before) });
+    rows.set(id, { n, first, row, round, result, asked: agentRequests().slice(before) });
     if (n <= 3) {
       assert.equal(first.metrics?.path, "agent", `run ${n} by hand: ${JSON.stringify(first.metrics)}`);
       assert.equal(round, "look_back", "a labelled run the agent finished looks back on the label");
@@ -167,6 +173,9 @@ test("a 20-run labelled stream: right served runs cost $0 learning and stay work
   assert.match(compile, new RegExp(LABEL(WRONG).replace(/[.?]/g, "\\$&")), "the label");
   assert.match(compile, /Give `answer` again whole under its name, changed so it answers cases like this one right or hands them back/, "the revision ask");
   assert.equal(wrong.row.metrics?.path, "workflow", `no new answer of the agent's: the path stays the workflow's: ${JSON.stringify(wrong.row.metrics)}`);
+  // Its answer stands: the grade's words are no message of the job's, so they never cut the workflow's answer off.
+  assert.ok(wrong.result?.final_answer, `the served run had an answer: ${JSON.stringify(wrong.result)}`);
+  assert.deepEqual((await viewOverStore(server, `run-${WRONG}`, VIEW_DEPS)).result, wrong.result, "the round left the run's result as it was");
   const two = await server.learning.proposal(`run-${WRONG}`, 2);
   assert.equal(two?.round, 2, `the revision ask is round 2: ${JSON.stringify(two)}`);
   assert.ok(two.turn?.asked?.some((said) => said.includes(LABEL(WRONG))), `round 2 heard the label: ${JSON.stringify(two.turn)}`);
@@ -268,17 +277,61 @@ test("a run whose agent called learned_workflow itself, graded wrong: its feedba
   assert.ok(cost.learning_usd >= two.proposal.look_back_usd - 1e-9, `the round's look-back is in its learning: ${JSON.stringify([cost, two.proposal])}`);
 });
 
-test("withoutFeedbackRounds: a round's words and every row up to the run's next other message are left out; a person's follow-up after it still counts", async () => {
+test("a graded run keeps its answer: its feedback round's words are no message of the job's, so result.final_answer and result.output stand after the round (#2648 review)", { timeout: 120_000 }, async (t) => {
+  const { server, start, grade } = await world(t, { outputSchema: ANSWER_SCHEMA });
+  const first = await start("run-graded", 1, { byHand: true });
+  assert.equal(first.metrics?.path, "agent", "the agent finished it: a label asks a look-back");
+  const before = await viewOverStore(server, "run-graded", VIEW_DEPS);
+  assert.equal(before.status, "completed");
+  assert.deepEqual([before.result?.final_answer, before.result?.output], [AGENT_JSON, { answer: 42 }], `the job's answer and its output: ${JSON.stringify(before.result)}`);
+  const { round, row } = await grade(first, false, LABEL(1));
+  assert.equal(round, "look_back", "a labelled run the agent finished looks back on the label");
+  assert.ok((row.endedAt ?? 0) > (first.endedAt ?? 0), "the run was opened again and ended");
+  assert.ok((await server.learning.proposal("run-graded", 2))?.turn?.asked?.some((said) => said.includes(LABEL(1))), "the round heard the label");
+  const after = await viewOverStore(server, "run-graded", VIEW_DEPS);
+  assert.equal(after.status, "completed");
+  assert.deepEqual(after.result, before.result, `the round left the run's answer and output as they were: ${JSON.stringify(after.result)}`);
+  const { runTimeline } = await import("../dist/store-reads/journal.js");
+  const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+  const shown = (await runTimeline(server, "run-graded", BACKGROUND_CONTEXT, { settled: true })).filter((one) => one.kind === "user_message" && one.text === LABEL(1));
+  assert.deepEqual(shown.map((one) => one.id.endsWith(":feedback")), [true], `the grade's words still show, once, as the reviewer's message, marked: ${JSON.stringify(shown)}`);
+});
+
+test("the job's turns: a grade's words' row (FEEDBACK_SUFFIX) is no message of the job's for any reader: the answer, the path, nothing new, the messages a stop stands after, a run's trace; a person's follow-up still is", async () => {
   const { withoutFeedbackRounds } = await import("../dist/store-reads/journal.js");
-  const { runPathOf } = await import("../dist/runner/learning-end.js");
-  const entries = [{ kind: "pi.user", id: 1 }, { kind: "agentrun.feedback", id: 7 }];
-  const row = (id, kind, extra = {}) => ({ id, kind, agent_label: null, parent_tool_use_id: null, ...extra });
-  const job = [row("0:1", "user_message"), row("0:2", "tool_use", { tool_name: "learned_workflow", tool_use_id: "c1" }), row("0:3", "tool_result", { tool_name: "learned_workflow", tool_use_id: "c1", tool_status: "success" }), row("0:4", "final_answer", { text: "42" })];
-  const round = [row("0:7", "user_message", { text: "Review: wrong." }), row("0:8", "error"), row("0:9", "final_answer", { text: "NOTES", agent_label: "learning" })];
-  assert.equal(runPathOf([...job, ...round]), "handed_back", "read whole, the round's words are a second message");
-  assert.equal(runPathOf(withoutFeedbackRounds([...job, ...round], entries)), "workflow", "the round is left out");
-  assert.equal(runPathOf(withoutFeedbackRounds([...job, ...round, row("0:17", "user_message"), row("0:18", "final_answer", { text: "41" })], entries)), "handed_back", "a person's follow-up after the round is the job's");
-  assert.deepEqual(withoutFeedbackRounds(job, []), job, "a run with no round reads as it is");
+  const { runPathOf, onlyLearnedWorkflows, traceFrom } = await import("../dist/runner/learning-end.js");
+  const { isMessageRow, isFeedbackRow, FEEDBACK_SUFFIX } = await import("../dist/timeline/index.js");
+  const { usersOf, stoppedAt } = await import("../dist/run-view.js");
+  const row = (id, kind, extra = {}) => ({ id, kind, agent_label: null, parent_tool_use_id: null, text: null, ...extra });
+  const job = [row("0:1", "user_message", { text: "Question 1" }), row("0:2", "tool_use", { tool_name: "learned_workflow", tool_use_id: "c1" }), row("0:3", "tool_result", { tool_name: "learned_workflow", tool_use_id: "c1", tool_status: "success" }), row("0:4", "final_answer", { text: "42" })];
+  const words = row(`0:7${FEEDBACK_SUFFIX}`, "user_message", { text: "Review: wrong." });
+  const round = [words, row("0:8", "error"), row("0:9", "user_message", { text: "asked", agent_label: "learning" }), row("0:10", "final_answer", { text: "NOTES", agent_label: "learning" })];
+  const graded = [...job, ...round];
+  const person = row("0:17", "user_message", { text: "Why 42?" });
+  // The mark.
+  assert.equal(FEEDBACK_SUFFIX, ":feedback");
+  assert.deepEqual([isFeedbackRow(words), isMessageRow(words)], [true, false], "a grade's words are shown, never a message a turn took");
+  assert.deepEqual([isFeedbackRow(person), isMessageRow(person)], [false, true], "a person's message is one");
+  // The view.
+  assert.deepEqual(withoutFeedbackRounds(graded), [...job, ...round.slice(2)], "the round's words and the rows up to the next message are left out");
+  assert.deepEqual(withoutFeedbackRounds(job), job, "a run with no round reads as it is");
+  // The answer (GET /runs/{id} result.final_answer, and result.output read from it).
+  assert.equal(answerOf(graded), "42", "a grade never cuts the job's answer off");
+  assert.equal(answerOf([...graded, person]), null, "a person's follow-up with no answer of its own still has none");
+  assert.equal(answerOf([...graded, person, row("0:18", "final_answer", { text: "Six times seven." })]), "Six times seven.");
+  // The path, and nothing new to look back on.
+  assert.deepEqual([runPathOf(graded), onlyLearnedWorkflows(graded)], ["workflow", true], "the round is learning, never the agent going on");
+  assert.deepEqual([runPathOf([...graded, person, row("0:18", "final_answer", { text: "41" })]), onlyLearnedWorkflows([...graded, person])], ["handed_back", false], "a person's follow-up after the round is the job's");
+  // The messages a stop stands after (run-view.ts usersOf, stoppedAt): a grade is no newer message.
+  assert.equal(usersOf(graded), usersOf(job) + 1, "the job's message and the end-of-run turn's ask; never the grade's words");
+  const heard = [...job, words];
+  assert.equal(stoppedAt({ stopped_at: "0:4" }, heard), true, "a stop still stands after a grade's words");
+  assert.equal(stoppedAt({ stopped_after: usersOf(job) }, heard), true, "counted, the grade's words are no message");
+  assert.equal(stoppedAt({ stopped_at: "0:4" }, [...heard, person]), false, "a person's message after it moves on");
+  // A run's trace for a later compile: the person's messages after the first, never a grade's.
+  assert.deepEqual(traceFrom(graded, []).feedback, [], "a grade is not the person's feedback");
+  assert.deepEqual(traceFrom([...graded, person], []).feedback, ["Why 42?"]);
+  assert.equal(traceFrom(graded, []).answer, "42");
 });
 
 test("a grade of an archived run, or of a run of an archived agent, is kept and opens no round: closed history starts no paid learning (#2648 review)", { timeout: 120_000 }, async (t) => {
