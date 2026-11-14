@@ -1710,6 +1710,97 @@ repository's main; the docs were read on 2026-11-05.
 | a snapshot's size is its own; delete with retries and a forced stop; the listing trails a create; no redirect followed; three tries with backoff | `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:913`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:799-817`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:819-824`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:343`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:35-36` |
 | auto-delete off with `-1` | `agentrun@7907382ed:packages/serve/src/daytona-api.ts:37` |
 
+## Kubernetes
+
+A Kubernetes computer is a pod in one namespace of a cluster, reached through the Kubernetes API alone
+(`src/kubernetes.ts`). It is a sandbox (exec, files, processes), network none, with no mount of the run's folder yet.
+
+### Object model
+
+- **pod** (default): a plain Pod per computer, named for the request (`computer-<12 hex>`). Its one container runs the
+  image (the `image` option, or the image a spec names), as root, with `automountServiceAccountToken: false`,
+  `enableServiceLinks: false`, `restartPolicy: Never`, the `runtimeClass` option (gVisor's, where the cluster has one),
+  the node selector and tolerations given, and `activeDeadlineSeconds` at the most a computer may live (24 hours by
+  default) as a backstop. Its main process only sleeps.
+- **claim** (`object: "claim"`, or a `warmPool` given): a `SandboxClaim` of kubernetes-sigs/agent-sandbox
+  (`extensions.agents.x-k8s.io/v1beta1`) whose `spec.warmPoolRef` names a `SandboxWarmPool`; the pool's
+  `SandboxTemplate`, the cluster operator's, gives the pod. `spec.lifecycle.shutdownTime` is the backstop. The claim
+  binds a `Sandbox` (`agents.x-k8s.io/v1beta1`), which names its pod by the `agents.x-k8s.io/pod-name` annotation. A
+  spec's image is the warm pool's name.
+
+Either way the daemon is a child: Kubernetes exec (through the API server, a WebSocket of `v5.channel.k8s.io`, else
+`v4`) is the root channel the shared adapter installs, starts and bridges the daemon through, and an upload is
+`head -c <size>` over exec, so it needs no end of stdin. Init starts with `--own-network`: its programs run as
+`2510:2510` in a network namespace with loopback alone. Under gVisor, whose root holds no `CAP_SYS_ADMIN`, init makes
+that namespace inside a user namespace. On a runc node whose kernel refuses that (Ubuntu's
+`apparmor_restrict_unprivileged_userns=1`), give the pod model `addCapabilities: "SYS_ADMIN,NET_ADMIN"`: init uses
+them to make the namespace and drops every capability before any program runs.
+
+Labels: a Kubernetes label value takes no colon, so the adapter's labels live in one annotation, `agentrun.labels`
+(JSON). Two real labels let a listing select: `agentrun.computer=1` and `agentrun.computer.name=<name>`. Lifetime is
+the janitor's (the deadline label, which `extend` patches under the object's `resourceVersion`), with init's own deadline
+and the backstop above.
+
+### Reaching the API (`auth`)
+
+| `auth` | What it reads |
+| --- | --- |
+| `kubeconfig` | `kubeconfig`, a kubeconfig as JSON (`kubectl config view --raw --minify --flatten -o json`), and its `context`: server, CA, and a token, token file or client certificate. An exec plugin is refused in words. |
+| `in-cluster` | The pod's service account (its token read again before each call) and `KUBERNETES_SERVICE_HOST`/`_PORT`. |
+| `token` | `apiUrl` and `token`, or `tokenFile`, read again before each call. |
+| `gke-adc` | `apiUrl` (GKE's endpoint or its DNS endpoint) and a Google access token from Application Default Credentials (`src/google-adc.ts`): a `service_account`, `authorized_user` or `external_account` file (`googleCredentials`, else `GOOGLE_APPLICATION_CREDENTIALS`), or the metadata server. Every token carries the `cloud-platform` and `userinfo.email` scopes: GKE names a Google caller by email only with the second. An external account's subject token comes from a file or a URL; an executable or AWS source is refused in words. |
+
+`caData` overrides the CA (PEM or base64 of PEM). The API URL must be https. REST and exec go over `node:https`, so a
+cluster's own CA and a client certificate work with no dependency. A library caller can give `tokenSource` instead.
+
+### Errors
+
+Every failure names the method, the path and the status, in the API server's own words. 401 and 403 are `denied` (and
+a refused create says which RBAC verbs it needs), a ResourceQuota's 403 is `limit`, 404 `not_found`, 409 `exists`, 400
+and 422 `invalid`. A 429, a 5xx, a call that did not answer in time, and an API that could not be reached carry
+`transient: true` (`ComputerError.transient`): serve's computer failover follows those and nothing else. A pod waiting on
+`ImagePullBackOff`, `ErrImagePull`, `InvalidImageName` or a container config error reads `failed`, in its words, so
+create gives up at once rather than at its bound.
+
+### Settings
+
+Serve's keys, every one optional: `KUBERNETES_AUTH`, `KUBERNETES_API_URL`, `KUBERNETES_CA_DATA`, `KUBERNETES_TOKEN`,
+`KUBERNETES_TOKEN_FILE`, `KUBERNETES_KUBECONFIG`, `KUBERNETES_CONTEXT`, `KUBERNETES_NAMESPACE`, `KUBERNETES_OBJECT`,
+`KUBERNETES_WARM_POOL`, `KUBERNETES_RUNTIME_CLASS`, `KUBERNETES_NODE_SELECTOR` and `KUBERNETES_TOLERATIONS` (JSON),
+`KUBERNETES_ADD_CAPABILITIES`, `KUBERNETES_GOOGLE_CREDENTIALS`. `AGENTRUN_KUBERNETES_IMAGE` names the image (pod) or
+warm pool (claim) every Kubernetes computer starts from. The server passes its own `KUBERNETES_SERVICE_HOST`,
+`KUBERNETES_SERVICE_PORT` and `GOOGLE_APPLICATION_CREDENTIALS` (the descriptor's `hostEnv`).
+
+What the provider's identity needs in its namespace: `create`, `get`, `list`, `delete` and `patch` on `pods` (pod model)
+or `sandboxclaims` (claim model); `get` on `sandboxes` and `pods` (claim model); `create` on `pods/exec`. The namespace
+must admit a root container (Pod Security `baseline`, not `restricted`). A NetworkPolicy that denies the pods'
+ingress and egress (`agentrun.computer=1`) is defense in depth: the programs' own network is loopback alone either way.
+
+### Archil
+
+Not yet: a Kubernetes computer takes no Archil mount, and check() refuses one in the descriptor's words. Under gVisor,
+root holds no `CAP_SYS_ADMIN`, so the Archil client's FUSE mount fails in the pod's own namespaces; a probe in a gVisor
+pool showed it works inside `unshare(USER|NS|NET)` (mount and `umount2`, `/dev/fuse` 0666), with no real Archil client's
+I/O tried. Making it work means the mount is made inside a user and mount namespace that init's programs share, which the
+daemon does not make yet.
+
+### Conformance on Kubernetes
+
+`npm run test:kubernetes -w @parcha/agentrun-computer` runs the suite when `AGENTRUN_COMPUTER_LIVE_KUBERNETES=1` and
+the module's settings are set (`src/conformance/kubernetes.ts`: `COMPUTER_KUBERNETES_KUBECONFIG`, a JSON kubeconfig
+file, never `KUBECONFIG`; `COMPUTER_KUBERNETES_IMAGE`; `COMPUTER_KUBERNETES_NAMESPACE`). A local kind cluster does:
+
+```sh
+kind create cluster --name agentrun-computer --kubeconfig ./kind.yaml
+kubectl --kubeconfig ./kind.yaml config view --raw --minify --flatten -o json > ./kind.json
+AGENTRUN_COMPUTER_LIVE_KUBERNETES=1 COMPUTER_KUBERNETES_KUBECONFIG=./kind.json COMPUTER_KUBERNETES_NAMESPACE=default \
+  COMPUTER_KUBERNETES_IMAGE=debian:bookworm-slim COMPUTER_KUBERNETES_ADD_CAPABILITIES=SYS_ADMIN,NET_ADMIN \
+  npm run test:kubernetes -w @parcha/agentrun-computer
+```
+
+On kind (Kubernetes 1.37, runc, an Ubuntu 24.04 host) every Core group passes, with Full `create-retried`,
+`create-after-release`, `release-older` and `lifetime.extend`, and the run leaves nothing behind.
+
 ## E2B
 
 ```ts

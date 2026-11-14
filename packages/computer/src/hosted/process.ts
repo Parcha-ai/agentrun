@@ -53,7 +53,8 @@ export function race<T>(host: Pick<MachineHost, "id" | "errorCode">, promise: Pr
 		return Promise.resolve(fail("aborted", `${what} was aborted`));
 	}
 	return new Promise((settle) => {
-		const timer = setTimeout(() => done(fail("timeout", `${what} did not answer within ${seconds(ms)}`)), ms);
+		// A call that does not answer in time is the vendor's trouble, not the call's: transient.
+		const timer = setTimeout(() => done({ ok: false, error: { code: "timeout", message: `${what} did not answer within ${seconds(ms)}`, transient: true } }), ms);
 		const onAbort = () => done(fail("aborted", `${what} was aborted`));
 		signal?.addEventListener("abort", onAbort, { once: true });
 		let settled = false;

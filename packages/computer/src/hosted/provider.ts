@@ -59,7 +59,7 @@ import {
 	type ReleaseHow,
 	runLifetimeMs,
 } from "../provider.js";
-import { type ComputerError, ok, type Result } from "../result.js";
+import { type ComputerError, failAs, ok, type Result } from "../result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "../screen-watch.js";
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
@@ -642,13 +642,13 @@ export class HostedProvider implements ComputerProvider {
 					async (made) => void (made.ok ? await this.#kill(made.value.id) : await this.#deleteNamed(name)),
 					async () => void (await this.#deleteNamed(name)),
 				);
-				return this.#fail(code, `${message}; a machine it makes after this is deleted as it lands, and ${this.#label} ends it by ${deadline} either way`);
+				return failAs(created.error, `${message}; a machine it makes after this is deleted as it lands, and ${this.#label} ends it by ${deadline} either way`);
 			}
 			// A create the vendor refused made nothing. One that failed otherwise may have: it goes by its name.
 			if (["invalid", "denied", "limit", "not_found", "refused", "unauthorized", "exists"].includes(code)) return created;
 			this.#end(name);
 			const swept = await this.#deleteNamed(name);
-			return this.#fail(code, `${this.#label} did not create the machine: ${message}${swept}`);
+			return failAs(created.error, `${this.#label} did not create the machine: ${message}${swept}`);
 		}
 		this.#requests.made(name);
 		return ok({ ref: { id: created.value.id, name }, made: { deadline, maxDeadline, labels, daemon, sha256, commands, user, ...(runtime === undefined ? {} : { runtime }) } });

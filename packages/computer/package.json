@@ -7,7 +7,8 @@
     "computer",
     "sandbox",
     "docker",
-    "daytona"
+    "daytona",
+    "kubernetes"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -37,6 +38,10 @@
     "./daytona": {
       "types": "./dist/daytona.d.ts",
       "default": "./dist/daytona.js"
+    },
+    "./kubernetes": {
+      "types": "./dist/kubernetes.d.ts",
+      "default": "./dist/kubernetes.js"
     },
     "./modal": {
       "types": "./dist/modal.d.ts",
@@ -101,6 +106,7 @@
     "test:daytona": "node --test --test-timeout=1800000 test/daytona/*.test.mjs",
     "test:modal": "node --test --test-timeout=1800000 test/modal/*.test.mjs",
     "test:e2b": "node --test --test-timeout=1800000 test/e2b/*.test.mjs",
+    "test:kubernetes": "node --test --test-timeout=1800000 test/kubernetes/*.test.mjs",
     "conformance": "node dist/conformance/cli.js"
   },
   "repository": {
