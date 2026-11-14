@@ -1148,18 +1148,12 @@ def notes_setup_folder(t, setup):
         t.run_exec(["/usr/bin/osascript", "-e", REMOVE_FOLDERS, setup], "remove the setup folder")
 
 
-def notes_probe(t, when):
-    """A one-off look at Notes' settings on CI (removed before merge): what its zoom keeps."""
-    done = subprocess.run(["/usr/bin/defaults", "read", "com.apple.Notes"], capture_output=True, text=True, timeout=30)
-    print(f"    probe {when}: {done.returncode}\n{done.stdout[-4000:]}", flush=True)
-
-
-# Notes' window and zoom for the movie. Its window (1000 by 660 points on CI's 1024 by 737 screen) is drawn at 1.31x, so its
-# 13-point body text read about 17 px tall against TextEdit's 30-point Menlo at 2x. A window 920 by 430 points is drawn
-# at 2x, and View > Zoom In (⇧⌘.) NOTES_ZOOM times brings the body text to TextEdit's size. Both are put back by the
-# teardown, live (Actual Size, ⇧⌘0, and the window's old bounds), so Notes keeps them as they were when it quits.
+# Notes' window for the movie. Its own (1000 by 660 points on CI's 1024 by 737 screen) is drawn at 1.31x on the movie's
+# 1080p frame, its body text smaller than TextEdit's. A window 920 by 430 points is drawn at 2x, as TextEdit's is: the
+# two read alike. The teardown puts the old bounds back, live, so Notes keeps them as they were when it quits (it saves
+# its window frame as it changes). Zoom In (⇧⌘.) is no help here: Notes enables it only in front, and the task leaves
+# Notes in the background.
 NOTES_WINDOW = (920, 430)
-NOTES_ZOOM = 4
 NOTES_BOUNDS = """on run argv
   tell application "Notes"
     if (count of argv) is 4 then set bounds of front window to {(item 1 of argv) as integer, (item 2 of argv) as integer, (item 3 of argv) as integer, (item 4 of argv) as integer}
@@ -1169,29 +1163,14 @@ NOTES_BOUNDS = """on run argv
 end run"""
 
 
-def notes_key(c, chord):
-    """One chord to Notes' main window (a menu item's, which the driver presses when Notes is in the background)."""
-    reply = c.call("ui.act", {"target": {"app": "com.apple.Notes"}, "steps": [{"key": chord}]})
-    step = ((reply.get("result") or {}).get("steps") or [{}])[0]
-    if "error" in reply or "error" in step:
-        raise Failed(f"Notes {chord}: {(reply.get('error') or step.get('error') or {}).get('message')}")
-
-
 def notes_look(t):
-    """With --movie, Notes' window sized and its notes zoomed for the movie (NOTES_WINDOW, NOTES_ZOOM), each undone by
-    the teardown."""
+    """With --movie, Notes' window sized for the movie (NOTES_WINDOW), put back by the teardown."""
     if not t.rec:
         return
     old = [int(n) for n in osa(t.c, NOTES_BOUNDS).split()]
-    t.undo.append(("put back Notes' window", lambda c: osa(c, NOTES_BOUNDS, *map(str, old))))
+    t.undo.append(("put back Notes' window", lambda c: print(f"    Notes' window back to {osa(c, NOTES_BOUNDS, *map(str, old)).strip()}", flush=True)))
     left, top = old[0], old[1]
     print(f"    Notes' window {old} -> {osa(t.c, NOTES_BOUNDS, str(left), str(top), str(left + NOTES_WINDOW[0]), str(top + NOTES_WINDOW[1])).strip()}", flush=True)
-    if CI:
-        notes_probe(t, "before the zoom")
-    t.undo.append(("put back Notes' zoom (Actual Size)", lambda c: notes_key(c, "super+shift+0")))
-    t.act([{"key": "super+shift+."}] * NOTES_ZOOM, f"zoom Notes in {NOTES_ZOOM} times (View > Zoom In)")
-    if CI:
-        notes_probe(t, "after the zoom")
 
 
 def notes_new_note(t):
