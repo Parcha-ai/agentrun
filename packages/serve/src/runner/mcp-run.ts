@@ -21,7 +21,7 @@ import { mcpGateway, type McpGatewayOptions } from "../mcp-gateway.js";
 import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store, TriggerSettings } from "../store/index.js";
-import { type ApprovalPrice, mcpToolName } from "../tool-gate.js";
+import { type ApprovalPrice, mcpToolName, type ToolEffect, toolEffect } from "../tool-gate.js";
 import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
 import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
@@ -76,6 +76,9 @@ export interface ClaimMcp {
   catalogOf(tool: string): string | undefined;
   /** What an asked call of a pinned tool costs on its card (main's: its price, else "not metered"); undefined otherwise. */
   priceOf(name: string): ApprovalPrice | undefined;
+  /** A pinned tool's effect (`mcp:<server>/<tool>`), by its annotations as the pin holds them (tool-gate.ts toolEffect):
+   *  what the gate's "allow reads" and a destructive call's card read; never a later listing. Undefined for any other. */
+  effectOf(name: string): ToolEffect | undefined;
   /** The claim step's credentials opened again on the same pin (an expired OAuth token refreshed), then the claim
    *  confirmed: before a resumed loop's next model request. */
   fresh(): Promise<void>;
@@ -164,6 +167,12 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       const pinned = parsed && Object.hasOwn(pin, parsed[1]!) ? pin[parsed[1]!] : undefined;
       if (!pinned?.tools.some((tool) => tool.name === parsed![2])) return undefined;
       return pinned.prices && Object.hasOwn(pinned.prices, parsed![2]!) ? pinned.prices[parsed![2]!]! : "not metered";
+    },
+    effectOf(name) {
+      const parsed = /^mcp:([^/]+)\/(.+)$/.exec(name);
+      const pinned = parsed && Object.hasOwn(pin, parsed[1]!) ? pin[parsed[1]!] : undefined;
+      const tool = pinned?.tools.find((one) => one.name === parsed![2]);
+      return tool ? toolEffect(tool.annotations) : undefined;
     },
     fresh: () => step.fresh(),
     release: () => held.abort(),

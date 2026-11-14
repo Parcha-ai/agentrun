@@ -64,7 +64,7 @@ export async function parkedMcpRun(t, { gate, hooks = quiet, state = "ended", me
   const ran = [];
   const said = [];
   const write = { name: WIRE, description: "Writes a note.", inputSchema: { type: "object" }, replay: "never", call: async (args) => (ran.push(args), { text: "the call ran" }) };
-  const mcp = { tools: [write], catalogOf: (name) => (name === WIRE ? CATALOG : undefined), priceOf: (name) => (name === CATALOG ? "not metered" : undefined), fresh: async () => {}, release: () => {} };
+  const mcp = { tools: [write], catalogOf: (name) => (name === WIRE ? CATALOG : undefined), priceOf: (name) => (name === CATALOG ? "not metered" : undefined), effectOf: (name) => (name === CATALOG ? "write" : undefined), fresh: async () => {}, release: () => {} };
   const createLoop = createAdapterLoop(() => ({
     adapter: parkingCli(said),
     session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },

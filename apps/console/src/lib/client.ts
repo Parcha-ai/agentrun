@@ -359,8 +359,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  password session alone may (a token is 403); the first answer wins, so the same one again is 204 and another 409
      *  `not_continuable` with `details: { reason: "already_answered", decision }`. `note`: with deny, the reason the model
      *  is told; sent only when given. */
-    answerApproval: (id: string, approvalId: string, decision: "allow" | "deny", note?: string) =>
-      call<unknown>("POST", `${run(id)}/approvals/${encodeURIComponent(approvalId)}`, { body: { decision, ...(note ? { note } : {}) } }),
+    /** `confirmed`: the second confirm an allow of a destructive call needs (`confirm_destructive`). */
+    answerApproval: (id: string, approvalId: string, decision: "allow" | "deny", note?: string, confirmed?: true) =>
+      call<unknown>("POST", `${run(id)}/approvals/${encodeURIComponent(approvalId)}`, { body: { decision, ...(note ? { note } : {}), ...(confirmed ? { confirm_destructive: true } : {}) } }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };
 }

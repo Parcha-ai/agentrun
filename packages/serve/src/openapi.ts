@@ -247,6 +247,8 @@ const MCP_SIGN_IN_CLIENT = closed({
 /** The private-network hosts an MCP server's authorization server may be on (mcp-private-hosts.ts). */
 const PRIVATE_HOSTS = closed({ hosts: { type: "array", maxItems: MAX_PRIVATE_HOSTS, items: { type: "string", minLength: 1, maxLength: 253 }, description: "Host names or IP addresses, as kept: lowercase, every final dot dropped, an IPv6 address in brackets." } });
 const PRIVATE_HOSTS_RULE = "A listed host may resolve to private-network addresses (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7), and still only over https; every address it resolves to is checked, and the request goes to an address checked. Loopback, link-local (cloud metadata among them), unspecified, multicast and broadcast addresses, this machine's and this server's own are refused whatever the list says. The server's sign-in and a runner's token refresh read the list at each use.";
+/** How a tool's annotations sort it (tool-gate.ts toolEffect). */
+const EFFECT_RULE = "read when its annotations say readOnlyHint true; else destructive only when they say destructiveHint true; else write (destructiveHint false or not given, or no annotations: not the MCP spec's default of destructiveHint true, under which every tool of a server that annotates nothing would read destructive). The server's own claims, as the listing the run pinned gave them, never a later listing.";
 /** A remote MCP server's tools as it listed them (mcp-probe.ts listServer), and the server as saved: never its credential. */
 const MCP_TOOL = {
   type: "object", additionalProperties: false, required: ["name", "input_schema"],
@@ -257,8 +259,11 @@ const MCP_TOOL = {
     annotations: { type: "object", description: "The server's own claims about the tool (read-only, destructive, and so on): the server's word, not checked." },
     grantable: { const: false, description: "Present, and false, on a known meta tool: one that runs other actions by name (Composio's COMPOSIO_MULTI_EXECUTE_TOOL, Klavis Strata's execute_action, Zapier's execute actions, Arcade's UseTool, Docker's mcp-exec, Cloudflare's portal_execute and code mode). A grant of it could not name the real action, so none is granted: a save that grants it is 422 with `reason`, and a run that pinned one is refused at its launch. Absent on every other tool.", "x-agentrun-serve": "mcpservers/1" },
     reason: { type: "string", description: "Beside `grantable: false`: why the tool can't be granted.", "x-agentrun-serve": "mcpservers/1" },
+    effect: { enum: ["read", "write", "destructive"], description: `On a saved server's read: what the tool does by its annotations, ${EFFECT_RULE} A read tool runs with no one asked under the server's \`allow_reads\`; allowing a destructive one's call takes \`confirm_destructive\`.`, "x-agentrun-serve": "allowreads/1" },
     grant_problems: { type: "object", additionalProperties: { type: "string" }, description: "On a saved server's read: why a grant of the tool is refused, where it would run, in the words the save's 422 says. `*` is a refusal on every harness (the server is named hands, or `mcp__<server>__<tool>` is past the 52 characters every harness's tool names share); a harness id is that harness alone, whose own MCP client would drop or retype the tool's schema. Absent when nothing refuses the grant. A known meta tool is `grantable: false` instead.", "x-agentrun-serve": "mcpservers/1" },
-    permission: { enum: [...PERMISSIONS], description: "On a saved server's read: the permission this server applies to the tool for an agent that sets none, under its tool settings (`mcp:<server>/<tool>`, else `mcp:<server>/*`, else `default_permission`). The same as an agent's read gives as its `default_permission` once it grants the tool. Absent on a preview.", "x-agentrun-serve": "mcpservers/1" },
+    permission: { enum: [...PERMISSIONS], description: "On a saved server's read: the permission this server applies to the tool for an agent that sets none, under its tool settings (`mcp:<server>/<tool>`, else `mcp:<server>/*` and its `allow_reads`, else `default_permission`). The same as an agent's read gives as its `default_permission` once it grants the tool. Absent on a preview.", "x-agentrun-serve": "mcpservers/1" },
+    allow_reads: { const: true, description: "On a saved server's read: present where `permission` is allow because of its server's `allow_reads` (a read-only tool that would ask), not a setting or a default. Absent where the tool's own setting (`mcp:<server>/<tool>`) or a deny decides it.", "x-agentrun-serve": "allowreads/1" },
+    fallback_allow_reads: { const: true, description: "On a saved server's read: present where, with no permission on the tool's own key (`mcp:<server>/<tool>`), its server's `allow_reads` would let it run with no one asked: the permission it falls back to is allow, whatever its own setting says now. Absent on a tool that is not read-only, with `allow_reads` off, or where a deny holds.", "x-agentrun-serve": "allowreads/1" },
     default_permission: { enum: [...PERMISSIONS], description: "On a saved server's read: the owner's default for the tool (ask, as for any catalog tool), the one that applies when the server's tool settings set none.", "x-agentrun-serve": "mcpservers/1" },
     permissions: { type: "array", items: { enum: [...PERMISSIONS] }, description: "On a saved server's read: the permissions the tool may be set to.", "x-agentrun-serve": "mcpservers/1" },
   },
@@ -352,6 +357,12 @@ const PIN_BROKEN = {
   description: "The server's own settings only (GET /settings/tools): this MCP tool's stored pin does not read, so the tool gate refuses every call of it. A PUT that keeps the key and sets no valid pin (this mark sent back, as served, or the pin left out) keeps it broken; a valid pin repairs it, and leaving the key out removes the setting. Refused in an agent's definition.tool_settings.",
   "x-agentrun-serve": "pins/1",
 };
+/** An MCP server's "allow reads" (tool-gate.ts readsLift): on its wildcard in the server's tool settings only. */
+const ALLOW_READS = {
+  type: "boolean",
+  description: `On an MCP server's wildcard (\`mcp:<server>/*\`) in this server's tool settings only (an agent's own, or any other key, is 422): true lets each of the server's read-only tools run with no one asked, where it would ask; false clears it. A tool is read-only when its annotations say readOnlyHint true; a tool's effect is ${EFFECT_RULE} It never lifts a deny (the server's or the agent's), the agent's own ask, a tool's own key (\`mcp:<server>/<tool>\`), a pin's refusal, or a write's or a destructive tool's ask.`,
+  "x-agentrun-serve": "allowreads/1",
+};
 /** The tool settings map (tool-plane.ts): the server's (/settings/tools) and an agent's own (definition.tool_settings),
  *  by settings key: each tool of the table, a catalog tool by name, an MCP server's wildcard; a provider only for the
  *  two that have a choice. */
@@ -365,7 +376,7 @@ const TOOL_SETTINGS = {
       permission: { ...PERMISSION, enum: [...permissionsOf(name)] },
     },
   }])),
-  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN } },
+  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN, allow_reads: ALLOW_READS } },
 };
 /** bash's policy in an agent's own tool settings (bash-read-only.ts). */
 const BASH_POLICY = {
@@ -375,6 +386,7 @@ const BASH_POLICY = {
 /** An agent's own tool settings (definition.tool_settings): the map, with bash's policy. */
 const AGENT_TOOL_SETTINGS = {
   ...TOOL_SETTINGS,
+  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN } },
   properties: { ...TOOL_SETTINGS.properties, bash: { ...TOOL_SETTINGS.properties.bash, properties: { ...TOOL_SETTINGS.properties.bash!.properties, policy: BASH_POLICY } } },
 };
 /** What a capability resolves to on each harness: `native`, `kernel`, `exa-keyless`, `parallel`, `browserbase`, or `unavailable: <reason>`. */
@@ -393,7 +405,7 @@ const WHY = {
 const TOOL_SETTINGS_ANSWER = {
   type: "object", required: [...PICKABLE], propertyNames: TOOL_SETTINGS.propertyNames,
   properties: Object.fromEntries(PICKABLE.map((name) => [name, { type: "object", additionalProperties: false, required: ["provider"], properties: { provider: { enum: [...PROVIDERS[name]] }, permission: PERMISSION } }])),
-  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN } },
+  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN, allow_reads: { const: true, description: "Set: this MCP server's read-only tools run with no one asked (see PUT's `allow_reads`).", "x-agentrun-serve": "allowreads/1" } } },
 };
 /** GET /agents/{agent_id}'s `tools`: each tool the agent's current revision grants, in capabilities.tools' order; one
  *  with a provider choice with the provider in force, where it came from, the server's (its default), and what it
@@ -2129,7 +2141,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "answerApproval", tags: ["runs"], summary: "Answer a tool call that waits for the owner's approval",
       description: "A tool set to ask parks its run at each call: status input_required, state waiting, and its view's and its summary's pending (kind approval) naming the call; a timeline row of kind tool_approval_requested follows the call's own rows (its call's, and its result's once it ran), then a row with what came of the answer. allow runs the call once, and the session goes on with its result; deny answers the call with the refusal, the note as its reason. The first answer wins: the same answer again is 204, another 409 not_continuable with details {reason: already_answered, decision}. A cancel of the run marks the call canceled, and a stop withdraws it. A person's message while it waits declines it, with the message as the reason: the run goes on in one turn with the refusal and their words, its row reads `Declined by your message`, their words show as their own message row between the approval row and the outcome, and a later answer is 409 with details.decision deny. Only the owner's password session answers, on the page's own origin with a JSON body: a bearer token is 403 forbidden, since a run's process, an agent's MCP client or a script may hold one.",
       parameters: [ref("parameters/RunId"), { name: "approval_id", in: "path", required: true, description: "The run's pending.id.", schema: { type: "string" } }],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["decision"], properties: { decision: { enum: ["allow", "deny"] }, note: { type: "string", maxLength: 2000, description: "Why: with deny, the refusal's reason the model is told." } } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["decision"], properties: { decision: { enum: ["allow", "deny"] }, note: { type: "string", maxLength: 2000, description: "Why: with deny, the refusal's reason the model is told." }, confirm_destructive: { const: true, description: "The second confirm an allow of a destructive call needs (its pending's `destructive`): without it that allow is 422 on `confirm_destructive`, reason `missing`, and the call still waits. A deny needs none.", "x-agentrun-serve": "allowreads/1" } } } } } },
       responses: { "204": { description: "Answered: the run goes on." }, ...errors(400, 401, 403, 404, 409, 415, 422, 429, 500) },
       "x-agentrun-serve": "approvals/1",
     },
@@ -2399,6 +2411,7 @@ const PENDING: Json = {
         args_preview: { type: "string", maxLength: ARGS_PREVIEW_BYTES, description: `The call's arguments as JSON, cut at ${ARGS_PREVIEW_BYTES} bytes.` },
         requested_at: { type: "string", format: "date-time" },
         price: { oneOf: [{ type: "number", minimum: 0 }, { const: "not metered" }], description: "What the call costs, in USD, where its tool declares a price; \"not metered\" for an unpriced MCP call. Absent when the tool names none." },
+        destructive: { const: true, description: `Present on an MCP tool's call that is destructive by the annotations the run pinned (destructiveHint true, readOnlyHint not true), and on a call whose allow lets such a tool run (a learned workflow's, its card naming the tool in \`mcp_calls\`): its allow needs \`confirm_destructive: true\`. Absent on every other call.`, "x-agentrun-serve": "allowreads/1" },
       },
       description: "A tool call set to ask waits for the owner's approval (status input_required, state waiting): POST /runs/{run_id}/approvals/{id} answers it.",
       "x-agentrun-serve": "approvals/1",

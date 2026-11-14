@@ -1,10 +1,11 @@
-import { Fragment, type ReactNode, useEffect, useRef } from "react";
+import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Chip, type ChipTone } from "@/components/ui/chip";
 import { HARNESS_ORDER, issuesFor, PIN_BROKEN, PIN_HOLDS, pinLine, providerHelp, providerLabel, resolution, DENY_ONLY, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 import { Picker } from "@/components/ui/picker";
 import type { Agent } from "@/lib/agentForm";
-import { grantOf, type McpServer } from "@/lib/mcp";
+import { grantOf, type McpServer, type ToolEffect } from "@/lib/mcp";
 import type { Permission, ToolSetting, ToolSettings } from "@/lib/v2";
 
 /** One row of a tools table: a tool, with its provider choice (`choice`) where it has one and its permission (`gate`)
@@ -30,6 +31,14 @@ export function PinNote({ setting, label = "Pinned", also = false }: { setting?:
   return <p className="max-w-[640px] text-small text-muted-foreground" role="note"><span className="text-foreground">{label}:</span> {pinLine(setting.pin)}. {PIN_HOLDS}{also ? " This server pins it too; both hold." : ""}</p>;
 }
 
+/** An MCP tool's effect as its server's annotations say it: the mark beside its name, and what the mark means. */
+const EFFECT: Record<ToolEffect, [ChipTone, string]> = {
+  read: ["info", "Read-only, its server says: under Allow reads it runs without asking."],
+  write: ["warning", "Not read-only, and not marked destructive by its server: it keeps its permission."],
+  destructive: ["error", "May delete or overwrite, its server says: allowing it takes a second click."],
+};
+export const EffectMark = ({ effect }: { effect: ToolEffect }) => <span data-effect={effect}><Chip tone={EFFECT[effect][0]} title={EFFECT[effect][1]}>{effect}</Chip></span>;
+
 /** Said once above a table where ask can't be answered: accounts off. */
 export const ASK_OFF = "Ask is off on this server: approving a call takes the owner's password sign-in, and this server runs with accounts off.";
 
@@ -40,9 +49,17 @@ export const ASK_OFF = "Ask is off on this server: approving a call takes the ow
  *  server's for an agent's) is marked; a provider's row can be reset, a permission goes back by choosing its default.
  *  Ask, where it can't be answered here (`ask_needs`), is offered disabled, with why. `refused`: whether a row's tool is
  *  refused by the server's deny, which holds for every agent (SERVER_DENY, said under it); `locked`, whether that also
- *  holds its permission at deny here (an agent's table: its own setting holds nothing over it). */
-export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, refused = () => false, locked = false, unattended = false, noteOf, onEdit }: {
+ *  holds its permission at deny here (an agent's table: its own setting holds nothing over it). An MCP tool's row may
+ *  carry its effect's mark (`effectOf`), a line under its name (`detailOf`), and a shorter name (`labelOf`); setting one
+ *  that `confirmAllowOf` names (a destructive tool) to allow asks again in place, and only "Allow without asking" saves it.
+ *  `fallbackWordOf`: where a row's fallback is not its default, what it is instead ("allow reads"), said in its place. */
+export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, refused = () => false, locked = false, unattended = false, noteOf, labelOf, detailOf, effectOf, confirmAllowOf = () => false, fallbackWordOf, onEdit }: {
   label: string;
+  fallbackWordOf?: (name: string) => string | undefined;
+  labelOf?: (name: string) => ReactNode;
+  detailOf?: (name: string) => ReactNode;
+  effectOf?: (name: string) => ToolEffect | undefined;
+  confirmAllowOf?: (name: string) => boolean;
   /** The agent never asks (its approvals): a tool whose permission is ask runs without asking, and says so. */
   unattended?: boolean;
   rows: ToolRow[];
@@ -60,6 +77,8 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
    *  saved (a read-modify-write), so every other key and field is written back as it was. */
   onEdit: (edit: (current: ToolSettings) => ToolSettings) => void;
 }) {
+  // The destructive tool whose allow waits on its second click.
+  const [confirming, setConfirming] = useState<string | null>(null);
   const providers = rows.some((r) => r.choice);
   const permissions = rows.some((r) => r.gate);
   const askOff = rows.some((r) => r.gate?.ask_needs === "password");
@@ -88,16 +107,23 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
               const denied = gate !== undefined && refused(name, chosen);
               const held = denied && locked;
               const permission = held ? "deny" : chosen;
+              const setPermission = (next: Permission) => onEdit((current) => withPermission(current, name, next, gateFallback));
+              const effect = effectOf?.(name);
+              const fallbackWord = fallbackWordOf?.(name) ?? "default";
+              const detail = detailOf?.(name);
               return (
                 <Fragment key={name}>
                   <tr data-tool={name} data-set={set || permissionSet ? "" : undefined} className="border-b align-top last:border-b-0">
-                    <td className="px-3 py-2.5 font-mono text-body">{name}</td>
+                    <td className="px-3 py-2.5 font-mono text-body">
+                      <span className="flex flex-wrap items-center gap-2">{labelOf?.(name) ?? name}{effect && <EffectMark effect={effect} />}</span>
+                      {detail ? <span data-tool-detail className="mt-0.5 block text-small text-muted-foreground">{detail}</span> : null}
+                    </td>
                     {permissions && <td className="px-3 py-2">
                       {gate ? <>
-                        <Picker small label={`${name} permission`} value={permission} disabled={busy || held} onChange={(v) => { const chosen = v as Permission; onEdit((current) => withPermission(current, name, chosen, gateFallback)); }}
-                          className={cn("w-36", permissionSet && "border-primary text-primary")}
-                          options={gate.permissions.map((p) => ({ value: p, label: `${p}${p === gateFallback ? " (default)" : ""}`, ...(p === "ask" && gate.ask_needs === "password" && !unattended ? { disabled: true, title: "No one can approve a call here: it takes the owner's password sign-in." } : {}) }))} />
-                        {permissionSet && !held && <span className="mt-1 block font-mono text-label text-muted-foreground">default: {gateFallback}</span>}
+                        <Picker small label={`${name} permission`} value={permission} disabled={busy || held} onChange={(v) => { const next = v as Permission; if (next === "allow" && next !== permission && confirmAllowOf(name)) setConfirming(name); else setPermission(next); }}
+                          className={cn(fallbackWordOf ? "w-48" : "w-36", permissionSet && "border-primary text-primary")}
+                          options={gate.permissions.map((p) => ({ value: p, label: `${p}${p === gateFallback ? ` (${fallbackWord})` : ""}`, ...(p === "ask" && gate.ask_needs === "password" && !unattended ? { disabled: true, title: "No one can approve a call here: it takes the owner's password sign-in." } : {}) }))} />
+                        {permissionSet && !held && <span className="mt-1 block font-mono text-label text-muted-foreground">default: {gateFallback}{fallbackWord === "default" ? "" : ` (${fallbackWord})`}</span>}
                         {denied && <span className="mt-1 block max-w-[260px] text-label text-warning-text">{SERVER_DENY}</span>}
                         {permission === "deny" && <span className="mt-1 block max-w-[260px] text-label text-muted-foreground">{DENY_ONLY}</span>}
                         {permission === "ask" && unattended && !denied && <span className="mt-1 block max-w-[220px] text-label text-warning-text">Runs without asking: Never ask is on.</span>}
@@ -118,6 +144,9 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                       {set && <Button size="sm" variant="ghost" disabled={busy} aria-label={`Reset ${name} to its default`} onClick={() => pick(undefined)}>Reset</Button>}
                     </td>
                   </tr>
+                  {confirming === name && <tr><td colSpan={heads.length + 1} className="px-3 pb-2.5">
+                    <ConfirmAllow name={name} keep={permission === "ask" ? "Keep asking" : "Cancel"} onAllow={() => { setConfirming(null); setPermission("allow"); }} onKeep={() => setConfirming(null)} />
+                  </td></tr>}
                   {noteOf?.(name) ? <tr data-note={name}><td colSpan={heads.length + 1} className="px-3 pb-2.5">{noteOf(name)}</td></tr> : null}
                   {issues[name]?.length ? (
                     <tr><td colSpan={heads.length + 1} className="px-3 pb-2.5">{issues[name].map((m) => <p key={m} className="font-mono text-small text-destructive-text" role="alert">{m}</p>)}</td></tr>
@@ -129,6 +158,21 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
         </table>
       </div>
     </>
+  );
+}
+
+/** The second click setting a destructive tool to allow takes, asked in place: what it lets through, then Keep (where the
+ *  keyboard starts) and "Allow without asking". Esc keeps it as it was. */
+function ConfirmAllow({ name, keep, onAllow, onKeep }: { name: string; keep: string; onAllow: () => void; onKeep: () => void }) {
+  const back = useRef<HTMLButtonElement>(null);
+  useEffect(() => { back.current?.focus(); }, []);
+  return (
+    <div role="alertdialog" aria-label={`Allow ${name} without asking?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onKeep(); } }}
+      className="flex flex-wrap items-center gap-3 border border-destructive/50 bg-card px-3 py-2.5">
+      <p className="min-w-0 flex-1 text-body"><span className="font-semibold">Allow a destructive tool?</span> Its server marks <span className="break-all font-mono">{name}</span> as one that may delete or overwrite: every call would run with no one asked.</p>
+      <Button ref={back} type="button" size="sm" variant="ghost" onClick={onKeep}>{keep}</Button>
+      <Button type="button" size="sm" variant="destructive" onClick={onAllow}>Allow without asking</Button>
+    </div>
   );
 }
 
@@ -224,6 +268,8 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
           wait, so the server refuses the start (its asks blocker, runnable.ts), in the same words. */}
       <p className="-mt-1 mb-2 text-small text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : unattended ? "Never ask is on: a tool on ask runs without waiting for you. A tool set to deny still holds." : "A tool on ask makes the run wait for your approval at each call."}</p>
       <ToolTable label="This agent's tool settings" unattended={unattended} rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
+        // An MCP tool's effect as its server's read marks it; setting a destructive one to allow takes a second click.
+        effectOf={(name) => listedTool(name)?.effect} confirmAllowOf={(name) => listedTool(name)?.effect === "destructive"}
         // A pin: the agent's own, the server's beside it where it pins the tool too; the server's alone where only it does.
         noteOf={(name) => {
           const own = value[name];

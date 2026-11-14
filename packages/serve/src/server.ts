@@ -122,7 +122,7 @@ import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
-import { permissionFrom } from "./tool-gate.js";
+import { permissionFrom, toolEffect } from "./tool-gate.js";
 import { isMcpWildcard, mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
@@ -2799,7 +2799,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
         // A tool of bash's family the agent's computer gives no shell for reads unavailable (runShellOf).
         const revision = entry.revision as unknown as Revision | undefined;
-        const tools = revision ? agentTools(env, settings.get(), await toolingOf(revision), caps.tools.map((tool) => tool.name), await shellOfRevision(revision)) : [];
+        const tooling = revision ? await toolingOf(revision) : undefined;
+        // An MCP tool's effect, by its saved server's listing now (mcp-servers-store.ts): what "allow reads" reads.
+        const listed = tooling?.tools.some((name) => mcpToolOf(name)) ? new Map((await store.mcp.servers()).map((row) => [row.name, (row.tools ?? []) as { name: string; annotations?: unknown }[]])) : undefined;
+        const effectOf = (name: string) => {
+          const parsed = mcpToolOf(name);
+          const tool = parsed && listed?.get(parsed.server)?.find((one) => one.name === parsed.tool);
+          return tool ? toolEffect(tool.annotations) : undefined;
+        };
+        const tools = revision && tooling ? agentTools(env, settings.get(), tooling, caps.tools.map((tool) => tool.name), await shellOfRevision(revision), effectOf) : [];
         return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), tools }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
@@ -2956,11 +2964,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The owner's answer to a tool call that waits for approval (tool-gate.ts): the first answer wins.
         const run = await needRun(id);
         const body = await bodyOf(req);
-        const issues: InputIssue[] = Object.keys(body).filter((k) => k !== "decision" && k !== "note").map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
+        const issues: InputIssue[] = Object.keys(body).filter((k) => k !== "decision" && k !== "note" && k !== "confirm_destructive").map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
+        if (body.confirm_destructive !== undefined && body.confirm_destructive !== true) issues.push({ field: "confirm_destructive", reason: "wrong_type", message: "confirm_destructive is true when sent: the second confirm of a destructive call's allow" });
         if (body.decision !== "allow" && body.decision !== "deny") issues.push({ field: "decision", reason: body.decision === undefined ? "missing" : "not_an_option", message: "decision is allow or deny" });
         if (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 2000)) issues.push({ field: "note", reason: "wrong_type", message: "note is a string of at most 2000 characters" });
         if (issues.length) throw invalid(issues);
-        await approve(store, run, decodeURIComponent(second!), body.decision as "allow" | "deny", typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined);
+        await approve(store, run, decodeURIComponent(second!), body.decision as "allow" | "deny", typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined, body.confirm_destructive === true);
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
       }

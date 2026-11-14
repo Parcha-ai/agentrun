@@ -22,6 +22,7 @@ import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type Sour
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
+import { toolEffect } from "./tool-gate.js";
 import { HARNESSES } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
 import { mcpDroppedWords, mcpGrantNameProblem, mcpToolName } from "./tool-names.js";
@@ -506,7 +507,12 @@ export class McpServersOverStore {
       ...listed,
       // Each priced tool's price in USD a call, as the owner saved them, on every read.
       ...(prices && Object.keys(prices).length ? { prices } : {}),
-      tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(mcpToolName(name, tool.name), settings), ...grantProblemsOf(this.env, name, tool) })),
+      // Each tool's effect by its annotations as listed now (toolEffect), and its permission under them: what a run pinned
+      // from this listing gets. A run already going keeps the marks its own pin holds.
+      tools: listed.tools.map((tool) => {
+        const effect = toolEffect(tool.annotations);
+        return { ...tool, effect, ...serverGate(mcpToolName(name, tool.name), settings, effect), ...grantProblemsOf(this.env, name, tool) };
+      }),
       ...(unmetered.length ? { not_metered: unmetered } : {}),
       auth: { type: row.auth, ...(row.auth === "headers" || row.auth === "github_app" ? { headers: Object.keys((cred?.type === "headers" ? cred.headers : {}) as HeaderMap) } : {}) },
       credential: opened === null ? null : !cred ? ("unreadable" as const) : expired ? ("expired" as const) : ("sealed" as const),

@@ -141,7 +141,7 @@ export type State = "working" | "waiting" | "idle";
 
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
-export type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; resolved?: true };
+export type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; destructive?: true; resolved?: true };
 /** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
 /** `by`: "message", a deny a person's message gave while the call waited (Runs.message); "setting", the allow or deny the tool's setting gave an ask that waited (the tool set to allow or deny since it asked). */
 /** `superseded`: the answer a stop or a cancel overrode before the run's process acted on it, or the person's allow a deny set since overrode, kept as it was given. */
@@ -158,7 +158,7 @@ export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decisio
 // command names the call), so the card's id is the call's id. ---
 
 /** An `agentrun.ask` entry's data: the tool call the gate parked for a person, as the runner wrote it. */
-type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: number | "not metered" | null };
+type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: number | "not metered" | null; destructive?: true };
 /** An `agentrun.answer` entry's data: the person's answer the runner wrote, or a withdrawal when the run was stopped or
  *  cancelled while the call waited. */
 type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn" | "canceled"; answeredAt?: string; note?: string; by?: "message" | "setting"; superseded?: { decision: string; answeredAt?: string } };
@@ -185,6 +185,7 @@ export function asksOf(entries: readonly JournalEntry[]): Map<string, Approval> 
       args_json: JSON.stringify(d.args ?? {}) ?? "{}",
       requested_at: d.requestedAt,
       ...(typeof d.price === "number" || d.price === "not metered" ? { price: d.price } : {}),
+      ...(d.destructive === true ? { destructive: true as const } : {}),
       ...(answered.has(d.callId) ? { resolved: true as const } : {}),
     });
   }
@@ -469,7 +470,7 @@ export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
 /** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
 export const approvalOf = (run: Pick<RunView, "approvals" | "meta">, redact: (text: string) => string): PendingApproval | undefined => {
   const waiting = waitingApproval(run);
-  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
+  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}), ...(waiting.destructive ? { destructive: true as const } : {}) } : undefined;
 };
 /** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
  *  done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so
@@ -577,6 +578,8 @@ export interface RunMoment {
   readonly waitingApprovalId?: string;
   /** The tool calls this run has or had waiting for approval, by id (for the not-found refusal). */
   readonly approvalIds?: ReadonlySet<string>;
+  /** Those of them its pin marks destructive: an allow of one needs confirm_destructive (runs-over-store.ts approve). */
+  readonly destructiveIds?: ReadonlySet<string>;
   /** What is archived of it, when anything is: its agent, else the run itself. Archiving closes a run: it takes no message
    *  (runs-over-store.ts message). Absent when neither is. */
   readonly archived?: "run" | "agent";
@@ -619,7 +622,7 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
     // counted but not shown), or a question its turn ended on.
     waitsOnPerson: run.kind === "agentic" && (waiting !== undefined || pausedAt(run, { inFlight: false }) !== undefined || (status === "input_required" && state === "waiting")),
     ...(waiting ? { waitingApprovalId: waiting.id } : {}),
-    ...(run.approvals ? { approvalIds: new Set(run.approvals.keys()) } : {}),
+    ...(run.approvals ? { approvalIds: new Set(run.approvals.keys()), destructiveIds: new Set([...run.approvals.values()].filter((one) => one.destructive).map((one) => one.id)) } : {}),
     ...(answered ? { answeredApprovals: Object.fromEntries(Object.entries(answered).map(([id, a]) => [id, { decision: a.decision, ...(a.ended ? { ended: true as const } : {}) }])) } : {}),
   };
 }

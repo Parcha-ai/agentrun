@@ -1,13 +1,17 @@
 import { Plug } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
+import { ToolTable } from "@/components/ToolSettings";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { Banner } from "@/components/ui/banner";
 import { Input } from "@/components/ui/field";
+import { Switch } from "@/components/ui/switch";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
+import { ownSettings, type ToolChoice } from "@/lib/toolSettings";
+import type { Permission, ToolSettings } from "@/lib/v2";
 import { type ComposioTools, GITHUB_MCP_URL, type McpAdd, type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, type McpSource, PREVIEW_SCOPE_NOTE, signInFailure, SOURCE_LABEL } from "@/lib/mcp";
 
 type Problem = ReturnType<typeof mcpProblem>;
@@ -26,8 +30,15 @@ const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
  *  outcome an OAuth sign-in's way back names (`#/settings/mcp?server=&sign_in=`); `open` takes the browser to a sign-in. */
 /** `writable`: this session may type a credential (session.secrets_writable); `whyNot`, why not when it may not. */
 type Add = McpAdd;
-export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", open = (url) => location.assign(url) }: { v2: Client; signIn?: SignIn; add?: Add; writable: boolean; whyNot?: SecretsWhyNot; open?: (url: string) => void }) {
+/** `choices`: capabilities' tools with a provider choice, so a save of the server's tool settings sends no default
+ *  provider back as if picked. */
+export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", open = (url) => location.assign(url), choices = [] }: { v2: Client; signIn?: SignIn; add?: Add; writable: boolean; whyNot?: SecretsWhyNot; open?: (url: string) => void; choices?: readonly ToolChoice[] }) {
   const [servers, setServers] = useState<McpServer[] | null>(null);
+  // This server's tool settings (GET /v2/settings/tools): each saved server's Allow reads and its tools' permissions. Not
+  // read (a token without the right, an older server): the tools list without them.
+  const [settings, setSettings] = useState<ToolSettings | null>(null);
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const [settingsProblem, setSettingsProblem] = useState<{ server: string; problem: Problem } | null>(null);
   const [loadError, setLoadError] = useState<Problem | null>(null);
   // A template's Apply sent the person here to set up a server it needs: a Composio one opens the Composio form with its
   // toolkit and actions filled (the key is a credential, so only where this session may type one), any other the add form.
@@ -53,6 +64,19 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
     v2.listMcpServers().then((r) => { if (n === asked.current) { setServers(r.servers); setLoadError(null); } }, (e) => { if (n === asked.current) setLoadError(mcpProblem(e)); });
   };
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { v2.toolSettings().then(setSettings, () => setSettings(null)); }, [v2]);
+  // A change of one server's settings, saved as the Tools page saves: the map read as it is now, the change made to it,
+  // and every other key and field written back as it was (a PUT replaces the whole map). The servers are read again
+  // after it: each tool's permission in force is the server's word.
+  const saveSettings = async (server: string, edit: (current: ToolSettings) => ToolSettings) => {
+    setSettingsBusy(true); setSettingsProblem(null);
+    try {
+      const now = await v2.toolSettings();
+      setSettings(await v2.saveToolSettings(edit(ownSettings(now, choices))));
+      load();
+    } catch (e) { setSettingsProblem({ server, problem: mcpProblem(e) }); }
+    setSettingsBusy(false);
+  };
   // A template's setup link fills a name no saved server has: its own, else the first free `<name>-<n>`, so saving never
   // replaces a server of that name (an older one that matches no need, say). Chosen once the list is read, and kept for
   // that link: the server it saves is never counted against it.
@@ -96,7 +120,7 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
         {form && (!form.add || listed) && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}`} v2={v2} saved={form.saved} add={form.add && filled(form.add)} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {composio && (typeof composio !== "object" || listed) && <ComposioForm key={typeof composio === "object" ? addKey : "new"} v2={v2} add={typeof composio === "object" ? filled(composio) : undefined} onClose={() => setComposio(false)} onSaved={load} />}
         {servers && (servers.length
-          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} />)}</ul>
+          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} settings={settings} settingsBusy={settingsBusy} settingsProblem={settingsProblem?.server === s.name ? settingsProblem.problem : null} onSettings={(edit) => void saveSettings(s.name, edit)} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
         <PrivateHosts v2={v2} />
       </div>
@@ -108,7 +132,14 @@ const Said = ({ problem }: { problem: Problem }) => (
   <div role="alert"><p className="font-mono text-body text-destructive-text">{problem.text}</p>{problem.detail && <p className="mt-1 text-small text-muted-foreground">{problem.detail}</p>}</div>
 );
 
-function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: (problem?: Problem) => void; onChanged: () => void }) {
+/** Each tool's key in the tool settings (`mcp:<server>/<tool>`), and the server's wildcard. */
+const keyOf = (server: string, tool: string) => `mcp:${server}/${tool}`;
+const ALL_PERMISSIONS: Permission[] = ["allow", "ask", "deny"];
+
+function ServerRow({ v2, server: s, settings, settingsBusy, settingsProblem, onSettings, writable, signIn, onChange, onChanged }: {
+  v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: (problem?: Problem) => void; onChanged: () => void;
+  settings: ToolSettings | null; settingsBusy: boolean; settingsProblem: Problem | null; onSettings: (edit: (current: ToolSettings) => ToolSettings) => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [note, setNote] = useState<McpRefresh | null>(null);
@@ -128,9 +159,11 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
           <p className="mt-1.5 break-all font-mono text-small text-muted-foreground">{s.url}</p>
           {s.auth.type === "github_app" && <p className="mt-1 font-mono text-small text-muted-foreground">Signed with this server's GitHub App: a token narrowed to the run's repository is made for each run{s.auth.headers?.length ? ` · headers ${s.auth.headers.join(", ")}` : ""}</p>}
           {oauth && s.oauth &&<p className="mt-1 font-mono text-small text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.credential === "expired" ? " · sign-in expired: sign in again" : s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
+          {settings && <AllowReads server={s} settings={settings} busy={settingsBusy} onSettings={onSettings} />}
+          {settingsProblem && <div className="mt-2"><Said problem={settingsProblem} /></div>}
           <details className="mt-2">
             <summary className="cursor-pointer font-mono text-small">{s.tools.length} tool{s.tools.length === 1 ? "" : "s"}</summary>
-            <ul className="mt-1 space-y-0.5">{s.tools.map((t) => <li key={t.name} className="font-mono text-small">{t.name}{s.prices?.[t.name] !== undefined && <span className="text-muted-foreground"> · ${s.prices[t.name]} a call</span>}{s.not_metered?.includes(t.name) && <span className="text-muted-foreground"> · not metered</span>}</li>)}</ul>
+            <div className="mt-2"><ServerTools server={s} settings={settings} busy={settingsBusy} onSettings={onSettings} /></div>
           </details>
           {/* Its one secret ("mcp:<server>": its bearer token, its headers' values, or its sign-in), as every secret's row.
               Replace opens the server's form; a sign-in's has none: its Sign in is the write. */}
@@ -156,6 +189,61 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
       )}
       {problem && <div className="mt-3"><Said problem={problem} />{problem.needsClient && writable && <Button className="mt-2" size="sm" variant="primary" onClick={() => onChange(problem)}>Enter a Client ID</Button>}</div>}
     </li>
+  );
+}
+
+/** A saved server's Allow reads: one switch, saved at once on its wildcard (`mcp:<server>/*`'s allow_reads), that lets each
+ *  of its read-only tools run with no one asked. A deny, a tool's own setting and an agent's own ask still hold. */
+function AllowReads({ server: s, settings, busy, onSettings }: { server: McpServer; settings: ToolSettings; busy: boolean; onSettings: (edit: (current: ToolSettings) => ToolSettings) => void }) {
+  const wildcard = keyOf(s.name, "*");
+  const on = settings[wildcard]?.allow_reads === true;
+  const reads = s.tools.filter((t) => t.effect === "read").length;
+  const id = `allow-reads-${s.name}`;
+  const words = `${id}-words`;
+  const flip = (next: boolean) => onSettings((current) => {
+    const { [wildcard]: old, ...rest } = current;
+    const { allow_reads: _gone, ...kept } = old ?? {};
+    const now = next ? { ...kept, allow_reads: true as const } : kept;
+    return Object.keys(now).length ? { ...rest, [wildcard]: now } : rest;
+  });
+  return (
+    <div className="mt-2">
+      <div className="flex items-center gap-2">
+        <Switch checked={on} onChange={flip} busy={busy} labelledBy={id} />
+        <span id={id} className="caps text-small font-semibold">Allow reads</span>
+      </div>
+      <p id={words} className="mt-1 text-small text-muted-foreground">{reads} of {s.tools.length} tool{s.tools.length === 1 ? "" : "s"} read-only, as the server marks them: {on ? "they run without asking" : "on, they run without asking"}. Writes keep their permission.</p>
+    </div>
+  );
+}
+
+/** A saved server's tools, each with its effect's mark and what a call costs; and, where this server's tool settings
+ *  read, its permission here (`mcp:<server>/<tool>`), saved at once. A row's fallback is what applies with no setting of
+ *  its own: allow where the server's read says Allow reads would let it run with no setting of its own
+ *  (`fallback_allow_reads`, the server's word: never worked out here), named "allow reads", even while its own setting
+ *  asks, so a choice of allow removes that setting; else the server's wildcard, else the owner's default. A destructive tool's allow takes
+ *  a second click. */
+function ServerTools({ server: s, settings, busy, onSettings }: { server: McpServer; settings: ToolSettings | null; busy: boolean; onSettings: (edit: (current: ToolSettings) => ToolSettings) => void }) {
+  const wildcard = settings?.[keyOf(s.name, "*")];
+  const byKey = new Map(s.tools.map((t) => [keyOf(s.name, t.name), t]));
+  const rows = s.tools.map((t) => ({
+    name: keyOf(s.name, t.name),
+    ...(settings ? { gate: { name: keyOf(s.name, t.name), permission: t.permission ?? "ask", default_permission: t.default_permission ?? "ask", permissions: t.permissions?.length ? t.permissions : ALL_PERMISSIONS } } : {}),
+  }));
+  const detail = (tool: string) => {
+    const price = s.prices?.[tool];
+    return price !== undefined ? `$${price} a call` : s.not_metered?.includes(tool) ? "not metered" : null;
+  };
+  return (
+    <ToolTable label={`${s.name}'s tools`} rows={rows} settings={settings ?? {}} busy={busy} issues={{}}
+      fallbackOf={() => ""} resolvesOf={() => null} onEdit={onSettings}
+      labelOf={(name) => byKey.get(name)?.name ?? name}
+      detailOf={(name) => detail(byKey.get(name)?.name ?? "")}
+      effectOf={(name) => byKey.get(name)?.effect}
+      confirmAllowOf={(name) => byKey.get(name)?.effect === "destructive"}
+      refused={(_, permission) => permission === "deny"}
+      fallbackWordOf={(name) => (byKey.get(name)?.fallback_allow_reads ? "allow reads" : undefined)}
+      permissionFallbackOf={(g) => (byKey.get(g.name)?.fallback_allow_reads ? "allow" : wildcard?.permission ?? g.default_permission)} />
   );
 }
 
