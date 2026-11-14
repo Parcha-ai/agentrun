@@ -7,7 +7,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject } from "ajv/dist/2020.js";
-import { groupOf, type Json, type JsonObject } from "./wire.js";
+import { groupOf, type Json, type JsonObject, PROTOCOL_METHODS } from "./wire.js";
 
 export type Split = "dev" | "heldout";
 export type ParamSpec = { pick: (string | number | boolean | Record<string, string | number | boolean>)[] } | { int: [number, number] };
@@ -61,7 +61,10 @@ export interface Needs {
 	kind: string;
 	/** Groups the computer must have because the task can't be done without them; never which tools the agent uses. */
 	groups?: string[];
-	apps?: string[];
+	/** Each entry must be installed; a list is alternatives, any one will do. A precondition, read once per computer. */
+	apps?: (string | string[])[];
+	/** Probes (checks on the bench's channel) of what the computer must be able to do; the check's id names it. */
+	capabilities?: Check[];
 	osVersion?: string;
 }
 
@@ -77,6 +80,8 @@ export interface TaskSpec {
 	params?: Record<string, ParamSpec>;
 	setup?: Call[];
 	instruction: string;
+	/** deny: done through the UI; the agent gets no shell or exec, and the oracle only the agent's groups. Default allow. */
+	exec?: "allow" | "deny";
 	budget: Budget;
 	checks: Check[];
 	sufficient?: boolean;
@@ -95,7 +100,7 @@ export interface Task {
 	rubric?: string;
 	/** Every file of the folder by name, for {{file:NAME}}. */
 	files: Record<string, string>;
-	/** The groups the bench's own channel needs on every run: setup's, the checks' and teardown's. */
+	/** The groups the bench's own channel needs on every run: the capability probes', setup's, the checks' and teardown's. */
 	benchGroups: string[];
 	/** The groups the oracle needs besides, asked of a computer only when the oracle runs. */
 	oracleGroups: string[];
@@ -178,6 +183,8 @@ function folderSha(files: Record<string, string>): string {
 }
 
 const BUILTIN = new Set(["seed", "nonce"]);
+/** The groups an exec-deny task's oracle may use: the agent's own, so the oracle proves the path the agent must take. */
+const DENY_ORACLE_GROUPS: ReadonlySet<string> = new Set(["ui", "input", "screen", "apps"]);
 
 /** The rules the schema can't say: placeholders that name nothing, files that aren't there, ids twice, bad patterns. */
 function ruleProblems(spec: TaskSpec, files: Record<string, string>): string[] {
@@ -227,21 +234,44 @@ function ruleProblems(spec: TaskSpec, files: Record<string, string>): string[] {
 			problems.push(`${where}: ${(error as Error).message}`);
 		}
 	};
-	for (const check of spec.checks) {
+	// One set of rules for a check and a probe, which is written as a check.
+	const checkRules = (check: Check, label: string) => {
 		if (check.kind === "exec") {
-			matches(check.stdout, `check ${check.id} stdout`);
-			matches(check.stderr, `check ${check.id} stderr`);
+			matches(check.stdout, `${label} stdout`);
+			matches(check.stderr, `${label} stderr`);
 		} else if (check.kind === "file") {
-			matches(check.text, `check ${check.id} text`);
-			if (check.exists === false && check.text) problems.push(`check ${check.id}: a file that must not exist has no text to match`);
+			matches(check.text, `${label} text`);
+			if (check.exists === false && check.text) problems.push(`${label}: a file that must not exist has no text to match`);
 		} else if (check.kind === "ui") {
-			matches(check.find.name, `check ${check.id} find.name`);
-			matches(check.find.value, `check ${check.id} find.value`);
-			if (check.min !== undefined && check.max !== undefined && check.min > check.max) problems.push(`check ${check.id}: min is above max`);
-		} else if (check.kind === "answer") matches(check.text, `check ${check.id} text`);
+			matches(check.find.name, `${label} find.name`);
+			matches(check.find.value, `${label} find.value`);
+			if (check.min !== undefined && check.max !== undefined && check.min > check.max) problems.push(`${label}: min is above max`);
+		} else if (check.kind === "answer") matches(check.text, `${label} text`);
+	};
+	for (const check of spec.checks) checkRules(check, `check ${check.id}`);
+	const capabilities = spec.needs.capabilities ?? [];
+	const probeIds = capabilities.map((probe) => probe.id);
+	for (const id of new Set(probeIds.filter((id, i) => probeIds.indexOf(id) !== i))) problems.push(`capability ${id} is probed twice`);
+	for (const probe of capabilities) {
+		if (probe.kind === "answer") problems.push(`capability ${probe.id} is an answer check: a probe reads the computer, never an agent's answer`);
+		else checkRules(probe, `capability ${probe.id}`);
+		// A probe's verdict is remembered for every seed of the bench run, so it can't depend on one.
+		for (const name of placeholders(probe)) problems.push(`capability ${probe.id}: a probe is the same for every seed, so it holds no {{${name}}}`);
 	}
 	const calls = [...(spec.setup ?? []), ...(spec.teardown ?? []), ...(spec.oracle ?? [])];
 	for (const call of calls) if (call.exit && call.method !== "exec.run") problems.push(`${call.method}: exit is for exec.run only`);
+	for (const call of calls) {
+		if (PROTOCOL_METHODS.has(call.method)) continue;
+		const wire = call.method.startsWith("processes.") ? ` (the wire's are process.start, process.read, process.wait, ...: processes.start is code mode's name)` : "";
+		problems.push(`${call.method} is not a method of the computer protocol${wire}`);
+	}
+	if (spec.exec === "deny") {
+		(spec.oracle ?? []).forEach((call, i) => {
+			const group = groupOf(call.method);
+			if (call.method === "hello" || call.method === "ping" || (group !== undefined && DENY_ORACLE_GROUPS.has(group))) return;
+			problems.push(`exec deny: the oracle's call ${i + 1}, ${call.method}, is the ${group ?? "daemon"} group's; an exec-deny oracle uses only ui, input, screen and apps (apps.install excluded), the path the agent must take`);
+		});
+	}
 	if (spec.sufficient === false && spec.rubric === undefined && files["rubric.md"] === undefined) problems.push("a task whose checks are not sufficient needs a rubric for the grader");
 	return problems;
 }
@@ -280,7 +310,7 @@ export function loadTask(dir: string): Task {
 	const problems = ruleProblems({ ...spec, rubric: rubricName }, files);
 	if (problems.length > 0) throw new TaskError(where, problems);
 	const groupsOf = (groups: (string | undefined)[]) => [...new Set(groups.filter((g): g is string => g !== undefined))].sort();
-	const benchGroups = groupsOf([...[...(spec.setup ?? []), ...(spec.teardown ?? [])].map((call) => groupOf(call.method)), ...spec.checks.map(checkGroup)]);
+	const benchGroups = groupsOf([...[...(spec.setup ?? []), ...(spec.teardown ?? [])].map((call) => groupOf(call.method)), ...spec.checks.map(checkGroup), ...(spec.needs.capabilities ?? []).map(checkGroup)]);
 	const oracleGroups = groupsOf((spec.oracle ?? []).map((call) => groupOf(call.method))).filter((group) => !benchGroups.includes(group));
 	return { spec, dir: where, sha256: folderSha(files), rubric: rubricName ? files[rubricName] : undefined, files, benchGroups, oracleGroups };
 }

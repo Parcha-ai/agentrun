@@ -105,7 +105,7 @@ async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", 
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const record = { created: [], released: [], options: [], ...(existing ? { existing } : {}) };
-  const providers = Object.fromEntries(["docker", "e2b", "daytona", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}) })]));
+  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
   const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode, kinds, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}) });
@@ -298,13 +298,16 @@ test("a desktop whose setting names an image is made with that configuration's o
 });
 
 test("a sandbox's GPUs go into the spec its provider makes the computer with; GPUs its provider does not give are refused before anything is made", async () => {
-  // A GPU computer that takes the Archil mount (a GPU snapshot with root and the Archil client), in Mode 2.
-  const { record, run } = await claim({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: { DAYTONA_API_KEY: "dk" }, kinds: GPU_ARCHIL_KINDS });
+  // A GPU computer that takes the Archil mount (Modal's, once its FUSE mount is proven there), in Mode 2.
+  const MODAL_KEYS = { MODAL_TOKEN_ID: "mi", MODAL_TOKEN_SECRET: "ms" };
+  const { record, run } = await claim({ kind: "sandbox", provider: "modal", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: MODAL_KEYS, kinds: GPU_ARCHIL_KINDS });
   const answer = await run();
   assert.deepEqual(record.created[0].gpu, { type: "H100", count: 1 });
   assert.equal(record.created[0].mount?.kind !== undefined, true, "with the run's folder mounted beside them");
   await answer.release();
-  // A Daytona GPU computer takes no mount: in Mode 2 it is refused before anything is made, saying why and what to use.
-  assert.equal(await refusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: { DAYTONA_API_KEY: "dk" } }), "A Daytona GPU computer can't mount this run's folder: Daytona's GPU runtime gives it no /dev/fuse. Use a GPU computer from the library, or this sandbox without a GPU.");
+  // The registry's Modal GPU computer takes no mount yet: in Mode 2 it is refused before anything is made, saying why and what to use.
+  assert.equal(await refusal({ kind: "sandbox", provider: "modal", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: MODAL_KEYS }), "A Modal GPU computer can't mount this run's folder yet: Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279). Use a GPU computer from the library, or this sandbox without a GPU.");
+  // A Daytona sandbox takes no Archil mount at all, with GPUs or without: refused in Mode 2, saying why.
+  assert.equal(await refusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: { DAYTONA_API_KEY: "dk" } }), "A Daytona sandbox can't mount the run's folder from Archil (Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes): pick another sandbox for this agent's computer in Settings → Computers.");
   assert.match(await refusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
 });

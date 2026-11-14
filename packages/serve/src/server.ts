@@ -83,7 +83,7 @@ import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
 import { hostAddressesOnce, noHostAddresses, unionOf } from "./docker-host-addresses.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES } from "./cap.js";
-import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
+import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { bootSealKey, withSealKey } from "./seal-key.js";
@@ -98,11 +98,11 @@ import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
-import { MCP_AUTH_TYPES, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
+import { MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type ComposioControl, composioSave, composioTools } from "./composio-preset.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
+import { getMcpServer, listMcpServers } from "./mcp-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
-import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
@@ -747,7 +747,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       tool_keys: { routes: true, at_rest: "sealed" },
       /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
        *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. */
-      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...MCP_HARNESSES] },
+      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...HARNESSES] },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
@@ -970,18 +970,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // pins and credentials from the store at a run's claim (runner/mcp-claim.ts); this server hands a run no MCP source.
   let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[] }>();
   const refreshMcpMeta = async (): Promise<void> => {
-    mcpMeta = new Map((await store.mcp.servers()).map((row) => [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [] }]));
+    mcpMeta = new Map((await listMcpServers(store)).map((row) => [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [] }]));
   };
   await refreshMcpMeta();
   // Each saved server's tools in the harnesses' shape (the registry keeps input_schema; a bound tool takes inputSchema),
   // with whether each can be granted: a known meta tool can't (mcp-meta.ts).
   const mcpTools = (server: string) => {
     const saved = mcpMeta.get(server);
-    return saved?.tools.map((tool) => {
-      const meta = metaToolOf(saved.url, tool.name);
-      const bound = { name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), inputSchema: (tool.input_schema ?? {}) as Record<string, unknown>, ...(tool.annotations ? { annotations: tool.annotations as Record<string, unknown> } : {}) };
-      return meta ? { ...bound, grantable: false as const, reason: meta.reason } : bound;
-    });
+    return saved && marked(saved.url, { tools: saved.tools.map((tool) => ({ name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), inputSchema: (tool.input_schema ?? {}) as Record<string, unknown>, ...(tool.annotations ? { annotations: tool.annotations as Record<string, unknown> } : {}) })) }).tools;
   };
   // The server's tool settings, in the store: capabilities say what they resolve to, again after a PUT. load() reads them
   // once here.
@@ -1704,7 +1700,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
     const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
     // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
-    const rows = (body.tools ?? []).some(isMcpWildcard) ? await store.mcp.servers().catch(() => []) : [];
+    const rows = (body.tools ?? []).some(isMcpWildcard) ? await listMcpServers(store).catch(() => []) : [];
     const listed = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
     const gate = (name: string) => permissionFrom(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask");
     // `deniedBy`: where each deny was set (the agent's tool settings, the server's), which a refused draft's words name.
@@ -2097,7 +2093,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const handed = mcpAuthOf(mcp_auth, issues);
       const auth: Record<string, RunMcpAuth[string]> = {};
       for (const [server, headers] of Object.entries(handed ?? {})) {
-        const row = await store.mcp.server(server);
+        const row = await getMcpServer(store, server);
         if (row?.auth !== "per_run") issues.push({ field: `mcp_auth.${server}`, reason: "not_an_option", message: row ? `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` : `No MCP server ${server} is saved here.` });
         else auth[server] = { headers, origin: new URL(row.url).origin };
       }
@@ -2214,7 +2210,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
   function runBodyIssues(body: Json): InputIssue[] {
-    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "learning", "archil_disk", "repo", "hold", "hold_minutes"]);
+    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "learning", "archil_disk", "repo", "workflow_first", "hold", "hold_minutes"]);
     issues.push(...holdIssues(body));
     if (body.repo !== undefined && !(typeof body.repo === "string" && REPO_NAME.test(body.repo))) issues.push({ field: "repo", reason: "wrong_type", message: "repo is a GitHub repository as owner/name, one the agent is bound to" });
     if (body.archil_disk !== undefined) {
@@ -2229,6 +2225,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (body.max_cost_usd !== undefined && !(typeof body.max_cost_usd === "number" && body.max_cost_usd > 0 && Number.isFinite(body.max_cost_usd))) issues.push({ field: "max_cost_usd", reason: "wrong_type", message: "max_cost_usd is a number above 0" });
     if (body.cap_mode !== undefined && !(CAP_MODES as readonly unknown[]).includes(body.cap_mode)) issues.push({ field: "cap_mode", reason: "not_an_option", message: `cap_mode is one of ${CAP_MODES.join(", ")}` });
     if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
+    if (body.workflow_first !== undefined && typeof body.workflow_first !== "boolean") issues.push({ field: "workflow_first", reason: "wrong_type", message: "workflow_first is true or false" });
     if (body.learning !== undefined && body.learning !== RUN_LEARNING_USE) issues.push({ field: "learning", reason: "not_an_option", message: `learning is "${RUN_LEARNING_USE}" (the run starts from what its agent learned and keeps nothing), or absent (its agent's own)` });
     return issues;
   }
@@ -3313,7 +3310,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const read = await agentCostOverStore(store, id, limit);
         // Each workflow's name as the other learning reads show it: one that holds a secret or a sign-in's value is cut.
         const shown = await learningShown(id);
-        const cost = { ...read, runs: read.runs.map((run) => (run.workflow === null ? run : { ...run, workflow: shown.name(run.workflow) })) };
+        const cost = { ...read, runs: read.runs.map((run) => (run.workflow === null ? run : { ...run, workflow: shown.name(run.workflow) })), workflows: read.workflows.map((one) => ({ ...one, workflow: shown.name(one.workflow) })) };
         if (csv) {
           res.writeHead(200, { "content-type": "text/csv; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-disposition": `attachment; filename="${id}-cost-per-run.csv"` });
           return void res.end(costCsv(cost.runs));

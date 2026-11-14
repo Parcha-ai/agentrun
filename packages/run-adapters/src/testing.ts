@@ -137,7 +137,6 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
     get calls() { return stats.calls; },
     get opened() { return stats.opened; },
     get closed() { return stats.closed; },
-    capabilities: () => ({}),
     check: (spec) => [
       ...(spec.context === "fork" ? ["the faux harness cannot fork a session"] : []),
       ...(options.refuse?.(spec) ?? []),

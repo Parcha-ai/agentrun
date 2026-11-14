@@ -16,7 +16,7 @@ import { runBench } from "./runner.js";
 import type { Split, Task } from "./task.js";
 import { loadSuite, TaskError } from "./task.js";
 import { serveBackend } from "./serve.js";
-import { proofMarkdown, verifySuite } from "./verify.js";
+import { proofMarkdown, provedRight, type TaskProof, unverifiedPairs, verifySuite } from "./verify.js";
 
 const USAGE = `usage:
   computer-bench validate <suite>...
@@ -25,6 +25,7 @@ const USAGE = `usage:
   computer-bench run --suite <dir> --arms <arms.json> --out <dir> [--seeds 1,2,3] [--task id,...] [--split dev|heldout]
                      [--backend fake|serve --serve <url>] [--mode agent|null|oracle] [--grade auto|always|never]
                      [--judge anthropic:<model>|openrouter:<model>] [--parallel N] [--retries N]
+                     [--verified <verify.json>]   (only the task × seed pairs verify proved right)
   computer-bench report <out> [--split dev|heldout]`;
 
 class Usage extends Error {}
@@ -43,6 +44,7 @@ const OPTIONS = {
 	judge: { type: "string" },
 	parallel: { type: "string" },
 	retries: { type: "string" },
+	verified: { type: "string" },
 } as const;
 
 function need(value: string | undefined, name: string): string {
@@ -171,17 +173,58 @@ async function verify(values: Record<string, unknown>): Promise<number> {
 	writeFileSync(join(out, "verify.md"), markdown);
 	writeFileSync(join(out, "verify.json"), `${JSON.stringify(proofs, null, 2)}\n`);
 	process.stdout.write(markdown);
-	return proofs.every((proof) => proof.untouched === "fails" && (proof.solved === "passes" || proof.solved === "no oracle")) ? 0 : 1;
+	// A skipped task (the computer can't do it) is not a broken one.
+	return proofs.every((proof) => proof.skipped_because !== undefined || provedRight(proof)) ? 0 : 1;
+}
+
+/** What a verify.json entry lacks of a TaskProof, in words, or undefined when it has every field a run reads. */
+function proofProblem(proof: unknown): string | undefined {
+	if (typeof proof !== "object" || proof === null || Array.isArray(proof)) return "is not an object";
+	const p = proof as Record<string, unknown>;
+	const strings = (value: unknown) => Array.isArray(value) && value.every((one) => typeof one === "string");
+	if (typeof p.task !== "string") return "has no task id";
+	if (!Number.isInteger(p.seed)) return "has no integer seed";
+	if (!Number.isInteger(p.version)) return "has no task version";
+	if (typeof p.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(p.sha256)) return "has no task sha256";
+	if (typeof p.untouched !== "string" || typeof p.solved !== "string") return "has no untouched or solved state";
+	if (!strings(p.wrong) || !strings(p.skipped)) return "has no wrong or skipped list";
+	if (p.skipped_because !== undefined && typeof p.skipped_because !== "string") return "has a skipped_because that is not words";
+	return undefined;
+}
+
+/** --verified: the pairs verify did not prove right are refused, and the run says how many it left out. */
+function verifiedOf(path: string | undefined, tasks: readonly Task[], seeds: readonly number[]): ((task: string, seed: number) => string | undefined) | undefined {
+	if (path === undefined) return undefined;
+	let proofs: TaskProof[];
+	try {
+		proofs = JSON.parse(readFileSync(path, "utf8")) as TaskProof[];
+	} catch (error) {
+		throw new Usage(`--verified ${path} is not a verify.json: ${(error as Error).message}`);
+	}
+	if (!Array.isArray(proofs)) throw new Usage(`--verified ${path} is not a verify.json: it holds no list of proofs`);
+	proofs.forEach((proof, i) => {
+		const bad = proofProblem(proof);
+		if (bad) throw new Usage(`--verified ${path} is not a verify.json: its proof ${i + 1} ${bad}`);
+	});
+	const refuse = unverifiedPairs(proofs, tasks);
+	const out = tasks.flatMap((task) => seeds.map((seed) => refuse(task.spec.id, seed))).filter((why): why is string => why !== undefined);
+	const skipped = out.filter((why) => why.startsWith("skipped: ")).length;
+	process.stdout.write(`--verified left out ${out.length} of ${tasks.length * seeds.length} task × seed pairs (${out.length - skipped} not verified, ${skipped} skipped)\n`);
+	return refuse;
 }
 
 async function run(values: Record<string, unknown>): Promise<number> {
 	const suites = values.suite as string[] | undefined;
 	if (!suites?.length) throw new Usage("--suite is needed");
 	const out = need(values.out as string | undefined, "out");
+	const tasks = tasksOf(suites, values.task as string | undefined, values.split as string | undefined);
+	const seeds = seedsOf(values.seeds as string | undefined);
+	const refuse = verifiedOf(values.verified as string | undefined, tasks, seeds);
 	const results = await runBench({
-		tasks: tasksOf(suites, values.task as string | undefined, values.split as string | undefined),
+		tasks,
 		arms: armsOf(need(values.arms as string | undefined, "arms")),
-		seeds: seedsOf(values.seeds as string | undefined),
+		seeds,
+		...(refuse ? { refuse } : {}),
 		backend: backendOf(values.backend as string | undefined, values.serve as string | undefined),
 		store: new Store(out),
 		judge: judgeOf(values.judge as string | undefined),
@@ -200,9 +243,9 @@ async function run(values: Record<string, unknown>): Promise<number> {
 function report(values: Record<string, unknown>, positionals: readonly string[]): number {
 	const out = positionals[0];
 	if (!out) throw new Usage("report needs the run's out folder");
-	const { results, labels } = readResults(out);
+	const { results, labels, bench } = readResults(out);
 	const split = oneOf<Split>(values.split as string | undefined, ["dev", "heldout"], "split");
-	const built = buildReport(results, labels, { split });
+	const built = buildReport(results, labels, { split, bench });
 	const markdown = reportMarkdown(built);
 	const suffix = split ? `-${split}` : "";
 	writeFileSync(join(out, `report${suffix}.md`), markdown);

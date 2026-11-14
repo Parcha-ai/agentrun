@@ -238,6 +238,34 @@ describe("applying a template", () => {
     expect(t.sent[1].key).toBe(t.sent[0].key);
   });
 
+  it("asks a list parameter one item a line, as a run's list input, titles it with its items joined, and sends a list", async () => {
+    const WATCH: TemplateView = { ...REVIEWER, name: "watch", display_name: "Watch on ${parameters.companies}", mcp: [], parameters: {
+      companies: { type: "array", items: { type: "string", minLength: 1 }, required: true, description: "The companies to watch." },
+      limits: { type: "array", items: { type: "integer" }, required: false, description: "Item caps." },
+    } };
+    const t = await open("watch", { templates: [WATCH] });
+    const box = t.host.querySelector<HTMLTextAreaElement>('[data-field="parameters.companies"] textarea');
+    expect(box).toBeTruthy();
+    expect(t.host.querySelector('[data-field="parameters.companies"]')!.textContent).toContain("One a line.");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "Stripe\n\n Adyen \n");
+      box!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(t.host.querySelector("h1")!.textContent).toContain("Watch on Stripe, Adyen");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ companies: ["Stripe", "Adyen"] });
+  });
+
+  it("sends a required list left empty as [], for the server to take or refuse; an optional one left empty is not sent", async () => {
+    const WATCH: TemplateView = { ...REVIEWER, name: "watch", display_name: null, mcp: [], parameters: {
+      companies: { type: "array", items: { type: "string" }, required: true, description: "The companies to watch." },
+      limits: { type: "array", items: { type: "integer" }, required: false, description: "Item caps." },
+    } };
+    const t = await open("watch", { templates: [WATCH] });
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ companies: [] });
+  });
+
   it("sends a boolean parameter as its checkbox shows it: false untouched, true once ticked", async () => {
     const FLAGGED: TemplateView = { ...REVIEWER, name: "flagged", parameters: { ...REVIEWER.parameters, strict: { type: "boolean", required: true, description: "Fail on any finding" } } };
     const t = await open("flagged", { templates: [FLAGGED] });

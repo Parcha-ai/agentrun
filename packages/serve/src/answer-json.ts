@@ -82,3 +82,43 @@ export function structuredAnswer(answer: string, schema: unknown): { value: unkn
   const problems = compiled.check(json.value);
   return problems.length ? { why: `the answer's json does not meet the output schema: ${problems.slice(0, 3).join("; ")}` } : { value: json.value };
 }
+
+/** A JSON object schema's one field a bare value fills: its only property, else its only required one; undefined for
+ *  any other schema. */
+function oneFieldOf(schema: unknown): string | undefined {
+  if (!isObject(schema)) return undefined;
+  const properties = isObject(schema.properties) ? Object.keys(schema.properties) : [];
+  if (properties.length === 1) return properties[0];
+  const required = Array.isArray(schema.required) ? schema.required.filter((key): key is string => typeof key === "string") : [];
+  return required.length === 1 ? required[0] : undefined;
+}
+
+/** A learned workflow's answer (`output`, as its tool hands it back: learned-workflow.ts learnedOutput) as a run serves it
+ *  to an agent with output schema `schema`: the one function serving, a replay and the grade path read it through, so
+ *  each sees the answer as the run presents it. No schema: the output as it is. With one: an output whose fenced json
+ *  block already meets it, as it is; else its value shaped to the schema (the output as JSON when it parses, else its
+ *  text; a value that is no object fills the schema's one field, oneFieldOf: a one-field workflow's bare "5462" is
+ *  `{"mcc": "5462"}`, never the number; an object output is only itself), the first shape that meets the schema, fenced as the answer's one json block;
+ *  `value` is what structuredAnswer reads back from `text`. None meets it: why, and the job goes back to the agent. */
+export function answerAsServed(output: string, schema: unknown): { text: string; value: unknown } | { why: string } {
+  if (schema === undefined) return { text: output, value: output };
+  const compiled = schemaCheck(schema);
+  if ("why" in compiled) return { why: `the agent's output schema ${compiled.why}` };
+  const written = structuredAnswer(output, schema);
+  if ("value" in written) return { text: output, value: written.value };
+  const field = oneFieldOf(schema);
+  const values: unknown[] = [];
+  try {
+    values.push(JSON.parse(output));
+  } catch {
+    // Not JSON: its text alone.
+  }
+  // An object output is its own shape: one that fails the schema goes back to the agent, never as its own text in a field.
+  if (!isObject(values[0])) values.push(output);
+  const shapes = values.flatMap((value) => (isObject(value) || field === undefined ? [value] : [value, { [field]: value }]));
+  const meets = shapes.find((shape) => !compiled.check(shape).length);
+  if (meets !== undefined) return { text: `\`\`\`json\n${JSON.stringify(meets, null, 2)}\n\`\`\``, value: meets };
+  // Said against the object shape (the one-field object a bare value fills), else the first.
+  const problems = compiled.check(shapes.find(isObject) ?? shapes[0]);
+  return { why: `its answer does not meet the agent's output schema: ${problems.slice(0, 3).join("; ")}` };
+}

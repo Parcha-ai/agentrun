@@ -6,8 +6,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { FAKE_AGENTS, FakeWorld, fakeBackend, helper, pngOf } from "../dist/fake-world.js";
-import { ENTRY, runBench, runChecks } from "../dist/index.js";
-import { arm, fakeTasks, jsonl, recordOf, store } from "./support.mjs";
+import { ENTRY, ranProgram, runBench, runChecks } from "../dist/index.js";
+import { arm, fakeTasks, jsonl, recordOf, store, withSpec } from "./support.mjs";
 
 test("the fake agents: right passes every fake task, wrong and null fail every task whose checks are sufficient", async () => {
 	const s = store();
@@ -53,7 +53,9 @@ test("a run's record: the header first, then every call in order, the checks, an
 	const byN = [...steps].sort((a, b) => a.n - b.n);
 	for (let i = 1; i < byN.length; i += 1) assert.ok(byN[i].t_ms >= byN[i - 1].t_ms, "numbers follow the time each call was sent");
 	const phases = [...new Set(steps.map((step) => step.phase))];
-	assert.deepEqual(phases, ["setup", "frame", "agent", "check", "observe", "teardown"]);
+	// The preconditions (needs.apps through apps.list) come before setup; the ping that tells a dead computer from a
+	// wrong one comes after the agent's part and before the checks.
+	assert.deepEqual(phases, ["precondition", "setup", "frame", "agent", "ping", "check", "observe", "teardown"]);
 	const acts = steps.filter((step) => step.method === "ui.act");
 	assert.equal(acts.length, 2);
 	for (const act of acts) {
@@ -309,6 +311,77 @@ test("null mode runs no agent, and oracle mode solves the task on the bench's ch
 	assert.deepEqual(
 		solved.map((result) => result.outcome),
 		["pass", "pass"],
+	);
+});
+
+test("the arm's surface is real: tools gives the agent one method per tool call, code one script per tool call and no bare call", async () => {
+	const s = store();
+	const [stepwise, scripted] = await runBench({ tasks: fakeTasks("fake.notes.new-note"), arms: [arm("fake-right", "right-tools", "tools"), arm("fake-right", "right-code", "code")], seeds: [1], backend: fakeBackend({ agents: FAKE_AGENTS }), store: s, grade: "never" });
+	assert.deepEqual([stepwise.outcome, scripted.outcome], ["pass", "pass"]);
+	assert.deepEqual([stepwise.steps, stepwise.tool_calls], [4, 4], "tools: each of the four computer calls is its own tool call");
+	assert.deepEqual([scripted.steps, scripted.tool_calls], [4, 1], "code: one script of four computer calls is one tool call");
+	const agentSteps = (result) => recordOf(s, result.run).filter((entry) => entry.kind === ENTRY.step && entry.data.phase === "agent").map((entry) => entry.data);
+	assert.deepEqual(agentSteps(stepwise).map((step) => step.turn), [1, 2, 3, 4]);
+	assert.deepEqual(agentSteps(scripted).map((step) => step.turn), [1, 1, 1, 1]);
+	assert.deepEqual(recordOf(s, scripted.run)[0].data.agent, { surface: "code", exec: "allow", groups: ["exec", "files", "screen", "input.pointer", "input.keys", "apps", "ui"] });
+	// What each surface is given, as the agent sees it.
+	const seen = {};
+	const probe = async (wire, request) => {
+		const bare = await wire.call("ui.observe", { target: { app: "fake.settings" } });
+		seen[request.arm.surface] = { script: typeof wire.script, bare: bare.ok ? "ok" : `${bare.error.code}: ${bare.error.message}` };
+		if (wire.script) await wire.script(async (computer) => computer.call("ui.observe", { target: { app: "fake.settings" } }));
+		return { outcome: "done" };
+	};
+	await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("probe", "probe-tools", "tools"), arm("probe", "probe-code", "code")], seeds: [1], backend: fakeBackend({ agents: { probe } }), store: store(), grade: "never" });
+	assert.deepEqual(seen.tools, { script: "undefined", bare: "ok" });
+	assert.equal(seen.code.script, "function");
+	assert.match(seen.code.bare, /^denied: .*code mode.*script/);
+});
+
+test("exec deny: the agent's grant has no exec or processes, the record and result say so; exec allow keeps the shell", async () => {
+	const [task] = fakeTasks("fake.settings.dark-theme");
+	const deny = withSpec(task, { exec: "deny" });
+	const shell = async (wire) => {
+		const ran = await wire.call("exec.run", { argv: ["set", "dark", "yes"] });
+		const started = await wire.call("process.start", { argv: ["true"] });
+		return { outcome: "done", message: `${ran.ok ? "ran" : ran.error.code} ${started.ok ? "started" : started.error.code}` };
+	};
+	const worlds = [];
+	const s = store();
+	const groups = ["exec", "processes", "files", "screen", "input.pointer", "input.keys", "apps", "ui"];
+	const [denied] = await runBench({ tasks: [deny], arms: [arm("shell")], seeds: [1], backend: fakeBackend({ agents: { shell }, worlds, world: () => new FakeWorld({ groups }) }), store: s, grade: "never" });
+	assert.equal(denied.exec, "deny");
+	assert.equal(denied.outcome, "fail");
+	assert.equal(worlds[0].settings.get("dark"), "no", "the world never saw the exec.run");
+	assert.equal(denied.exec_calls, 0, "a refused exec.run is no use of the shell");
+	const header = recordOf(s, denied.run)[0].data;
+	assert.deepEqual(header.agent, { surface: "tools", exec: "deny", groups: ["files", "screen", "input.pointer", "input.keys", "apps", "ui"] });
+	const refused = recordOf(s, denied.run).filter((entry) => entry.kind === ENTRY.step && entry.data.phase === "agent").map((entry) => [entry.data.method, entry.data.error?.code]);
+	assert.deepEqual(refused, [["exec.run", "denied"], ["process.start", "denied"]]);
+	const [allowed] = await runBench({ tasks: [task], arms: [arm("shell")], seeds: [1], backend: fakeBackend({ agents: { shell } }), store: store(), grade: "never" });
+	assert.equal(allowed.exec, "allow");
+	assert.equal(allowed.outcome, "pass", "exec allow: the agent may use the shell");
+	assert.equal(allowed.exec_calls, 1);
+	assert.equal(allowed.platform, "macos desktop");
+});
+
+test("a program ran when it started: a command cut by its timeout or a failed shell tool call counts, a call refused or stopped before it started does not", () => {
+	const step = (fields) => ({ n: 1, phase: "agent", method: "exec.run", params: {}, t_ms: 0, ms: 1, ok: true, ...fields });
+	const cases = [
+		[step({}), true],
+		[step({ ok: false, error: { code: "timeout", message: "ran past 30 s" } }), true],
+		[step({ method: "process.wait", ok: false, error: { code: "aborted", message: "stopped before it was sent" } }), false],
+		[step({ phase: "tool", method: "bash", ok: false, error: { code: "tool_failed", message: "exit 1" } }), true],
+		[step({ phase: "tool", method: "bash", ok: false, error: { code: "tool_refused", message: "a gate denied it" } }), false],
+		[step({ ok: false, error: { code: "denied", message: "no exec group" } }), false],
+		[step({ ok: false, error: { code: "limit", message: "budget" } }), false],
+		[step({ ok: false, error: { code: "not_found", message: "no such program" } }), false],
+		[step({ method: "ui.act" }), false],
+		[step({ phase: "tool", method: "web_search" }), false],
+	];
+	assert.deepEqual(
+		cases.map(([one]) => ranProgram(one)),
+		cases.map(([, ran]) => ran),
 	);
 });
 

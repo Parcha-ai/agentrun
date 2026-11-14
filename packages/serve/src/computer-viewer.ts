@@ -3,8 +3,8 @@
 // beside it, under LIVE_CSP (browser-live.ts), which allows no inline script or style. It is pi-browser's viewer
 // generalized to a computer: one canvas, one WebSocket to this server's own origin, the token read from the fragment and
 // sent once, in the hello (computer-live.ts has the protocol). Frames are drawn by their format (JPEG or PNG, told by their
-// bytes) and acked once drawn, so the next comes only then. The bar has Take over and Hand back; no address bar, back or
-// reload (a browser's). A desktop gets the mouse, the wheel and keys; a phone gets taps, swipes, its back, home and
+// bytes) and acked once drawn, so the next comes only then. The bar has Take over and Hand back, unless the page that
+// frames it has its own (hands=page in the fragment: the console's Screen tab); no address bar, back or reload (a browser's). A desktop gets the mouse, the wheel and keys; a phone gets taps, swipes, its back, home and
 // recents buttons, and keys (a soft keyboard's too, through beforeinput). Coordinates are the screen's real pixels, the w and h each frame carries. A swipe lasts 1,000 ms
 // at most, as the computer takes it (createActionMapper's bound). Losing focus tells the endpoint ("blur"), which lets go of
 // the buttons held.
@@ -38,16 +38,17 @@ const html = `<!doctype html>
 const css = `* { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: #111; color: #eee; font: 14px system-ui, sans-serif; }
 body { display: flex; flex-direction: column; }
-#bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; background: #222; border-bottom: 1px solid #333; }
-#bar button { background: #333; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+#bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 8px; background: #222; border-bottom: 1px solid #333; }
+#bar button { background: #333; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
 #bar button:hover { background: #444; }
 #bar button:disabled { opacity: 0.5; cursor: not-allowed; }
 #bar #hands { background: #1f4d2b; border-color: #2f6b3d; }
 #bar #hands.holding { background: #5a3b00; border-color: #7a5410; }
-#hands[hidden], #phone[hidden], #notice[hidden] { display: none; }
+#bar[hidden], #hands[hidden], #phone[hidden], #drive[hidden], #notice[hidden] { display: none; }
 #phone { display: inline-flex; gap: 6px; }
 #spacer { flex: 1; }
-#drive { min-width: 9em; text-align: right; color: #aaa; }
+/* Who drives takes the bar's room left over, and on a frame as narrow as a phone's a line of its own: never clipped. */
+#drive { flex: 0 1 auto; min-width: 0; text-align: right; color: #aaa; }
 #drive.agent, #drive.pending { color: #f0b429; }
 #drive.person { color: #6cc070; }
 .not-held #screen { cursor: not-allowed; }
@@ -64,6 +65,9 @@ const js = `"use strict";
 (function () {
   var params = new URLSearchParams(location.hash.slice(1));
   var token = params.get("t");
+  // Framed by a page with its own Take over and Hand back (the console's Screen tab says hands=page): no second button
+  // here, nor a second line of who drives; a phone's bar keeps its back, home and recents, a desktop's bar goes.
+  var handsOnPage = params.get("hands") === "page";
   // The fragment never stays in the address bar, the history or a screenshot of it.
   history.replaceState(null, "", location.pathname + location.search);
 
@@ -102,7 +106,9 @@ const js = `"use strict";
   var DRIVE = { agent: "the agent has the ", pending: "taking over: the agent's step is ending", person: "you have the " };
   function setDrive(state) { drive.className = state || ""; drive.textContent = !DRIVE[state] ? "" : state === "pending" ? DRIVE[state] : DRIVE[state] + noun(); }
   function showHands() {
-    handsEl.hidden = false;
+    handsEl.hidden = handsOnPage;
+    drive.hidden = handsOnPage;
+    $("bar").hidden = handsOnPage && kind !== "phone";
     handsEl.textContent = holding ? "Hand back" : "Take over";
     handsEl.className = holding ? "holding" : "";
     document.body.classList.toggle("not-held", !holding);

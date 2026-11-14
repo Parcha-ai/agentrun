@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { type CheckResult, nodeLine, nodeMatches, type ObservedNode, runChecks, type Stage1, stage1Of } from "./checks.js";
 import { combine, GRADER_STEPS, type GradeWhen, type GraderInput, type GraderVerdict, type Judge, wantsGrader } from "./grader.js";
 import { type ComputerIdentity, ENTRY, imageType, type RunHeader, type RunRecord, type Step, type Store } from "./record.js";
-import { Frames, frameSourceOf, tap } from "./tap.js";
+import { type AgentWire, Frames, frameSourceOf, tap } from "./tap.js";
 import { type Call, type ResolvedTask, resolveTask, type Task, type UiQuery } from "./task.js";
 import { fromBase64, type Hello, hasGroup, type Json, type JsonObject, type Wire, type WireResult } from "./wire.js";
 
@@ -37,7 +37,12 @@ export interface AgentResult {
 	message?: string;
 	cost_usd?: number;
 	tokens?: { input?: number; output?: number; cache_read?: number; cache_write?: number };
-	turns?: number;
+	/** The model's tool calls (its turns at the computer and every other tool), where the backend counts them apart from
+	 *  its computer calls (serve's Timeline). Absent: the agent tap's count. */
+	tool_calls?: number;
+	/** It made more computer calls than the step budget before anyone could stop it (on serve the calls run on serve's
+	 *  side; the tap refuses the one past the budget): like money spent over budget, a success bought so is not one. */
+	over_steps?: boolean;
 	/** sha256 of what the agent was given. */
 	given?: RunHeader["given"];
 	/** Where its transcript is, when the backend keeps one (a serve run id, a file). */
@@ -51,9 +56,12 @@ export interface AgentRequest {
 	budget: ResolvedTask["budget"];
 	/** Ends at the wall budget, or when the step budget is spent, or when the bench run is stopped. */
 	signal: AbortSignal;
-	/** The agent's wire: route every one of the agent's computer calls through it (it records, budgets and grants).
-	 *  A backend whose steps are recorded elsewhere (serve's journal) reports them with onStep instead. */
-	tap(wire: Wire): Wire;
+	/** Whether the agent may run programs on its computer: deny gives it no exec or processes group and no shell. */
+	exec: "allow" | "deny";
+	/** The agent's wire: route every one of the agent's computer calls through it (it records, budgets and grants, and
+	 *  is the arm's surface: on "code" calls go through its script). A backend whose steps are recorded elsewhere
+	 *  (serve's journal) reports them with onStep instead. */
+	tap(wire: Wire): AgentWire;
 	onStep(step: Omit<Step, "n">): void;
 }
 
@@ -63,8 +71,11 @@ export interface Episode {
 	/** The bench's own channel to the computer: hello, setup, frames, checks, teardown. It may hold groups the agent is
 	 *  not given (exec on a phone). */
 	bench: Wire;
-	/** The groups the agent is given, from those the computer offers. Absent: all of them. */
+	/** The groups the agent is given, from those the computer offers. Absent: all of them. A task that denies exec takes
+	 *  exec and processes out of either. */
 	agentGroups?: readonly string[];
+	/** The agent that will drive it, where the backend names one (serve's agent id). */
+	agentId?: string;
 	agent(request: AgentRequest): Promise<AgentResult>;
 	release(): Promise<void>;
 }
@@ -98,6 +109,10 @@ export interface Result {
 	version: number;
 	sha256: string;
 	split: string;
+	/** The task's os and kind, "android phone", "linux desktop", "macos desktop": the report's tables are per platform. */
+	platform: string;
+	/** Whether the task let the agent run programs (exec deny: done through the UI alone). */
+	exec: "allow" | "deny";
 	seed: number;
 	arm: string;
 	attempt: number;
@@ -106,15 +121,21 @@ export interface Result {
 	scored: boolean;
 	/** Whether this attempt was followed by another (infra). */
 	rerun: boolean;
-	/** Why it is infra or refused, in words. */
+	/** Why it is infra or refused, in words. A task the computer can't do (a missing app, a failed capability probe) is
+	 *  refused in phase preconditions, its why starting "skipped: ". */
 	why?: string;
-	phase?: "open" | "hello" | "setup" | "agent" | "checks";
+	phase?: "open" | "hello" | "preconditions" | "setup" | "agent" | "checks";
 	stage1?: Stage1;
 	checks?: { id: string; kind: string; status: string }[];
 	grade?: { verdict: string; locus: string; by: string; confidence: string; judge: string };
 	by?: "checks" | "grader";
 	queue?: string;
+	/** The agent's computer calls (a code-mode script of six calls is six). */
 	steps: number;
+	/** The model's tool calls, computer or not: its turns. */
+	tool_calls: number;
+	/** The agent's computer calls that ran a program and answered: exec.run, process.*, or a shell tool's call. */
+	exec_calls: number;
 	cost_usd?: number;
 	wall_s: number;
 	routes: Record<string, number>;
@@ -148,9 +169,27 @@ export interface RunOptions {
 	onResult?: (result: Result) => void;
 	/** The bench run's id (default: a new one). */
 	id?: string;
+	/** The tasks found undoable (a precondition failed), by id, with why: each is refused without claiming a computer.
+	 *  Filled as the run finds them; pass one map to several runs (verify's null and oracle passes) to share it. */
+	skips?: Map<string, string>;
+	/** Why a task × seed is refused before any computer is claimed (verify did not prove it: run --verified), or
+	 *  undefined to run it. */
+	refuse?: (task: string, seed: number) => string | undefined;
 }
 
+/** How long the ping after the agent's turn may take before the computer counts as not answering. */
+const PING_MS = 15_000;
+
 const sinceS = (t0: number) => Math.round((Date.now() - t0) / 100) / 10;
+
+/** The groups a task that denies exec takes from the agent: running a program, and starting one. */
+const NO_EXEC = new Set(["exec", "processes"]);
+
+/** A task's platform, its os and kind: "android phone", "linux desktop", "macos desktop". */
+export const platformOf = (task: Task): string => `${task.spec.needs.os} ${task.spec.needs.kind}`;
+
+/** What every result of a job says about it: the task as it was, its platform and exec, the seed and the arm. */
+const jobOf = (task: Task, seed: number, arm: Arm) => ({ task: task.spec.id, version: task.spec.version, sha256: task.sha256, split: task.spec.split, platform: platformOf(task), exec: task.spec.exec ?? "allow", seed, arm: arm.id });
 
 /** Why a hello can't run a task, or undefined when it can. */
 export function helloMismatch(hello: Hello, task: Task, agentGroups: readonly string[], mode: "agent" | "null" | "oracle" = "agent"): string | undefined {
@@ -173,6 +212,71 @@ export function helloMismatch(hello: Hello, task: Task, agentGroups: readonly st
 	const oracleMissing = mode === "oracle" ? task.oracleGroups.filter((group) => !hasGroup(hello.groups, group)) : [];
 	if (oracleMissing.length > 0) return `the task's oracle needs ${oracleMissing.join(", ")}, which this computer does not offer`;
 	return undefined;
+}
+
+/** An entry of needs.apps in words: an id, or "one of a, b" for a list of alternatives. */
+const appWords = (entry: string | string[]) => (typeof entry === "string" ? entry : `one of ${entry.join(", ")}`);
+
+/**
+ * The task's preconditions on this computer, read on the bench's channel after hello and before setup: every needs.apps
+ * entry installed (apps.list; a list is alternatives, any one will do), then every capability probe passing. skipped:
+ * the computer can't do the task (refused, never retried, remembered for the bench run). infra: a precondition could
+ * not be read (a call the computer did not answer), so it is the computer's failure, run again.
+ */
+export async function readPreconditions(wire: Wire, task: Task, hello: Hello, signal: AbortSignal): Promise<{ skipped: string } | { infra: string } | undefined> {
+	const apps = task.spec.needs.apps ?? [];
+	if (apps.length > 0) {
+		if (!hello.groups.includes("apps")) return { skipped: `needs ${apps.map(appWords).join(", ")}, and this computer has no apps group to list its apps` };
+		const listed = await wire.call("apps.list", {}, { signal });
+		if (!listed.ok) return { infra: `apps.list failed: ${listed.error.code}: ${listed.error.message}` };
+		const installed = new Set(((listed.value as { apps?: { id: string }[] }).apps ?? []).map((app) => app.id));
+		const missing = apps.filter((entry) => (typeof entry === "string" ? !installed.has(entry) : !entry.some((id) => installed.has(id))));
+		if (missing.length > 0) return { skipped: `needs ${missing.map(appWords).join(", ")}` };
+	}
+	for (const probe of task.spec.needs.capabilities ?? []) {
+		const [result] = await runChecks([probe], { wire, signal });
+		if (result?.status === "error") return { infra: `capability ${probe.id}: ${result.reason}` };
+		if (result?.status === "fail") {
+			const seen = result.output.trim().replace(/\s*\n\s*/g, "; ");
+			return { skipped: `needs ${probe.id}: ${result.reason}${seen ? ` (${seen.slice(0, 300)})` : ""}` };
+		}
+	}
+	return undefined;
+}
+
+/** The protocol client's words when the computer's end of the connection went (packages/computer client.ts): code
+ *  gone, or a harness's tool failure that quotes them. Never the bench's own release or a run's stop. */
+const STREAM_LOST = /the daemon's stream (ended|closed)/;
+
+/**
+ * Whether the record shows the agent's computer was lost in its turn before the bench stopped it: an agent call failed
+ * with the connection-lost words, no agent call after it answered, and the bench had seen that failure before the stop.
+ * `steps` is in the order the bench saw each answer (the tap's, and a driver's as it reports them), and `stopAt` is how
+ * many it had seen when it stopped the agent: an order, not a clock, since a driver's step times are on its own clock
+ * and a fast computer answers many calls in one millisecond. A call in flight at the stop is answered after it, and a
+ * stop lets serve's computer go, so that failure is the stop's. With no `stopAt` (the driver stopped the run and did not
+ * say when) nothing orders the loss first: undefined.
+ */
+export function lostBeforeStop(steps: readonly Step[], stopAt: number | undefined): Step["error"] | undefined {
+	if (stopAt === undefined) return undefined;
+	const isAgentCall = (step: Step) => step.phase === "agent" && step.method !== "hello" && step.method !== "ping";
+	// The last loss the bench saw before the stop: later ones (the dead stream failing calls after it) don't hide it.
+	const lost = steps.slice(0, stopAt).findLast((step) => isAgentCall(step) && !step.ok && STREAM_LOST.test(step.error?.message ?? ""));
+	if (!lost) return undefined;
+	// A call that answered after it, before or after the stop, shows the computer was still there.
+	if (steps.slice(steps.indexOf(lost) + 1).some((step) => isAgentCall(step) && step.ok)) return undefined;
+	return lost.error;
+}
+
+/** A ping on the bench's channel, short: why the computer did not answer, or undefined when it did. */
+async function pingFails(wire: Wire, signal: AbortSignal): Promise<string | undefined> {
+	try {
+		const answered = await wire.call("ping", {}, { signal: AbortSignal.any([signal, AbortSignal.timeout(PING_MS)]) });
+		return answered.ok ? undefined : `${answered.error.code}: ${answered.error.message}`;
+	} catch (error) {
+		if (isFatal(error)) throw error;
+		return `no answer: ${(error as Error).message}`;
+	}
 }
 
 /** The slots of a ui.act step that name an element. In a task's calls each may hold `{"find": <uiQuery>}` instead of a
@@ -268,6 +372,19 @@ async function readTree(wire: Wire, hello: Hello, signal: AbortSignal): Promise<
 	return [head, ...lines, ...(nodes.length > 400 || value.truncated ? [`… ${nodes.length - Math.min(nodes.length, 400)} more`] : [])].join("\n");
 }
 
+/** The tools that are a shell: a call of one that answered ran a program. */
+const SHELL_TOOLS = new Set(["bash", "bash_background", "shell"]);
+
+/** Whether an agent's step ran a program: exec.run or a process method that answered, or that its timeout cut once
+ *  it started; a shell tool call that answered or failed, never one refused before it ran (serve's row says refused:
+ *  the step's error is `tool_refused`). Any other failed call (denied, limit, invalid, not_found, aborted before it was
+ *  sent, ...) started nothing. */
+export const ranProgram = (step: Step): boolean => {
+	if (step.phase === "tool") return SHELL_TOOLS.has(step.method) && step.error?.code !== "tool_refused";
+	if (step.phase !== "agent" || !(step.method === "exec.run" || step.method.startsWith("process."))) return false;
+	return step.ok || step.error?.code === "timeout";
+};
+
 /** A run's tallies from its agent steps. */
 function tally(steps: readonly Step[]) {
 	const agent = steps.filter((step) => step.phase === "agent" && step.method !== "hello" && step.method !== "ping");
@@ -276,6 +393,7 @@ function tally(steps: readonly Step[]) {
 	let noop = 0;
 	let verified = 0;
 	let stale = 0;
+	const exec_calls = steps.filter(ranProgram).length;
 	for (const step of agent) {
 		stale += step.stale ?? 0;
 		if (step.method === "ui.act") {
@@ -288,13 +406,13 @@ function tally(steps: readonly Step[]) {
 		}
 		if ((step.method === "ui.act" || step.method === "input.actions") && step.ok && step.changed === false) noop += 1;
 	}
-	return { steps: agent.length, routes, acts, noop, verified, stale };
+	return { steps: agent.length, routes, acts, noop, verified, stale, exec_calls };
 }
 
 /** A run whose checks ran and whose computer is released, waiting for its verdict. */
 interface Checked {
-	ctx: { record: RunRecord; end: (result: Omit<Result, "bench" | "run" | "task" | "version" | "sha256" | "split" | "seed" | "arm" | "attempt" | "scored" | "rerun">) => Result; resolved: ResolvedTask; arm: Arm };
-	common: Pick<Result, "steps" | "routes" | "acts" | "noop" | "verified" | "stale" | "cost_usd" | "wall_s" | "answer">;
+	ctx: { record: RunRecord; end: (result: Omit<Result, "bench" | "run" | "task" | "version" | "sha256" | "split" | "platform" | "exec" | "seed" | "arm" | "attempt" | "scored" | "rerun">) => Result; resolved: ResolvedTask; arm: Arm };
+	common: Pick<Result, "steps" | "tool_calls" | "exec_calls" | "routes" | "acts" | "noop" | "verified" | "stale" | "cost_usd" | "wall_s" | "answer">;
 	/** A check that could not run ended the run as infra, so stage 1 here has passed or failed. */
 	stage1: "pass" | "fail";
 	checks: CheckResult[];
@@ -327,8 +445,9 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 		steps.push(step);
 		record.entry(ENTRY.step, step);
 	};
-	const base = { bench, run, task: task.spec.id, version: task.spec.version, sha256: task.sha256, split: task.spec.split, seed: resolved.seed, arm: arm.id, attempt: n };
-	const empty = { steps: 0, wall_s: 0, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 };
+	const base = { bench, run, ...jobOf(task, resolved.seed, arm), attempt: n };
+	const empty = { steps: 0, tool_calls: 0, exec_calls: 0, wall_s: 0, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 };
+	let turns = 0;
 	const end = (result: Omit<Result, keyof typeof base | "scored" | "rerun">): Result => {
 		const full: Result = { ...base, ...result, scored: result.outcome === "pass" || result.outcome === "fail" || result.outcome === "budget", rerun: false };
 		record.entry(ENTRY.verdict, full);
@@ -345,11 +464,13 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 		const greeted = await episode.bench.call("hello", { client: `computer-bench/${BENCH_VERSION}` }, { signal });
 		if (!greeted.ok) return end({ ...empty, outcome: "infra", phase: "hello", why: `hello failed: ${greeted.error.code}: ${greeted.error.message}` });
 		const hello = greeted.value as Hello;
-		const agentGroups = episode.agentGroups ?? hello.groups;
+		// A task that denies exec gives the agent no way to run a program, whatever the computer offers.
+		const agentGroups = (episode.agentGroups ?? hello.groups).filter((group) => base.exec === "allow" || !NO_EXEC.has(group));
 		const header: RunHeader = {
 			bench: { version: BENCH_VERSION, run: bench },
 			task: { id: task.spec.id, version: task.spec.version, sha256: task.sha256, split: task.spec.split, seed: resolved.seed, nonce: resolved.nonce, params: resolved.params, instruction: resolved.instruction, ...(task.spec.source ? { source: `${task.spec.source.suite}:${task.spec.source.id}` } : {}) },
 			arm: { id: arm.id, harness: arm.harness, surface: arm.surface, model: arm.model, ...(arm.effort ? { effort: arm.effort } : {}) },
+			agent: { surface: arm.surface, exec: base.exec, groups: [...agentGroups], ...(episode.agentId ? { id: episode.agentId } : {}) },
 			attempt: n,
 			budget: resolved.budget,
 			computer: { ...episode.identity, hello },
@@ -358,6 +479,13 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 		record.entry(ENTRY.run, header);
 		const mismatch = helloMismatch(hello, task, agentGroups, options.mode ?? "agent");
 		if (mismatch) return end({ ...empty, outcome: "refused", phase: "hello", why: mismatch });
+		const unmet = await readPreconditions(tapped("precondition"), task, hello, signal);
+		if (unmet && "infra" in unmet) return end({ ...empty, outcome: "infra", phase: "preconditions", why: `the preconditions could not be read: ${unmet.infra}` });
+		if (unmet) {
+			const why = `skipped: ${unmet.skipped}`;
+			options.skips?.set(task.spec.id, why);
+			return end({ ...empty, outcome: "refused", phase: "preconditions", why });
+		}
 		touched = true;
 		const setupFailed = await runCalls(benchWire, resolved.setup, signal);
 		if (setupFailed) return end({ ...empty, outcome: "infra", phase: "setup", why: `setup: ${setupFailed}` });
@@ -368,8 +496,11 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 		if (frames) await frames.take(signal);
 		const stop = new AbortController();
 		let spent: "steps" | "wall" | undefined;
+		// When the bench stopped the agent, as how many steps it had seen by then: what a loss is ordered against.
+		let stopAt: number | undefined;
 		const wall = setTimeout(() => {
 			spent ??= "wall";
+			stopAt ??= steps.length;
 			stop.abort(new Error("the task's wall budget is spent"));
 		}, resolved.budget.wall_s * 1000);
 		const agentSignal = AbortSignal.any([signal, stop.signal]);
@@ -383,6 +514,7 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 					arm,
 					instruction: resolved.instruction,
 					budget: resolved.budget,
+					exec: base.exec,
 					signal: agentSignal,
 					tap: (wire) =>
 						tap(wire, {
@@ -394,8 +526,11 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 							steps: resolved.budget.steps,
 							grant: agentGroups,
 							frames,
+							surface: arm.surface,
+							onTurn: () => ++turns,
 							onSpent: () => {
 								spent ??= "steps";
+								stopAt ??= steps.length;
 								stop.abort(new Error("the task's step budget is spent"));
 							},
 						}),
@@ -411,14 +546,30 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 		} finally {
 			clearTimeout(wall);
 		}
+		// Stopped by the bench: its own budget stop, or the driver's (serve cancels a run past its budget, and a cancel lets
+		// the run's computer go, so a computer gone after it is the stop's doing, not a death).
+		const stoppedByBench = spent !== undefined || agent.outcome === "budget";
 		if (spent && agent.outcome !== "infra") agent = { ...agent, outcome: "budget", message: agent.message ?? `the ${spent} budget is spent` };
-		const overspent = agent.cost_usd !== undefined && agent.cost_usd > resolved.budget.usd;
-		if (overspent && agent.outcome === "done") agent = { ...agent, outcome: "budget", message: `it spent $${agent.cost_usd?.toFixed(2)} of a $${resolved.budget.usd} budget` };
+		const overUsd = agent.cost_usd !== undefined && agent.cost_usd > resolved.budget.usd;
+		const overspent = overUsd || agent.over_steps === true;
+		if (overspent && agent.outcome === "done") agent = { ...agent, outcome: "budget", message: overUsd ? `it spent $${agent.cost_usd?.toFixed(2)} of a $${resolved.budget.usd} budget` : `it made more than the task's budget of ${resolved.budget.steps} computer calls` };
 		const agentWall = sinceS(agentStart);
 		if (signal.aborted) return end({ ...empty, outcome: "infra", phase: "agent", why: "the bench run was stopped" });
 		const tallies = tally(steps);
-		const common = { ...tallies, cost_usd: agent.cost_usd, wall_s: agentWall, ...(agent.answer === undefined ? {} : { answer: agent.answer }) };
+		const common = { ...tallies, tool_calls: agent.tool_calls ?? turns, cost_usd: agent.cost_usd, wall_s: agentWall, ...(agent.answer === undefined ? {} : { answer: agent.answer }) };
 		if (agent.outcome === "infra" || agent.outcome === "refused") return end({ ...common, outcome: agent.outcome, phase: "agent", why: agent.message ?? `the agent's run ended ${agent.outcome}` });
+
+		// Is the computer still there? Decided from its own signals, never a grader's: a ping on the bench's channel. One
+		// that fails after the agent ended by itself is a death in its turn. After the bench stopped it, the stop may have
+		// let the computer go, so it is a death only when the record shows the connection lost first.
+		const silent = await pingFails(tapped("ping"), signal);
+		if (silent) {
+			const lost = stoppedByBench ? lostBeforeStop(steps, stopAt) : undefined;
+			if (!stoppedByBench || lost) {
+				const first = lost ? `its calls failed (${lost.code}: ${lost.message}) before the ${spent === "wall" ? "wall" : "step"} budget stopped it; ` : "";
+				return end({ ...common, outcome: "infra", phase: "agent", why: `the computer stopped answering during the agent's turn: ${first}ping: ${silent}` });
+			}
+		}
 
 		// Stage 1, on the computer as the agent left it, before anything else touches it.
 		const checks: CheckResult[] = await runChecks(resolved.checks, { wire: tapped("check"), answer: agent.answer, signal });
@@ -483,8 +634,8 @@ async function grade(options: RunOptions, run: Checked, signal: AbortSignal): Pr
 		stage1,
 		checks: checks.map(({ id, kind, status }) => ({ id, kind, status })),
 		by: combined.by,
-		// An agent (or an oracle) that failed by its own account says why; the checks still decide.
-		...(run.input.agent.outcome === "error" && run.input.agent.message ? { why: run.input.agent.message } : {}),
+		// An agent (or an oracle) that failed by its own account says why, and so does a budget; the checks still decide.
+		...((run.input.agent.outcome === "error" || outcome === "budget") && run.input.agent.message ? { why: run.input.agent.message } : {}),
 		...(verdict && options.judge ? { grade: { verdict: verdict.verdict, locus: verdict.locus, by: combined.by, confidence: verdict.confidence, judge: options.judge.id } } : {}),
 		...(queue ? { queue } : {}),
 	});
@@ -552,6 +703,7 @@ export async function runBench(options: RunOptions): Promise<Result[]> {
 				mode: options.mode ?? "agent",
 				judge: options.judge?.id ?? null,
 				grade: options.grade ?? "auto",
+				retries: options.retries ?? 2,
 				seeds: options.seeds,
 				arms: options.arms,
 				tasks: options.tasks.map((task) => ({ id: task.spec.id, version: task.spec.version, sha256: task.sha256, split: task.spec.split })),
@@ -564,20 +716,30 @@ export async function runBench(options: RunOptions): Promise<Result[]> {
 	const jobs = jobsOf(options.tasks, options.arms, options.seeds);
 	const results: Result[] = [];
 	const retries = options.retries ?? 2;
+	const run = { ...options, skips: options.skips ?? new Map<string, string>() };
 	let next = 0;
 	let fatal: unknown;
 	const worker = async () => {
 		while (next < jobs.length && !signal.aborted && fatal === undefined) {
 			const job = jobs[next++] as (typeof jobs)[number];
 			const resolved = resolveTask(job.task, job.seed);
+			const unrun = (n: number, outcome: "infra" | "refused", why: string, phase?: Result["phase"]): Result => ({ bench, run: "-", ...jobOf(job.task, job.seed, job.arm), attempt: n, outcome, scored: false, rerun: false, why, ...(phase ? { phase } : {}), steps: 0, tool_calls: 0, exec_calls: 0, wall_s: 0, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 });
 			for (let n = 1; n <= retries + 1; n += 1) {
-				const result = await attempt(options, bench, resolved, job.arm, n, signal).catch((error: Error): Result | undefined => {
-					if (isFatal(error)) {
-						fatal ??= error;
-						return undefined;
-					}
-					return { bench, run: "-", task: job.task.spec.id, version: job.task.spec.version, sha256: job.task.sha256, split: job.task.spec.split, seed: job.seed, arm: job.arm.id, attempt: n, outcome: "infra", scored: false, rerun: false, why: `the runner threw: ${error.message}`, steps: 0, wall_s: 0, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 };
-				});
+				// A pair verify did not prove, or a task already found undoable: refused before any computer is claimed.
+				const refused = run.refuse?.(job.task.spec.id, job.seed);
+				const skipped = run.skips.get(job.task.spec.id);
+				const result =
+					refused !== undefined
+						? unrun(n, "refused", refused, "open")
+						: skipped !== undefined
+							? unrun(n, "refused", skipped, "preconditions")
+							: await attempt(run, bench, resolved, job.arm, n, signal).catch((error: Error): Result | undefined => {
+									if (isFatal(error)) {
+										fatal ??= error;
+										return undefined;
+									}
+									return unrun(n, "infra", `the runner threw: ${error.message}`);
+								});
 				// A fatal error stops this worker, and the others before their next job.
 				if (!result) return;
 				const again = result.outcome === "infra" && n <= retries && !signal.aborted;
