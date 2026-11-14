@@ -2,7 +2,7 @@
 // package's index until the cutover: its tests import it from dist/kernel/cap/.
 export { CapRefused, createCap, DECISION_IMAGE_TOKENS, DECISION_OUTPUT_TOKENS, DecisionPriceUnreadable, END_MARK_WAIT_MS, END_NOT_WRITTEN, MARK_NOT_WRITTEN, openCap } from "./admit.js";
 export { capRule, noteFor, requestFigures, type Judged, type JudgeState, type NoteState } from "./rule.js";
-export { beforeRequestOf, type BeforeRequestOptions } from "./port.js";
+export { beforeRequestOf, capRequestOf, type BeforeRequestOptions, type PricedRequest } from "./port.js";
 export { DECISION_SESSION, overCapOf, paidCalls, runCap, TOOL_SESSION, type RunCap, type RunCapOptions, type RunDecisions, type RunTools } from "./run-cap.js";
 export { ANSWER_TOKENS_LEAST, CACHE_WARM_MS, CAP_TOLERANCE, FIT_TOLERANCE, STOP_ALLOWANCE_TOKENS, THINKING_BUDGET_LEAST, expectedInput, inputBound, mostOutput, previousAfter, pricingOf, ratesFor, requestPrice } from "./price.js";
 export { CAP_REFUSAL_CODE, SPEND_CAP_REACHED, SUGGESTED_RAISE_FACTOR, centsMoney, leastMoney, money, OVER_CAP_END, overCapEnd, overCapMessage, overCapWords, paidRefusal, raiseFigure, raiseTo, spentMoney, suggestedRaise } from "./words.js";
