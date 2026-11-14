@@ -22,7 +22,7 @@ import { DEFAULT_HARNESS } from "../../harness.js";
 import { durableWait } from "../../workflow/pi-versions.js";
 import { HOSTED_SEARCH_ALLOWANCE_TOKENS } from "../../hosted-search.js";
 import { sessionProvider, tierProvider } from "../../port-models.js";
-import { KINDS } from "../journal-kinds.js";
+import { type CallStatus, KINDS } from "../journal-kinds.js";
 import { CALL_REFUSED } from "../../timeline/index.js";
 import { type ComputerCallRecord, recordingCalls } from "../../computer-calls.js";
 
@@ -60,6 +60,9 @@ export type PiSessionIO = SessionIO & {
    *  are kept): each run's pi-native tool (code mode's script among them) runs inside recordingCalls with it, so its row
    *  carries the calls it made as a host tool's does. */
   keepCalls?: (call: string, calls: readonly ComputerCallRecord[], dropped: number) => Promise<void>;
+  /** A nested call's end (a script's or tools_call's, its id `<callId>/<key>`), once pi has its outcome, run now or read
+   *  from its record: the host keeps it beside the call's start, which its gate wrote, so the call's rows show its result. */
+  nestedEnded?: (callId: string, status: CallStatus, output: string) => Promise<void>;
 };
 
 /** `extension` with each of its tools run inside recordingCalls, its calls kept by `keep` under the call's id. A call pi
@@ -513,8 +516,9 @@ export const HOST_TOOL_OUTPUT = Object.freeze({ maxLines: HOST_RESULT_MAX_CHARS 
 /** pi's nested calls as a host tool's (NestedCalls): each the session's tool by its name, run as pi's own nested tool task
  *  (`executeTool`, its call id `<callId>/<key>`), whose ToolTask hooks ask the gate as the tool itself (`nested`), and
  *  whose rerun by the same key gets the recorded call back, finished or still running, never a second one. Fresh: asked
- *  at the gate or run in this session (`touched`). A refused one is the gate's words (CALL_REFUSED, from refusalWords). */
-function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<string>, refusals: ReadonlyMap<string, string>): NestedCalls {
+ *  at the gate or run in this session (`touched`). A refused one is the gate's words (CALL_REFUSED, from refusalWords).
+ *  Each one's end goes to the host (`ended`: PiSessionIO.nestedEnded), which keeps it on the run's record. */
+function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<string>, refusals: ReadonlyMap<string, string>, ended?: PiSessionIO["nestedEnded"]): NestedCalls {
   return {
     async call(name, args, key) {
       const result = await api.executeTool(name, args as JsonObject, context, { key });
@@ -532,6 +536,7 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
       // A refusal in the gate's words (this session's), or, answered from an earlier session's record, said so.
       const words = refused ? (refusals.get(callId) ?? `${name} was refused (the run's tool settings or a person's answer), and it did not run.`) : undefined;
       const text = words ?? (said || result.diagnostics.map((one) => one.message).join("\n"));
+      await ended?.(callId, refused ? "refused" : interrupted ? "interrupted" : result.isError ? "failed" : "done", text);
       return {
         text,
         ...(result.isError ? { isError: true } : {}),
@@ -573,7 +578,7 @@ function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => 
         ...(model ? { model } : {}),
         output: (chunk: string) => api.output(chunk),
         ...(attempt === undefined ? {} : { attempt }),
-        ...(tool.nests ? { nested: piNested(api, toolContext, touched, nestedRefusals) } : {}),
+        ...(tool.nests ? { nested: piNested(api, toolContext, touched, nestedRefusals, io.nestedEnded) } : {}),
       });
       io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: answer.text });
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));

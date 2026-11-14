@@ -91,6 +91,7 @@ export type ConformanceCase =
   | "meta-call-park"
   | "meta-call-deny"
   | "meta-codemode-park"
+  | "meta-codemode-stop"
   | "meta-codemode-crash";
 
 export interface ConformanceSubject {
