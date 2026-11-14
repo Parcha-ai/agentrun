@@ -210,7 +210,6 @@ func (d *Display) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 				return nil, err
 			}
 			w.seq++
-			w.read = time.Now()
 			w.jpeg, w.frameW, w.frameH, w.cursor = frame, fw, fh, &cursor
 			return d.frame(w), nil
 		}
@@ -268,10 +267,12 @@ func (d *Display) look(ctx context.Context, w *watching, region image.Rectangle)
 	region = region.Intersect(whole)
 	var img *image.RGBA
 	if !region.Empty() {
+		// The cap counts from the read's start, so the read and the frame's encode are inside the gap, not added to it.
+		started := time.Now()
 		if img, err = c.GetImage(region.Min.X, region.Min.Y, region.Dx(), region.Dy()); err != nil {
 			return cursor, false, d.gone(c, err)
 		}
-		w.read = time.Now()
+		w.read = started
 	}
 	x, y, err := c.QueryPointer()
 	if err != nil {
