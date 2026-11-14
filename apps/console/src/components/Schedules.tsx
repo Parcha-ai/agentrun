@@ -1,4 +1,4 @@
-import { ArrowLeft, CalendarClock, Copy, GitPullRequest, KeyRound, Pause, Pencil, Play, Plus, Trash2, Webhook, Zap } from "lucide-react";
+import { ArrowLeft, Blocks, CalendarClock, Copy, GitPullRequest, KeyRound, Pause, Pencil, Play, Plus, Trash2, Webhook, Zap } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { AcceptEditor, ConditionList, EVENT_HINTS, Said } from "@/components/AcceptEditor";
 import { ProblemCard } from "@/components/Problem";
@@ -12,17 +12,19 @@ import { Picker } from "@/components/ui/picker";
 import { ScheduleWhen } from "@/components/ScheduleWhen";
 import { ZonePicker } from "@/components/ZonePicker";
 import { type Client, ClientError } from "@/lib/client";
+import { httpHref } from "@/lib/safeUrl";
 import { runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { ACCEPT_LIMITS, acceptFields, type RuleDraft, ruleDraftOf } from "@/lib/accept";
-import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, composioWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf } from "@/lib/schedules";
-import type { Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
+import { ACCEPT_LIMITS, acceptFields, emptyRule, type RuleDraft, ruleDraftOf } from "@/lib/accept";
+import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf } from "@/lib/schedules";
+import type { ComposioEvent, ComposioTriggers, Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
+import type { McpServer } from "@/lib/mcp";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or its editor
  *  (`edit`: a schedule's whole, a webhook's or GitHub trigger's filter). */
-export type ScheduleView = { trigger?: string | null; kind?: "schedule" | "webhook" | "github"; edit?: boolean };
+export type ScheduleView = { trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio"; edit?: boolean };
 type PageProps = { v2: Client; go: (hash: string) => void; agentName: (id: string) => string };
 /** `minEvery`: the shortest interval the server takes (capabilities' features.triggers.min_every_s), when it says. */
 /** `now`: the page's clock, for whether a one-time schedule's picked time is still ahead. */
@@ -38,7 +40,7 @@ const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", sen
 /** `now`: the page's clock, for whether a one-time schedule's time has passed. */
 export function SchedulesPage({ v2, view, go, agentName, minEvery, failuresToPause, refreshMs = 15_000, now = Date.now }: PageProps & { view: ScheduleView; minEvery?: number; failuresToPause?: number; refreshMs?: number; now?: () => number }) {
   if (view.trigger === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} now={now} failuresToPause={failuresToPause} />;
-  if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : view.kind === "github" ? <GitHubForm v2={v2} go={go} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} now={now} />;
+  if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : view.kind === "github" ? <GitHubForm v2={v2} go={go} /> : view.kind === "composio" ? <ComposioForm v2={v2} go={go} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} now={now} />;
   if (view.edit) return <ScheduleEdit key={view.trigger} v2={v2} go={go} id={view.trigger} minEvery={minEvery} now={now} />;
   return <ScheduleDetail key={view.trigger} v2={v2} go={go} agentName={agentName} id={view.trigger} every={refreshMs} now={now} failuresToPause={failuresToPause} />;
 }
@@ -93,9 +95,10 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause }: PagePr
     <div className="p-5 md:p-8">
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <h1 className="mr-auto font-mono text-2xl font-semibold">Triggers</h1>
-        {/* With no trigger yet the panel below offers the three, each with what it is for: the page says each once. */}
+        {/* With no trigger yet the panel below offers the four, each with what it is for: the page says each once. */}
         {!(triggers && !triggers.length) && (
           <>
+            <Button size="lg" onClick={() => go("#/triggers/new-composio")}><Blocks aria-hidden /> New app trigger</Button>
             <Button size="lg" onClick={() => go("#/triggers/new-github")}><GitPullRequest aria-hidden /> New GitHub trigger</Button>
             <Button size="lg" onClick={() => go("#/triggers/new-webhook")}><Webhook aria-hidden /> New webhook</Button>
             <Button size="lg" variant="solid" onClick={() => go("#/triggers/new")}><Plus aria-hidden /> New schedule</Button>
@@ -131,20 +134,21 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause }: PagePr
 }
 
 
-/** A server with no trigger yet: what a trigger is, and the three things that can start a run, each with its own way
- *  in. These stand in for the page's three buttons, which show once there is a trigger. */
+/** A server with no trigger yet: what a trigger is, and the four things that can start a run, each with its own way
+ *  in. These stand in for the page's four buttons, which show once there is a trigger. */
 function FirstTrigger({ go }: { go: (hash: string) => void }) {
   const kinds = [
     { Icon: CalendarClock, name: "Schedule", what: "At the times you set: every day or week at a time, every few minutes or hours, or once.", action: "New schedule", to: "#/triggers/new" },
     { Icon: Webhook, name: "Webhook", what: "On each signed request another system sends to its URL.", action: "New webhook", to: "#/triggers/new-webhook" },
     { Icon: GitPullRequest, name: "GitHub", what: "On the events you pick from this server's GitHub App. Connect GitHub in Settings first.", action: "New GitHub trigger", to: "#/triggers/new-github" },
+    { Icon: Blocks, name: "From an app", what: "On an event in an app a saved Composio server connects, such as a new issue in a GitHub repository. Save the server in Settings first.", action: "New app trigger", to: "#/triggers/new-composio" },
   ];
   return (
     <section aria-labelledby="first-trigger" className="border border-primary/50 bg-primary/5 p-5">
       <p className="caps text-label text-primary-text">No triggers yet</p>
       <h2 id="first-trigger" className="mt-2 text-xl font-semibold">Start runs without being here</h2>
       <p className="mt-1 max-w-prose text-lead text-muted-foreground">A trigger starts a run of an agent for you, and each run it starts stops at a spend cap. Pick what should start it.</p>
-      <ul className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-3">
+      <ul className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
         {kinds.map(({ Icon, name, what, action, to }) => (
           <li key={name} className="flex flex-col border bg-background p-4">
             <p className="flex items-center gap-2 text-prose font-semibold"><Icon className="size-4 text-primary-text" aria-hidden />{name}</p>
@@ -170,6 +174,12 @@ function whatWords(t: Trigger, agentName: (id: string) => string, now: number): 
   const when = t.source.kind === "schedule" ? scheduleLine(t.source, t.next_at, { instead: onceWords(onceState(t, now)), now }) : t.source.kind === "github" ? githubWhen(t.source) : t.source.kind === "composio" ? composioWhen(t.source) : hookWhen(t.source);
   return `${when} · ${t.target.kind === "start_run" ? agentName(t.target.agent_id) || t.target.agent_id : `messages run ${runLabel(t.target.run_id)}`}`;
 }
+
+/** Whether Composio has a trigger from an app's instance on, in words. */
+type OnComposio = ComposioTriggers["triggers"][number]["on_composio"];
+const ON_COMPOSIO: Record<OnComposio, string> = {
+  on: "On", off: "Off", missing: "Composio no longer has it: delete this trigger and make it again.", unknown: "Composio didn't say",
+};
 
 /** A trigger this page doesn't open (one that sends its firings to a run), opened by its address: what it is, and nothing
  *  to change it. */
@@ -199,6 +209,11 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
   // while the first is, and an older answer never shows a secret the newer one already revoked.
   const rotateOut = useRef(false);
   const [renewing, setRenewing] = useState(false);
+  // A trigger from an app: whether its instance is on at Composio (GET .../composio/triggers; null, not read), what
+  // Composio could not follow of a pause or resume, and, once deleted here, what it could not follow of the delete.
+  const [atComposio, setAtComposio] = useState<OnComposio | null>(null);
+  const [composioNote, setComposioNote] = useState<string | null>(null);
+  const [gone, setGone] = useState<string | null>(null);
   const [tries, setTries] = useState(0);
   // A Run now out: a second click while it is waits for it, so a double click fires once.
   const firing = useRef(false);
@@ -217,7 +232,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
   useEffect(() => { read().catch((e) => setError(problem(e, "the trigger"))); }, [v2, id, tries]); // eslint-disable-line react-hooks/exhaustive-deps
   // Read again while the page is open, so a timed firing, its run and the next time show with no reload; not while a
   // read or a Run now is out. A read that fails here leaves the page as it was.
-  useRereads(() => { if (!reading.current && !firing.current) read().catch(() => {}); }, every, [v2, id]);
+  useRereads(() => { if (!reading.current && !firing.current && gone === null) read().catch(() => {}); }, every, [v2, id]);
   // A schedule with no cap of its own runs under its agent's default (definition.max_cost_usd): read it to say so.
   const [agentCap, setAgentCap] = useState<number | undefined>(undefined);
   const capAgent = trigger && trigger.target.kind === "start_run" && typeof trigger.target.max_cost_usd !== "number" ? trigger.target.agent_id : null;
@@ -227,12 +242,33 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
     v2.getAgent(capAgent).then((r) => { if (live) setAgentCap(typeof r.agent.definition.max_cost_usd === "number" ? r.agent.definition.max_cost_usd : undefined); }, () => {});
     return () => { live = false; };
   }, [v2, capAgent]);
+  const appServer = trigger?.source.kind === "composio" ? trigger.source.server : null;
+  useEffect(() => {
+    if (!appServer) return;
+    let live = true;
+    v2.composioTriggers(appServer).then((r) => { if (live) setAtComposio(r.triggers.find((x) => x.id === id)?.on_composio ?? "unknown"); }, () => { if (live) setAtComposio(null); });
+    return () => { live = false; };
+  }, [v2, appServer, id, trigger?.enabled]);
+  // Deleted here, with what Composio could not follow: said until the person leaves.
+  if (gone !== null) {
+    return (
+      <div className="p-5 md:p-8">
+        <a href="#/triggers" className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
+        <h1 className="mt-3 break-words text-2xl font-semibold leading-tight">{trigger?.name ?? id}</h1>
+        <p className="mt-2 text-body">Deleted here. Its runs stay.</p>
+        <p role="status" data-composio-note className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-body text-warning-text">{gone}</p>
+        <a href="#/triggers" className="mt-4 inline-block text-body underline underline-offset-2">All triggers</a>
+      </div>
+    );
+  }
   if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} link={{ href: "#/triggers", label: "All triggers" }} /> : <ListSkeleton label="Loading the trigger" rows={4} />;
   const hook = isWebhookTrigger(trigger) ? trigger : null;
   // A GitHub trigger: its events, its firings, Pause/Resume (a Disconnect turns it off) and Delete; no URL or secret.
   const gh = isGitHubTrigger(trigger) ? trigger : null;
-  if (!hook && !gh && !isScheduleTrigger(trigger)) return <NotASchedule />;
-  const runs = trigger as Schedule | WebhookTrigger | GitHubTrigger;
+  // A trigger from an app: its server, event and config, its filter, and whether Composio still has its instance.
+  const app = isComposioTrigger(trigger) ? trigger : null;
+  if (!hook && !gh && !app && !isScheduleTrigger(trigger)) return <NotASchedule />;
+  const runs = trigger as Schedule | WebhookTrigger | GitHubTrigger | ComposioTrigger;
   // A one-time schedule whose time has passed: Done with when it ran (a started firing of its own time, the server's word:
   // nothing to resume), or that its time passed. Resume stays unless the server says it ran: the browser's clock alone
   // may run ahead of the server's.
@@ -244,11 +280,18 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
   };
   const toggle = () => act("pause", async () => {
     generation.current++;
-    const answer = await v2.updateTrigger(id, { enabled: !trigger.enabled });
+    setComposioNote(null);
+    const { composio, ...answer } = await v2.updateTrigger(id, { enabled: !trigger.enabled });
     generation.current++;
     setTrigger(answer);
+    setComposioNote(composio?.note ?? null);
   }, trigger.enabled ? "the pause" : "the resume");
-  const remove = () => act("delete", async () => { await v2.deleteTrigger(id); go("#/triggers"); }, "the delete");
+  // A delete Composio could not follow stays on the page to say what to remove there.
+  const remove = () => act("delete", async () => {
+    const said = await v2.deleteTrigger(id);
+    if (said?.composio) setGone(said.composio.note);
+    else go("#/triggers");
+  }, "the delete");
   // A composio trigger's secret is Composio's: given here, sealed, never shown again.
   const giveSecret = async () => {
     if (rotateOut.current) return;
@@ -282,12 +325,12 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
           <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && !done && <OffChip trigger={trigger} />}</h1>
-          <p className="mt-2 break-words font-mono text-small text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : <span title={cronOf(trigger)}>{scheduleLine(runs.source as Schedule["source"], trigger.next_at, { instead: onceWords(done), now: now() })}</span>}</p>
+          <p className="mt-2 break-words font-mono text-small text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : app ? `App · ${composioWhen(app.source)}` : <span title={cronOf(trigger)}>{scheduleLine(runs.source as Schedule["source"], trigger.next_at, { instead: onceWords(done), now: now() })}</span>}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
           {!(done && "ran" in done) && <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>}
-          <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> {hook || gh ? "Edit filter" : "Edit"}</Button>
+          <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> {hook || gh || app ? "Edit filter" : "Edit"}</Button>
           {hook && hook.source.signature === "composio" && (!givingSecret ? <Button size="sm" onClick={() => setGivingSecret(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Set secret</Button> : (
             <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); void giveSecret(); }}>
               <Input name="secret" type="password" autoComplete="off" aria-label="Composio's webhook secret" className="w-64" value={given} onChange={(e) => setGiven(e.target.value)} />
@@ -317,6 +360,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
         </p>
       )}
       {said && <ProblemCard problem={said} className="mt-4" />}
+      {composioNote && <p role="status" data-composio-note className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-body text-warning-text">{composioNote}</p>}
       {hook && fresh && <SecretOnce label="The webhook's new secret" secret={fresh} />}
       <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-body sm:grid-cols-[max-content_minmax(0,1fr)]">
         <dt className="caps text-label text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={`#/agents/${encodeURIComponent(runs.target.agent_id)}`} className="hover:underline">{agentName(runs.target.agent_id) || runs.target.agent_id}</a></dd>
@@ -327,6 +371,15 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
           <dt className="caps text-label text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}{hook.source.signature === "composio" && !secretSet && !(trigger as { secret?: { set?: boolean } }).secret?.set ? " (no secret set yet: every request is refused)" : ""}</dd>
           <dt className="caps text-label text-muted-foreground">Accepts</dt>
           <dd className="min-w-0 break-words">{hook.source.accept?.length ? <ul className="space-y-1 font-mono text-small">{hook.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every signed request"}</dd>
+        </> : app ? <>
+          <dt className="caps text-label text-muted-foreground">App</dt><dd className="min-w-0 break-words"><a href="#/settings/mcp" className="font-mono hover:underline">{app.source.server}</a><span className="text-small text-muted-foreground"> · a saved Composio server</span></dd>
+          <dt className="caps text-label text-muted-foreground">Event</dt><dd className="min-w-0 break-words font-mono">{app.source.event}</dd>
+          <dt className="caps text-label text-muted-foreground">Config</dt>
+          <dd className="min-w-0 break-words">{Object.keys(app.source.config).length ? <ul className="space-y-1 font-mono text-small">{Object.entries(app.source.config).map(([k, v]) => <li key={k}>{k}: {typeof v === "string" ? v : JSON.stringify(v)}</li>)}</ul> : "None"}</dd>
+          <dt className="caps text-label text-muted-foreground">Accepts</dt>
+          <dd className="min-w-0 break-words">{app.source.accept?.length ? <ul className="space-y-1 font-mono text-small">{app.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every event of its instance"}</dd>
+          <dt className="caps text-label text-muted-foreground">At Composio</dt>
+          <dd className="min-w-0 break-words">{atComposio ? <span data-on-composio={atComposio} className={atComposio === "missing" ? "text-warning-text" : undefined}>{ON_COMPOSIO[atComposio]}</span> : <span className="text-muted-foreground">Not read</span>}</dd>
         </> : gh ? <>
           <dt className="caps text-label text-muted-foreground">Accepts</dt>
           <dd className="min-w-0 break-words"><ul className="space-y-1 font-mono text-small">{gh.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul><p className="mt-1 text-small text-muted-foreground">From this server's GitHub App (Settings → GitHub).</p></dd>
@@ -358,8 +411,9 @@ function ScheduleEdit({ v2, go, id, minEvery, now }: FormProps & { id: string })
   const [tries, setTries] = useState(0);
   useEffect(() => { v2.getTrigger(id).then(setTrigger, (e) => setError(problem(e, "the trigger"))); }, [v2, id, tries]);
   if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} /> : <ListSkeleton label="Loading the trigger" rows={4} />;
-  // A webhook's or GitHub trigger's filter is edited alone: its address, secret and run stay as they are.
-  if (isWebhookTrigger(trigger) || isGitHubTrigger(trigger)) return <FilterForm v2={v2} go={go} trigger={trigger} />;
+  // A webhook's, GitHub trigger's or trigger from an app's filter is edited alone: its address, secret, what was made on
+  // Composio, and its run stay as they are.
+  if (isWebhookTrigger(trigger) || isGitHubTrigger(trigger) || isComposioTrigger(trigger)) return <FilterForm v2={v2} go={go} trigger={trigger} />;
   // Never an editor for another kind of trigger: its save would rebuild it as a schedule that starts runs.
   if (!isScheduleTrigger(trigger)) return <NotASchedule />;
   return <ScheduleForm v2={v2} go={go} trigger={trigger} minEvery={minEvery} now={now} />;
@@ -743,6 +797,203 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
   );
 }
 
+/** A new trigger from an app: a saved Composio server (Settings → MCP servers), one of its toolkit's events and that
+ *  event's config, its fields read from the event's schema; an optional filter on what Composio delivers; then the agent
+ *  each event starts a capped run of. The server makes the instance on Composio, and the project's webhook subscription
+ *  when there is none, and says in its own words what stops it: a subscription at another address is moved here only once
+ *  the person says so. */
+function ComposioForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
+  const [servers, setServers] = useState<McpServer[] | null>(null);
+  const [readError, setReadError] = useState<Problem | null>(null);
+  const [tries, setTries] = useState(0);
+  const [events, setEvents] = useState<{ server: string; events: ComposioEvent[] } | null>(null);
+  const [eventsError, setEventsError] = useState<Problem | null>(null);
+  const [eventTries, setEventTries] = useState(0);
+  const [draft, setDraft] = useState<ComposioDraft>(emptyComposio);
+  const [agents, setAgents] = useState<Agent[] | null>(null);
+  const [issues, setIssues] = useState<Record<string, string>>({});
+  const [rest, setRest] = useState<string[]>([]);
+  // A refusal's way on: the link to connect the server's account, or the address the project's subscription is at.
+  const [connect, setConnect] = useState<string | null>(null);
+  const [elsewhere, setElsewhere] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  // A create sent again unchanged reuses its Idempotency-Key; an edited one (a move asked) gets a new key.
+  const keys = useRef(keeper()).current;
+  // A create that answers after the person left the form opens nothing.
+  const open = useRef(true);
+  useEffect(() => { open.current = true; return () => { open.current = false; }; }, []);
+  useEffect(() => {
+    let live = true;
+    setReadError(null);
+    v2.listMcpServers().then((r) => {
+      if (!live) return;
+      const apps = r.servers.filter((x) => x.source === "composio");
+      setServers(apps);
+      // One saved Composio server: it is the one.
+      if (apps.length === 1) setDraft((d) => (d.server ? d : { ...d, server: apps[0]!.name }));
+    }, (e) => { if (live) setReadError(problem(e, "the saved MCP servers")); });
+    return () => { live = false; };
+  }, [v2, tries]);
+  useEffect(() => {
+    if (!draft.server) return;
+    let live = true;
+    const server = draft.server;
+    setEvents(null); setEventsError(null);
+    v2.composioEvents(server).then((r) => { if (live) setEvents({ server, events: r.events }); }, (e) => { if (live) setEventsError(problem(e, `${server}'s events`)); });
+    return () => { live = false; };
+  }, [v2, draft.server, eventTries]);
+  useEffect(() => { allAgents(v2).then(setAgents, () => setAgents([])); }, [v2]);
+  const set = <K extends keyof ComposioDraft>(k: K) => (value: ComposioDraft[K]) => setDraft((d) => ({ ...d, [k]: value }));
+  // Another server or event starts its config and filter afresh.
+  const pickServer = (server: string) => setDraft((d) => (d.server === server ? d : { ...d, server, event: "", config: {}, where: [] }));
+  const pickEvent = (event: string) => { setDraft((d) => (d.event === event ? d : { ...d, event, config: {}, where: [] })); setIssues({}); };
+  const event = events?.server === draft.server ? events.events.find((e) => e.slug === draft.event) : undefined;
+  const fields: ConfigField[] = configFieldsOf(event?.config);
+  const agentCapRaw = (agents ?? []).find((a) => a.agent_id === draft.agentId)?.definition.max_cost_usd;
+  const agentCap = typeof agentCapRaw === "number" && agentCapRaw > 0 ? agentCapRaw : undefined;
+  const send = async (body: TriggerCreate) => {
+    const shown = new Set(["name", "source.server", "source.event", "source.config", ...fields.map((f) => `source.config.${f.name}`), "target.agent_id", "target.input", "target.max_cost_usd", ...(draft.where.length ? acceptFields([draft.where.length]) : [])]);
+    setIssues({}); setRest([]); setConnect(null); setElsewhere(null); setSaving(true);
+    try {
+      const made = await v2.createTrigger(body, keys.keyFor("createTrigger", body));
+      if (open.current) go(hashOf(made.id));
+      return;
+    } catch (err) {
+      if (err instanceof ClientError && err.code === "composio_subscription_elsewhere") setElsewhere(typeof err.details?.webhook_url === "string" ? err.details.webhook_url : "another address");
+      else if (err instanceof ClientError && err.code.startsWith("composio_")) {
+        // Composio's refusals are said in the server's words: what stops it, and how to go on.
+        setRest([err.message]);
+        if (err.code === "composio_not_connected") setConnect(httpHref(typeof err.details?.connect_url === "string" ? err.details.connect_url : null) ?? null);
+      } else {
+        const found = issuesOf(err);
+        setIssues(Object.fromEntries(Object.entries(found.fields).filter(([k]) => shown.has(k))));
+        setRest([...found.rest, ...Object.entries(found.fields).filter(([k]) => !shown.has(k)).map(([, v]) => v)]);
+      }
+    }
+    setSaving(false);
+  };
+  const bodyNow = () => composioBodyOf(draft, fields, agentCap !== undefined);
+  const save = (e: FormEvent) => {
+    e.preventDefault();
+    const { body, issues: missing } = bodyNow();
+    setRest([]); setConnect(null);
+    if (!body) { setIssues(missing ?? {}); return; }
+    void send(body);
+  };
+  // The person said to move the project's subscription here: the same create, asking for the move.
+  const move = () => {
+    const { body } = bodyNow();
+    setElsewhere(null);
+    if (body) void send({ ...body, source: { ...body.source, move_subscription: true } } as TriggerCreate);
+  };
+  const back = <a href="#/triggers" className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>;
+  const title = <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Blocks className="size-5 text-primary-text" aria-hidden />New app trigger</h1>;
+  if (readError) return <div className="max-w-2xl p-5 md:p-8">{back}{title}<ProblemCard problem={readError} onRetry={() => setTries((n) => n + 1)} className="mt-4" /></div>;
+  if (servers === null) return <ListSkeleton label="Reading the saved Composio servers" rows={3} />;
+  if (!servers.length) {
+    return (
+      <div className="max-w-2xl p-5 md:p-8">
+        {back}{title}
+        <p className="mt-4 border px-4 py-6 text-body">
+          Save a Composio server first: <a href="#/settings/mcp" className="underline underline-offset-2">Settings → MCP servers</a>, Add from Composio. A trigger from an app uses its key and the account it is connected as.
+        </p>
+      </div>
+    );
+  }
+  const live = agentsByName((agents ?? []).filter((a) => !a.archived_at));
+  return (
+    <form onSubmit={save} className="max-w-2xl p-5 md:p-8" noValidate>
+      {back}{title}
+      <p className="mt-2 text-body text-muted-foreground">Each event Composio delivers for it starts a capped run of the agent. This server makes the trigger on Composio for the account the server is connected as.</p>
+      {rest.length > 0 && (
+        <div className="mt-4 border border-destructive/50 p-3 text-body text-destructive-text" role="alert">
+          {rest.map((r, i) => <p key={i} className="break-words">{r}</p>)}
+          {connect && <a href={connect} target="_blank" rel="noreferrer" className="mt-2 inline-block underline underline-offset-2">Connect the account</a>}
+        </div>
+      )}
+      <div className="mt-5 space-y-5">
+        <Field label="Name" field="name" issue={issues.name}><Input name="name" value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="new issues" /></Field>
+        <Field label="Composio server" field="source.server" issue={issues["source.server"]}>
+          <Picker name="server" label="Composio server" className="w-full" value={draft.server} onChange={pickServer}
+            options={[{ value: "", label: "Pick a server" }, ...servers.map((x) => ({ value: x.name, label: x.toolkit ? `${x.name} (${x.toolkit})` : x.name }))]} />
+        </Field>
+        {draft.server && (eventsError ? <ProblemCard problem={eventsError} onRetry={() => setEventTries((n) => n + 1)} className="" /> : (
+          <Field label="Event" field="source.event" issue={issues["source.event"]} hint={event?.description}>
+            <Picker name="event" label="Event" className="w-full" value={draft.event} onChange={pickEvent} disabled={!events}
+              options={[{ value: "", label: events ? (events.events.length ? "Pick an event" : "Composio offers no event for this toolkit") : "Loading the events" }, ...(events?.events ?? []).map((x) => ({ value: x.slug, label: x.name || x.slug }))]} />
+          </Field>
+        ))}
+        {event && (
+          <>
+            {event.polled && <p className="text-small text-muted-foreground" role="note">Composio checks for it every few minutes, so a run starts some minutes after the event.</p>}
+            {event.instructions && <p className="whitespace-pre-wrap text-small text-muted-foreground">{event.instructions}</p>}
+            <fieldset className="min-w-0">
+              <legend className="caps text-label text-muted-foreground">Config</legend>
+              <p className="mb-2 mt-1 text-small text-muted-foreground">What Composio watches for <span className="font-mono">{event.slug}</span>.</p>
+              <Said issues={issues} field="source.config" />
+              {!fields.length ? <p className="text-small text-muted-foreground">This event takes no config.</p> : (
+                <div className="space-y-4">
+                  {fields.map((f) => <ConfigInput key={`${event.slug}:${f.name}`} field={f} value={draft.config[f.name] ?? f.initial} issue={issues[`source.config.${f.name}`]} onChange={(v) => setDraft((d) => ({ ...d, config: { ...d.config, [f.name]: v } }))} />)}
+                </div>
+              )}
+            </fieldset>
+            <AppFilter where={draft.where} onChange={set("where")} issues={issues} />
+          </>
+        )}
+        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+          <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
+            options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
+              ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
+        </Field>
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="What Composio delivered comes with it."><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
+        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+          hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
+          <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
+        </Field>
+      </div>
+      {elsewhere && (
+        <div role="alertdialog" aria-label="Move the subscription here?" className="mt-6 space-y-3 border border-warning/50 p-4 text-body">
+          <p>This Composio project's webhook subscription sends its events to <code className="break-all font-mono text-small">{elsewhere}</code>, not to this server.</p>
+          <p>Moving it here sends every event of the project to this server instead: whatever listens at that address stops getting them.</p>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="solid" onClick={move}>Move it here</Button>
+            <Button type="button" size="sm" variant="ghost" onClick={() => setElsewhere(null)}>Keep it there</Button>
+          </div>
+        </div>
+      )}
+      <div className="mt-6 flex flex-wrap gap-2">
+        <Button type="submit" size="lg" variant="solid" disabled={saving || !!elsewhere}>{saving ? "Creating" : "Create trigger"}</Button>
+        <Button type="button" size="lg" variant="ghost" onClick={() => go("#/triggers")}>Cancel</Button>
+      </div>
+    </form>
+  );
+}
+
+/** One field of an event's config, typed as its schema says: text, a number, a choice, a switch, or JSON. Its title, its
+ *  description, and whether it is required; the issue under it (`source.config.<name>`). */
+function ConfigInput({ field: f, value, issue, onChange }: { field: ConfigField; value: string; issue?: string; onChange: (value: string) => void }) {
+  const name = `config-${f.name}`;
+  const error = issue ? <span data-issue={`source.config.${f.name}`}>{issue}</span> : undefined;
+  if (f.type === "boolean") {
+    return (
+      <div data-config-field={f.name}>
+        <label className="flex items-center gap-2 text-body"><input type="checkbox" name={name} checked={value === "true"} onChange={(e) => onChange(e.target.checked ? "true" : "false")} className="accent-primary" /> {f.title}</label>
+        {f.description && <p className="mt-1 text-small text-muted-foreground">{f.description}</p>}
+        {issue && <p className="mt-1 text-small text-destructive-text" role="alert">{error}</p>}
+      </div>
+    );
+  }
+  return (
+    <div data-config-field={f.name}>
+      <UiField className="min-w-0" label={f.title} required={f.required} optional={!f.required} hint={f.description} error={error}>
+        {f.options ? <Picker name={name} label={f.title} className="w-full" value={value} onChange={onChange} options={[...(f.required ? [] : [{ value: "", label: "None" }]), ...f.options.map((o) => ({ value: o, label: o }))]} placeholder="Pick one" />
+          : f.type === "json" ? <Textarea name={name} rows={3} className="p-3 font-mono" value={value} onChange={(e) => onChange(e.target.value)} spellCheck={false} />
+          : <Input name={name} inputMode={f.type === "string" ? undefined : "decimal"} value={value} onChange={(e) => onChange(e.target.value)} autoComplete="off" spellCheck={false} />}
+      </UiField>
+    </div>
+  );
+}
+
 /** What a webhook's runs do with its filter and its cap (`max_active_runs`, serve's triggers.ts): with no filter a
  *  request while its last run is going is skipped; with one, each request it takes is its own run (its adapter's
  *  `concurrent`). A cap holds either way, and a request past it waits; taking the filter away keeps the cap. */
@@ -815,19 +1066,24 @@ function GitHubEvents({ picks, onChange, issues }: { picks: GitHubPicks; onChang
   );
 }
 
-/** A webhook's or GitHub trigger's filter, edited: a PATCH of its source, its kind and signature as they were and the new
- *  `accept` (none, on a webhook: every signed request fires again). Its URL, secret and run stay. A save that changes
- *  nothing sends nothing. */
-function FilterForm({ v2, go, trigger }: { v2: Client; go: (hash: string) => void; trigger: WebhookTrigger | GitHubTrigger }) {
+/** A webhook's, GitHub trigger's or trigger from an app's filter, edited: a PATCH of its source, all of it as it was but
+ *  the new `accept` (none, on a webhook: every signed request fires again; on a trigger from an app, every event of its
+ *  instance). Its URL, secret, what was made on Composio and its run stay. A save that changes nothing sends nothing. */
+function FilterForm({ v2, go, trigger }: { v2: Client; go: (hash: string) => void; trigger: WebhookTrigger | GitHubTrigger | ComposioTrigger }) {
   const hook = isWebhookTrigger(trigger) ? trigger : null;
-  const [rules, setRules] = useState<RuleDraft[]>(() => (hook ? (hook.source.accept ?? []).map(ruleDraftOf) : []));
-  const [picks, setPicks] = useState<GitHubPicks>(() => (hook ? { events: [], where: {}, other: [] } : githubPicksOf((trigger as GitHubTrigger).source.accept)));
+  const app = isComposioTrigger(trigger) ? trigger : null;
+  const [rules, setRules] = useState<RuleDraft[]>(() => (hook ? (hook.source.accept ?? []).map(ruleDraftOf) : app ? (app.source.accept ?? []).map(ruleDraftOf) : []));
+  const [picks, setPicks] = useState<GitHubPicks>(() => (hook || app ? { events: [], where: {}, other: [] } : githubPicksOf((trigger as GitHubTrigger).source.accept)));
+  // A trigger from an app's filter is its first rule's conditions (the form's own); any rule after it, made through the
+  // API, is kept as it is. A first rule that names actions is kept so too.
+  const appFirst = app && rules[0] && !rules[0].actions.trim() ? rules[0] : null;
+  const appOthers = app ? rules.slice(appFirst ? 1 : 0) : [];
   const [issues, setIssues] = useState<Record<string, string>>({});
   const [rest, setRest] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const save = async (e: FormEvent) => {
     e.preventDefault();
-    const { source, issues: found } = hook ? webhookSourceOf(hook.source, rules) : githubSourceOf(picks);
+    const { source, issues: found } = hook ? webhookSourceOf(hook.source, rules) : app ? composioSourceOf(app.source, appFirst?.where ?? [], appOthers) : githubSourceOf(picks);
     setRest([]);
     if (Object.keys(found).length) { setIssues(found); return; }
     setIssues({}); setSaving(true);
@@ -836,21 +1092,24 @@ function FilterForm({ v2, go, trigger }: { v2: Client; go: (hash: string) => voi
       go(hashOf(trigger.id));
     } catch (err) {
       const refused = issuesOf(err);
-      const shown = acceptFields(hook ? rules.map((r) => r.where.length) : githubRulesOf(picks).map((r) => r.where.length));
+      const shown = acceptFields(hook || app ? rules.map((r) => r.where.length) : githubRulesOf(picks).map((r) => r.where.length));
       setIssues(Object.fromEntries(Object.entries(refused.fields).filter(([k]) => shown.has(k))));
       setRest([...refused.rest, ...Object.entries(refused.fields).filter(([k]) => !shown.has(k)).map(([, v]) => v)]);
       setSaving(false);
     }
   };
-  const Icon = hook ? Webhook : GitPullRequest;
+  const Icon = hook ? Webhook : app ? Blocks : GitPullRequest;
+  // The first rule's conditions, as the form edits them: emptied, the rule goes.
+  const setWhere = (where: RuleDraft["where"]) => setRules(appFirst ? (where.length ? [{ ...appFirst, where }, ...appOthers] : appOthers) : where.length ? [{ ...emptyRule(), event: app!.source.event, where }, ...appOthers] : appOthers);
   return (
     <form onSubmit={(e) => void save(e)} className="max-w-2xl p-5 md:p-8" noValidate>
       <a href={hashOf(trigger.id)} className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> {trigger.name}</a>
       <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Icon className="size-5 text-primary-text" aria-hidden />Edit filter</h1>
-      <p className="mt-2 text-body text-muted-foreground">{hook ? "Which signed requests start a run. Its URL and secret stay as they are." : "Which events from this server's GitHub App start a run."}</p>
+      <p className="mt-2 text-body text-muted-foreground">{hook ? "Which signed requests start a run. Its URL and secret stay as they are." : app ? `Which ${app.source.event} events from ${app.source.server} start a run. Its event, its config and its instance on Composio stay as they are.` : "Which events from this server's GitHub App start a run."}</p>
       {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-body text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
       <div className="mt-5 space-y-5">
         {hook ? <WebhookFilter signature={hook.source.signature ?? "standard"} rules={rules} onChange={setRules} issues={issues} cap={trigger.max_active_runs ?? null} />
+          : app ? <AppFilter where={appFirst?.where ?? []} onChange={setWhere} issues={issues} others={appOthers.map((r) => r.event + (r.actions.trim() ? ` (${r.actions.trim()})` : ""))} />
           : <GitHubEvents picks={picks} onChange={setPicks} issues={issues} />}
       </div>
       <div className="mt-6 flex flex-wrap gap-2">
@@ -858,5 +1117,22 @@ function FilterForm({ v2, go, trigger }: { v2: Client; go: (hash: string) => voi
         <Button type="button" size="lg" variant="ghost" onClick={() => go(hashOf(trigger.id))}>Cancel</Button>
       </div>
     </form>
+  );
+}
+
+/** A trigger from an app's filter: conditions on the event's delivery, all of which must hold (none: every event of its
+ *  instance starts a run). The event's data is under /data. `others`: rules made through the API, kept as they are. */
+function AppFilter({ where, onChange, issues, others = [] }: { where: RuleDraft["where"]; onChange: (where: RuleDraft["where"]) => void; issues: Record<string, string>; others?: string[] }) {
+  return (
+    <fieldset className="min-w-0">
+      <legend className="caps text-label text-muted-foreground">Filter <span className="font-normal normal-case">(optional)</span></legend>
+      <div className="mt-2 space-y-3">
+        <Said issues={issues} field="source.accept" />
+        <Said issues={issues} field="source.accept[0]" />
+        <p className="text-small text-muted-foreground">A condition reads what Composio delivers: the event's data is under /data, such as /data/title for a new issue's title.</p>
+        <ConditionList name="composio" at="source.accept[0]" where={where} onChange={onChange} issues={issues} label="Only when" />
+        {others.length > 0 && <p className="text-small text-muted-foreground" role="note">{others.length === 1 ? "One more rule, made through the API, is kept as it is" : `${others.length} more rules, made through the API, are kept as they are`}: {others.join(", ")}.</p>}
+      </div>
+    </fieldset>
   );
 }

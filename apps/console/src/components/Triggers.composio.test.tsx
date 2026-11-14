@@ -85,7 +85,8 @@ async function open(v2: ReturnType<typeof createClient>, view: Parameters<typeof
   act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName: (id: string) => (id === "triage" ? "Triage" : id) })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
-  const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
+  // A button by its words, or by its aria-label when it shows an icon alone (Remove condition 1).
+  const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()) || label.test(b.getAttribute("aria-label") ?? ""));
   const click = async (label: RegExp) => {
     const b = button(label);
     if (!b) throw new Error(`no button ${label}; buttons: ${[...host.querySelectorAll("button")].map((x) => JSON.stringify(x.textContent)).join(", ")}`);
