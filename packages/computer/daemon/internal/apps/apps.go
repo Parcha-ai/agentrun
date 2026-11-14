@@ -29,6 +29,9 @@ const LaunchWindow = 10 * time.Second
 // endWait is how long apps.terminate waits for the app's windows to go after TERM, and again after KILL.
 const endWait = 3 * time.Second
 
+// activeWait is the longest apps.launch waits for the window manager to make the app's window the active one.
+const activeWait = 2 * time.Second
+
 // poll is how often a launch or a terminate looks at the windows again.
 const poll = 50 * time.Millisecond
 
@@ -163,7 +166,7 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 		if err := g.front(ctx, shown[len(shown)-1], before); err != nil {
 			return nil, err
 		}
-		return struct{}{}, nil
+		return g.active(ctx, shown[len(shown)-1], before)
 	}
 	started, err := g.table.Start(ctx, process.StartParams{Argv: argv, Env: map[string]string{"DISPLAY": g.display.Name()}, Orphans: "keep"})
 	if err != nil {
@@ -194,7 +197,7 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 			if err := g.front(ctx, *pick, now); err != nil {
 				return nil, err
 			}
-			return struct{}{}, nil
+			return g.active(ctx, *pick, now)
 		}
 		if time.Now().After(deadline) {
 			return nil, rpc.Errorf(rpc.KindTimeout, "%s showed no window within %s of its launch (%s): it may still be starting, and apps.terminate ends it", e.ID, seconds(g.window), g.ended(started.ID))
@@ -261,6 +264,30 @@ func (g *group) signal(app string, s *snapshot, sig string) {
 			_ = syscall.Kill(w.pid, n)
 		}
 	}
+}
+
+// active answers apps.launch once the window manager has made w its active window, so keys typed right after the
+// launch reach it: the manager takes the request front sent in its own time. With no window manager, front gave w the
+// focus itself. A manager that has not within activeWait leaves the launch answered: the window shows.
+func (g *group) active(ctx context.Context, w window, s *snapshot) (any, error) {
+	if !s.wm {
+		return struct{}{}, nil
+	}
+	for deadline := time.Now().Add(activeWait); time.Now().Before(deadline); {
+		now, err := g.look()
+		if err != nil {
+			return nil, err
+		}
+		if now.active == w.id {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, rpc.Errorf(rpc.KindAborted, "apps.launch was cancelled while the window manager brought the app's window to the front")
+		case <-time.After(poll):
+		}
+	}
+	return struct{}{}, nil
 }
 
 // running is whether the launch with that process id still runs its program.

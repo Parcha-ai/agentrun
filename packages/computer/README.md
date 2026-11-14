@@ -602,7 +602,8 @@ by its rectangle), so a longer one ends the connection before anything is alloca
   url? })` takes an id, a name (`Mousepad`) or a program (`mousepad`), starts the entry's `Exec` (`url` in its `%u`/`%f`
   field; an entry with none refuses a `url` as `invalid`) as `process.start` does with orphans `keep`, with `DISPLAY`,
   and answers `{}` once a new window of the app shows, raised and focused (through the window manager's
-  `_NET_ACTIVE_WINDOW` when one runs); none within 10 s is `timeout`, "no window within 10 s", and the app runs on. An
+  `_NET_ACTIVE_WINDOW` when one runs, waiting up to 2 s for it to be the active window), so keys typed right after
+  reach it; none within 10 s is `timeout`, "no window within 10 s", and the app runs on. An
   app already running with a window is brought to the front and answers at once, unless a `url` is given. A
   window is the app's by the launch that made it (`_NET_WM_PID` and the process's parents), else by its `WM_CLASS`
   (the entry's `StartupWMClass`, its id's last part or its program). `background` is `unsupported`: a Linux desktop
@@ -1775,8 +1776,9 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    whose start answers after the call gave up on it (its bound passed, or the caller aborted) is killed as it lands.
 6. A desktop's X server, `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`, starts through the daemon with
    `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
-   shared with Docker). Then xfwm4, which the template has (`xfwm4 --compositor=off --sm-client-disable`,
-   `WINDOW_MANAGER`), starts the same way on it, so the apps an agent opens are framed and focused. Hello re-checks the
+   shared with Docker). Then xfwm4, which the template has, starts the same way on it (`dbus-run-session -- xfwm4
+   --compositor=off --sm-client-disable`, `WINDOW_MANAGER`: xfwm4 reads its settings over a session bus and exits
+   without one), so the apps an agent opens are framed and focused. Hello re-checks the
    display on every call, so `connect()` refuses a desktop whose X server has gone (it reads back kind `linux`).
 
 envd runs as root and obeys anyone with the API key, as Daytona's toolbox does, and answers on 49983 (`e2b@2.63.0`

@@ -170,8 +170,9 @@ test("the Agent37 build's recipe is box/Dockerfile plus Xvfb, xfwm4 and the apps
   assert.deepEqual([...agent37Build.RECIPE].sort(), ["Dockerfile", ...copied].sort());
   assert.ok(agent37Build.DESKTOP.includes(`apt-get install -y -qq --no-install-recommends ${agent37Build.DESKTOP_PACKAGES.join(" ")} >/dev/null`));
   for (const name of ["xvfb", "xfwm4", "xfce4-terminal", "mousepad", "firefox-esr", "xdotool"]) assert.ok(agent37Build.DESKTOP_PACKAGES.includes(name), name);
-  assert.equal(WINDOW_MANAGER[0], "xfwm4", "the window manager the provider starts is one the image has");
-  assert.match(agent37Build.DESKTOP, /for x in Xvfb xfwm4 [^;]*; do command -v "\$x"/, "the build checks the programs are there");
+  const programs = agent37Build.DESKTOP.match(/for x in ([^;]*); do command -v "\$x"/)?.[1].split(" ") ?? [];
+  assert.ok(programs.includes("Xvfb"), "the build checks the X server is there");
+  for (const program of WINDOW_MANAGER.filter((arg) => !arg.startsWith("-"))) assert.ok(programs.includes(program), `the build checks the window manager's ${program} is there`);
   const checked = agent37Build.DESKTOP.match(/for app in ([^;]*); do/)?.[1].split(" ") ?? [];
   assert.ok(checked.some((app) => DESKTOP_APPS.includes(app)), "the build checks a desktop file the conformance apps case opens");
   assert.match(agent37Build.DESKTOP, /! command -v sudo/, "the desktop's packages bring no sudo, checked");

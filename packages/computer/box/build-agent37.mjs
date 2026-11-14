@@ -27,8 +27,8 @@ export const API_URL = "https://api.agent37.com";
 /** Every file the image is made of besides DESKTOP: the Dockerfile and what it copies, as build-e2b.mjs hashes them. */
 export const RECIPE = ["Dockerfile", "agentrun-archil"];
 /**
- * What a desktop adds to box/Dockerfile: Xvfb and xfwm4, which the provider starts through computerd as the tool user on
- * :0 (src/desktop.ts), and the apps E2B Desktop has that are cheap to carry: Xfce's terminal and text editor, Firefox
+ * What a desktop adds to box/Dockerfile: Xvfb and xfwm4 (with dbus-run-session, which xfconf's packages bring), which
+ * the provider starts through computerd as the tool user on :0 (src/desktop.ts), and the apps E2B Desktop has that are cheap to carry: Xfce's terminal and text editor, Firefox
  * ESR, and xdotool. computerd's apps group lists and opens them by their desktop files. Nothing starts here, and no VNC
  * server or sudo comes with it.
  */
@@ -40,7 +40,7 @@ RUN set -eu; \\
     apt-get update -qq; \\
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ${DESKTOP_PACKAGES.join(" ")} >/dev/null; \\
     rm -rf /var/lib/apt/lists/*; \\
-    for x in Xvfb xfwm4 xfce4-terminal mousepad firefox-esr xdotool; do command -v "$x" >/dev/null || { echo "the image has no $x" >&2; exit 1; }; done; \\
+    for x in Xvfb xfwm4 dbus-run-session xfce4-terminal mousepad firefox-esr xdotool; do command -v "$x" >/dev/null || { echo "the image has no $x" >&2; exit 1; }; done; \\
     for app in org.xfce.mousepad xfce4-terminal firefox-esr; do [ -f "/usr/share/applications/$app.desktop" ] || { echo "the image has no desktop file $app.desktop" >&2; exit 1; }; done; \\
     ! command -v sudo >/dev/null 2>&1 || { echo "the image has sudo" >&2; exit 1; }
 `;

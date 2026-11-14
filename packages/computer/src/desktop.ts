@@ -24,8 +24,12 @@ export interface DesktopOptions {
 /** The groups a desktop declares besides exec, files and processes: apps is computerd's, from the desktop's .desktop files. */
 export const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys", "apps"] as const;
 
-/** The window manager E2B's and Agent37's desktops run: xfwm4, which both images have, with no compositor and no session. */
-export const WINDOW_MANAGER: readonly string[] = ["xfwm4", "--compositor=off", "--sm-client-disable"];
+/**
+ * The window manager E2B's and Agent37's desktops run: xfwm4, which both images have, with no compositor and no session
+ * manager, in a session bus of its own (dbus-run-session), where it reads its settings from xfconfd: without one it
+ * exits at once, "Xfconf could not be initialized".
+ */
+export const WINDOW_MANAGER: readonly string[] = ["dbus-run-session", "--", "xfwm4", "--compositor=off", "--sm-client-disable"];
 
 const DISPLAY = /^:\d{1,5}(\.\d{1,5})?$/;
 /** How often create asks the daemon whether the display is up yet. */

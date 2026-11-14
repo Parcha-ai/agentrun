@@ -229,16 +229,24 @@ func TestAppsListLaunchAndTerminateOnADesktop(t *testing.T) {
 	}
 }
 
-// With a window manager (xfwm4, as the desktops run), the app's window is inside the manager's frame: launch still
-// answers once it shows, the app in front is the manager's active window, and terminate ends it.
+// With a window manager (xfwm4 in a session bus of its own, as the desktops run it: src/desktop.ts WINDOW_MANAGER), the
+// app's window is inside the manager's frame: launch answers once it shows and the manager has made it the active
+// window, and terminate ends it.
 func TestAppsUnderAWindowManager(t *testing.T) {
-	path, err := exec.LookPath("xfwm4")
-	if err != nil {
-		t.Skip("xfwm4 is not on PATH: the window manager's case runs where it is (the box image has it)")
+	for _, program := range []string{"xfwm4", "dbus-run-session"} {
+		if _, err := exec.LookPath(program); err != nil {
+			t.Skipf("%s is not on PATH: the window manager's case runs where it is (the box image has it)", program)
+		}
 	}
 	w := setup(t, 5*time.Second)
-	wm := exec.Command(path, "--compositor=off", "--sm-client-disable")
-	wm.Env = append(os.Environ(), "DISPLAY="+w.display)
+	wm := exec.Command("dbus-run-session", "--", "xfwm4", "--compositor=off", "--sm-client-disable")
+	// No session bus of the test's own: xfwm4 gets the one dbus-run-session starts, as on a desktop.
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "DBUS_SESSION_BUS_ADDRESS=") && !strings.HasPrefix(kv, "DISPLAY=") {
+			wm.Env = append(wm.Env, kv)
+		}
+	}
+	wm.Env = append(wm.Env, "DISPLAY="+w.display)
 	if err := wm.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -258,10 +266,9 @@ func TestAppsUnderAWindowManager(t *testing.T) {
 	if _, err := w.call("apps.launch", map[string]any{"id": "test.window"}); err != nil {
 		t.Fatalf("apps.launch under xfwm4: %v", err)
 	}
-	for deadline := time.Now().Add(5 * time.Second); w.foreground() != "test.window"; time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("test.window is not in front under xfwm4 within 5 s: %q is", w.foreground())
-		}
+	// At once: launch answered, so the manager has made the window the active one, and keys typed now reach it.
+	if f := w.foreground(); f != "test.window" {
+		t.Fatalf("right after apps.launch answered under xfwm4, the app in front is %q, not test.window", f)
 	}
 	if _, err := w.call("apps.terminate", map[string]any{"id": "test.window"}); err != nil {
 		t.Fatalf("apps.terminate under xfwm4: %v", err)
