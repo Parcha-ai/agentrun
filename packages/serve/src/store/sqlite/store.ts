@@ -146,8 +146,15 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
   createdAt: r.created_at, updatedAt: r.updated_at,
 });
 const json = (value: unknown): string => JSON.stringify(value ?? null);
-/** A run's labels as its column holds them: keys sorted, so the same labels are the same text; null for none. */
+/** A UTF-16 surrogate standing alone (in `u` mode a whole pair is one code point, so only a lone half matches). */
+const LONE_SURROGATE = /[\ud800-\udfff]/u;
+/** A run's labels as its column holds them: keys sorted, so the same labels are the same text; null for none. A key or value
+ *  holding a lone surrogate is refused (TypeError), nothing written: JSON.stringify keeps it as a `\ud800` escape that
+ *  Postgres' json check takes but json_each_text cannot decode, so every later label search scanning the run would fail. */
 const labelsColumn = (labels: RunLabels | undefined): string | null => {
+  for (const [key, value] of Object.entries(labels ?? {})) {
+    if (LONE_SURROGATE.test(key) || LONE_SURROGATE.test(value)) throw new TypeError(`a run's label ${JSON.stringify(key)} holds a lone UTF-16 surrogate: a label is whole Unicode characters`);
+  }
   const keys = Object.keys(labels ?? {}).sort();
   return keys.length === 0 ? null : JSON.stringify(Object.fromEntries(keys.map((key) => [key, labels![key]])));
 };

@@ -47,6 +47,28 @@ test("list matches every label asked for, key and value; a key or value that rea
   assert.deepEqual((await store.runs.list({ labels: { tenant: "t-1" }, agentId: "agent-1", limit: 1 })).length, 1, "with the other filters and the limit");
 });
 
+test("a label value holding a lone UTF-16 surrogate is refused at the write, nothing kept, and every later search still answers", async (t) => {
+  // JSON.stringify keeps a lone surrogate as a \ud800 escape, which Postgres' json check takes but json_each_text cannot
+  // decode: kept, it would fail every later search that scans the run, whatever label it asked for.
+  const { store } = await storeOn(t);
+  await agentWithRevision(store);
+  await store.runs.create(run("run-1", { tenant: "t-1" }));
+  for (const [id, value] of [["run-hi", "a\ud800"], ["run-lo", "\udc00b"]]) {
+    await assert.rejects(store.runs.create(run(id, { tenant: value })), TypeError, `${JSON.stringify(value)} is refused`);
+    assert.equal(await store.runs.get(id), undefined, "no run written");
+  }
+  await assert.rejects(store.runs.createInline({
+    agent: { id: "agent-x", name: "Expert", description: null, ref: "src:expert:1" },
+    revision: { id: "rev-x", version: "1", kind: "agentic", body: { instructions: "Answer.", tools: [], skills: {} }, skills: {} },
+    run: { id: "run-x", labels: { turn: "\ud800" } },
+    launch: { body: { input: { content: "hi" }, title: "hi", place: { mode: "runner" } } },
+  }), TypeError);
+  assert.equal(await store.runs.get("run-x"), undefined, "no inline run written");
+  await store.runs.create(run("run-2", { mood: "😀" }));
+  assert.deepEqual((await store.runs.list({ labels: { tenant: "t-1" } })).map((row) => row.id), ["run-1"]);
+  assert.deepEqual((await store.runs.list({ labels: { mood: "😀" } })).map((row) => row.id), ["run-2"], "a surrogate pair is one character, kept and matched");
+});
+
 test("an inline agent's run keeps its labels too", async (t) => {
   const { store } = await storeOn(t);
   const made = await store.runs.createInline({

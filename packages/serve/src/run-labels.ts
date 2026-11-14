@@ -16,6 +16,10 @@ export const LABEL_KEY = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$/;
 export const MAX_LABEL_VALUE = 256;
 /** No control character in a value: a label is shown as one line. */
 const CONTROL = /[\u0000-\u001f\u007f]/;
+/** A UTF-16 surrogate standing alone, half of no character (in `u` mode a whole pair is one code point, so only a lone half
+ *  matches). JSON.stringify keeps one as a `\ud800` escape that Postgres' json check takes but json_each_text cannot
+ *  decode: kept on a run, it would fail every later label search that scans that run. */
+export const LONE_SURROGATE = /[\ud800-\udfff]/u;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -25,6 +29,7 @@ function valueProblem(value: unknown): string | undefined {
   const characters = [...value].length;
   if (characters < 1 || characters > MAX_LABEL_VALUE) return `is text of 1 to ${MAX_LABEL_VALUE} characters`;
   if (CONTROL.test(value)) return "holds no control character (a newline, a tab, NUL)";
+  if (LONE_SURROGATE.test(value)) return "is whole Unicode characters (no lone UTF-16 surrogate)";
   return undefined;
 }
 

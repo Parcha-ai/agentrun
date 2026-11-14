@@ -63,6 +63,8 @@ test("labels out of bounds are 422 under labels or labels.<key>, and no run star
     [{ tenant: "x".repeat(257) }, "labels.tenant", "bad_format"],
     [{ tenant: "😀".repeat(257) }, "labels.tenant", "bad_format"],
     [{ tenant: "a\nb" }, "labels.tenant", "bad_format"],
+    [{ tenant: "a\ud800" }, "labels.tenant", "bad_format"],
+    [{ tenant: "\udc00b" }, "labels.tenant", "bad_format"],
   ]) {
     const refused = await start(api, labels);
     assert.equal(refused.status, 422, JSON.stringify(refused.body));
