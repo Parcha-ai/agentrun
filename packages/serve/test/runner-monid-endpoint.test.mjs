@@ -150,7 +150,7 @@ test("a call priced by usage whose estimate does not fit the cap is refused unse
   assert.deepEqual(sent().map((call) => call.maxCost), [0], "only the estimate read, which runs nothing");
 });
 
-test("an endpoint monid has re-priced by usage since the save is held at monid's estimate for the call, as any call priced by usage", async (t) => {
+test("an endpoint monid has re-priced by usage since the save is sent, held at its pinned price and sent with it as maxCost, never refused for its pricing", async (t) => {
   const sent = callLog(t);
   charging(t, 0.001);
   // Pinned at $0.01 a call when the agent was saved; monid now prices it per result and estimates one result ($0.001).
@@ -160,9 +160,21 @@ test("an endpoint monid has re-priced by usage since the save is held at monid's
   const paid = await toolLedger(0.5);
   const answer = await bookedIn({ call: "c1", paid }, () => search.call(ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
   assert.equal(answer.isError, undefined, answer.text);
-  assert.deepEqual(sent().map((call) => call.maxCost), [0, 0.001]);
+  assert.deepEqual(sent().map((call) => call.maxCost), [0.01], "sent once, its pinned price as maxCost: monid runs it only at an estimate within it");
   const booked = paidBookings(await paid.records()).filter((row) => row.call === "c1");
-  assert.deepEqual(booked.map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", 0.001], ["agentrun.tool_cost", 0.001]], JSON.stringify(booked));
+  assert.deepEqual(booked.map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", 0.01], ["agentrun.tool_cost", 0.001]], JSON.stringify(booked));
+});
+
+test("a fixed-price endpoint's call that does not fit the cap is refused before monid is asked anything, its price read again only once the cap lets it go", async (t) => {
+  const log = callLog(t);
+  const { spec } = await specFor(t, { body: { tools: [MATCH], monidPin: { [MATCH]: PIN[MATCH] } }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const [match] = spec.mcp.tools;
+  const paid = await toolLedger(0.01);
+  const answer = await bookedIn({ call: "c1", paid }, () => match.call(ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
+  assert.equal(answer.isError, true);
+  assert.match(answer.text, /Not sent: .*could cost up to \$0\.026/, answer.text);
+  const every = readFileSync(process.env[CALLS_ENV], "utf8").split("\n").filter(Boolean);
+  assert.deepEqual([log(), every], [[], []], "no inspect and no run");
 });
 
 /** run-1 on a new store, its agent granted `tools` with the pin `pin`, run by a runner on the adapter spec with a
@@ -207,16 +219,6 @@ test("a pinned endpoint's ask card names it and shows its pinned price", async (
 test("a call priced by usage asks with monid's estimate for its own input on its card, the call itself unsent", async (t) => {
   const sent = callLog(t);
   const one = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
-  assert.equal(one.row.state, "parked", JSON.stringify(one.row));
-  assert.deepEqual(one.asks.map((ask) => [ask.tool, ask.price]), [[SEARCH, { estimate_usd: 0.003 }]], JSON.stringify(one.asks));
-  assert.deepEqual(sent().map((call) => call.maxCost), [0], "only the estimate read, which runs nothing");
-});
-
-test("a pinned endpoint monid has re-priced by usage since the save asks with monid's estimate on its card, never its old pinned price", async (t) => {
-  const sent = callLog(t);
-  // Pinned at $0.01 a call when the agent was saved; monid now prices it per result and estimates three results ($0.003).
-  const stale = { ...USAGE_PIN[SEARCH], usd: 0.01 };
-  const one = await monidRun(t, { tools: [SEARCH], pin: { [SEARCH]: stale }, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
   assert.equal(one.row.state, "parked", JSON.stringify(one.row));
   assert.deepEqual(one.asks.map((ask) => [ask.tool, ask.price]), [[SEARCH, { estimate_usd: 0.003 }]], JSON.stringify(one.asks));
   assert.deepEqual(sent().map((call) => call.maxCost), [0], "only the estimate read, which runs nothing");
