@@ -1011,11 +1011,13 @@ would cut one past 2,000 lines or 51,200 bytes and save the rest to a file the s
 
 ### Finding and calling the run's tools
 
-An agentic run on any harness also has three tools over its own tools (`src/runner/meta-tools.ts`) when they earn their
-tokens (about 640 on each request): when the run has a catalog tool (any MCP tool or any `monid` tool), or more than 20
-tools (`META_TOOLS_OVER`, `offersMetaTools` in the kernel, the same test Claude Code's own tool search follows). A run of
-a few built-in tools has none of them. Codex has the first two and keeps its own code mode. None of them goes around the
-run's tool settings:
+A run lists every tool to the model in full until its catalog tools (an MCP server's, a monid one) pass 20
+(`DEFER_CATALOG_OVER`, `defersCatalog` in the kernel). Then they are deferred: not listed, found with `tools_search` and
+run with `tools_call` (built-ins and pi's own tools are always listed). Under 20, there is no search or call: they
+would find tools the model already has, at about 640 tokens on every request. Claude Code defers MCP tools itself (its
+ToolSearch, on under the same test), so it is offered neither of the two; Codex has them and keeps its own code mode.
+`codemode` is offered on every run (not Codex). Each of the three has a tool-settings key of its own, allow by default:
+set to `deny`, it is not offered at all, and a call to it is refused. None of them goes around the run's tool settings:
 
 - `tools_search {query, limit?}` ranks the run's tools by what they do and answers each match's name, description and
   input schema (8 by default, at most 25). It finds only tools the run may call: never one set to deny, and never these

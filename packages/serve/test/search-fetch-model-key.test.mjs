@@ -124,7 +124,7 @@ test.skip("with only model keys: native search on pi, claude-agent and codex, an
     const run = await research(api, `parallel-${harness}`, { harness, instructions: HARNESS_RESEARCH });
     const opened = (await seen()).opened.slice(before);
     assert.deepEqual(opened.filter((line) => line.harness), [{ harness, options: {} }], `${harness}: its own search off`);
-    assert.deepEqual(opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write"]], `${harness}: web_search a host tool`);
+    assert.deepEqual(opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write", ...(harness === "codex" ? [] : ["codemode"])]], `${harness}: web_search a host tool`);
     assert.match(run.results.web_fetch, /"via":"parallel"/);
   }
   calls = await seen();
@@ -191,7 +191,7 @@ test("a capped claude-agent run on auto never sends Claude's own search: it reso
     const run = await research(api, id, { harness: "claude-agent", instructions: HARNESS_RESEARCH }, { max_cost_usd: 1 });
     const calls = await seen();
     assert.deepEqual(calls.opened.filter((line) => line.harness), [{ harness: "claude-agent", options: {} }], `${id}: no WebSearch on the adapter`);
-    assert.deepEqual(calls.opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write"]], `${id}: web_search a host tool`);
+    assert.deepEqual(calls.opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write", "codemode"]], `${id}: web_search a host tool`);
     // The run's resolved plane, as its start wrote it on the run's launch in the store (the runner reads it at the claim).
     assert.equal((await store.runs.launch(run.runId))?.body?.plane?.web_search, keyed ? "parallel" : "exa-keyless");
     assert.match(run.results.web_search, keyed ? /^\{"provider":"parallel"/ : /^\{"provider":"exa-keyless"/);

@@ -32,6 +32,9 @@ const { WRAP_UP_TEXT } = await import("../dist/tool-budget.js");
 const toldToWrapUp = (sent) => sent.some((body) => JSON.stringify(body.messages ?? []).includes(WRAP_UP_TEXT));
 const SONNET = Object.freeze({ id: "claude-sonnet-5-5", api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 });
 const priceOf = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
+/** A production desktop run has pi's own codemode where the host's would be (the same name: one is offered), so the host's adds nothing to
+ *  its request; this run builds its adapter without that extension, so the host's codemode is switched off by its setting. */
+const NO_HOST_CODEMODE = Object.assign(() => "allow", { permission: async (name) => (name === "codemode" ? "deny" : "allow") });
 const fauxComposer = ({ store, sealKey }) => computerDepsFrom({ env: {}, store, sealKey, faux: fauxComputers() });
 const TASK = "Open a terminal, run hostname, and write what it prints to answer.md in your work folder.";
 /** The tokens Anthropic counts for the first request (a desktop run's first turn on Sonnet). */
@@ -62,7 +65,7 @@ async function desktopRun(t, capUsd, origin, mode = "strict") {
   const counted = [];
   const provider = { api: "anthropic-messages", origin, credential: () => `not-a-secret-${"x"}` };
   const result = await capRun(t, {
-    specOf: (sent) => (_claim, run) => ({ adapter: piAdapter({ run, model: SONNET.id, provider, fetch: desktopOrigin(sent, counted), price: priceOf }), session: { ...spec.session, key: "root", label: "root", context: "fresh" }, input: TASK, hooks: quiet, gate: () => "allow" }),
+    specOf: (sent) => (_claim, run) => ({ adapter: piAdapter({ run, model: SONNET.id, provider, fetch: desktopOrigin(sent, counted), price: priceOf }), session: { ...spec.session, key: "root", label: "root", context: "fresh" }, input: TASK, hooks: quiet, gate: NO_HOST_CODEMODE }),
     // Strict mode: every step's input at the cache-write price, whatever was cached. Expected mode (the default): a step
     // after the first is priced from what the session's previous request read from the cache (the loop's `previous`).
     runCap: { capUsd: () => capUsd, modelOf: () => SONNET, mode },

@@ -2,4 +2,4 @@
 packages: @parcha/agentrun-serve, @parcha/agentrun-harness-claude, @parcha/agentrun-kernel
 kind: feature
 ---
-The host's `tools_search`, `tools_call` and `codemode`, and Claude Code's own tool search, are offered only to a run with a catalog tool (any MCP or monid tool) or more than 20 tools, so a run of a few built-in tools no longer pays their 639 tokens on every request.
+One discovery system. A run lists every tool until its catalog tools (MCP and monid) pass 20; then they are deferred, found with `tools_search` and run with `tools_call`. Under 20 there is no search or call, and Claude Code's own tool search follows the same threshold and gets neither of ours. `codemode`, `tools_search` and `tools_call` each have a tool-settings key (allow by default); a tool set to deny is not offered at all.

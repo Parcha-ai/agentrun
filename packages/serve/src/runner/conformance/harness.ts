@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { META_TOOLS_OVER } from "@parcha/agentrun-kernel";
+import { DEFER_CATALOG_OVER } from "@parcha/agentrun-kernel";
 import { AnswerTaken, dropPostgresSchema, openPostgresStore, openStore, RunFinal, type RunRow, type Store, type StoreRole, storeTarget, Unanswered } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
@@ -114,11 +114,11 @@ export function suiteTools(countFile?: string) {
   return { tools, ran, letSlowGo: () => letGo(), slowStarted: started };
 }
 
-/** Tools that do nothing, enough of them beside any other tools to pass META_TOOLS_OVER: a run with that many tools is offered
- *  tools_search, tools_call and codemode (the kernel's offersMetaTools), which the meta cases need. */
-export function fillerTools(count = META_TOOLS_OVER + 1): Record<string, SuiteTool> {
+/** Catalog tools (an MCP server's, by wire name) that do nothing, enough of them to pass DEFER_CATALOG_OVER: a run with that
+ *  many has its catalog deferred (not listed) and is offered tools_search and tools_call, which the meta cases need. */
+export function fillerTools(count = DEFER_CATALOG_OVER + 1): Record<string, SuiteTool> {
   return Object.fromEntries(Array.from({ length: count }, (_, index) => {
-    const name = `idle_${index}`;
+    const name = `mcp__idle__tool_${index}`;
     return [name, { name, replaySafe: true, ask: false, run: async () => "idle" } satisfies SuiteTool];
   }));
 }
@@ -464,10 +464,9 @@ function saidTakenOver(rows: readonly TimelineEvent[], runner: string): void {
 }
 
 /** A crash at `point` during a call of `tool`, then a second runner's resume: the run ends. */
-async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks, script: ScriptStep[] = [{ call: tool }, { say: "done" }], { filler = false }: { filler?: boolean } = {}) {
+async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks, script: ScriptStep[] = [{ call: tool }, { say: "done" }]) {
   const w = await world(subject, t);
-  const { tools: suite, ran } = suiteTools();
-  const tools = filler ? { ...suite, ...fillerTools() } : suite;
+  const { tools, ran } = suiteTools();
   const holder: { runner?: Runner; crashed?: boolean } = {};
   await w.start("runner-a", { script, tools, hooks: crashAt(point, holder) }, holder);
   // An unanswered first claim is run out while it waits: it never reaches the crash point otherwise.
@@ -1135,8 +1134,7 @@ const CASES: readonly Case[] = [
     title: "a codemode script's ask parks the run; approved, the script runs again with its recorded calls answered from their records, the asked call runs once, its outcome is the answer, and the rest of the script never runs",
     async body(subject, t) {
       const w = await world(subject, t);
-      const { tools: suite, ran } = suiteTools();
-      const tools = { ...suite, ...fillerTools() };
+      const { tools, ran } = suiteTools();
       const script = "const a = await tools.read({});\nconst b = await tools.asked({});\nawait tools.effect({});\nreturn [a, b];";
       await w.start("runner-a", { script: [{ call: "codemode", args: { script } }, { sayLastResult: true }], tools, hooks: quiet });
       await w.ended("parked");
@@ -1154,7 +1152,7 @@ const CASES: readonly Case[] = [
     title: "a crash after a codemode script's call's intent: the script runs again, the call is told interrupted, never run twice, and the script ends there",
     async body(subject, t) {
       const script = "await tools.effect({});\nawait tools.read({});\nreturn 'end';";
-      const { ran } = await crashThenResume(subject, t, "effect", "beforeResult", [{ call: "codemode", args: { script } }, { say: "done" }], { filler: true });
+      const { ran } = await crashThenResume(subject, t, "effect", "beforeResult", [{ call: "codemode", args: { script } }, { say: "done" }]);
       assert.equal(ran.effect, 1, "the effect ran once, never again after the crash");
       assert.equal(ran.read, 0, "the script ended at the interrupted call: nothing after it ran");
     },
@@ -1185,10 +1183,13 @@ export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record
       ? { "length-ends-failed": `${facts.id} resumes an answer its output limit cut itself, up to ${facts.recoversCutAnswers} times in one turn (its adapter's facts: recoversCutAnswers ${facts.recoversCutAnswers})` }
       : {}),
     ...(facts.recoversCutAnswers === 0 ? { "length-mid-run": `a cut ends ${facts.id}'s turn, as pi's does (its adapter's facts: recoversCutAnswers 0)` } : {}),
+    ...(facts.ownToolSearch ? { "meta-search": OWN_TOOL_SEARCH(facts.id), "meta-call-park": OWN_TOOL_SEARCH(facts.id), "meta-call-deny": OWN_TOOL_SEARCH(facts.id) } : {}),
     ...(facts.ownCodemode ? { "meta-codemode-park": OWN_CODEMODE(facts.id), "meta-codemode-crash": OWN_CODEMODE(facts.id) } : {}),
   };
 }
 
+/** Why a harness that defers a run's MCP tools itself has no case of the host's tools_search or tools_call. */
+const OWN_TOOL_SEARCH = (id: string) => `${id} defers a run's MCP tools behind a tool search of its own (its adapter's facts: ownToolSearch), so the host offers no tools_search or tools_call beside it`;
 /** Why a harness that runs scripts itself has no case of the host's codemode. */
 const OWN_CODEMODE = (id: string) => `${id} runs the model's scripts in its own code mode (its adapter's facts: ownCodemode), so the host offers no codemode beside it`;
 /** The cases of the host's tools over a session's tools (runner/meta-tools.ts), which only the adapter loop gives. */
