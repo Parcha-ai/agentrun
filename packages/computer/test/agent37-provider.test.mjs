@@ -545,7 +545,7 @@ test("a dead tunnel is noticed within 15 s: each connection sets ssh2's keepaliv
 		}
 	}
 	const { host } = await setup(t, { ssh2: { Client: Recording } });
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	assert.equal((await run(host, value.id, ["true"])).code, 0);
 	assert.equal(seen.length, 1);
 	const { keepaliveInterval, keepaliveCountMax } = seen[0];
