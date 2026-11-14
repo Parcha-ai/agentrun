@@ -29,14 +29,14 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
-import { type CompileAsk, type CompileTrace, compileDue, compileReference, COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
+import { type CompileAsk, type CompileTrace, compileDue, compilePrompt, compileReference,COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
 import { type PromotionRecord, promotionOf, promotionsOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
 import { MIN_SECRET, redactSecrets } from "../learn/secrets.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
-import { LEARNING_LABEL, PROPOSAL } from "../learning.js";
+import { holdsSecret, LEARNING_LABEL, PROPOSAL, secretsShown } from "../learning.js";
 import type { RunPath } from "../learning-cost.js";
 import { reflects, type Reflect } from "../reflect-range.js";
 import { said, STOPPED } from "../learning-words.js";
@@ -76,6 +76,8 @@ export interface LearningEndDeps {
    *  hostDecisionKeys), host-side, never handed to the run. Read once per check; none: a draft with a decision node is
    *  refused. */
   readonly decisionProviders?: () => Promise<{ readonly providers: Readonly<Record<string, unknown>>; readonly default: string } | undefined>;
+  /** The runner's log: what the compile turn left out for holding a secret, by name and count, never a value. */
+  readonly log?: (line: string) => void;
 }
 
 /** The end-of-run step for a run launched with `launch`: undefined when its launch records no learning start (a run that
@@ -343,6 +345,12 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     if (!heldNames.size && !dueWith(input.seedNotes ?? 0, input.seedWorkflows ?? 0)) return undefined;
   }
   const dsl = await import("@parcha/agentrun-dsl");
+  // Every text the turn is told passes the check a run's start makes (learning.ts holdsSecret, as chooseWorkflows reads a
+  // learned workflow) over what the run must never learn (`refuse`): one that holds a secret is left out whole, never sent
+  // cut, and logged by name and count only. A workflow the start left out is never revised from its text either.
+  const shown = secretsShown(input.refuse);
+  const holds = (value: unknown) => holdsSecret(typeof value === "string" ? value : (JSON.stringify(value) ?? ""), shown);
+  const leftOut = { workflows: new Set<string>(), notes: 0, traces: 0, input: false };
   const folder = deps.learningFolder(input.agentId);
   let read: { notes: { file: string; text: string }[]; workflows: number; current?: string; held?: PromotionRecord };
   try {
@@ -350,7 +358,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
       const workflows = (snapshot?.workflows ?? []).filter(({ status }) => status === "active" || status === "pending");
       const textOf = async (name: string) => {
         const file = workflows.find((one) => one.name === name)?.files.find(({ path }) => path.endsWith("/workflow.json"));
-        return file ? await body(file.path, file.oid) : undefined;
+        const text = file ? await body(file.path, file.oid) : undefined;
+        if (text === undefined || !(holds(name) || holds(text))) return text;
+        leftOut.workflows.add(shown.name(name));
+        return undefined;
       };
       let current = revising ? await textOf(revising) : undefined;
       let held: PromotionRecord | undefined;
@@ -365,7 +376,12 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
       // An agent with a learned workflow compiles nothing new: its notes' text is not read.
       if (!revising && !held && workflows.length) return { notes: [], workflows: workflows.length };
       const notes: { file: string; text: string }[] = [];
-      for (const note of snapshot?.notes ?? []) if (note.status === "active") notes.push({ file: note.file, text: redactSecrets(await body(note.file, note.oid), input.refuse, Number.POSITIVE_INFINITY) });
+      for (const note of snapshot?.notes ?? []) {
+        if (note.status !== "active") continue;
+        const text = await body(note.file, note.oid);
+        if (holds(note.file) || holds(text)) leftOut.notes += 1;
+        else notes.push({ file: note.file, text });
+      }
       return { notes, workflows: workflows.length, ...(current !== undefined ? { current } : {}), ...(held ? { held } : {}) };
     });
   } catch {
@@ -373,8 +389,13 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   } finally {
     await folder.end().catch(() => undefined);
   }
-  // A revision of a workflow main no longer holds (a person retired it) asks for none.
-  if (revising && read.current === undefined) return undefined;
+  // What it left out, by name and count: said once the facts are gathered, or now when it asks nothing.
+  const sayLeftOut = () => {
+    const parts = [...[...leftOut.workflows].map((name) => `workflow \`${name}\``), ...(leftOut.notes ? [`${leftOut.notes} note${leftOut.notes === 1 ? "" : "s"}`] : []), ...(leftOut.traces ? [`${leftOut.traces} earlier run${leftOut.traces === 1 ? "" : "s"}`] : []), ...(leftOut.input ? ["the run's input"] : [])];
+    if (parts.length) deps.log?.(`learning: run ${input.runId}: the compile turn left out what holds a secret: ${parts.join(", ")}`);
+  };
+  // A revision of a workflow main no longer holds (a person retired it), or whose text holds a secret, asks for none.
+  if (revising && read.current === undefined) return sayLeftOut(), undefined;
   let held: HeldAsk | undefined;
   if (read.held) {
     // Once per hold: a run since it that compiled this workflow asked already, whatever came of it (its revision is on its
@@ -382,23 +403,39 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     // agent's kept learning since the hold, never a window of its last runs; one that can't be read asks nothing.
     const since = Date.parse(read.held.at);
     const kept = await deps.store.learning.proposals(input.agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
-    if (!kept || kept.some((one) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow)) return undefined;
+    if (!kept || kept.some((one) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow)) return sayLeftOut(), undefined;
     const { workflow, digest, source, reason, replay } = read.held;
     held = { workflow, digest, source, reason, ...(replay ? { replay: { n: replay.n, agree: replay.agree, agent_acc: replay.agent_acc, wf_acc: replay.wf_acc, delta: replay.delta, handed_back: replay.handed_back } } : {}) };
     revising = workflow;
   }
-  if (!revising && !dueWith(read.notes.length, read.workflows)) return undefined;
-  const traces = await Promise.all(done.slice(0, COMPILE_TRACES).reverse().map((run) => traceOf(deps.store, run.id, input.refuse).catch(() => undefined)));
+  if (!revising && !dueWith(read.notes.length, read.workflows)) return sayLeftOut(), undefined;
+  // An earlier run's trace is cut of each value it held (traceFrom); one that still holds a secret (a value in a call's
+  // input spelled in JSON escapes, a shape the cut does not take) is left out whole.
+  const traces = (await Promise.all(done.slice(0, COMPILE_TRACES).reverse().map((run) => traceOf(deps.store, run.id, input.refuse).catch(() => undefined)))).filter((one): one is CompileTrace => {
+    if (one === undefined) return false;
+    if (!holds(one)) return true;
+    leftOut.traces += 1;
+    return false;
+  });
   const { tools, decisions, outputSchema } = await draftTools(deps, input.runId);
   const allowed = draftDecisionProviders(decisions);
   const judges = allowed.length > 0;
   // Jev by default: a run that can call Jev (a decision provider its gate does not deny) asks every step for a guard it reads.
   const jev = allowed.includes("jev");
   const described = await describedOf(tools, deps.store);
-  const fields = input.input !== null && typeof input.input === "object" && !Array.isArray(input.input) ? { input: input.input as Record<string, unknown> } : {};
-  const base = { reference: compileReference(dsl, { tools, judges, jev }), notes: read.notes, traces: traces.filter((one): one is CompileTrace => one !== undefined), tools, described, judges, jev, ...fields, ...(outputSchema !== undefined ? { outputSchema } : {}) };
-  if (!revising) return { mode: "new", ...base };
-  return { mode: "revise", workflow: revising, current: read.current!, ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : held ? { held } : {}), ...base };
+  const object = input.input !== null && typeof input.input === "object" && !Array.isArray(input.input);
+  leftOut.input = object && holds(input.input);
+  const fields = object && !leftOut.input ? { input: input.input as Record<string, unknown> } : {};
+  const base = { reference: compileReference(dsl, { tools, judges, jev }), notes: read.notes, traces, tools, described, judges, jev, ...fields, ...(outputSchema !== undefined ? { outputSchema } : {}) };
+  const ask: CompileAsk = !revising ? { mode: "new", ...base } : { mode: "revise", workflow: revising, current: read.current!, ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : held ? { held } : {}), ...base };
+  sayLeftOut();
+  // Last, the prompt itself, whatever it is told now or later (a tool's description, the agent's output schema): one that
+  // still holds a secret asks nothing.
+  if (holds(compilePrompt(ask))) {
+    deps.log?.(`learning: run ${input.runId}: the compile turn asked nothing: its prompt holds a secret`);
+    return undefined;
+  }
+  return ask;
 }
 
 /** The tools a workflow draft may name (learning-run.ts draftTools): the revision's own, as its run's gate reads them

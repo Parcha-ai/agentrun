@@ -791,6 +791,12 @@ export async function chooseSkills(work: Workspace, seed: Seed, own: readonly st
  *  either way it is never chosen. */
 const readsHeld = (decoded: string[] | "too_deep", shown: Shown): boolean => decoded === "too_deep" || decoded.some(shown.holds);
 
+/** Whether `text` holds a host secret (`shown`): as written, or, read as JSON, in any string it decodes to (its escapes
+ *  decoded), or nested past the bound. The one check a learned workflow's text passes at a run's start (chooseWorkflows)
+ *  and every text its compile turn is told (runner/learning-end.ts compileAskOf); a text that is not JSON is read as
+ *  written. */
+export const holdsSecret = (text: string, shown: Shown): boolean => shown.holds(text) || readsHeld(decodedStrings(text), shown);
+
 /** Which of `seed`'s learned workflows a run may run (its `learned_workflow` tool), in the seed's order: each while its
  *  line (workflowLine) fits what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET). One that does not,
  *  or holds a host secret (`shown`), is left out and named in `left`, but for one whose name is itself a secret, never
@@ -801,7 +807,7 @@ export function chooseWorkflows(seed: Seed, shown: Shown): { flows: LearnedWorkf
   let room = LEARNED_WORKFLOWS_BUDGET;
   for (const flow of seed.workflows ?? []) {
     // Its JSON read as JSON reads it too (decodedStrings: its escapes decoded, as its learned call's run reads it).
-    if (shown.holds(flow.workflow) || shown.holds(flow.description) || shown.holds(flow.name) || readsHeld(decodedStrings(flow.workflow), shown)) {
+    if (holdsSecret(flow.workflow, shown) || shown.holds(flow.description) || shown.holds(flow.name)) {
       // Named, but for a name that is itself a secret.
       if (!shown.holds(flow.name)) left.push(flow.name);
       continue;
