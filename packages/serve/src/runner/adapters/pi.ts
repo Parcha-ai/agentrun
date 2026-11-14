@@ -569,6 +569,8 @@ function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => 
     // record by its key (executeTool), never run twice.
     replay: tool.replay === "safe" || tool.nests ? "safe" : "unsafe",
     outputLimits: HOST_TOOL_OUTPUT,
+    // A catalog tool the run defers: pi never offers it, and a nested call (tools_call, a script) runs it by its name.
+    ...(tool.deferred ? { deferred: true as const } : {}),
     execute: async (args: unknown, api, toolContext: Context) => {
       touched.add(api.callId);
       io.onEvent({ type: "tool_start", callId: api.callId, name: tool.name, args });

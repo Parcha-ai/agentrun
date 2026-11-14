@@ -15,12 +15,13 @@ import { closeOpenSessions as closeCodex, codexSpec } from "./conformance-codex.
 import { closeOpenSessions as closeOpenCode, openCodeSpec } from "./conformance-opencode.mjs";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
+import { runnerGate, verdictOf } from "./gate-support.mjs";
 
 const { CODEMODE, META_TOOLS, metaTools, refusedName, searchTools, TOOLS_CALL, TOOLS_SEARCH } = await import("../dist/runner/meta-tools.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { MAX_RESTARTS, suiteTools } = await import("../dist/runner/conformance/harness.js");
+const { fillerTools, MAX_RESTARTS, suiteTools } = await import("../dist/runner/conformance/harness.js");
 const { deniedText } = await import("../dist/refusal-words.js");
 const { paidRequest, parallelSearchFee } = await import("../dist/paid-calls.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
@@ -48,7 +49,7 @@ test("tools_search answers only the run's tools it may call: a tool set to deny 
   const write = await searchTools("write a file", TOOLS, granted);
   assert.equal(write[0]?.name, "write_file", `ranked by what a tool does (pi-durable's BM25): ${JSON.stringify(write.map((one) => one.name))}`);
   assert.deepEqual(write[0].input_schema, TOOLS[0].inputSchema, "with its input schema");
-  const [search] = metaTools({ tools: () => all, granted, codemode: true });
+  const [search] = metaTools({ tools: () => all, granted, codemode: true, discovery: { search: true, call: true } });
   assert.equal(search.name, TOOLS_SEARCH);
   const answer = await search.call({ query: "email" }, { signal: new AbortController().signal });
   assert.doesNotMatch(answer.text, /send_email/, `the tool's own answer holds no denied tool: ${answer.text}`);
@@ -60,7 +61,7 @@ test("tools_call refuses, in words, a call of itself, of the other two, and of a
   assert.equal(refusedName(TOOLS_CALL, "mcp__hands__write_file", TOOLS), undefined, "a harness's name for a run's tool is that tool");
   const calls = [];
   const nested = { call: async (name, args, key) => (calls.push([name, key]), { text: "ran", fresh: true }), memo: async (_key, value) => value };
-  const [, call] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true });
+  const [, call] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
   const refused = await call.call({ name: CODEMODE, args: {} }, { signal: new AbortController().signal, nested });
   assert.equal(refused.isError, true);
   assert.deepEqual(calls, [], "nothing was called");
@@ -73,7 +74,7 @@ test("tools_call refuses, in words, a call of itself, of the other two, and of a
 
 test("a codemode script sees the run's tools and nothing else of the run: no process, require, fetch, environment or timers", async () => {
   const nested = { call: async () => ({ text: "ran", fresh: true }), memo: async (_key, value) => value };
-  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true });
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
   const script = "return [typeof process, typeof require, typeof fetch, typeof setTimeout, typeof globalThis.env, typeof tools.write_file, ALL_TOOLS.map((one) => one.name).includes('tools_call')];";
   const answer = await codemode.call({ script }, { signal: new AbortController().signal, nested });
   assert.equal(answer.isError, undefined, answer.text);
@@ -105,7 +106,7 @@ async function gatedRun(t, script, gate) {
   await queue(server, "run-1");
   const { tools, ran } = suiteTools();
   const requests = [];
-  const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
+  const spec = piAdapterSpec({ script, tools: { ...tools, ...fillerTools() }, hooks: quiet }, { requests });
   const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), gate }));
   const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
@@ -167,10 +168,10 @@ async function paidRequestsOf(store) {
  *  `afterTurn`: the subject's model requests come in its script's order, so the request after the call is asked with
  *  the call's spend (claude-agent's stand-in CLI times its own requests: only its booking is read). */
 const HARNESSES = [
-  { name: "pi", specOf: piAdapterSpec, codemode: true, afterTurn: true },
-  { name: "claude-agent", specOf: claudeAgentSpec, codemode: true, afterTurn: false },
-  { name: "opencode", specOf: openCodeSpec, codemode: true, afterTurn: true },
-  { name: "codex", specOf: codexSpec, codemode: false, afterTurn: true },
+  { name: "pi", specOf: piAdapterSpec, codemode: true, discovery: true, afterTurn: true },
+  { name: "claude-agent", specOf: claudeAgentSpec, codemode: true, discovery: false, afterTurn: false },
+  { name: "opencode", specOf: openCodeSpec, codemode: true, discovery: true, afterTurn: true },
+  { name: "codex", specOf: codexSpec, codemode: false, discovery: true, afterTurn: true },
 ];
 
 /** An uncapped `harness` run of `script` whose tool `search` makes one paid Parallel search answered 200: the spend each
@@ -191,7 +192,7 @@ async function paidRun(t, script, harness = HARNESSES[0]) {
   let sent = 0;
   const search = { name: "search", replaySafe: false, run: async () => `searched (${(await paidRequest(parallelSearchFee(10), async () => (sent++, new Response("{}", { status: 200 })))).status})` };
   const asked = [];
-  const spec = harness.specOf({ script, tools: { search }, hooks: quiet });
+  const spec = harness.specOf({ script, tools: { search, ...fillerTools() }, hooks: quiet });
   const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), runCap: { capUsd: () => undefined, modelOf: () => undefined, judged: (request) => void asked.push(request.spentUsd) } }), { restartLimit: MAX_RESTARTS });
   runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
   await until(async () => {
@@ -202,7 +203,7 @@ async function paidRun(t, script, harness = HARNESSES[0]) {
 }
 
 for (const harness of HARNESSES) {
-  test(`${harness.name}: a paid call made through tools_call books once, under its own nested call id, as the model's direct call books`, async (t) => {
+  if (harness.discovery) test(`${harness.name}: a paid call made through tools_call books once, under its own nested call id, as the model's direct call books`, async (t) => {
     const { asked, sent, requests } = await paidRun(t, [{ call: TOOLS_CALL, args: { name: "search", args: {} } }, { say: "done" }], harness);
     assert.equal(sent, 1, "sent once");
     assert.equal(requests.length, 1, `one paid request on the run's records: ${JSON.stringify(requests)}`);
@@ -242,7 +243,7 @@ test("under a cap with room for one paid search, a script's second search is ref
         }
       },
     };
-    return piAdapterSpec({ script, tools: { pay }, hooks: quiet }, { fetch: scriptedOrigin(script, requests) })(claim, run);
+    return piAdapterSpec({ script, tools: { pay, ...fillerTools() }, hooks: quiet }, { fetch: scriptedOrigin(script, requests) })(claim, run);
   };
   const runCap = { capUsd, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
   const { row } = await capRun(t, { script, specOf, cap: runCap, runCap: { capUsd: () => capUsd, modelOf: () => FREE } });
@@ -255,7 +256,8 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwA
 
 /** A `harness` run of `script` over `tools` (each `{name, replaySafe, run, structured?, images?}`), uncapped, ended: what
  *  the model said, in order, and the requests pi's provider got (pi only, `requests`). `native`: pi-native tools. */
-async function metaRun(t, harness, script, tools, { native } = {}) {
+async function metaRun(t, harness, script, own, { native } = {}) {
+  const tools = { ...own, ...fillerTools() };
   const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
   const { journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
   const { server, runners: [store] } = await stores({ runners: 1 });
@@ -278,7 +280,8 @@ for (const harness of HARNESSES) {
     const { runTimeline } = await import("../dist/store-reads/journal.js");
     const add = { name: "add", replaySafe: false, run: async () => "5" };
     // One run each: a scripted CLI stand-in makes its script's first call alone.
-    const runs = [[TOOLS_CALL, { name: "add", args: {} }], ...(harness.codemode ? [[CODEMODE, { script: "await tools.add({}); await tools.add({}); return 'two';" }]] : [])];
+    // (Claude Code defers MCP tools itself, so it is never offered tools_call.)
+    const runs = [...(harness.discovery ? [[TOOLS_CALL, { name: "add", args: {} }]] : []), ...(harness.codemode ? [[CODEMODE, { script: "await tools.add({}); await tools.add({}); return 'two';" }]] : [])];
     for (const [name, args] of runs) {
       const { row, server } = await metaRun(t, harness, [{ call: name, args }, { say: "done" }], { add });
       assert.equal(row.state, "ended", JSON.stringify(row));
@@ -336,3 +339,109 @@ test("pi: a pi-native tool of the run (as the subagent tool is) is found by tool
   assert.equal(ran, 1, "tools_call ran it once");
   assert.match(said.join("\n"), /helper ran/, `its answer is tools_call's: ${JSON.stringify(said)}`);
 });
+
+test("a run's catalog tools are deferred only past DEFER_CATALOG_OVER of them: the name decides, and the three are never counted", async () => {
+  const { DEFER_CATALOG_OVER, defersCatalog } = await import("@parcha/agentrun-kernel");
+  const mcp = (count) => Array.from({ length: count }, (_, index) => `mcp__probe__tool_${index}`);
+  assert.equal(DEFER_CATALOG_OVER, 20);
+  assert.equal(defersCatalog(["read", "write", "edit", "bash", "web_fetch"]), false, "built-ins only");
+  assert.equal(defersCatalog(["read", ...mcp(1)]), false, "one MCP tool");
+  assert.equal(defersCatalog(["monid_discover", "monid_inspect", "monid_run"]), false, "monid's three");
+  assert.equal(defersCatalog(mcp(DEFER_CATALOG_OVER)), false, "exactly the threshold: not yet");
+  assert.equal(defersCatalog(mcp(DEFER_CATALOG_OVER + 1)), true, "past it");
+  assert.equal(defersCatalog([...mcp(DEFER_CATALOG_OVER - 3), "monid_discover", "monid_inspect", "monid_run", "monid_run2"].slice(0, 22)), true, "monid's tools count toward it");
+  const many = Array.from({ length: 40 }, (_, index) => `tool_${index}`);
+  assert.equal(defersCatalog(many), false, "built-in tools never defer, however many");
+});
+
+/** A pi run's first model request's tool names, for `tools` (the session's, `{name, replaySafe, run}`) under `gate`, and what ran. */
+async function listedRun(t, script, tools, gate = Object.assign(() => "allow", { permission: async () => "allow" })) {
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  await queue(server, "run-1");
+  const requests = [];
+  const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
+  const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), gate }), { restartLimit: MAX_RESTARTS });
+  const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  await until(async () => {
+    const now = await server.runs.get("run-1");
+    return (now.state === "ended" || now.state === "failed") && now.runner === null && now;
+  }, "the run ended", 30_000);
+  const offered = (body) => (body?.tools ?? []).map((tool) => tool.name).sort();
+  return { offered: offered(requests[0]), requests, result: lastResult(requests) };
+}
+
+const catalog = (count, ran) => Object.fromEntries(Array.from({ length: count }, (_, index) => {
+  const name = `mcp__probe__tool_${index}`;
+  return [name, { name, replaySafe: true, ask: false, description: `Probe ${index}: ${index === 3 ? "weigh the oranges" : "does nothing in particular"}.`, run: async () => (ran?.push(name), `${name} ran`) }];
+}));
+
+test("a run with a few catalog tools lists every tool and offers no tools_search or tools_call", async (t) => {
+  const { offered } = await listedRun(t, [{ say: "done" }], { read: { name: "read", replaySafe: true, run: async () => "r" }, ...catalog(3) });
+  assert.deepEqual(offered, ["codemode", "mcp__probe__tool_0", "mcp__probe__tool_1", "mcp__probe__tool_2", "read"], "all listed; codemode as always");
+});
+
+test("a run over the threshold does not list its catalog tools: tools_search finds one, tools_call runs it as that tool, and a gate's deny of it refuses it", async (t) => {
+  const ran = [];
+  const tools = { read: { name: "read", replaySafe: true, run: async () => "r" }, ...catalog(25, ran) };
+  const script = [{ call: TOOLS_SEARCH, args: { query: "weigh oranges" } }, { call: TOOLS_CALL, args: { name: "mcp__probe__tool_3", args: {} } }, { sayLastResult: true }];
+  const { offered, result } = await listedRun(t, script, tools);
+  assert.deepEqual(offered, [CODEMODE, "read", TOOLS_CALL, TOOLS_SEARCH].sort(), "the catalog tools are not listed; the built-in is, with search, call and codemode");
+  assert.deepEqual(ran, ["mcp__probe__tool_3"], "tools_call ran the tool search found, once");
+  assert.match(result.text, /mcp__probe__tool_3 ran/);
+  const denied = [];
+  const gate = Object.assign((call) => (call.tool === "mcp__probe__tool_3" ? { deny: "no catalog tool 3" } : "allow"), { permission: async () => "allow" });
+  const refused = await listedRun(t, script, { read: tools.read, ...catalog(25, denied) }, gate);
+  assert.deepEqual(denied, [], "asked about as the inner tool, a deny refused it: it never ran");
+  assert.match(refused.result.text, /no catalog tool 3/);
+});
+
+test("a tool whose setting is deny is never found by tools_search", async (t) => {
+  const tools = { read: { name: "read", replaySafe: true, run: async () => "r" }, ...catalog(25) };
+  const gate = Object.assign(() => "allow", { permission: async (name) => (name === "mcp__probe__tool_3" ? "deny" : "allow") });
+  const { result } = await listedRun(t, [{ call: TOOLS_SEARCH, args: { query: "probe", limit: 25 } }, { sayLastResult: true }], tools, gate);
+  assert.doesNotMatch(result.text, /tool_3\b/, "the denied tool is not among the matches");
+  assert.match(result.text, /mcp__probe__tool_4/, "the others are");
+});
+
+test("codemode, tools_search and tools_call each have a setting: allow unless an owner sets deny, and a denied one is not offered at all", async (t) => {
+  const tools = { read: { name: "read", replaySafe: true, run: async () => "r" }, ...catalog(25) };
+  const without = (denied) => Object.assign(() => "allow", { permission: async (name) => (name === denied ? "deny" : "allow") });
+  assert.deepEqual((await listedRun(t, [{ say: "done" }], tools, without(CODEMODE))).offered, ["read", TOOLS_CALL, TOOLS_SEARCH].sort());
+  // With either helper denied the model could not both find and run what was hidden, so nothing is hidden: every catalog
+  // tool is listed and neither helper is offered (denying a helper never takes an allowed tool out of reach).
+  const all = [CODEMODE, ...Object.keys(tools)].sort();
+  assert.deepEqual((await listedRun(t, [{ say: "done" }], tools, without(TOOLS_SEARCH))).offered, all);
+  assert.deepEqual((await listedRun(t, [{ say: "done" }], tools, without(TOOLS_CALL))).offered, all);
+});
+
+test("the gate: each of the three allows unless its own setting is deny, then a call to it is refused in the gate's words; pi's computer codemode stays the kind's", async () => {
+  const gate = (settings, where) => runnerGate({ settings, harness: "pi", ...where });
+  for (const name of [CODEMODE, TOOLS_SEARCH, TOOLS_CALL]) {
+    assert.equal(await verdictOf(gate({}), name), "allow", `${name}: allow by default`);
+    assert.equal(await verdictOf(gate({ [name]: { permission: "allow" } }), name), "allow");
+    const denied = gate({ [name]: { permission: "deny" } });
+    assert.equal(await denied.policy(name), "deny", `${name}: its setting is read`);
+    assert.match(await verdictOf(denied, name), /denied|not run|refused|deny/i, `${name}: a call is refused`);
+    assert.equal(await verdictOf(denied, `mcp__hands__${name}`), await verdictOf(denied, name), `${name}: claude-agent's name for it reads the same key`);
+    const others = [CODEMODE, TOOLS_SEARCH, TOOLS_CALL].filter((one) => one !== name);
+    for (const other of others) assert.equal(await verdictOf(denied, other), "allow", `${name}'s setting does not hold ${other}`);
+  }
+});
+
+test("tools_search, tools_call and codemode are tool-settings keys: allow or deny, never ask", async () => {
+  const { settingsIssues } = await import("../dist/tool-plane.js");
+  for (const name of [CODEMODE, TOOLS_SEARCH, TOOLS_CALL]) {
+    assert.deepEqual(settingsIssues({ [name]: { permission: "deny" } }), [], `${name}: deny is a setting`);
+    assert.deepEqual(settingsIssues({ [name]: { permission: "allow" } }), []);
+    assert.equal(settingsIssues({ [name]: { permission: "ask" } }).length, 1, `${name}: ask is not offered`);
+  }
+});
+
+for (const harness of HARNESSES.filter((one) => one.discovery)) {
+  test(`${harness.name}: a catalog tool of a deferred run is not listed to the model, and tools_call runs it by name`, async (t) => {
+    const { row, said } = await metaRun(t, harness, [{ call: TOOLS_CALL, args: { name: "mcp__idle__tool_0", args: {} } }, { sayLastResult: true }], {});
+    assert.equal(row.state, "ended", JSON.stringify(row));
+    assert.match(said.join("\n"), /idle/, `the deferred tool ran: ${JSON.stringify(said)}`);
+  });
+}
