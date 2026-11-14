@@ -481,6 +481,24 @@ test("a replay run whose revision was superseded never runs, its cancel lost or 
   assert.equal(gw.requests.length, 0, "no model request");
 });
 
+test("a held replay's leftover run never runs once its revision replays again: only the newer replay's runs claim", { timeout: 120_000 }, async (t) => {
+  const { server, gw, launchOf, ended } = await world(t);
+  const at = () => new Date().toISOString();
+  // Replay A held at its deadline, its cancel lost: run replay-a-left is still queued. Its owner then starts replay B.
+  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: at(), decided: "hold", source: "replay", reason: "held at its deadline", runs: ["replay-a-left"], inputs: ["graded-0"], replay_id: "replay-a" }, (was) => was === undefined);
+  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: at(), decided: "replaying", source: "replay", reason: "replaying again", runs: ["replay-b-0"], inputs: ["graded-0"], replay_id: "replay-b" }, (was) => was?.decided === "hold");
+  const replayBody = { ...launchOf("Question 0"), replay: { of: "graded-0", workflow: "answer", digest: DIGEST } };
+  await server.runs.create({ id: "replay-a-left", agentId: "agent-1", revisionId: "rev-1" }, { body: replayBody });
+  const left = await ended("replay-a-left");
+  assert.equal(left.state, "failed", JSON.stringify(left));
+  assert.match(left.summary ?? "", /not one of its runs/);
+  assert.equal(gw.requests.length, 0, "no model request: replay A's leftover spent nothing");
+  await server.runs.create({ id: "replay-b-0", agentId: "agent-1", revisionId: "rev-1" }, { body: replayBody });
+  const own = await ended("replay-b-0");
+  assert.equal(own.state, "ended", JSON.stringify(own));
+  assert.ok(gw.requests.some((request) => isNode(request)), "replay B's own run ran its workflow");
+});
+
 test("a run pinned to an older revision, launched after the newest one's replay started, never supersedes it: the champion serves it", { timeout: 180_000 }, async (t) => {
   const w = await championWorld(t);
   const { server, start, startPinned, logs, dir } = w;
