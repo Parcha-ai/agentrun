@@ -485,6 +485,11 @@ export function fakeHost({
 				make();
 				throw new Late("the answer never came back");
 			}
+			if (create === "lost-answered") {
+				// A host whose own client gave up on the create's reply, answered as a Result (Agent37's REST, Daytona's).
+				make();
+				return { ok: false, error: { code: "timeout", message: "POST /v1/instances did not answer within 300 s" } };
+			}
 			if (create === "broken") {
 				make();
 				throw new Error("502: Bad Gateway");

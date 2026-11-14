@@ -98,7 +98,8 @@ export function race<T>(host: Pick<MachineHost, "descriptor" | "errorCode">, pro
 /**
  * One host call, bounded: ctx.timeoutMs is the vendor's own bound, and the race gives it CALL_SLACK_MS more. A call
  * that throws at once is an error like one that rejects; a Result the host answers keeps its own words, prefixed. A
- * call given up on (timeout or abort) that answers later is handed to onLate, a rejection as a failure.
+ * call given up on (timeout or abort) hands onLate what it answers: later, a rejection as a failure, when the race gave
+ * up; at once, when the host's own client did and answered so.
  */
 export async function hostCall<T>(
 	host: Pick<MachineHost, "descriptor" | "errorCode">,
@@ -125,6 +126,8 @@ export async function hostCall<T>(
 	}
 	const answered = raced.value;
 	if (answered.ok) return answered;
+	// The host's own client gave up (its timeout or abort, answered as a Result): no answer comes later, so this is it.
+	if (onLate && (answered.error.code === "timeout" || answered.error.code === "aborted")) onLate(answered);
 	return { ok: false, error: { ...answered.error, message: `${what} failed: ${answered.error.message}` } };
 }
 

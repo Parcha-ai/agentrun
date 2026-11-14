@@ -450,6 +450,13 @@ test("a create whose answer is lost or broken is swept by its name: the machine 
 	assert.match(timedOut.error.message, /deleted as it lands/);
 	for (let i = 0; i < 100 && lost.fake.live().length > 0; i++) await new Promise((done) => setTimeout(done, 10));
 	await nothingLeft(lost.fake, "a lost create");
+	// Lost, answered as a Result: the host's own client timed out, so no answer comes later either. Swept by name the same.
+	const answered = setup({}, { create: "lost-answered" });
+	const gaveUp = await create(answered.provider);
+	assert.equal(gaveUp.error?.code, "timeout");
+	assert.match(gaveUp.error.message, /deleted as it lands/);
+	for (let i = 0; i < 100 && answered.fake.live().length > 0; i++) await new Promise((done) => setTimeout(done, 10));
+	await nothingLeft(answered.fake, "a create whose host answered a timeout");
 });
 
 test("a create that lands after an abort is deleted as it lands", async () => {
