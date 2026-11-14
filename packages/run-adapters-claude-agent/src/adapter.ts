@@ -106,7 +106,7 @@ export interface ClaudeAgentAdapterOptions {
   skills?: readonly ClaudeAgentSkill[];
   /** Claude's own WebSearch, and nothing else of the CLI's: the model may call it, and the CLI runs each call as a request
    *  of its own through the session's model proxy with Anthropic's web search server tool, the one hosted tool that proxy
-   *  then admits. Each search the provider reports is booked at `CLAUDE_WEB_SEARCH_USD` on top of `price`, into the
+   *  then admits. Each search the provider reports is booked at `NATIVE_SEARCH_USD` (kernel/host) on top of `price`, into the
    *  session's cost and so its spend cap. WebFetch stays off (it would fetch from the CLI's own process). Default off. */
   webSearch?: boolean;
   /** With `webSearch`: the input tokens a search request may read in beyond its body, added to its input bound, so a cap

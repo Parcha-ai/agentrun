@@ -45,29 +45,9 @@ jobs:
           sw_vers
           swift --version
           xcodebuild -version
-      # Each target builds in its own step, past its first error, and the job goes on: one run reports every error.
-      - name: Build ComputerdKit
-        continue-on-error: true
-        run: swift build --target ComputerdKit -Xswiftc -continue-building-after-errors 2>&1 | tee build-kit.log
-      - name: Build ComputerdMac
-        continue-on-error: true
-        run: swift build --target ComputerdMac -Xswiftc -continue-building-after-errors 2>&1 | tee build-mac.log
-      - name: Build ComputerdApp
-        continue-on-error: true
-        run: swift build --target ComputerdApp -Xswiftc -continue-building-after-errors 2>&1 | tee build-app.log
-      - name: Build ComputerdCLI
-        continue-on-error: true
-        run: swift build --target ComputerdCLI -Xswiftc -continue-building-after-errors 2>&1 | tee build-cli.log
-      - name: Build UIFixture
-        continue-on-error: true
-        run: swift build --target UIFixture -Xswiftc -continue-building-after-errors 2>&1 | tee build-fixture.log
-      - name: Build the tests
-        continue-on-error: true
-        run: swift build --build-tests -Xswiftc -continue-building-after-errors 2>&1 | tee build-tests.log
-      - name: Build errors
-        run: |
-          if grep -h "error:" build-*.log | sort -u; then exit 1; fi
-          echo "no build errors"
+      # One build of every target and the tests; -continue-building-after-errors reports every error in one run.
+      - name: Build
+        run: swift build --build-tests -Xswiftc -continue-building-after-errors 2>&1 | tee build.log
       - name: Unit tests
         run: swift test --skip-build 2>&1 | tee test.log
       # The steps below run even when a unit test failed, so one red test does not hide the smoke test's report.
@@ -92,7 +72,7 @@ jobs:
       - name: Seed the runner's grants
         if: ${{ !cancelled() }}
         run: scripts/seed-tcc.sh build/Computerd.app
-      - name: Smoke test and the ui conformance cases
+      - name: Peer check and the conformance cases
         if: ${{ !cancelled() }}
         run: scripts/smoke.sh build/Computerd.app
       - name: Logs
@@ -102,7 +82,7 @@ jobs:
           name: computerd-macos-logs
           path: |
             packages/computer/daemon-macos/test.log
-            packages/computer/daemon-macos/build-*.log
+            packages/computer/daemon-macos/build.log
             /tmp/computerd-ci/ui-conformance.json
             /tmp/computerd-ci/stderr.log
             /tmp/computerd-ci/demos/

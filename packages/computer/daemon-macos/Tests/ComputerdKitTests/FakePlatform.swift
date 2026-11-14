@@ -91,8 +91,8 @@ final class FakeOS: @unchecked Sendable {
 
 	var entries: [String] { with { $0.log } }
 
-	func platform(background: Feature = .on, foreground: Feature = .on, nav: Feature = .off("macOS has no system back, home or app switcher")) -> Platform {
-		Platform(accessibility: FakeAX(os: self), capture: FakeCapture(os: self), workspace: FakeWorkspace(os: self), background: FakeRoute(os: self, name: "bg"), backgroundFeature: background, foreground: FakeRoute(os: self, name: "fg"), foregroundFeature: foreground, navFeature: nav, raw: FakeRaw(os: self), person: FakePerson(os: self), clock: FakeClock(os: self))
+	func platform(background: Feature = .on, foreground: Feature = .on) -> Platform {
+		Platform(accessibility: FakeAX(os: self), capture: FakeCapture(os: self), workspace: FakeWorkspace(os: self), background: FakeRoute(os: self, name: "bg"), backgroundFeature: background, foreground: FakeRoute(os: self, name: "fg"), foregroundFeature: foreground, raw: FakeRaw(os: self), person: FakePerson(os: self), clock: FakeClock(os: self))
 	}
 
 	func engine(policy: Policy = Policy(), background: Feature = .on, foreground: Feature = .on) -> UIEngine {

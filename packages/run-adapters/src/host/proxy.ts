@@ -49,6 +49,11 @@ export interface ProxyUsage {
   cacheWrite?: number;
 }
 
+/** What one provider-native web search costs, in USD, beside the tokens: $10 per 1,000 searches (Anthropic's "Web search tool"
+ *  and OpenAI's "Web search (all models)" list the same price). The one figure every fee reads: the proxy policies of the
+ *  Claude and Codex harnesses and the runner's hosted search. */
+export const NATIVE_SEARCH_USD = 0.01;
+
 /** What one provider's API may carry through the proxy. */
 export interface ProviderPolicy {
   /** A name for messages. */
