@@ -160,6 +160,15 @@ Route: `POST /connectors/enrollment`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun connectors import-remote-history CONNECTOR_ID TARGET_ID`
+
+Import explicitly selected, redacted past sessions without running or learning from them.
+
+Route: `POST /connectors/{connector_id}/targets/{target_id}/history`.
+
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun connectors import-remote-target CONNECTOR_ID`
 
 Import an explicitly selected source-native agent reference.
@@ -168,6 +177,7 @@ Route: `POST /connectors/{connector_id}/import`.
 
 - `--target-id STRING` (string, required)
 - `--name STRING` (string)
+- `--history-only` (boolean)
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 

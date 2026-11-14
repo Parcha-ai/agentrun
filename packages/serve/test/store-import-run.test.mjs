@@ -60,6 +60,27 @@ test("a session imported twice is refused (one run per source and session)", asy
   assert.equal(await store.runs.get("imp-b"), undefined, "the second run is not written");
 });
 
+test("importRun checks source authorization settings inside the run transaction and leaves no partial history after revocation", async (t) => {
+  const { store } = await storeOn(t);
+  await agentWithRevision(store);
+  const settingsGuards = [{ key: "source-grant", fields: { allowed: true, revoked: false } }, { key: "source-target", fields: { disconnected: false } }];
+  const input = (id) => ({ id, agentId: "agent-1", revisionId: "rev-1", importedFrom: { source: "codex", session: id }, launch: launch(), startedAt: T0, transcript: transcript(), settingsGuards });
+  await store.settings.put("source-grant", { allowed: true, revoked: false, heartbeat: 10 });
+  await store.settings.put("source-target", { disconnected: false });
+  await store.importRun(input("guarded-good"));
+  await store.settings.put("source-grant", { allowed: true, revoked: true, heartbeat: 11 });
+  await assert.rejects(store.importRun(input("guarded-revoked")), StoreConstraint);
+  assert.equal(await store.runs.get("guarded-revoked"), undefined);
+  await assert.rejects(store.runs.launch("guarded-revoked"), StoreLaunchMissing);
+  assert.deepEqual(await runEntries(store, "guarded-revoked", context), []);
+  await store.settings.put("source-grant", { allowed: true, revoked: false, heartbeat: 12 });
+  await store.settings.put("source-target", { disconnected: true });
+  await assert.rejects(store.importRun(input("guarded-disconnected")), StoreConstraint);
+  await store.settings.remove("source-grant");
+  await assert.rejects(store.importRun(input("guarded-absent")), StoreConstraint);
+  assert.equal((await store.runs.list({})).length, 1);
+});
+
 test("importedFrom.file round-trips to the store's own reads and is never on an answer", async (t) => {
   const { store } = await storeOn(t);
   await agentWithRevision(store);

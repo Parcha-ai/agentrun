@@ -1869,6 +1869,7 @@ export interface operations {
       label?: string;
       capabilities?: {
         native_execution?: boolean;
+        history_import?: boolean;
       };
     };
     answer: {
@@ -2885,6 +2886,21 @@ export interface operations {
       outcome?: "done" | "cancelled" | "expired";
     };
   };
+  importRemoteHistory: {
+    body: {
+      sessions: Record<string, unknown>[];
+    };
+    answer: {
+      agent_id: string;
+      runs: {
+        session_id: string;
+        run_id: string;
+        already: boolean;
+      }[];
+      imported: number;
+      already: number;
+    };
+  };
   importRemoteTarget: {
     body: {
       target_id: string;
@@ -2923,6 +2939,7 @@ export interface operations {
           target_id: string;
         };
       };
+      history_only?: boolean;
     };
     answer: {
       agent_id: string;
@@ -3450,6 +3467,7 @@ export interface operations {
         capabilities: {
           observe: true;
           native_execution: boolean;
+          history_import: boolean;
         };
         targets: Record<string, unknown>[];
       }[];
@@ -4174,6 +4192,7 @@ export interface operations {
       label?: string;
       capabilities: {
         native_execution: boolean;
+        history_import?: boolean;
       };
     };
     answer: {
@@ -4187,6 +4206,7 @@ export interface operations {
         capabilities: {
           observe: true;
           native_execution: boolean;
+          history_import: boolean;
         };
         targets: Record<string, unknown>[];
       };
@@ -4241,6 +4261,7 @@ export interface operations {
         capabilities: {
           observe: true;
           native_execution: boolean;
+          history_import: boolean;
         };
         targets: Record<string, unknown>[];
       };
