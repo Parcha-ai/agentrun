@@ -538,7 +538,7 @@ test("a draft whose answer is text passes the dry run against a many-field outpu
   assert.deepEqual(real.value, { mcc: "5251", description: "Hardware", confidence: 0.9 });
   assert.deepEqual(await draftDryRun(dsl, text, input, SHAPE), { status: "passed" });
   assert.deepEqual(await draftDryRun(dsl, field, input, SHAPE), { status: "passed" });
-  const broken = await draftDryRun(dsl, text, input, { type: "object", properties: { mcc: { type: 7 } } });
+  const broken = await draftDryRun(dsl, text, input, { type: "object", properties: { mcc: { type: "string", pattern: "([" } } });
   assert.equal(broken.status, "failed", JSON.stringify(broken));
   assert.match(broken.detail, /^its dry run failed: the agent's output schema /);
 });
