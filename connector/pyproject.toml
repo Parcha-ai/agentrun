@@ -1,0 +1,17 @@
+[build-system]
+requires = []
+build-backend = "backend"
+backend-path = ["build_support"]
+
+[project]
+name = "agentrun-cli"
+version = "0.1.11.dev0"
+description = "Explicit metadata observation for existing coding-agent sessions"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.12,<3", "websockets>=15,<17", "prompt-toolkit>=3.0.52,<4"]
+
+[project.optional-dependencies]
+test = ["pyte>=0.8.2,<0.9"]
+
+[project.scripts]
+agentrun = "agentrun_cli.cli:main"

@@ -11,6 +11,19 @@ const exec = promisify(execFile);
 const exporter = await readFile(new URL('./export-source.mjs', import.meta.url));
 const machinePathRule = await readFile(new URL('./machine-path.mjs', import.meta.url));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+
+test('connector source and notices ship without local worker state or Python build output', async t => {
+  const f = await fixture(t);
+  const sources = ['connector/pyproject.toml', 'connector/README.md', 'connector/LICENSE', 'connector/NOTICE', 'connector/src/agentrun_cli/cli.py'];
+  const privateFiles = ['connector/.venv/pyvenv.cfg', 'connector/build/lib/agentrun_cli/cli.py', 'connector/.agentrun/remote.json', 'connector/dist/receipt.json', 'connector/src/agentrun_cli/__pycache__/cli.pyc'];
+  for (const path of sources) await f.write(path, '# Connector source fixture\n');
+  for (const path of privateFiles) await f.write(path, 'PRIVATE_CONNECTOR_STATE\n');
+  await f.run();
+  const listing = await f.listing();
+  for (const path of sources) assert.ok(listing.includes(`agentrun-dsl-source/${path}\n`), `${path} is included`);
+  for (const path of privateFiles) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), `${path} is excluded`);
+});
+
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'agentrun-source-export-'));
   t.after(() => rm(root, { recursive: true, force: true }));
