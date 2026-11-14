@@ -2951,6 +2951,11 @@ export interface operations {
           of?: string[];
           cost_usd?: number | null;
           skipped_write?: number;
+          skipped_tools?: {
+            tool: string;
+            inputs: number;
+            no_read_only_hint: boolean;
+          }[];
         };
         runs?: string[];
         inputs?: string[];

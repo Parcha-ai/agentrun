@@ -1126,6 +1126,11 @@ export type ListLearningPromotionsResponse = {
       of?: Array<string>;
       cost_usd?: number | null;
       skipped_write?: number;
+      skipped_tools?: Array<{
+        tool: string;
+        inputs: number;
+        no_read_only_hint: boolean;
+      }>;
     };
     runs?: Array<string>;
     inputs?: Array<string>;

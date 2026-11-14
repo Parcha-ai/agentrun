@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { READ_TOOLS, SKIPPED_WRITE, callKey, canonical, recordedCalls, replayCalls, ReplaySkipped, toolClassOf } = await import("../dist/learn/replay-calls.js");
+const { READ_TOOLS, SKIPPED_WRITE, callKey, canonical, recordedCalls, replayCalls, ReplaySkipped, toolClassOf, toolWord, unmarkedWords } = await import("../dist/learn/replay-calls.js");
 const { CALL_REFUSED } = await import("../dist/timeline/index.js");
 
 test("a tool is read or write: MCP by its annotations (readOnlyHint true, not destructive), built-ins by the fixed list, anything else write", () => {
@@ -13,7 +13,7 @@ test("a tool is read or write: MCP by its annotations (readOnlyHint true, not de
   assert.equal(of("mcp:fake/add"), "read");
   assert.equal(of("mcp:fake/delete_thing"), "write");
   assert.equal(of("mcp:fake/odd"), "write", "read-only and destructive at once: a write");
-  assert.equal(of("mcp:fake/plain"), "write", "no annotation: a write");
+  assert.equal(of("mcp:fake/plain"), "unmarked", "listed with no annotation: unmarked (a write, its skip says why)");
   assert.equal(of("mcp:fake/unlisted"), "write", "a tool the pin does not list: a write");
   assert.equal(toolClassOf("mcp:fake/add"), "write", "no annotations read at all: a write");
   for (const tool of ["web_fetch", "web_search", "pdf_pages", "llm"]) assert.equal(of(tool), "read", tool);
@@ -85,4 +85,27 @@ test("a read runs live once and is cached; a recorded one is answered at no cost
   assert.equal(await calls.call({ label: "add", tool: "mcp:fake/add" }, { a: 0, b: 0 }, live(0)), 0, "a failed read runs live again");
   assert.equal(ran, 4);
   assert.equal(calls.skipped, undefined);
+});
+
+test("an MCP tool its server lists with no readOnlyHint is unmarked: never run, its skip says so; a destructive one, a built-in write or an unlisted tool stays a write", async () => {
+  const listed = { "mcp:web/browse": {}, "mcp:web/fetch_page": { title: "Fetch" }, "mcp:web/wipe": { destructiveHint: true }, "mcp:web/said_writes": { readOnlyHint: false } };
+  const of = (tool) => toolClassOf(tool, (name) => listed[name]);
+  assert.deepEqual(["mcp:web/browse", "mcp:web/fetch_page", "mcp:web/wipe", "mcp:web/said_writes", "mcp:web/unlisted", "bash"].map(of), ["unmarked", "unmarked", "write", "write", "write", "write"]);
+  const calls = replayCalls(new Map(), of);
+  let ran = 0;
+  await assert.rejects(calls.call({ label: "look", tool: "mcp:web/browse" }, { url: "https://example.com" }, async () => (ran += 1)), ReplaySkipped);
+  assert.deepEqual(calls.skipped, { tool: "mcp:web/browse", step: "look", unmarked: true });
+  assert.equal(ran, 0, "an unmarked tool never runs in a replay");
+  const wiped = replayCalls(new Map(), of);
+  await assert.rejects(wiped.call({ label: "wipe", tool: "mcp:web/wipe" }, {}, async () => (ran += 1)), ReplaySkipped);
+  assert.deepEqual(wiped.skipped, { tool: "mcp:web/wipe", step: "wipe" }, "a destructive tool's skip is a write's");
+});
+
+test("the hint names the tools, the first two and how many more past three", () => {
+  assert.equal(unmarkedWords(["browse"]), "browse has no readOnlyHint, so replay can't run it: if it only reads, mark it read-only in the MCP server");
+  assert.equal(unmarkedWords(["browse", "fetch_page"]), "browse and fetch_page have no readOnlyHint, so replay can't run them: if they only read, mark them read-only in the MCP server");
+  assert.equal(unmarkedWords(["a", "b", "c"]).split(" have")[0], "a, b and c");
+  assert.equal(unmarkedWords(["browse", "fetch_page", "c", "d"]).split(" have")[0], "browse, fetch_page and 2 more");
+  assert.equal(toolWord("mcp:web/browse"), "browse");
+  assert.equal(toolWord("bash"), "bash");
 });

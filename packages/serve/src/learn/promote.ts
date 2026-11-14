@@ -65,7 +65,7 @@ export interface ReplayScore {
  *  serving revision's graded runs fell below the bar: held). `replay`: the numbers it was decided on, with the graded runs
  *  replayed (`of`), what its replay runs cost (`cost_usd`, null when one's is unknown) and how many of its inputs were
  *  skipped (`skipped_write`: each needed a write the graded run's recording does not have, learn/replay-calls.ts; never
- *  run, never scored). `refit`: the guards a refit
+ *  run, never scored) and at which tools (`skipped_tools`, SkippedTool). `refit`: the guards a refit
  *  changed. `checked`: the newest grade (its seq) the last refit check read (refits run once per REFIT_EVERY more graded runs
  *  it served, counted by seq: a count of the grades kept stalls once the GRADES_KEPT trim holds it). */
 export interface PromotionRecord {
@@ -75,7 +75,7 @@ export interface PromotionRecord {
   readonly decided: "promote" | "hold" | "replaying" | "superseded";
   readonly source: "replay" | "dry_run" | "refit" | "graded";
   readonly reason: string;
-  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_write?: number };
+  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_write?: number; readonly skipped_tools?: readonly SkippedTool[] };
   readonly runs?: readonly string[];
   /** A replaying record's graded runs, one per `runs` entry in order: the input each reserved replay run replays, so a
    *  launch interrupted after the reservation is finished by a later claim (runner/promotion.ts relaunch). */
@@ -88,6 +88,27 @@ export interface PromotionRecord {
    *  recorded it, or a refit's own commit. What the digest serves from as the champion (championOf) once a newer revision
    *  is on the folder's main. */
   readonly commit?: string;
+}
+
+/** A tool that stopped a replay's inputs (each a skipped_write row): its catalog name, how many inputs it stopped, and
+ *  whether it is an MCP tool its server listed with no readOnlyHint (`no_read_only_hint`: replay may only lack the hint,
+ *  not a recording). */
+export interface SkippedTool {
+  readonly tool: string;
+  readonly inputs: number;
+  readonly no_read_only_hint: boolean;
+}
+
+/** The tools that stopped `rows`' skipped inputs, most inputs first (then by name). */
+export function skippedToolsOf(rows: readonly ReplayRow[]): SkippedTool[] {
+  const by = new Map<string, { inputs: number; unmarked: boolean }>();
+  for (const row of rows) {
+    if (row.outcome !== "skipped_write" || !row.skipped) continue;
+    const was = by.get(row.skipped.tool) ?? { inputs: 0, unmarked: true };
+    by.set(row.skipped.tool, { inputs: was.inputs + 1, unmarked: was.unmarked && row.skipped.unmarked === true });
+  }
+  return [...by].map(([tool, one]) => ({ tool, inputs: one.inputs, no_read_only_hint: one.unmarked }))
+    .sort((a, b) => b.inputs - a.inputs || (a.tool < b.tool ? -1 : a.tool > b.tool ? 1 : 0));
 }
 
 /** One guard a refit changed: its step, its threshold before and after, and its new fit when one was fit. */
@@ -260,11 +281,12 @@ export function trimPromotions(items: readonly PromotionRecord[]): PromotionReco
  *  that did not end completed); with its guard rows, read record-only (recordOnly) so each step's p is known. A failed
  *  row is no evidence either way (replayScore leaves it out): the replay ran without what the run it replays had. A
  *  skipped one (`skipped_write`) is none either: its workflow stopped at a write the graded run's recording does not have,
- *  which a replay never runs (learn/replay-calls.ts). */
+ *  which a replay never runs (learn/replay-calls.ts), the one named in `skipped`. */
 export interface ReplayRow {
   readonly of: string;
   readonly recorded: { readonly answer: string | null; readonly correct: boolean; readonly expected?: Readonly<Record<string, unknown>> };
   readonly outcome: "answered" | "handed_back" | "failed" | "skipped_write";
+  readonly skipped?: { readonly tool: string; readonly unmarked?: true };
   readonly answer: string | null;
   readonly guards: readonly GuardRow[];
 }
