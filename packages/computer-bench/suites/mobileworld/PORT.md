@@ -28,7 +28,7 @@ notice Apache-2.0 §4(b) asks for.
 | --- | --- |
 | file and class (`native/bid_file_rename.py:BidFileRenameTask`) | `source.id`; the folder and `id` are the file name in kebab case (`mobileworld.bid-file-rename`) |
 | `goal` | `instruction`: word for word when English, our translation when Chinese (`lang-cn`; `tags` gets `translated`) |
-| `app_names` (display names) | `needs.apps`: package names, with the stock-Android and the common vendor package for each app |
+| `app_names` (display names) | `needs.apps`: package names, each entry required; an app that differs by maker (a file manager, a camera) is one entry listing the stock-Android and the common vendor packages, any one of which will do |
 | `task_tags` (`lang-en`, `lang-cn`, ...) | `tags` |
 | `snapshot_tag` (AVD snapshot) and `start_on_home_screen` | `setup` builds the state over `exec.run` (adb's shell user), starting from the phone as it is |
 | `initialize_task_hook` | `setup` steps, which first save or move aside whatever they replace |
@@ -160,8 +160,14 @@ split, and the two invoice tasks in heldout.
   value of 255 or more. Min wants 0 or 1. A vendor whose lowest slider position stores a higher value would fail an
   agent that did the task.
 - **open-flight-mode and close-flight-mode:** these need USB adb (see above).
-- **take-selfie:** the oracle is a screen capture saved into DCIM/Camera. It shows the check reads a new camera-folder
-  image, not that a camera app works. It keeps `exec`: the cloud phone has no camera, and bench2-runner skips it.
+- **take-selfie:**
+  - A camera probe (`dumpsys media.camera` lists at least one camera device) runs before setup. A phone without one
+    is skipped, not scored.
+  - The oracle opens the camera app with the still-image intent and presses its shutter through `ui.act` (a node
+    named shutter, take photo or capture), the path the agent takes. A pass shows the camera app saved a photo the
+    check counts.
+  - Neither can be proven on a cloud phone: round 1's cloud phones had no working camera (the camera app opened no
+    window), and they kept no `dumpsys` output, so the probe's wording is from stock Android, not from a run.
 - **bid-file-rename:** the agent sees the dates only through the file manager. Most of them list Download through
   MediaStore, so a stale index would show the wrong dates; setup asks for a rescan of each file to prevent that.
 

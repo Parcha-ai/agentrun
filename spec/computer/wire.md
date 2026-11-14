@@ -273,9 +273,12 @@ The result:
   quiet apart, or `maxSettleMs` passed. An expect is polled on the computer, and an act's `state` is the window once it
   settles after the expect, never a frame of a transition. Every verdict of an act reads that one final view: a set's
   hold, the expect's `met`, and the `state` it answers. A poll's look only says when to read the final view again.
-- **A settle reads the tree.** "Looks the same" compares the window's id, bounds and nodes (each node's role, name,
-  value, flags and bounds). The window's image counts only when the window has no nodes (`ui.tree` off, or an app that
-  exposes none). A blinking caret, a spinner's frame or a playing video changes the image every look, so a settle on
+- **A settle reads the tree.** "Looks the same" compares the window's id, bounds and the nodes on it (each node's role,
+  name, value, flags and bounds held inside the window), never which element each is. A node wholly outside the window
+  is not seen, so it counts neither for a settle nor as a step's effect: an app may rebuild its rows scrolled out of
+  view, or at the window's edge, each time its tree is read (System Settings' sidebar), which would wait out
+  `maxSettleMs` on every act. The window's image counts only when the window has no
+  nodes (`ui.tree` off, or an app that exposes none). A blinking caret, a spinner's frame or a playing video changes the image every look, so a settle on
   the image would wait out `maxSettleMs` on every act; a transition moves the nodes, so a settle on the tree still
   waits for it. `ui.settle-tree` times acts on a focused field.
 - **A set holds.** A `set` step answers `verified: true` only when its value still holds in the act's final view: read

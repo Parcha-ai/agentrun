@@ -5,7 +5,7 @@
   "title": "Read the battery level from Settings",
   "split": "heldout",
   "tags": ["settings", "info", "answer"],
-  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings"] },
   "params": {
     "level": { "int": [13, 94] }
   },

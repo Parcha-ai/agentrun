@@ -95,7 +95,7 @@ function tracked(adapter) {
  *  sessions folder per loop: a resume on another runner opens the session from the run's journal. */
 export function openCodeSpec(setup, options = {}) {
   strictOptions("openCodeSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
-  strictOptions("openCodeSpec", options, ["fetch", "requests"]);
+  strictOptions("openCodeSpec", options, ["fetch", "requests", "price"]);
   const { script, tools, hooks, agentId } = setup;
   const sessionsDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-opencode-conformance-"));
   dirs.push(sessionsDir);
@@ -103,7 +103,7 @@ export function openCodeSpec(setup, options = {}) {
   return async (_claim, run) => ({
     ...(agentId ? { agentId } : {}),
     adapter: tracked(await harness.adapter(
-      { run, model: MODEL, provider: { origin: "https://provider.invalid", credential: () => `not-a-secret-${"x"}` }, price: () => 0, sessionsDir, fetch: options.fetch ?? scriptedResponses(script, options.requests) },
+      { run, model: MODEL, provider: { origin: "https://provider.invalid", credential: () => `not-a-secret-${"x"}` }, price: options.price ?? (() => 0), sessionsDir, fetch: options.fetch ?? scriptedResponses(script, options.requests) },
       { standIn: { command: process.execPath, args: [STAND_IN] } },
     )),
     record: harness.record,

@@ -5,7 +5,7 @@
   "title": "Set the screen timeout in Settings",
   "split": "dev",
   "tags": ["settings", "choice"],
-  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings"] },
   "params": {
     "t": {
       "pick": [

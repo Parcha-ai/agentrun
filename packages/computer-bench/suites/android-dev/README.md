@@ -46,7 +46,9 @@ through Chrome's share sheet, one into another app (Contacts) and one into the p
     change-alarm.
 - Phone and package names differ by vendor, so setup opens apps by intent (`android.settings.SETTINGS`, `SHOW_ALARMS`,
   `CATEGORY_APP_CONTACTS`, `VIEW` of a DocumentsUI directory, `VIEW` with `-p com.android.chrome`), and `needs.apps`
-  lists the Google, AOSP and Samsung packages of each app.
+  lists the Google, AOSP and Samsung packages of each app as one entry of alternatives, any one of which will do.
+  Settings is `com.android.settings` alone. A phone missing an app is skipped (`skipped: needs com.android.chrome`),
+  not scored.
 - The phone-harness probes of 2026-11-08 (`kinds/phone-probe-out`) ran a redroid 15 image with AOSP DeskClock,
   Contacts and DocumentsUI and no Chrome. The Chrome tasks need `com.android.chrome` installed; the rest name the AOSP
   packages too.

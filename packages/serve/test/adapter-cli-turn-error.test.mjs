@@ -19,7 +19,6 @@ const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 function failingCli(status, error) {
   return {
     id: "stand-in-cli",
-    capabilities: () => ({}),
     check: () => [],
     async open(_spec, io) {
       const state = (await io.writer.read()).some((record) => record.kind === "stand-in.sent") ? "idle" : "new";

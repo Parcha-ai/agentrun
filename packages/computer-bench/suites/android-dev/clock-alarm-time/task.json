@@ -5,7 +5,7 @@
   "title": "Read the time of a labelled alarm in Clock",
   "split": "dev",
   "tags": ["clock", "info", "answer"],
-  "needs": { "os": "android", "kind": "phone", "apps": ["com.google.android.deskclock", "com.android.deskclock", "com.sec.android.app.clockpackage"] },
+  "needs": { "os": "android", "kind": "phone", "apps": [["com.google.android.deskclock", "com.android.deskclock", "com.sec.android.app.clockpackage"]] },
   "params": {
     "t": {
       "pick": [

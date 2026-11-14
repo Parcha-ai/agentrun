@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { CAPS } from "./check.js";
 import { INDEX_FILE, INDEX_LINES } from "./notes.js";
-import { type DraftDecisions, draftDecisionProviders, SKILL_NAME } from "./skills.js";
+import { type DraftDecisions, draftDecisionProviders, learnedName, SKILL_NAME } from "./skills.js";
 import { mcpNameOf } from "../tool-names.js";
 
 /** Control and invisible characters: none may reach the prompt through a value the host puts in it. */
@@ -44,8 +44,12 @@ export const LATER_LOOK = "You looked back on this run before. Since then the co
  *  (skills.ts DraftDecisions, the one the draft check reads): with a provider it has (draftDecisionProviders), a draft may
  *  use judge, pick and sift nodes; without, the prompt bans them as it always did. `later`, a later round's (a follow-up
  *  opened the run again after it looked back): the prompt says so (LATER_LOOK) after its first line. */
-export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: boolean; decisions?: DraftDecisions; later?: boolean }): string {
-  const { dir, active, tools = [], draftFor = [], described = [], workflows = true, decisions, later = false } = options;
+export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: boolean; decisions?: DraftDecisions; handedBack?: string; revise?: ReviseAsk; later?: boolean }): string {
+  const { dir, active, tools = [], draftFor = [], described = [], workflows = true, decisions, handedBack, revise, later = false } = options;
+  // A learned workflow's name is the store's rule for one (skills.ts learnedName: WORKFLOW_NAME, `sort_invoice` too), never
+  // a skill's: a name the store keeps never stops the turn that asks for its revision.
+  if (handedBack !== undefined && !(typeof handedBack === "string" && learnedName("workflow", handedBack))) throw new Error("the workflow that handed the run back must be a workflow's name");
+  if (revise !== undefined && !(typeof revise.workflow === "string" && learnedName("workflow", revise.workflow))) throw new Error("the workflow asked to be revised must be a workflow's name");
   const judges = draftDecisionProviders(decisions).length > 0;
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
   if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");
@@ -115,6 +119,11 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     ...(workflows ? [
       "A job that runs end to end as model and tool-call steps, from a defined input to a defined output, is a workflow draft,",
       "and so is one the person asks you to keep as a workflow; its steps may also be a skill.",
+      "A workflow whose input takes a run's input as the run is given it (the same field names, such as `content`) runs first",
+      "on later runs, before you: it answers alone, or ends on an `escalate` node and hands the case back to you with what it found.",
+      "Give each of its model nodes `\"tier\": \"fast\"`; a step that needs your own judgment names no tier, and runs on your model.",
+      ...(handedBack ? [handbackAsk(handedBack)] : []),
+      ...(revise ? [reviseAsk(revise)] : []),
       ...(draftFor.length ? [draftAsk(draftFor), ...describedLines(described, tools)] : []),
     ] : []),
     "",
@@ -167,6 +176,23 @@ const describedLines = (described: readonly { readonly name: string; readonly do
   });
   return lines.length ? ["What each tool a call node may run takes and gives:", ...lines] : [];
 };
+
+/** The one line that asks for a revision of the learned workflow that ran first on this run and handed it back. */
+const handbackAsk = (name: string): string =>
+  `Your learned workflow \`${name}\` ran first on this run and handed it back to you. If a change to it would have let it finish this case, give \`${name}\` again whole under its name with that change; if handing this case back was right, keep it as it is.`;
+
+/** A learned workflow the money rule stopped from running first (runner/workflow-first.ts costLineOf): its name, and its
+ *  cost a run over its last `runs` served runs against the agent's by hand, in dollars. */
+export interface ReviseAsk {
+  readonly workflow: string;
+  readonly served_usd: number;
+  readonly by_hand_usd: number;
+  readonly runs: number;
+}
+
+/** The one line that asks for a revision of the learned workflow the money rule stopped from running first. */
+const reviseAsk = ({ workflow, served_usd, by_hand_usd, runs }: ReviseAsk): string =>
+  `Your learned workflow \`${workflow}\` no longer runs first: over its last ${runs} runs it served it cost $${served_usd} a run, against $${by_hand_usd} a run by hand, so you took this run from the start. To have it run first again, give \`${workflow}\` again whole under its name, changed to finish more cases alone or to spend less on each; a new version runs first again and is held to the same line.`;
 
 /** The one line that asks for a workflow draft of a skill's job, by the skill's name. */
 const draftAsk = (names: readonly string[]): string => {

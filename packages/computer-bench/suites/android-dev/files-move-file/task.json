@@ -5,7 +5,7 @@
   "title": "Move a file into a folder in the Files app",
   "split": "heldout",
   "tags": ["files", "move"],
-  "needs": { "os": "android", "kind": "phone", "apps": ["com.google.android.documentsui", "com.android.documentsui", "com.google.android.apps.nbu.files", "com.sec.android.app.myfiles"] },
+  "needs": { "os": "android", "kind": "phone", "apps": [["com.google.android.documentsui", "com.android.documentsui", "com.google.android.apps.nbu.files", "com.sec.android.app.myfiles"]] },
   "params": {
     "f": {
       "pick": [
