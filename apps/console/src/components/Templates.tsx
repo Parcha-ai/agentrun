@@ -12,7 +12,7 @@ import { keeper } from "@/lib/idempotency";
 import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
-import { grantsOf, issuesAt, matchesOf, needsOf, paramHelp, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, setUpHref, startValues, templateHash, titleOf } from "@/lib/templatePackages";
+import { grantsOf, issuesAt, matchesOf, needsOf, paramHelp, paramIssueWords, paramLabel, parameterField, parameterFields, parametersOf, paramValid, type ParameterText, setUpHref, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
@@ -130,7 +130,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const setParam = (key: string, value: string) => {
     setValues((was) => ({ ...was, [key]: value }));
     const p = t.parameters[key];
-    if (p && paramValid(p, value)) setIssues((was) => was.filter((i) => i.field !== `parameters.${key}`));
+    if (p && paramValid(parameterField(p), value)) setIssues((was) => was.filter((i) => i.field !== `parameters.${key}`));
   };
   const apply = async () => {
     setApplying(true); setIssues([]); setSaid(null);
@@ -164,7 +164,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       else setSaid({ text: e instanceof Error ? e.message : String(e), withIssues: false });
     } finally { setApplying(false); }
   };
-  const params = Object.entries(t.parameters);
+  const params = Object.entries(parameterFields(t));
   // Issues the form has no place for (a trigger's, an override's) show above the button, in the server's words.
   const placed = (i: FieldIssue) => /^(parameters|secrets|mcp|servers)\./.test(i.field) || /^grants\.\d+$/.test(i.field);
   if (made) {

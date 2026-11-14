@@ -77,11 +77,17 @@ export const MAX_PACKAGE_FILES = 256;
 export const MAX_EVAL_FILE_BYTES = 32 << 20;
 /** A parameter's sample, of its type, for the check that compiles a package before any apply. */
 const SAMPLES = { string: "x", number: 1, integer: 1, boolean: true } as const;
+/** A string of each format a parameter (or a list parameter's items) may say, for that check. */
+const FORMAT_SAMPLES: Record<string, string> = { uri: "https://example.com", email: "someone@example.com", hostname: "example.com", date: "2026-01-01", "date-time": "2026-01-01T00:00:00Z", uuid: "00000000-0000-4000-8000-000000000000", cron: "0 9 * * *", timezone: "UTC" };
+/** A scalar's sample: its first choice, else one of its format, else one of its type. */
+const sampleOf = (spec: { type?: unknown; enum?: unknown; format?: unknown }): unknown => (Array.isArray(spec.enum) ? spec.enum[0] : FORMAT_SAMPLES[spec.format as string] ?? SAMPLES[spec.type as ScalarType]);
 /** An agent id in the shape an apply gives a trigger's target, for that check. */
 const SAMPLE_AGENT = `agt_${"0".repeat(24)}`;
 // semver.org's own expression, SemVer 2.0.0.
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
 const PLACEHOLDER = /\$\{parameters\.([^}]*)\}/g;
+/** Text that is one placeholder alone: it takes the parameter's value with its type (a pin's, a trigger's input's). */
+const WHOLE = /^\$\{parameters\.([^}]*)\}$/;
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
 /** An MCP server a package uses, by where it comes from (`source`, `toolkit`), never by the name an owner saves it under:
@@ -93,9 +99,12 @@ const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 export type McpNeed = { source: McpSource; toolkit: string; tools: string[]; required: boolean; reason?: string; allow: string[]; pin: Record<string, Record<string, PinValue>> };
 /** A need mapped to the saved MCP server an apply gives it (`server`, its saved name). */
 export type McpServed = McpNeed & { server: string };
-type Parameter = { type: (typeof PARAMETER_TYPES)[number]; required: boolean; description: string; pattern?: string; enum?: (string | number | boolean)[]; format?: (typeof PARAMETER_FORMATS)[number]; default?: string | number | boolean };
-/** Whether `value` is of the parameter type `type`. */
-const ofType = (type: Parameter["type"], value: unknown): boolean => (type === "integer" ? Number.isSafeInteger(value) : type === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === type);
+type Scalar = string | number | boolean;
+type ScalarType = (typeof PARAMETER_TYPES)[number];
+/** A parameter: a scalar, or (`type: array`) a list of one, its `items` that scalar's JSON Schema (an input's vocabulary). */
+type Parameter = { type: (typeof INPUT_TYPES)[number]; items?: Json; required: boolean; description: string; pattern?: string; enum?: Scalar[]; format?: (typeof PARAMETER_FORMATS)[number]; default?: Scalar | Scalar[] };
+/** Whether `value` is of the scalar type `type`. */
+const ofType = (type: ScalarType, value: unknown): boolean => (type === "integer" ? Number.isSafeInteger(value) : type === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === type);
 /** Whether `text` matches `pattern`; a pattern that does not compile matches nothing (it is reported on its own). */
 const safeTest = (pattern: string, text: string): boolean => {
   try {
@@ -205,13 +214,39 @@ export const githubTriggerUnconnected = (packageName: string, source: Json): str
 /** Every string in `value`, deep. */
 const strings = (value: unknown): string[] => (typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings) : isObject(value) ? Object.values(value).flatMap(strings) : []);
 
-/** `value` with each `${parameters.x}` in its strings replaced by the value given for x (its own: never an inherited
- *  name such as constructor), else nothing. */
+/** The value given for the parameter `name` (its own: never an inherited name such as constructor), else undefined. */
+const givenOf = (given: Record<string, unknown>, name: string): unknown => (Object.hasOwn(given, name) ? given[name] ?? undefined : undefined);
+/** Whether a pin's parameter was given no value it can pin: none, "", or an empty list. */
+const unset = (value: unknown): boolean => value === undefined || value === "" || (Array.isArray(value) && !value.length);
+/** A parameter's value as text: a list's items joined by ", " (an empty one, ""), nothing as "". */
+const asText = (value: unknown): string => (value === undefined ? "" : Array.isArray(value) ? value.map(asText).join(", ") : String(value));
+
+/** `value` with each `${parameters.x}` in its strings replaced by the value given for x as text (asText). */
 const filled = (value: unknown, given: Record<string, unknown>): unknown =>
-  typeof value === "string" ? value.replace(PLACEHOLDER, (_, name: string) => String(Object.hasOwn(given, name) ? given[name] ?? "" : ""))
+  typeof value === "string" ? value.replace(PLACEHOLDER, (_, name: string) => asText(givenOf(given, name)))
   : Array.isArray(value) ? value.map((item) => filled(item, given))
   : isObject(value) ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, filled(item, given)]))
   : value;
+
+/** A trigger's target.input filled: a value that is one placeholder alone takes the parameter's value with its type (a
+ *  list stays a list, an integer an integer), and is dropped when the parameter was given none, so the input schema sees
+ *  the field absent; other text is filled as text. */
+const inputFilled = (value: unknown, given: Record<string, unknown>): unknown => {
+  if (typeof value === "string") {
+    const whole = WHOLE.exec(value);
+    return whole ? givenOf(given, whole[1]!) : filled(value, given);
+  }
+  if (Array.isArray(value)) return value.map((item) => inputFilled(item, given)).filter((item) => item !== undefined);
+  if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, inputFilled(item, given)]).filter(([, item]) => item !== undefined));
+  return value;
+};
+
+/** A trigger filled from the apply's parameters: its target.input typed (inputFilled), the rest as text. */
+const triggerFilled = (trigger: Json, given: Record<string, unknown>): Json => {
+  const out = filled(trigger, given) as Json;
+  if (isObject(trigger.target) && trigger.target.input !== undefined) out.target = { ...(out.target as Json), input: inputFilled(trigger.target.input, given) };
+  return out;
+};
 
 /** An mcp entry's `pin` read: by tool, each one of the entry's `tools`, its arguments checked by the one rule every pin
  *  is (tool-plane.ts pinIssues, on the tool's gate name), text in it may hold `${parameters.<name>}` (checked with the
@@ -237,16 +272,20 @@ function pinOf(pin: unknown, server: string, tools: readonly string[], at: strin
 function scalarFilled(value: PinScalar, given: Record<string, unknown>): { value: PinScalar; empty: string[] } {
   if (typeof value !== "string") return { value, empty: [] };
   const named = [...value.matchAll(PLACEHOLDER)].map((match) => match[1]!);
-  const empty = named.filter((name) => !Object.hasOwn(given, name) || given[name] === undefined || given[name] === null || given[name] === "");
-  const whole = /^\$\{parameters\.([^}]*)\}$/.exec(value);
+  const empty = named.filter((name) => unset(givenOf(given, name)));
+  const whole = WHOLE.exec(value);
   if (whole && !empty.length) {
     const one = given[whole[1]!];
     if (typeof one === "string" || typeof one === "number" || typeof one === "boolean") return { value: one, empty };
   }
   return { value: filled(value, given) as string, empty };
 }
-/** A pin's value filled (scalarFilled), each of a one-of list's in its order. */
+/** A pin's value filled (scalarFilled), each of a one-of list's in its order. One placeholder alone of a list parameter
+ *  pins the list as a one-of: any of the values the owner gave. */
 function pinFilled(value: PinValue, given: Record<string, unknown>): { value: PinValue; empty: string[] } {
+  const whole = typeof value === "string" ? WHOLE.exec(value) : null;
+  const list = whole ? givenOf(given, whole[1]!) : undefined;
+  if (Array.isArray(list) && list.length) return { value: list as PinValue, empty: [] };
   if (!Array.isArray(value)) return scalarFilled(value as PinScalar, given);
   const each = value.map((one) => scalarFilled(one, given));
   return { value: each.map((one) => one.value), empty: each.flatMap((one) => one.empty) };
@@ -491,9 +530,27 @@ export function readPackage(dir: string): Package {
   if (f.checkout !== undefined && f.checkout !== "pull_request") bad(MANIFEST, "checkout is pull_request: the server checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn");
   const parameters: Record<string, Parameter> = {};
   for (const [key, p] of Object.entries(f.parameters === undefined ? {} : isObject(f.parameters) ? f.parameters : (bad(MANIFEST, "parameters is a mapping of names"), {}))) {
-    const ok = PARAMETER.test(key) && isObject(p) && !unknownFields(p, ["type", "required", "pattern", "enum", "format", "description", "default"]).length && (PARAMETER_TYPES as readonly unknown[]).includes(p.type) && (p.required === undefined || typeof p.required === "boolean") && typeof p.description === "string" && p.description.trim() !== "" && (p.pattern === undefined || (p.type === "string" && typeof p.pattern === "string"));
+    // A list of a scalar (a watch's companies), its items in an input's vocabulary: what apply takes, and a trigger's
+    // target.input fills whole.
+    if (isObject(p) && p.type === "array") {
+      const items = p.items;
+      if (!PARAMETER.test(key) || unknownFields(p, ["type", "required", "items", "description", "default"]).length || !(p.required === undefined || typeof p.required === "boolean") || !(typeof p.description === "string" && p.description.trim()) || !isObject(items) || !(PARAMETER_TYPES as readonly unknown[]).includes(items.type) || unknownFields(items, ITEM_KEYS).length) {
+        bad(MANIFEST, `parameters.${key} is {type: array, items: {type: ${PARAMETER_TYPES.join(" | ")}, and that scalar's ${ITEM_KEYS.slice(1).join(", ")}}, required?, default?, description}, its name lowercase`);
+        continue;
+      }
+      const schema = { type: "array", items: scalarSchema(items.type as ScalarType, items, `parameters.${key}.items`, (message) => bad(MANIFEST, message)) };
+      const check = schemaCheck(schema);
+      const takes = (value: unknown) => !("why" in check) && !check.check(value).length;
+      if (p.default !== undefined) {
+        if (!takes(p.default)) bad(MANIFEST, `parameters.${key}.default is a list its items take`);
+        if (p.required === true) bad(MANIFEST, `parameters.${key} is required and has a default: a default is for a parameter apply may leave out`);
+      }
+      parameters[key] = { type: "array", items: schema.items, required: p.required === true, description: p.description as string, ...(p.default !== undefined && takes(p.default) ? { default: p.default as Scalar[] } : {}) };
+      continue;
+    }
+    const ok =PARAMETER.test(key) && isObject(p) && !unknownFields(p, ["type", "required", "pattern", "enum", "format", "description", "default"]).length && (PARAMETER_TYPES as readonly unknown[]).includes(p.type) && (p.required === undefined || typeof p.required === "boolean") && typeof p.description === "string" && p.description.trim() !== "" && (p.pattern === undefined || (p.type === "string" && typeof p.pattern === "string"));
     if (!ok) {
-      bad(MANIFEST, `parameters.${key} is {type: ${PARAMETER_TYPES.join(" | ")}, required?, pattern? (strings), enum?, format? (strings), default?, description}, its name lowercase`);
+      bad(MANIFEST, `parameters.${key} is {type: ${PARAMETER_TYPES.join(" | ")}, required?, pattern? (strings), enum?, format? (strings), default?, description} (or type: array, items: a scalar), its name lowercase`);
       continue;
     }
     try {
@@ -504,15 +561,15 @@ export function readPackage(dir: string): Package {
     // What a string's value is (a cron line, a time zone), for a form to ask for it as such.
     const format = p.format === undefined ? undefined : p.type === "string" && (PARAMETER_FORMATS as readonly unknown[]).includes(p.format) ? (p.format as Parameter["format"]) : (bad(MANIFEST, `parameters.${key}.format is one of ${PARAMETER_FORMATS.join(", ")}, on a string parameter`), undefined);
     // A closed set of values (a form shows a choice, never a pattern): one or more, each of the parameter's type, once.
-    const choices = p.enum === undefined ? undefined : Array.isArray(p.enum) && p.enum.length > 0 && p.enum.every((one) => ofType(p.type as Parameter["type"], one)) && new Set(p.enum).size === p.enum.length ? (p.enum as (string | number | boolean)[]) : (bad(MANIFEST, `parameters.${key}.enum is a list of one or more distinct ${p.type as string} values`), undefined);
+    const choices = p.enum === undefined ? undefined : Array.isArray(p.enum) && p.enum.length > 0 && p.enum.every((one) => ofType(p.type as ScalarType, one)) && new Set(p.enum).size === p.enum.length ? (p.enum as Scalar[]) : (bad(MANIFEST, `parameters.${key}.enum is a list of one or more distinct ${p.type as string} values`), undefined);
     if (choices && typeof p.pattern === "string") bad(MANIFEST, `parameters.${key} has an enum and a pattern: the enum says the values, so leave the pattern out`);
-    if (choices && p.default !== undefined && !choices.includes(p.default as string | number | boolean)) bad(MANIFEST, `parameters.${key}.default is not one of its enum`);
+    if (choices && p.default !== undefined && !choices.includes(p.default as Scalar)) bad(MANIFEST, `parameters.${key}.default is not one of its enum`);
     if (p.default !== undefined) {
-      if (!ofType(p.type as Parameter["type"], p.default)) bad(MANIFEST, `parameters.${key}.default is a ${p.type as string}, as the parameter is`);
+      if (!ofType(p.type as ScalarType, p.default)) bad(MANIFEST, `parameters.${key}.default is a ${p.type as string}, as the parameter is`);
       else if (typeof p.pattern === "string" && typeof p.default === "string" && !safeTest(p.pattern, p.default)) bad(MANIFEST, `parameters.${key}.default does not match its pattern`);
       if (p.required === true) bad(MANIFEST, `parameters.${key} is required and has a default: a default is for a parameter apply may leave out`);
     }
-    parameters[key] = { type: p.type as Parameter["type"], required: p.required === true, description: p.description as string, ...(typeof p.pattern === "string" ? { pattern: p.pattern } : {}), ...(choices ? { enum: choices } : {}), ...(format ? { format } : {}), ...(p.default !== undefined && ofType(p.type as Parameter["type"], p.default) ? { default: p.default as string | number | boolean } : {}) };
+    parameters[key] = { type: p.type as ScalarType, required: p.required === true, description: p.description as string, ...(typeof p.pattern === "string" ? { pattern: p.pattern } : {}), ...(choices ? { enum: choices } : {}), ...(format ? { format } : {}), ...(p.default !== undefined && ofType(p.type as ScalarType, p.default) ? { default: p.default as Scalar } : {}) };
   }
   const inputSchema = inputsSchema(f.inputs, (message) => bad(MANIFEST, message));
   const secrets = list(f.secrets, "secrets", (secret) => /^[A-Z][A-Z0-9_]{0,127}$/.test(secret));
@@ -690,14 +747,24 @@ export function readPackage(dir: string): Package {
   // /v2/agents and POST /v2/triggers check their bodies (all but the agent the trigger names, which an apply makes). A
   // trigger's times are read as of the epoch, so its form is checked here and a date that has passed is the apply's
   // refusal, never a server's start.
-  const samples = Object.fromEntries(Object.entries(parameters).map(([key, spec]) => [key, spec.default ?? SAMPLES[spec.type]]));
+  const samples = Object.fromEntries(Object.entries(parameters).map(([key, spec]) => [key, spec.default ?? (spec.type === "array" ? [sampleOf(spec.items!)] : sampleOf(spec))]));
   const declared = Object.fromEntries(MODEL_TIER_NAMES.flatMap((tier) => (p.model?.[tier] ? [[tier, p.model[tier]!]] : [])));
   // Every MCP tool ticked, each served under its toolkit's name: the widest agent an apply can make, so each tool the
   // package lists is checked as a grant.
   const every = mcp.flatMap(({ toolkit, tools: listed }) => listed.map((tool) => mcpToolName(toolkit, tool)));
   const made = compiled(p, samples, { ...(harness ? { harness: harness[0]! } : {}), ...(p.model?.prefer ? { model: p.model.prefer } : {}), ...(Object.keys(declared).length ? { modelTiers: declared } : {}), mcp: mcp.map((need) => ({ ...need, server: need.toolkit })), defaultTools: [], grants: every });
   for (const issue of definitionBodyIssues(made.agent)) bad(issue.field.startsWith("skills.") ? `skills/${issue.field.slice("skills.".length)}` : MANIFEST, `${issue.field.startsWith("skills.") ? "" : `the agent it makes: ${issue.field}: `}${issue.message}`);
-  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
+  // A sample stands in for a value apply is given: at a target.input field a parameter with no default fills whole, what
+  // hangs on the value (a pattern, a bound, a choice) is the apply's, on the value given. Its type, and whether the
+  // inputs name the field at all, are checked here.
+  const sampled = (field: string): boolean => {
+    const at = /^triggers\.(\d+)\.target\.input\.([^.]+)/.exec(field);
+    const target = at ? (p.triggers[Number(at[1])]?.target as Json | undefined) : undefined;
+    const value = at && isObject(target) && isObject(target.input) ? target.input[at[2]!] : undefined;
+    const whole = typeof value === "string" ? WHOLE.exec(value) : null;
+    return !!whole && Object.hasOwn(parameters, whole[1]!) && parameters[whole[1]!]!.default === undefined;
+  };
+  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field)) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   return p;
 }
@@ -737,7 +804,7 @@ export function packageView(p: Package) {
 /** POST /v2/templates/{name}/apply's body (`{parameters, grants?, overrides?: {model}}`), checked against the package:
  *  the parameters as given, the MCP tools the owner allows (each one the package lists, by its gate name), and the model
  *  asked for in place of the package's. 422 naming every field that is wrong. */
-export function applyBodyOf(p: Package, body: Json): { parameters: Record<string, string | number | boolean>; grants: string[]; servers: Record<string, string>; model?: string; approvals?: Approvals } {
+export function applyBodyOf(p: Package, body: Json): { parameters: Record<string, Scalar | Scalar[]>; grants: string[]; servers: Record<string, string>; model?: string; approvals?: Approvals } {
   const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides"]);
   const listed = p.mcp.flatMap(({ toolkit, tools }) => tools.map((tool) => mcpToolName(toolkit, tool)));
   const grants: string[] = [];
@@ -756,12 +823,16 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Record<string
   }
   const given = body.parameters ?? {};
   if (!isObject(given)) issues.push({ field: "parameters", reason: "wrong_type", message: "parameters is an object of the package's parameters, by name" });
-  const parameters: Record<string, string | number | boolean> = {};
+  const parameters: Record<string, Scalar | Scalar[]> = {};
   for (const [key, value] of Object.entries(isObject(given) ? given : {})) {
     const spec = Object.hasOwn(p.parameters, key) ? p.parameters[key] : undefined;
-    const typed = spec && ofType(spec.type, value);
+    const typed = spec && (spec.type === "array" ? Array.isArray(value) : ofType(spec.type, value));
+    // A list's items, each checked as an input's are (the full compiler): the first problem, said at the parameter.
+    const itemIssue = spec?.type === "array" && typed ? inputIssues({ [key]: value }, { type: "object", properties: { [key]: { type: "array", items: spec.items } } }, "parameters")[0] : undefined;
     if (!spec) issues.push({ field: `parameters.${key}`, reason: "not_allowed", message: `The package ${p.name} takes no parameter ${key}.` });
-    else if (!typed) issues.push({ field: `parameters.${key}`, reason: "wrong_type", message: `parameters.${key} is a ${spec.type}: ${spec.description}` });
+    else if (!typed) issues.push({ field: `parameters.${key}`, reason: "wrong_type", message: `parameters.${key} is ${spec.type === "array" ? `a list of ${(spec.items as Json).type as string}` : `a ${spec.type}`}: ${spec.description}` });
+    else if (itemIssue) issues.push({ ...itemIssue, field: `parameters.${key}`, message: `${itemIssue.message}: ${spec.description}` });
+    else if (spec.type === "array") parameters[key] = value as Scalar[];
     else if (spec.enum && !spec.enum.includes(value as string | number | boolean)) issues.push({ field: `parameters.${key}`, reason: "not_an_option", message: `parameters.${key} is one of ${spec.enum.join(", ")}: ${spec.description}` });
     else if (spec.pattern && !new RegExp(spec.pattern, "u").test(value as string)) issues.push({ field: `parameters.${key}`, reason: "bad_format", message: `parameters.${key} is ${spec.description}` });
     else parameters[key] = value as string | number | boolean;
@@ -915,7 +986,7 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     // The package's checkout (manifest `checkout`): the server fetches it before each run's first turn.
     ...(p.checkout ? { checkout: p.checkout } : {}),
   };
-  return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json), unpinned };
+  return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => triggerFilled(trigger, parameters)), unpinned };
 }
 
 /** Each pin the package's MCP servers (`mcp`) set, by the tool's gate name, its values filled from `parameters`, and the
