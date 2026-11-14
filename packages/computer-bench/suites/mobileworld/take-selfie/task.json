@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "mobileworld.take-selfie",
-  "version": 1,
+  "version": 2,
   "title": "Take a photo with the camera",
   "split": "dev",
   "source": {
@@ -9,10 +9,24 @@
     "id": "native/take_selfie.py:TakeSelfieTask",
     "revision": "a026188705f4a494a12d14ddab3786a23fd2c537",
     "licence": "Apache-2.0",
-    "changes": "Instruction is the source's goal, word for word (\"Take a photo.\"; the source's name says selfie, its goal and check don't). The source counted MediaStore images added since setup, or more image files in /sdcard/Pictures; ours counts image files in /sdcard/DCIM and /sdcard/Pictures newer than a marker setup writes, which covers the vendor camera apps' folders, and leaves out Screenshots folders and unfinished (.pending) files so a screenshot can't pass. HEIC is counted as well as the source's JPEG, PNG and DNG. Teardown deletes the run's new images. The oracle saves a screen capture into DCIM/Camera: it proves the check reads a new camera-folder image, not that a camera app works."
+    "changes": "Instruction is the source's goal, word for word (\"Take a photo.\"; the source's name says selfie, its goal and check don't). The source counted MediaStore images added since setup, or more image files in /sdcard/Pictures; ours counts image files in /sdcard/DCIM and /sdcard/Pictures newer than a marker setup writes, which covers the vendor camera apps' folders, and leaves out Screenshots folders and unfinished (.pending) files so a screenshot can't pass. HEIC is counted as well as the source's JPEG, PNG and DNG. Teardown deletes the run's new images. A camera probe (dumpsys media.camera lists a device) skips the task on a phone with no camera. The oracle opens the camera app with the still-image intent and presses its shutter through ui.act, so it proves the camera app takes a photo the check counts; it can't be proven on a cloud phone without a camera."
   },
   "tags": ["camera", "create"],
-  "needs": { "os": "android", "kind": "phone", "apps": ["com.google.android.GoogleCamera", "com.android.camera2", "com.android.camera", "com.sec.android.app.camera", "com.android.systemui"] },
+  "needs": {
+    "os": "android",
+    "kind": "phone",
+    "apps": [["com.google.android.GoogleCamera", "com.android.camera2", "com.android.camera", "com.sec.android.app.camera"]],
+    "capabilities": [
+      {
+        "id": "camera",
+        "kind": "exec",
+        "why": "The camera service lists at least one camera device. A phone with none (round 1's cloud phones: their camera app opened no window) can't take a photo, so the task is skipped there.",
+        "argv": ["sh", "-c", "dumpsys media.camera | grep -m1 'Number of camera devices'"],
+        "timeoutMs": 20000,
+        "stdout": { "matches": "Number of camera devices: [1-9]" }
+      }
+    ]
+  },
   "setup": [
     {
       "method": "exec.run",
@@ -47,8 +61,20 @@
   "oracle": [
     {
       "method": "exec.run",
-      "why": "Save a new image into the camera folder, the state a photo leaves.",
-      "params": { "argv": ["sh", "-c", "mkdir -p /sdcard/DCIM/Camera && screencap -p /sdcard/DCIM/Camera/IMG_{{nonce}}.png"], "timeoutMs": 30000 }
+      "why": "Open the phone's camera app for a still photo, as tapping its icon does.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.media.action.STILL_IMAGE_CAMERA"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "ui.act",
+      "why": "Press the camera app's shutter, the path the agent takes: the camera's own photo, not a stand-in.",
+      "params": {
+        "steps": [{ "press": { "find": { "name": { "matches": "shutter|take (a )?photo|capture", "flags": "i" } } } }]
+      }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait up to 10 s for the camera app to finish writing the photo, so the check reads it.",
+      "params": { "argv": ["sh", "-c", "for i in 1 2 3 4 5 6 7 8 9 10; do n=$(find /sdcard/DCIM /sdcard/Pictures -type f -newer /data/local/tmp/computer-bench-{{nonce}}/t0 ! -name '.*' ! -path '*/Screenshots/*' \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.heic' -o -iname '*.png' -o -iname '*.dng' \\) 2>/dev/null | wc -l); [ \"$n\" -gt 0 ] && exit 0; sleep 1; done; exit 1"], "timeoutMs": 20000 }
     }
   ]
 }

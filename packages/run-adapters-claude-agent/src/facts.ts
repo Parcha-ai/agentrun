@@ -18,8 +18,6 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   recoversCutAnswers: 3,
   // One run's memory, measured with the server's (serve's host.ts): the CLI and its SDK beside the run's process.
   runMib: 288,
-  // Its own MCP client binds the session's remote MCP servers.
-  mcp: true,
   thinking: Object.freeze(["low", "medium", "high", "xhigh", "max"] as const),
   // Anthropic's web search, through the session's proxy, as the pinned CLI's WebSearch asks for it.
   webSearch: "native",

@@ -37,7 +37,7 @@ test("verify on the fake ui driver: every fixture check fails the untouched wind
 		assert.equal(proof.solved, "passes", `${proof.task}: ${proof.why ?? ""}`);
 		assert.deepEqual(proof.wrong, []);
 	}
-	assert.match(proofMarkdown(proofs), /8 task × seed proofs; 0 not right/);
+	assert.match(proofMarkdown(proofs), /8 task × seed proofs: 8 right, 0 skipped, 0 not right\./);
 });
 
 test("the fake agents on the fake ui driver: right passes every fixture task, wrong and null fail every one", async () => {

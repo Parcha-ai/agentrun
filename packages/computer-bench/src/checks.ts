@@ -42,6 +42,32 @@ export function matches(text: string, match: Match): boolean {
 	return match.not ? !hit : hit;
 }
 
+/**
+ * An answer as an answer check compares it: markdown emphasis taken off (`**x**`, `__x__`, `*x*`, `_x_`, `` `x` ``)
+ * and the thousands separators taken out of numbers (`103,190.70` is `103190.70`: a comma between a digit and a group
+ * of exactly three digits). Nothing else: no rounding, no number parsing. An underscore or asterisk inside a word or a
+ * number (`bid_1_final`, `2*3*4`) is no emphasis.
+ */
+export function normaliseAnswer(text: string): string {
+	return text
+		.replace(/`([^`\n]+)`/g, "$1")
+		.replace(/\*\*(?=\S)([^*\n]*?\S)\*\*/g, "$1")
+		.replace(/(?<![\w\\])__(?=\S)([^_\n]*?\S)__(?!\w)/g, "$1")
+		.replace(/(?<![\w*\\])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![\w*])/g, "$1")
+		.replace(/(?<![\w\\])_(?=[^\s_])([^_\n]*?[^\s_])_(?!\w)/g, "$1")
+		.replace(/(?<=\d),(?=\d{3}(?!\d))/g, "");
+}
+
+/** The match an answer check compares with: its literals normalised as the answer is (a pattern is left as written). */
+function answerMatch(match: Match): Match {
+	return {
+		...match,
+		...(match.equals === undefined ? {} : { equals: normaliseAnswer(match.equals) }),
+		...(match.contains === undefined ? {} : { contains: normaliseAnswer(match.contains) }),
+		...(match.oneOf === undefined ? {} : { oneOf: match.oneOf.map(normaliseAnswer) }),
+	};
+}
+
 /** A match in words, for a failure's reason. */
 export function describe(match: Match): string {
 	const what =
@@ -177,7 +203,7 @@ export async function runCheck(check: Check, context: CheckContext): Promise<Che
 			case "answer": {
 				const answer = context.answer;
 				if (answer === undefined) return done("fail", "", "the agent gave no final answer");
-				if (!matches(answer, check.text)) return done("fail", answer, `the answer does not ${describe(check.text)}`);
+				if (!matches(normaliseAnswer(answer), answerMatch(check.text))) return done("fail", answer, `the answer, without emphasis and thousands separators, does not ${describe(check.text)}`);
 				return done("pass", answer);
 			}
 		}

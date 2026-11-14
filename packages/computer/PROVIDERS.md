@@ -338,6 +338,10 @@ provider's options, so you write none of them by hand. The case `health.declared
 descriptor, and each computer's `hello` against `capabilities()`. [spec/computer/provider.md](../../spec/computer/provider.md)
 says what each member promises.
 
+A mount kind your machines can't take goes in the descriptor's `unmounted`, with why in one sentence, and `check()`
+refuses it in those words. Daytona declares no mount: `unmounted: { archil: "Archil mounts don't work on Daytona yet:
+Archil's client hangs on its sandboxes" }`.
+
 If your machines can't run Linux as root, the adapter doesn't fit, and you'd implement `ComputerProvider`
 (`src/provider.ts`) directly. That's a big job, because the adapter's whole lifecycle, claims and all, becomes yours to
 write.

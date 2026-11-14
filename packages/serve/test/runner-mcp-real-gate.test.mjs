@@ -1,8 +1,8 @@
 // MCP calls through the runner's REAL gate (adapterRunGate → RunGate.decide, the revision's and the server's tool settings
 // from the store), not a stand-in permission function: an agent's own `mcp:<server>/<tool>` deny and a server's
 // `mcp:<server>/*` deny each refuse the call before its intent with the gate's words, by the tool's catalog name, and
-// nothing reaches the MCP server; an ask parks the run named by the catalog name. On pi (its wire name mcp__fake__add) and
-// on a CLI stand-in whose MCP client calls the session's door.
+// nothing reaches the MCP server; an ask parks the run named by the catalog name. On pi and on a CLI stand-in whose tool
+// bridge asks the host's gate, each calling the tool by its wire name mcp__fake__add.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -10,8 +10,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
-import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
@@ -42,42 +40,29 @@ const lastResult = (sent) => {
   return typeof content === "string" ? content : (content ?? []).map((part) => part.text ?? "").join("");
 };
 
-/** A CLI stand-in whose MCP client (Claude Code's call-id key) calls `add` at the session's door and keeps the answer. */
-function mcpCli(seen) {
-  const client = { callIdMeta: "claudecode/toolUseId" };
+/** A CLI stand-in whose tool bridge asks the host's gate before it calls `mcp__fake__add`, and keeps the answer: the
+ *  tool's result, or the gate's refusal as an error result, as every CLI adapter's bridge hands it the model. */
+function bridgeCli(seen) {
   return {
     id: "stand-in-cli",
-    capabilities: () => ({ mcpClient: client }),
     check: () => [],
     async open(spec, io) {
-      const proxy = await startModelProxy({
-        policy: anthropicPolicy({ model: "claude-test", tools: [] }), hooks: io.models, model: "claude-test", origin: "https://faux.invalid",
-        credential: async () => "not-a-secret-provider", ...(spec.mcp ? { mcp: { session: spec.mcp, client } } : {}),
-      }, randomBytes(32).toString("base64url"));
-      let state = (await io.writer.read()).some((record) => record.kind === "stand-in.sent") ? "idle" : "new";
       let turn;
+      let state = "new";
       return {
         get state() { return state; },
-        async send(text) {
-          if (text.startsWith("[tool approval] ")) {
-            turn = (async () => (io.onEvent({ type: "turn_end", status: "completed" }), { status: "completed" }))();
-            return;
-          }
-          await io.writer.append([{ kind: "stand-in.sent", data: null }]);
+        async send() {
           state = "idle";
           turn = (async () => {
-            const response = await fetch(`${proxy.url}/mcp/fake`, {
-              method: "POST",
-              headers: { authorization: `Bearer ${proxy.key}`, "content-type": "application/json", accept: "application/json" },
-              body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "add", arguments: { a: 2, b: 3 }, _meta: { [client.callIdMeta]: "toolu_real_gate_1" } } }),
-            });
-            seen.answer = (await response.json()).result;
+            const call = { callId: "toolu_real_gate_1", tool: "mcp__fake__add", args: { a: 2, b: 3 } };
+            const answer = await io.gate(call);
+            if (answer !== "allow" && !("deny" in answer)) return { status: "aborted" };
+            seen.answer = answer === "allow" ? await spec.tools.find((tool) => tool.name === call.tool).call(call.args, { callId: call.callId, signal: io.signal }) : { text: answer.deny, isError: true };
             io.onEvent({ type: "turn_end", status: "completed" });
             return { status: "completed" };
           })();
         },
-        async recover() {}, async settleOpenTurn() { state = "idle"; }, turnEnd: () => turn, async interrupt() {},
-        async close() { await proxy.close().catch(() => undefined); },
+        async recover() {}, async settleOpenTurn() {}, turnEnd: () => turn, async interrupt() {}, async close() {},
       };
     },
   };
@@ -114,7 +99,7 @@ async function realGateRun(t, { harness, agentSettings = {}, serverSettings }) {
     const gate = await adapterRunGate(store, claim, revision, work);
     const own = harness === "pi"
       ? await base(claim, run)
-      : { adapter: mcpCli(seen), session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Add them.", record: "loop", hooks: quiet, runCap: { capUsd: () => undefined, modelOf: () => undefined } };
+      : { adapter: bridgeCli(seen), session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Add them.", record: "loop", hooks: quiet, runCap: { capUsd: () => undefined, modelOf: () => undefined } };
     return { ...own, workRoot: work, gate, ...(mcp ? { mcp } : {}) };
   });
   runner = startRunner({ store, createLoop: loop, name: "runner-a", ...STEADY });
@@ -139,10 +124,10 @@ test("pi, through the real gate: the agent's own mcp:fake/add deny refuses the c
   assert.equal(lastResult(sent), deny("agent"));
 });
 
-test("a CLI, through the real gate: the agent's own mcp:fake/add deny refuses the call at the door in the gate's words, and nothing reaches the server", async (t) => {
+test("a CLI, through the real gate: the agent's own mcp:fake/add deny refuses the call at its bridge in the gate's words, and nothing reaches the server", async (t) => {
   const { seen, fake } = await realGateRun(t, { harness: "claude-agent", agentSettings: { "mcp:fake/add": { permission: "deny" } } });
   assert.equal(toolCalls(fake).length, 0, "nothing reached the MCP server");
-  assert.deepEqual(seen.answer, { content: [{ type: "text", text: deny("agent") }], isError: true });
+  assert.deepEqual(seen.answer, { text: deny("agent"), isError: true });
 });
 
 test("pi, through the real gate: the server's mcp:fake/* deny refuses the call in the gate's words, and nothing reaches the server", async (t) => {

@@ -39,9 +39,9 @@ test("Modal: MOUNT is [\"archil\"], what its provider declares", () => {
 	assert.deepEqual([...modal.MOUNT], declared(provider));
 });
 
-test("Daytona: MOUNT is [\"archil\"], what its provider declares", () => {
+test("Daytona: MOUNT is [], what its provider declares: Archil's client hangs on its sandboxes", () => {
 	const provider = new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: DAEMON, fetch: async () => assert.fail("no request") });
-	assert.deepEqual([...daytona.MOUNT], ["archil"]);
+	assert.deepEqual([...daytona.MOUNT], []);
 	assert.deepEqual([...daytona.MOUNT], declared(provider));
 });
 
