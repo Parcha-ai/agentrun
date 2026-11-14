@@ -404,6 +404,34 @@ test("an allowed call priced by usage that monid estimates at $0 runs at its est
   assert.deepEqual([run.row.state, run.row.summary], ["failed", "monid charged $1.42, more than the $0 held; the run stopped"], JSON.stringify(run.row));
 });
 
+/** The fake monid can't be reached from here on in this test: each request fails as a fetch to a host that can't be. */
+function monidDown(t) {
+  const before = process.env.AGENTRUN_TEST_FAUX_MONID_DOWN;
+  process.env.AGENTRUN_TEST_FAUX_MONID_DOWN = "1";
+  t.after(() => {
+    if (before === undefined) delete process.env.AGENTRUN_TEST_FAUX_MONID_DOWN; else process.env.AGENTRUN_TEST_FAUX_MONID_DOWN = before;
+  });
+}
+const UNKNOWN_WORDS = `monid may have charged for ${SEARCH} and did not say how much, so this run's cap can't be kept; the run stopped`;
+
+test("under a cap, a call priced by usage whose estimate read ends with its charge unknown stops the run at once in words that say so: its $0 hold bounds nothing", async (t) => {
+  const sent = callLog(t);
+  monidDown(t);
+  t.mock.method(console, "error", () => {});
+  const requests = [];
+  const run = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, toolSettings: { [SEARCH]: { permission: "allow" } }, launch: { max_cost_usd: 1 }, requests, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
+  assert.deepEqual(sent().map((call) => call.maxCost), [0], "the read, and nothing after it");
+  assert.equal(requests.length, 1, "no further model turn");
+  assert.deepEqual([run.row.state, run.row.summary], ["failed", UNKNOWN_WORDS], JSON.stringify(run.row));
+});
+
+test("with no cap, a call priced by usage whose estimate read ends with its charge unknown answers that, and the run goes on", async (t) => {
+  callLog(t);
+  monidDown(t);
+  const run = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, toolSettings: { [SEARCH]: { permission: "allow" } }, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
+  assert.equal(run.row.state, "ended", JSON.stringify(run.row));
+});
+
 test("a monid charge at its call's hold is booked and the run goes on, as before", async (t) => {
   const sent = callLog(t);
   charging(t, 0.026);
