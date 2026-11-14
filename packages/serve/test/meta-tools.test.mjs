@@ -252,7 +252,32 @@ async function metaRun(t, harness, script, own, { native } = {}) {
     return (now.state === "ended" || now.state === "failed") && now.runner === null && now;
   }, "the run ended", 30_000);
   const { entries } = await journalRecords(server.journal({ runId: "run-1", runner: "test-reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
-  return { row, said: messagesOf(entries).filter((message) => message.role === "model").map((message) => message.text), requests };
+  return { row, said: messagesOf(entries).filter((message) => message.role === "model").map((message) => message.text), requests, server };
+}
+
+for (const harness of HARNESSES) {
+  test(`${harness.name}: tools_call${harness.codemode ? " and a codemode script each leave" : " leaves"} a row of their own on the timeline, the calls they made after it`, async (t) => {
+    const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
+    const { runTimeline } = await import("../dist/store-reads/journal.js");
+    const add = { name: "add", replaySafe: false, run: async () => "5" };
+    // One run each: a scripted CLI stand-in makes its script's first call alone.
+    const runs = [[TOOLS_CALL, { name: "add", args: {} }], ...(harness.codemode ? [[CODEMODE, { script: "await tools.add({}); await tools.add({}); return 'two';" }]] : [])];
+    for (const [name, args] of runs) {
+      const { row, server } = await metaRun(t, harness, [{ call: name, args }, { say: "done" }], { add });
+      assert.equal(row.state, "ended", JSON.stringify(row));
+      const rows = (await runTimeline(server, "run-1", ctx)).filter((one) => one.kind === "tool_use" || one.kind === "tool_result");
+      const shown = JSON.stringify(rows.map((one) => [one.kind, one.tool_name, one.tool_use_id, one.summary]));
+      const [call, ...more] = rows.filter((one) => one.kind === "tool_use" && one.tool_name === name);
+      assert.ok(call, `${name} has its own row: ${shown}`);
+      assert.equal(more.length, 0, `once: ${shown}`);
+      assert.ok(rows.some((one) => one.kind === "tool_result" && one.tool_use_id === call.tool_use_id && one.tool_status === "success"), `${name}'s result row: ${shown}`);
+      // Where the harness shows the nested calls (a CLI's record keeps each as its own tool's), each reads after the row
+      // of the call that made it.
+      for (const nested of rows.filter((one) => one.kind === "tool_use" && one.tool_name === "add")) {
+        assert.ok(nested.tool_use_id.startsWith(`${call.tool_use_id}/`) && rows.indexOf(call) < rows.indexOf(nested), `${nested.tool_use_id} reads after its call's row: ${shown}`);
+      }
+    }
+  });
 }
 
 for (const harness of HARNESSES.filter((one) => one.codemode)) {

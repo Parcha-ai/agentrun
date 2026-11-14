@@ -1,5 +1,5 @@
 // Two calls in one pi run, each set to ask and answered in turn: an answer restates the run's rows at once (runs.ts
-// restate), and the earlier call must still read in order then: its own rows "Held for your approval", its approval row,
+// restate), and the earlier call must still read in order then: its own rows (as any call's, once it ran), its approval row,
 // then its resume row with the outcome. The rows an answer restates were rewritten once already (the resume row's text no
 // longer starts with the gate's head), so the link from a resume row to its approval can't be read from that text.
 import assert from "node:assert/strict";
@@ -41,7 +41,12 @@ function readsInOrder(rows, callId, outcome, at) {
   const resume = rows.findIndex((r, i) => i > ask && r.origin === "server" && outcome.test(r.summary ?? ""));
   assert.ok(own.length > 0 && ask > Math.max(...own), `${at}: the approval row follows the call's own rows: ${JSON.stringify(shown)}`);
   assert.ok(resume > ask, `${at}: the outcome (the resume row) follows the approval row: ${JSON.stringify(shown)}`);
-  assert.deepEqual(own.map((i) => rows[i].summary), own.map(() => "Held for your approval"), `${at}: the call's own rows say only that it was held: ${JSON.stringify(shown)}`);
+  // One that ran reads as any call, its result saying how it came to run; one that did not run says only that it was held.
+  const ran = /^AgentRun: \S+ ran( once you allowed it|, as its setting allows it)/.exec(rows[resume].summary ?? "");
+  if (!ran) return assert.deepEqual(own.map((i) => rows[i].summary), own.map(() => "Held for your approval"), `${at}: the call's own rows say only that it was held: ${JSON.stringify(shown)}`);
+  assert.ok(own.every((i) => rows[i].summary !== "Held for your approval"), `${at}: a call that ran is never "held": ${JSON.stringify(shown)}`);
+  const result = own.map((i) => rows[i]).find((r) => r.kind === "tool_result");
+  assert.ok(result?.summary.endsWith(`(${ran[1] === ", as its setting allows it" ? "ran, as its setting allows it" : "ran once you allowed it"})`), `${at}: its result row says how it came to run: ${JSON.stringify(shown)}`);
 }
 
 test("pi: two calls set to ask in one run, the first allowed, the second denied with a note: after the second answer, and at the run's end, the first still reads held, then its approval, then its outcome, and so does the second", { timeout: 150_000 }, async (t) => {
@@ -167,6 +172,12 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`${harness}: a call the person declined, web_fetch's setting put back to allow right after, is never run`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, "declined"));
 }
 
+// A deny set on the server while a call waits for its person, then their allow: the deny refuses it, and its rows say so
+// (never that the run ended while it waited), its allow kept on the record as the answer the deny overrode.
+for (const harness of ["pi", "claude-agent", "codex"]) {
+  test(`${harness}: web_fetch set to deny on the server while the second call waits, then the person allows it: refused unrun, its rows saying the tool is now set to deny`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, "denied-since"));
+}
+
 async function bothAllowed(t, harness, putBack) {
   const server = await serve(t, { faux: FAUX, harnessTable: fauxTable(fixture("faux-harness.mjs")), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true });
   const { api } = server;
@@ -218,6 +229,10 @@ async function bothAllowed(t, harness, putBack) {
     const view = (await api("GET", `/runs/${runId}`)).body;
     assert.deepEqual([view.status, view.pending?.id], ["input_required", second.id], "still waiting on the person");
     assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
+  } else if (putBack === "denied-since") {
+    // web_fetch set to deny while the second call waits, then the person allows it: the deny wins.
+    assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
+    assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
   } else {
     assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
   }
@@ -225,6 +240,16 @@ async function bothAllowed(t, harness, putBack) {
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   const done = await rowsNow(api, runId);
   const shown = JSON.stringify(done.map((r) => `${r.kind}: ${r.summary}`));
+  if (putBack === "denied-since") {
+    const own = done.filter((r) => (r.kind === "tool_use" || r.kind === "tool_result") && r.tool_use_id === second.call_id);
+    assert.ok(own.length > 0 && own.every((r) => r.summary === "Not run: its tool is now set to deny on this server"), `its own rows say the deny refused it: ${shown}`);
+    assert.equal(own.find((r) => r.kind === "tool_result")?.refused, true, `its result row is marked refused: ${shown}`);
+    assert.deepEqual(done.filter((r) => r.kind === "tool_approval_requested" && r.tool_use_id === second.call_id).map((r) => r.summary), [`Denied by the tool's setting on this server: web_fetch {"url":"http://b.example/"}`], `its approval row: ${shown}`);
+    assert.ok(done.some((r) => r.kind === "phase" && r.summary === "AgentRun: You allowed web_fetch, but it is now set to deny on this server, so it was not run"), `its outcome names the allow and the deny: ${shown}`);
+    assert.ok(!done.some((r) => /ENOTFOUND b\.example/.test(`${r.summary ?? ""} ${r.tool_result_preview ?? ""}`)), `it never ran: ${shown}`);
+    assert.ok(!done.some((r) => /^(Not run: the run ended|Withdrawn)/.test(r.summary ?? "")), `never "ended while it waited" or withdrawn: ${shown}`);
+    return;
+  }
   if (putBack === "declined") {
     assert.ok(!done.some((r) => r.kind === "tool_result" && r.tool_use_id === second.call_id && r.summary !== "Held for your approval"), `the declined call never ran: ${shown}`);
     assert.ok(!done.some((r) => /ENOTFOUND b\.example|as its setting allows it/.test(`${r.summary ?? ""} ${r.tool_result_preview ?? ""}`)), `no row says it ran: ${shown}`);
