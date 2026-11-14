@@ -121,6 +121,8 @@ type Conn struct {
 	formats        map[byte]format
 	visuals        map[uint32]visual
 	xtest          byte
+	// damage is DAMAGE's major opcode once InitDamage found it, and damageEvent its DamageNotify's event code.
+	damage, damageEvent byte
 
 	// wmu orders requests: their sequence numbers are the order they are buffered in.
 	wmu sync.Mutex
