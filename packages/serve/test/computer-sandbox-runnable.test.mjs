@@ -75,11 +75,11 @@ async function saveAndStart(api, id, setting) {
 }
 
 for (const [provider, keys] of [["e2b", { E2B_API_KEY: "fake-test-key" }], ["modal", { MODAL_TOKEN_ID: "fake-test-id", MODAL_TOKEN_SECRET: "fake-test-key" }]]) {
-  test(`an agent whose computer is a ${provider} sandbox, its key saved in Settings → Computers, is never refused for its place in Mode 2 (AGENTRUN_BOXES unset)`, async (t) => {
+  test(`an agent whose computer is a ${provider} sandbox, its key saved in Settings → Computers, is never refused for its place in Mode 2 (AGENTRUN_BOXES unset); it is not ready, its stock image having no Archil client`, async (t) => {
     const api = await server(t, { archil: true });
     const saved = await api("PUT", `/computers/${provider}/keys`, keys);
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
-    assert.equal(saved.body.ready, true, `${provider} is ready with its key saved: ${JSON.stringify(saved.body)}`);
+    assert.deepEqual([saved.body.ready, saved.body.why?.match(/stock image .*, which has no Archil client/) !== null], [false, true], `${provider} is not ready with its key saved: ${JSON.stringify(saved.body)}`);
 
     const said = await saveAndStart(api, `remote-${provider}`, { computer: { kind: "sandbox", provider } });
     assert.deepEqual(said.saved, [], `the agent is saved with a warning on its computer or place: ${JSON.stringify(said)}`);

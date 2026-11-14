@@ -739,8 +739,12 @@ passes the binding's conformance cases (below) needs no change here.
   `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
   because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
   git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Modal, E2B or Agent37 sandbox mounts
-  the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
-  it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes.
+  the run's folder from its disk with a mount credential minted for that run alone, but only from an image with Archil's
+  client and helper (the computer package's box recipe). This server names a vendor's image only through its
+  descriptor's `imageEnv`, which none of the three declares, so each would start from its vendor's stock image: Settings
+  shows them not ready, and a run's claim refuses them before any computer is made. Docker's sandbox is refused, since
+  it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes. So in Mode 2 no sandbox
+  runs for now.
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
   `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and

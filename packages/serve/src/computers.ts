@@ -61,6 +61,9 @@ export interface ProviderEntry {
   readonly capabilities: readonly KindCapabilities[];
   /** The image a computer of each kind starts from when its setting names none. */
   readonly defaultImage?: Partial<Record<ComputerKind, string>>;
+  /** The environment variable an owner names this provider's image in (Daytona's AGENTRUN_DAYTONA_SNAPSHOT), as its
+   *  descriptor declares it (computer-deps.ts computerSpecOf). */
+  readonly imageEnv?: string;
   /** A program its computers need on this machine's PATH, what installs it, and the machines it is built for
    *  (`${platform}-${arch}`; absent, every one), as its descriptor declares it: the phone's adb. Absent: none. */
   readonly hostCommand?: HostCommand;
@@ -208,13 +211,19 @@ export const COMPUTER_UNAVAILABLE = "computer_unavailable";
  *  A sandbox holds the run's folder: Mode 1 keeps it on this machine, which only a computer that binds a local folder
  *  (Docker) reaches; Mode 2 keeps it on the owner's disk, which only a computer that mounts the disk reaches (never a
  *  local Docker bind). A desktop, phone or browser holds no folder unless its provider mounts it, so either mode takes
- *  it. */
-export function modeRefusal(kind: ComputerKind, provider: ProviderEntry, mode: FolderMode): string | undefined {
+ *  it. A sandbox that mounts the disk needs an image with Archil's client and helper (the computer package's box
+ *  recipe), and this server names a vendor's image only in its descriptor's imageEnv (`env`): with none named, it starts
+ *  from the vendor's stock image (computer-deps.ts computerSpecOf), whose mount is refused at start. */
+export function modeRefusal(kind: ComputerKind, provider: ProviderEntry, mode: FolderMode, env: KeyEnv): string | undefined {
   if (kind !== "sandbox") return undefined;
   if (mode === "local" && !provider.mounts.includes("bind")) return `${provider.label} can't mount this server's run folders (they are on its own disk): set this agent's computer to sandbox on Docker, or none (Settings → Computers)`;
   if (mode === "disk" && !provider.mounts.includes("archil")) {
     const why = provider.unmounted?.archil;
     return `${provider.label} can't mount the owner's disk this server keeps run folders on${why ? ` (${why})` : ""}: set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)`;
+  }
+  if (mode === "disk" && (provider.imageEnv === undefined || envValue(env, provider.imageEnv) === undefined)) {
+    const stock = provider.defaultImage?.sandbox;
+    return `${aLabel(provider.label, true)} sandbox can't mount the owner's disk this server keeps run folders on yet: it would start from ${provider.label}'s stock image${stock ? ` (${stock})` : ""}, which has no Archil client, and this server can't name another: set this agent's computer to none (Settings → Computers)`;
   }
   return undefined;
 }
@@ -288,7 +297,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     // Under this server's AGENTRUN_BOX_ALLOW none, a computer that needs a network is refused at a
     // run's start and its claim (resolve-computer.ts noNetworkRefusal), so it is never ready here, whatever its keys.
     const refusedOpen = (provider: ProviderEntry): boolean => boxAllowOf(env as NodeJS.ProcessEnv) === "none" && needsNetwork(provider.network);
-    const unusable = (kind: ComputerKind, provider: ProviderEntry): string | undefined => modeRefusal(kind, provider, mode) ?? (refusedOpen(provider) ? noNetworkWhy(provider) : undefined);
+    const unusable = (kind: ComputerKind, provider: ProviderEntry): string | undefined => modeRefusal(kind, provider, mode, env) ?? (refusedOpen(provider) ? noNetworkWhy(provider) : undefined);
     // Each provider that binds a folder of this machine asked once for the view: its daemon answers, or why not.
     const daemons = new Map(await Promise.all(kinds.PROVIDERS.filter(local).map(async (provider) => [provider.id, await answers(provider.id)] as const)));
     return {
@@ -407,7 +416,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
       return `${provider.label} does not serve a ${computer.kind} computer${words.length ? ` (${words.join("; ")})` : ""}: set this agent's computer to one it serves (Settings → Computers)`;
     }
     const mode = await modeNow();
-    const refused = modeRefusal(computer.kind, provider, mode) ?? gpuRefusal(kinds, computer, provider, mode) ?? (local(provider) ? daemonWhy(computer.kind, await answers(provider.id), mode) : undefined) ?? hostOf(provider);
+    const refused = modeRefusal(computer.kind, provider, mode, env) ?? gpuRefusal(kinds, computer, provider, mode) ?? (local(provider) ? daemonWhy(computer.kind, await answers(provider.id), mode) : undefined) ?? hostOf(provider);
     if (refused) return refused;
     const missing = missingKeys(provider, new Set([...(await sealedKeyNames(store)), ...provider.keys.filter((key) => envValue(env, key.name) !== undefined).map((key) => key.name)]));
     return missing.length ? keysWhy(provider, missing, true) : undefined;
