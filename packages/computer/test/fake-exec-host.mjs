@@ -44,7 +44,7 @@ export function fakeExecHost(options = {}) {
 	const { decodeUtf8 = false, bufferOutput = false, holdStdin = false, mergeStderr = false, commandTimeoutMs, exitCode, killDetaches = false, closeStdoutEarly = false, slowWriteMs = 0 } = options;
 	const children = new Set();
 	const host = {
-		id: "fake-exec",
+		descriptor: { id: "fake-exec" },
 		calls: [],
 		async exec(id, argv, { stdin }) {
 			host.calls.push({ id, argv, stdin });

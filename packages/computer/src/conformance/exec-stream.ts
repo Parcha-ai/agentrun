@@ -509,7 +509,7 @@ export async function checkExecStream(host: MachineHost, machine: string, option
 		onCheck?.(check);
 	}
 	const checks = [...done.values()];
-	return { host: host.id, machine, checks, pass: checks.every((check) => check.status === "pass") };
+	return { host: host.descriptor.id, machine, checks, pass: checks.every((check) => check.status === "pass") };
 }
 
 /** The report as a person reads it: one line per check, what failed in words, the verdict last. */

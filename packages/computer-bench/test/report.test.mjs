@@ -189,7 +189,8 @@ test("the report for the blog: a table per platform with the paired difference, 
 	assert.match(gradedText.slice(gradedText.indexOf("## How we measured")), /the grader \(anthropic:claude-opus-5-5\) read the record of 1 of the 9 scored runs, where the checks were not sufficient/);
 	assert.match(measured, /infra/);
 	assert.match(measured, /re-run up to 2 times/);
-	assert.match(measured, /deny exec \(1\): a1/);
+	assert.match(measured, /deny exec \(1\): a1; the agent had no shell and no way to start a program, and kept the computer's files group where it has one\./);
+	assert.doesNotMatch(measured, /worked through the UI/, "an agent with files.write needs no UI to make a file a check reads");
 	assert.match(measured, /allow exec \(2\): a2, l1/);
 });
 

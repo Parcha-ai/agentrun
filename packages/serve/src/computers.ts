@@ -24,7 +24,7 @@ import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./s
 import type { PairedComputerRow, Store } from "./store/index.js";
 import type { PairedView } from "./computer-attach.js";
 import { withPaired } from "./workspace/attached-computers.js";
-import { aLabel, type ComputerSettingKind, type ShellPlace, needsNetwork, shellChoiceOf, stockImageWhy } from "./workspace/resolve-computer.js";
+import { aLabel, type ComputerSettingKind, type ShellPlace, mode2ArchilWhy, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
 
 // Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
 // body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
@@ -61,9 +61,6 @@ export interface ProviderEntry {
   readonly capabilities: readonly KindCapabilities[];
   /** The image a computer of each kind starts from when its setting names none. */
   readonly defaultImage?: Partial<Record<ComputerKind, string>>;
-  /** The environment variable an owner names this provider's image in (Daytona's AGENTRUN_DAYTONA_SNAPSHOT), as its
-   *  descriptor declares it: where it has none, this server can't name its image (computer-deps.ts computerSpecOf). */
-  readonly imageEnv?: string;
   /** A program its computers need on this machine's PATH, what installs it, and the machines it is built for
    *  (`${platform}-${arch}`; absent, every one), as its descriptor declares it: the phone's adb. Absent: none. */
   readonly hostCommand?: HostCommand;
@@ -211,16 +208,18 @@ export const COMPUTER_UNAVAILABLE = "computer_unavailable";
  *  A sandbox holds the run's folder: Mode 1 keeps it on this machine, which only a computer that binds a local folder
  *  (Docker) reaches; Mode 2 keeps it on the owner's disk, which only a computer that mounts the disk reaches (never a
  *  local Docker bind). A desktop, phone or browser holds no folder unless its provider mounts it, so either mode takes
- *  it, and a sandbox that mounts the disk is one whose image this server can name (resolve-computer.ts stockImageWhy). */
+ *  it. A sandbox that mounts the disk can't start yet either, nor can a desktop that would mount it (resolve-computer.ts
+ *  mode2ArchilWhy). */
 export function modeRefusal(kind: ComputerKind, provider: ProviderEntry, mode: FolderMode): string | undefined {
+  // A desktop with files and exec on a provider that mounts the disk would mount it in Mode 2, so it needs the image too.
+  if (kind === "desktop") return mode === "disk" && provider.mounts.includes("archil") && provider.capabilities.some((one) => one.kind === "desktop" && one.groups.includes("files") && one.groups.includes("exec")) ? mode2ArchilWhy(provider.label, "desktop") : undefined;
   if (kind !== "sandbox") return undefined;
   if (mode === "local" && !provider.mounts.includes("bind")) return `${provider.label} can't mount this server's run folders (they are on its own disk): set this agent's computer to sandbox on Docker, or none (Settings → Computers)`;
   if (mode === "disk" && !provider.mounts.includes("archil")) {
     const why = provider.unmounted?.archil;
     return `${provider.label} can't mount the owner's disk this server keeps run folders on${why ? ` (${why})` : ""}: set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)`;
   }
-  const stock = mode === "disk" ? stockImageWhy(provider) : undefined;
-  return stock ? `${stock}: set this agent's computer to none (Settings → Computers)` : undefined;
+  return mode === "disk" ? mode2ArchilWhy(provider.label, "sandbox") : undefined;
 }
 
 /** The GPUs a sandbox of `provider` gives, as its configuration that serves a sandbox declares them, or undefined. */

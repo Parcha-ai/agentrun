@@ -60,21 +60,17 @@ test("a Browserbase key the server starts with and Browserbase accepts: accepted
   assert.equal((await client(baseUrl)("GET", "/capabilities")).body.tools.find((tool) => tool.name === "browser").available, true);
 });
 
-test("a monid key the server starts with is checked against monid's check fake: one monid refuses leaves its three tools unavailable, saying why; one it accepts leaves them available; the runs' fake sees neither check", async (t) => {
+test("a monid key the server starts with is checked against monid's check fake: one monid refuses is refused on its key row, saying why; one it accepts is accepted; the runs' fake sees neither check", async (t) => {
   for (const [key, available] of [[["monid", "wrong", randomBytes(6).toString("hex")].join("_"), false], [MONID_KEY, true]]) {
     await t.test(String(available), async (t) => {
       const log = join(await scratch(t), "monid-calls.jsonl");
       withEnv(t, { MONID_API_KEY: key, AGENTRUN_TEST_FAUX_MONID_CALLS: log }, KEYS);
       const before = monidCheckCalls.length;
-      const { api, baseUrl } = await serve(t, { fauxMonid: FAUX_MONID, fauxMonidCheck: FAUX_MONID_CHECK });
+      const { api } = await serve(t, { fauxMonid: FAUX_MONID, fauxMonidCheck: FAUX_MONID_CHECK });
       const row = await checked(api, "monid");
       assert.equal(row.check?.state, available ? "accepted" : "refused", JSON.stringify(row));
-      const tools = (await client(baseUrl)("GET", "/capabilities")).body.tools.filter((tool) => tool.name.startsWith("monid."));
-      assert.equal(tools.length, 3, JSON.stringify(tools));
-      assert.deepEqual(tools.map((tool) => tool.available), [available, available, available], JSON.stringify(tools));
       if (!available) {
-        for (const tool of tools) assert.match(tool.reason, /^Monid refused MONID_API_KEY \(401: Missing or invalid API key\) when this server started/, tool.name);
-        assert.equal(row.check.reason, tools[0].reason);
+        assert.match(row.check.reason, /^Monid refused MONID_API_KEY \(401: Missing or invalid API key\) when this server started/);
         assert.ok(!JSON.stringify(row).includes(key), "no part of the key is shown");
       }
       assert.deepEqual(monidCheckCalls.slice(before).map((call) => [call.method, call.path, call.authorized]), [["POST", "/v1/discover", available]], "one discover, through the check's fake");
@@ -85,10 +81,9 @@ test("a monid key the server starts with is checked against monid's check fake: 
 
 test("under faux, a key with no check fake of its own is not checked at the start: the fakes the runs use see the runs' calls alone", async (t) => {
   withEnv(t, { MONID_API_KEY: ["monid", "wrong", randomBytes(6).toString("hex")].join("_") }, KEYS);
-  const { api, baseUrl } = await serve(t, { fauxMonid: FAUX_MONID });
+  const { api } = await serve(t, { fauxMonid: FAUX_MONID });
   await new Promise((go) => setTimeout(go, 300));
   assert.equal(rowOf((await api("GET", "/settings/tool-keys")).body, "monid").check, null);
-  assert.ok((await client(baseUrl)("GET", "/capabilities")).body.tools.filter((tool) => tool.name.startsWith("monid.")).every((tool) => tool.available));
 });
 
 test("the start's check never holds up the start: with Browserbase not answering, the server answers, the row reads not yet checked (null) and the browser available until it answers", async (t) => {

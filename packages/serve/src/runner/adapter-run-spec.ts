@@ -74,6 +74,7 @@ import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
 import { type claimComputer, type ComputerDeps, computerReadyWords, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
+import type { ScriptDecide } from "../workspace/computer-script.js";
 import type { RunComputerHold } from "./computer-journal.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
@@ -84,7 +85,8 @@ import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
-import { monidApprovalPrice } from "../monid.js";
+import type { MonidPin } from "../monid.js";
+import { monidForClaim, monidSessionNames, withMonid } from "./monid-run.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -225,6 +227,8 @@ type RevisionBody = {
   readonly tools?: readonly string[];
   readonly toolSettings?: unknown;
   readonly harness?: string;
+  /** Its monid endpoints as monid listed them at the save (monid.ts MonidPin). */
+  readonly monidPin?: MonidPin;
   readonly approvals?: Approvals;
   readonly skills?: Record<string, unknown>;
   /** What the server checks out in the run's folder before its first turn (pr-checkout.ts). */
@@ -278,7 +282,7 @@ export type RunPermissions = {
   readonly decide: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace, mcpServers: readonly string[] = [], options: { readonly computerCodemode?: boolean; readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf } = {}): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace, mcpServers: readonly string[] = [], options: { readonly computerCodemode?: boolean; readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf } = {}): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly script: ScriptDecide; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
@@ -289,7 +293,12 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // tool's settings, never to a table tool's of the same shape.
   // An MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf): what "allow reads" lifts an ask by.
   // pi's code mode on a desktop or a phone (pi-computer.ts) owns the name `codemode` there: held to the kind's setting.
-  const gate = runGate({ root: folder, work: folder, ...(shell === undefined ? {} : { computer: shell === "computer" }), mcpServers, ...(options.computerCodemode ? { computerCodemode: true } : {}), ...(options.effectOf ? { effectOf: options.effectOf } : {}), ...(options.argumentsOf ? { argumentsOf: options.argumentsOf } : {}) }, claim.runId, revision, () => current, approvers);
+  const where = { root: folder, work: folder, mcpServers, ...(options.computerCodemode ? { computerCodemode: true } : {}), ...(options.effectOf ? { effectOf: options.effectOf } : {}), ...(options.argumentsOf ? { argumentsOf: options.argumentsOf } : {}) };
+  const gate = runGate({ ...where, ...(shell === undefined ? {} : { computer: shell === "computer" }) }, claim.runId, revision, () => current, approvers);
+  // A script's computer calls (computer_script, pi's code mode) run on the run's computer, a desktop that mounts no folder
+  // too: decided as on a computer, so its shell.run and processes.start follow bash's one setting alike. The run's own
+  // host tools keep `gate`, where its bash is (Archil's exec, or none).
+  const onComputer = runGate({ ...where, computer: true }, claim.runId, revision, () => current, approvers);
   // The run's learned workflows, once its spec has read them (learn): a learned_workflow call is asked about its MCP nodes.
   let learned: readonly LearnedWorkflow[] = [];
   const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], options: Parameters<NonNullable<AdapterRunSpec["gate"]>>[1] = {}) => {
@@ -336,7 +345,12 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     current = await storeSettings(store);
     return current.unreadable ? "deny" : gate.policy(tool);
   };
-  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), askedFor, permissions, permission, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows) });
+  // A script's computer call, held as the tool it is (computer-script.ts HELD_AS), with the settings read from the store now.
+  const script = async (tool: string, args: unknown) => {
+    current = await storeSettings(store);
+    return onComputer.decide(tool, args);
+  };
+  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), askedFor, permissions, permission, script, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows) });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call
@@ -410,9 +424,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const checkout = body.checkout === "pull_request" ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part })) : undefined;
   holds.hold({ checkout });
 
-  // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin made at the first claim or read as written, its
+  // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin, the one its revision's save made, read, its
   // credentials opened under the server's seal key into this claim's memory, one gateway for the claim. First, before
-  // anything the spec would have to let go: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its
+  // anything the spec would have to let go: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
   const hold = (values: string[]) => cut.hold(values);
@@ -527,11 +541,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // the same path), for its path checks; it reads nothing in it.
   // A pinned MCP tool is held to the arguments its listing in the run's pin declares (mcp.argumentsOf).
   const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted), { computerCodemode: Boolean(tools.computer), ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}) });
-  // What a script's shell and files are held to: this gate, so a denied bash or write holds inside computer_script and codemode.
-  tools.computer?.guard.install(async (tool, args) => {
-    await gate.permissions.refresh();
-    return gate.permissions.decide(tool, args);
-  });
+  // What a script's shell and files are held to: this gate's settings, decided as on the run's computer (gate.script), so a
+  // denied bash or write holds inside computer_script and codemode.
+  tools.computer?.guard.install(gate.script);
 
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped — every paid request still books through the one cap), the run's model priced WITH tiers, strict where the
@@ -657,7 +669,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const tiers = new Map<string, LearnedTier>([...[...tierRoutes].filter(([tier]) => !isSubagentRoute(tier)).map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
   // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate).
   gate.learn(workflows);
-  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp, () => route.model, replay)).map((tool) => answersCut(tool, cut));
+  // The run's monid endpoints (monid-run.ts), one host tool each from its revision's pin, on the claim's keys and beside
+  // its MCP tools in the loop's one catalog seam; their answers pass the run's one redactor as the other non-hand tools'.
+  const monid = monidForClaim(body.monidPin, toolEnv, () => ws.workspace);
+  const catalog = withMonid(mcp, monid && { ...monid, tools: monid.tools.map((tool) => answersCut(tool, cut)) });
+  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, catalog, () => route.model, replay)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
@@ -679,7 +695,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     const browserNames = native.filter((extension) => extension.name !== "ask_person").flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name));
     piTools.push(subagentTool({
       granted,
-      sessionNames: (catalog) => (catalog === BROWSER_TOOL ? browserNames : [wireName(catalog)]),
+      sessionNames: (catalog) => (catalog === BROWSER_TOOL ? browserNames : monidSessionNames(catalog, body.monidPin) ?? [wireName(catalog)]),
       tier: (tier) => {
         const why = tierWhy.get(tier);
         if (why !== undefined) return { why };
@@ -744,14 +760,13 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The gate's answer with its words (adapterRunGate, RunGate.decide): a deny names where it was set and that nothing was
     // sent or charged, and a pinned MCP tool's call outside its pin is refused before it is asked or sent.
     gate,
-    // monid.run's card shows what the call is held at (monid.ts monidApprovalPrice), as an MCP tool's shows its price.
-    approvalPrice: monidApprovalPrice(toolEnv),
     runCap,
     // The answer's schema: a miss is asked again once (adapter-loop.ts, the output contract's retry).
     ...(body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {}),
     ...(cap ? { cap } : {}),
-    // The run's MCP for a harness with its own client (mcp-run.ts), the session the adapter mounts; absent when none.
-    ...(mcp ? { mcp } : {}),
+    // The run's MCP for a harness with its own client (mcp-run.ts), with its monid endpoints beside it (monid-run.ts):
+    // the catalog tools the session mounts; absent when none.
+    ...(catalog ? { mcp: catalog } : {}),
     // The run's end-of-run step, when it learns (the spec's, which the loop prefers over its deps': adapter-loop.ts stepOf).
     ...(endOfRun ? { endOfRun } : {}),
     ...(start ? { learningLaid: laidOf(seedLaid) } : {}),

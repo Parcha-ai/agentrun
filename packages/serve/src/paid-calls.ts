@@ -1,5 +1,5 @@
-// A web tool's request to Parallel (its search, web-search.ts; its extract, web-fetch.ts), booked as monid.run's call
-// is (monid.ts): on the run's one ledger (the kernel cap's paid tool calls, RunTools), admitted at the request's price
+// A web tool's request to Parallel (its search, web-search.ts; its extract, web-fetch.ts), booked as a monid endpoint's
+// call is (monid.ts): on the run's one ledger (the kernel cap's paid tool calls, RunTools), admitted at the request's price
 // before it is sent (refused unsent in the cap's words when the cap does not hold it) and settled after at what it
 // charged. A charge is the run's cost, a line of its own on its timeline and /usage's `tools` meter. Every request goes
 // through the run's one Parallel client's `post` (web-fetch.ts), which books it here by the endpoint it asks.

@@ -791,6 +791,18 @@ describe("Settings → MCP servers, the Composio preset", () => {
   });
 });
 
+describe("Settings → MCP servers, deleting a Composio server", () => {
+  it("says what to remove in Composio when it could not be removed there, after the row is gone", async () => {
+    const note = "Remove hn in Composio yourself: https://platform.composio.dev";
+    const s = server([[saved({ name: "hn" })], []], (c) => (c.method === "DELETE" ? json(200, { deleted: true, composio: { removed: false, note } }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Delete$/, p.row("hn"));
+    await p.click(/^Delete$/, p.row("hn").querySelector('[role="alertdialog"]')!);
+    expect(p.text()).toContain("No MCP server is saved here yet");
+    expect(p.host.querySelector('[role="status"]')?.textContent).toContain(note);
+  });
+});
+
 describe("Settings → MCP servers, a server's tool settings", () => {
   const ALL = ["allow", "ask", "deny"] as const;
   const gate = (permission: "allow" | "ask" | "deny" = "ask") => ({ permission, default_permission: "ask" as const, permissions: [...ALL] });
