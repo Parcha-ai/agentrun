@@ -52,12 +52,12 @@ for (const harness of HARNESSES) {
     ];
     for (const [tool, args, words] of aliases) {
       const { last, answer } = await run(prompt(tool, args));
-      assert.notEqual(last.status, "input_required", `${tool}: nothing asks`);
+      assert.equal(last.status, "completed", `${tool}: nothing asks and nothing fails, ${JSON.stringify(last)}`);
       assert.equal(sent(), 0, `${tool}: the call with an undeclared argument never reached the MCP server`);
       // pi checks a call against a listing that closes itself (Slack's: additionalProperties false) before the gate, and
       // refuses an unknown field in its own words; every other listing here is open, so the gate's words are read.
       const ownCheck = harness === "pi" && TOOLS[tool].input.additionalProperties === false;
-      if (last.status === "completed") assert.match(answer, ownCheck ? new RegExp(`${words.source}|Validation failed for tool "mcp__fake__${tool}":\\s+- channel_id: unknown field`) : words, `${tool}: the model read why`);
+      assert.match(answer, ownCheck ? new RegExp(`${words.source}|Validation failed for tool "mcp__fake__${tool}":\\s+- channel_id: unknown field`) : words, `${tool}: the model read why`);
     }
 
     // Through a nested call: the inner call is held to the same listing. tools_call is offered only past the deferral
@@ -70,9 +70,9 @@ for (const harness of HARNESSES) {
       assert.equal(many.status, 201, JSON.stringify(many.body));
       through = await run(host("tools_call", { name: INNER, args: aliased }), many.body.agent_id);
     } else through = await run(host("codemode", { script: `return await tools.${INNER}(${JSON.stringify(aliased)});` }));
-    assert.notEqual(through.last.status, "input_required", `${nested}: nothing asks`);
+    assert.equal(through.last.status, "completed", `${nested}: nothing asks and nothing fails, ${JSON.stringify(through.last)}`);
     assert.equal(sent(), 0, `${nested}: the call with an undeclared argument never reached the MCP server`);
-    if (through.last.status === "completed") assert.match(through.answer, /`to` is not an argument of GMAIL_SEND_EMAIL/, `${nested}: the model read why`);
+    assert.match(through.answer, /`to` is not an argument of GMAIL_SEND_EMAIL/, `${nested}: the model read why`);
 
     // Declared arguments alone: it runs, unasked.
     const ok = await run(prompt("GMAIL_SEND_EMAIL", { recipient_email: "ops@example.com", subject: "hi", body: "hi" }));

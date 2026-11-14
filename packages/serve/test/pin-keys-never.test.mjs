@@ -47,9 +47,9 @@ for (const harness of HARNESSES) {
     const extra = await whenFree(() => api("POST", `/agents/${id}/runs`, { input: { content: prompt("update_record", { id: "r1", fields: { score: 5, owner: "mallory" } }) } }));
     assert.equal(extra.status, 202, JSON.stringify(extra.body));
     const { last } = await follow(api, extra.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
-    assert.notEqual(last.status, "input_required", "nothing asks: the call is refused outright");
+    assert.equal(last.status, "completed", `nothing asks and nothing fails: the call is refused outright, ${JSON.stringify(last)}`);
     assert.deepEqual(callsOf(fake, "update_record"), [], "the call with an extra key never reached the MCP server");
-    if (last.status === "completed") assert.match((await api("GET", `/runs/${extra.body.run_id}`)).body.result?.final_answer ?? "", /fields keys in \(score\)/, "the model read the pin's words");
+    assert.match((await api("GET", `/runs/${extra.body.run_id}`)).body.result?.final_answer ?? "", /fields keys in \(score\)/, "the model read the pin's words");
 
     // The pinned key alone: it runs, unasked.
     const ran = await whenFree(() => api("POST", `/agents/${id}/runs`, { input: { content: prompt("update_record", { id: "r1", fields: { score: 5 } }) } }));
@@ -77,9 +77,9 @@ for (const harness of HARNESSES) {
       const refused = await whenFree(() => api("POST", `/agents/${runner}/runs`, { input: { content: input({ score: 5, owner: "mallory" }) } }));
       assert.equal(refused.status, 202, JSON.stringify(refused.body));
       const end = await follow(api, refused.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
-      assert.notEqual(end.last.status, "input_required", `${via}: nothing asks`);
+      assert.equal(end.last.status, "completed", `${via}: nothing asks and nothing fails, ${JSON.stringify(end.last)}`);
       assert.equal(callsOf(fake, "update_record").length, before, `${via}: the call with an extra key never reached the MCP server`);
-      if (end.last.status === "completed") assert.match((await api("GET", `/runs/${refused.body.run_id}`)).body.result?.final_answer ?? "", /fields keys in \(score\)/, `${via}: the model read the pin's words`);
+      assert.match((await api("GET", `/runs/${refused.body.run_id}`)).body.result?.final_answer ?? "", /fields keys in \(score\)/, `${via}: the model read the pin's words`);
       const pinned = await whenFree(() => api("POST", `/agents/${runner}/runs`, { input: { content: input({ score: 6 }) } }));
       assert.equal(pinned.status, 202, JSON.stringify(pinned.body));
       const ok = await follow(api, pinned.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
