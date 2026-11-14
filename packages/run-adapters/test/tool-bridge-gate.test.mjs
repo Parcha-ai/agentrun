@@ -104,3 +104,15 @@ test('a replay-safe call a crash cut, asked about again by the next drive, is as
     { callId: 'fresh', tool: 'peek', args: { q: 'y' } },
   ]);
 });
+
+test('a deferred tool is not listed to the model, yet a nested call and call() run it by name', async () => {
+  const { drive } = await driveOf('deferred');
+  const log = [];
+  const hidden = { ...payTool(log), name: 'hidden', deferred: true };
+  const outer = { name: 'outer', description: 'Calls hidden.', inputSchema: { type: 'object' }, replay: 'safe', nests: true, execute: async (_args, io) => (await io.nested.call('hidden', { n: 1 }, 'call')).text };
+  const bridge = toolBridge(drive, [payTool(log), hidden, outer]);
+  assert.deepEqual(bridge.tools.map((tool) => tool.name), ['pay', 'outer'], 'the model is listed the others');
+  assert.equal((await bridge.call('outer', {}, 'c5')).text, 'paid', 'a nested call ran the deferred tool');
+  assert.equal((await bridge.call('hidden', {}, 'c6')).text, 'paid', 'and so does a call by name');
+  assert.equal(log.length, 2);
+});

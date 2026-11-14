@@ -18,8 +18,11 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { suiteTools, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+const { fillerTools, suiteTools, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 const { TOOL_BUDGET_TEXT } = await import("../dist/tool-budget.js");
+const { CODEMODE, TOOLS_CALL } = await import("../dist/runner/meta-tools.js");
+const { runTimeline } = await import("../dist/store-reads/journal.js");
+const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
 const { compiled, PackageError, readPackage } = await import("../dist/templates.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
@@ -50,16 +53,16 @@ const ended = (server) =>
   }, "the run ended", 30_000);
 
 /** One pi run of `script` through the adapter loop under `toolCalls`: the provider's requests and the tools' counts. */
-async function budgetedRun(t, script, toolCalls) {
+async function budgetedRun(t, script, toolCalls, extraTools = {}) {
   const { server, runners: [store] } = await stores({ runners: 1 });
   await queue(server, "run-1");
   const { tools, ran } = suiteTools();
   const requests = [];
-  const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
+  const spec = piAdapterSpec({ script, tools: { ...tools, ...extraTools }, hooks: quiet }, { requests });
   const runner = startRunner({ store, createLoop: createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), gate: gateOf(toolCalls) })), name: "runner-a", ...TIMING });
   t.after(() => runner.close());
   const row = await ended(server);
-  return { row, requests, ran };
+  return { row, requests, ran, server };
 }
 
 test("past its budget each call is refused in the budget's words, the refusal uncounted, and the model's answer lands", async (t) => {
@@ -85,6 +88,45 @@ test("no budget changes nothing: every call runs", async (t) => {
   const w = await budgetedRun(t, script, undefined);
   assert.equal(w.ran.read, 4);
   assert.equal(refusals(resultsIn(w.requests)), 0);
+});
+
+// A nested call (one a running tool makes: a codemode script's, tools_call's) counts against the budget as a direct call
+// does, and the call that makes it counts as one too. Past the budget it is refused unsent in the budget's words, and a
+// script ends at the refusal (meta-tools.ts).
+const FIVE_READS = "for (let i = 0; i < 5; i++) await tools.read({}); return 'all five';";
+/** The tool_result rows of `tool` on the run's timeline, as a person reads them. */
+const resultRows = async (server, tool) => (await runTimeline(server, "run-1", BACKGROUND_CONTEXT)).filter((row) => row.kind === "tool_result" && row.tool_name === tool);
+
+test("codemode under a budget of 2: a script of five reads runs one (the codemode call and its first read are the 2), the second is refused unsent and ends the script, and the timeline says why", async (t) => {
+  const w = await budgetedRun(t, [{ call: CODEMODE, args: { script: FIVE_READS } }, { say: "done" }], 2);
+  assert.equal(w.ran.read, 1, "one nested read ran: no call past the budget was sent");
+  const [said] = resultsIn(w.requests);
+  assert.equal(said.isError, true);
+  assert.ok(said.text.startsWith(TOOL_BUDGET_TEXT), `refused in the budget's words: ${said.text}`);
+  assert.match(said.text, /The script stopped at this refused call, and nothing after it ran\./);
+  assert.doesNotMatch(said.text, /all five/);
+  const [row] = await resultRows(w.server, CODEMODE);
+  assert.ok(row?.tool_result_preview?.includes(TOOL_BUDGET_TEXT), `the codemode row says why: ${JSON.stringify(row)}`);
+});
+
+test("tools_call under a budget of 3: the first call and its read are 2, the second tools_call is the 3rd and its read is refused unsent in the budget's words", async (t) => {
+  const call = { call: TOOLS_CALL, args: { name: "read", args: {} } };
+  const w = await budgetedRun(t, [call, call, { say: "done" }], 3, fillerTools());
+  assert.equal(w.ran.read, 1, "one nested read ran");
+  const results = resultsIn(w.requests);
+  assert.deepEqual(results.map((result) => result.text), ["read", TOOL_BUDGET_TEXT], JSON.stringify(results));
+  assert.equal(results[1].isError, true);
+});
+
+test("the budget is spent across direct and nested calls alike: a read, then a script (its first read the 3rd call), then a direct read past it", async (t) => {
+  const script = [{ call: "read" }, { call: CODEMODE, args: { script: "await tools.read({}); await tools.read({}); await tools.read({}); return 'three';" } }, { call: "read" }, { say: "done" }];
+  const w = await budgetedRun(t, script, 3);
+  assert.equal(w.ran.read, 2, "the direct read and the script's first: the 1st and 3rd calls");
+  const results = resultsIn(w.requests);
+  assert.equal(results.length, 3, JSON.stringify(results));
+  assert.equal(results[0].text, "read");
+  assert.ok(results[1].text.startsWith(TOOL_BUDGET_TEXT), `the script's second read refused: ${results[1].text}`);
+  assert.deepEqual(results[2], { text: TOOL_BUDGET_TEXT, isError: true }, "the direct read after the script: the budget is spent");
 });
 
 // A native tool that opens a conversation of its own (the way a subagent does: owned by its call's task, on the session's
@@ -189,6 +231,49 @@ test("the count holds across a claim moved to another runner: it is read from th
   assert.equal(requests.at(-1).messages.filter((message) => message.role === "assistant").length, script.length - 1, "the model answered last");
 });
 
+test("a script run again on another runner after a crash counts each nested call once: none twice, none lost", async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-tool-budget-nested-"));
+  const clock = { skewMs: 0 };
+  const now = () => Date.now() + clock.skewMs;
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
+  const runnerStores = [await openSqliteStore({ dataDir: dir, role: "runner", now }), await openSqliteStore({ dataDir: dir, role: "runner", now })];
+  const runners = [];
+  const { tools, ran, letSlowGo, slowStarted } = suiteTools();
+  t.after(async () => {
+    letSlowGo();
+    for (const runner of runners) await runner.close().catch(() => {});
+    for (const each of runnerStores) await each.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.agents.create({ id: "agent-1", name: "Budget" }, { id: "rev-1", kind: "agentic", body: {} });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  const requests = [];
+  // Budget 4: codemode (1), its read (2) and slow (3), cut by the crash; the script's rerun answers the read from its record
+  // and ends at slow (its first call run again). Then the direct read is the 4th, and the next is refused: counted twice,
+  // that read would be refused too; lost, the next would run.
+  const script = [{ call: CODEMODE, args: { script: "await tools.read({}); await tools.slow({}); await tools.read({}); return 'all';" } }, { call: "read" }, { call: "read" }, { say: "done" }];
+  const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
+  const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), gate: gateOf(4) }), { restartLimit: MAX_RESTARTS });
+  runners.push(startRunner({ store: runnerStores[0], createLoop: loop, name: "runner-a", ...TIMING }));
+  let slowOut = false;
+  void slowStarted.then(() => (slowOut = true));
+  await until(() => slowOut, "the first runner started slow", 20_000);
+  runners[0].kill();
+  clock.skewMs += STEADY_LEASE.leaseMs * 2;
+  runners.push(startRunner({ store: runnerStores[1], createLoop: loop, name: "runner-b", ...TIMING }));
+  await until(async () => (await server.runs.get("run-1")).runner === "runner-b", "the second runner took the run", 10_000);
+  letSlowGo();
+  for (const deadline = Date.now() + 30_000; ; await sleep(20)) {
+    const row = await server.runs.get("run-1");
+    if (row.state === "ended" && row.runner === null) break;
+    assert.ok(Date.now() < deadline, `the run ended: ${JSON.stringify(row)}`);
+  }
+  assert.equal(ran.read, 2, "the script's first read, once, and the first direct read");
+  const results = resultsIn(requests);
+  assert.deepEqual(results.slice(-2).map((result) => result.text), ["read", TOOL_BUDGET_TEXT], JSON.stringify(results));
+});
+
 test("the API: a definition keeps max_tool_calls, an edit that leaves it out keeps it, 0 clears it; a bad one, a workflow's, and one on another harness are refused", async (t) => {
   const { api } = await serve(t, {});
   const made = await api("POST", "/agents", agent("budgeted", { max_tool_calls: 30 }));
@@ -207,10 +292,13 @@ test("the API: a definition keeps max_tool_calls, an edit that leaves it out kee
   const flow = await api("POST", "/agents", flowAgent("flow", answerFlow(), { max_tool_calls: 5 }));
   assert.equal(flow.status, 422);
   assert.ok(JSON.stringify(flow.body).includes("definition.max_tool_calls"), JSON.stringify(flow.body));
-  // On another harness the budget would hold nothing: the save is refused, never an agent whose runs go without it.
-  const codex = await api("POST", "/agents", agent("on-codex", { harness: "codex", max_tool_calls: 5 }));
-  assert.equal(codex.status, 422, JSON.stringify(codex.body));
-  assert.deepEqual(codex.body.error.fields.map((field) => field.field), ["definition.max_tool_calls"]);
+  // On another harness the budget would hold nothing (its calls, and the calls its tools_call, codemode or Codex's own code
+  // mode make, are not counted): the save is refused, never an agent whose runs go without it.
+  for (const harness of ["claude-agent", "codex", "opencode"]) {
+    const refused = await api("POST", "/agents", agent(`on-${harness}`, { harness, max_tool_calls: 5 }));
+    assert.equal(refused.status, 422, `${harness}: ${JSON.stringify(refused.body)}`);
+    assert.deepEqual(refused.body.error.fields.map((field) => field.field), ["definition.max_tool_calls"], harness);
+  }
 });
 
 const REVIEW = new URL("../templates/code-review/", import.meta.url).pathname;

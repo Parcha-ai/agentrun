@@ -1011,8 +1011,13 @@ would cut one past 2,000 lines or 51,200 bytes and save the rest to a file the s
 
 ### Finding and calling the run's tools
 
-Every agentic run on every harness also has three tools over its own tools (`src/runner/meta-tools.ts`). Codex has the
-first two and keeps its own code mode. None of them goes around the run's tool settings:
+A run lists every tool to the model in full until its catalog tools (an MCP server's, a monid one) pass 20
+(`DEFER_CATALOG_OVER`, `defersCatalog` in the kernel). Then they are deferred: not listed, found with `tools_search` and
+run with `tools_call` (built-ins and pi's own tools are always listed). Under 20, there is no search or call: they
+would find tools the model already has, at about 640 tokens on every request. Claude Code defers MCP tools itself (its
+ToolSearch, on under the same test), so it is offered neither of the two; Codex has them and keeps its own code mode.
+`codemode` is offered on every run (not Codex). Each of the three has a tool-settings key of its own, allow by default:
+set to `deny`, it is not offered at all, and a call to it is refused. None of them goes around the run's tool settings:
 
 - `tools_search {query, limit?}` ranks the run's tools by what they do and answers each match's name, description and
   input schema (8 by default, at most 25). It finds only tools the run may call: never one set to deny, and never these
@@ -1561,6 +1566,14 @@ letter, at most 32, with no underscores, so `mcp__<server>__<tool>` splits one w
 data directory's store, which holds no value in the clear. The server does not start without its seal key. A `PUT` that
 sends no `token` (or no `headers`) keeps the sealed credential, as long as the auth type and the URL's origin stay the
 same: a saved credential never goes to another origin unless you send it again.
+
+Each saved server records where its tools come from, `source` and `toolkit`, which a template's `mcp` needs are matched
+on at apply ([templates](templates/README.md#agentmd)). The source is what made the server, recorded when it is saved
+and never read off its address or its name: the Composio preset records `composio` and its toolkit, a `github_app`
+server is `github`/`github`, and any other is `url` with no toolkit until you set one (`toolkit` in the `PUT`, in
+`POST .../oauth/start` for a server you sign in to, or Settings → MCP servers). A `PUT` with no `toolkit` keeps the
+record, and `DELETE` removes it with the server. A record counts only for the server it was saved with: a server saved
+again under the same name after a `DELETE` starts afresh.
 
 `GET /v2/settings/mcp-servers` and `GET .../{name}` show each server with `credential`: `sealed`, `unreadable` (sealed
 under another key, or damaged: a `PUT` with the credential seals it again) or `expired` (an OAuth sign-in whose refresh
@@ -3019,19 +3032,17 @@ that fails or takes over 3 seconds leaves the byte bound; the request is never h
 **The smallest cap that works.** The byte bound reads text as about two to three times the tokens it is billed as, and a
 step is sent only when the run's spend plus that step's least (its input bound, priced by the cap mode, and a 1,024-token
 answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet ($3 / $15,
-cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (with the host's
-`tools_search`, `tools_call` and `codemode`: about 2,000 bytes, 639 tokens by Anthropic's count), five requests (four
+cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools, five requests (four
 screenshots, then the answer), spending about $0.04 in all:
 
 | Cap mode | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- | --- |
-| `strict` | Through a gateway (OpenRouter): the byte bound | $0.07 | $0.13 | about $0.013 |
-| `strict` | Straight to Anthropic: Anthropic's count | $0.04 | $0.09 | about $0.012 |
-| `expected` (the default) | Through a gateway | as `strict` | $0.07 | about $0.007 |
-| `expected` (the default) | Straight to Anthropic | as `strict` | $0.06 | about $0.007 |
+| `strict` | Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
+| `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
+| `expected` (the default) | Either | as `strict` | $0.06 | about $0.007 |
 
-In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs $0.06 straight to Anthropic and $0.07 through a gateway (whose first request alone needs $0.064), and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
-CLI's measured 6,926 bytes with five tools, about 8,900 with the host's three: $0.05 for its first request through a gateway). A cap below these pauses at
+In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs about $0.06 by either route, and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
+CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
 once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. (In `strict` mode through a gateway, a run a cent under the five-step figure is not parked before its last step: the cap's wrap-up refuses its last screenshot, and the run answers from what it has.)
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
