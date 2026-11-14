@@ -22,8 +22,11 @@ import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type Sour
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
+import { HARNESSES } from "./harness.js";
+import { harnessOf } from "./harness-table.js";
+import { mcpDroppedWords, mcpGrantNameProblem, mcpToolName } from "./tool-names.js";
 import { type McpCredential, type McpCredentialMark, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
-import { unknownFields } from "./validate.js";
+import { isObject, unknownFields } from "./validate.js";
 
 /** How many writes an owner's save or tools refresh makes over a row whose credential a run's refresh keeps changing,
  *  each re-applied onto the row read again, before it is refused in words. */
@@ -102,7 +105,7 @@ export class McpServersOverStore {
    *  taken, for a fake the eval made to stand in for a package's need. Every other server records what made it. */
   standIns = false;
 
-  constructor(private readonly store: McpServersStore, env: NodeJS.ProcessEnv, private readonly version: string, private readonly network: OAuthNetwork = systemNetwork) {
+  constructor(private readonly store: McpServersStore, private readonly env: NodeJS.ProcessEnv, private readonly version: string, private readonly network: OAuthNetwork = systemNetwork) {
     // The server never starts without a seal key (seal-key.ts bootSealKey), so there is no keyless registry: every
     // credential is kept sealed under it.
     const sealKey = sealKeyOf(env[SEAL_KEY_ENV]);
@@ -503,7 +506,7 @@ export class McpServersOverStore {
       ...listed,
       // Each priced tool's price in USD a call, as the owner saved them, on every read.
       ...(prices && Object.keys(prices).length ? { prices } : {}),
-      tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(`mcp:${name}/${tool.name}`, settings) })),
+      tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(mcpToolName(name, tool.name), settings), ...grantProblemsOf(this.env, name, tool) })),
       ...(unmetered.length ? { not_metered: unmetered } : {}),
       auth: { type: row.auth, ...(row.auth === "headers" || row.auth === "github_app" ? { headers: Object.keys((cred?.type === "headers" ? cred.headers : {}) as HeaderMap) } : {}) },
       credential: opened === null ? null : !cred ? ("unreadable" as const) : expired ? ("expired" as const) : ("sealed" as const),
@@ -539,6 +542,22 @@ export class McpServersOverStore {
     if ("failed" in minted) throw new ApiError("github_failed", minted.failed);
     return { ...headers, authorization: `Bearer ${minted.token}` };
   }
+}
+
+/** Why a grant of `tool` of `server` is refused where it would run, for a saved server's read (`grant_problems`): by its
+ *  name alone on every harness (under `*`), or on one harness whose own MCP client would drop or retype its schema (that
+ *  harness's facts, in the words the save's blocker says). Nothing when nothing refuses it. */
+function grantProblemsOf(env: NodeJS.ProcessEnv, server: string, tool: McpTool): { grant_problems?: Record<string, string> } {
+  const named = mcpGrantNameProblem(server, tool.name);
+  const problems: Record<string, string> = named ? { "*": `${mcpToolName(server, tool.name)} ${named}` } : {};
+  const schema = tool.input_schema;
+  if (!named && isObject(schema)) {
+    for (const harness of HARNESSES) {
+      const dropped = harnessOf(env, harness)?.facts?.schemaProblems?.(`mcp__${server}__${tool.name}`, schema)[0];
+      if (dropped) problems[harness] = mcpDroppedWords(server, tool.name, harness, dropped);
+    }
+  }
+  return Object.keys(problems).length ? { grant_problems: problems } : {};
 }
 
 /** Which save of a server this is: a PUT or a sign-in makes a new one (its updated time moves), a refresh of its tools or

@@ -1,0 +1,9 @@
+---
+packages: @parcha/agentrun-computer-bench
+kind: breaking
+---
+computer-bench: a result's `steps` are the agent's computer calls, not its tool calls (a code-mode script of six calls is six steps), and `tool_calls` is new, its model turns; results from before compare on neither.
+- On serve, each computer call a tool row of the run's Timeline carries (`computer_calls`, and `computer_calls_dropped` past serve's bound) is a step with its method, answer, time, its ui.act routes and readbacks, and its expect, so the routes table fills. A tool call that made no computer call is a turn, recorded with phase `tool`, never a step. The step budget counts computer calls and stops the run past it, and a run that made more calls than the budget is `budget` whatever its checks say; pi's `max_tool_calls` stays as a backstop.
+- An arm's surface is real: on serve its agent's computer has `surface` ("code" or "tools", its id names it), and on the fake backend "tools" makes each call a tool call and "code" makes calls only inside the agent wire's `script(fn)`.
+- A task with `exec: "deny"` runs on an agent with no exec or processes group (on serve, its own agent with `computer.exec: false`, its id ending `-ui`; an arm's `options.definition.computer` may pin a provider, never the kind, surface or exec). The record's header says what the agent was given (`agent: {surface, exec, groups, id?}`), and each result says `platform`, `exec` and `exec_calls`.
+- The report keeps bench.json's arms order: the first arm is the baseline in every table. It adds a table per platform (passed / scored, success, the paired difference against the first arm with its 95% CI, median computer steps, model turns and wall time, $ per pass) with its tasks, the passes per arm that ran a program, and a "How we measured" paragraph made from the run.

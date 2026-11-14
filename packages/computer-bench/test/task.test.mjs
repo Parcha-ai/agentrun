@@ -37,9 +37,9 @@ const problemsOf = (spec, files) => {
 	return "";
 };
 
-test("every suite in the package loads, and mac-dev and android-dev are 20 tasks, half dev and half held out", () => {
+test("every suite in the package loads; mac-dev, android-dev and linux-desktop are half dev and half held out", () => {
 	const counts = {};
-	for (const suite of ["fake", "ui-fixture", "mac-dev", "android-dev", "macosworld", "mobileworld"]) {
+	for (const suite of ["fake", "ui-fixture", "mac-dev", "android-dev", "linux-desktop", "macosworld", "mobileworld"]) {
 		const tasks = loadSuite(join(SUITES, suite));
 		counts[suite] = { all: tasks.length, dev: tasks.filter((task) => task.spec.split === "dev").length };
 		for (const task of tasks) {
@@ -49,6 +49,7 @@ test("every suite in the package loads, and mac-dev and android-dev are 20 tasks
 	}
 	assert.deepEqual(counts["mac-dev"], { all: 20, dev: 10 });
 	assert.deepEqual(counts["android-dev"], { all: 20, dev: 10 });
+	assert.deepEqual(counts["linux-desktop"], { all: 10, dev: 5 });
 	assert.equal(counts.macosworld.all + counts.mobileworld.all, 18);
 });
 
@@ -66,6 +67,30 @@ test("mac-dev and android-dev tasks cover the apps the brief names", () => {
 	const apps = (suite) => new Set(loadSuite(join(SUITES, suite)).map((task) => task.spec.id.split(".")[1]));
 	for (const app of ["notes", "calendar", "finder", "safari", "textedit", "settings", "reminders"]) assert.ok(apps("mac-dev").has(app), `mac-dev has no ${app} task`);
 	for (const app of ["settings", "clock", "contacts", "files", "chrome"]) assert.ok(apps("android-dev").has(app), `android-dev has no ${app} task`);
+	for (const app of ["editor", "terminal", "files", "browser", "cross"]) assert.ok(apps("linux-desktop").has(app), `linux-desktop has no ${app} task`);
+});
+
+test("every linux-desktop task denies exec and gets different params on seeds 1, 2 and 3", () => {
+	for (const task of loadSuite(join(SUITES, "linux-desktop"))) {
+		assert.equal(task.spec.exec, "deny", task.spec.id);
+		const seen = new Set([1, 2, 3].map((seed) => JSON.stringify(resolveTask(task, seed).params)));
+		assert.equal(seen.size, 3, `${task.spec.id} repeats its params across seeds 1-3`);
+	}
+});
+
+test("a linux-desktop teardown stops only the apps its run started, and git-email checks the global config is kept", () => {
+	for (const task of loadSuite(join(SUITES, "linux-desktop"))) {
+		const scripts = (steps) => (steps ?? []).map((step) => (step.params?.argv ?? []).join(" "));
+		for (const script of scripts(task.spec.teardown)) {
+			for (const kill of script.match(/pkill[^;]*/g) ?? []) assert.match(kill, /computer-bench-\{\{nonce\}\}/, `${task.spec.id}'s teardown kills by a name any desktop's app has: ${kill}`);
+		}
+		for (const script of scripts(task.spec.setup.filter((step) => step.method === "process.start"))) {
+			const app = /exec (mousepad|xfce4-terminal|thunar)\b/.exec(script)?.[1];
+			if (app) assert.match(script, /echo \$\$ > \/tmp\/computer-bench-\{\{nonce\}\}-[a-z]+\.pid && exec /, `${task.spec.id} starts ${app} without keeping its pid`);
+		}
+	}
+	const [git] = loadSuite(join(SUITES, "linux-desktop")).filter((task) => task.spec.id === "linux.terminal.git-email");
+	assert.ok(git.spec.checks.some((check) => check.id === "global-email-kept"), "git-email passes an agent that also sets the global user.email");
 });
 
 test("a good task loads; its bench groups come from its setup and checks", () => {

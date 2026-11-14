@@ -40,6 +40,7 @@ import { proposeRun } from "../propose.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
 import { type McpServerRow, type Store } from "../store/store.js";
+import { getMcpServer, listMcpServers } from "../mcp-store.js";
 import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
@@ -267,7 +268,7 @@ async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Rec
     // escaped "\/" is a slash there), its price read first (unpricedCalls asks synchronously).
     for (const name of draftMcpTools(doc)) {
       const { server, tool } = mcpNameOf(name)!;
-      if (!rows.has(server)) rows.set(server, store.mcp.server(server).catch(() => undefined));
+      if (!rows.has(server)) rows.set(server, getMcpServer(store, server).catch(() => undefined));
       const price = ((await rows.get(server))?.prices as Record<string, unknown> | undefined)?.[tool];
       priced.set(name, typeof price === "number" && Number.isFinite(price) ? price : undefined);
     }
@@ -280,7 +281,7 @@ async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Rec
 /** The tools each saved MCP server lists now, by the server's name (none for one not saved, or a store that can't be
  *  read): what a wildcard grant names (tools.ts mcpGrantsListed). */
 async function mcpListedOf(store: Pick<Store, "mcp">): Promise<(server: string) => readonly string[]> {
-  const rows = await store.mcp.servers().catch(() => [] as McpServerRow[]);
+  const rows = await listMcpServers(store).catch(() => [] as McpServerRow[]);
   const byName = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
   return (server) => byName.get(server) ?? [];
 }
@@ -301,7 +302,7 @@ async function describedOf(tools: readonly string[], store: Pick<Store, "mcp">):
       continue;
     }
     const { server, tool } = mcp;
-    if (!listed.has(server)) listed.set(server, store.mcp.server(server).catch(() => undefined));
+    if (!listed.has(server)) listed.set(server, getMcpServer(store, server).catch(() => undefined));
     const row = await listed.get(server)!;
     const entry = ((row?.tools ?? []) as { name?: unknown; title?: unknown; description?: unknown; input_schema?: unknown; output_schema?: unknown }[]).find((one) => one?.name === tool);
     if (!entry) continue;
