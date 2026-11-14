@@ -72,7 +72,7 @@ const START = Date.now();
 
 /**
  * A fake host. Its calls answer plain values or throw, as src/host.ts says. Options:
- *  - facts: over the defaults (child daemon, vendor lifetime, archil mounts);
+ *  - facts: over the defaults (child daemon, vendor lifetime); its descriptor takes network none and an archil mount;
  *  - create: "ok", "fail" (refused: nothing made), "hold" (answers once fake.release() is called), "lost" (makes the
  *    machine, then throws Late: its id never comes back), "broken" (makes it, then throws a plain error);
  *  - starting: how many reads a new machine answers starting before it runs;
@@ -87,8 +87,10 @@ const START = Date.now();
  *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
  *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager does not start) or
  *    "manager dies" (it ends at once);
- *  - timer: "ok" or "limit" (setTimer throws a HostError limit); setTimer moves the end and the deadline label;
  *  - lingers: { reads, lists } after a delete; fileApi: false for a host with no upload;
+ *  - timer: "ok" (extend moves the end and the deadline label: the vendor's timer, or with lifetime janitor the label
+ *    alone, rounded up to a whole second), "limit" (extend throws a HostError limit, nothing moves), or "none" (a host
+ *    with no extend);
  *  - onStep(step, machine): at the start of every host call and daemon request, so a test can abort a signal there;
  *  - hang: a script's kind ("install", ...) whose process never ends; killHangs: a process's kill that never settles;
  *  - archil: root verbs' answers, as fake-archil.mjs's;
@@ -438,7 +440,7 @@ export function fakeHost({
 	const chunks = (proc) => (proc.chunks.length === 0 ? undefined : Buffer.concat(proc.chunks).toString("utf8"));
 
 	const host = {
-		id: "fakehost",
+		descriptor: { id: "fakehost", label: "Fakehost", network: ["none"], mounts: ["archil"] },
 		facts: {
 			daemon: "child",
 			isolation: "microvm",
@@ -447,8 +449,6 @@ export function fakeHost({
 			arch: "amd64",
 			vendorAgentPorts: [7777],
 			gpuReadBack: true,
-			network: ["none"],
-			mounts: ["archil"],
 			...facts,
 		},
 		errorCode(error) {
@@ -481,6 +481,11 @@ export function fakeHost({
 			if (create === "lost") {
 				make();
 				throw new Late("the answer never came back");
+			}
+			if (create === "lost-answered") {
+				// A host whose own client gave up on the create's reply, thrown as a HostError timeout (Agent37's REST, Daytona's).
+				make();
+				throw new HostError("timeout", "POST /v1/instances did not answer within 300 s");
 			}
 			if (create === "broken") {
 				make();
@@ -541,15 +546,25 @@ export function fakeHost({
 					},
 				}
 			: {}),
-		async setTimer(id, { end, most }, ctx) {
-			const m = machines.get(id);
-			await step("setTimer", ctx, m);
-			if (gone(m)) throw new NotFound(`machine ${id} not found`);
-			if (timer === "limit") throw new HostError("limit", "no whole number of seconds reaches it; nothing moved");
-			m.endsAt = new Date(Math.min(end.getTime(), most.getTime()));
-			// A vendor that keeps no label change reads its moved end as the deadline label (src/host.ts, setTimer).
-			m.labels[DEADLINE_LABEL] = m.endsAt.toISOString();
-		},
+		...(timer === "none"
+			? {}
+			: {
+					// The vendor's timer, or the janitor's deadline label, which this fake rounds up to a whole second.
+					async extend(id, end, ctx) {
+						const m = machines.get(id);
+						await step("extend", ctx, m);
+						if (gone(m)) throw new NotFound(`machine ${id} not found`);
+						if (timer === "limit") throw new HostError("limit", "no whole number of seconds reaches it; nothing moved");
+						const most = Date.parse(m.labels["agentrun.computer.max-deadline"]);
+						if (host.facts.lifetime === "janitor") {
+							m.labels[DEADLINE_LABEL] = new Date(Math.min(Math.ceil(end.getTime() / 1000) * 1000, most)).toISOString();
+							return;
+						}
+						m.endsAt = new Date(Math.min(end.getTime(), most));
+						// A vendor that keeps no label change reads its moved end as the deadline label (src/host.ts, extend).
+						m.labels[DEADLINE_LABEL] = m.endsAt.toISOString();
+					},
+				}),
 	};
 
 	fake.host = host;

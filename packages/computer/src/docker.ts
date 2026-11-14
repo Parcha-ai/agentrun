@@ -59,8 +59,7 @@ import { daemonStage, daemonVerified, egressStage, egressStaged } from "./docker
 import { EGRESS_READY } from "./docker/egress-proxy.js";
 import { type DockerVolume, OLD_ENGINE, outsideWords, subpathOf, VOLUME_SUBPATH_ENGINE, volumeMount, volumeOf } from "./docker/volume.js";
 import { addressBytes } from "./docker/egress-table.js";
-import type { KindCapabilities } from "./kinds.js";
-import { checkMount, type MountKind, type MountReadBack, WORKSPACE } from "./mount.js";
+import { checkMount, type MountReadBack, WORKSPACE } from "./mount.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -149,11 +148,6 @@ export interface DockerProviderOptions {
 	volume?: { name: string; root: string };
 }
 
-/** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
-export const MOUNT: readonly MountKind[] = DOCKER.mounts;
-
-/** The machine kind and groups of each configuration (its descriptor's): a linux computer, and a desktop. */
-export const CAPABILITIES: readonly KindCapabilities[] = DOCKER.capabilities;
 
 /** What create() takes: the provider's options, the daemon optional. */
 export interface DockerCreateOptions extends Partial<DockerProviderOptions> {
@@ -365,7 +359,7 @@ export class DockerProvider implements ComputerProvider {
 			user: ["root", "uid"],
 			release: ["stop", "delete"],
 			stopDeletes: false,
-			mount: [...MOUNT],
+			mount: [...DOCKER.mounts],
 		};
 	}
 

@@ -32,7 +32,8 @@
 // each call node's tool is a read or a write; a read runs live through a cache seeded from the graded run's recorded calls,
 // a write is answered only from that recording (same tool, same canonical arguments) and is never sent, and an input whose
 // workflow needs a write the recording does not have is skipped (counted in the record's replay.skipped_write, never
-// scored); a replay whose every input was skipped holds the revision in those words. Its credentials resolve at its claim
+// scored); a replay whose every input was skipped holds the revision in those words, or, when the tool that stopped them
+// is an MCP tool its server listed with no readOnlyHint, naming it (replay.skipped_tools). Its credentials resolve at its claim
 // as any run's of the agent do: saved ones from the server's store, and the per_run MCP credentials the run whose claim
 // started it was handed, sealed anew for the replay run alone (startReplay), never opened outside the claim.
 import type { Context } from "@earendil-works/chord/context";
@@ -45,9 +46,9 @@ import { FINAL_STATES, RunFinal, type RunRow, type Store, StoreConstraint } from
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/journal.js";
 import type { McpPin } from "../mcp-gateway.js";
-import { recordedCalls, type ReplayCalls, replayCalls, SKIPPED_WRITE, toolClassOf } from "../learn/replay-calls.js";
+import { recordedCalls, type ReplayCalls, replayCalls, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
-import { championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, replayingOf, replayScore, answerCorrect, scoredRows, thresholdsOf } from "../learn/promote.js";
+import { championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, replayingOf, replayScore, answerCorrect, scoredRows, skippedToolsOf, thresholdsOf } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
@@ -427,7 +428,7 @@ async function answerOf(store: PromotionDeps["store"], runId: string, context: C
   }
 }
 
-const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ? (row!.metrics as { replay?: { outcome?: unknown }; guards?: unknown; path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
+const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ? (row!.metrics as { replay?: { outcome?: unknown; skipped?: { tool?: unknown; unmarked?: unknown } }; guards?: unknown; path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
 
 /** The replay's rows, once every replay run ended (or REPLAY_DEADLINE_MS passed: one not ended is failed, no evidence);
  *  undefined while one is at work or not created yet (its record is reserved before its runs are created: a run missing
@@ -452,10 +453,12 @@ async function replayRows(deps: PromotionDeps, record: PromotionRecord): Promise
     cost = cost === null || !ended || run.costUsd === null ? null : cost + run.costUsd;
     const m = metricsOf(run);
     const outcome = ended && run.state === "ended" && (m.replay?.outcome === "answered" || m.replay?.outcome === "handed_back" || m.replay?.outcome === "skipped_write") ? m.replay.outcome : "failed";
+    const stoppedAt = outcome === "skipped_write" ? m.replay?.skipped : undefined;
     rows.push({
       of,
       recorded: { answer: await answerOf(store, of, context), correct: grade.correct, ...(grade.expected ? { expected: grade.expected } : {}) },
       outcome,
+      ...(stoppedAt && typeof stoppedAt.tool === "string" ? { skipped: { tool: stoppedAt.tool, ...(stoppedAt.unmarked === true ? { unmarked: true as const } : {}) } } : {}),
       answer: outcome === "answered" ? await answerOf(store, run.id, context) : null,
       guards: Array.isArray(m.guards) ? (m.guards as GuardRow[]) : [],
     });
@@ -480,17 +483,24 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
   const pts = (value: number) => `${(value * 100).toFixed(1)}%`;
   const skipped = read.rows.filter((row) => row.outcome === "skipped_write").length;
   const failed = read.rows.length - scored.length - skipped;
-  const aside = [...(failed ? [`${failed} failed: a step failed, no evidence either way`] : []), ...(skipped ? [`${skipped} skipped: ${SKIPPED_WRITE}`] : []),
+  // Inputs stopped at an MCP tool its server listed with no readOnlyHint: the hold names those tools (the server may only
+  // lack the hint); any other skip (a destructive tool, a built-in write) keeps the recording's words.
+  const tools = skippedToolsOf(read.rows);
+  const unmarked = tools.filter((one) => one.no_read_only_hint);
+  const writes = skipped - unmarked.reduce((sum, one) => sum + one.inputs, 0);
+  const hint = unmarked.length ? unmarkedWords(unmarked.map((one) => toolWord(one.tool))) : undefined;
+  const skipWhy = !hint ? SKIPPED_WRITE : writes ? `${hint} (${writes} more ${writes === 1 ? "needs" : "need"} a write the recording doesn't have)` : hint;
+  const aside = [...(failed ? [`${failed} failed: a step failed, no evidence either way`] : []), ...(skipped ? [`${skipped} skipped: ${skipWhy}`] : []),
     ...(read.unstarted ? [`${read.unstarted} never started by the replay's deadline`] : [])].join("; ");
   const said = `on ${plural(score.n, "graded input")}: the workflow ${pts(score.wf_acc)} (${score.handed_back} handed back, the agent's answer), the agent ${pts(score.agent_acc)}, ${score.delta >= 0 ? "+" : ""}${(score.delta * 100).toFixed(1)} pts${aside ? ` (${aside})` : ""}`;
   const reason = read.rows.length && skipped === read.rows.length
-    ? `every one of its ${plural(skipped, "graded input")} ${SKIPPED_WRITE}: a replay never runs a write, so nothing was replayed`
+    ? hint ? `nothing was replayed on its ${plural(skipped, "graded input")}: ${skipWhy}` : `every one of its ${plural(skipped, "graded input")} ${SKIPPED_WRITE}: a replay never runs a write, so nothing was replayed`
     : scored.length < REPLAY_MIN
       ? `only ${plural(scored.length, "replay")} answered or handed back${aside ? ` (${aside})` : ""}, fewer than ${REPLAY_MIN}`
       : ok ? `replayed ${said}: within ${PROMOTE_BAR * 100} pts` : `replayed ${said}: more than ${PROMOTE_BAR * 100} pts under the agent`;
   const decided = await recordPromotion(store.settings, agentId, {
     workflow: workflow.name, digest, at: iso(now()), decided: ok ? "promote" : "hold", source: "replay", reason,
-    replay: { ...score, of: read.rows.map((row) => row.of), cost_usd: read.cost, skipped_write: skipped }, ...(record.runs ? { runs: record.runs } : {}),
+    replay: { ...score, of: read.rows.map((row) => row.of), cost_usd: read.cost, skipped_write: skipped, skipped_tools: tools }, ...(record.runs ? { runs: record.runs } : {}),
     ...(record.commit ? { commit: record.commit } : seedOf(deps)),
   }, (was) => was?.decided === "replaying");
   // Another claim's decision came first: it logs, cancels and refits; this one reads it.
@@ -591,7 +601,8 @@ export async function replayCallsFor(store: Store, runId: string, launch: RunLau
     const named = /^mcp:([^/]+)\/(.+)$/.exec(tool);
     const server = named && pin && Object.hasOwn(pin, named[1]!) ? pin[named[1]!] : undefined;
     const listed = server?.tools.find((one) => one.name === named![2]) as { annotations?: Record<string, unknown> } | undefined;
-    return listed?.annotations;
+    // Listed with none: `{}`, so a tool its server left unannotated reads unmarked, never as one it does not list.
+    return listed ? (listed.annotations ?? {}) : undefined;
   };
   return replayCalls(recorded, (tool) => toolClassOf(tool, annotations));
 }

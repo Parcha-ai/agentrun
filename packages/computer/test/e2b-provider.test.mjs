@@ -131,7 +131,7 @@ test("maxLifetimeMs is Hobby's 1 h by default, Pro's 24 h at most, and check() r
 	assert.match(refused[0].message, /at most 1 h/);
 	const pro = setup({ maxLifetimeMs: 24 * HOUR }).provider;
 	assert.deepEqual(pro.check({ ...SPEC, lifetimeMs: 2 * HOUR }), []);
-	assert.throws(() => setup({ maxLifetimeMs: 24 * HOUR + 1 }), /24 h/);
+	assert.throws(() => setup({ maxLifetimeMs: 24 * HOUR + 1 }), /at most 86400000 ms, the longest E2B keeps a computer/);
 	assert.throws(() => setup({ maxLifetimeMs: 0 }), /maxLifetimeMs/);
 	assert.deepEqual(rec.calls, []);
 });
@@ -424,7 +424,7 @@ test("the registry builds E2B from its options alone, and the conformance module
 	assert.equal(conformance.conformanceImage({ env: { COMPUTER_E2B_TEMPLATE: "my-desktop" } }), "my-desktop");
 	assert.ok(conformance.conformanceNotes.some((note) => /Hobby/.test(note)));
 	const host = await conformance.createHost({ env: { [ENV.key]: KEY }, Sandbox: rec.Sandbox });
-	assert.equal(host.id, "e2b");
+	assert.equal(host.descriptor.id, "e2b");
 	await assert.rejects(conformance.createHost({ env: { E2B_API_KEY: BARE }, Sandbox: rec.Sandbox }), /set COMPUTER_E2B_API_KEY/);
 	assert.deepEqual(rec.calls, []);
 });

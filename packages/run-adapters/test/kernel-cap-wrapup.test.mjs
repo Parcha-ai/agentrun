@@ -91,7 +91,7 @@ test("the least of the request taking the note is priced cache-aware, as its adm
   const previous = { model: SONNET45.id, cachedTokens: 99_000, inputTokens: 1_000, boundTokens: 100_000, endedAt: T0 - 1_000 };
   // Uncached, its step-0 typical ($0.39) would make $0.80 left due (3x); read from the cache ($0.05) it is not.
   const { cap } = capWith(1.2, { spentUsd: 0.4 });
-  assert.equal(cap.note(modelRequest(SONNET45, 100_000, 1_024, { previous })), undefined);
+  assert.equal(cap.note(modelRequest(SONNET45, 100_000, 1_024, { recent: [previous] })), undefined);
 });
 
 test("at step 0 with no previous request, the next request's least priced uncached makes it due alone (a pin)", () => {

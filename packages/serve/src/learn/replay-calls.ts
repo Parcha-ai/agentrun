@@ -1,7 +1,8 @@
 // What a replay run's learned workflow does at each call node (SPEC B4: "re-run the draft offline on recorded inputs/
 // outputs where possible, else live at workflow cost"; runner/promotion.ts starts the replay runs). Every tool is a read
 // or a write (toolClassOf): an MCP tool by its server's own annotations (readOnlyHint true and not destructiveHint: read),
-// a built-in by the fixed list READ_TOOLS, anything else a write.
+// a built-in by the fixed list READ_TOOLS, anything else a write (an MCP tool listed with no readOnlyHint too, its skip
+// marked unmarked so the hold names it: a server that left the hint out holds every revision otherwise unexplained).
 //   - A read runs live through a cache keyed by (tool, canonical args), seeded from the graded run's recorded calls: a
 //     hit, recorded or already run in this replay, costs nothing and is never sent again.
 //   - A write is NEVER run in a replay: it is answered from the graded run's recording when a call there has the same
@@ -26,20 +27,36 @@ export const READ_TOOLS: readonly string[] = [WEB_FETCH_TOOL, WEB_SEARCH_TOOL, P
 /** Why a replayed input is skipped, word for word: what a PromotionRecord's reason and the replay's row say. */
 export const SKIPPED_WRITE = "needs a write the recording doesn't have";
 
-export type ToolClass = "read" | "write";
+/** `unmarked`: an MCP tool its server lists with no readOnlyHint and not destructive. A replay treats it as a write (nothing
+ *  says it only reads), but its skip says why: the server may only have left the hint out (the hold's reason names it). */
+export type ToolClass = "read" | "write" | "unmarked";
 
 /** An MCP tool's catalog name, `mcp:<server>/<tool>`. */
 const MCP_TOOL = /^mcp:([^/]+)\/(.+)$/;
 
 /** Whether `tool` (a catalog name) reads or writes: an MCP tool by `annotations` (its server's listing as the run's pin
- *  holds it): read only when readOnlyHint is true and destructiveHint is not; a built-in by READ_TOOLS; else write. */
+ *  holds it, `{}` for a tool listed with none; undefined for one not listed): read only when readOnlyHint is true and
+ *  destructiveHint is not, unmarked when it is listed with no readOnlyHint and not destructive; a built-in by READ_TOOLS;
+ *  else write. */
 export function toolClassOf(tool: string, annotations?: (tool: string) => Readonly<Record<string, unknown>> | undefined): ToolClass {
   if (MCP_TOOL.test(tool)) {
     const said = annotations?.(tool);
-    return said?.readOnlyHint === true && said.destructiveHint !== true ? "read" : "write";
+    if (said?.destructiveHint === true) return "write";
+    return said?.readOnlyHint === true ? "read" : said && said.readOnlyHint === undefined ? "unmarked" : "write";
   }
   return READ_TOOLS.includes(tool) ? "read" : "write";
 }
+
+/** Why replay can't run MCP tools with no readOnlyHint (bare tool names, most-skipped first): "browse, fetch_page and 2
+ *  more have no readOnlyHint, so replay can't run them: if they only read, mark them read-only in the MCP server". */
+export function unmarkedWords(names: readonly string[]): string {
+  const one = names.length === 1;
+  const list = names.length <= 3 ? names.join(", ").replace(/, ([^,]*)$/, " and $1") : `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
+  return `${list} ${one ? "has" : "have"} no readOnlyHint, so replay can't run ${one ? "it" : "them"}: if ${one ? "it only reads, mark it" : "they only read, mark them"} read-only in the MCP server`;
+}
+
+/** A catalog name as a person reads it in a reason: an MCP tool's own name, any other whole. */
+export const toolWord = (tool: string): string => MCP_TOOL.exec(tool)?.[2] ?? tool;
 
 /** `value` as JSON with every object's keys sorted, at every depth: two argument objects that differ only in key order
  *  read the same. */
@@ -105,11 +122,15 @@ const recordedValue = (tool: string, recorded: Recorded): { value: unknown } | u
   return recorded.details && typeof recorded.details === "object" ? { value: recorded.details } : undefined;
 };
 
+/** The write that stopped a replay's input: its tool and step, and `unmarked` when it is an MCP tool its server listed with
+ *  no readOnlyHint (toolClassOf). */
+export type Skipped = { readonly tool: string; readonly step: string; readonly unmarked?: true };
+
 /** A replay's call nodes (learned-workflow.ts runLearned's `run.replay`): `call` runs each by the rules above. `skipped`:
  *  the write that stopped it, once one did; `stop` aborts the workflow's run there. `live`: how many reads ran live. */
 export interface ReplayCalls {
   call(node: { readonly label: string; readonly tool: string }, args: unknown, live: () => Promise<unknown>): Promise<unknown>;
-  readonly skipped: { readonly tool: string; readonly step: string } | undefined;
+  readonly skipped: Skipped | undefined;
   readonly stop: AbortSignal;
   readonly live: number;
 }
@@ -136,14 +157,15 @@ export function replayCalls(recorded: ReadonlyMap<string, Recorded>, classOf: (t
     async call(node, args, run) {
       const key = callKey(node.tool, args);
       const said = recorded.get(key);
-      if (classOf(node.tool) === "write") {
+      const kind = classOf(node.tool);
+      if (kind !== "read") {
         // Never run: the recording's answer, or the input is skipped here.
         const value = said ? recordedValue(node.tool, said) : undefined;
         if (said && value) {
           if (said.isError) throw new Error(said.text);
           return value.value;
         }
-        skipped ??= { tool: node.tool, step: node.label };
+        skipped ??= { tool: node.tool, step: node.label, ...(kind === "unmarked" ? { unmarked: true as const } : {}) };
         stop.abort(new ReplaySkipped(`${node.tool} ${SKIPPED_WRITE}`));
         throw new ReplaySkipped(`call node "${node.label}": ${node.tool} ${SKIPPED_WRITE}`);
       }

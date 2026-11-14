@@ -155,6 +155,20 @@ describe("the workflow card: standing, guards and where it is unsure", () => {
     expect(host.querySelector('[data-testid="refit"]')).toBeNull();
   });
 
+  // A revision serving on its dry run (too few graded inputs to replay) is not proven: its chip says not replayed and is
+  // never green; one promoted on its replay says how many inputs it was decided on.
+  it("says what serving was decided on: replayed n/of, or not replayed", () => {
+    const of = Array.from({ length: 20 }, (_, i) => `g${i}`);
+    const replayed = mount(createElement(Steps, { data: read([rev(1, guarded(0.7))]), promotions: [record({ replay: { of, n: 18, agree: 17, agent_acc: 0.9, wf_acc: 0.9, delta: 0, handed_back: 1, skipped_write: 2 } })], serving: "1".repeat(16), loop }));
+    const chip = (host: HTMLElement) => host.querySelector('[data-testid="standing"] span')!;
+    expect(chip(replayed).textContent).toBe("Serving · replayed 18/20");
+    expect(chip(replayed).className).toMatch(/success/);
+    const dry = mount(createElement(Steps, { data: read([rev(1, guarded(0.7))]), promotions: [record({ replay: undefined, source: "dry_run", reason: "no graded input it fits: promoted on its passing dry run" })], serving: "1".repeat(16), loop }));
+    expect(chip(dry).textContent).toBe("Serving · not replayed");
+    expect(chip(dry).className).not.toMatch(/success/);
+    expect(dry.querySelector('[data-testid="standing"]')?.textContent).toContain("no graded input it fits: promoted on its passing dry run");
+  });
+
   it("an older promoted revision says it served, not that it serves", () => {
     const promotions = [record({}), record({ digest: "2".repeat(16), at: "2026-11-03T10:00:00Z", replay: undefined, source: "dry_run", reason: "promoted on its dry run" })];
     const host = mount(createElement(Steps, { data: read(REVS2), promotions, serving: "2".repeat(16), loop }));
