@@ -52,6 +52,7 @@ npm 11), never by hand. Push with `--force-with-lease=<branch>:<old-head>`.
 ## Step 3: local checks on the head
 
 ```bash
+umask 022                       # this check shell: fixture directories must not be group-writable
 npm ci --ignore-scripts && npm run build
 npm run build:daemon -w @parcha/agentrun-computer  # before check when Docker-backed serve/client demos apply
 npm run check
@@ -64,6 +65,8 @@ npm run verify:packages          # when a package's files, manifest or the lock 
 Docker-backed serve/client demos need the computer daemon in a fresh checkout. Build it after
 the initial package build and before `npm run check`; the check's rebuild does not remove it.
 Package-consumer verification still needs the daemon built as `CONTRIBUTING.md` requires.
+Run these checks in a shell with umask 022: Docker custody checks correctly reject fixture
+directories made group-writable by umask 002. Do not relax the daemon's permission checks.
 
 Then `node scripts/stranger.mjs <name>` for every package whose README, `bin`, exports or demo the
 pull request touches (specs in `scripts/stranger/`).
