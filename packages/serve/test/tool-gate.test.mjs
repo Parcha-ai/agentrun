@@ -137,7 +137,16 @@ function readsInOrder(rows, callId, at, { answered = true } = {}) {
   if (!answered) return;
   const resume = bySeq.findIndex((r) => r.origin === "server" && /^AgentRun: (\S+ ran once you allowed it|You declined \S+|Your message declined \S+)/.test(r.summary ?? ""));
   assert.ok(resume > ask, `${at}: the outcome (the resume row) follows the approval row: ${JSON.stringify(shown)}`);
-  assert.deepEqual(own.map((i) => bySeq[i].summary), own.map(() => "Held for your approval"), `${at}: the call's own rows say only that it was held`);
+  ownRowsRead(own.map((i) => bySeq[i]), bySeq[resume].summary, `${at}: ${JSON.stringify(shown)}`);
+}
+/** A parked call's own rows once answered: one that ran reads as any call (what it did, its result with its status), its
+ *  result saying how it came to run; one that did not run says only that it was held. */
+function ownRowsRead(own, outcome, at) {
+  const ran = /^AgentRun: \S+ ran( once you allowed it|, as its setting allows it)/.exec(outcome ?? "");
+  if (!ran) return assert.deepEqual(own.map((r) => r.summary), own.map(() => "Held for your approval"), `${at}: the call's own rows say only that it was held`);
+  assert.ok(own.every((r) => r.summary !== "Held for your approval"), `${at}: a call that ran is never "held"`);
+  const result = own.find((r) => r.kind === "tool_result");
+  assert.ok(result?.summary.endsWith(`(${ran[1] === ", as its setting allows it" ? "ran, as its setting allows it" : "ran once you allowed it"})`) && result.tool_status, `${at}: its result row says how it came to run`);
 }
 
 test("the gate's settings: ask offered where the kernel runs the approved call itself and for catalog tools; the owner's defaults; settings it takes, an MCP server's wildcard among them; web_search under ask and deny", () => {
@@ -308,7 +317,7 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
     // The model's own words may quote what it read (pi's faux model echoes the message); every row the server writes may not.
     assert.deepEqual(rows.filter((r) => r.kind !== "final_answer" && r.kind !== "text_block" && String(r.summary ?? "").includes(run.callId)).map((r) => r.summary), [], `${at}: no summary of the server's names the call id`);
     assert.equal(resumeRows(rows).length, 1, `${at}: one message resumed it`);
-    ownRowsSay(rows, run.callId, "Held for your approval", at);
+    if (run.decision !== "allow") ownRowsSay(rows, run.callId, "Held for your approval", at);
     assert.equal(view.pending, null);
     // The model read the answer as the call's own result: the runner runs an allowed call in place and hands a denied one
     // the refusal, so pi's faux model echoes the page or the refusal, never a message about the call.
