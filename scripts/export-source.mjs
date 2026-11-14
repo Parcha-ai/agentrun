@@ -131,8 +131,8 @@ if (arguments_.includes('--inventory-only')) {
 }
 
 const allowedRootFiles = new Set(['README.md', 'AGENTS.md', 'CLAUDE.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'SECURITY.md', 'ASSETS.md', 'LICENSE', 'LICENSE.md', 'LICENSE.txt', 'NOTICE', 'NOTICE.md', 'NOTICE.txt', '.gitignore', '.nvmrc', 'package.json', 'package-lock.json', 'tsconfig.base.json']);
-const allowedDirectories = new Set(['apps', 'changes', 'docs', 'examples', 'packages', 'python', 'scripts', 'spec', '.github']);
-const excludedComponents = new Set(['.pi', 'site', 'dist', 'node_modules', '.git', '.release', '.openai', '.sites-runtime', '.cascade', '.desloppify', '.impeccable', '.review', '.reviews', '.codex', '.agents', '.cache', 'coverage', 'candidates', 'scorecard.png', '.lake', '__pycache__']);
+const allowedDirectories = new Set(['apps', 'changes', 'connector', 'docs', 'examples', 'packages', 'python', 'scripts', 'spec', '.github']);
+const excludedComponents = new Set(['.pi', 'site', 'dist', 'node_modules', '.git', '.release', '.openai', '.sites-runtime', '.cascade', '.desloppify', '.impeccable', '.review', '.reviews', '.codex', '.agents', '.cache', '.venv', '.agentrun', 'coverage', 'candidates', 'scorecard.png', '.lake', '__pycache__']);
 const textExtensions = new Set(['.md', '.json', '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.tsx', '.html', '.jsonl', '.css', '.svg', '.txt', '.yml', '.yaml', '.toml', '.sh', '.lean', '.tla', '.cfg', '.sse', '.go', '.c', '.h', '.swift', '.plist', '.entitlements', '.java', '.xml', '.py', '.sql', '.applescript']);
 const binaryExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2', '.webm', '.pdf']);
 /** A PDF is exported only when one line of ASSETS.md names it with its SHA-256: each one is a document someone reviewed, not a type. */
@@ -143,7 +143,7 @@ function excluded(path, file) {
   // A review file is a file named `<name>.review.<ext>` (the author's `<n>.review.json`). Only files match: a module or
   // directory named review, and a directory named like a review file, are source.
   // What `pip install ./python` leaves beside the Python client's source (its build tree, its metadata) is not source.
-  if (path === 'python/build' || path.startsWith('python/build/') || /(?:^|\/)[^/]+\.egg-info(?:\/|$)/.test(path)) return true;
+  if (/^(?:python|connector)\/build(?:\/|$)/.test(path) || /(?:^|\/)[^/]+\.egg-info(?:\/|$)/.test(path)) return true;
   return parts.some(part => part === 'pi.config.mjs' || excludedComponents.has(part) || /^\.env(?:\.|$)/.test(part) || /\.local(?:\.|$)/.test(part)) ||
     (file && /^.+\.review\.[^/]+$/.test(parts.at(-1))) ||
     /\.(?:tgz|tar|gz|pem|key|p12|pfx|map|log)$/.test(path);
@@ -189,7 +189,7 @@ async function collect(relative = '') {
     if (entry.isDirectory()) { await collect(path); continue; }
     if (!entry.isFile()) throw new Error(`Source export refuses special file: ${path}`);
     const ext = extension(path);
-    const isText = entry.name === '.gitignore' || textExtensions.has(ext) || allowedRootFiles.has(path) || /^packages\/(?:dsl|jev|pi-browser|serve|decisions|computer|client|run-adapters|run-adapters-claude-agent|run-adapters-codex|agentrun)\/(?:LICENSE|NOTICE)$/.test(path) || path === 'packages/computer/daemon/go.mod' || path === 'packages/computer/daemon-macos/NOTICE' || path === 'packages/serve/launcher/agentrun-serve' || path === 'packages/serve/docker/Dockerfile' || /^packages\/computer\/test\/fixtures\/desktop(?:-xfwm4)?\/Dockerfile$/.test(path) || /^packages\/computer\/box\/(?:agentrun-archil|Dockerfile|build-daytona\.py|build-modal\.py)$/.test(path) || path === '.dockerignore' || path === 'spec/lean/lean-toolchain' || path === '.github/CODEOWNERS' || path === 'python/agentrun/py.typed' || path === 'python/LICENSE' || path === 'python/NOTICE';
+    const isText = entry.name === '.gitignore' || textExtensions.has(ext) || allowedRootFiles.has(path) || /^packages\/(?:dsl|jev|pi-browser|serve|decisions|computer|client|run-adapters|run-adapters-claude-agent|run-adapters-codex|agentrun)\/(?:LICENSE|NOTICE)$/.test(path) || path === 'packages/computer/daemon/go.mod' || path === 'packages/computer/daemon-macos/NOTICE' || path === 'packages/serve/launcher/agentrun-serve' || path === 'packages/serve/docker/Dockerfile' || /^packages\/computer\/test\/fixtures\/desktop(?:-xfwm4)?\/Dockerfile$/.test(path) || /^packages\/computer\/box\/(?:agentrun-archil|Dockerfile|build-daytona\.py|build-modal\.py)$/.test(path) || path === '.dockerignore' || path === 'spec/lean/lean-toolchain' || path === '.github/CODEOWNERS' || path === 'python/agentrun/py.typed' || /^(?:python|connector)\/(?:LICENSE|NOTICE)$/.test(path);
     if (!isText && !binaryExtensions.has(ext)) throw new Error(`Unreviewed source-export file type: ${path}`);
     const bytes = await readFile(join(root, path));
     if (ext === '.pdf' && !assetsLines.some(line => line.includes(`\`${path.split('/').at(-1)}\``) && line.includes(sha256(bytes)))) throw new Error(`Unreviewed PDF: ${path} is not in ASSETS.md with its SHA-256 ${sha256(bytes)} on its line`);

@@ -1,0 +1,5 @@
+---
+packages: repo
+kind: feature
+---
+Include the existing Python metadata observer CLI and its source provenance in the public repository. The installable connector keeps enrollment credentials origin-bound, retains only scoped credentials, and waits for its polling daemon to stop before persisting disconnect state. Source exports include connector code and notices while excluding private state and build output. Concurrent discovery allocates stable opaque session and project IDs under the state lock. Selected Codex reads share a shutdown-aware total deadline. Collector queues are isolated by destination, credential and consent revision, and reconnect refuses a receiver that does not confirm the requested ingestion mode. A single atomic observation sequence checkpoint survives disconnects and destination changes while stale payloads are still discarded, so returning receivers accept fresh updates immediately. Invalid or exhausted wire-safe checkpoints fail closed. Broken HTTP response framing retains pending observation events for retry instead of exiting the daemon; known error status and retry headers still govern authorization and backoff.
