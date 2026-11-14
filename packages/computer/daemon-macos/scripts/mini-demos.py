@@ -2,13 +2,15 @@
 the running Computerd's own computerd command by ui.observe and ui.act with batched steps. Each call's latency is
 logged. With --movie, each is recorded from screen.watch to a movie of its own window, with the step on screen.
 
-    python3 -I mini-demos.py PATH/TO/computerd COMPUTERD_HOME OUT_DIR [--movie] [--ask-grants] [TASK ...]
+    python3 -I mini-demos.py PATH/TO/computerd COMPUTERD_HOME OUT_DIR [--movie] [--ask-grants] [--answer-alerts] [TASK ...]
 
 TASK is a task's id (mac.notes.new-note, ...); none runs all five. Without --movie nothing is recorded (no frames, no
 movie). --movie works only on a demo machine, and refuses before anything is made otherwise: a CI runner
 (GITHUB_ACTIONS=true), or a user whose login name starts with "agentrun-demo" (a dedicated demo account, made by a
 person). Nothing else unlocks it. --ask-grants raises Computerd's Automation prompts for the five apps, for a person at the Mac to answer, and
-exits. Writes, under OUT_DIR:
+exits. --answer-alerts (CI only) takes one screen shot, which raises the screen capture alert, answers the system's
+alerts (see clear_alerts), and exits: before the conformance cases, whose fixture could not come in front of it. Writes,
+under OUT_DIR:
 
     demos.json             every task's calls: method, params, ms, the steps' routes, the expect, the error, and what it left
     demos.md               the table: task, calls, steps, ms, result, left behind
@@ -73,8 +75,8 @@ args = [a for a in sys.argv[1:] if not a.startswith("--")]
 flags = {a for a in sys.argv[1:] if a.startswith("--")}
 if len(args) < 3:
     sys.exit(__doc__)
-if flags - {"--movie", "--ask-grants"}:
-    sys.exit(f"unknown option {' '.join(sorted(flags - {'--movie', '--ask-grants'}))}\n{__doc__}")
+if flags - {"--movie", "--ask-grants", "--answer-alerts"}:
+    sys.exit(f"unknown option {' '.join(sorted(flags - {'--movie', '--ask-grants', '--answer-alerts'}))}\n{__doc__}")
 helper, home, out = args[0], args[1], os.path.abspath(args[2])
 only = set(args[3:])
 movie = "--movie" in flags
@@ -1100,12 +1102,22 @@ def calendar_new_event(t):
     # the default calendar, with its inspector open; the inspector's calendar menu moves it into the task's calendar.
     add = need(t, tree["nodes"], "the Add Event button", role="button", name="Add Event")
     t.inspector = True  # from here on the teardown closes the inspector first (see close_inspector)
-    t.act([{"press": add["ref"]}], "press Add Event")
-    tree = t.observe("observe the quick event field")
-    boxes = [n for n in tree["nodes"] if n.get("role") == "textbox"]
-    field = next((n for n in boxes if "focused" in (n.get("flags") or [])), None) or next((n for n in boxes if "Event" in (n.get("name") or "")), None)
-    typing = {"type": title, "into": field["ref"]} if field is not None else {"type": title}
-    t.act([typing, {"key": "enter"}], "type the event's title, enter", expect={"text": title, "timeoutMs": 10000})
+    # The quick event field reads what is typed a moment after it shows (as in calendar_setup_quick_event): enter at
+    # once closed it with no event made, once in four CI runs (the window then held no field and no event). So the
+    # title, a pause, then enter; and the field opened again once when no event came of it.
+    for attempt in (1, 2):
+        t.act([{"press": add["ref"]}], "press Add Event" + (" again" if attempt > 1 else ""))
+        tree = t.observe("observe the quick event field")
+        boxes = [n for n in tree["nodes"] if n.get("role") == "textbox"]
+        field = next((n for n in boxes if "focused" in (n.get("flags") or [])), None) or next((n for n in boxes if "Event" in (n.get("name") or "")), None)
+        typing = {"type": title, "into": field["ref"]} if field is not None else {"type": title}
+        t.act([typing], "type the event's title")
+        time.sleep(1)
+        if t.act([{"key": "enter"}], "enter makes the event", expect={"text": title, "timeoutMs": 6000}, must=attempt > 1):
+            break
+        print("    no event came of the quick event field: it opens again", flush=True)
+        tree = t.observe()
+        add = need(t, tree["nodes"], "the Add Event button", role="button", name="Add Event")
     tree = t.observe("observe the event's inspector")
     menu = need(t, tree["nodes"], "the inspector's calendar menu", id="calendar-button")
     t.act([{"press": menu["ref"]}], "open the event's calendar menu")
@@ -1285,12 +1297,23 @@ def lock():
 
 
 ALERT_BUTTONS = ("OK", "Close", "Don't Allow", "Deny", "Cancel", "Not Now", "Later", "Ignore", "Dismiss")
+# macOS 26's screen capture alert for Computerd itself, which seed-tcc.sh's replayd approvals no longer keep away:
+# "“Computerd” is requesting to bypass the system private window picker and directly access your screen and audio",
+# with Allow and Open System Settings only. Computerd's Screen Recording is seeded already; Allow answers it so.
+OWN_CAPTURE_ALERT = "“Computerd” is requesting to bypass the system private window picker"
 
 
-def clear_alerts(c):
+def clear_alerts(c, wait=0):
     """CI only, on a throwaway runner: a system alert (UserNotificationCenter's) sits mid-screen in front of every
-    demo's window. Its words are printed and it is answered by its dismissing button, so no movie shows it. On a
-    person's Mac an alert is theirs to answer, and nothing here runs."""
+    demo's window. Its words are printed and it is answered by its dismissing button (Allow for Computerd's own screen
+    capture alert), so no movie shows it. Waits up to wait seconds for one to show. On a person's Mac an alert is
+    theirs to answer, and nothing here runs."""
+    until = time.monotonic() + wait
+    while "com.apple.UserNotificationCenter" not in running_ids(["com.apple.UserNotificationCenter"]):
+        if time.monotonic() >= until:
+            print("  no system alert is on screen", flush=True)
+            return
+        time.sleep(1)
     for _ in range(3):
         if "com.apple.UserNotificationCenter" not in running_ids(["com.apple.UserNotificationCenter"]):
             return
@@ -1301,7 +1324,8 @@ def clear_alerts(c):
         nodes = r["result"].get("nodes", [])
         words = [n.get("name") or n.get("value") for n in nodes if n.get("role") in ("text", "statictext", "heading") and (n.get("name") or n.get("value"))]
         print(f"  a system alert is on screen: {' / '.join(words)[:400]}", flush=True)
-        button = next((n for name in ALERT_BUTTONS for n in nodes if n.get("role") == "button" and n.get("name") == name), None)
+        names = ("Allow",) if any(OWN_CAPTURE_ALERT in w for w in words) else ALERT_BUTTONS
+        button = next((n for name in names for n in nodes if n.get("role") == "button" and n.get("name") == name), None)
         if button is None:
             print(f"  (no button to dismiss it among: {[n.get('name') for n in nodes if n.get('role') == 'button']})", flush=True)
             return
@@ -1322,6 +1346,13 @@ def main():
     c = Client()
     hello = c.call("hello", {"client": "mini-demos"}).get("result") or {}
     print(f"Computerd on {hello.get('device', {}).get('model')}, macOS {hello.get('osVersion')}, features {json.dumps(hello.get('features'))}", flush=True)
+    if "--answer-alerts" in flags:
+        if not CI:
+            sys.exit("--answer-alerts runs on CI runners only: on a person's Mac an alert is theirs to answer")
+        shot = c.call("screen.shot", {})
+        print(f"one screen shot, to raise the capture alert: {'error ' + shot['error'].get('message', '') if 'error' in shot else 'taken'}", flush=True)
+        clear_alerts(c, wait=8)
+        sys.exit(0)
     print(f"run {RUN}: sandboxes named {NAME!r}", flush=True)
     if CI:
         clear_alerts(c)

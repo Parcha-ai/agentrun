@@ -59,6 +59,10 @@ peer=0
 reply="$(printf '{"jsonrpc":"2.0","id":1,"method":"ping"}\n' | nc -U -w 5 "$home/computerd.sock" 2>&1 || true)"
 if [[ "$reply" == *"refused this client"* ]]; then echo "PASS the socket refuses a client not signed as Computerd"; else echo "FAIL the socket answered an unsigned client: $reply"; peer=1; fi
 
+# macOS 26 raises its screen capture alert for Computerd on its first capture, over every window: the ui fixture could
+# not come in front of it (ui.fixture-shape), and every demo's movie had it painted over. Raised and answered first.
+python3 -I "$here/mini-demos.py" "$app/Contents/Helpers/computerd" "$home" "$home/demos" --answer-alerts || echo "the system alerts were not answered: see above"
+
 # The protocol's conformance cases, on the same running app (a missing build fails the run).
 conformance=0
 if [[ -f "$here/../../dist/conformance/cli.js" ]]; then
