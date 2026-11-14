@@ -2,6 +2,7 @@
 // its workflow.json, oldest first, each with who made it, when, why and the text it had then; the latest `limit` of them;
 // a workflow no commit changed is 404; a README-only commit (a retire, an approval) is no revision of its workflow.json.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -49,6 +50,9 @@ test("a learned workflow's revisions: oldest first with the text each had, by ru
   assert.deepEqual(schemaProblems(doc, schema, all.body), []);
   assert.deepEqual(all.body.revisions.map((r) => [r.commit, r.by, r.text && JSON.parse(r.text)]), [[first, { run: "run-1" }, v1], [second, { run: "run-3" }, v2], [third, { user: true }, v3]], "oldest first; the README commit and the other note's commit are no revisions");
   assert.deepEqual([all.body.name, all.body.total, all.body.truncated], ["answer", 3, false]);
+  // Each revision's digest is its file's (workflow-first.ts workflowDigest): what runs' metrics and promotion records name it by.
+  assert.deepEqual(all.body.revisions.map((r) => r.digest), all.body.revisions.map((r) => createHash("sha256").update(r.text).digest("hex").slice(0, 16)));
+  assert.equal(new Set(all.body.revisions.map((r) => r.digest)).size, 3);
   assert.match(all.body.revisions[0].reason, /It does the job again\./);
   assert.ok(Date.parse(all.body.revisions[0].at) > 0);
 
