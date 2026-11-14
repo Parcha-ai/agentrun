@@ -741,8 +741,8 @@ test("a store holding two answers to one approval is refused migration 0003 in w
   await store.close();
   // The store as a build before 0003 left it, after an approve and a deny of call-1 raced and both were written; call-2 has
   // one answer, which the migration keeps as it is. Every migration from 0003 on is unrecorded, so the open applies them
-  // again from 0003 (0004 on runs.outcome's check, 0007's computer_viewers.host and 0008's tables, made only where
-  // missing, run twice unharmed; 0009's column is dropped, as a build before it left it).
+  // again from 0003 (0004 on runs.outcome's check, 0007's computer_viewers.host, 0008's tables, 0010's imported_templates and 0011's
+  // revisions.mcp_pin, made only where missing, run twice unharmed; 0009's column is dropped, as a build before it left it).
   await sql(schema, "DROP INDEX commands_one_answer");
   await sql(schema, "ALTER TABLE commands DROP COLUMN answer");
   await sql(schema, "DELETE FROM schema_migrations WHERE version >= 3");

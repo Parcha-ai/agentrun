@@ -1,7 +1,7 @@
 // A claimed run's remote MCP servers on the runner (tl-mcp's note, sections 4 to 6). A spec builder calls mcpForClaim once
 // per claim, inside the adapter loop's spec step: after the loop's Gate and Harness are open, before its session. It runs
-// the claim step (mcp-claim.ts: the pin made at the first claim or read as written, checked against the meta tools known
-// now, the pinned servers' credentials opened into this claim's memory) and builds ONE gateway (mcp-gateway.ts) for the
+// the claim step (mcp-claim.ts: the pin its revision's save made, read and checked against the meta tools known now, the
+// pinned servers' credentials opened into this claim's memory) and builds ONE gateway (mcp-gateway.ts) for the
 // claim, never shared with another, reading those credentials live. The builder puts what it returns in its spec
 // (AdapterRunSpec.mcp); the loop does the rest:
 // - one host tool per pinned tool (`tools`), under its wire name with the pinned description and schema, for every
@@ -24,6 +24,7 @@ import type { Store, TriggerSettings } from "../store/index.js";
 import { type ApprovalPrice, mcpToolName } from "../tool-gate.js";
 import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
+import { registryListing } from "../mcp-pin-first.js";
 import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
 
 /** The GitHub App access for a claim (runner/github-app.ts githubAppAccess, tl-triggers'): the server's App, read from
@@ -34,8 +35,9 @@ export interface McpForClaimOptions {
   /** The claim this pass holds: the pin is written under its fence, and a refresh is confirmed against its epoch. */
   readonly claim: Claim;
   /** The one store: the registry's rows, the run's pin row and its run row (the epoch), the GitHub App's settings, and
-   *  where it is (Store.where: the claims waiting on a server's refresh lease meet by it). */
-  readonly store: Pick<Store, "mcp" | "runs" | "settings" | "triggerSettings" | "where">;
+   *  where it is (Store.where: the claims waiting on a server's refresh lease meet by it); for a run whose revision has
+   *  no pin, its revision and the registry a listing reads (its sign-in state, flush). */
+  readonly store: Pick<Store, "mcp" | "mcpOauth" | "runs" | "settings" | "triggerSettings" | "where" | "agents" | "flush">;
   /** The runner's seal key (the server's): always present (seal-key.ts boots one before any claim), so the claim's sealed
    *  credentials always open; there is no no-seal-key path here (E6). */
   readonly sealKey: Buffer;
@@ -83,7 +85,7 @@ export interface ClaimMcp {
   release(): void;
 }
 
-/** The run's MCP for one claim: undefined when it grants no MCP tool. Throws McpClaimRefused (a pin that cannot be made,
+/** The run's MCP for one claim: undefined when it grants no MCP tool. Throws McpClaimRefused (a granted tool its pin lacks,
  *  a pinned tool that is a meta tool now: the loop ends the run in those words, before its session opens) or Fenced (the
  *  claim lost while a refresh was awaited: the loop ends interrupted). A builder calls it before it takes anything it
  *  would have to let go, since a throw here leaves its spec unbuilt and its release uncalled. */
@@ -100,6 +102,8 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       grants: options.grants,
       sealKey: options.sealKey,
       signal: held.signal,
+      // A run whose revision has no pin (one made before the upgrade) pins it here, listing as a save does.
+      pinListing: registryListing(options.store, options.sealKey, { loopback: options.loopback === true, ...(options.network ? { network: options.network } : {}), ...(githubApp ? { githubApp } : {}), ...(options.githubMcpOrigin ? { appOrigin: options.githubMcpOrigin } : {}) }),
       ...(options.bounds ? { bounds: options.bounds } : {}),
       ...(options.network ? { network: options.network } : {}),
       ...(options.loopback ? { loopback: true } : {}),

@@ -7,7 +7,7 @@
 //   - a newer set landed first: our keep is dropped, nothing written, its server named in the log and no token in it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { queued, storeOn, T0 } from "./store-helpers.mjs";
+import { queued, registryPin, storeOn, T0 } from "./store-helpers.mjs";
 
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 const { sealMcpCredential } = await import("../dist/store/index.js");
@@ -107,8 +107,8 @@ function heldKeep(store) {
 async function setUp(t) {
   const opened = await storeOn(t);
   await opened.store.mcp.put({ name: "fake", url: MCP_URL, auth: "bearer", tools: [ADD], sealed: sealedSet(EXPIRED()) });
-  await queued(opened.store, "run-1");
-  await queued(opened.store, "run-2");
+  await queued(opened.store, "run-1", { mcpPin: await registryPin(opened.store) });
+  await queued(opened.store, "run-2", { mcpPin: await registryPin(opened.store) });
   const one = await opened.store.claim("run-1", "runner-a", { leaseMs: 600_000 });
   const two = await opened.store.claim("run-2", "runner-b", { leaseMs: 600_000 });
   return { ...opened, one, two };

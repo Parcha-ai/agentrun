@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { queued, storeOn } from "./store-helpers.mjs";
+import { queued, registryPin, storeOn } from "./store-helpers.mjs";
 
 const { githubAppAccess } = await import("../dist/runner/github-app.js");
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
@@ -109,7 +109,7 @@ test("a claimed run whose agent grants a github_app server's tools gets the App'
   t.after(() => fake.close());
   const ADD = { name: "add", title: "Add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } };
   await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [ADD], sealed: null });
-  await queued(store, "run-1");
+  await queued(store, "run-1", { mcpPin: await registryPin(store) });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const content = 'Review it.\n\n<trigger-payload source="github" installation="777" repo="acme/widgets" number="7">{}</trigger-payload>';
   const githubApp = await githubAppAccess(store, KEY, { content }, { api: github.api, fromGitHub: true });
@@ -234,7 +234,7 @@ async function claimedGitHub(t, { failSame } = {}) {
   t.after(() => fake.close());
   const ADD = { name: "add", title: "Add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } };
   await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [ADD], sealed: null });
-  await queued(store, "run-1");
+  await queued(store, "run-1", { mcpPin: await registryPin(store) });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const work = mkdtempSync(join(tmpdir(), "github-app-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));

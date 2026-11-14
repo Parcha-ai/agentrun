@@ -169,7 +169,8 @@ test("on the runner, a pinned server whose name resolves to a private address at
   const { store, dir } = await storeOn(t);
   const url = "https://mcp.example.test/mcp";
   await store.mcp.put({ name: "corp", url, auth: "none", tools: [{ name: "add", input_schema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }], sealed: null });
-  await queued(store, "run-1");
+  // The revision as its save pinned it: the granted tool, the server's URL then.
+  await queued(store, "run-1", { mcpPin: { corp: { url, tools: [{ name: "add", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }] } } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:corp/add"], harness: { commit: async () => undefined }, work: () => dir, network });
   t.after(() => mcp.release());
@@ -194,19 +195,19 @@ test("on the runner, a pinned server whose name resolves to a private address at
   assert.deepEqual(await call("call-4"), { text: `The MCP server corp's address is refused here: the MCP server at mcp.example.test is a private address; refused. Nothing was sent.`, isError: true });
 });
 
-test("on the runner, a server whose saved URL carries a credential in its query ends the claim before it is pinned or anything sent, its URL never named", async (t) => {
+test("on the runner, a server whose saved URL carries a credential in its query ends the claim before anything is sent, its URL never named", async (t) => {
   const fake = await startFakeMcp();
   t.after(() => fake.close());
   const { store, dir } = await storeOn(t);
   const secret =`not-a-secret-${"pinned-query"}`;
   await store.mcp.put({ name: "old", url: `${fake.url}?api_key=${secret}`, auth: "none", tools: [{ name: "add", input_schema: { type: "object" } }], sealed: null });
-  await queued(store, "run-1");
+  // A revision saved before a save refused such a URL: its pin holds it.
+  await queued(store, "run-1", { mcpPin: { old: { url: `${fake.url}?api_key=${secret}`, tools: [{ name: "add", inputSchema: { type: "object" } }] } } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   await assert.rejects(mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: ["mcp:old/add"], harness: { commit: async () => undefined }, work: () => dir }), (error) => {
     assert.equal(error.message, "The MCP server old can't be used: api_key in the URL's query looks like a credential; send it as a header instead (Headers). Nothing was sent.");
     return true;
   });
-  assert.ok(!(await store.mcp.pin("run-1")), "nothing pinned");
   assert.equal(fake.log.length, 0, "nothing sent");
 });
 
@@ -217,7 +218,7 @@ test("two runners on one store, one beside a local install and one not: a server
   await store.mcp.put({ name: "local", url: fake.url, auth: "none", tools: [{ name: "add", input_schema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }], sealed: null });
   /** run `runId`'s add, on a runner told (or not) that the server beside it is a local install. */
   const addOn = async (runId, runner, loopback) => {
-    await queued(store, runId);
+    await queued(store, runId, { mcpPin: { local: { url: fake.url, tools: [{ name: "add", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }] } } });
     const claim = await store.claim(runId, runner, { leaseMs: 60_000 });
     const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:local/add"], harness: { commit: async () => undefined }, work: () => dir, ...(loopback === undefined ? {} : { loopback }) });
     t.after(() => mcp.release());

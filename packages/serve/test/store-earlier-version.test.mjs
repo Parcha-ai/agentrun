@@ -104,3 +104,50 @@ test("an empty data directory, one not made yet, and one holding this version's 
   const made = await openSqliteStore({ dataDir: fresh, role: "server" });
   await made.close();
 });
+
+test("a store an earlier build of this version made (no revisions.mcp_pin, a per-run mcp_pins table) opens: the server adds the column and drops the table, an earlier revision has no pin, and a revision saved after pins", async (t) => {
+  const dir = dataDir(t);
+  const first = await openSqliteStore({ dataDir: dir, role: "server" });
+  await first.agents.create({ id: "agent-old", name: "agent-old" }, { id: "rev-old", kind: "agentic", body: { instructions: "Answer." } });
+  await first.runs.create({ id: "run-old", agentId: "agent-old", revisionId: "rev-old" });
+  await first.close();
+  // The earlier build's shape: version 11, revisions without mcp_pin, and each run's pin in mcp_pins (as main had it).
+  const raw = new DatabaseSync(join(dir, "store.sqlite"));
+  try {
+    raw.exec("ALTER TABLE revisions DROP COLUMN mcp_pin");
+    raw.exec("CREATE TABLE mcp_pins (run_id TEXT PRIMARY KEY REFERENCES runs (id), body TEXT NOT NULL CHECK (body IS NULL OR json_valid(body)), pinned_at INTEGER NOT NULL) STRICT");
+    raw.prepare("INSERT INTO mcp_pins (run_id, body, pinned_at) VALUES (?, ?, ?)").run("run-old", JSON.stringify({ fake: { url: "http://127.0.0.1:1/mcp", tools: [{ name: "add" }] } }), 1);
+    raw.exec("UPDATE store_meta SET schema_version = 11 WHERE singleton = 1");
+  } finally {
+    raw.close();
+  }
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  try {
+    const check = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true });
+    try {
+      assert.equal(check.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get().schema_version, 11, "the store stays at version 11");
+      const column = check.prepare("SELECT name, type, \"notnull\" FROM pragma_table_info('revisions') WHERE name = 'mcp_pin'").get();
+      assert.deepEqual({ ...column }, { name: "mcp_pin", type: "TEXT", notnull: 0 }, "the open adds revisions.mcp_pin, nullable TEXT");
+      assert.equal(check.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table' AND name = 'mcp_pins'").get().n, 0, "the open drops mcp_pins");
+    } finally {
+      check.close();
+    }
+    assert.equal((await store.mcp.pin("run-old")) ?? null, null, "a revision saved before has no pin: its first run pins it (Agents.pinOnce)");
+    const pin = { fake: { url: "http://127.0.0.1:1/mcp", tools: [{ name: "add", inputSchema: { type: "object" } }] } };
+    await store.agents.create({ id: "agent-new", name: "agent-new" }, { id: "rev-new", kind: "agentic", body: { instructions: "Answer." }, mcpPin: pin });
+    await store.runs.create({ id: "run-new", agentId: "agent-new", revisionId: "rev-new" });
+    assert.deepEqual((await store.mcp.pin("run-new"))?.body, pin, "a revision saved after the open pins");
+  } finally {
+    await store.close();
+  }
+  // The column is json-checked as the DDL's is.
+  const bad = new DatabaseSync(join(dir, "store.sqlite"));
+  try {
+    assert.throws(() => bad.prepare("UPDATE revisions SET mcp_pin = 'not json' WHERE id = 'rev-old'").run(), /CHECK constraint failed/, "a non-JSON pin is refused");
+  } finally {
+    bad.close();
+  }
+  // A second open finds the column and adds nothing.
+  const again = await openSqliteStore({ dataDir: dir, role: "server" });
+  await again.close();
+});

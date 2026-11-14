@@ -1,7 +1,7 @@
 // The MCP registry and each run's pin in the store (store.mcp): the server writes the registry rows (a server's url, auth,
 // listed tools, prices and its credential, sealed: bytes the store never opens), and a runner reads them at its claim. A
-// run's pin is written once, under the claim, in one transaction with the claim's epoch fence (insert-if-absent): a stale
-// claim writes nothing, and a later claim reads the pin as written. A token refresh is one write that re-reads the row:
+// run's pin is its revision's, written with the revision when the agent is saved (one insert, never later): every run of
+// it, at every claim, reads that pin, and no claim writes one. A token refresh is one write that re-reads the row:
 // when another claim refreshed it first (the row changed since it was read), it is skipped and the newer row returned. A
 // conditional save (putIfCredential) writes only while the row's credential is the one its writer read.
 import assert from "node:assert/strict";
@@ -12,7 +12,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const { mcpServersOverStore } = await import("../dist/mcp-servers-store.js");
 const { openMcpCredential, sealMcpCredential } = await import("../dist/store/index.js");
-const { Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, STORE_WRITE_DEADLINE_MS, StoreConstraint } = await import("../dist/store/index.js");
+const { MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, STORE_WRITE_DEADLINE_MS, StoreConstraint } = await import("../dist/store/index.js");
 
 const SEALED = Uint8Array.from([1, 2, 3, 4, 250]);
 const SERVER = { name: "github", url: "https://mcp.example.com/github", auth: "oauth", protocol: "2025-06-18", tools: [{ name: "create_issue", grantable: true }], prices: { create_issue: 0.01 }, sealed: SEALED };
@@ -76,30 +76,34 @@ test("a conditional removal deletes the row only while its credential is the one
   assert.equal(await store.mcp.removeIfCredential("github", read), undefined, "gone: nothing to delete");
 });
 
-test("a run's pin is written once under its claim: a second pinOnce reads the first, a later claim reads it as written", async (t) => {
-  const { store } = await storeOn(t);
-  await queued(store);
-  assert.equal(await store.mcp.pin("run-1"), undefined, "no pin before the first claim");
-  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
-  const first = await store.mcp.pinOnce(claim, { github: { url: SERVER.url, tools: ["create_issue"] } });
-  assert.deepEqual(first.body, { github: { url: SERVER.url, tools: ["create_issue"] } });
-  const second = await store.mcp.pinOnce(claim, { github: { url: "https://elsewhere.example", tools: [] } });
-  assert.deepEqual(second, first, "never rewritten");
-  await store.release(claim);
-  const later = await store.claim("run-1", "runner-b", { leaseMs: 30_000 });
-  assert.deepEqual(await store.mcp.pinOnce(later, { other: {} }), first, "a later claim reads it as written");
-  assert.deepEqual(await store.mcp.pin("run-1"), first);
+test("a run's pin is its revision's, written with the revision at its save: every run of it reads that pin, a revision saved with none has no pin row", async (t) => {
+  const { store, clock } = await storeOn(t);
+  const pin = { github: { url: SERVER.url, tools: [{ name: "create_issue", inputSchema: { type: "object" } }], prices: { create_issue: 0.01 } } };
+  await queued(store, "run-1", { mcpPin: pin });
+  const savedAt = clock.now;
+  clock.now += 5_000;
+  await store.runs.create({ id: "run-2", agentId: "agent-run-1", revisionId: "rev-run-1" });
+  assert.deepEqual(await store.mcp.pin("run-1"), { runId: "run-1", body: pin, pinnedAt: savedAt });
+  assert.deepEqual(await store.mcp.pin("run-2"), { runId: "run-2", body: pin, pinnedAt: savedAt }, "another run of the same revision: the same pin, saved when the revision was");
+  assert.deepEqual((await store.agents.revision("rev-run-1")).mcpPin, pin, "the revision keeps it");
+  await queued(store, "run-3");
+  assert.equal(await store.mcp.pin("run-3"), undefined, "a revision saved with no pin");
+  assert.equal((await store.agents.revision("rev-1")).mcpPin, null);
+  assert.equal(await store.mcp.pin("run-none"), undefined, "no such run");
 });
 
-test("a stale claim's pinOnce is refused (Fenced) and writes no pin", async (t) => {
-  const { store, clock } = await storeOn(t);
-  await queued(store);
-  const stale = await store.claim("run-1", "runner-a", { leaseMs: 1_000 });
-  clock.now += 2_000;
-  const current = await store.claim("run-1", "runner-b", { leaseMs: 30_000 });
-  assert.equal(current.epoch, 2);
-  await assert.rejects(store.mcp.pinOnce(stale, { github: {} }), Fenced);
-  assert.equal(await store.mcp.pin("run-1"), undefined, "nothing written");
+test("a new revision carries its own pin, and an inline run's revision its first use's: a run reads the pin of the revision it runs", async (t) => {
+  const { store } = await storeOn(t);
+  const before = { github: { url: SERVER.url, tools: [{ name: "create_issue", inputSchema: { type: "object" } }] } };
+  const after = { github: { url: SERVER.url, tools: [{ name: "create_issue", description: "Open an issue.", inputSchema: { type: "object" } }] } };
+  await queued(store, "run-1", { mcpPin: before });
+  await store.agents.addRevision({ agentId: "agent-run-1", id: "rev-2", kind: "agentic", body: { instructions: "Answer." }, mcpPin: after, ifCurrent: "rev-run-1" });
+  await store.runs.create({ id: "run-2", agentId: "agent-run-1", revisionId: "rev-2" });
+  assert.deepEqual((await store.mcp.pin("run-1")).body, before, "the earlier revision's run keeps its pin");
+  assert.deepEqual((await store.mcp.pin("run-2")).body, after);
+  const launch = { body: { input: { content: "go" }, title: "go", place: { mode: "runner" } } };
+  await store.runs.createInline({ agent: { id: "agent-inline", name: "inline", ref: "grep:expert:1" }, revision: { id: "rev-inline", version: "1", kind: "agentic", body: { instructions: "Answer." }, skills: {}, mcpPin: after }, run: { id: "run-3" }, launch });
+  assert.deepEqual((await store.mcp.pin("run-3")).body, after, "the inline revision's pin");
 });
 
 test("two claims refreshing one expired token at once make one network refresh, and both get the holder's set", async (t) => {

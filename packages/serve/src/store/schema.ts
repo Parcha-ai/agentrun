@@ -8,7 +8,10 @@
 // run-change feed (run_changes), each channel post's tries (channel_attempts) and the claim a post's try settles under
 // (channel_posts.claim); version 9 adds where a live viewer answers (computer_viewers.host, a runner's live host,
 // live-reach.ts); version 10 pairs a person's own computer (paired_computers, pairing_codes); version 11 keeps a command's answer
-// (commands.answer). The template packages imported from GitHub (imported_templates) are a table of their own that nothing
+// (commands.answer). An agent's MCP tools are pinned on its revision when it is saved (revisions.mcp_pin, REVISIONS_MCP_PIN),
+// in place of each run's pin at its first claim (the mcp_pins table): a server open adds the column to a store an earlier
+// build of this version made and drops the table, so a revision saved before has no pin until its first run pins it.
+// The template packages imported from GitHub (imported_templates) are a table of their own that nothing
 // else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
 // (IMPORTED_TEMPLATES), as it does the one-answer index.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
@@ -18,7 +21,7 @@
 // STORE_DDL is the control plane and the runs: agents and revisions (with a template's package), runs (state, the claim's
 // epoch, runner, claimed_until and wake_at, cost, metrics, summary), commands, idempotency, triggers (their scopes,
 // firings, conversations and settings), the channel outbox and told ledger, the review ledger, settings, sealed keys,
-// learning state, the MCP registry, pending MCP sign-ins, each run's MCP pin, and the computer ledger. PI_DDL is pi-durable's
+// learning state, the MCP registry, pending MCP sign-ins, and the computer ledger. PI_DDL is pi-durable's
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
@@ -33,6 +36,10 @@ export const ONE_ANSWER_INDEX = "commands_one_answer";
 export const COMMANDS_ONE_ANSWER = `CREATE UNIQUE INDEX IF NOT EXISTS ${ONE_ANSWER_INDEX} ON commands (run_id, json_extract(body, '$.approval')) WHERE kind IN ('approve', 'deny') AND refused IS NULL`;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
+
+/** A revision's MCP pin, as its save listed the tools (JSON, null when it grants no MCP tool). In STORE_DDL, and added at a
+ *  server open to a store an earlier build of this version made (one that pinned each run in mcp_pins, dropped at that open). */
+export const REVISIONS_MCP_PIN = `ALTER TABLE revisions ADD COLUMN ${json("mcp_pin", true)}`;
 
 /** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
  *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read
@@ -77,6 +84,8 @@ export const STORE_DDL: readonly string[] = [
   // read and copied whole with its files. Null is none (a revision with no skills).
   // `parent_id`: the revision that was the agent's current one when this revision was committed (null for its first), kept
   // for the v2 revisions view. `note`: the optional note a revision was committed with (the v2 note), null for none.
+  // `mcp_pin`: the MCP tools the revision grants, as their servers listed them when it was saved (mcp-gateway.ts McpPin:
+  // per server its URL then, the granted tools, their prices), which every run of it calls; null when it grants none.
   `CREATE TABLE IF NOT EXISTS revisions (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents (id),
@@ -87,7 +96,8 @@ export const STORE_DDL: readonly string[] = [
     ${json("package", true)},
     note TEXT,
     external_version TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    ${json("mcp_pin", true)}
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS revisions_by_agent ON revisions (agent_id, created_at)`,
   // `external_version`: for a revision of an externally owned agent, the version it maps there (one revision per version),
@@ -441,11 +451,6 @@ export const STORE_DDL: readonly string[] = [
     -- The sign-in's non-secret working state the callback rebuilds (url, was, scope, kind, discovery, resource): no secret.
     ${json("working", true)},
     expires_at INTEGER NOT NULL
-  ) STRICT`,
-  `CREATE TABLE IF NOT EXISTS mcp_pins (
-    run_id TEXT PRIMARY KEY REFERENCES runs (id),
-    ${json("body")},
-    pinned_at INTEGER NOT NULL
   ) STRICT`,
 
   // A run's launch record: the one body the server writes when it starts a run (start = INSERT run), read by the runner at

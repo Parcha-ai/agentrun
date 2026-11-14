@@ -188,12 +188,14 @@ test("a github_app run's MCP call carries an installation token the runner minte
   await reader.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [add], sealed: null });
   const again = await serve(t, { data: server.data, publicUrl: PUBLIC, githubApi: server.github.url, githubMcpOrigin, faux: FAUX_MCP, harnesses: true });
   assert.equal((await again.api("POST", "/agents", agent("review", { tools: ["mcp:gh/add"], tool_settings: { "mcp:gh/*": { permission: "allow" } } }))).status, 201);
+  // The save listed the server to pin its tools, on a token of its own; the run's are the ones minted after it.
+  const atSave = server.github.tokens.length;
   const run = await again.api("POST", "/agents/review/runs", { input: { content: 'Call mcp__gh__add with {"a":2,"b":3}\n\nThe repository is https://github.com/acme/widgets.' }, max_cost_usd: 1 });
   assert.ok([201, 202].includes(run.status), JSON.stringify(run.body));
   const { last } = await follow(again.api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   const answer = (await again.api("GET", `/runs/${run.body.run_id}`)).body.result?.final_answer;
   assert.deepEqual([last.status, answer], ["completed", "The tool said: 5"]);
-  const tokens = server.github.tokens.filter((entry) => entry.repositories);
+  const tokens = server.github.tokens.slice(atSave).filter((entry) => entry.repositories);
   assert.deepEqual(tokens.map((entry) => [entry.installation, entry.repositories]), [[777, ["widgets"]]], "minted once, for the run's repository");
   assert.ok(seen.includes(`Bearer ${tokens[0].token}`), "the MCP server got it");
 });

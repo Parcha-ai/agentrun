@@ -193,6 +193,29 @@ export class McpServersOverStore {
     return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop), stop));
   }
 
+  /** What an agent's save pins of the saved server `name` (mcp-gateway.ts mcpPinOf): its URL, its tools as it lists them
+   *  now (listed once, with its saved credential, as a preview by name lists them; nothing stored), each marked grantable
+   *  or not (mcp-meta.ts), and its owner's prices for those still listed. Undefined when no server of that name is saved.
+   *  A server whose credential is not this server's to send (per_run, each run hands its own) or whose access token only a
+   *  run refreshes (oauth) and that refuses the listing for its credential is pinned as its owner's last save or refresh
+   *  listed it, with the credential it had then. Any other failure is the ApiError the listing threw, in its words. */
+  async pinListing(name: string, stop?: AbortSignal): Promise<{ url: string; tools: (McpTool & { grantable?: false; reason?: string })[]; prices: McpPrices } | undefined> {
+    const row = await this.store.mcp.server(name);
+    if (!row) return undefined;
+    const url = new URL(row.url);
+    const pinned = (tools: McpTool[]) => {
+      const listed = marked(row.url, { tools });
+      return { url: row.url, tools: listed.tools, prices: pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools) };
+    };
+    const send = await this.reached(row.auth, url, stop);
+    try {
+      return pinned((await this.listServer(url, await this.withAppToken(row.auth, url, (await this.opened(name, row, "name")).headers, stop), send, stop)).tools);
+    } catch (error) {
+      if ((row.auth === "per_run" || row.auth === "oauth") && error instanceof ApiError && error.code === "auth_required") return pinned((row.tools as McpTool[]) ?? []);
+      throw error;
+    }
+  }
+
   /** `listing`, and when it is refused as a server that signs in with OAuth (auth_required, `auth: oauth`), whether that
    *  sign-in can start with no Client ID entered (`details.oauth.registration`, McpSignIns.registration), so the console
    *  asks for one up front. `stop`: the preview's, which cuts that discovery too. */
