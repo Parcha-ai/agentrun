@@ -194,6 +194,22 @@ final class EngineTests: XCTestCase {
 		XCTAssertNil(platform.marks.scene(now: os.with { $0.now } + Marks.pointerMs + Marks.fadeMs), "the pointer fades")
 	}
 
+	func testAClickScrolledIntoViewMarksWhereItLanded() async throws {
+		let platform = os.platform()
+		let engine = UIEngine(platform: platform, policy: Policy())
+		let r = try await engine.observe(UiObserveParams())
+		// Hello sits below the window's visible area until it is scrolled to.
+		os.with { $0.elements[5]!.frame = Rect(120, 700, 100, 20) }
+		os.react = { entry, os in
+			if entry == "ax.scrolltovisible 5" { os.with { $0.elements[5]!.frame = Rect(120, 300, 100, 20) } }
+		}
+		_ = try await engine.act(UiActParams(steps: [.click(.ref(ref(r, "Hello")), button: nil, count: nil)]))
+		XCTAssertTrue(os.entries.contains("ax.scrolltovisible 5"), "\(os.entries)")
+		let scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(170, 310), "the mark is where the click landed, after the scroll")
+		XCTAssertNotNil(scene.ring)
+	}
+
 	func testPressWithoutAnActionClicksInTheBackground() async throws {
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())

@@ -1284,7 +1284,11 @@ class Serve:
 
     def pair(self):
         """Computerd paired with this server for the run, its policy first: the six apps, and the screen. The owner's
-        policy as it was is kept, and put back by close."""
+        policy as it was is kept, and put back by close. A Mac already paired with a server is refused before anything
+        changes: pairing again would replace its token, and close's unpair would leave it paired with nothing."""
+        attach = os.path.join(home, "attach.json")
+        if os.path.exists(attach):
+            raise Failed(f"this Mac is paired with a server ({attach}): --agent pairs it with its own, and would drop that pairing; run it where Computerd is not paired")
         policy = os.path.join(home, "policy.json")
         self.policy = open(policy, "rb").read() if os.path.exists(policy) else b""
         with open(policy, "w") as f:
@@ -1395,8 +1399,6 @@ def agent_run(t, serve, model, prompt):
                 words = first_sentence(row.get("text") or row.get("summary"))
                 if kind == "final_answer":
                     did["answer"] = (row.get("text") or "")[:400]
-            elif kind == "usage":
-                did["usd"] = (row.get("usage") or {}).get("usd")
             if kind in ("tool_use", "text_block", "final_answer", "error"):
                 print(f"    [{kind}] {(row.get('tool_input_preview') if kind == 'tool_use' else words) or ''}".replace("\n", "\n      "), flush=True)
             if words and t.rec:
@@ -1409,6 +1411,12 @@ def agent_run(t, serve, model, prompt):
         if time.monotonic() > deadline:
             serve.api("POST", f"/runs/{run}/cancel", {})
             raise Failed(f"the agent's run {run} did not end in 10 minutes")
+    # The cost from the ended run's whole timeline: its usage row keeps its id as the cost grows, and a page after the
+    # row was first read may not carry it again.
+    _, whole = serve.api("GET", f"/runs/{run}/timeline", timeout=30)
+    usage = [row for row in (whole or {}).get("rows") or [] if row.get("kind") == "usage"]
+    if usage:
+        did["usd"] = (usage[-1].get("usage") or {}).get("usd")
     t.notes.append(f"agent: {model_name(model)}, run {run} {did['status']}, {did['scripts']} scripts, {did['computerCalls']} computer calls"
                    + (f", ${did['usd']:.3f}" if isinstance(did["usd"], (int, float)) else ""))
     t.agent = did
@@ -1459,13 +1467,13 @@ def agent_notes(t):
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_FOLDER, NAME], "make the task's folder")
     title, line = f"{NAME} groceries", "Oat milk and eggs"
     count = """on run argv
-  tell application "Notes" to return count (notes of folder (item 1 of argv) whose name is (item 2 of argv))
+  tell application "Notes" to return count (notes of folder (item 1 of argv) whose name is (item 2 of argv) and plaintext contains (item 3 of argv))
 end run"""
 
     def check():
-        if (got := poll("the note", lambda: t.run_exec(["/usr/bin/osascript", "-e", count, NAME, title], "count the note").strip(), "1")) != "1":
-            raise Failed(f"the task's folder holds {got} notes titled {title!r}, not 1")
-        t.notes.append(f"the note \"{title}\" is in the task's folder")
+        if (got := poll("the note", lambda: t.run_exec(["/usr/bin/osascript", "-e", count, NAME, title, line], "count the note").strip(), "1")) != "1":
+            raise Failed(f"the task's folder holds {got} notes titled {title!r} with the line {line!r}, not 1")
+        t.notes.append(f"the note \"{title}\" with its line is in the task's folder")
     return f"In Notes, write a new note in the folder \"{NAME}\": its first line \"{title}\", its second line \"{line}\".", check
 
 
@@ -1475,14 +1483,16 @@ def agent_calendar(t):
     t.inspector = True  # the teardown closes an inspector the agent left open, before it deletes the calendar
     title = event_title(RUN)
     count = """on run argv
-  tell application "Calendar" to return count (events of calendar (item 1 of argv) whose summary is (item 2 of argv))
+  set today to current date
+  set time of today to 0
+  tell application "Calendar" to return count (events of calendar (item 1 of argv) whose summary is (item 2 of argv) and start date ≥ today and start date < today + 1 * days)
 end run"""
 
     def check():
         if (got := poll("the event", lambda: t.run_exec(["/usr/bin/osascript", "-e", count, NAME, title], "count the event").strip(), "1")) != "1":
             where = f"; the calendars holding it: {osa(t.c, EVENT_CALENDARS, title).strip() or 'none'}" if CI else ""
-            raise Failed(f"the task's calendar holds {got} events titled {title!r}, not 1{where}")
-        t.notes.append(f"the event \"{title}\" is in the task's calendar")
+            raise Failed(f"the task's calendar holds {got} events titled {title!r} today, not 1{where}")
+        t.notes.append(f"the event \"{title}\" is in the task's calendar, today")
     return f"In Calendar, add an event titled \"{title}\" today, in the calendar \"{NAME}\".", check
 
 
@@ -1492,7 +1502,10 @@ def agent_settings(t):
     def check():
         if version not in ((t.agent or {}).get("answer") or ""):
             raise Failed(f"the agent's answer does not name macOS {version}: {(t.agent or {}).get('answer')!r}")
-        t.notes.append(f"the agent read macOS {version} from About")
+        # Back on General: its list (Software Update) shows, which About's page does not.
+        if not find(t.observe("check: back on General")["nodes"], name="Software Update"):
+            raise Failed("System Settings is not back on General: no Software Update on screen")
+        t.notes.append(f"the agent read macOS {version} from About, and went back to General")
     return "In System Settings, open General, then About, and tell me which macOS version this Mac runs. Then go back to General.", check
 
 

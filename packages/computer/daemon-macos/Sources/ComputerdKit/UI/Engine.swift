@@ -790,7 +790,11 @@ public actor UIEngine {
 		}
 		if !target.window.bounds.contains(frame.center) {
 			try? ax.scrollToVisible(element)
-			if let moved = ax.frame(element) { frame = moved }
+			if let moved = ax.frame(element) {
+				frame = moved
+				// The step's mark was read before the scroll: it follows the element to where the pointer goes.
+				platform.marks.move(to: moved.center, box: moved)
+			}
 		}
 		guard target.window.bounds.contains(frame.center) else {
 			throw RouteUnavailable("\(ref) is outside its window's visible area: scroll to it first")

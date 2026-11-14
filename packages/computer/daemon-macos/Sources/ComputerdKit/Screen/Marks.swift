@@ -59,6 +59,15 @@ public final class Marks: @unchecked Sendable {
 		last = Mark(at: now, point: point, kind: kind, box: box)
 	}
 
+	/// The last step's place moved, its time and kind kept: an element scrolled into view after it was marked. Its box,
+	/// when it had one, is the element's new frame.
+	public func move(to point: Point, box: Rect?) {
+		lock.lock()
+		defer { lock.unlock() }
+		guard let mark = last else { return }
+		last = Mark(at: mark.at, point: point, kind: mark.kind, box: mark.box == nil ? nil : box)
+	}
+
 	/// The last step's place, for a step that names no place of its own (a key to the window's focus).
 	public var lastPoint: Point? {
 		lock.lock()
