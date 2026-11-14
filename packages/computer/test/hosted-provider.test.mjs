@@ -622,6 +622,18 @@ test("release is bounded by goneMs and the caller's signal while it waits, sayin
 	assert.match(slow.error.message, /read it running/);
 });
 
+test("release waits until get answers none: a machine the vendor still reads gone after its delete (being destroyed) holds the wait", async () => {
+	const { provider, fake } = setup({}, { lingers: { reads: 3, lists: 0, state: "gone" } });
+	const ref = made(await create(provider));
+	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
+	assert.equal(only(fake).lingering.reads, 0, "release did not end while the vendor still read the machine gone");
+	await nothingLeft(fake, "release");
+	const slow = setup({}, { lingers: { reads: 10_000, lists: 0, state: "gone" } });
+	const stuck = await slow.provider.release(made(await create(slow.provider)), "delete");
+	assert.equal(stuck.error?.code, "timeout", "a machine read gone and never none is still there at goneMs");
+	assert.match(stuck.error.message, /read it gone/);
+});
+
 test("release never touches a machine that is not this provider's, and refuses stop and detach in words", async () => {
 	const { provider, fake } = setup();
 	const stranger = fake.add({ labels: { team: "x" } });

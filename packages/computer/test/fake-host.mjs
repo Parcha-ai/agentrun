@@ -87,7 +87,8 @@ const START = Date.now();
  *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
  *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager does not start) or
  *    "manager dies" (it ends at once);
- *  - lingers: { reads, lists } after a delete; fileApi: false for a host with no upload;
+ *  - lingers: { reads, lists, state } after a delete, a lingering read in state (running unless given); fileApi: false
+ *    for a host with no upload;
  *  - timer: "ok" (extend moves the end and the deadline label: the vendor's timer, or with lifetime janitor the label
  *    alone, rounded up to a whole second), "limit" (extend throws a HostError limit, nothing moves), or "none" (a host
  *    with no extend);
@@ -504,7 +505,7 @@ export function fakeHost({
 			await step("get", ctx, m);
 			if (m?.deleted && m.lingering?.reads > 0) {
 				m.lingering.reads--;
-				return { ...view(m), state: "running" };
+				return { ...view(m), state: m.lingering.state };
 			}
 			if (gone(m)) return undefined;
 			if (m.startingReads > 0 && --m.startingReads === 0) m.state = "running";
@@ -527,7 +528,7 @@ export function fakeHost({
 			if (gone(m) || m.deleted) return;
 			m.deleted = true;
 			fake.events.push({ machine: id, what: "delete" });
-			if (lingers) m.lingering = { reads: lingers.reads ?? 0, lists: lingers.lists ?? 0 };
+			if (lingers) m.lingering = { reads: lingers.reads ?? 0, lists: lingers.lists ?? 0, state: lingers.state ?? "running" };
 		},
 		async exec(id, argv, ctx) {
 			const m = machines.get(id);
