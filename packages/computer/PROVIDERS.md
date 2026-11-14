@@ -21,9 +21,9 @@ that says what your API offers.
 ### Step one: run the exec pre-check
 
 Before you write anything else, write your host's constructor and its `exec` (see [the eleven members](#the-eleven-members)
-below). Then write a `createHost({ env })` in your conformance module that builds the host from your key, and point to
-that module from your provider file with `conformance`, as `e2b.ts` does. E2B's `createHost` in
-`src/conformance/e2b.ts` is three lines. Make a machine by hand in your console, then run, from the repository root:
+below). Then write a `createHost({ env = process.env } = {})` in your conformance module that builds the host from
+your key (the pre-check calls it with `{}`, the sweep with `{ env }`), and point to that module from your provider file
+with `conformance`, as `e2b.ts` does. E2B's `createHost` in `src/conformance/e2b.ts` is three lines. Make a machine by hand in your console, then run, from the repository root:
 
 ```sh
 npm ci --ignore-scripts && npm run build

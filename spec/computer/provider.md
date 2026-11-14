@@ -170,9 +170,10 @@ is written:
 npm run conformance -w @parcha/agentrun-computer -- --provider <id | ./module.js> --exec-stream --machine <id>
 ```
 
-It builds the host with the module's `createHost({ env })`, sends all 256 byte values each way and 8 MiB of random
-bytes (compared by sha256), checks output and stdin while the process runs, stderr apart, `sh -c 'exit 7'`, a killed
-`sleep`, and a silent process of 75 s (`--quick`: 5 s). Each failure says what the exec did wrong, such as "byte 0x80
+It builds the host with the module's `createHost(options)`, which it calls with `{}`, so `env` defaults to `process.env`
+(E2B's `createHost({ env = process.env } = {})`). It sends all 256 byte values each way and 8 MiB of random bytes
+(compared by sha256), checks output and stdin while the process runs, stderr apart, `sh -c 'exit 7'`, a killed `sleep`,
+and a silent process of 75 s (`--quick`: 5 s). Each failure says what the exec did wrong, such as "byte 0x80
 came back on stdout as ef bf bd: your exec decodes UTF-8". It exits 0 when every check passes and 1 when one fails.
 
 ## A new vendor
