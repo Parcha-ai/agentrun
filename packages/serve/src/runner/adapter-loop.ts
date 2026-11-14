@@ -1684,8 +1684,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // prices it (RunCap.asked), which a CLI's request names as its provider does, so the next request finds it.
           askedFor.set(request.turn, { model: specNow?.runCap ? theCap().asked(request).model.id : request.model, ...(request.inputTokensMax === undefined ? {} : { bound: request.inputTokensMax }), counted: request.inputTokensCounted === true, own: request.host === undefined && !request.side && !request.unanswered });
           // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused,
-          // whatever else would pause it (a paid call's refusal, pendingPause).
-          const over = await overCap();
+          // whatever else would pause it (a paid call's refusal, pendingPause). One a paid call stopped for good
+          // (paid-calls.ts stopRun) ends in that call's words, which say why, past its cap too.
+          const over = pendingPause?.forGood ? undefined : await overCap();
           if (!over && pendingPause) {
             pendingPause = await landing(pendingPause);
             // Fits now: dropped for good, on the root too, so a later claim never revives the old refusal.
@@ -1963,6 +1964,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // from that end, never run again.
             const ended = tool.nests ? undefined : record?.endOf(toolContext.callId);
             if (ended) return endedAnswer(tool.name, ended);
+            // A run a paid call stopped for good (paid-calls.ts stopRun) runs no tool after it, a script's own calls
+            // included: each is refused in the stop's words, never run.
+            if (pendingPause?.forGood) return { text: pendingPause.refuse, isError: true };
             // A call run again after an earlier attempt (the harness's rerun of a replay-safe call after a crash: its
             // attempt above 0) never passed the gate before its intent this time: the gate is asked again here, so a deny
             // set since the first attempt refuses the rerun, in words saying the earlier attempt may have taken effect.
@@ -2605,7 +2609,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // A turn whose booked spend passed the run's cap ends the run failed in the cap's words (overCap), its crossing
           // answer booked: main's end of a run over its cap, before any pause (a question to the person, a cap refusal).
           await bookingsSettled();
-          const over = cutOff ? undefined : await overCap();
+          // A run a paid call stopped for good (paid-calls.ts stopRun) ends in that call's words, past its cap too.
+          const stoppedBy = pendingPause?.forGood ? pendingPause : undefined;
+          const over = cutOff || stoppedBy ? undefined : await overCap();
           // A failed CLI turn: a message the person sent while it ran may not have reached the loop yet (the runner's next
           // poll), and the run's status is its last turn's end, so it is handed on now (bounded), as a finished turn's is.
           if (!cutOff && !over && !refused && outcome.status === "failed" && spec.record === "loop" && afterTurn.length === 0 && steeredIn.length === 0 && deps.deliverNow && !stopReason) {
@@ -2620,6 +2626,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
           if (cutOff) data = { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` };
           else if (over) data = { state: "failed", summary: over };
+          else if (stoppedBy) data = { state: "failed", summary: stoppedBy.refuse };
           else if (outcome.status !== "completed" && refused) {
             // A turn the host's check refused: what that does to the run is the cap's rule (parkOf), as on main. A refusal a
             // raise could fix parks the run on a raise; one no raise could fix (or a check with no cap) fails it, in the
