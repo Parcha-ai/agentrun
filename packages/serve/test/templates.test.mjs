@@ -95,6 +95,14 @@ test("a package names each trigger once, compared as a trigger keeps its name (t
   }
 });
 
+test("a tool-call budget is no field: a definition's max_tool_calls and a manifest's budget.tool_calls are each refused as unknown", async (t) => {
+  const { definitionIssues } = await import("../dist/validate.js");
+  const issues = definitionIssues({ name: "a", instructions: "x", max_tool_calls: 30 });
+  assert.deepEqual(issues.map((i) => [i.field, i.reason]), [["definition.max_tool_calls", "not_allowed"]]);
+  const problems = await problemsOf(t, ({ edit }) => edit(/^budget: .*\n/m, "budget: { per_run_usd: 0.50, tool_calls: 30 }\n"));
+  assert.ok(problems.some((p) => /budget/.test(p) && /tool_calls|unknown|no field/.test(p)), JSON.stringify(problems));
+});
+
 test("the validator refuses a malformed package, naming each problem", async (t) => {
   const refused = async (change, pattern) => {
     const problems = await problemsOf(t, change);
