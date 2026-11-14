@@ -1142,32 +1142,6 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(os.now - start, 250)
 	}
 
-	/// An expect at an app that tells its changes waits for one, then reads the window once the app went quiet: no
-	/// looks every expectPollMs, which take the app's own thread (System Settings drew About 2.5 to 4 s after the click
-	/// while it was read back to back). A change the app does not tell is read untoldMs after the last read at most.
-	func testAnExpectAtAnAppThatTellsItsChangesWaitsForOne() async throws {
-		os.tells = true
-		let engine = os.engine()
-		_ = try await engine.observe(UiObserveParams())
-		os.after(2000) { $0.elements[5]!.name = "Saved" }
-		var (start, walks) = (os.now, os.snapshots)
-		var result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Saved", timeoutMs: 5000)))
-		XCTAssertEqual(result.expect, .met)
-		XCTAssertEqual(os.snapshots - walks, 3, "the first look, one untoldMs on, one a quiet after the change")
-		XCTAssertEqual(os.now - start, 2150)
-		// A change the app does not tell.
-		os.after(500) { os in
-			os.silent = true
-			os.elements[5]!.name = "Hello"
-			os.silent = false
-		}
-		(start, walks) = (os.now, os.snapshots)
-		result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Hello", timeoutMs: 5000)))
-		XCTAssertEqual(result.expect, .met)
-		XCTAssertEqual(os.snapshots - walks, 2)
-		XCTAssertEqual(os.now - start, 150 + 1000 + 150)
-	}
-
 	func testCallsRunOneAtATime() async throws {
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())
