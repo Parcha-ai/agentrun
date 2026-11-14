@@ -116,6 +116,23 @@ test("a call is sent with its hold as monid's maxCost: an endpoint monid now pri
   assert.equal(paid.heldUsd(), 0, "its hold released");
 });
 
+test("an endpoint monid has re-priced by usage since the save is refused unsent: its estimate passing the pinned maxCost would not bound its charge", async (t) => {
+  const sent = callLog(t);
+  // Pinned at $0.01 a call when the agent was saved; monid now prices it per result, estimates one result ($0.001,
+  // under the pinned maxCost) and charges $1.42.
+  const SEARCH = "monid:faux/person/search";
+  const stale = { ...PIN[ENRICH], description: "faux /person/search", usd: 0.01 };
+  const { spec } = await specFor(t, { body: { tools: [SEARCH], monidPin: { [SEARCH]: stale } }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const [search] = spec.mcp.tools;
+  const paid = await toolLedger(0.5);
+  const answer = await bookedIn({ call: "c1", paid }, () => search.call(ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
+  assert.deepEqual(sent(), [], "never sent");
+  assert.equal(answer.isError, true, answer.text);
+  assert.match(answer.text, /monid:faux\/person\/search was not sent: monid now prices it per result \(PER_RESULT\), not the fixed \$0\.01 pinned when the agent was saved/, answer.text);
+  assert.equal(paid.spentUsd(), 0, `booked $${paid.spentUsd()} against a $0.5 cap`);
+  assert.equal(paid.heldUsd(), 0, "nothing held");
+});
+
 /** run-1 on a new store, its agent granted `tools` with the pin `pin`, run by a runner on the adapter spec with a
  *  scripted model; `launch` adds to its launch body (a cap). */
 async function monidRun(t, { script, tools, pin, toolSettings, launch = {}, requests = [] }) {
