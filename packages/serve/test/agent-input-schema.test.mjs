@@ -104,6 +104,9 @@ test("the model reads the run's content, then the other fields as one fenced jso
   assert.equal(inputMessage({ company: "Stripe" }), 'Input:\n```json\n{\n  "company": "Stripe"\n}\n```');
   assert.equal(inputMessage({ note: "a ``` b ```` c" }), 'Input:\n`````json\n{\n  "note": "a ``` b ```` c"\n}\n`````');
   assert.equal(inputMessage(undefined), "");
+  // More runs of backticks than a call takes arguments: still one block, never a RangeError.
+  const many = inputMessage({ note: "`a".repeat(400_000) });
+  assert.ok(many.startsWith('Input:\n```json\n{\n  "note": "`a`a'), many.slice(0, 40));
 });
 
 /** The user messages of a run of `id` with `input`, as its timeline has them (what its harness was sent). */

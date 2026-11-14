@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentInputOf, fieldIssueWords, fieldLabel, fieldOfIssue, fieldValid, inputOf, placeholderOf, startText } from "./inputForm";
+import { agentInputOf, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, inputOf, placeholderOf, startText } from "./inputForm";
 
 // An agentic agent's input_schema, as the run forms read it: one field for each top-level property other than
 // `content` (the run's message), the message box required or not, and the typed input the form sends. A schema the
@@ -66,6 +66,18 @@ describe("inputOf", () => {
   });
   it("sends text that is no number as typed, for the server to refuse in its own words", () => {
     expect(inputOf(form, "", { company: "Acme", limit: "lots" })).toEqual({ company: "Acme", limit: "lots" });
+  });
+  it("sends a required field left empty as empty (text \"\", a list []), for the schema to take or refuse; an optional one not at all", () => {
+    const strict = agentInputOf({ type: "object", properties: { code: { type: "string" }, tags: { type: "array", items: { type: "string" }, maxItems: 0 }, note: { type: "string" } }, required: ["code", "tags"] });
+    const f = strict.kind === "fields" ? strict.form : null!;
+    expect(inputOf(f, "", { code: "", tags: "", note: "" })).toEqual({ code: "", tags: [] });
+  });
+  it("starts a choice at its default, which is then sent as chosen: the server fills in no run input's default", () => {
+    const read = agentInputOf({ type: "object", properties: { reason: { type: "string", enum: ["vendor", "customer"], default: "vendor" } } });
+    const f = read.kind === "fields" ? read.form : null!;
+    const start = fieldStartText(f);
+    expect(start).toEqual({ reason: "vendor" });
+    expect(inputOf(f, "Check them.", start)).toEqual({ content: "Check them.", reason: "vendor" });
   });
 });
 

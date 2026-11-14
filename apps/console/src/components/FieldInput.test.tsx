@@ -36,6 +36,14 @@ describe("FieldInput", () => {
     expect(options.map((o) => o.value)).toEqual(["", "us", "eu"]);
   });
 
+  it("offers a typed input's default choice by its own value: a run input left out is not filled in, as a template's parameter is", async () => {
+    const field = fieldOf({ reason: { type: "string", enum: ["vendor", "customer"], default: "vendor" } }, "reason");
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(FieldInput, { field, label: "reason", value: "vendor", typedInput: true, onChange: () => {} })));
+    expect((await optionsOf(picker(host, "reason")!)).map((o) => [o.value, o.text])).toEqual([["", "None chosen"], ["vendor", "vendor (default)"], ["customer", "customer"]]);
+  });
+
   it("draws a number as a number field, its required mark and its hint", () => {
     const { host } = draw({ type: "integer", required: true, description: "How many", default: 10 }, "limit");
     const box = host.querySelector("input")!;

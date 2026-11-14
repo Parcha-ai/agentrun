@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Playground, startFailure } from "./Playground";
 import { agentFixture } from "@/fixtures";
 import { ClientError } from "@/lib/client";
+import { pick, picker } from "@/test/picker";
 
 // The playground for an agent with an input_schema: the form shows its fields, and the request it shows (its JSON, its
 // cURL and its JavaScript) carries the typed input. A schema the form can't show is typed as JSON, whole.
@@ -19,10 +20,10 @@ const SCHEMA = {
 };
 const typed = (input_schema: Record<string, unknown>) => { const base = agentFixture("invoice-checker"); return { ...base, agent_id: "researcher", definition: { ...base.definition, input_schema } }; };
 
-function mount(input_schema: Record<string, unknown>, result?: ReturnType<typeof startFailure>) {
+function mount(input_schema: Record<string, unknown>, result?: ReturnType<typeof startFailure>, revisions?: { revision: string; version: number; current: boolean; note: string | null; definition?: Record<string, unknown> }[]) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(Playground, { agents: [typed(input_schema)], efforts: [], origin: "http://serve.test", agentId: "researcher", ...(result ? { result } : {}) })));
+  act(() => root!.render(createElement(Playground, { agents: [typed(input_schema)], efforts: [], origin: "http://serve.test", agentId: "researcher", ...(result ? { result } : {}), ...(revisions ? { revisions } : {}) })));
   const set = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => act(() => {
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value);
     el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -58,5 +59,19 @@ describe("Playground, an agent with typed input", () => {
     expect(JSON.parse(box.value)).toEqual({ rows: [] });
     m.set(box, '{"rows":[{"a":1}]}');
     expect(m.host.textContent).toContain(`'{"input":{"rows":[{"a":1}]}}'`);
+  });
+
+  it("draws the fields of the revision picked, not the current one's, and starts them again on a change", async () => {
+    const CURRENT = { type: "object", properties: { account: { type: "string" } }, required: ["account"] };
+    const base = typed(CURRENT).definition;
+    const m = mount(CURRENT, undefined, [
+      { revision: "rev-2", version: 2, current: true, note: null, definition: { ...base, input_schema: CURRENT } },
+      { revision: "rev-1", version: 1, current: false, note: null, definition: { ...base, input_schema: SCHEMA } },
+    ]);
+    expect([!!m.at("account"), !!m.at("company")]).toEqual([true, false]);
+    await pick(picker(m.host, "Revision")!, "rev-1");
+    expect([!!m.at("account"), !!m.at("company")]).toEqual([false, true]);
+    m.set(m.at("company").querySelector("input")!, "Acme");
+    expect(m.host.textContent).toContain(`'{"input":{"company":"Acme"},"revision":"rev-1"}'`);
   });
 });
