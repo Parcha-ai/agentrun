@@ -129,13 +129,15 @@ type Held = { usd: number; basis: string; ran?: MonidAnswer };
 
 /** The claim's MCP with the run's monid endpoints beside it: the one catalog seam the loop reads (AdapterRunSpec.mcp).
  *  Its credentials' hooks are MCP's alone, and so is the closure of a pinned tool's arguments (argumentsOf: the gate's
- *  settings pins are on MCP tools; a monid endpoint's input is held to its pinned schema by the harness). */
+ *  settings pins are on MCP tools; a monid endpoint's input is held to its pinned schema by the harness), and so is each
+ *  tool's effect (effectOf: Allow reads and the destructive confirm read an MCP tool's annotations; an endpoint has none). */
 export function withMonid(mcp: ClaimMcp | undefined, monid: ClaimMonid | undefined): ClaimMcp | undefined {
   if (!monid) return mcp;
   return {
     tools: [...(mcp?.tools ?? []), ...monid.tools],
     catalogOf: (tool) => mcp?.catalogOf(tool) ?? monid.catalogOf(tool),
     argumentsOf: (name) => mcp?.argumentsOf(name),
+    effectOf: (name) => mcp?.effectOf(name),
     priceOf: (name, call) => mcp?.priceOf(name, call) ?? monid.priceOf(name, call),
     fresh: async () => mcp?.fresh(),
     release: () => mcp?.release(),

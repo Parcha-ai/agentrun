@@ -8,7 +8,7 @@ import { Slider } from "@/components/ui/slider";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { guardVerdict, StepGuards } from "@/components/StepGuards";
 import { Chip } from "@/components/ui/chip";
-import { recordOf, refitOf, replayLine, standingOf, stoppedOf } from "@/lib/learningLoop";
+import { recordOf, refitOf, refitWords, replayLine, standingOf, stoppedOf } from "@/lib/learningLoop";
 import type { Client } from "@/lib/client";
 import { runLabel, when } from "@/lib/format";
 import { replaySteps } from "@/lib/workflowReplay";
@@ -116,7 +116,7 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
         </p>
         {refit && (
           <p className="mt-1 break-words font-mono text-small text-muted-foreground" data-testid="refit">
-            Thresholds refit from {refit.from.slice(0, 7)}: {refit.guards.map((g) => `${g.node} ${g.was.toFixed(2)} → ${g.threshold.toFixed(2)}`).join(", ")}
+            Thresholds refit from {refit.from.slice(0, 7)}: {refit.guards.map(refitWords).join(", ")}
           </p>
         )}
       </div>

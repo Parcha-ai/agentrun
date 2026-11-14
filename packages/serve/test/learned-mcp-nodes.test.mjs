@@ -213,6 +213,37 @@ test("the up-front card names every MCP tool set to ask that the workflow can ca
   assert.equal(calls(fake).length, 0, "denied: nothing sent");
 });
 
+test("a learned_workflow call whose card covers a destructive MCP tool is marked destructive: an allow without confirm_destructive is 422 and nothing is sent; with it, the node runs once. A card of no destructive tool is not marked", { timeout: 150_000 }, async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const answer = await owner(server);
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" } })).status, 200);
+  // Two MCP nodes in turn, both set to ask (no setting): add, which the server marks read-only, and delete_thing, which it
+  // marks destructive. The one allow of the learned_workflow call lets both run, so it takes the second confirm.
+  const node = (label, tool, args, as) => ({ node: "call", label, via: "tool", tool, args, out: "Any", as, deadline_s: 60 });
+  const WIPE = {
+    v: 2, name: "add-then-delete",
+    schemas: { In: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, Any: {} },
+    input: { schemaId: "In" }, output: { schemaId: "Any", path: "sum" },
+    root: { node: "chain", steps: [node("add", "mcp:fake/add", { a: "{a}", b: "{b}" }, "sum"), node("delete", "mcp:fake/delete_thing", { id: "x" }, "gone")] },
+  };
+  const runId = await learnedRun(server, "wiper", ["mcp:fake/add", "mcp:fake/delete_thing"], [WIPE], `Call ${LEARNED_WORKFLOW_TOOL} with ${JSON.stringify({ name: "add-then-delete", input: { a: 2, b: 3 } })}`);
+  const pending = await pendingOf(api, runId, LEARNED_WORKFLOW_TOOL);
+  assert.ok((pending.args_preview ?? "").includes("mcp:fake/delete_thing"), JSON.stringify(pending));
+  assert.equal(pending.destructive, true, `the card covers a destructive tool, so the call is marked: ${JSON.stringify(pending)}`);
+  assert.equal(await answer(runId, pending.id, { decision: "allow" }), 422, "one click is not enough");
+  assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.id, pending.id, "the call keeps waiting");
+  assert.equal(calls(fake).length, 0, "nothing sent");
+  assert.equal(await answer(runId, pending.id, { decision: "allow", confirm_destructive: true }), 204);
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  assert.deepEqual([calls(fake, "add").length, calls(fake, "delete_thing").length], [1, 1], "confirmed: each node ran once");
+  // A card that covers no destructive tool takes one click, as before.
+  const plain = await learnedRun(server, "adder", ["mcp:fake/add"], [ADD_FLOW], RUN_ADD);
+  const one = await pendingOf(api, plain, LEARNED_WORKFLOW_TOOL);
+  assert.equal(one.destructive, undefined, JSON.stringify(one));
+});
+
 test("an allow of a learned_workflow call covers that call only: the same workflow called again in the run asks again, and so does the harness's own call of the same MCP tool", { timeout: 240_000 }, async (t) => {
   // One run, three calls in turn (faux-calls.mjs): the workflow, the workflow again, then the MCP tool itself.
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });

@@ -83,17 +83,24 @@ export const stoppedOf = (cost: Pick<LearningCost, "workflows"> | null, workflow
 export const refitOf = (records: readonly Promotion[], workflow: string, digest: string | null): Promotion | undefined =>
   digest === null ? undefined : [...records].reverse().find((r) => r.workflow === workflow && r.source === "refit" && r.decided === "promote" && r.refit?.from === digest);
 
-/** What a promotion record was decided on, in a few words beside "Promoted" or "Serving": "replayed 18/20" (graded inputs
- *  its replay answered or handed back, of those it ran on), "0 replays answered" (every one failed or was skipped), "not
- *  replayed" (promoted on its passing dry run: too few graded inputs to replay), "refit on 25 rows"; null for one still
- *  replaying, superseded, or held on its served runs (its reason says). Owner approval of the file is never proof. */
+/** What a promotion record was decided on, in a few words beside "Promoted" or "Serving": "replayed 18/20 · 9 alone"
+ *  (graded inputs its replay answered or handed back, of those it ran on, and how many of them it answered alone), "0
+ *  replays answered" (every one failed or was skipped), "not replayed" (promoted on its passing dry run: too few graded
+ *  inputs to replay), "refit on 25 rows · 22 alone"; null for one still replaying, superseded, or held on its served runs
+ *  (its reason says). Owner approval of the file is never proof. */
 export function proofOf(record: Promotion): string | null {
   const r = record.replay;
+  // Answered alone: what it did not hand back. Counted here, never kept on the record.
+  const alone = r ? ` · ${r.n - r.handed_back} alone` : "";
   if (record.source === "dry_run") return "not replayed";
-  if (record.source === "refit") return r ? `refit on ${r.n} ${r.n === 1 ? "row" : "rows"}` : null;
+  if (record.source === "refit") return r ? `refit on ${r.n} ${r.n === 1 ? "row" : "rows"}${alone}` : null;
   if (record.source !== "replay" || !r || record.decided === "replaying" || record.decided === "superseded") return null;
-  return r.n ? `replayed ${r.n}${r.of?.length ? `/${r.of.length}` : ""}` : "0 replays answered";
+  return r.n ? `replayed ${r.n}${r.of?.length ? `/${r.of.length}` : ""}${alone}` : "0 replays answered";
 }
+
+/** One switch a refit changed, in words: "classify 0.70 → 0.82", "read guard off", "unsupported escalate off". */
+export const refitWords = (g: NonNullable<Promotion["refit"]>["guards"][number]): string =>
+  g.escalate ? `${g.node} escalate off` : g.threshold === null ? `${g.node} guard off` : `${g.node} ${(g.was ?? 0).toFixed(2)} → ${g.threshold.toFixed(2)}`;
 
 /** Whether a record was decided on evidence: a replay or a refit that scored at least one graded input. */
 export const proven = (record: Promotion): boolean => (record.source === "replay" || record.source === "refit") && (record.replay?.n ?? 0) > 0;
