@@ -22,7 +22,7 @@ import { shownUrl } from "./mcp-probe.js";
 import { MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName } from "./tool-names.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
-import { applyBodyOf, compiled, filledPins, type Package, packageView, readPackage } from "./templates.js";
+import { applyBodyOf, compiled, filledPins, onServers, type Package, packageView, readPackage } from "./templates.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
@@ -898,7 +898,7 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   for (const id of Array.isArray(applied.trigger_ids) ? (applied.trigger_ids as unknown[]).map(String) : []) made.triggers.add(id);
   await deleteTriggers(api, made, true);
   const agent = expectOk(`reading the agent ${agentId}`, await api("GET", `/agents/${encodeURIComponent(agentId)}`));
-  await sameAsLocal(ctx, one, agent);
+  await sameAsLocal(ctx, one, agent, applied.servers);
   stopped();
   for (const note of one.learning) {
     expectOk(`seeding the note ${note.file}`, await api("PUT", `/agents/${encodeURIComponent(agentId)}/learning/files/${encodeURIComponent(note.file)}`, note.text, { "if-none-match": "*" }));
@@ -993,9 +993,14 @@ async function gradeLlm(ctx: Ctx, agentId: string, input: string): Promise<{ pas
 /** The package the server applied is this folder's: its view (GET /v2/templates: the model, effort, tools, MCP tools
  *  and what they allow, budget, learning, parameters, triggers, version, ...) equals this folder's, and the agent the
  *  apply made holds this folder's instructions and skill files. On another server a package of the same name may be
- *  another version, and its eval would measure that one: the case fails, naming each field that differs. */
-async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> {
+ *  another version, and its eval would measure that one: the case fails, naming each field that differs. The folder's
+ *  text is compared as the apply wrote it, on the saved servers its answer's `servers` names (onServers): a need the
+ *  owner's server fills under another name is the same package. */
+async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json, servers: unknown): Promise<void> {
+  const used = Object.fromEntries(Object.entries(isObject(servers) ? servers : {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   const { pkg } = ctx;
+  // The view (GET /v2/templates) is the package as shipped; the agent's text is the package on the servers used.
+  const applied = onServers(pkg, used);
   // Kept once read: a listing that fails fails this case alone, and the next case asks again.
   if (!ctx.served) {
     const listed = expectOk("listing the server's templates", await ctx.api("GET", "/templates"));
@@ -1006,10 +1011,10 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> 
   // computer_here is the server's answer to the package's computer list, never the package: not compared.
   const differs = [...new Set([...Object.keys(view), ...Object.keys(served)])].filter((key) => key !== "computer_here" && !same(view[key], served[key]));
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
-  const local = compiled(pkg, parameters, { mcp: [], defaultTools: [], grants: [] }).agent;
+  const local = compiled(applied, parameters, { mcp: [], defaultTools: [], grants: [] }).agent;
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");
   const theirs = Object.fromEntries(((agent.skills as Json[] | undefined) ?? []).map((s) => [String(s.path), String(s.sha256)]));
-  const ours = Object.fromEntries(Object.entries(pkg.skills).map(([path, text]) => [path, sha(text)]));
+  const ours = Object.fromEntries(Object.entries(applied.skills).map(([path, text]) => [path, sha(text)]));
   if (!isObject(agent.definition) || agent.definition.instructions !== (local.definition as Json).instructions) differs.push("instructions");
   if (!same(theirs, ours)) differs.push("skill files");
   if (differs.length) throw new ApiFailure(`the server's ${pkg.name} package is not this folder's: it differs in ${[...new Set(differs)].sort().join(", ")}. The eval would measure the server's copy: run it without --server, or on a server that ships this version`);
