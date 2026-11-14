@@ -4,6 +4,14 @@
 
 ## 0.1.0-beta.38 (2026-11-14)
 
+**Known issues:**
+
+- Mode 2 (an Archil workspace) can't start E2B, Modal or Agent37 sandboxes, or E2B or Agent37 desktops, yet: they need Archil's image in your vendor account. Settings shows them as not ready, and a run that asks for one is refused before anything starts. Mode 1 E2B desktops and Docker work.
+- Agent37 desktops need the agentrun-box template, which exists only in AgentRun's own Agent37 workspace today, so a desktop in your own Agent37 workspace may not start in either mode. A fix is coming.
+- On Codex, a run whose cap is under about $2.50 can pause after spending about $0.20 (the cap holds a request's largest possible output). A fix is coming.
+
+**Changes:**
+
 - computer-bench: `report.json` states one arm summary for the whole run and for each platform (`platforms[].arms` carries every field of `arms`): the paired difference is each arm's `difference` (`paired` is gone), steps, turns and wall are medians (`steps_median`, `tool_calls_median`, `wall_s_median`; the means and `usd_mean` are gone), $ per pass is `usd_per_pass` (`usd_per_success` is gone), passed / scored is `passed` / `success.runs`, and the global `tasks` table is gone (each platform lists its tasks). A program reading an older `report.json` reads the new names.
 - computer-bench: `needs.apps` entries are now each required, read once per computer through `apps.list` after hello and before setup; an entry that is a list is alternatives, any one of which will do. Who breaks: a task that listed one app's makers' packages side by side (`["com.google.android.deskclock", "com.android.deskclock"]`) now needs all of them and is skipped; wrap them in one list (`[["com.google.android.deskclock", "com.android.deskclock"]]`). The suites are updated.
   - A missing app or a failing `needs.capabilities` probe refuses the run as `skipped: needs <id>` (`needs one of a, b`; `needs camera: <why>`), is never retried, and is remembered: the task's other runs are refused without opening a computer. A computer with no apps group is refused in words. `loadTask` refuses an `answer` probe, a probe with placeholders, a method that is not the protocol's (`processes.start` names the wire's `process.*`), and an `exec: deny` oracle call outside ui, input, screen and apps (or `apps.install`), naming the call.
