@@ -161,7 +161,12 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     url = composioAddress(address);
     // Saved as what it is, a Composio server of this toolkit: a template that needs the toolkit maps to it, whatever its
     // name. A slug no template can name (mcp:<toolkit>/<tool>: no `_`) is saved as a Composio server of no toolkit.
-    const server = await save({ url, auth: { type: "headers", headers: { "x-api-key": key } } }, { source: "composio", toolkit: MCP_SERVER_NAME.test(toolkit) ? toolkit : null });
+    // Composio leaves out an action it does not serve, and a server that serves none of the picked ones lists no tools at
+    // all, which the MCP listing reports as "Method not found": said here as what it means, naming the picked actions.
+    const server = await save({ url, auth: { type: "headers", headers: { "x-api-key": key } } }, { source: "composio", toolkit: MCP_SERVER_NAME.test(toolkit) ? toolkit : null }).catch((error: unknown) => {
+      if (!(error instanceof ApiError) || error.code !== "upstream_failed") throw error;
+      throw invalid([issue("tools", "not_served", `Composio's ${toolkit} server doesn't serve ${(tools as string[]).join(", ")}: pick another action. Its tool listing failed: ${error.message}`)]);
+    });
     // Composio's server can leave out an action it was allowed (HACKERNEWS_GET_FRONTPAGE, live 11-13): say which, so a grant
     // doesn't vanish without a word. A toolkit with no account yet still lists its actions, so this holds before the connect.
     const listed = new Set((server.tools ?? []).map((tool) => tool.name));
