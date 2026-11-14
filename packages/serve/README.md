@@ -1440,7 +1440,8 @@ read again from monid (an inspect, which monid does not charge). A call of an en
 has re-priced by usage since the save) is held at monid's estimate for the call's own input instead: the call is first
 sent with `maxCost` 0, which monid refuses unrun and uncharged, naming its estimate; that estimate is the hold, and the
 call is sent with it as `maxCost`. Its approval card reads "Priced by usage, about $X (monid's estimate), can cost
-more" (`pending.price` `{estimate_usd}`). Its charge can pass the estimate: then it is booked as charged, and the run
+more" (`pending.price` `{estimate_usd}`), read once, when the card is first made: an answer given after the run
+parked reads nothing again, and a stop or a lost claim cuts the read off. Its charge can pass the estimate: then it is booked as charged, and the run
 stops at once, failed, in the words "monid charged $X, more than the $Y held; the run stopped". A run's spend cap is a
 hard stop for everything but that one charge. A call monid estimates at $0 is a free run, which `maxCost` 0 lets
 through: the estimate's read runs it (on its card, before the person answers), and it is held at $0. A mark a crash left unsettled leaves the run's cost unknown, as a

@@ -82,8 +82,9 @@ export interface ClaimMcp {
    *  other tool. */
   argumentsOf(name: string): ReadonlySet<string> | undefined;
   /** What an asked call of a pinned tool costs on its card (main's: its price, else "not metered"; a monid endpoint
-   *  priced by usage, monid's estimate for `call`'s input, read from monid); undefined otherwise. */
-  priceOf(name: string, call?: { callId: string; args: unknown }): ApprovalPrice | undefined | Promise<ApprovalPrice | undefined>;
+   *  priced by usage, or one monid has re-priced by usage since the save, monid's estimate for `call`'s input, read from
+   *  monid until `call.signal` aborts); undefined otherwise. */
+  priceOf(name: string, call?: { callId: string; args: unknown; signal?: AbortSignal }): ApprovalPrice | undefined | Promise<ApprovalPrice | undefined>;
   /** A pinned tool's effect (`mcp:<server>/<tool>`), by its annotations as the pin holds them (tool-gate.ts toolEffect):
    *  what the gate's "allow reads" and a destructive call's card read; never a later listing. Undefined for any other. */
   effectOf(name: string): ToolEffect | undefined;

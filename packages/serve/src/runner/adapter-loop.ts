@@ -1984,7 +1984,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const bySetting = now === "allow" && (await askStands(toolContext.callId));
               if (now === "ask" || bySetting) {
                 const call = { callId: toolContext.callId, tool: name, args: (args ?? {}) as Record<string, unknown> };
-                const price = (await mcp?.priceOf(name, call)) ?? null;
+                const price = priceFor(name, call);
                 const answer = bySetting ? await allowedBySetting(call, price, asked) : await answerOf(call, price, asked);
                 if (answer === "park") return await heldUntilAborted(toolContext.signal);
                 if (!answer.approved) return { text: refusedText(asked, answer.note?.trim() ? answer.note : undefined, "unknown"), isError: true };
@@ -2842,9 +2842,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const args = shown ? { ...shown, ...Object.fromEntries(Object.entries((call.args ?? {}) as Record<string, unknown>).filter(([key]) => !Object.hasOwn(shown, key))) } : call.args;
       // The call on the record before its ask (beforeAsk), with the input its model gave it.
       await beforeAsk?.(call);
-      // Its price on the card: a catalog tool's (an MCP tool's, a monid endpoint's pinned price or, priced by usage,
-      // monid's estimate for this call's input), else none.
-      const price = (await mcp?.priceOf(tool, call)) ?? null;
+      const price = priceFor(tool, call);
       // Marked destructive when the tool is, or when any MCP tool the one allow lets run is (the gate's `mcp_calls`, a
       // learned workflow's MCP calls set to ask): that allow takes the second confirm too.
       const covered = Array.isArray(shown?.mcp_calls) ? shown.mcp_calls.filter((name): name is string => typeof name === "string") : [];
@@ -2866,7 +2864,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** An ask's answer: one in the journal stands; else the approve or deny the runner hands over on a resume; else ask and
    *  park (the ask entry with the run parked, in one commit). The ask is main's approval card: the call's input, when it
    *  was asked and its `price`; asked again on a resume, it is the same request. */
-  async function answerOf(call: PreIntentCall, price: ApprovalPrice | null, asked: string = call.tool, destructive = mcp?.effectOf(asked) === "destructive"): Promise<AnswerData | "park"> {
+  /** A call's price on its card, read when its ask is first written and never for an ask already journaled (a resume
+   *  answers the card the person saw): a catalog tool's (an MCP tool's, a monid endpoint's pinned price or, priced by
+   *  usage, monid's estimate for this call's input, which reads monid), else none. The read ends with the claim or the
+   *  run's stop. */
+  function priceFor(name: string, call: { callId: string; args: unknown }): () => Promise<ApprovalPrice | null> {
+    return async () => (await mcp?.priceOf(name, { callId: call.callId, args: call.args, signal: AbortSignal.any([deps.signal, stopAbort.signal]) })) ?? null;
+  }
+
+  async function answerOf(call: PreIntentCall, price: () => Promise<ApprovalPrice | null>, asked: string = call.tool, destructive = mcp?.effectOf(asked) === "destructive"): Promise<AnswerData | "park"> {
     const conversation = await harness!.root(context);
     const entries = await entriesOf(gate!.journal, conversation.id, context);
     const first = findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId);
@@ -2878,7 +2884,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // run's pending approval, its approval row, an "always" answer pinned by it) has the one name main gives it.
     // An MCP tool its run's pin marks destructive (ClaimMcp.effectOf), or a call whose allow covers one (`destructive`):
     // its card asks a second confirm of an allow.
-    const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, requestedAt: isoNow(), price, ...(destructive ? { destructive: true as const } : {}) };
+    const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, requestedAt: isoNow(), price: await price(), ...(destructive ? { destructive: true as const } : {}) };
     const entryLands = (kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]) => landEntry(conversation, kind, data, staged);
     if (first === undefined) {
       // Asked and parked; or held as the parked call is, when another call of the round parked the run first.
@@ -2926,7 +2932,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  answers it. The ask closes with an allow row of its own (by "setting": "Allowed by the tool's setting"), the call
    *  runs, and the person is never asked again. A person's answer already in the inbox for the call stands over it when it
    *  is a deny; an allow of theirs is taken with the setting's answer, so no row is left untaken. */
-  async function allowedBySetting(call: PreIntentCall, price: ApprovalPrice | null, asked: string): Promise<AnswerData | "park"> {
+  async function allowedBySetting(call: PreIntentCall, price: () => Promise<ApprovalPrice | null>, asked: string): Promise<AnswerData | "park"> {
     // Decided only once the claim's stored commands are with the loop (deps.delivered): pi's recovery starts tool tasks while
     // the session opens, before command() can put a person's stored deny into the inbox, and the setting must not win over it.
     await (deps.delivered ?? Promise.resolve());
@@ -2950,7 +2956,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // As allowedBySetting: decided only once the claim's stored commands are with the loop.
     await (deps.delivered ?? Promise.resolve());
     const row = inbox.find((command) => (command.kind === "approve" || command.kind === "deny") && approvalOf(command) === call.callId);
-    if (row?.kind === "deny") return answerOf(call, null, asked);
+    if (row?.kind === "deny") return answerOf(call, async () => null, asked);
     const conversation = await harness!.root(context);
     const answeredAt = isoNow();
     const data: AnswerData = { callId: call.callId, approved: false, decision: "deny", answeredAt, by: "setting", ...(row ? { superseded: { decision: "allow" as const, answeredAt } } : {}) };

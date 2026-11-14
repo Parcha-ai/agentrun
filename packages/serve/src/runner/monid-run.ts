@@ -25,8 +25,8 @@ import type { Json } from "../validate.js";
 import type { Workspace } from "../workspace/index.js";
 import type { ClaimMcp } from "./mcp-run.js";
 
-/** The run's monid endpoints, as the loop's catalog seam reads them. */
-export type ClaimMonid = Pick<ClaimMcp, "tools" | "catalogOf" | "priceOf">;
+/** The run's monid endpoints, as the loop's catalog seam reads them; `release` cuts off every estimate read still out. */
+export type ClaimMonid = Pick<ClaimMcp, "tools" | "catalogOf" | "priceOf" | "release">;
 
 /** One host tool per endpoint of `pin`, on the claim's environment `env` (its key, and the tests' fake under faux), an
  *  answer too long for the model filed in `work()`; undefined when the pin holds none. `runId` names the run in the log. */
@@ -39,18 +39,34 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
     return monidClient({ key: env[MONID_KEY_ENV] ?? "", ...(faux ? { fetch: faux } : {}) });
   };
   // monid's estimate for a call priced by usage, by the call's id: read for its card, then kept for its hold; read again
-  // when its input is not the one it was read for.
+  // when its input is not the one it was read for, or when its read failed. Every read still out ends with `signal` (the
+  // run's stop, the call's own) or the claim's release (`released`), which forgets them all.
   const estimates = new Map<string, { input: string; read: Promise<Estimated> }>();
+  let released = new AbortController();
   const estimated = (callId: string, at: Endpoint, input: Json, signal?: AbortSignal): Promise<Estimated> => {
     const key = JSON.stringify(input);
     const kept = estimates.get(callId);
     if (kept?.input === key) return kept.read;
-    const read = clientOf().then((client) => client.run({ provider: at.provider, endpoint: `/${at.endpoint}`, input, maxCost: 0 }, signal)).then((answer): Estimated => {
+    const until = signal ? AbortSignal.any([signal, released.signal]) : released.signal;
+    const read = clientOf().then((client) => client.run({ provider: at.provider, endpoint: `/${at.endpoint}`, input, maxCost: 0 }, until)).then((answer): Estimated => {
       const usd = estimateOf(answer);
       return usd === undefined ? { answer } : { usd };
     });
     estimates.set(callId, { input: key, read });
+    const forget = () => {
+      if (estimates.get(callId)?.read === read) estimates.delete(callId);
+    };
+    // Kept only when it gave an estimate or monid ran the call; a read cut off or refused is read again by the next asker.
+    read.then((got) => {
+      if (until.aborted || ("answer" in got && chargeOf(got.answer) === undefined)) forget();
+    }, forget);
     return read;
+  };
+  /** Whether monid still prices the endpoint `at` per call, read now (an inspect monid does not charge): its listing's
+   *  answer, or the inspect's error. */
+  const fixedNow = async (at: Endpoint, signal?: AbortSignal): Promise<boolean | { error: unknown }> => {
+    const now = await (await clientOf()).inspect({ provider: at.provider, endpoint: `/${at.endpoint}` }, signal);
+    return now.error !== undefined ? { error: now.error } : heldOf(now.price) !== undefined;
   };
   /** What the call `callId` of the endpoint `at` (`name`, pinned at `pinnedUsd`) with `input` is held at, and why: its
    *  pinned price while monid still fixes it (read again, an inspect monid does not charge); else monid's estimate for
@@ -59,9 +75,9 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
    *  which maxCost 0 lets through) is the call itself (`ran`), held at $0. */
   const heldFor = async (name: string, at: Endpoint, pinnedUsd: number | null, input: Json, callId: string, signal: AbortSignal): Promise<Held | { answer: MonidAnswer }> => {
     if (pinnedUsd !== null) {
-      const now = await (await clientOf()).inspect({ provider: at.provider, endpoint: `/${at.endpoint}` }, signal);
-      if (now.error !== undefined) return { answer: uncharged({ error: `${name} was not sent: monid's price for it could not be read before the call (${String(now.error)}).` }) };
-      if (heldOf(now.price) !== undefined) return { usd: pinnedUsd, basis: "the price monid listed for it when the agent was saved" };
+      const fixed = await fixedNow(at, signal);
+      if (typeof fixed === "object") return { answer: uncharged({ error: `${name} was not sent: monid's price for it could not be read before the call (${String(fixed.error)}).` }) };
+      if (fixed) return { usd: pinnedUsd, basis: "the price monid listed for it when the agent was saved" };
     }
     const read = await estimated(callId, at, input, signal);
     if ("usd" in read) return { usd: read.usd, basis: "monid's estimate for this call's input (priced by usage: its charge can pass it)" };
@@ -109,14 +125,24 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
   return {
     tools,
     catalogOf: (tool) => catalog.get(tool),
-    // Its card shows what the call is held at: its pinned price, or for one priced by usage monid's estimate for its
-    // input (none when that cannot be read).
+    // Its card shows what the call would be held at, read when the card is made: its pinned price while monid still
+    // fixes it (or when that cannot be read: the call then says so), else monid's estimate for its input (none when that
+    // cannot be read).
     priceOf: (name, call) => {
       if (!Object.hasOwn(pin, name)) return undefined;
       const usd = pin[name]!.usd;
       const at = monidNameOf(name);
-      if (usd !== null || !at || !call) return usd ?? undefined;
-      return estimated(call.callId, at, (call.args ?? {}) as Json).then((read) => ("usd" in read ? { estimate_usd: read.usd } : undefined));
+      if (!at || !call) return usd ?? undefined;
+      return (async () => {
+        if (usd !== null && (await fixedNow(at, call.signal)) !== false) return usd;
+        const read = await estimated(call.callId, at, (call.args ?? {}) as Json, call.signal);
+        return "usd" in read ? { estimate_usd: read.usd } : undefined;
+      })();
+    },
+    release: () => {
+      released.abort(new Error("the claim let its monid endpoints go"));
+      released = new AbortController();
+      estimates.clear();
     },
   };
 }
@@ -140,7 +166,10 @@ export function withMonid(mcp: ClaimMcp | undefined, monid: ClaimMonid | undefin
     effectOf: (name) => mcp?.effectOf(name),
     priceOf: (name, call) => mcp?.priceOf(name, call) ?? monid.priceOf(name, call),
     fresh: async () => mcp?.fresh(),
-    release: () => mcp?.release(),
+    release: () => {
+      mcp?.release();
+      monid.release();
+    },
   };
 }
 
