@@ -120,7 +120,7 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(({ dir }) => rmSync(join(dir, "evals", "null-name", "prompt.md")), /evals\/null-name: has no prompt\.md/);
   await refused(({ dir }) => symlinkSync("/etc/hostname", join(dir, "skills", "review", "host.md")), /skills\/review\/host\.md: is not a regular file or a folder \(links are refused\)/);
   await refused(({ dir }) => writeFileSync(join(dir, "skills", "review", "CODEREVIEW.md"), "mine"), /rules\/CODEREVIEW\.md: skills\/review\/CODEREVIEW\.md has the same name/);
-  await refused(({ dir }) => mkdirSync(join(dir, "scripts")), /scripts\/: a package's folders are skills\/, rules\/, evals\/ and examples\//);
+  await refused(({ dir }) => mkdirSync(join(dir, "scripts")), /scripts\/: a package's folders are skills\/, rules\/ and evals\//);
   await refused(({ edit }) => edit("learning: false", "learning: false\nlearning: true"), /front matter is not YAML/);
   await refused(({ edit }) => edit("toolkit: github", "toolkit: GitHub_Server"), /mcp\[0\]\.toolkit "GitHub_Server" is not a toolkit name: .*the MCP server name rule/);
   await refused(({ edit }) => edit("source: github", "source: gitlab"), /mcp\[0\] is \{source: composio \| github \| url, toolkit/);

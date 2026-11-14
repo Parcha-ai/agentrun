@@ -22,7 +22,7 @@ const REVIEWER: TemplateView = {
     { name: "get_pull_request", tool: "mcp:github/get_pull_request", asks: "allow" },
     { name: "create_review", tool: "mcp:github/create_review", asks: "ask" },
   ] }],
-  category: "engineering", tags: ["code-review", "github"], examples: [],
+  category: "engineering", tags: ["code-review", "github"],
   parameters: {
     repo: { type: "string", required: true, description: "The repository, as owner/name", pattern: "^[^/]+/[^/]+$" },
     max_files: { type: "integer", required: false, description: "How many files it reads at most" },

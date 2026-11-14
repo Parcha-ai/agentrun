@@ -29,7 +29,7 @@ const KYB: TemplateView = {
     company: { type: "string", required: true, description: "The company's legal name" },
     depth: { type: "integer", required: false, description: "How many sources to read" },
   },
-  secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [], category: null, tags: [], examples: [],
+  secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [], category: null, tags: [],
 };
 const refusal = (fields: { field: string; reason: string; message: string }[]) => Object.assign(new ClientError(422, "input_invalid", "The template's input is not valid."), { fields });
 
