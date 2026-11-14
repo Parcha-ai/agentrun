@@ -56,9 +56,19 @@
         },
         "apps": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 },
+          "items": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 2, "uniqueItems": true }
+            ]
+          },
           "uniqueItems": true,
-          "description": "The apps the claim lets the agent touch, by bundle id or package. Everything else is refused by the driver."
+          "description": "The apps the task can't be done without, by bundle id or package: each entry must be installed (apps.list), and an entry that is a list is alternatives, any one of which will do (one clock app per phone maker). A precondition: read once per computer after hello; a computer missing one is refused (\"skipped: needs com.android.chrome\"), never retried, and the task's other runs on that backend are refused without claiming a computer."
+        },
+        "capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/check" },
+          "description": "What the computer must be able to do for the task to be doable at all, each a probe written as a check (its id names the capability: camera, bluetooth) on the bench's channel, read after hello and before setup. A probe that fails refuses the task (\"skipped: needs camera\") as a missing app does: a task the computer can't do is skipped, never scored. Never an answer check."
         },
         "osVersion": { "type": "string", "description": "A prefix of hello.osVersion the task was written for, such as \"26\" or \"15\"." }
       }
@@ -75,6 +85,10 @@
       "description": "Protocol calls on the bench's own channel before the agent starts. A failed call is an infra outcome: the run is done again, never scored."
     },
     "instruction": { "type": "string", "minLength": 1, "description": "What the agent is told, after params are filled in." },
+    "exec": {
+      "enum": ["allow", "deny"],
+      "description": "deny: the task is done through the UI, so the agent is given no shell and no way to run a program (no exec or processes group, no bash; on serve its agent's computer.exec is false), and its oracle may use only what the agent has (ui, input, screen, apps): the oracle drives the path the agent must. Every \"In the X app, ...\" task says deny. Default allow."
+    },
     "budget": {
       "type": "object",
       "additionalProperties": false,

@@ -23,8 +23,9 @@ export const ENTRY = {
 	cleanup: "agentrun.bench.cleanup",
 } as const;
 
-/** Who made a call: the bench setting up, the agent, the bench's frame after an act, a check, teardown, or the oracle. */
-export type Phase = "setup" | "agent" | "frame" | "check" | "observe" | "teardown" | "oracle";
+/** Who made a call: the bench reading the task's preconditions (apps, capability probes), setting up, the agent, the
+ *  bench's frame after an act, the bench's ping after the agent's turn, a check, teardown, or the oracle. */
+export type Phase = "precondition" | "setup" | "agent" | "frame" | "ping" | "check" | "observe" | "teardown" | "oracle";
 
 /** One protocol call, as the record keeps it. */
 export interface Step {

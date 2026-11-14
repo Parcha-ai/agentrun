@@ -5,7 +5,7 @@
   "title": "Turn the dark theme on or off in Settings",
   "split": "dev",
   "tags": ["settings", "toggle"],
-  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings"] },
   "params": {
     "mode": {
       "pick": [

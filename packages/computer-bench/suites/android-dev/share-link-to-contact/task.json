@@ -5,7 +5,7 @@
   "title": "Share a page's link from Chrome onto a contact",
   "split": "dev",
   "tags": ["share", "cross-app", "chrome", "contacts", "demo"],
-  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.chrome", "com.google.android.contacts", "com.android.contacts", "com.samsung.android.app.contacts"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.chrome", ["com.google.android.contacts", "com.android.contacts", "com.samsung.android.app.contacts"]] },
   "params": {
     "port": { "int": [20000, 29999] },
     "who": {
