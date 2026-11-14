@@ -82,9 +82,6 @@ type McpNeed = TemplateView["mcp"][number];
  *  server's mapping, for display: the apply maps them itself. */
 export const matchesOf = (need: McpNeed, saved: readonly Pick<McpServer, "name" | "source" | "toolkit">[]): string[] =>
   saved.filter((s) => s.source === need.source && s.toolkit === need.toolkit).map((s) => s.name).sort();
-/** The server an apply takes for a need among `matches` when the owner picks none: the one named as the toolkit, else the
- *  first by name. */
-export const defaultServer = (need: McpNeed, matches: readonly string[]): string | undefined => (matches.includes(need.toolkit) ? need.toolkit : matches[0]);
 /** Where a need not set up here is set up (Settings → MCP servers, its add form filled): the Composio preset with the
  *  toolkit and its actions, GitHub's server on the GitHub App, or a server under the toolkit's name. */
 export function setUpHref(need: McpNeed): string {

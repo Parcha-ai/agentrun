@@ -112,7 +112,7 @@ export function composioAddress(generated: string): string {
 
 /** PUT /settings/mcp-servers/{name}/composio: Composio makes the managed MCP server, `save` keeps it as a saved MCP server
  *  (`{url, auth}`: the key a sealed header), and a toolkit that needs the person's account says where to connect it. */
-export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> }; source?: "composio"; toolkit?: string }) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
+export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> } }, made: { source: "composio"; toolkit: string | null }) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
   const { key, toolkit, rest } = head(body);
   const tools = Array.isArray(rest.tools) ? rest.tools : [];
   const user = rest.user_id === undefined ? USER : typeof rest.user_id === "string" ? rest.user_id : "";
@@ -158,8 +158,8 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     }
     url = composioAddress(address);
     // Saved as what it is, a Composio server of this toolkit: a template that needs the toolkit maps to it, whatever its
-    // name. A slug no template can name (mcp:<toolkit>/<tool>: no `_`) is saved as a server of no toolkit.
-    const server = await save({ url, auth: { type: "headers", headers: { "x-api-key": key } }, ...(MCP_SERVER_NAME.test(toolkit) ? { source: "composio" as const, toolkit } : {}) });
+    // name. A slug no template can name (mcp:<toolkit>/<tool>: no `_`) is saved as a Composio server of no toolkit.
+    const server = await save({ url, auth: { type: "headers", headers: { "x-api-key": key } } }, { source: "composio", toolkit: MCP_SERVER_NAME.test(toolkit) ? toolkit : null });
     // Composio's server can leave out an action it was allowed (HACKERNEWS_GET_FRONTPAGE, live 11-13): say which, so a grant
     // doesn't vanish without a word. A toolkit with no account yet still lists its actions, so this holds before the connect.
     const listed = new Set((server.tools ?? []).map((tool) => tool.name));

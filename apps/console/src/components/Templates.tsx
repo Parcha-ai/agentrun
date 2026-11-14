@@ -14,7 +14,7 @@ import { keeper } from "@/lib/idempotency";
 import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
-import { choiceOptions, defaultServer, grantsOf, issuesAt, matchesOf, needsOf, paramHelp, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, setUpHref, startValues, templateHash, titleOf } from "@/lib/templatePackages";
+import { choiceOptions, grantsOf, issuesAt, matchesOf, needsOf, paramHelp, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, setUpHref, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
@@ -120,10 +120,13 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
     return () => { live = false; };
   }, [v2]);
   const grants = grantsOf(t, ticked);
-  // Each need's matching servers, and the one it uses: the owner's pick, else the apply's default.
-  const mapped = t.mcp.map((m) => { const matches = servers ? matchesOf(m, servers) : []; return { m, matches, uses: picks[m.toolkit] ?? defaultServer(m, matches) }; });
+  // Each need's matching servers, and the one it uses: its one match, else the owner's pick among several (never one picked
+  // for them: the apply refuses several with no pick).
+  const mapped = t.mcp.map((m) => { const matches = servers ? matchesOf(m, servers) : []; return { m, matches, uses: matches.length === 1 ? matches[0] : matches.includes(picks[m.toolkit] ?? "") ? picks[m.toolkit] : undefined }; });
   // Sent for every need several servers match, so the server the screen shows is the one the agent gets.
   const chosen = Object.fromEntries(mapped.flatMap(({ m, matches, uses }) => (matches.length > 1 && uses ? [[m.toolkit, uses]] : [])));
+  // A need several servers match that the owner hasn't picked one for: Apply waits for the pick.
+  const unpicked = mapped.filter(({ matches, uses }) => matches.length > 1 && !uses).map(({ m }) => m.toolkit);
   const at = (field: string) => issuesAt(issues, field);
   // A parameter's value as typed or picked: an issue at it goes as soon as the value is one the server takes.
   const setParam = (key: string, value: string) => {
@@ -265,15 +268,17 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
                 {servers && matches.length < 2 && <span className="text-small text-muted-foreground">{uses ? `Uses ${uses}` : "Not set up here"}</span>}
               </p>
               {m.reason && <p className="mt-1 text-small text-muted-foreground">{m.reason}</p>}
-              {/* Several saved servers are this source and toolkit: the owner picks one, the apply's default to start. */}
+              {/* Several saved servers are this source and toolkit (two Gmail accounts): the owner picks one, none picked to
+                  start, and Apply waits for it. */}
               {servers && matches.length > 1 && (
                 <label className="mt-2 flex flex-wrap items-center gap-2 text-small text-muted-foreground">Uses
-                  <Picker small label={`Server for ${m.toolkit}`} value={uses ?? ""} onChange={(v) => setPicks((was) => ({ ...was, [m.toolkit]: v }))} options={matches.map((s) => ({ value: s, label: s }))} />
+                  <Picker small label={`Server for ${m.toolkit}`} value={uses ?? ""} placeholder="Pick one" onChange={(v) => setPicks((was) => ({ ...was, [m.toolkit]: v }))} options={matches.map((s) => ({ value: s, label: s }))} />
+                  {!uses && <span data-unpicked={m.toolkit}>{matches.length} saved servers are {SOURCE_LABEL[m.source]} {m.toolkit}: pick the one the agent uses.</span>}
                 </label>
               )}
               {/* A need no saved server matches: said before Apply, with the way to set it up, so an agent is never made without
                   its tools unseen. Composio's opens the preset with its toolkit and actions; GitHub's is set up as a GitHub App. */}
-              {servers && !uses && (
+              {servers && matches.length === 0 && (
                 <p role="status" data-missing-mcp={m.toolkit} className="mt-2 border border-warning/50 px-3 py-2 text-small text-warning-text">
                   {m.required ? `${m.toolkit} is required and not set up here: Apply is refused until it is.` : `${m.toolkit} is not set up here: Apply makes the agent without its tools (${m.tools.map((x) => x.name).join(", ")}).`}{" "}
                   <a href={setUpHref(m)} className="font-mono text-primary-text underline-offset-2 hover:underline">{m.source === "github" ? "Set up GitHub App access" : m.source === "composio" ? `Add ${m.toolkit} from Composio` : `Set up ${m.toolkit}`}</a>
@@ -333,7 +338,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       </Section>
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
-        <Button size="sm" variant="solid" onClick={() => void apply()} disabled={applying}>{applying ? "Applying…" : "Apply"}</Button>
+        <Button size="sm" variant="solid" onClick={() => void apply()} disabled={applying || unpicked.length > 0} title={unpicked.length ? `Pick the server for ${unpicked.join(", ")} first` : undefined}>{applying ? "Applying…" : "Apply"}</Button>
         {said && (!said.withIssues || issues.length > 0) && <p className="min-w-0 flex-1 text-body text-destructive-text" role="alert">{said.text}</p>}
       </div>
       {issues.filter((i) => !placed(i)).length > 0 && <div className="mt-2"><Issues issues={issues.filter((i) => !placed(i))} named /></div>}

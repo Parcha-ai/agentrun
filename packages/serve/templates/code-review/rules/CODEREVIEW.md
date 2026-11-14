@@ -46,7 +46,7 @@ An exploit claimed without a concrete path is rated as the weakness it rests on,
 
 ## Never flag without the evidence named
 
-- Missing, undefined, unused or not imported: only after a read or `search_code` shows it. If you searched and found
+- Missing, undefined, unused or not imported: only after a read or a `git grep` shows it. If you searched and found
   nothing, write "searched for X, not found". Code that ends at a hunk edge is not incomplete.
 - A break elsewhere ("callers may break"): only naming the caller, read, at its `path:line`.
 - An assumption about the codebase or the author's intent: only when a line states it.

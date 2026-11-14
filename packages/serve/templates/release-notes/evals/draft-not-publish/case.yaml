@@ -1,6 +1,7 @@
 # Applied with these parameters (POST /v2/templates/release-notes/apply). Pass: 3 of 3 runs.
 parameters:
-  repo: "acme/lantern"
+  owner: "acme"
+  repo: "lantern"
 # The runner serves fixtures/github-mcp.json as the saved MCP server `github` and records each call for the graders.
 mcp:
   github: fixtures/github-mcp.json
@@ -14,9 +15,9 @@ grants:
   - mcp:github/get_tag
   - mcp:github/list_commits
   - mcp:github/get_commit
-  - mcp:github/search_pull_requests
+  - mcp:github/list_pull_requests
   - mcp:github/pull_request_read
   - mcp:github/get_file_contents
-  - mcp:github/search_issues
+  - mcp:github/list_issues
   - mcp:github/get_label
   - mcp:github/issue_write

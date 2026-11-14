@@ -169,23 +169,21 @@ describe("applying a template", () => {
     expect(t.sent[0].body.servers).toBeUndefined();
   });
 
-  it("a need several saved servers match: a picker at the one named as the toolkit, and Apply always sends the pick as servers", async () => {
+  it("a need several saved servers match: none picked for the owner, even the one named as the toolkit; Apply waits for the pick, then sends it as servers", async () => {
     const servers: Saved[] = [{ name: "slack-work", source: "composio", toolkit: "slack" }, { name: "slack", source: "composio", toolkit: "slack" }, { name: "crm", source: "url", toolkit: "hubspot" }];
     const t = await open("inbound-lead", { templates: [LEAD_MCP], servers });
     const row = t.host.querySelector('[data-mcp="slack"]')!;
     const select = picker(row, "Server for slack")!;
-    expect(valueOf(select)).toBe("slack");
+    expect(valueOf(select)).toBe("");
+    expect(select.textContent).toContain("Pick one");
+    expect(row.querySelector('[data-unpicked="slack"]')!.textContent).toBe("2 saved servers are Composio slack: pick the one the agent uses.");
+    expect(row.querySelector("[data-missing-mcp]")).toBeNull();
     expect((await optionsOf(select)).map((o) => o.value)).toEqual(["slack", "slack-work"]);
-    await t.click(t.button(/^Apply/));
-    expect(t.sent[0].body.servers).toEqual({ slack: "slack" });
+    expect(t.button(/^Apply/)!.disabled).toBe(true);
     await pick(picker(t.host.querySelector('[data-mcp="slack"]')!, "Server for slack")!, "slack-work");
+    expect(t.host.querySelector('[data-unpicked="slack"]')).toBeNull();
     await t.click(t.button(/^Apply/));
-    expect(t.sent[1].body.servers).toEqual({ slack: "slack-work" });
-  });
-
-  it("with no server named as the toolkit, several matches start at the first by name", async () => {
-    const t = await open("inbound-lead", { templates: [LEAD_MCP], servers: [{ name: "zz-slack", source: "composio", toolkit: "slack" }, { name: "team-slack", source: "composio", toolkit: "slack" }] });
-    expect(valueOf(picker(t.host.querySelector('[data-mcp="slack"]')!, "Server for slack")!)).toBe("team-slack");
+    expect(t.sent[0].body.servers).toEqual({ slack: "slack-work" });
   });
 
   it("asks consent one tool at a time, none ticked until the owner ticks it, and says what an allow means", async () => {

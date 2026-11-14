@@ -2,16 +2,17 @@
 // ({source: composio | github | url, toolkit}), never by the name an owner saves a server under, and names its tools
 // mcp:<toolkit>/<tool> inside. A saved MCP server records its own {source, toolkit}: the Composio preset sets composio and
 // its toolkit, a server on the GitHub App is github/github, any other is url with the toolkit the owner gives it. Apply
-// maps each need to the saved server whose record matches (the owner picks when several do) and rewrites the exact
-// prefix mcp:<toolkit>/ to mcp:<server>/ in the agent it makes. Also here: the display-only category and tags, and the
-// examples/ folder, checked and never applied.
+// maps each need to the saved server whose record matches (the owner picks when several do) and renames each catalog
+// name mcp:<toolkit>/<tool> to mcp:<server>/<tool> in the agent it makes. Also here: a template eval's fakes standing in
+// for a need, the display-only category and tags, and the examples/ folder, checked and never applied.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { sourceOf, storedSource } from "../dist/mcp-sources.js";
-import { PackageError, packageView, readPackage } from "../dist/templates.js";
+import { evalTemplate } from "../dist/template-eval.js";
+import { onServerName, onServerNames, PackageError, packageView, readPackage } from "../dist/templates.js";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
@@ -21,6 +22,7 @@ import { scratch, secretWritePath, serve, withEnv } from "./support.mjs";
 secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+const TEMPLATES = new URL("../templates/", import.meta.url).pathname;
 
 const MANIFEST = `---
 name: notes-digest
@@ -39,7 +41,7 @@ mcp:
 parameters:
   to: { type: string, description: "where the digest goes" }
 ---
-Call mcp:notes/list_notes, then mcp:notes/send_note once. The text xmcp:notes/list_notes is not a tool name.
+Call mcp:notes/list_notes, then mcp:notes/send_note once. The text xmcp:notes/list_notes is not a tool name. You hold mcp:notes/*.
 `;
 const SKILL = "---\nname: digest\ndescription: How to digest notes.\n---\nRead with mcp:notes/list_notes first.\n";
 
@@ -98,7 +100,7 @@ test("the validator refuses an MCP need in the old shape or a bad one, a categor
   await has(edit("source: url\n    toolkit: notes", "server: notes"), /mcp\[0\] is \{source: composio \| github \| url, toolkit/);
   await has(edit("source: url", "source: zapier"), /mcp\[0\] is \{source: composio \| github \| url/);
   await has(edit("source: url\n    toolkit: notes", "source: github\n    toolkit: gh"), /mcp\[0\]: a github source's toolkit is github/);
-  await has(edit("toolkit: notes", "toolkit: Notes_Kit"), /mcp\[0\] is \{source/);
+  await has(edit("toolkit: notes", "toolkit: Notes_Kit"), /mcp\[0\]\.toolkit "Notes_Kit" is not a toolkit name: \^\[a-z\]\[a-z0-9-\]\{0,31\}\$/);
   await has(edit(`reason: "Reads your notes and sends the digest on."`, `reason: "${"x".repeat(281)}"`), /mcp\[0\] is \{source/);
   await has(edit("parameters:", "mcp_again: 1\nparameters:"), /no field mcp_again/);
   await has((files) => void (files["agent.md"] = files["agent.md"].replace("    pin: { send_note: { to: \"${parameters.to}\" } }\n", "    pin: { send_note: { to: \"${parameters.to}\" } }\n  - source: composio\n    toolkit: notes\n    tools: [other]\n")), /mcp\[1\]: the toolkit notes is listed twice/);
@@ -129,17 +131,49 @@ test("a saved MCP server records its source and toolkit: url with none by defaul
   assert.equal((await api("PUT", "/settings/mcp-servers/my-notes", { url: fake.url, auth: { type: "none" } })).status, 200);
   assert.deepEqual(await read("my-notes"), ["url", "notes"]);
   assert.deepEqual((await api("GET", "/settings/mcp-servers")).body.servers.map((s) => [s.name, s.source, s.toolkit]), [["my-notes", "url", "notes"]]);
-  const bad = await api("PUT", "/settings/mcp-servers/my-notes", { url: fake.url, auth: { type: "none" }, source: "zapier", toolkit: "Not A Slug" });
+  // The source is what made the server, never sent: a PUT that claims one is refused, as is a toolkit off the rule.
+  const bad = await api("PUT", "/settings/mcp-servers/my-notes", { url: fake.url, auth: { type: "none" }, source: "composio", toolkit: "Not A Slug" });
   assert.equal(bad.status, 422, JSON.stringify(bad.body));
-  assert.deepEqual(bad.body.error.fields.map((f) => f.field).sort(), ["source", "toolkit"]);
+  assert.deepEqual(bad.body.error.fields.map((f) => [f.field, f.reason]).sort(), [["source", "not_allowed"], ["toolkit", "bad_format"]]);
   // The Composio preset records composio and its toolkit, whatever the name it is saved under.
   const preset = await api("PUT", "/settings/mcp-servers/hn-feed/composio", { api_key: composio.apiKey, toolkit: "hackernews", tools: ["add"] });
   assert.equal(preset.status, 200, JSON.stringify(preset.body));
   assert.deepEqual(await read("hn-feed"), ["composio", "hackernews"]);
+  // A save over it that names no toolkit (a new key, say) keeps what made it; one that names a toolkit keeps it composio.
+  const hn = (await api("GET", "/settings/mcp-servers/hn-feed")).body;
+  assert.equal((await api("PUT", "/settings/mcp-servers/hn-feed", { url: hn.url, auth: { type: "headers" } })).status, 200);
+  assert.deepEqual(await read("hn-feed"), ["composio", "hackernews"]);
+  const cleared = await api("PUT", "/settings/mcp-servers/hn-feed", { url: hn.url, auth: { type: "headers" }, toolkit: null });
+  assert.equal(cleared.status, 422, "a composio server names its toolkit");
+  assert.deepEqual(cleared.body.error.fields.map((f) => [f.field, f.reason]), [["toolkit", "missing"]]);
   // Removed with its server: a server saved again under the name starts from url with none.
   assert.equal((await api("DELETE", "/settings/mcp-servers/my-notes")).status, 204);
   assert.equal((await api("PUT", "/settings/mcp-servers/my-notes", { url: fake.url, auth: { type: "none" } })).status, 200);
   assert.deepEqual(await read("my-notes"), ["url", null]);
+});
+
+test("a template eval's own server takes a fake's source, the need it stands in for; an eval on an owner's server saves only a url fake, and fails a case that fakes Composio or GitHub there", async (t) => {
+  const eval_ = await serve(t, { mcpStandIns: true });
+  const fake = await notesServer(t);
+  const read = async (name) => {
+    const { body } = await eval_.api("GET", `/settings/mcp-servers/${name}`);
+    return [body.source, body.toolkit];
+  };
+  assert.equal((await eval_.api("PUT", "/settings/mcp-servers/hubspot", { url: fake.url, auth: { type: "none" }, source: "composio", toolkit: "hubspot" })).status, 200);
+  assert.deepEqual(await read("hubspot"), ["composio", "hubspot"]);
+  assert.equal((await eval_.api("PUT", "/settings/mcp-servers/github", { url: fake.url, auth: { type: "none" }, source: "github", toolkit: "github" })).status, 200);
+  assert.deepEqual(await read("github"), ["github", "github"]);
+  const bare = await eval_.api("PUT", "/settings/mcp-servers/slack", { url: fake.url, auth: { type: "none" }, source: "composio" });
+  assert.deepEqual(bare.body.error.fields.map((f) => [f.field, f.reason]), [["toolkit", "missing"]]);
+  const odd = await eval_.api("PUT", "/settings/mcp-servers/slack", { url: fake.url, auth: { type: "none" }, source: "gitlab", toolkit: "slack" });
+  assert.deepEqual(odd.body.error.fields.map((f) => [f.field, f.reason]), [["source", "not_an_option"]]);
+
+  // An owner's server: the eval's fake for a Composio need is never saved there, and the case fails saying where it runs.
+  const owner = await serve(t, { templates: TEMPLATES });
+  const report = await evalTemplate({ dir: join(TEMPLATES, "inbound-lead"), cases: ["write-back"], server: { baseUrl: owner.baseUrl, token: owner.token } });
+  assert.equal(report.pass, false);
+  assert.match(report.cases[0].error, /fakes the composio toolkit hubspot, and only the eval's own server saves a fake as composio: run it without --server/);
+  assert.equal((await owner.api("GET", "/settings/mcp-servers/hubspot")).status, 404, "nothing saved");
 });
 
 test("a server's record is read only for the server row it was written for: one left behind by a removal cut short, or written for no row, is never another server's", async (t) => {
@@ -171,28 +205,31 @@ test("a server's record is read only for the server row it was written for: one 
   assert.equal(await store.settings.get("mcp.source/my-notes"), undefined, "its own record goes with it");
 });
 
-test("what a server is, read: github/github on the GitHub App or at its address; composio with no toolkit yet on Composio's hosts; else url; a record counts only for its row", () => {
-  const origin = "https://api.githubcopilot.com";
-  assert.deepEqual(sourceOf({ url: "https://backend.composio.dev/v3/mcp/abc?user_id=u", auth: "headers", createdAt: 5 }, undefined, origin), { source: "composio", toolkit: null });
-  assert.deepEqual(sourceOf({ url: "https://mcp.composio.dev/x", auth: "none", createdAt: 5 }, undefined, origin), { source: "composio", toolkit: null });
-  assert.deepEqual(sourceOf({ url: "https://notcomposio.dev/x", auth: "none", createdAt: 5 }, undefined, origin), { source: "url", toolkit: null });
-  assert.deepEqual(sourceOf({ url: "https://api.githubcopilot.com/mcp/", auth: "bearer", createdAt: 5 }, undefined, origin), { source: "github", toolkit: "github" });
+test("what a server is, read: github/github on the GitHub App's tokens, else the record written for its row, else url with none; never its address or name", () => {
+  const none = { source: "url", toolkit: null };
+  assert.deepEqual(sourceOf({ auth: "github_app", createdAt: 5 }, undefined), { source: "github", toolkit: "github" });
+  assert.deepEqual(sourceOf({ auth: "github_app", createdAt: 5 }, storedSource({ source: "url", toolkit: "notes" }, { createdAt: 5 })), { source: "github", toolkit: "github" }, "the auth wins over any record");
+  // GitHub's own address, or Composio's, on another auth: what made it says, and no record is url.
+  assert.deepEqual(sourceOf({ url: "https://api.githubcopilot.com/mcp/", auth: "bearer", createdAt: 5 }, undefined), none);
+  assert.deepEqual(sourceOf({ url: "https://backend.composio.dev/v3/mcp/abc", auth: "headers", createdAt: 5 }, undefined), none);
   const record = storedSource({ source: "composio", toolkit: "slack" }, { createdAt: 5 });
-  assert.deepEqual(sourceOf({ url: "https://backend.composio.dev/v3/mcp/abc", auth: "headers", createdAt: 5 }, record, origin), { source: "composio", toolkit: "slack" });
-  assert.deepEqual(sourceOf({ url: "https://backend.composio.dev/v3/mcp/abc", auth: "headers", createdAt: 6 }, record, origin), { source: "composio", toolkit: null }, "written for another row");
-  assert.deepEqual(sourceOf({ url: "https://mcp.example.com/mcp", auth: "none" }, record, origin), { source: "url", toolkit: null }, "no row yet");
-  assert.deepEqual(sourceOf({ url: "https://mcp.example.com/mcp", auth: "none", createdAt: 5 }, { source: "url", toolkit: "notes" }, origin), { source: "url", toolkit: null }, "a record naming no row");
+  assert.deepEqual(sourceOf({ auth: "headers", createdAt: 5 }, record), { source: "composio", toolkit: "slack" });
+  assert.deepEqual(sourceOf({ auth: "headers", createdAt: 6 }, record), none, "written for another row");
+  assert.deepEqual(sourceOf({ auth: "none" }, record), none, "no row yet");
+  assert.deepEqual(sourceOf({ auth: "none", createdAt: 5 }, { source: "url", toolkit: "notes" }), none, "a record naming no row");
+  assert.deepEqual(sourceOf({ auth: "bearer", createdAt: 5 }, { source: "github", toolkit: "github", of: 5 }), none, "github is the auth's, never a record's");
+  assert.deepEqual(sourceOf({ auth: "none", createdAt: 5 }, storedSource({ source: "github", toolkit: "github" }, { createdAt: 5 }, true)), { source: "github", toolkit: "github" }, "but for an eval's fake standing in for it");
 });
 
-test("a sign-in carries the server's source and toolkit: the server it saves records them; a bad one is refused before anything is sent", async (t) => {
+test("a sign-in carries the server's toolkit: the server it saves records url and it; a source or a bad toolkit is refused before anything is sent", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { api } = await serve(t);
   const as = await startFakeOAuth();
   const mcp = await startFakeMcp({ token: as.accepts, oauth: as.issuer });
   t.after(() => Promise.all([as.close(), mcp.close()]));
-  const bad = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url, source: "composio" });
+  const bad = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url, source: "composio", toolkit: "No_Kit" });
   assert.equal(bad.status, 422, JSON.stringify(bad.body));
-  assert.deepEqual(bad.body.error.fields.map((f) => [f.field, f.reason]), [["toolkit", "missing"]]);
+  assert.deepEqual(bad.body.error.fields.map((f) => [f.field, f.reason]).sort(), [["source", "not_allowed"], ["toolkit", "bad_format"]]);
   assert.equal(as.log.length, 0, "nothing was sent to the authorization server");
   const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url, toolkit: "notion" });
   assert.equal(started.status, 200, JSON.stringify(started.body));
@@ -230,7 +267,7 @@ test("apply maps each need to the saved server whose source and toolkit match an
   assert.ok(definition.tools.includes("mcp:my-notes/list_notes"), JSON.stringify(definition.tools));
   assert.ok(!definition.tools.some((tool) => tool.startsWith("mcp:notes/")), JSON.stringify(definition.tools));
   assert.deepEqual(definition.tool_settings, { "mcp:my-notes/list_notes": { permission: "allow" }, "mcp:my-notes/send_note": { pin: { to: "me" } } });
-  assert.equal(definition.instructions, "Call mcp:my-notes/list_notes, then mcp:my-notes/send_note once. The text xmcp:notes/list_notes is not a tool name.");
+  assert.equal(definition.instructions, "Call mcp:my-notes/list_notes, then mcp:my-notes/send_note once. The text xmcp:notes/list_notes is not a tool name. You hold mcp:my-notes/*.");
   assert.equal(Object.fromEntries(agent.skills.map((s) => [s.path, s.sha256]))["digest/SKILL.md"], sha256(SKILL.replace("mcp:notes/", "mcp:my-notes/")));
 
   // A grant names the package's own tool (mcp:<toolkit>/<tool>): the saved name is no grant of the package.
@@ -238,12 +275,15 @@ test("apply maps each need to the saved server whose source and toolkit match an
   assert.equal(byServer.status, 422, JSON.stringify(byServer.body));
   assert.deepEqual(byServer.body.error.fields.map((f) => f.field), ["grants.0"]);
 
-  // Two match: the one named as the toolkit is taken, said; the owner's pick takes another; a pick that is not one of them is refused.
+  // Two match: never picked for the owner, even the one named as the toolkit: the apply is refused, naming both, and
+  // nothing is made. The owner's pick takes one; a pick that is not one of them is refused.
   assert.equal((await api("PUT", "/settings/mcp-servers/notes", { url: fake.url, auth: { type: "none" }, toolkit: "notes" })).status, 200);
+  const agentsBefore = (await api("GET", "/agents")).body.agents.length;
   const two = await api("POST", "/templates/notes-digest/apply", { parameters: { to: "me" } });
-  assert.equal(two.status, 201, JSON.stringify(two.body));
-  assert.deepEqual(two.body.servers, { notes: "notes" });
-  assert.match(two.body.warnings.find((w) => w.field === "servers.notes")?.message ?? "", /my-notes and notes/);
+  assert.equal(two.status, 422, JSON.stringify(two.body));
+  assert.deepEqual(two.body.error.fields.map((f) => [f.field, f.reason]), [["servers.notes", "missing"]]);
+  assert.match(two.body.error.fields[0].message, /my-notes and notes are each url notes/);
+  assert.equal((await api("GET", "/agents")).body.agents.length, agentsBefore, "nothing was made");
   const picked = await api("POST", "/templates/notes-digest/apply", { parameters: { to: "me" }, servers: { notes: "my-notes" }, grants: ["mcp:notes/list_notes"] });
   assert.equal(picked.status, 201, JSON.stringify(picked.body));
   assert.deepEqual(picked.body.servers, { notes: "my-notes" });
@@ -257,9 +297,22 @@ test("apply maps each need to the saved server whose source and toolkit match an
   void dir;
 });
 
+test("apply's rename reads each catalog name (parseToolName), swaps its server and writes it again (formatToolName): a tool, a wildcard, never a longer word or another server", () => {
+  const servers = { notes: "my-notes", gmail: "notes", slack: "slack" };
+  assert.equal(onServerName("mcp:notes/list_notes", servers), "mcp:my-notes/list_notes");
+  assert.equal(onServerName("mcp:notes/*", servers), "mcp:my-notes/*");
+  assert.equal(onServerName("mcp:gmail/GMAIL_SEND_EMAIL", servers), "mcp:notes/GMAIL_SEND_EMAIL", "a server named as another toolkit");
+  assert.equal(onServerName("mcp:other/x", servers), "mcp:other/x");
+  assert.equal(onServerName("read", servers), "read");
+  assert.equal(onServerName("mcp:Notes/x", servers), "mcp:Notes/x", "outside the grammar: as it is");
+  assert.equal(onServerNames("Use mcp:gmail/GMAIL_SEND_EMAIL and mcp:notes/list_notes, then mcp:notes/*. Not xmcp:notes/list_notes, nor mcp:notes/ alone.", servers),
+    "Use mcp:notes/GMAIL_SEND_EMAIL and mcp:my-notes/list_notes, then mcp:my-notes/*. Not xmcp:notes/list_notes, nor mcp:notes/ alone.", "one pass: the gmail rename is not renamed again");
+  assert.equal(onServerNames("`mcp:notes/send_note`", servers), "`mcp:my-notes/send_note`");
+});
+
 test("a required need with no matching saved server refuses the apply, naming the source and toolkit and how to set it up", async (t) => {
   const { root } = await notesPackage(t, (files) => void (files["agent.md"] = files["agent.md"].replace("source: url", "source: composio").replace("required: false", "required: true")));
-  const { api } = await serve(t, { templates: root });
+  const { api, store } = await serve(t, { templates: root });
   const fake = await notesServer(t);
   // A url server with the toolkit is not a Composio one.
   assert.equal((await api("PUT", "/settings/mcp-servers/notes", { url: fake.url, auth: { type: "none" }, toolkit: "notes" })).status, 200);
@@ -269,8 +322,12 @@ test("a required need with no matching saved server refuses the apply, naming th
   assert.equal(field?.reason, "not_set_up_here");
   assert.match(field.fix, /Add from Composio/);
   assert.match(field.fix, /list_notes, send_note/);
-  // The owner says it is a Composio server: it maps.
-  assert.equal((await api("PUT", "/settings/mcp-servers/notes", { url: fake.url, auth: { type: "none" }, source: "composio", toolkit: "notes" })).status, 200);
+  // The owner can't say it is one: the source is what made the server.
+  const claimed = await api("PUT", "/settings/mcp-servers/notes", { url: fake.url, auth: { type: "none" }, source: "composio", toolkit: "notes" });
+  assert.equal(claimed.status, 422, JSON.stringify(claimed.body));
+  // Made by the Composio preset (its record, as the preset writes it, for this row): it maps.
+  await store.settings.put("mcp.source/notes", storedSource({ source: "composio", toolkit: "notes" }, await store.mcp.server("notes")));
+  assert.equal((await api("PUT", "/settings/mcp-servers/notes", { url: fake.url, auth: { type: "none" } })).status, 200);
   const applied = await api("POST", "/templates/notes-digest/apply", { parameters: { to: "me" } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   assert.deepEqual(applied.body.servers, { notes: "notes" });

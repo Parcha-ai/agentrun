@@ -542,35 +542,24 @@
         ]
       }
     },
-    "search_pull_requests": {
-      "description": "Search pull requests with GitHub search syntax.",
+    "list_pull_requests": {
+      "description": "List pull requests in a repository: state, base, sort and direction filter and order them.",
       "input": {
         "type": "object",
         "properties": {
-          "query": {
-            "type": "string"
-          },
-          "owner": {
-            "type": "string"
-          },
-          "repo": {
-            "type": "string"
-          },
-          "sort": {
-            "type": "string"
-          },
-          "order": {
-            "type": "string"
-          },
-          "page": {
-            "type": "integer"
-          },
-          "perPage": {
-            "type": "integer"
-          }
+          "owner": { "type": "string" },
+          "repo": { "type": "string" },
+          "state": { "type": "string" },
+          "head": { "type": "string" },
+          "base": { "type": "string" },
+          "sort": { "type": "string" },
+          "direction": { "type": "string" },
+          "page": { "type": "integer" },
+          "perPage": { "type": "integer" }
         },
         "required": [
-          "query"
+          "owner",
+          "repo"
         ]
       },
       "answers": [
@@ -582,7 +571,7 @@
             "content": [
               {
                 "type": "text",
-                "text": "{\"total_count\":3,\"items\":[]}"
+                "text": "[]"
               }
             ]
           }
@@ -592,7 +581,7 @@
         "content": [
           {
             "type": "text",
-            "text": "{\"total_count\":3,\"incomplete_results\":false,\"items\":[{\"number\":412,\"title\":\"Read default flags from `LANTERN_OPTS`\",\"body\":\"Default flags can be set in the `LANTERN_OPTS` environment variable. Flags on the command line win over it.\",\"state\":\"closed\",\"user\":{\"login\":\"dtran\"},\"labels\":[{\"name\":\"enhancement\"}],\"html_url\":\"https://github.com/acme/lantern/pull/412\",\"pull_request\":{\"merged_at\":\"2026-10-25T12:00:00Z\"}},{\"number\":411,\"title\":\"Cap webhook retries\",\"body\":\"`lantern notify` retries a failed webhook at most 3 times a minute, so a slow receiver is no longer flooded.\",\"state\":\"closed\",\"user\":{\"login\":\"mira-k\"},\"labels\":[{\"name\":\"enhancement\"}],\"html_url\":\"https://github.com/acme/lantern/pull/411\",\"pull_request\":{\"merged_at\":\"2026-10-05T12:00:00Z\"}},{\"number\":399,\"title\":\"Fix --since with dates before 1970\",\"body\":\"`--since 1969-12-31` crashed; it now works.\",\"state\":\"closed\",\"user\":{\"login\":\"osei-a\"},\"labels\":[{\"name\":\"bug\"}],\"html_url\":\"https://github.com/acme/lantern/pull/399\",\"pull_request\":{\"merged_at\":\"2026-09-28T12:00:00Z\"}}]}"
+            "text": "[{\"number\":412,\"title\":\"Read default flags from `LANTERN_OPTS`\",\"body\":\"Default flags can be set in the `LANTERN_OPTS` environment variable. Flags on the command line win over it.\",\"state\":\"closed\",\"user\":{\"login\":\"dtran\"},\"labels\":[{\"name\":\"enhancement\"}],\"html_url\":\"https://github.com/acme/lantern/pull/412\",\"updated_at\":\"2026-10-25T12:01:00Z\",\"merged_at\":\"2026-10-25T12:00:00Z\",\"merge_commit_sha\":\"3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c\",\"base\":{\"ref\":\"main\"},\"head\":{\"ref\":\"lantern-opts\",\"sha\":\"a412a412a412a412a412a412a412a412a412a412\"}},{\"number\":411,\"title\":\"Cap webhook retries\",\"body\":\"`lantern notify` retries a failed webhook at most 3 times a minute, so a slow receiver is no longer flooded.\",\"state\":\"closed\",\"user\":{\"login\":\"mira-k\"},\"labels\":[{\"name\":\"enhancement\"}],\"html_url\":\"https://github.com/acme/lantern/pull/411\",\"updated_at\":\"2026-10-05T12:01:00Z\",\"merged_at\":\"2026-10-05T12:00:00Z\",\"merge_commit_sha\":\"5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e\",\"base\":{\"ref\":\"develop\"},\"head\":{\"ref\":\"webhook-cap\",\"sha\":\"6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f\"}},{\"number\":399,\"title\":\"Fix --since with dates before 1970\",\"body\":\"`--since 1969-12-31` crashed; it now works.\",\"state\":\"closed\",\"user\":{\"login\":\"osei-a\"},\"labels\":[{\"name\":\"bug\"}],\"html_url\":\"https://github.com/acme/lantern/pull/399\",\"updated_at\":\"2026-09-28T12:01:00Z\",\"merged_at\":\"2026-09-28T12:00:00Z\",\"merge_commit_sha\":\"7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a\",\"base\":{\"ref\":\"main\"},\"head\":{\"ref\":\"since-1970\",\"sha\":\"a399a399a399a399a399a399a399a399a399a399\"}}]"
           }
         ]
       }
@@ -740,35 +729,24 @@
         ]
       }
     },
-    "search_issues": {
-      "description": "Search issues with GitHub search syntax.",
+    "list_issues": {
+      "description": "List issues in a repository: state, labels, orderBy and direction filter and order them.",
       "input": {
         "type": "object",
         "properties": {
-          "query": {
-            "type": "string"
-          },
-          "owner": {
-            "type": "string"
-          },
-          "repo": {
-            "type": "string"
-          },
-          "sort": {
-            "type": "string"
-          },
-          "order": {
-            "type": "string"
-          },
-          "page": {
-            "type": "integer"
-          },
-          "perPage": {
-            "type": "integer"
-          }
+          "owner": { "type": "string" },
+          "repo": { "type": "string" },
+          "state": { "type": "string" },
+          "labels": { "type": "array", "items": { "type": "string" } },
+          "orderBy": { "type": "string" },
+          "direction": { "type": "string" },
+          "since": { "type": "string" },
+          "perPage": { "type": "integer" },
+          "after": { "type": "string" }
         },
         "required": [
-          "query"
+          "owner",
+          "repo"
         ]
       },
       "answers": [],
@@ -776,7 +754,7 @@
         "content": [
           {
             "type": "text",
-            "text": "{\"total_count\":0,\"items\":[]}"
+            "text": "{\"issues\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null},\"totalCount\":0}"
           }
         ]
       }

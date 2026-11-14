@@ -39,8 +39,19 @@ write left unticked is not granted at all): each is held by its pin,
 which the tool gate checks before it allows or asks anything (a review can only COMMENT, a send only reaches the channel
 set at apply, a draft issue is only ever created), or, where no pin can bound it, by a stated rule (a test lists both).
 Apply writes each pin into the agent's own tool settings, so a pinned write never runs without its pin. The unpinned
-writes a package offers for the owner's grant (code-review's pending-review comment, inbound-lead's CRM record) are the
-rule-bounded ones above, and once granted they run unasked under `never`.
+writes a package offers for the owner's grant (inbound-lead's HubSpot note, whose destination is a contact that differs
+each run) are the rule-bounded ones above, and once granted they run unasked under `never`. No package offers a write
+whose object argument a pin can't bound: inbound-lead puts the fit score in its note's text, not in a contact update
+that could overwrite any field.
+
+**Every scoped tool is pinned, reads too.** A package that reads text anyone can write pins every MCP tool that takes a
+scope argument (a GitHub `owner` and `repo`, a channel) to its parameters, reads as well as writes, so a hostile pull
+request, release or page can't have a read reach another repository the credential reaches and a write quote it where
+its author reads it. A free-text search across everything the credential sees (GitHub's `search_code`,
+`search_issues`, `search_pull_requests`) can't be pinned, so no package uses one: they list and read instead. A
+repository is two parameters, `owner` and `repo`, because GitHub's tools take them apart. `code-review` and
+`release-notes` pin each of their GitHub tools to them, and each has an eval case (`other-repo`) where the untrusted text
+asks for another repository's file.
 
 **A pinned send goes only where the owner set.** A package may pin a send's destination to a parameter (`pin` in its
 `mcp` entry): apply writes it into the agent's tool settings, and the server's tool gate refuses any call of that tool
@@ -48,25 +59,26 @@ whose destination is not the pinned one, before it is sent or asked about, even 
 a page that talks the agent into posting elsewhere gets a refusal, never a post. A pin fixes where a send goes, not
 what it says, and it does not reach a write to a record (a CRM contact): that one is held by its skill's own check.
 `market-monitor` pins `SLACK_SEND_MESSAGE`'s `channel` and `GMAIL_SEND_EMAIL`'s `recipient_email` to its `channel`
-parameter (and keeps `cc`, `bcc` and `extra_recipients` out), and `inbound-lead` pins `SLACK_SEND_MESSAGE`'s
-`channel` to its `slack_channel` (both Composio actions) and `HUBSPOT_CREATE_CRM_OBJECT_WITH_PROPERTIES`'s `objectType`
-to `notes`, so that tool can only make a note. `market-monitor`'s `channel` takes a Slack channel id or an email address: each
+parameter (and keeps `cc`, `bcc`, `extra_recipients` and `from_email` out), and `inbound-lead` pins
+`SLACK_SEND_MESSAGE`'s `channel` to its `slack_channel` (both Composio actions). A name the action also takes the
+destination by (Slack's `channel_id`, Gmail's `to`) is pinned absent beside it. `market-monitor`'s `channel` takes a Slack channel id or an email address: each
 pin applies only to its own tool, so a channel id leaves no address `GMAIL_SEND_EMAIL` can send to and an address no
 channel Slack can post in, and its skill sends with the tool that matches the destination's kind. A send whose
 destination parameter apply was not given is set to deny, so it never runs, with a `pins.<tool>` warning that names
 the parameter to give.
 
-**Scope the credentials.** An allowed read reaches whatever the saved credential reaches. Save the GitHub server with
-a fine-grained token for the one repository the agent works on, the HubSpot one with the scopes its tools need, and so on: once
+**Scope the credentials.** An allowed read reaches whatever the saved credential reaches, less what a pin holds it from.
+Install the GitHub App only on the repositories its agents work on, connect the HubSpot toolkit with the scopes its
+tools need, and so on: once
 the owner grants a write, text the agent read could try to copy what that read reaches into it.
 
 | Package | What it does | Started by | Needs |
 |---|---|---|---|
-| `code-review` | Reviews a pull request for real bugs on a read-only checkout AgentRun makes of the PR (`checkout: pull_request`, in `repo/`): one `subagent` turn starts five quick and three deep reviewers, each with read-only bash (`git diff`, `git grep`, `nl -ba`; none builds or runs the code), against the repository's `CODEREVIEW.md` (on top of its own `rules/CODEREVIEW.md`, the baseline and the starter); the agent merges and verifies their findings and posts one comment review with P0/P1/P2 findings, each quoting the line behind it, and a 1-5 risk score, never an approval (its write is pinned to COMMENT). A fork's PR is reviewed when a writer comments `@<bot> review` | a run naming a PR, or a GitHub webhook trigger the owner adds | a shell (`computer: [shell, none]`: with none, it is made without bash and its reviewers read through the GitHub tools); a saved GitHub MCP server (source `github`) to read the PR and post; with neither, a diff in the message |
+| `code-review` | Reviews a pull request for real bugs on a read-only checkout AgentRun makes of the PR (`checkout: pull_request`, in `repo/`): one `subagent` turn starts five quick and three deep reviewers, each with read-only bash (`git diff`, `git grep`, `nl -ba`; none builds or runs the code), against the repository's `CODEREVIEW.md` (on top of its own `rules/CODEREVIEW.md`, the baseline and the starter); the agent merges and verifies their findings and posts one comment review with P0/P1/P2 findings, each quoting the line behind it, and a 1-5 risk score, never an approval (its write is pinned to COMMENT). A fork's PR is reviewed when a writer comments `@<bot> review` | a run naming a PR, or a GitHub webhook trigger the owner adds | a shell (`computer: [shell, none]`: with none, it is made without bash and its reviewers read through the GitHub tools); a saved GitHub MCP server (source `github`, on the GitHub App) to read the PR and post, every call pinned to its `owner` and `repo`; with neither, a diff in the message |
 | `kyb` | Business due diligence: identity, owners, sanctions against the lists themselves, adverse media, a verdict, every claim cited | a run naming a company | nothing; web tools only |
 | `market-monitor` | A weekly digest of what changed at the companies you watch, posted to one Slack channel or address | a weekly schedule (its `cron` and `timezone` parameters, Monday 08:00 UTC by default), or a run | optional: a saved Composio Slack or Gmail MCP server (toolkit `slack` or `gmail`), to send |
-| `inbound-lead` | Researches a form or CRM lead, scores it against your ICP, writes back to HubSpot or posts to Slack | a webhook (needs the seal key): your form tool or relay signs Standard Webhooks bodies of type `lead.submitted`, each lead its own run (3 at once); or a run | optional: a saved Composio HubSpot or Slack MCP server (toolkit `hubspot` or `slack`) |
-| `release-notes` | Turns the merged PRs since the last release into user-facing notes, as a draft issue to edit (no MCP tool makes a draft release) | a run naming the release or tag | a saved GitHub MCP server (source `github`); with none, a list of PRs in the message |
+| `inbound-lead` | Researches a form or CRM lead, scores it against your ICP, adds a note with the score to the lead's HubSpot contact or posts to Slack | a webhook (needs the seal key): your form tool or relay signs Standard Webhooks bodies of type `lead.submitted`, each lead its own run (3 at once); or a run | optional: a saved Composio HubSpot or Slack MCP server (toolkit `hubspot` or `slack`) |
+| `release-notes` | Turns the merged PRs since the last release into user-facing notes, as a draft issue to edit (no MCP tool makes a draft release) | a run naming the release or tag | a saved GitHub MCP server (source `github`, on the GitHub App), every call pinned to its `owner` and `repo`; with none, a list of PRs in the message |
 
 ## Eval cases
 
@@ -130,13 +142,16 @@ holds a copy of the package alone and is removed at the end: the eval never touc
 keys a server needs. With `--server`, everything goes through that server's v2 API: the package it ships by this name
 must be this folder's (the agent an apply makes holds this folder's instructions and skill files, else the case fails
 saying so), a case with a fake MCP server needs a server on this machine and fails rather than replace an MCP server
-saved by the same name, and the agents the eval made are archived at the end.
+saved by the same name, and the agents the eval made are archived at the end. That server records what made each MCP
+server, so a fake there is a `url` one with its toolkit: a case that fakes a `composio` or `github` need fails there,
+and runs on the eval's own server.
 
 **A case**, run by run:
 
 1. Each `mcp` fixture is served as an MCP server on this machine's loopback and saved under its toolkit's name, with
-   the need's source and toolkit and no credential; it records every call, with its arguments. It is removed after the
-   case.
+   no credential, standing in for the need: the eval's own server records it as the need's source and toolkit (a
+   `github` one too, which on any other server only the GitHub App's tokens are). It records every call, with its
+   arguments, and is removed after the case.
 2. The package is applied with the case's `parameters` and `grants`: a fresh agent for each run, so what one run
    learns never reaches the next.
 3. The `learning` folder's notes are written to the agent's learning folder (`PUT .../learning/files/{file}`); the

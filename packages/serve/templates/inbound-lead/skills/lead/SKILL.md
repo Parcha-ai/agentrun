@@ -78,12 +78,13 @@ Fast: the owner wants the brief in under a minute, so research what the criteria
 ## Posting to HubSpot (`post_to: crm`)
 
 Tools `mcp:hubspot/...`, the HubSpot toolkit's actions. Each action answers `{data, successful, error}`: `successful`
-false is a failed call. At most two writes, each once (`HUBSPOT_CREATE_CRM_OBJECT_WITH_PROPERTIES` for the note,
-`HUBSPOT_PARTIALLY_UPDATE_CONTACT_USING_CONTACT_ID` for the score), and only on a contact proven to be the lead's:
+false is a failed call. One write, once (`HUBSPOT_CREATE_NOTE`, the note, the fit score in its text), and only on a
+contact proven to be the lead's:
 
 1. **Find the contact, and prove it.** A record id in the payload (`hs_object_id`, `objectId`, `vid`) is a hint, never
    proof: whoever sent the payload chose it.
-   - With an id: `HUBSPOT_READ_CRM_CONTACT_BY_ID` with `contactId` that id and `properties` including `email`.
+   - With an id: `HUBSPOT_READ_CONTACT` with `contactId` that id, `properties` including `email`, and `associations`
+     `["companies"]`.
    - With none: `HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA`, `filterGroups` one filter `{propertyName: email, operator: EQ,
      value: <the lead's email>}`, `properties` including `email`.
    - The contact is the lead's only when its `email` equals the submission's email (trimmed, compared ignoring case).
@@ -91,18 +92,17 @@ false is a failed call. At most two writes, each once (`HUBSPOT_CREATE_CRM_OBJEC
      found: **write nothing**. Don't search for another contact to write to instead. Set `posted.done` false and say
      why in `posted.detail` (e.g. "record 51999's email is not the lead's: nothing written").
    - Never create a contact.
-2. **The note.** `HUBSPOT_CREATE_CRM_OBJECT_WITH_PROPERTIES` with `objectType` `notes`, `properties` `hs_timestamp`
-   (now, ISO 8601) and `hs_note_body` (the brief as short HTML: score and next step first, then the criteria with
-   their `met`, the computation, the flags, the unknowns, and the source links), and `associations` one entry
-   `{to__id: <the contact's id>, types: [{associationCategory: HUBSPOT_DEFINED, associationTypeId: 202}]}` (HubSpot's
-   note-to-contact association).
-3. **The score.** When a score property is set, `HUBSPOT_PARTIALLY_UPDATE_CONTACT_USING_CONTACT_ID` with `contactId`
-   the proven contact's id and `properties` `{<crm_score_property>: <the score, a number>}` and nothing else. No property set: skip this write and say so in `posted.detail`.
+   - The proven contact's company, when it has one (its `associations.companies`): `HUBSPOT_GET_COMPANY` with
+     `companyId` that id is the owner's own record of it (name, domain, size, industry), a source like any other.
+2. **The note.** `HUBSPOT_CREATE_NOTE` with `hs_timestamp` (now, ISO 8601), `hs_note_body` (the brief as short HTML:
+   the fit score out of 100 and the next step first, then the criteria with their `met`, the computation, the flags,
+   the unknowns, and the source links), and `associations` one entry, the proven contact alone:
+   `{to: {id: <the contact's id>}, types: [{associationCategory: HUBSPOT_DEFINED, associationTypeId: 202}]}` (HubSpot's
+   note-to-contact association). The score lives in the note's text: never in a contact field.
 
-A write the owner hasn't allowed at apply asks them first; that's expected. Write only to the contact you proved in
-step 1, and to the note you create on it. A write that fails is not retried: say what failed in
-`posted.detail`. Never create or change a property, a pipeline, a deal or another contact, and never write lead text
-into a field other than the note.
+A write the owner hasn't allowed at apply asks them first; that's expected. Write only the one note, on the contact you
+proved in step 1. A write that fails is not retried: say what failed in `posted.detail`. Never create or change a
+contact, a property, a pipeline, a company or a deal.
 
 ## Posting to Slack (`post_to: slack`)
 

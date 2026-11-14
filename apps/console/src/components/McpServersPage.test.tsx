@@ -6,7 +6,7 @@ import { route } from "@/App";
 import { createClient } from "@/lib/client";
 import { type McpServer, PREVIEW_SCOPE_NOTE } from "@/lib/mcp";
 import recorded from "@/fixtures/mcp.requests.json";
-import { pick as choose, picker, valueOf } from "@/test/picker";
+import { picker } from "@/test/picker";
 
 // Settings → MCP servers over /v2/settings/mcp-servers: add a server, preview its tools, save it; each refusal in plain
 // words; OAuth's sign-in and its way back; the saved list with each credential's state, refresh and delete. A credential
@@ -29,6 +29,8 @@ const TOOLS = [
 ];
 const PREVIEW = { protocol: "2026-07-28", server_info: { name: "fake-mcp", version: "1.0.0" }, tools: TOOLS };
 const saved = (extra: Partial<McpServer> = {}): McpServer => ({ name: "fake", url: VARS.url, auth: { type: "bearer" }, source: "url", toolkit: null, credential: "sealed", tools: TOOLS, protocol: "2026-07-28", listed_at: "2026-11-04T10:00:00Z", updated_at: "2026-11-04T10:00:00Z", ...extra });
+/** The source the add form shows, read-only: what made the server, never a choice. */
+const sourceShown = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-mcp-source]")?.dataset.mcpSource;
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const refusal = (status: number, code: string, message: string, extra: Record<string, unknown> = {}) => json(status, { error: { code, message, retryable: false, ...extra } });
 
@@ -503,14 +505,14 @@ describe("Settings → MCP servers, GitHub App", () => {
     const p = await open(s.v2, { add: { name: "hubspot" } });
     expect(p.input("mcp-name").value).toBe("hubspot");
     expect(p.input("mcp-toolkit").value).toBe("hubspot");
-    expect(valueOf(picker(p.host, "Source")!)).toBe("url");
+    expect(sourceShown(p.host)).toBe("url");
     await p.type("mcp-url", VARS.url);
     await p.click(/^Preview$/);
     await p.click(/^Save$/);
-    expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/hubspot", body: { url: VARS.url, auth: { type: "none" }, source: "url", toolkit: "hubspot" } });
+    expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/hubspot", body: { url: VARS.url, auth: { type: "none" }, toolkit: "hubspot" } });
   });
 
-  it("a new server with no toolkit sends no source, so the server says what its address is; GitHub App access is GitHub's own", async () => {
+  it("a new server with no toolkit sends none; the source is never sent, and GitHub App access is GitHub's own", async () => {
     const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved()) : undefined));
     const p = await open(s.v2);
     await p.click(/^Add server$/);
@@ -521,35 +523,31 @@ describe("Settings → MCP servers, GitHub App", () => {
     expect(s.writes().at(-1)!.body).toEqual({ url: VARS.url, auth: { type: "none" } });
     act(() => root?.unmount()); document.body.innerHTML = "";
     const gh = await open(server([[]]).v2, { add: { name: "github", auth: "github_app" } });
-    expect(valueOf(picker(gh.host, "Source")!)).toBe("github");
-    expect(picker(gh.host, "Source")!.disabled).toBe(true);
+    expect(sourceShown(gh.host)).toBe("github");
+    expect(picker(gh.host, "Source")).toBeFalsy();
     expect(gh.input("mcp-toolkit").value).toBe("github");
     expect(gh.input("mcp-toolkit").readOnly).toBe(true);
   });
 
-  it("changes a saved server's toolkit and source, sending only what changed", async () => {
+  it("changes a saved server's toolkit, sending only what changed and never a source", async () => {
     const s = server([[saved({ name: "crm" })]], (c) => (c.method === "PUT" ? json(200, saved({ name: "crm" })) : undefined));
     const p = await open(s.v2);
     await p.click(/^Change$/, p.row("crm"));
+    expect(sourceShown(p.host)).toBe("url");
     await p.type("mcp-toolkit", "hubspot");
     await p.click(/^Save$/);
     expect(s.writes().at(-1)!.body).toEqual({ url: VARS.url, auth: { type: "bearer" }, toolkit: "hubspot" });
-    await p.click(/^Change$/, p.row("crm"));
-    await choose(picker(p.host, "Source")!, "github");
-    expect(p.input("mcp-toolkit").value).toBe("github");
-    await p.click(/^Save$/);
-    expect(s.writes().at(-1)!.body).toEqual({ url: VARS.url, auth: { type: "bearer" }, source: "github", toolkit: "github" });
   });
 
-  it("marks a saved server composio with its toolkit, as one saved before the preset recorded it needs", async () => {
-    const s = server([[saved({ name: "slack" })]], (c) => (c.method === "PUT" ? json(200, saved({ name: "slack", source: "composio", toolkit: "slack" })) : undefined));
+  it("shows a Composio server's source as what made it, read-only, and a toolkit edit sends only the toolkit", async () => {
+    const s = server([[saved({ name: "work-slack", source: "composio", toolkit: "slack" })]], (c) => (c.method === "PUT" ? json(200, saved({ name: "work-slack", source: "composio", toolkit: "slack-eu" })) : undefined));
     const p = await open(s.v2);
-    await p.click(/^Change$/, p.row("slack"));
-    expect(picker(p.host, "Source")!.disabled).toBe(false);
-    await choose(picker(p.host, "Source")!, "composio");
-    await p.type("mcp-toolkit", "slack");
+    await p.click(/^Change$/, p.row("work-slack"));
+    expect(sourceShown(p.host)).toBe("composio");
+    expect(picker(p.host, "Source")).toBeFalsy();
+    await p.type("mcp-toolkit", "slack-eu");
     await p.click(/^Save$/);
-    expect(s.writes().at(-1)!.body).toEqual({ url: VARS.url, auth: { type: "bearer" }, source: "composio", toolkit: "slack" });
+    expect(s.writes().at(-1)!.body).toEqual({ url: VARS.url, auth: { type: "bearer" }, toolkit: "slack-eu" });
   });
 
   it("a sign-in carries the toolkit, so the server it saves is matched by a template's need", async () => {
@@ -559,7 +557,7 @@ describe("Settings → MCP servers, GitHub App", () => {
     await p.pick("oauth");
     await p.settle();
     await p.click(/^Sign in$/);
-    expect(s.writes().at(-1)).toEqual({ method: "POST", path: "/v2/settings/mcp-servers/notion/oauth/start", body: { url: VARS.oauth_url, source: "url", toolkit: "notion" } });
+    expect(s.writes().at(-1)).toEqual({ method: "POST", path: "/v2/settings/mcp-servers/notion/oauth/start", body: { url: VARS.oauth_url, toolkit: "notion" } });
     expect(p.opened).toEqual(["http://127.0.0.1:4300/authorize?state=t"]);
   });
 

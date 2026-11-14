@@ -1,7 +1,7 @@
 ---
 name: inbound-lead
 display_name: Inbound lead researcher
-version: 0.1.0
+version: 0.2.0
 description: Researches each inbound lead from your form or CRM (the person, the company), scores it 0-100 against your ideal customer profile with the evidence for each criterion, suggests the next step, and posts the brief to the CRM record or a Slack channel. Learns from your corrections.
 license: Apache-2.0
 author: { name: Parcha Labs }
@@ -15,23 +15,24 @@ tools: [read, web_search, web_fetch]
 mcp:
   - source: composio
     toolkit: hubspot
-    tools: [HUBSPOT_READ_CRM_CONTACT_BY_ID, HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA, HUBSPOT_CREATE_CRM_OBJECT_WITH_PROPERTIES, HUBSPOT_PARTIALLY_UPDATE_CONTACT_USING_CONTACT_ID]
+    tools: [HUBSPOT_READ_CONTACT, HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA, HUBSPOT_GET_COMPANY, HUBSPOT_CREATE_NOTE]
     required: false
-    reason: "Looks up the lead's contact in HubSpot to prove it is theirs, then adds one note and sets the score property on that contact. It never creates a contact."
-    allow: [HUBSPOT_READ_CRM_CONTACT_BY_ID, HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA]
-    # The create tool only ever makes the note: a contact, company or deal is refused.
-    pin: { HUBSPOT_CREATE_CRM_OBJECT_WITH_PROPERTIES: { objectType: notes } }
+    reason: "Reads the lead's contact and company, and adds a note to the lead's contact in your HubSpot. The note can't be limited to one contact yet."
+    allow: [HUBSPOT_READ_CONTACT, HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA, HUBSPOT_GET_COMPANY]
+    # The note is the one write, and the fit score goes in its text: no update tool, because a pin can't limit an object
+    # argument's keys (a contact update could overwrite any field). The note's destination is its associations, a
+    # contact that differs each run, so it is not pinned: the owner ticks it at apply.
   - source: composio
     toolkit: slack
     tools: [SLACK_SEND_MESSAGE]
     required: false
     reason: "Posts each lead's brief to the one Slack channel you set, and nowhere else."
-    pin: { SLACK_SEND_MESSAGE: { channel: "${parameters.slack_channel}" } }
+    # channel_id is the name the action also takes a channel by: held absent, so the pinned channel is the only one.
+    pin: { SLACK_SEND_MESSAGE: { channel: "${parameters.slack_channel}", channel_id: null } }
 parameters:
   icp: { type: string, required: true, description: "your ideal customer in your own words: industry, company size, region, buying signals, and what disqualifies a lead (e.g. 'B2B fintech, 50-2000 people, US or EU, has a compliance team; never gambling operators')" }
-  post_to: { type: string, required: false, default: none, enum: [crm, slack, none], description: "where each brief goes: crm (a note and the score field on the HubSpot contact), slack (a message in one channel) or none (the run's answer only)" }
+  post_to: { type: string, required: false, default: none, enum: [crm, slack, none], description: "where each brief goes: crm (a note on the lead's HubSpot contact, the fit score in its text), slack (a message in one channel) or none (the run's answer only)" }
   slack_channel: { type: string, pattern: "^[CG][A-Z0-9]{8,12}$", description: "a Slack channel ID like C0123ABCD (the channel's details in Slack show it), never its name: where the brief is posted when post_to is slack" }
-  crm_score_property: { type: string, pattern: "^[a-z][a-z0-9_]{0,99}$", description: "a HubSpot contact number property's internal name, like lead_fit_score (lowercase letters, digits and underscores): the fit score is written there when post_to is crm; empty: the note only" }
   competitors: { type: string, description: "your competitors' names or domains, comma-separated; a lead from one is flagged, never scored as a customer" }
 budget: { per_run_usd: 5.00 }
 learning: true
@@ -65,7 +66,6 @@ profile disagree, the note wins, because it is newer.
 
 - `post_to`: `${parameters.post_to}` (`crm`, `slack` or `none`).
 - Slack channel ID, when posting to Slack: `${parameters.slack_channel}` (empty: none set, so nothing is posted).
-- HubSpot score property, when posting to the CRM: `${parameters.crm_score_property}` (empty: write the note only).
 - The owner's competitors: `${parameters.competitors}` (empty: none named).
 
 Post only where `post_to` says: to that one channel ID, or to the CRM contact whose email is the lead's. Your writes

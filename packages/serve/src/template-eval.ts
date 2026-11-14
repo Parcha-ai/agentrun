@@ -752,7 +752,8 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     cpSync(options.dir, join(scratch!, "templates", pkg.name), { recursive: true });
     const { startServe } = await import("./server.js");
     // A local install by construction: its own scratch server, reached on loopback, its fake MCP servers there too.
-    const serve = await startServe({ mcpLoopback: true, data: join(scratch!, "data"), port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}) }).catch((error: unknown) => {
+    // Its fakes stand in for the package's MCP needs (mcpStandIns): each is saved as the source and toolkit it fakes.
+    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: join(scratch!, "data"), port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}) }).catch((error: unknown) => {
       removeTree(scratch!);
       throw error;
     });
@@ -834,10 +835,13 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
       if (options.server && !LOOPBACK_HOST.test(new URL(options.server.baseUrl).hostname)) throw new ApiFailure(`the case fakes the MCP server ${name} on this machine's loopback, which the server at ${new URL(options.server.baseUrl).host} cannot reach: run it on a server on this machine`);
       // An owner's server keeps its own MCP servers: a case never replaces one, it fails instead.
       if (options.server &&(await api("GET", `/settings/mcp-servers/${name}`)).status !== 404) throw new ApiFailure(`the server already has an MCP server named ${name}, and the case would replace it with its fake: run the eval on its own server (no --server), or on one without ${name}`);
+      const need = ctx.pkg.mcp.find((one) => one.toolkit === name);
+      // An owner's server records what made each server, so there a fake is only ever a url one with its toolkit: one
+      // standing in for a Composio or GitHub need is the eval's own server's alone.
+      if (options.server && need && need.source !== "url") throw new ApiFailure(`the case fakes the ${need.source} toolkit ${name}, and only the eval's own server saves a fake as ${need.source}: run it without --server`);
       const fake = await startFake(name, fixture);
       fakes.push(fake);
-      const need = ctx.pkg.mcp.find((one) => one.toolkit === name);
-      expectOk(`saving the fake MCP server ${name}`, await api("PUT", `/settings/mcp-servers/${name}`, { url: fake.url, auth: { type: "none" }, ...(need ? { source: need.source, toolkit: need.toolkit } : {}) }));
+      expectOk(`saving the fake MCP server ${name}`, await api("PUT", `/settings/mcp-servers/${name}`, { url: fake.url, auth: { type: "none" }, ...(need ? { toolkit: need.toolkit, ...(options.server ? {} : { source: need.source }) } : {}) }));
       saved.push({ name, url: fake.url });
       // Another eval on the same server may have saved its own fake under the name meanwhile: then neither case's calls
       // can be told apart, and this one fails rather than run on a fake it does not own.

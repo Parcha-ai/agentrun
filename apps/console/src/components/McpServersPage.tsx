@@ -8,7 +8,6 @@ import { Input } from "@/components/ui/field";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
-import { Picker } from "@/components/ui/picker";
 import { type ComposioTools, GITHUB_MCP_URL, type McpAdd, type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, type McpSource, PREVIEW_SCOPE_NOTE, signInFailure, SOURCE_LABEL } from "@/lib/mcp";
 
 type Problem = ReturnType<typeof mcpProblem>;
@@ -290,21 +289,20 @@ function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved
   const [url, setUrl] = useState(saved?.url ?? (add?.auth === "github_app" ? GITHUB_MCP_URL : ""));
   const [type, setType] = useState<McpAuth["type"]>(saved?.auth.type ?? add?.auth ?? "none");
   const [headerRows, setHeaderRows] = useState(Math.max(1, saved?.auth.headers?.length ?? 0));
-  // Where its tools come from and the toolkit they are, which a template's MCP need is matched on. A server a template's
-  // url need sent the person here for starts with that toolkit. On the GitHub App's tokens it is github/github, a github
-  // server's toolkit is github, and a composio one names its toolkit (one saved before the preset recorded it is marked
-  // here): the server holds it to those.
-  const [source, setSource] = useState<McpSource>(saved?.source ?? "url");
+  // Where its tools come from and the toolkit they are, which a template's MCP need is matched on. The source is what made
+  // the server, shown and never sent: on the GitHub App's tokens github (its toolkit github), from the Composio preset
+  // composio, else url. The toolkit is the owner's to set; a server a template's url need sent the person here for starts
+  // with that toolkit.
+  const shownSource: McpSource = type === "github_app" ? "github" : saved?.source === "composio" ? "composio" : "url";
   const [toolkit, setToolkit] = useState(saved?.toolkit ?? (add && !add.auth ? add.name : ""));
-  const shownSource: McpSource = type === "github_app" ? "github" : source;
   const shownToolkit = shownSource === "github" ? "github" : toolkit.trim();
-  // What a save sends of them: only what differs from the saved server (a new one: only what was said), so a server at
-  // GitHub's address keeps what the server makes of it, and one on the GitHub App's tokens sends none.
-  const kind = (): { source?: McpSource; toolkit?: string | null } => {
+  // What a save sends of it: only a toolkit that differs from the saved server's (a new one: only one said); one on the
+  // GitHub App's tokens sends none.
+  const kind = (): { toolkit?: string | null } => {
     if (type === "github_app") return {};
     const named = shownToolkit || null;
-    if (saved) return { ...(shownSource !== saved.source ? { source: shownSource } : {}), ...(named !== saved.toolkit ? { toolkit: named } : {}) };
-    return shownSource === "url" && !named ? {} : { source: shownSource, toolkit: named };
+    if (saved) return named !== saved.toolkit ? { toolkit: named } : {};
+    return named ? { toolkit: named } : {};
   };
   const [preview, setPreview] = useState<McpPreview | null>(null);
   // `given`: the refusal its row opened it with (a sign-in that needs a Client ID), kept until the next try.
@@ -369,8 +367,8 @@ function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Address</span>
         <Input name="mcp-url" value={url} onChange={(e) => { setUrl(e.target.value); if (problem?.needsClient) setProblem(null); }} placeholder="https://mcp.example.com/mcp" spellCheck={false} /></label>
       <div className="block"><span className="caps mb-2 block text-small font-semibold">Source</span>
-        <Picker label="Source" className="w-48" value={shownSource} disabled={type === "github_app"} onChange={(v) => setSource(v as McpSource)}
-          options={(["url", "composio", "github"] as const).map((s) => ({ value: s, label: SOURCE_LABEL[s] }))} /></div>
+        <span className="-mt-1 mb-2 block text-small text-muted-foreground">What made it: GitHub App access is GitHub, the Composio preset is Composio, anything else is URL.</span>
+        <span data-mcp-source={shownSource}className="font-mono text-body">{SOURCE_LABEL[shownSource]}</span></div>
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Toolkit</span>
         <span className="-mt-1 mb-2 block text-small text-muted-foreground">The name a template gives these tools (mcp:{shownToolkit || "<toolkit>"}/&lt;tool&gt;): applying one uses this server for them.</span>
         <Input name="mcp-toolkit" value={shownSource === "github" ? "github" : toolkit} readOnly={shownSource === "github"} onChange={(e) => setToolkit(e.target.value)} placeholder="hubspot" spellCheck={false} /></label>

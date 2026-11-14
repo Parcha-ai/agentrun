@@ -18,7 +18,7 @@ import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
 import type { PinScalar, PinValue } from "./tool-gate.js";
-import { isMcpName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName } from "./tool-names.js";
+import { formatToolName, isMcpName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName, parseToolName } from "./tool-names.js";
 import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { BOUND_TOOLS, toolOf } from "./tools.js";
@@ -345,7 +345,10 @@ export function readPackage(dir: string): Package {
       && names.length > 0 && names.every((tool) => typeof tool === "string" && MCP_TOOL_NAME.test(tool)) && new Set(names).size === names.length && (need.required === undefined || typeof need.required === "boolean")
       && (reason === undefined || (typeof reason === "string" && reason.trim() !== "" && reason.length <= MAX_REASON && !/[\r\n]/.test(reason)))
       && Array.isArray(allow) && allow.every((tool) => names.includes(tool)) && new Set(allow).size === allow.length;
-    if (!ok) bad(MANIFEST, `mcp[${i}] is {source: ${MCP_SOURCES.join(" | ")}, toolkit: the toolkit its tools come from, the name the package calls them by (mcp:<toolkit>/<tool>, ${MCP_SERVER_NAME.source}), tools: its tool names (${MCP_TOOL_NAME.source}), none twice, required?: true or false, reason?: one line of at most ${MAX_REASON} characters on why the agent needs them, allow?: the tools of its tools it asks the owner to allow, pin?: {<tool>: {<argument>: <value>}}}`);
+    // A toolkit is held to the MCP server name rule (tool-names.ts), so mcp:<toolkit>/<tool> inside the package is a catalog
+    // name every place that checks one (an agent's grant, a tool setting, a learned workflow) takes.
+    if (isObject(need) && need.toolkit !== undefined && (typeof need.toolkit !== "string" || !MCP_SERVER_NAME.test(need.toolkit))) bad(MANIFEST, `mcp[${i}].toolkit ${JSON.stringify(need.toolkit)} is not a toolkit name: ${MCP_SERVER_NAME.source}, the MCP server name rule, since the package names its tools mcp:<toolkit>/<tool>`);
+    else if (!ok) bad(MANIFEST, `mcp[${i}] is {source: ${MCP_SOURCES.join(" | ")}, toolkit: the toolkit its tools come from, the name the package calls them by (mcp:<toolkit>/<tool>, ${MCP_SERVER_NAME.source}), tools: its tool names (${MCP_TOOL_NAME.source}), none twice, required?: true or false, reason?: one line of at most ${MAX_REASON} characters on why the agent needs them, allow?: the tools of its tools it asks the owner to allow, pin?: {<tool>: {<argument>: <value>}}}`);
     else if (need.source === "github" && need.toolkit !== "github") bad(MANIFEST, `mcp[${i}]: a github source's toolkit is github (GitHub's MCP server), not ${need.toolkit as string}`);
     else if (mcp.some((m) => m.toolkit === need.toolkit)) bad(MANIFEST, `mcp[${i}]: the toolkit ${need.toolkit as string} is listed twice: its tools are all mcp:${need.toolkit as string}/<tool>, so they are one entry`);
     else {
@@ -830,29 +833,43 @@ export function mcpSetUp(need: Pick<McpNeed, "source" | "toolkit" | "tools">): s
 export type SavedSource = { name: string; source: McpSource; toolkit: string | null };
 
 /** Each MCP need of `p` mapped to a saved server here: `candidates`, those whose record is the need's {source, toolkit},
- *  by name; `server`, the owner's pick among them (`picks`, by toolkit), else the one named as the toolkit, else the first,
- *  else none. A pick that is not a candidate is refused (422 under servers.<toolkit>): an owner never maps a need to a
- *  server that says it is something else. */
+ *  by name; `server`, the owner's pick among them (`picks`, by toolkit), else the one candidate, else none. Never picked
+ *  silently: several candidates and no pick is refused (422 under servers.<toolkit>, naming them), and so is a pick that
+ *  is not a candidate (an owner never maps a need to a server that says it is something else). */
 export function serversFor(p: Package, saved: readonly SavedSource[], picks: Readonly<Record<string, string>>): { need: McpNeed; server: string | null; candidates: string[] }[] {
   const issues: InputIssue[] = [];
   const mapped = p.mcp.map((need) => {
     const candidates = saved.filter((one) => one.source === need.source && one.toolkit === need.toolkit).map((one) => one.name).sort();
     const pick = Object.hasOwn(picks, need.toolkit) ? picks[need.toolkit] : undefined;
     if (pick !== undefined && !candidates.includes(pick)) issues.push({ field: `servers.${need.toolkit}`, reason: "not_an_option", message: `${pick} is not a saved MCP server that is ${need.source} ${need.toolkit}: ${candidates.length ? `${candidates.join(", ")} ${candidates.length === 1 ? "is" : "are"}` : "none is saved here"}.` });
-    const server = pick ?? (candidates.includes(need.toolkit) ? need.toolkit : candidates[0]) ?? null;
+    else if (pick === undefined && candidates.length > 1) issues.push({ field: `servers.${need.toolkit}`, reason: "missing", message: `Saved MCP servers ${new Intl.ListFormat("en", { type: "conjunction" }).format(candidates)} are each ${need.source} ${need.toolkit}: servers.${need.toolkit} says which one the agent uses.` });
+    const server = pick ?? (candidates.length === 1 ? candidates[0]! : null);
     return { need, server, candidates };
   });
   if (issues.length) throw invalid(issues);
   return mapped;
 }
 
-/** `text` with each exact `mcp:<toolkit>/` of `servers` ({toolkit: saved name}) read as `mcp:<server>/`, in one pass, so a
- *  server named as another of the package's toolkits is never rewritten twice; a longer name that ends the same
- *  (`xmcp:gmail/`) is left. */
+const SERVER_PART = MCP_SERVER_NAME.source.slice(1, -1);
+const TOOL_PART = MCP_TOOL_NAME.source.slice(1, -1);
+/** A catalog MCP name in prose (`mcp:<server>/<tool>` or `mcp:<server>/*`), whole: not the tail of a longer word
+ *  (`xmcp:gmail/x`), nor cut short of a longer tool name. */
+const MCP_NAME_IN_TEXT = new RegExp(`(?<![A-Za-z0-9_.:/-])mcp:${SERVER_PART}/(?:\\*|${TOOL_PART}(?![A-Za-z0-9_-]))`, "g");
+
+/** Catalog name `name` on the saved servers of `servers` ({toolkit: saved name}): read (parseToolName), its server swapped
+ *  when it is one of the package's toolkits, and written again (formatToolName); a wildcard `mcp:<toolkit>/*` the same
+ *  way. Any other name, or one outside the grammar, as it is. */
+export function onServerName(name: string, servers: Readonly<Record<string, string>>): string {
+  const parsed = parseToolName(name);
+  if (!parsed || parsed.kind === "plain" || !Object.hasOwn(servers, parsed.server)) return name;
+  return formatToolName({ ...parsed, server: servers[parsed.server]! });
+}
+
+/** `text` with each whole catalog MCP name in it on the saved servers' (onServerName), in one pass, so a server named as
+ *  another of the package's toolkits is never rewritten twice. */
 export function onServerNames(text: string, servers: Readonly<Record<string, string>>): string {
-  const moved = Object.keys(servers).filter((toolkit) => servers[toolkit] !== toolkit);
-  if (!moved.length) return text;
-  return text.replace(new RegExp(`(?<![A-Za-z0-9_.:/-])mcp:(${moved.join("|")})/`, "g"), (_, toolkit: string) => `mcp:${servers[toolkit]}/`);
+  if (!Object.keys(servers).some((toolkit) => servers[toolkit] !== toolkit)) return text;
+  return text.replace(MCP_NAME_IN_TEXT, (name) => onServerName(name, servers));
 }
 
 /** `p` as the agent an apply makes on `servers` sees it: its instructions and each skill file with the package's tool

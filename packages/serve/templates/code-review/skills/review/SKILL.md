@@ -50,7 +50,8 @@ Name no `model`. Their `tools`: `["bash", "read"]`; with no checkout `["read", "
 
 ```text
 Review one code change. First `read` .agents/skills/review/<guide> whole and follow it.
-repo: <owner/name>
+owner: <the repository's owner, as your instructions name it>
+repo: <the repository's name alone, as your instructions name it>
 pr: <number>
 base_sha: <sha>
 head_sha: <sha>

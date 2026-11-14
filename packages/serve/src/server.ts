@@ -124,7 +124,7 @@ import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
 import { isMcpWildcard, mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerNames, onServers, type Package, packageModel, packageTiers, packageView, pickComputer, readPackages, serversFor, type ShellHere, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageModel, packageTiers, packageView, pickComputer, readPackages, serversFor, type ShellHere, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, loadToolSettings, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { wakeAnsweredBySetting } from "./settings-wake.js";
@@ -209,6 +209,9 @@ export type ServeOptions = {
    *  alone use): an MCP server's URL may be on loopback, at its save, preview and sign-in, and for the runner beside it.
    *  Never inferred; absent, loopback is refused there in words saying how to say so. */
   mcpLoopback?: boolean;
+  /** A template eval's own scratch server (template-eval.ts), never set by the CLI: an MCP server's save may say, in its
+   *  `source`, which package need the eval's fake stands in for. Every other server records what made a server. */
+  mcpStandIns?: boolean;
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
    *  the only lock: put TLS in front of it. */
   host?: string;
@@ -953,6 +956,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   toolKeys.view();
   const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
+  mcpServers.standIns = options.mcpStandIns === true;
   // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the run-grant checks read in
   // step (blockersOf's `mcp`, and the template apply): the server is the one writer of these rows (a save, refresh, sign-in
   // or delete), so the snapshot is refreshed after each of those and reads what is saved now. The runner reads the registry,
@@ -1905,7 +1909,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function applyTemplate(template: Package, body: Json) {
     const { parameters, grants: asked, servers: picks, model: override, approvals } = applyBodyOf(template, body);
     const missing = template.secrets.filter((name) => !secret(name, storedKeys));
-    // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do); the package's
+    // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
+    // one: several and no pick is a 422); the package's
     // tool names, mcp:<toolkit>/<tool>, read as that server's from here on (templates.ts onServers).
     const mapped = serversFor(template, [...mcpMeta].map(([name, meta]) => ({ name, ...meta.source })), picks);
     const servers = Object.fromEntries(mapped.flatMap(({ need, server }) => (server ? [[need.toolkit, server]] : [])));
@@ -1914,14 +1919,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const unsaved = mapped.filter(({ server }) => !server).map(({ need }) => need);
     // A grant of a need with no server here grants nothing: dropped before the names move, so it never reads as a tool
     // of a saved server that happens to be named as its toolkit.
-    const grants = asked.filter((tool) => Object.hasOwn(servers, mcpToolOf(tool)?.server ?? "")).map((tool) => onServerNames(tool, servers));
+    const grants = asked.filter((tool) => Object.hasOwn(servers, mcpToolOf(tool)?.server ?? "")).map((tool) => onServerName(tool, servers));
     const needed = unsaved.filter((need) => need.required);
     if (missing.length || needed.length) {
       const fix = "Add it in Settings → Model keys or Settings → Tool keys, or set it where AgentRun starts, then apply the template again.";
       throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `a ${need.source} MCP server of the toolkit ${need.toolkit}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}.`, fix: mcpSetUp(need) }))] });
     }
-    // Several saved servers match a need the owner picked none for: the one taken, and the others, said.
-    const several: InputIssue[] = mapped.filter(({ need, candidates }) => candidates.length > 1 && !Object.hasOwn(picks, need.toolkit)).map(({ need, server, candidates }) => ({ field: `servers.${need.toolkit}`, reason: "not_an_option", message: `Saved MCP servers ${new Intl.ListFormat("en", { type: "conjunction" }).format(candidates)} are each ${need.source} ${need.toolkit}: the agent uses ${server}. servers.${need.toolkit} picks another.` }));
     // The package's computer list: the first entry this server meets now (templates.ts pickComputer), written as the
     // agent's computer; a fallback, or a shell tool that computer does not run, said under `computer`. A list none of
     // whose entries is met (a shell alone, where there is none) refuses the apply: nothing is made.
@@ -2008,7 +2011,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
     // Which saved server each MCP need runs on (null: none here, said under mcp.<toolkit>).
     const used = Object.fromEntries(mapped.map(({ need, server }) => [need.toolkit, server]));
-    const applied = { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...several, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...appShort] };
+    const applied = { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...appShort] };
     return { applied, minted };
   }
 
@@ -3203,7 +3206,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);
         const body = await bodyOf(req);
-        const answer = await composioSave(body, options.composioControl ?? {}, (mcp) => mcpServers.save(id, mcp, stopping.signal), id, stopping.signal, async () => (await mcpServers.get(id)).url);
+        const answer = await composioSave(body, options.composioControl ?? {}, (mcp, made) => mcpServers.save(id, mcp, stopping.signal, undefined, made), id, stopping.signal, async () => (await mcpServers.get(id)).url);
         await refreshMcpMeta();
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
