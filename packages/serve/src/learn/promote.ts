@@ -82,6 +82,9 @@ export interface PromotionRecord {
   /** A replaying record's graded runs, one per `runs` entry in order: the input each reserved replay run replays, so a
    *  launch interrupted after the reservation is finished by a later claim (runner/promotion.ts relaunch). */
   readonly inputs?: readonly string[];
+  /** The replay's id, minted when it was reserved (a claim's, or a person's POST .../replays) and kept on the record that
+   *  decides it: what GET .../replays/{replay_id} reads. */
+  readonly replay_id?: string;
   readonly refit?:{ readonly from: string; readonly guards: readonly RefitGuard[] };
   readonly checked?: number;
   /** A superseded revision's newer one: the digest whose claim cancelled its replay. */

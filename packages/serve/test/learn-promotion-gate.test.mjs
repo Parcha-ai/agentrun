@@ -120,8 +120,9 @@ const { StoreConstraint } = await import("../dist/store/store.js");
 const LEARNING = { given: [], seed: "s", section: "" };
 
 /** A store of `graded` graded agent runs the workflow fits (each with its launch), runs created and commands sent kept, and
- *  `replaying`: a promotion record already replaying with its runs (rows given). For the challenger and deadline checks. */
-async function replayStoreOf({ graded = 6, rows: given = [], records = [], newest, raced = [], creating } = {}) {
+ *  `replaying`: a promotion record already replaying with its runs (rows given). For the challenger and deadline checks.
+ *  `path`: the path each graded run took (`agent`, or `workflow`: one a learned workflow answered alone). */
+async function replayStoreOf({ graded = 6, rows: given = [], records = [], newest, raced = [], creating, path = "agent" } = {}) {
   const kv = new Map();
   const settings = {
     get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
@@ -132,9 +133,9 @@ async function replayStoreOf({ graded = 6, rows: given = [], records = [], newes
   const launches = new Map(given.filter((row) => row.launch).map((row) => [row.id, row.launch]));
   for (let i = 0; i < graded; i++) {
     const id = `graded-${i}`;
-    rows.set(id, { id, state: "ended", metrics: { path: "agent" }, archivedAt: null });
+    rows.set(id, { id, state: "ended", metrics: { path }, archivedAt: null });
     launches.set(id, { input: { question: `Question ${i}` }, title: `Question ${i}`, place: { mode: "runner" }, learning: LEARNING });
-    await putGrade(settings, "a", { run: id, correct: true, expected: { question: `Question ${i}` }, source: "eval", at: `t${i}`, path: "agent" });
+    await putGrade(settings, "a", { run: id, correct: true, expected: { question: `Question ${i}` }, source: "eval", at: `t${i}`, path });
   }
   for (const record of records) await recordPromotion(settings, "a", record, () => true);
   const created = [];
@@ -178,6 +179,20 @@ test("two revisions claimed at once: one challenger reserved, one set of replay 
   assert.equal(replaying.length, 1, `one challenger: ${JSON.stringify(await promotionsOf(settings, "a"))}\n${logs.join("\n")}`);
   assert.equal(created.length, 6, "only the reserved challenger's replay runs start");
   assert.deepEqual([...created].sort(), [...replaying[0].runs].sort(), "the runs started are the ones its record reserved");
+});
+
+// A graded run a learned workflow answered alone (path workflow) has a recorded answer and a grade as an agent's run does:
+// it is a replay input, never left out for the path it took.
+test("graded runs a workflow answered alone are replayed: a new revision reserves a replay run on each", async () => {
+  const text = flowOf(undefined);
+  const digest = workflowDigest({ workflow: text });
+  const { settings, created, logs, gateOf } = await replayStoreOf({ path: "workflow" });
+  assert.equal(await gateOf()({ name: "answer", workflow: text }, digest), undefined, "it does not serve while it replays");
+  const record = (await promotionsOf(settings, "a")).at(-1);
+  assert.deepEqual([record.decided, record.source], ["replaying", "replay"], `replayed, never promoted on its dry run: ${JSON.stringify(record)}\n${logs.join("\n")}`);
+  assert.deepEqual([...record.inputs].sort(), Array.from({ length: 6 }, (_, i) => `graded-${i}`), "every path-workflow graded run is an input");
+  assert.deepEqual([...created].sort(), [...record.runs].sort());
+  assert.match(record.replay_id, /^[0-9a-f-]{36}$/, "the reservation mints the replay's id");
 });
 
 // Review on #2644 (expired replays): a replay decided past REPLAY_DEADLINE_MS with a run still at work cancels that run as

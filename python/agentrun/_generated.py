@@ -240,6 +240,8 @@ __all__ = [
     "GetGitHubConnectionResponseObject2InstallationsItem",
     "GetHealthResponse",
     "GetHealthResponseChecks",
+    "GetLearnedWorkflowReplayResponse",
+    "GetLearnedWorkflowReplayResponseScore",
     "GetLearningBatchResponse",
     "GetLearningBatchResponseLessons",
     "GetLearningBatchResponsePaths",
@@ -1402,6 +1404,7 @@ class ListLearningPromotionsResponsePromotionsItem(_ListLearningPromotionsRespon
     replay: ListLearningPromotionsResponsePromotionsItemReplay
     runs: list[str]
     inputs: list[str]
+    replay_id: str
     refit: ListLearningPromotionsResponsePromotionsItemRefit
     checked: int
     commit: str
@@ -2427,6 +2430,36 @@ class RecordLearningEvalResponse(TypedDict):
     accuracy: float
     ci: list[float]
     recorded_at: str
+
+
+class _GetLearnedWorkflowReplayResponseRequired(TypedDict):
+    replay: str
+    workflow: str
+    digest: str
+    status: Literal["running", "done", "failed"]
+    inputs: int
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
+    alone: int
+    score: GetLearnedWorkflowReplayResponseScore
+    cost_usd: float | None
+
+
+class GetLearnedWorkflowReplayResponse(_GetLearnedWorkflowReplayResponseRequired, total=False):
+    decided: Literal["promote", "hold", "superseded"]
+    reason: str
+
+
+class GetLearnedWorkflowReplayResponseScore(TypedDict):
+    n: int
+    agree: int
+    agent_acc: float
+    wf_acc: float
+    delta: float
+    handed_back: int
+    alone: int
 
 
 class ListLearnedWorkflowRevisionsResponse(TypedDict):
@@ -6266,6 +6299,7 @@ OPERATIONS: dict[str, Operation] = {
     "listLearningNotes": Operation(method="GET", path="/agents/{agent_id}/learning/notes", path_params=("agent_id",), multi_segment=(), query=("cursor", "limit", "status"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "readLearningFile": Operation(method="GET", path="/agents/{agent_id}/learning/files/{file}", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=(), body=None, answer="json+text", secret=False, public_fields=(), tagged=True),
     "recordLearningEval": Operation(method="POST", path="/agents/{agent_id}/learning/evals", path_params=("agent_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getLearnedWorkflowReplay": Operation(method="GET", path="/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}", path_params=("agent_id", "name", "digest", "replay_id"), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "retireLearningFile": Operation(method="POST", path="/agents/{agent_id}/learning/files/{file}/retire", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=("If-Match",), body=None, answer="text", secret=False, public_fields=(), tagged=True),
     "listLearnedWorkflowRevisions": Operation(method="GET", path="/agents/{agent_id}/learning/workflows/{name}/revisions", path_params=("agent_id", "name"), multi_segment=(), query=("limit",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "writeLearningFile": Operation(method="PUT", path="/agents/{agent_id}/learning/files/{file}", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=("If-Match", "If-None-Match"), body=OperationBody(required=True, types=("text/markdown", "text/plain", "application/json")), answer="text", secret=False, public_fields=(), tagged=True),
@@ -6500,6 +6534,10 @@ class LearningResource(Group):
     def record_eval(self, agent_id: str, body: RecordLearningEvalBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> RecordLearningEvalResponse:
         """Record a held-out test of the agent: its counts and the cost a task, with learning and by hand (POST /agents/{agent_id}/learning/evals)."""
         return self._call("recordLearningEval", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def replay(self, agent_id: str, name: str, digest: str, replay_id: str, *, timeout: float | None = None) -> GetLearnedWorkflowReplayResponse:
+        """A replay of a learned workflow's revision: running, done or failed, its counts and its score (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id})."""
+        return self._call("getLearnedWorkflowReplay", (agent_id, name, digest, replay_id), None, None, timeout=timeout)
 
     def retire(self, agent_id: str, file: str, *, if_match: str | None = None, timeout: float | None = None) -> Tagged[str]:
         """Retire a note, a skill or a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire)."""

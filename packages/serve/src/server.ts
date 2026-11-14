@@ -36,7 +36,8 @@ import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./ho
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
-import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
+import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, learningFolderOf, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
+import { askReplay, type ReplayAsk, ReplayRefused, replayView } from "./runner/promotion.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, workflowRevisions, writeNote } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/skills.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
@@ -54,7 +55,7 @@ import { liveReachOf } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
-import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
+import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
 import { factsOverStore, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
@@ -74,7 +75,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { type Grade, GRADE_SOURCES, type GradeSource, gradeView, promotionsOf, promotionsShown, putGrade } from "./learn/promote.js";
+import { type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, promotionsOf, promotionsShown, putGrade } from "./learn/promote.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -565,6 +566,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/restore$/, name: "restoreLearningFile" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/workflows\/([^/]+)\/revisions$/, name: "listLearnedWorkflowRevisions" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/workflows\/([^/]+)\/promote$/, name: "promoteLearnedWorkflow" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/workflows\/([^/]+)\/revisions\/([^/]+)\/replays$/, name: "startLearnedWorkflowReplay" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/workflows\/([^/]+)\/revisions\/([^/]+)\/replays\/([^/]+)$/, name: "getLearnedWorkflowReplay" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
 ];
@@ -2013,6 +2016,27 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return { entry, warnings };
   }
 
+  /** A replay's ports for agent `entry` (runner/promotion.ts askReplay, replayView): its learning folder where this server
+   *  reads it, cut of the host's secrets as the learning reads cut them, and a replay run's launch made as a run's start
+   *  makes one now (prepareLaunch: the agent's current revision, model, plane and learning start). */
+  const replayAskOf = (entry: AgentEntry): ReplayAsk => ({
+    store, agentId: entry.agent.id, context: ctx, log: (line) => void log?.(line),
+    folder: () => learningFolderOf(data, entry.agent.id), shown: () => learningShown(entry.agent.id),
+    launchOf: async (input) => {
+      const { launch, revision } = await prepareLaunch(startDeps, entry, { input });
+      return { launch, revisionId: revision.id };
+    },
+  });
+  /** `act`, its ReplayRefused answered as the API's: 404 not_found, or 409 replay_conflict, in its words. */
+  const replayAsked = async <T>(act: () => Promise<T>): Promise<T> => {
+    try {
+      return await act();
+    } catch (error) {
+      if (error instanceof ReplayRefused) throw new ApiError(error.kind === "missing" ? "not_found" : "replay_conflict", error.message);
+      throw error;
+    }
+  };
+
   /** Agent `source`'s learned workflow `raw` made into a workflow agent of its own, as POST /agents makes one
    *  (createAgentOf: the definition's checks, the workflow's validation and what this host refuses of it). Only an active
    *  one, checked again as a restore checks it (learning-routes.ts promotable). Its revision is a workflow revision of the
@@ -2866,6 +2890,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2${path}`, "promote_without_session");
       throw new ApiError("forbidden", owner ? "Making a learned workflow an agent takes the owner's password sign-in in the console, never a token." : "Making a learned workflow an agent takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
+    // A replay its owner starts runs the agent's graded inputs again at its cost, and may promote a revision that then
+    // serves first: the same session as making one an agent.
+    if (found.name === "startLearnedWorkflowReplay" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+      authFailed(`/v2${path}`, "replay_without_session");
+      throw new ApiError("forbidden", owner ? "Replaying a learned workflow's revision takes the owner's password sign-in in the console, never a token." : "Replaying a learned workflow's revision takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+    }
     // A run's live computer view is a full-control credential for its computer: the owner's signed-in page alone, as
     // approving a note is (never a token a run, an MCP client or a script may hold).
     if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || found.name === "getRunComputer") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
@@ -3598,6 +3628,27 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           return { status: 201, body: { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
+      }
+      case "startLearnedWorkflowReplay": {
+        const body = await bodyOf(req);
+        const entry = await needAgent(id);
+        const extra = unknownFields(body, ["inputs"]);
+        if (extra.length) throw invalid(extra);
+        const inputs = body.inputs === undefined ? "held" : body.inputs;
+        if (inputs !== "held" && !(typeof inputs === "number" && Number.isInteger(inputs) && inputs >= 1 && inputs <= GRADES_KEPT)) {
+          throw new ApiError("bad_request", `inputs is "held" (the graded inputs the revision was last decided on, the default) or a whole number from 1 to ${GRADES_KEPT}: that many of the agent's newest graded inputs.`);
+        }
+        const [, , name, digest] = found.pattern.exec(path)!.map((part) => decodeURIComponent(part));
+        const started = await replayAsked(() => askReplay(replayAskOf(entry), name!, digest!, inputs as "held" | number));
+        return send(res, 202, started, { location: `/v2/agents/${encodeURIComponent(id)}/learning/workflows/${encodeURIComponent(name!)}/revisions/${encodeURIComponent(digest!)}/replays/${started.replay}` });
+      }
+      case "getLearnedWorkflowReplay": {
+        const entry = await needAgent(id);
+        const [, , name, digest, replayId] = found.pattern.exec(path)!.map((part) => decodeURIComponent(part));
+        const view = await replayAsked(() => replayView(replayAskOf(entry), name!, digest!, replayId!));
+        // Its words cut as the promotions list cuts a record's (promotionsShown).
+        const shown = await learningShown(id);
+        return send(res, 200, { ...view, workflow: shown.name(view.workflow), ...(view.reason !== undefined ? { reason: shown.text(view.reason) } : {}) });
       }
       case "getRunLearning": {
         const run = await needRun(id);
