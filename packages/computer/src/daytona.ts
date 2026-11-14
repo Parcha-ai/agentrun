@@ -13,8 +13,6 @@ import { boundOf, pause as sleep } from "./hosted/process.js";
 import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
 import { dateOf, driftOf, isWhole, sizeOf } from "./hosted/values.js";
-import type { KindCapabilities } from "./kinds.js";
-import type { MountKind } from "./mount.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
 import { type ComputerSpec, checkGpu, type NetworkPolicy, type Refusal } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, errorOf, failFor, ok, type Result, vendorFail } from "./result.js";
@@ -35,7 +33,7 @@ export type WebSocketFactory = (url: string, init: { headers: Record<string, str
 export type DaytonaTimeouts = HostedTimeouts & { retryMs: number };
 
 /** The Daytona provider's options: the key and Daytona's own settings, then the shared adapter's (HostedOptions). */
-export interface DaytonaProviderOptions extends Omit<HostedOptions, "label" | "kind" | "desktop" | "maxLifetimeMs" | "timeouts" | "archilEgress"> {
+export interface DaytonaProviderOptions extends Omit<HostedOptions, "kind" | "desktop" | "maxLifetimeMs" | "timeouts" | "archilEgress"> {
 	/** The Daytona API key. The caller passes it; this provider never reads the environment and never puts it in a computer. */
 	apiKey: string;
 	/** Default https://app.daytona.io/api. */
@@ -103,15 +101,6 @@ interface Sandbox {
 	sandboxClass?: string;
 	toolboxProxyUrl?: string;
 }
-
-/**
- * The mount kinds a Daytona computer takes: none. Archil's client hangs on Daytona's sandboxes, so an Archil mount is
- * refused in the descriptor's words (DAYTONA_NO_ARCHIL) before any request.
- */
-export const MOUNT: readonly MountKind[] = DAYTONA.mounts;
-
-/** The machine kind, groups and GPUs of its one configuration (its descriptor's): a linux computer, with GPUs when asked. */
-export const CAPABILITIES: readonly KindCapabilities[] = DAYTONA.capabilities;
 
 /**
  * A DaytonaProvider from its options alone; it reads no environment, so the key, the API URL (default Daytona's own) and
@@ -290,7 +279,7 @@ const finish = (stream: PassThrough, error?: Error) => void (error ? stream.dest
 
 /** Daytona's sandboxes as a MachineHost (../host.ts). */
 class DaytonaHost implements MachineHost {
-	readonly id = "daytona";
+	readonly descriptor = DAYTONA;
 	readonly facts: HostFacts;
 	readonly #rest: DaytonaRest;
 	readonly #webSocket: WebSocketFactory;
@@ -331,9 +320,6 @@ class DaytonaHost implements MachineHost {
 			networkReadBack: true,
 			// get reads sb.gpu and sb.gpuType back: a sandbox with none reads none.
 			gpuReadBack: true,
-			network: [...DAYTONA.network],
-			mounts: [...MOUNT],
-			unmounted: { ...DAYTONA.unmounted },
 			release: ["stop", "delete"],
 			// autoDeleteInterval 0: Daytona deletes a sandbox as soon as it stops, so a stop keeps no computer.
 			stopDeletes: options.autoDelete === 0,
@@ -747,6 +733,6 @@ export class DaytonaProvider extends HostedProvider {
 			autoDelete: autoDeleteMinutes ?? NO_AUTO_DELETE,
 			pollMs,
 		});
-		super(host, { ...rest, label: "Daytona", kind: "linux", timeouts: hostedTimeouts });
+		super(host, { ...rest, kind: "linux", timeouts: hostedTimeouts });
 	}
 }

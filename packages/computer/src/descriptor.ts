@@ -1,6 +1,6 @@
 // A provider's descriptor: everything a server, Settings and the conformance kit need to know of a vendor before any
 // of its code loads. Each vendor declares one, once, in its descriptor module (src/descriptors/<id>.ts, data and a lazy
-// load() alone), and its provider module takes its MOUNT and CAPABILITIES from it. The kind registry's PROVIDERS and
+// load() alone), and its provider module reads its mounts and capabilities from it. The kind registry's PROVIDERS and
 // the provider registry are derived from the descriptors; nothing beside them repeats what a descriptor says.
 import type { ComputerSettingKind, KindCapabilities } from "./kinds.js";
 import type { MountKind, Unmounted } from "./mount.js";

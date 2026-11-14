@@ -70,7 +70,8 @@ const START = Date.now();
 
 /**
  * A fake host. Options:
- *  - facts: over the defaults (child daemon, vendor lifetime, network read back, archil mounts);
+ *  - facts: over the defaults (child daemon, vendor lifetime, network read back); its descriptor takes network none
+ *    and an archil mount;
  *  - create: "ok", "fail" (refused: nothing made), "hold" (answers once fake.release() is called), "lost" (makes the
  *    machine, then throws Late: its id never comes back), "broken" (makes it, then throws a plain error);
  *  - starting: how many reads a new machine answers starting before it runs;
@@ -440,7 +441,7 @@ export function fakeHost({
 	const chunks = (proc) => (proc.chunks.length === 0 ? undefined : Buffer.concat(proc.chunks).toString("utf8"));
 
 	const host = {
-		id: "fakehost",
+		descriptor: { id: "fakehost", label: "Fakehost", network: ["none"], mounts: ["archil"] },
 		facts: {
 			daemon: "child",
 			isolation: "microvm",
@@ -450,8 +451,6 @@ export function fakeHost({
 			vendorAgentPorts: [7777],
 			networkReadBack: true,
 			gpuReadBack: true,
-			network: ["none"],
-			mounts: ["archil"],
 			release: ["delete"],
 			...facts,
 		},

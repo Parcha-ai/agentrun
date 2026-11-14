@@ -424,7 +424,7 @@ test("the registry builds E2B from its options alone, and the conformance module
 	assert.equal(conformance.conformanceImage({ env: { COMPUTER_E2B_TEMPLATE: "my-desktop" } }), "my-desktop");
 	assert.ok(conformance.conformanceNotes.some((note) => /Hobby/.test(note)));
 	const host = await conformance.createHost({ env: { [ENV.key]: KEY }, Sandbox: rec.Sandbox });
-	assert.equal(host.id, "e2b");
+	assert.equal(host.descriptor.id, "e2b");
 	await assert.rejects(conformance.createHost({ env: { E2B_API_KEY: BARE }, Sandbox: rec.Sandbox }), /set COMPUTER_E2B_API_KEY/);
 	assert.deepEqual(rec.calls, []);
 });

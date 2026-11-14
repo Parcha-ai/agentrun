@@ -179,14 +179,12 @@ test("each entry's kinds are derived by serves() from its static capabilities, n
 	}
 });
 
-test("PROVIDERS is derived from the descriptors, and each provider module's MOUNT and CAPABILITIES are its descriptor's own; a module declares no network beside it", async () => {
+test("PROVIDERS is derived from the descriptors, and a provider module declares no mounts, capabilities or network beside its descriptor", async () => {
 	assert.deepEqual(PROVIDERS, DESCRIPTORS.map(entryOf), "every entry is its descriptor through entryOf, its network included");
 	assert.deepEqual(PROVIDERS.map((entry) => entry.id), [...providerIds], "one entry per registry provider, in the descriptors' order");
 	for (const descriptor of DESCRIPTORS) {
 		const module = await providerModule(descriptor.id);
-		assert.equal(module.CAPABILITIES, descriptor.capabilities, `${descriptor.id}: its module's CAPABILITIES are its descriptor's, not a copy`);
-		assert.equal(module.MOUNT, descriptor.mounts, `${descriptor.id}: its module's MOUNT is its descriptor's mounts, not a copy`);
-		assert.equal("NETWORK" in module, false, `${descriptor.id}: its network is its descriptor's alone`);
+		for (const copy of ["MOUNT", "CAPABILITIES", "NETWORK"]) assert.equal(copy in module, false, `${descriptor.id}: its ${copy} is its descriptor's alone`);
 		assert.equal("load" in PROVIDERS.find((entry) => entry.id === descriptor.id), false, `${descriptor.id}: an entry is data, without load()`);
 	}
 });

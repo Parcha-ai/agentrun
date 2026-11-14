@@ -1,11 +1,12 @@
-// The machine host: what a vendor writes to put computers on its machines. A vendor answers seven calls about its own
-// machines (create, get, list, delete, exec, errorCode, and its static facts); hostedProvider (./hosted/provider.ts)
-// owns everything else a ComputerProvider does: the spec's check, the daemon's upload, install and start, the stdio
-// bridge, the read-back and the probe, labels, list and attach, the deadline and extend, the waits after a delete and a
-// stop, the sweep of a lost create, the Archil mount, and the words of every refusal. These doc comments are the
-// contract a new vendor reads (PROVIDERS.md, "The eight members").
-import type { MountKind, Unmounted } from "./mount.js";
-import type { ComputerCapabilities, ComputerSpec, GpuCapability, GpuSpec, NetworkForm, NetworkPolicy, Refusal } from "./provider.js";
+// The machine host: what a vendor writes to put computers on its machines. A host has twelve members: its descriptor
+// and its facts, five calls about its own machines (create, get, list, delete, exec), and five optional hooks (upload,
+// errorCode, stop, extend, check). HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does:
+// the spec's check, the daemon's upload, install and start, the stdio bridge, the read-back and the probe, labels, list
+// and attach, the deadline and extend, the waits after a delete and a stop, the sweep of a lost create, the Archil
+// mount, and the words of every refusal. These doc comments are the contract a new vendor reads (PROVIDERS.md, "The
+// twelve members").
+import type { ProviderDescriptor } from "./descriptor.js";
+import type { ComputerCapabilities, ComputerSpec, GpuCapability, GpuSpec, NetworkPolicy, Refusal } from "./provider.js";
 import type { ComputerErrorCode, Result } from "./result.js";
 
 /**
@@ -14,8 +15,11 @@ import type { ComputerErrorCode, Result } from "./result.js";
  * The adapter bounds each call by ctx.timeoutMs and ctx.signal; a host passes both on to its vendor call when it can.
  */
 export interface MachineHost {
-	/** The provider's descriptor id ("e2b"): the vendor named by every error of code vendor. */
-	readonly id: string;
+	/**
+	 * The provider's descriptor (./descriptors): its id names the vendor of every error of code vendor, its label is the
+	 * vendor in words, and capabilities() and check() read its network forms, mount kinds and unmounted kinds.
+	 */
+	readonly descriptor: HostDescriptor;
 	readonly facts: HostFacts;
 	/**
 	 * Makes one machine, by its options, and answers once the vendor has its id. It does not wait for the machine to run
@@ -163,7 +167,10 @@ export interface MachineProcess {
 	kill(): Promise<void>;
 }
 
-/** What a vendor's machines are, static: with the adapter's options, capabilities() is built from these alone. */
+/** What the host reads of its provider's descriptor. */
+export type HostDescriptor = Pick<ProviderDescriptor, "id" | "label" | "network" | "mounts" | "unmounted">;
+
+/** What a vendor's machines are, static: with its descriptor and the adapter's options, capabilities() is built from these alone. */
 export interface HostFacts {
 	/** child: the vendor's agent is the machine's first process and starts init; pid1: init is the machine's main process. */
 	daemon: "child" | "pid1";
@@ -190,12 +197,6 @@ export interface HostFacts {
 	 * request is held to them only then. A vendor that reads none back (Modal) answers the request's computer as made.
 	 */
 	gpuReadBack?: boolean;
-	/** The network forms its computers take: of its descriptor's. */
-	network: NetworkForm[];
-	/** The mount kinds it takes: of its descriptor's. */
-	mounts?: MountKind[];
-	/** Why it takes none of these mount kinds, each in check()'s words: of its descriptor's. */
-	unmounted?: Unmounted;
 	/** How release may end one; "stop" needs host.stop. */
 	release: Array<"stop" | "delete">;
 	stopDeletes?: boolean;

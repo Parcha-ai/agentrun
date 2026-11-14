@@ -70,8 +70,8 @@ export function codeOfError(host: Pick<MachineHost, "errorCode">, error: unknown
  * Settles with the promise's result, or a timeout or abort in words once ms pass or signal aborts. A host call that
  * answers a Result is passed on as it answers; one that throws is read through the host's errorCode.
  */
-export function race<T>(host: Pick<MachineHost, "id" | "errorCode">, promise: Promise<T>, what: string, ms: number, signal?: AbortSignal): Promise<Result<T>> {
-	const fail = failFor(host.id);
+export function race<T>(host: Pick<MachineHost, "descriptor" | "errorCode">, promise: Promise<T>, what: string, ms: number, signal?: AbortSignal): Promise<Result<T>> {
+	const fail = failFor(host.descriptor.id);
 	if (signal?.aborted) {
 		promise.catch(() => {});
 		return Promise.resolve(fail("aborted", `${what} was aborted`));
@@ -99,8 +99,8 @@ export function race<T>(host: Pick<MachineHost, "id" | "errorCode">, promise: Pr
  * One host call, bounded: ctx.timeoutMs is the vendor's own bound, and the race gives it CALL_SLACK_MS more. A call
  * that throws at once is an error like one that rejects; a Result the host answers keeps its own words, prefixed.
  */
-export async function hostCall<T>(host: Pick<MachineHost, "id" | "errorCode">, what: string, run: (ctx: HostCall) => Promise<Result<T>>, ms: number, signal?: AbortSignal): Promise<Result<T>> {
-	const fail = failFor(host.id);
+export async function hostCall<T>(host: Pick<MachineHost, "descriptor" | "errorCode">, what: string, run: (ctx: HostCall) => Promise<Result<T>>, ms: number, signal?: AbortSignal): Promise<Result<T>> {
+	const fail = failFor(host.descriptor.id);
 	if (signal?.aborted) return fail("aborted", `${what} was aborted before it was called`);
 	let promise: Promise<Result<T>>;
 	try {
@@ -144,7 +144,7 @@ const OUTPUT_MAX = 64 * 1024;
  * A non-zero exit is a result, not an error.
  */
 export async function runToExit(host: MachineHost, id: string, argv: readonly string[], { stdin, ms, signal, what }: { stdin?: Uint8Array; ms: number; signal?: AbortSignal; what: string }): Promise<Result<RunResult>> {
-	const fail = failFor(host.id);
+	const fail = failFor(host.descriptor.id);
 	const started = await hostCall(host, what, (ctx) => host.exec(id, argv, { stdin: stdin !== undefined }, ctx), ms, signal);
 	if (!started.ok) return started;
 	const proc = started.value;
@@ -176,7 +176,7 @@ const STDIN_CHUNK = 256 * 1024;
 export async function uploadThroughExec(host: MachineHost, id: string, path: string, bytes: Uint8Array, ms: number, signal?: AbortSignal): Promise<Result<void>> {
 	const ran = await runToExit(host, id, ["sh", "-c", 'umask 077 && cat > "$1"', "sh", path], { stdin: bytes, ms, ...(signal ? { signal } : {}), what: `the upload to ${path}` });
 	if (!ran.ok) return ran;
-	return ran.value.exitCode === 0 ? ok(undefined) : failFor(host.id)("vendor", `the upload to ${path} exited with ${ran.value.exitCode}: ${`${ran.value.stdout} ${ran.value.stderr}`.trim().slice(0, 300)}`);
+	return ran.value.exitCode === 0 ? ok(undefined) : failFor(host.descriptor.id)("vendor", `the upload to ${path} exited with ${ran.value.exitCode}: ${`${ran.value.stdout} ${ran.value.stderr}`.trim().slice(0, 300)}`);
 }
 
 /**
@@ -206,7 +206,7 @@ export async function openBridge(
 	id: string,
 	{ argv, name, version, requestMs, helloMs, signal }: { argv: readonly string[]; name: string; version: string; requestMs: number; helloMs: number; signal?: AbortSignal },
 ): Promise<Opened> {
-	const fail = failFor(host.id);
+	const fail = failFor(host.descriptor.id);
 	const what = `starting the daemon's stdio bridge in ${name}`;
 	if (signal?.aborted) return fail("aborted", `${what} was aborted before it was called`);
 	let starting: Promise<Result<MachineProcess>>;

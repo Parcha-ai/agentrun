@@ -19,8 +19,6 @@ import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { PHONE_GROUPS, PHONE_HARNESS } from "./descriptors/phone-harness.js";
-import type { KindCapabilities } from "./kinds.js";
-import type { MountKind } from "./mount.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import {
 	type AttachedComputer,
@@ -50,10 +48,6 @@ const fail = failFor("phone-harness");
 
 /** The phone harness's API. */
 export const PHONE_HARNESS_URL = "https://api.phone-harness.com";
-/** A phone mounts no folder. */
-export const MOUNT: readonly MountKind[] = PHONE_HARNESS.mounts;
-/** The one configuration it offers, as its capabilities() declare it: its descriptor's. */
-export const CAPABILITIES: readonly KindCapabilities[] = PHONE_HARNESS.capabilities;
 /** The longest lifetime by default: a rented phone bills by the minute. */
 export const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
 /** How long create waits for a phone to be ready by default: the service's own CLI waits 240 s. */

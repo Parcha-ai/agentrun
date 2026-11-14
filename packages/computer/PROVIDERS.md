@@ -20,7 +20,7 @@ that says what your API offers.
 
 ### Step one: run the exec pre-check
 
-Before you write anything else, write your host's constructor and its `exec` (see [the eight members](#the-eight-members)
+Before you write anything else, write your host's constructor and its `exec` (see [the twelve members](#the-twelve-members)
 below). Then write a `createHost({ env })` in your conformance module that builds the host from your key, and point to
 that module from your provider file with `conformance`, as `e2b.ts` does. E2B's `createHost` in
 `src/conformance/e2b.ts` is three lines. Make a machine by hand in your console, then run, from the repository root:
@@ -52,17 +52,20 @@ You add four things under `packages/computer/src/`, each copied from E2B's:
 - `conformance/<vendor>.ts`, which reads your key and builds your provider for the test suite.
 - One line in `descriptors/index.ts` that adds your descriptor to `DESCRIPTORS`.
 
-### The eight members
+### The twelve members
 
-Every snippet below is cut from E2B's host in `src/e2b.ts`, and `// …` marks a cut. A member answers a `Result`, either
-`ok(value)` or a failure with a code. If a member throws, AgentRun reads the error through `errorCode`. Each call gets
-`ctx` with a `timeoutMs` and sometimes a `signal`. Pass both to your client where you can.
+A host has twelve members: `descriptor`, `facts`, `create`, `get`, `list`, `delete` and `exec`, then the optional
+`upload`, `errorCode`, `stop`, `extend` and `check`. Every snippet below is cut from E2B's host in `src/e2b.ts`, and
+`// …` marks a cut. A call answers a `Result`, either `ok(value)` or a failure with a code. If a call throws, AgentRun
+reads the error through `errorCode`. Each call gets `ctx` with a `timeoutMs` and sometimes a `signal`. Pass both to
+your client where you can.
 
-**`id`** is your descriptor's id. Errors with code `vendor` name it.
+**`descriptor`** is your descriptor (below). Errors with code `vendor` name its id, refusals name its label, and the
+provider's network and mounts are the ones it declares.
 
 ```ts
 class E2BHost implements MachineHost {
-	readonly id = "e2b";
+	readonly descriptor = E2B;
 ```
 
 **`facts`** says what your machines are. It never changes, and AgentRun builds the provider's capabilities from it.
@@ -85,8 +88,6 @@ A user on a bigger plan raises the option, up to the fact.
 		arch: "amd64",
 		vendorAgentPorts: [ENVD_PORT],
 		networkReadBack: true,
-		network: [...E2B.network],
-		mounts: [...MOUNT],
 		release: ["delete"],
 	};
 ```
@@ -210,12 +211,12 @@ the rest of AgentRun calls.
 export class E2BProvider extends HostedProvider {
 	constructor(options: E2BProviderOptions) {
 		// … check the options
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, label: "E2B", kind, maxLifetimeMs });
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, kind, maxLifetimeMs });
 	}
 }
 ```
 
-The same file exports `create(options)`, `MOUNT`, `CAPABILITIES` and `conformance`, as `e2b.ts` does. Load your SDK
+The same file exports `create(options)` and `conformance`, as `e2b.ts` does. Load your SDK
 lazily through a constant like `E2B_PACKAGE` and pin it exactly as a root devDependency. `test/vendor-sdks.test.mjs`
 finds that constant in your file and checks the pin.
 
@@ -325,8 +326,8 @@ in the pull request template.
 ### What a provider declares
 
 Every provider has a descriptor and answers `capabilities()` with its kind, OS, daemon, groups (exec, files, screen
-and so on), lifetime, networks, isolation, release, users and mounts. On a `MachineHost` these come from `facts` and the
-provider's options, so you write none of them by hand. The case `health.declared` checks `capabilities()` against the
+and so on), lifetime, networks, isolation, release, users and mounts. On a `MachineHost` these come from `facts`, the descriptor
+(networks and mounts) and the provider's options, so you write none of them by hand. The case `health.declared` checks `capabilities()` against the
 descriptor, and each computer's `hello` against `capabilities()`. [spec/computer/provider.md](../../spec/computer/provider.md)
 says what each member promises.
 

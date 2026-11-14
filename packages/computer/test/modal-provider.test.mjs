@@ -14,6 +14,7 @@ import { checkLifetime, kindRefusals, recordedMount, sweep } from "../dist/index
 import { fakeObjects } from "./fake-archil.mjs";
 
 const modal = await import("../dist/modal.js");
+const { MODAL } = await import("../dist/descriptors/modal.js");
 const { ModalProvider } = modal;
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -132,8 +133,8 @@ test("capabilities, as before the move: a linux VM whose lifetime Modal enforces
 			fence: "userns-netns",
 		},
 	});
-	assert.deepEqual(modal.CAPABILITIES[0].gpu, provider.capabilities().gpu, "the static configuration declares the same GPUs");
-	assert.deepEqual([...modal.MOUNT], ["archil"]);
+	assert.deepEqual(MODAL.capabilities[0].gpu, provider.capabilities().gpu, "the static configuration declares the same GPUs");
+	assert.deepEqual(provider.capabilities().mount, ["archil"]);
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend(): Modal's timeout cannot move");
 	assert.equal(provider.stream, undefined, "no stream()");
@@ -471,7 +472,7 @@ test("the conformance module passes the COMPUTER_MODAL_ token to the client expl
 	}
 	const { ModalClient, made, rec } = fakeClient();
 	const host = await createHost({ env: { ...DEV_TOKEN, COMPUTER_MODAL_APP: APP }, ModalClient });
-	assert.equal(host.id, "modal");
+	assert.equal(host.descriptor.id, "modal");
 	assert.deepEqual(made, [{ tokenId: "fake-dev-id", tokenSecret: "fake-dev-secret" }]);
 	assert.deepEqual(rec.calls, [], "the host calls nothing until the sweep does");
 });

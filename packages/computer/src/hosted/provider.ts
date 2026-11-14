@@ -99,8 +99,6 @@ export interface HostedTimeouts {
 }
 
 export interface HostedOptions {
-	/** The vendor's name in words ("E2B"), for refusals and Settings' test. */
-	label: string;
 	/** desktop: an X server started through the daemon; linux (default): no screen. */
 	kind?: "desktop" | "linux";
 	/** The display and its X server, for kind desktop. Default Xvfb on :0, 1280x800. */
@@ -276,7 +274,6 @@ export class HostedProvider implements ComputerProvider {
 
 	constructor(host: MachineHost, options: HostedOptions) {
 		const {
-			label,
 			kind = "linux",
 			desktop = {},
 			maxLifetimeMs = host.facts.maxLifetimeMs,
@@ -287,10 +284,11 @@ export class HostedProvider implements ComputerProvider {
 			onNote,
 			archilEgress,
 		} = options;
-		this.id = host.id;
+		const { id, label } = host.descriptor;
+		this.id = id;
 		this.host = host;
 		this.#label = label;
-		this.#fail = failFor(host.id);
+		this.#fail = failFor(id);
 		this.#onNote = onNote;
 		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
 		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
@@ -325,11 +323,11 @@ export class HostedProvider implements ComputerProvider {
 
 	/** The computer's facts, from the host's and the adapter's options alone. */
 	capabilities(): ComputerCapabilities {
-		const { facts } = this.host;
+		const { facts, descriptor } = this.host;
 		return {
 			kind: this.#kind,
 			lifetime: facts.lifetime,
-			network: [...facts.network],
+			network: [...descriptor.network],
 			networkReadBack: facts.networkReadBack,
 			isolation: facts.isolation,
 			os: "linux",
@@ -338,7 +336,7 @@ export class HostedProvider implements ComputerProvider {
 			maxLifetimeMs: this.#maxLifetimeMs,
 			release: [...facts.release],
 			...(facts.stopDeletes === undefined ? {} : { stopDeletes: facts.stopDeletes }),
-			...(facts.mounts === undefined ? {} : { mount: [...facts.mounts] }),
+			mount: [...descriptor.mounts],
 			vendorAgentPorts: [...facts.vendorAgentPorts],
 			...(facts.gpu === undefined ? {} : { gpu: structuredClone(facts.gpu) }),
 			...(facts.user === undefined ? {} : { user: [...facts.user] }),
@@ -354,7 +352,7 @@ export class HostedProvider implements ComputerProvider {
 		const label = this.#label;
 		// An Archil mount's own rules hold only where the provider takes one; elsewhere checkMount's refusal says why alone.
 		const archil = (mount as { kind?: unknown } | undefined)?.kind === "archil" && (capabilities.mount ?? []).includes("archil");
-		refusals.push(...checkMount(mount, capabilities.mount ?? [], this.host.facts.unmounted), ...(archil ? archilRefusals(given as unknown as ComputerSpec) : []));
+		refusals.push(...checkMount(mount, capabilities.mount ?? [], this.host.descriptor.unmounted), ...(archil ? archilRefusals(given as unknown as ComputerSpec) : []));
 		const daemonUser = `${this.#uid}:${this.#gid}`;
 		const asked = this.#takesUser() ? given.user : undefined;
 		if (asked !== undefined) {
@@ -1379,7 +1377,7 @@ export async function settle(
 		ask,
 	}: Pick<HostedTimeouts, "requestMs" | "listMs" | "pollMs" | "goneMs"> & { signal?: AbortSignal; want?: "gone" | "stopped"; ask?: (signal: AbortSignal) => Promise<Result<void>> },
 ): Promise<Result<void>> {
-	const fail = failFor(host.id);
+	const fail = failFor(host.descriptor.id);
 	const doing = ask === undefined ? "release" : "the stop";
 	type Read = { failed: Result<never> } | { settled: true } | { last: string };
 	let agreed = 0;

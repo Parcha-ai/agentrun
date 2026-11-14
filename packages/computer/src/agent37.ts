@@ -17,8 +17,6 @@ import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
 import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh.js";
 import { dateOf, DOMAIN, driftOf, isWhole, sizeOf } from "./hosted/values.js";
-import type { KindCapabilities } from "./kinds.js";
-import type { MountKind } from "./mount.js";
 import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
@@ -62,7 +60,7 @@ export type Agent37Type = "vm" | "default";
 export type Agent37Region = "us" | "eu" | "ap-south";
 
 /** The Agent37 provider's options: the key, the SSH key and ssh2, then the shared adapter's (HostedOptions). */
-export interface Agent37ProviderOptions extends Omit<HostedOptions, "label" | "maxLifetimeMs"> {
+export interface Agent37ProviderOptions extends Omit<HostedOptions, "maxLifetimeMs"> {
 	/** The workspace's API key (sk_live_...). The caller passes it; this provider never reads it from the environment. */
 	apiKey: string;
 	/**
@@ -127,10 +125,6 @@ const DEFAULT_CREATE_MS = 300_000;
 /** How much a tunnel may hold unsent before a write waits for it (the WebSocket's bufferedAmount). */
 const TUNNEL_HIGH_WATER = 1024 * 1024;
 const TUNNEL_POLL_MS = 10;
-/** The mount kinds an Agent37 computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
-export const MOUNT: readonly MountKind[] = AGENT37.mounts;
-/** The machine kind and groups of each configuration: kind linux (the default), and kind desktop on the box template. */
-export const CAPABILITIES: readonly KindCapabilities[] = AGENT37.capabilities;
 
 /** An answer of Agent37's REST API that is not a success, as the code its status and the envelope's stable code (docs: errors) make. */
 export class Agent37Error extends Error {
@@ -313,7 +307,7 @@ function tunnelOf(ws: WebSocketLike, host: string): { duplex: Duplex; opened: Pr
 
 /** Agent37's instances as a MachineHost (../host.ts). */
 class Agent37Host implements MachineHost {
-	readonly id = "agent37";
+	readonly descriptor = AGENT37;
 	readonly facts: HostFacts;
 	readonly #apiKey: string;
 	readonly #ssh: SshExec;
@@ -351,8 +345,6 @@ class Agent37Host implements MachineHost {
 			// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
 			windowManager: true,
 			networkReadBack: true,
-			network: [...AGENT37.network],
-			mounts: [...MOUNT],
 			release: ["delete"],
 			specFields: ["cpus", "memoryMb"],
 			labelRules: { maxBytes: METADATA_MAX_BYTES, measure: "json" },
@@ -538,7 +530,7 @@ export class Agent37Provider extends HostedProvider {
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);
 		if (region !== "us" && type !== "vm") throw new Error(`Agent37 runs type default in us alone: ${region} takes type vm`);
 		const host = new Agent37Host({ apiKey, sshKey: privateKey, ssh2, fetch: fetcher, WebSocket, apiUrl: api.href.replace(/\/+$/, ""), proxyDomain, type, region });
-		super(host, { ...rest, label: "Agent37", timeouts: { createMs: DEFAULT_CREATE_MS, ...timeouts } });
+		super(host, { ...rest, timeouts: { createMs: DEFAULT_CREATE_MS, ...timeouts } });
 	}
 }
 

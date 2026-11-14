@@ -139,15 +139,13 @@ for a descriptor loaded from elsewhere. `DESCRIPTORS` (`descriptors/index.ts`) l
 Settings shows them. The kind registry's `PROVIDERS` and the provider registry are derived from them; nothing else
 repeats what a descriptor says.
 
-The provider module takes its `MOUNT` and `CAPABILITIES` from its descriptor and exports `create(options)`, where
-`options` holds each key and setting by its `option` name.
+The provider module exports `create(options)`, where `options` holds each key and setting by its `option` name. Its
+mounts and capabilities are its descriptor's, read from the descriptor and exported nowhere else.
 
 The conformance case `health.declared` holds `capabilities()` to the declaration, and `hello` to `capabilities()`.
 
-**Status.** The descriptor lands with the provider contract's next change (branch `computer/cp1-descriptor`). Until it
-merges, `PROVIDERS` in `packages/computer/src/kinds.ts` is kept by hand and each module exports its own `CAPABILITIES`
-and `MOUNT`; the suite reads `PROVIDERS` either way. After that, the contract types move to a zero-dependency package,
-`@parcha/agentrun-computer-protocol` (**draft**), and this spec is generated from there.
+**Status.** Next, the contract types move to a zero-dependency package, `@parcha/agentrun-computer-protocol`
+(**draft**), and this spec is generated from there.
 
 ## A hosted vendor's exec
 

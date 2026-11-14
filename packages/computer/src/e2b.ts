@@ -12,8 +12,6 @@ import { shellLine } from "./hosted/scripts.js";
 import { show } from "./drift.js";
 import { dateOf, DOMAIN, driftOf, isWhole } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
-import type { KindCapabilities } from "./kinds.js";
-import type { MountKind } from "./mount.js";
 import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
 
@@ -58,7 +56,7 @@ interface ProcessRpc {
 }
 
 /** The E2B provider's options: the key and the SDK, then the shared adapter's (HostedOptions). */
-export interface E2BProviderOptions extends Omit<HostedOptions, "label" | "maxLifetimeMs"> {
+export interface E2BProviderOptions extends Omit<HostedOptions, "maxLifetimeMs"> {
 	/** The E2B API key. The caller passes it; this provider never reads it from the environment or puts it in a computer. */
 	apiKey: string;
 	/** The SDK's Sandbox class: the host's `e2b` package's. */
@@ -140,11 +138,6 @@ const KEEPALIVE_HEADER = "Keepalive-Ping-Interval";
 const KEEPALIVE_S = "50";
 /** The Connect codes envd's process calls answer (connectrpc Code), as this provider's codes. */
 const CONNECT_CODES: Record<number, ComputerErrorCode> = { 1: "aborted", 3: "invalid", 4: "timeout", 5: "not_found", 7: "denied", 8: "limit", 16: "denied" };
-
-/** The mount kinds an E2B computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
-export const MOUNT: readonly MountKind[] = E2B.mounts;
-/** The machine kind and groups of each configuration: kind linux (the plain template), and kind desktop (the default). */
-export const CAPABILITIES: readonly KindCapabilities[] = E2B.capabilities;
 
 
 /** The SDK names its errors (index.mjs:86-360); Connect's carry a code. */
@@ -238,7 +231,7 @@ const push = (stream: PassThrough, data: Uint8Array) => void (stream.writableEnd
 
 /** E2B's sandboxes as a MachineHost (../host.ts). */
 class E2BHost implements MachineHost {
-	readonly id = "e2b";
+	readonly descriptor = E2B;
 	readonly facts: HostFacts = {
 		daemon: "child",
 		isolation: "microvm",
@@ -249,8 +242,6 @@ class E2BHost implements MachineHost {
 		// E2B Desktop's template has xfwm4, which its own desktop runs: the apps an agent opens are framed and focused.
 		windowManager: true,
 		networkReadBack: true,
-		network: [...E2B.network],
-		mounts: [...MOUNT],
 		release: ["delete"],
 	};
 	readonly #Sandbox: SdkSandboxClass;
@@ -480,6 +471,6 @@ export class E2BProvider extends HostedProvider {
 		const ambient = ambientProblem();
 		if (ambient) throw new Error(ambient);
 		if (typeof domain !== "string" || !DOMAIN.test(domain)) throw new Error(`the E2B domain must be a host name such as ${DEFAULT_DOMAIN}, not ${JSON.stringify(domain)}`);
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), timeoutsOf(rest.timeouts).requestMs), { ...rest, label: "E2B", kind, maxLifetimeMs });
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), timeoutsOf(rest.timeouts).requestMs), { ...rest, kind, maxLifetimeMs });
 	}
 }

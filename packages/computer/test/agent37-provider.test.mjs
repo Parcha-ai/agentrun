@@ -608,7 +608,7 @@ test("the conformance module reads COMPUTER_AGENT37_* alone, needs its live swit
 	const desktop = await conformanceModule.createProvider({ env: { ...env, [ENV.live]: "1", [ENV.kind]: "desktop" }, ...doubles });
 	assert.equal(desktop.capabilities().kind, "desktop");
 	const host = await conformanceModule.createHost({ env, ...doubles });
-	assert.equal(host.id, "agent37");
+	assert.equal(host.descriptor.id, "agent37");
 	assert.equal(sweepScope({ env }), workspaceOf(KEY));
 	assert.doesNotMatch(sweepScope({ env }), new RegExp(KEY));
 	assert.notEqual(sweepScope({ env: { ...env, [ENV.key]: BARE } }), sweepScope({ env }), "another key is another workspace");
