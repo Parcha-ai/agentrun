@@ -1988,7 +1988,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     delete: {
       operationId: "deleteMcpServer", tags: ["local"], summary: "Forget a saved MCP server and its credential",
-      description: "A server the Composio preset made also has its MCP server deleted in the owner's Composio account, with the saved key, before the row goes: Composio's 404 means it is already gone. 403 forbidden to the API token when the server holds a credential: removing it drops a secret, the owner's signed-in session's alone. A server saved with none is the token's to remove. 412 precondition_failed when the server's credential changed between that check and the removal (a save or a sign-in landed): nothing is removed.",
+      description: "A server the Composio preset made also has its MCP server deleted in the owner's Composio account, with the saved key, after the row is removed: the row is already gone while that delete waits on Composio. Composio's 404 means it is already gone; when Composio refuses or does not answer, or the saved key does not open, the answer is 200 with `composio.removed: false` and a note to remove it there. 403 forbidden to the API token when the server holds a credential: removing it drops a secret, the owner's signed-in session's alone. A server saved with none is the token's to remove. 412 precondition_failed when the server's credential changed between that check and the removal (a save or a sign-in landed): nothing is removed, and nothing is sent to Composio.",
       parameters: [MCP_NAME],
       responses: {
         "204": { description: "Forgotten (and, for a Composio preset server, its Composio MCP server deleted, or already gone there)." },
