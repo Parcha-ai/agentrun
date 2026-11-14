@@ -209,16 +209,30 @@ test("lifetime: maxLifetimeMs caps what check takes, in words, and create refuse
 	assert.deepEqual(rec.calls, [], "refused before any SDK call");
 });
 
-test("Modal takes 10 tags on a sandbox, five of them the adapter's own: past that its create refuses in words, before sandboxes.create", async () => {
-	const { provider, rec } = setup();
+test("Modal takes 10 tags on a sandbox, the adapter's own among them: past that check() refuses in words with no SDK call, and create refuses the same words before any SDK call", async () => {
 	const six = Object.fromEntries([1, 2, 3, 4, 5, 6].map((n) => [`l${n}`, "v"]));
-	const made = await create(provider, { ...SPEC, labels: six });
-	assert.equal(made.error?.code, "invalid");
-	assert.match(made.error.message, /Modal takes at most 10 tags on a sandbox, and this one's would be 11/);
-	assert.ok(!rec.names().includes("sandboxes.create"), "refused before Modal was asked");
-	const five = setup();
-	await create(five.provider, { ...SPEC, labels: Object.fromEntries(Object.entries(six).slice(1)) });
-	assert.equal(Object.keys(five.rec.params().tags).length, 10, "ten tags go to Modal");
+	const five = Object.fromEntries(Object.entries(six).slice(1));
+	// Each spec past the limit: the count is create's own, the caller's labels with the adapter's (five, and a GPU's).
+	for (const [spec, own] of [
+		[{ ...SPEC, labels: six }, 5],
+		[{ ...SPEC, labels: five, gpu: { type: "T4", count: 1 } }, 6],
+	]) {
+		const { provider, rec } = setup();
+		const refusals = provider.check(spec);
+		assert.equal(refusals.length, 1, JSON.stringify(refusals));
+		assert.equal(refusals[0].field, "labels");
+		assert.equal(refusals[0].message, `a Modal computer carries at most 10 labels, the adapter's own among them, and this one's would carry 11, ${own} of them the adapter's: give at most ${10 - own} labels`);
+		assert.deepEqual(rec.calls, [], "check made no SDK call");
+		const made = await create(provider, spec);
+		assert.equal(made.error?.code, "refused");
+		assert.equal(made.error.message, `labels: ${refusals[0].message}`, "create's words are check's");
+		assert.deepEqual(rec.calls, [], "create refused before any SDK call: no app lookup, no listing, no sandboxes.create");
+	}
+	const at = setup();
+	assert.deepEqual(at.provider.check({ ...SPEC, labels: five }), [], "ten labels in all are Modal's limit, taken");
+	assert.deepEqual(at.rec.calls, []);
+	await create(at.provider, { ...SPEC, labels: five });
+	assert.equal(Object.keys(at.rec.params().tags).length, 10, "ten tags go to Modal");
 });
 
 test("the janitor does not sweep Modal computers: Modal ends them at their lifetime", async () => {
