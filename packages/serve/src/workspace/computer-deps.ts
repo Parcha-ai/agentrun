@@ -240,6 +240,10 @@ export const imageWaitWords = (making: "build" | "pull", image: string): string 
 /** An OS as people write its name. */
 const OS_NAMES: Readonly<Record<string, string>> = { linux: "Linux", windows: "Windows", macos: "macOS", android: "Android", ios: "iOS" };
 
+/** The run's timeline phase as its claim starts making its computer (computerForClaim's onStarting): a phone takes
+ *  tens of seconds to boot, and until it is up the run's timeline has nothing else to say. */
+export const computerStartingWords = ({ provider, kind }: Pick<ComputerSaid, "provider" | "kind">): string => `Starting a ${kind} from ${provider}…`;
+
 /** The run's timeline phase once its claim's computer is connected (computerForClaim's onConnected): what it says it
  *  is, in its hello's own facts, such as "The phone is ready: Android 15 (arm64), from Phone harness." */
 export const computerReadyWords = ({ provider, kind, hello }: ComputerSaid): string =>
