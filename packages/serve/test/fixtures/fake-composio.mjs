@@ -11,10 +11,11 @@
 // port that the server under test didn't send (a port prober on the host GETs / on each new loopback listener; another
 // test process's client may still call a port it freed, which this fake then took) is not one of its calls. Such a
 // request is answered 404 and kept apart in `strays`, never in `calls`, so a stray without the key can't read as the
-// server sending none; `mcpLog` likewise holds only the requests on the MCP endpoint's own path.
+// server sending none (fixtures/stranger.mjs); `mcpLog` likewise holds only the requests on the MCP endpoint's own path.
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { startFakeMcp } from "./fake-mcp-server.mjs";
+import { stranger } from "./stranger.mjs";
 
 /** An MCP endpoint that serves no tools, as Composio's does when none of the allowed actions is one it serves: it agrees a
  *  protocol and answers every other method "Method not found". */
@@ -52,10 +53,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     for await (const chunk of req) chunks.push(chunk);
     const text = Buffer.concat(chunks).toString("utf8");
     const url = new URL(req.url, "http://x");
-    if (!url.pathname.startsWith(`${own}/`)) {
-      strays.push({ method: req.method, path: url.pathname, headers: Object.keys(req.headers), at: Date.now() });
-      return void (res.writeHead(404, { "content-type": "application/json" }), res.end(JSON.stringify({ error: { message: "not this fake's" } })));
-    }
+    if (stranger(req, res, { own: (path) => path.startsWith(`${own}/`), strays })) return;
     url.pathname = url.pathname.slice(own.length);
     let body;
     try { body = text ? JSON.parse(text) : undefined; } catch { body = text; }

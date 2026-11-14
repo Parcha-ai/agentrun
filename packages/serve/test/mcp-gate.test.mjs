@@ -22,6 +22,7 @@ import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { agent, call, clientOwnerSession, follow, runRecordOf, scratch, serve as serveOf, startInProcessRunner, whenFree, withEnv } from "./support.mjs";
 import { HOLD_ENV } from "./fixtures/faux-mcp.mjs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 
@@ -454,7 +455,7 @@ async function ownClient(t, harness) {
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
   await copyStandIn(standIn);
   const gateway = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     const text = JSON.parse(body || "{}").input?.[0]?.content?.[0]?.text ?? "";

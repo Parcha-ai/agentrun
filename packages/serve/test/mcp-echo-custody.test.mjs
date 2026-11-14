@@ -13,6 +13,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 import { agent, follow, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 /** The server's bearer and a header value saved beside it: no real ones. */
@@ -96,7 +97,7 @@ test("pi: an MCP server that echoes its bearer and a header value in its answer:
 /** serve's model gateway on loopback: each Responses request answered with the text it carries, and its usage. */
 async function echoGateway(t) {
   const server = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     const text = JSON.parse(body || "{}").input?.[0]?.content?.[0]?.text ?? "";

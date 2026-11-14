@@ -20,6 +20,7 @@ import { withToolSearch } from "./fixtures/claude-tool-search.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { agent, call, clientOwnerSession, follow, scratch, serve as serveOf, whenFree, withEnv } from "./support.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const TOKEN = `not-a-secret-${"mcp-gate-wired-0123"}`;
 const json = { "content-type": "application/json" };
@@ -40,7 +41,7 @@ function resultIn(messages) {
 async function echoGateway(t) {
   const seen = [];
   const server = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     const text = JSON.parse(body || "{}").input?.[0]?.content?.[0]?.text ?? "";
@@ -57,7 +58,7 @@ async function echoGateway(t) {
  *  output yet calls it; one with an output says what the tool said; any other says "Noted.". */
 async function callingGateway(t) {
   const server = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     const request = JSON.parse(body || "{}");
