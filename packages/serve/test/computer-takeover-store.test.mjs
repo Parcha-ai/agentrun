@@ -253,7 +253,8 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
 
 test("a person takes over a runner run's desktop and hands it back: the take waits out the agent's call in flight, the run read's computer.state is taken_over while the person holds it, and the Timeline says both at their own times", async (t) => {
   const world = await setup(t);
-  const run = await world.start();
+  // The agent's second look waits in its shot, so the run is still going when the read after the hand-back is made.
+  const run = await world.start({ second: true });
   await world.until(world.live, "the desktop is live in the server's read");
   assert.equal(await world.hold(), "agent");
   assert.equal(await world.computerState(), "ready", "the run read: the agent drives its desktop");
@@ -270,7 +271,9 @@ test("a person takes over a runner run's desktop and hands it back: the take wai
   const back = await world.route("handBackRunComputer");
   assert.ok(back.hold === "person" || back.hold === "agent", `the answer is who drives: ${JSON.stringify(back)}`);
   await world.until(async () => (await world.hold()) === "agent" && run.hold.state() === "agent", "the desktop is the agent's again");
+  await run.inSecondShot;
   assert.equal(await world.computerState(), "ready", "the run read: the agent's again after the hand-back");
+  run.letGoSecond();
   await world.ended();
   const said = await world.rows();
   const took = said.indexOf("You took over the desktop");
