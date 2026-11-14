@@ -25,6 +25,7 @@ import { sessionProvider, tierProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
 import { CALL_REFUSED } from "../../timeline/index.js";
 import { ConversationToolBudget, countCalls } from "../../tool-budget.js";
+import { type ComputerCallRecord, recordingCalls } from "../../computer-calls.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
 export interface PiRun {
@@ -61,7 +62,23 @@ export type PiSessionIO = SessionIO & {
   /** What the request that just answered cost, as the runner's booking wrote it (the session's ledger): its figure, null
    *  when unknown, undefined when none was booked. pi's own price for the model is none (the adapter does not know it). */
   bookedCost?: () => Promise<number | null | undefined>;
+  /** Keeps a tool call's computer calls beside it on the run's root, by the call's id (the loop's, as its host tools'
+   *  are kept): each run's pi-native tool (code mode's script among them) runs inside recordingCalls with it, so its row
+   *  carries the calls it made as a host tool's does. */
+  keepCalls?: (call: string, calls: readonly ComputerCallRecord[], dropped: number) => Promise<void>;
 };
+
+/** `extension` with each of its tools run inside recordingCalls, its calls kept by `keep` under the call's id. */
+function recordingExtension(extension: Extension, keep: NonNullable<PiSessionIO["keepCalls"]>): Extension {
+  if (!extension.tools?.length) return extension;
+  return {
+    ...extension,
+    tools: extension.tools.map((tool) => ({
+      ...tool,
+      execute: (args: never, api: { readonly callId: string }, context: never) => recordingCalls(async () => tool.execute(args, api as never, context), (calls, dropped) => keep(api.callId, calls, dropped)),
+    })) as typeof extension.tools,
+  };
+}
 
 export interface PiAdapterOptions {
   readonly run: PiRun;
@@ -350,8 +367,9 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     ],
   });
   run.registry.install(extension);
-  // The run's pi-native extensions (options.extensions), in the claim's registry beside the session's.
-  const native = options.extensions ?? [];
+  // The run's pi-native extensions (options.extensions), in the claim's registry beside the session's: each tool's computer
+  // calls recorded on its row (io.keepCalls), as the loop records its host tools'.
+  const native = (options.extensions ?? []).map((each) => (io.keepCalls ? recordingExtension(each, io.keepCalls) : each));
   for (const each of native) run.registry.install(each);
   // The root conversation may exist already (the loop's session records live beside it, under it): its agent is set here,
   // the session's model, the run's system text (pi's instructions, its parts as the CLI adapters join them), this

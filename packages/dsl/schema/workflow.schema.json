@@ -51,6 +51,12 @@
               "type": "string",
               "title": "as"
             },
+            "guard": {
+              "description": "A step guard as a document holds it (StepGuard once validateWorkflow accepted it): an object the validator reads field\nby field, so a wrong signal or threshold is refused in words an author can act on, never a schema union's.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "guard"
+            },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
               "type": "object",
@@ -205,6 +211,12 @@
               "type": "string",
               "title": "context"
             },
+            "guard": {
+              "description": "A step guard as a document holds it (StepGuard once validateWorkflow accepted it): an object the validator reads field\nby field, so a wrong signal or threshold is refused in words an author can act on, never a schema union's.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "guard"
+            },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
               "type": "object",
@@ -339,6 +351,12 @@
               "type": "string",
               "title": "tier"
             },
+            "guard": {
+              "description": "A step guard as a document holds it (StepGuard once validateWorkflow accepted it): an object the validator reads field\nby field, so a wrong signal or threshold is refused in words an author can act on, never a schema union's.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "guard"
+            },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
               "type": "object",
@@ -472,6 +490,12 @@
               ],
               "type": "string",
               "title": "tier"
+            },
+            "guard": {
+              "description": "A step guard as a document holds it (StepGuard once validateWorkflow accepted it): an object the validator reads field\nby field, so a wrong signal or threshold is refused in words an author can act on, never a schema union's.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "guard"
             },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
@@ -900,6 +924,12 @@
               "$ref": "#/definitions/DecisionImages",
               "title": "images"
             },
+            "guard": {
+              "description": "A step guard as a document holds it (StepGuard once validateWorkflow accepted it): an object the validator reads field\nby field, so a wrong signal or threshold is refused in words an author can act on, never a schema union's.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "guard"
+            },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
               "type": "object",
@@ -985,6 +1015,12 @@
               "description": "The images a decision node sends with its request: each key is a token (such as `\"<page1>\"`) that appears literally in\nthe node's `state` or in a question's text, and each value is a reference to the image, written as a `state` value is\n(`\"{item.pages.0.image}\"`, or a literal path), that resolves to a string the host loads (a run-relative file path).",
               "$ref": "#/definitions/DecisionImages",
               "title": "images"
+            },
+            "guard": {
+              "description": "A step guard as a document holds it (StepGuard once validateWorkflow accepted it): an object the validator reads field\nby field, so a wrong signal or threshold is refused in words an author can act on, never a schema union's.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "guard"
             },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
@@ -1085,6 +1121,12 @@
               "description": "The images a decision node sends with its request: each key is a token (such as `\"<page1>\"`) that appears literally in\nthe node's `state` or in a question's text, and each value is a reference to the image, written as a `state` value is\n(`\"{item.pages.0.image}\"`, or a literal path), that resolves to a string the host loads (a run-relative file path).",
               "$ref": "#/definitions/DecisionImages",
               "title": "images"
+            },
+            "guard": {
+              "description": "A step guard as a document holds it (StepGuard once validateWorkflow accepted it): an object the validator reads field\nby field, so a wrong signal or threshold is refused in words an author can act on, never a schema union's.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "guard"
             },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
@@ -1677,6 +1719,12 @@
               },
               "title": "requires"
             },
+            "guard": {
+              "description": "A step guard (StepGuard): its signal can only be `jev`, a call reports no confidence.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "guard"
+            },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
               "type": "object",
@@ -1720,6 +1768,12 @@
             "as": {
               "type": "string",
               "title": "as"
+            },
+            "guard": {
+              "description": "A step guard as a document holds it (StepGuard once validateWorkflow accepted it): an object the validator reads field\nby field, so a wrong signal or threshold is refused in words an author can act on, never a schema union's.",
+              "type": "object",
+              "additionalProperties": {},
+              "title": "guard"
             },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
