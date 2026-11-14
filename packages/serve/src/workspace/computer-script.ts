@@ -20,7 +20,8 @@ const SCRIPT_MEMORY_BYTES = 256 * 1024 * 1024;
 
 type ScriptArgs = { readonly code?: unknown; readonly timeoutMs?: unknown };
 
-/** The run's tool gate's decision of one call, as a script's computer call is held to it (RunPermissions.decide). */
+/** The run's tool gate's decision of one call, as a script's computer call is held to it: decided as on the run's
+ *  computer, where the call runs (adapterRunGate's script). */
 export type ScriptDecide = (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
 
 /** The tool a script's computer call is held to, as the run's own tool of that name is: the shell is bash's, a program

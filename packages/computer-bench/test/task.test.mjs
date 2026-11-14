@@ -78,6 +78,19 @@ test("every linux-desktop task denies exec and gets different params on seeds 1,
 	}
 });
 
+test("an exec-deny task's agent keeps the files group, so count-errors and new-note pass only through their windows", () => {
+	const [count] = loadSuite(join(SUITES, "linux-desktop")).filter((task) => task.spec.id === "linux.terminal.count-errors");
+	const setup = count.spec.setup.map((step) => (step.params?.argv ?? []).join(" ")).join("\n");
+	assert.match(setup, /gzip [^;]*server-\{\{nonce\}\}\.log/, "count-errors leaves its log as text, which files.read hands the agent to count");
+	assert.match(count.spec.instruction, /server-\{\{nonce\}\}\.log\.gz/);
+	assert.match(JSON.stringify(count.spec.oracle), /zgrep -c ERROR/);
+	assert.match(count.spec.needs.capabilities[0].argv.join(" "), /command -v zgrep/);
+	const [note] = loadSuite(join(SUITES, "linux-desktop")).filter((task) => task.spec.id === "linux.editor.new-note");
+	const shown = note.spec.checks.find((check) => check.kind === "exec");
+	assert.ok(shown, "new-note passes a note written with files.write, Mousepad untouched");
+	assert.match(shown.argv.join(" "), /xdotool search --all --onlyvisible --class mousepad --name.*\{\{note\.name\}\}-\{\{nonce\}\}\\?\.txt/);
+});
+
 test("a linux-desktop teardown stops only the apps its run started, and git-email checks the global config is kept", () => {
 	for (const task of loadSuite(join(SUITES, "linux-desktop"))) {
 		const scripts = (steps) => (steps ?? []).map((step) => (step.params?.argv ?? []).join(" "));

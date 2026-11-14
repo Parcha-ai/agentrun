@@ -74,6 +74,7 @@ import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
 import { type claimComputer, type ComputerDeps, computerReadyWords, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
+import type { ScriptDecide } from "../workspace/computer-script.js";
 import type { RunComputerHold } from "./computer-journal.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
@@ -278,7 +279,7 @@ export type RunPermissions = {
   readonly decide: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace, mcpServers: readonly string[] = [], options: { readonly computerCodemode?: boolean } = {}): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace, mcpServers: readonly string[] = [], options: { readonly computerCodemode?: boolean } = {}): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly script: ScriptDecide; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
@@ -289,6 +290,10 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // tool's settings, never to a table tool's of the same shape.
   // pi's code mode on a desktop or a phone (pi-computer.ts) owns the name `codemode` there: held to the kind's setting.
   const gate = runGate({ root: folder, work: folder, ...(shell === undefined ? {} : { computer: shell === "computer" }), mcpServers, ...(options.computerCodemode ? { computerCodemode: true } : {}) }, claim.runId, revision, () => current, approvers);
+  // A script's computer calls (computer_script, pi's code mode) run on the run's computer, a desktop that mounts no folder
+  // too: decided as on a computer, so its shell.run and processes.start follow bash's one setting alike. The run's own
+  // host tools keep `gate`, where its bash is (Archil's exec, or none).
+  const onComputer = runGate({ root: folder, work: folder, computer: true, mcpServers, ...(options.computerCodemode ? { computerCodemode: true } : {}) }, claim.runId, revision, () => current, approvers);
   // The run's learned workflows, once its spec has read them (learn): a learned_workflow call is asked about its MCP nodes.
   let learned: readonly LearnedWorkflow[] = [];
   const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], options: Parameters<NonNullable<AdapterRunSpec["gate"]>>[1] = {}) => {
@@ -335,7 +340,12 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     current = await storeSettings(store);
     return current.unreadable ? "deny" : gate.policy(tool);
   };
-  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), askedFor, permissions, permission, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows) });
+  // A script's computer call, held as the tool it is (computer-script.ts HELD_AS), with the settings read from the store now.
+  const script = async (tool: string, args: unknown) => {
+    current = await storeSettings(store);
+    return onComputer.decide(tool, args);
+  };
+  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), askedFor, permissions, permission, script, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows) });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call
@@ -525,11 +535,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The gate names the run's folder by its Workspace (Mode 2: its folder on the run's disk, never this machine's folder at
   // the same path), for its path checks; it reads nothing in it.
   const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted), { computerCodemode: Boolean(tools.computer) });
-  // What a script's shell and files are held to: this gate, so a denied bash or write holds inside computer_script and codemode.
-  tools.computer?.guard.install(async (tool, args) => {
-    await gate.permissions.refresh();
-    return gate.permissions.decide(tool, args);
-  });
+  // What a script's shell and files are held to: this gate's settings, decided as on the run's computer (gate.script), so a
+  // denied bash or write holds inside computer_script and codemode.
+  tools.computer?.guard.install(gate.script);
 
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped — every paid request still books through the one cap), the run's model priced WITH tiers, strict where the
