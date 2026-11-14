@@ -422,8 +422,8 @@ export function readPackage(dir: string): Package {
   // Bounded before anything is read: a file, the files together, and how many there are.
   // The agent's files' bytes (evals/ is the package's own test data, never part of an agent) under POST /v2/agents'
   // limits, an eval's file under MAX_EVAL_FILE_BYTES alone; every file, evals/ too, counts toward MAX_PACKAGE_FILES. A
-  // file under evals/ an agent is given all the same (the answer's schema, which ships beside each SKILL.md) keeps the
-  // agent's limits: checked once the manifest names it, before it is read.
+  // file under evals/ an agent is given all the same (the answer's schema, which becomes its output_schema and is in its
+  // instructions) keeps the agent's limits: checked once the manifest names it, before it is read.
   const listed = files("");
   const all = listed.filter((path) => !path.startsWith("evals/"));
   const sizes = all.map((path) => [path, lstatSync(join(dir, path)).size] as const);
@@ -560,14 +560,12 @@ export function readPackage(dir: string): Package {
   });
   if (triggers.length && !(isObject(f.budget) && f.budget.per_run_usd !== undefined)) bad(MANIFEST, "budget is required when the package has triggers: {per_run_usd}, each run's cap");
   let outputSchema: unknown;
-  let schemaBounded = true;
   if (f.output !== undefined) {
     const at = isObject(f.output) ? f.output.schema : undefined;
     const evalSize = typeof at === "string" && at.startsWith("evals/") && inside(at) ? lstatSync(join(dir, at)).size : 0;
     if (!isObject(f.output) || unknownFields(f.output, ["schema"]).length || !inside(at)) bad(MANIFEST, "output is {schema: a JSON Schema file in the package}");
     else if (evalSize > MAX_FILE_BYTES || agentBytes + evalSize > MAX_PACKAGE_BYTES) {
-      schemaBounded = false;
-      bad(at as string, evalSize > MAX_FILE_BYTES ? `is over ${MAX_FILE_BYTES} bytes, a package file's limit: the answer's schema ships beside each SKILL.md, so it keeps an agent file's limits, under evals/ too` : `takes the agent's files over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit: the answer's schema ships beside each SKILL.md, so it counts as an agent file, under evals/ too`);
+      bad(at as string, evalSize > MAX_FILE_BYTES ? `is over ${MAX_FILE_BYTES} bytes, a package file's limit: the answer's schema is given to the agent, so it keeps an agent file's limits, under evals/ too` : `takes the agent's files over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit: the answer's schema is given to the agent, so it counts as an agent file, under evals/ too`);
     } else {
       try {
         outputSchema = JSON.parse(text(f.output.schema as string));
@@ -640,13 +638,9 @@ export function readPackage(dir: string): Package {
       else skills[path] = text(`rules/${entry.name}`);
     }
   }
-  // The answer's schema ships beside each SKILL.md too, as a rule does: the agent reads it there, and the skill names it.
-  const schemaFile = schemaBounded && isObject(f.output) && inside(f.output.schema) ? (f.output.schema as string) : undefined;
-  for (const skill of schemaFile ? skillDirs.filter((d) => d.isDirectory()) : []) {
-    const path = `${skill.name}/${basename(schemaFile!)}`;
-    if (Object.hasOwn(skills, path)) bad(schemaFile!, `skills/${path} has the same name, and the answer's schema ships beside each SKILL.md`);
-    else skills[path] = text(schemaFile!);
-  }
+  // The answer's schema is not copied beside each SKILL.md: it becomes the agent's output_schema, which the runner puts in
+  // the instructions on every harness (answer-json.ts outputContract). A skill that reads the file itself (a reviewer
+  // subagent's guide) keeps it in its own folder.
 
   // evals/<case>/: prompt.md (the run's input), graders/*.md (each its type in its front matter), case.yaml and
   // fixtures/ if it has them. The layout only: no eval runs here.

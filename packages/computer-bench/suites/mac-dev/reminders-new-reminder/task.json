@@ -1,0 +1,61 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.reminders.new-reminder",
+  "version": 1,
+  "title": "Add a reminder with a priority to a given list",
+  "split": "dev",
+  "tags": ["reminders", "create"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.reminders"] },
+  "params": {
+    "item": { "pick": ["Renew passport", "Book flights", "Water the plants", "Pay the phone bill"] },
+    "prio": {
+      "pick": [
+        { "say": "high", "set": 1, "re": "^[1-4]$" },
+        { "say": "medium", "set": 5, "re": "^5$" },
+        { "say": "low", "set": 9, "re": "^[6-9]$" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "The list exists and is empty, so the reminder is not there yet.",
+      "params": { "argv": ["osascript", "-e", "{{file:reminders.applescript}}", "start"], "timeoutMs": 60000 }
+    },
+    { "method": "apps.launch", "params": { "id": "com.apple.reminders" } }
+  ],
+  "instruction": "In Reminders, add a reminder \"{{item}} {{nonce}}\" with {{prio.say}} priority to the list \"computer-bench {{nonce}}\".",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "one-reminder",
+      "kind": "exec",
+      "why": "Exactly one reminder of the list has the name.",
+      "argv": ["osascript", "-e", "{{file:reminders.applescript}}", "count"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "1" }
+    },
+    {
+      "id": "priority",
+      "kind": "exec",
+      "why": "The reminder is open and its priority is in the asked band (Reminders' AppleScript priority: 1-4 high, 5 medium, 6-9 low, 0 none).",
+      "argv": ["osascript", "-e", "{{file:reminders.applescript}}", "priority"],
+      "timeoutMs": 60000,
+      "stdout": { "matches": "{{prio.re}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the list and its reminders.",
+      "params": { "argv": ["osascript", "-e", "{{file:reminders.applescript}}", "teardown"], "timeoutMs": 60000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Make the reminder with the asked priority.",
+      "params": { "argv": ["osascript", "-e", "{{file:reminders.applescript}}", "make"], "timeoutMs": 60000 }
+    }
+  ]
+}

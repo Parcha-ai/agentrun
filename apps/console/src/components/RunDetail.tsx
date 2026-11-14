@@ -31,6 +31,8 @@ export type RunDetailProps = {
   harnessSteers: boolean;
   rows: TimelineRow[];
   files: RunFile[];
+  /** The output schema of the revision the run started from: the Report reads an agentic run's result.output with it. */
+  outputSchema?: Record<string, unknown>;
   /** Reads a file's text (the authenticated bytes from /v2/runs/{id}/files/{path}). */
   readFile?: (file: RunFile) => Promise<string>;
   openFile?: RunFile | null;
@@ -99,7 +101,7 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readComputer, computerEvery, onTakeOver, onHandBack, readComputers }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, outputSchema, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readComputer, computerEvery, onTakeOver, onHandBack, readComputers }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   // The agent's ask at its computer: a message is no answer to it, but one to a working run.
@@ -206,7 +208,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
     <div className="flex h-full min-h-0 flex-col short:h-auto">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
       <Tabs tabs={tabs.map(([id, label]) => ({ id, label }))} value={tab} onChange={setTab} />
-      {tab === "graph" ? <div className="min-h-0 flex-1 short:min-h-96">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
+      {tab === "graph" ? <div className="min-h-0 flex-1 short:min-h-96">{graphView}</div> : <div data-scroll-pane className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (
@@ -226,7 +228,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
             : view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
           {/* With no served cap the banner names none to raise above; the run header's raise reads the run's own cap. */}
           {view.needsYou && budget && typeof budget.cap_usd === "number" && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} least={leastCap(budget)} paused onRaise={actions.onRaiseCap} />}
-          {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} />}
+          {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} schema={outputSchema} />}
           {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
           {tab === "report" && view.final && !run.result?.final_answer?.trim() && !run.result?.output && !rows.some((r) => r.kind === "final_answer" && r.text?.trim()) && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
             <p className="font-mono text-body text-muted-foreground">{NO_ANSWER}{view.canMessage ? " Send a follow-up below to ask for one." : ""}</p>

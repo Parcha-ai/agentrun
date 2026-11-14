@@ -1,0 +1,63 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.settings.dark-mode",
+  "version": 1,
+  "title": "Set the Mac's appearance to Light or Dark in System Settings",
+  "split": "heldout",
+  "tags": ["settings", "appearance", "choice"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.systempreferences"] },
+  "params": {
+    "mode": {
+      "pick": [
+        { "say": "Dark", "start": "false", "want": "true" },
+        { "say": "Light", "start": "true", "want": "false" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep the Mac's own appearance and Auto setting for teardown, turn Auto off, and set the opposite of the asked appearance.",
+      "params": { "argv": ["sh", "-c", "{{file:setup.sh}}"], "timeoutMs": 30000 }
+    },
+    { "method": "apps.launch", "params": { "id": "com.apple.systempreferences" } }
+  ],
+  "instruction": "Using System Settings, set the Mac's appearance to {{mode.say}}.",
+  "budget": { "steps": 15, "usd": 1, "wall_s": 180 },
+  "checks": [
+    {
+      "id": "appearance",
+      "kind": "exec",
+      "why": "System Events' appearance preferences report dark mode as asked (true for Dark, false for Light): the Appearance choice of System Settings › Appearance.",
+      "argv": ["osascript", "-e", "tell application \"System Events\" to tell appearance preferences to get dark mode"],
+      "timeoutMs": 30000,
+      "stdout": { "equals": "{{mode.want}}" }
+    },
+    {
+      "id": "not-auto",
+      "kind": "exec",
+      "why": "The appearance is fixed, not Auto: the global AppleInterfaceStyleSwitchesAutomatically, which the Auto choice sets, is off or absent.",
+      "argv": ["sh", "-c", "defaults read -g AppleInterfaceStyleSwitchesAutomatically 2>/dev/null || echo 0"],
+      "stdout": { "equals": "0" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Quit System Settings.",
+      "params": { "argv": ["osascript", "-e", "if application id \"com.apple.systempreferences\" is running then", "-e", "tell application id \"com.apple.systempreferences\" to quit", "-e", "end if"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Put back the Mac's own appearance and Auto setting.",
+      "params": { "argv": ["sh", "-c", "{{file:restore.sh}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Set the asked appearance through System Events.",
+      "params": { "argv": ["osascript", "-e", "tell application \"System Events\" to tell appearance preferences to set dark mode to {{mode.want}}"], "timeoutMs": 30000 }
+    }
+  ]
+}

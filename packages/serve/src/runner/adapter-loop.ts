@@ -31,11 +31,23 @@ const CLAIM_BOOKKEEPING: ReadonlySet<string> = new Set([KINDS.sessionKey, HOST_P
 
 /** A raised run's follow-up is the server's message (the kernel cap's followUpOf), never the person's. */
 const CAP_RAISED_ORIGIN: MessageOrigin = { kind: "server", reason: "cap_raised" };
+/** The output contract's one retry turn is the server's message too, under one request id per run: pi places it once from
+ *  its submission, a CLI's record writes it once, and a claim that finds it on the record never asks again. */
+const OUTPUT_RETRY_ORIGIN: MessageOrigin = { kind: "server", reason: "output_retry" };
+const OUTPUT_RETRY_REQUEST = "agentrun:output-retry";
+/** Whether the run had its one retry: the input entry the retry wrote (pi's submission, a CLI's record) with the model's
+ *  answer after it. One written and never answered (a runner lost between a CLI's record and its send) is not had: the
+ *  claim that opens the session again sends it, under the same request id, so it is written once. */
+const outputRetried = (entries: readonly { readonly kind?: string; readonly data?: unknown }[]): boolean => {
+  const at = entries.findLastIndex((entry) => entry.kind === KINDS.input && (originOf((entry.data as { origin?: unknown } | undefined)?.origin) as { reason?: string } | undefined)?.reason === OUTPUT_RETRY_ORIGIN.reason);
+  return at >= 0 && entries.slice(at + 1).some((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
+};
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunKept, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
-import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { outputMiss, outputRetryWords } from "../answer-json.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold } from "./computer-journal.js";
@@ -180,6 +192,10 @@ export interface AdapterRunSpec {
    *  the session through the loop's gate, a command row makes them fresh again, and the pass's end lets them go. Absent:
    *  the run grants no MCP tool. */
   readonly mcp?: ClaimMcp;
+  /** The JSON Schema the run's final answer's last json block meets (its revision's definition.output_schema). An answer
+   *  that misses it is asked again once, in the same session under the same cap (the output contract's retry); absent:
+   *  the run's answer is never checked here. */
+  readonly outputSchema?: unknown;
 }
 
 /** A tool host's lifecycle, as its bindings registered it: run by the adapter loop (AdapterRunSpec.lifecycle). */
@@ -854,6 +870,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   };
   /** The claim's CLI record (record: "loop"), for the end-of-run turn's answer; undefined for an adapter keeping its own. */
   let cliRecord: CliRecord | undefined;
+  /** Whether this loop sent the run its output retry (sendOutputRetry): never a second, even when its turn gave no answer. */
+  let outputRetrySent = false;
   /** The session's paid requests admitted and not yet booked (its model port's beforeRequest, then its afterRequest), and
    *  who waits for none: the run's end waits for them, since a booking written after the end (the run's release) is
    *  fenced and lost, and its request read back at its hold. */
@@ -1233,6 +1251,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     await session!.send(next.text, { id: next.requestId, ...(next.origin ? { origin: next.origin } : {}) });
     await specNow?.hooks?.afterMessageSent?.();
     await cliRecord?.message(next.text, next.origin);
+    return session!.turnEnd();
+  };
+
+  /** The output contract's one retry (AdapterRunSpec.outputSchema): the server's message saying why the answer missed the
+   *  schema, sent as a turn of its own on the same session, its requests admitted and booked by the run's one cap as any
+   *  turn's. A CLI's record writes it first (once, under its request id); pi's submission carries its origin and is placed
+   *  once under that id. Sent at most once by this loop (outputRetrySent), and by a later claim only when the record has
+   *  it unanswered (outputRetried). Its turn's end is what this gives. */
+  const sendOutputRetry = async (why: string): Promise<TurnEnd> => {
+    outputRetrySent = true;
+    const text = outputRetryWords(deps.redact ? deps.redact(why) : why);
+    await cliRecord?.followUp(text, OUTPUT_RETRY_REQUEST, OUTPUT_RETRY_ORIGIN);
+    await session!.send(text, { id: OUTPUT_RETRY_REQUEST, origin: OUTPUT_RETRY_ORIGIN });
+    await specNow?.hooks?.afterMessageSent?.();
     return session!.turnEnd();
   };
 
@@ -2323,6 +2355,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             const steered = cut ? undefined : steeredIn.shift();
             if (steered !== undefined) {
               turn = turnOfRequest(harness, root, steered);
+              continue;
+            }
+            // The output contract: an answer whose last json block misses the agent's output schema is asked again, once,
+            // in the same session, never a second time (outputRetried reads the record, so a later claim does not ask
+            // either), and not once the run is wrapping up at its cap (the room left is its answer's, and a retry that
+            // could not fit would park the run for the retry's sake). The run's result then says why (output_error).
+            const miss = cut || spec.outputSchema === undefined || outputRetrySent || outputRetried(settledEntries) ? undefined : outputMiss(lastAnswerText(settledEntries), spec.outputSchema);
+            if (miss !== undefined && !(await wrapUp())) {
+              turn = sendOutputRetry(miss);
               continue;
             }
             data = cut ? { state: "failed", summary: cut } : { state: "ended" };
