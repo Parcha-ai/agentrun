@@ -20,6 +20,47 @@ export const TEMPLATE_VALIDATE = {
   },
 };
 
+// `agentrun template install SOURCE`: a package on GitHub imported into the server (POST /v2/templates/import), which
+// resolves the ref to a commit, reads the package at it and checks it as it checks its own; nothing in it runs. With
+// --dry-run the package is shown whole (its instructions and every skill file) and stored nowhere. The first package from
+// a publisher needs --trust, said once, after reading it. Prints what was imported and the console page that applies it.
+export const TEMPLATE_INSTALL = {
+  command: ["template", "install"],
+  pathParams: ["source"],
+  summary: "Import a template package from GitHub (github:OWNER/REPO[/PATH][@REF]) and print the console page that applies it",
+  help: [
+    ["SOURCE", "github:OWNER/REPO[/PATH][@REF], or https://github.com/OWNER/REPO/tree/REF/PATH. The ref is resolved to a commit first"],
+    ["--dry-run", "check the package and print it whole (instructions, skill files); store nothing"],
+    ["--trust", "trust the package's publisher (the GitHub owner): the first package from one needs it"],
+  ],
+  options: { "dry-run": { type: "boolean" }, trust: { type: "boolean" } },
+  async run({ values, args, env, io, cli }) {
+    const client = cli.clientOf(cli.targetOf(values, env), io);
+    let refusal = "";
+    const refused = client.refused;
+    client.refused = (response, bytes) => ((refusal = bytes.toString("utf8")), refused(response, bytes));
+    const body = JSON.stringify({ source: args[0], ...(values["dry-run"] ? { dry_run: true } : {}), ...(values.trust ? { trust_publisher: true } : {}) });
+    const { response, bytes, code } = await cli.request(client, { method: "POST", path: "/templates/import", body, type: "application/json" });
+    if (code !== undefined) {
+      // The one refusal this command has a flag for: say it, after the server's error.
+      if (!values.trust && /"field"\s*:\s*"trust_publisher"/.test(refusal)) io.stderr.write(`Read it first (--dry-run), then run this again with --trust.\n`);
+      return code;
+    }
+    let answer;
+    try {
+      answer = JSON.parse(bytes.toString("utf8"));
+    } catch {
+      throw cli.fail(1, `The server's answer (${response.status}) is not JSON.`);
+    }
+    const { template = {}, stored, replaced, publisher_trusted, console_url } = answer;
+    const summary = { id: template.id, source: template.source, sha: template.sha, publisher: template.publisher, publisher_trusted, stored, replaced, console_url };
+    client.print(values["dry-run"] ? { ...summary, instructions: answer.instructions, skill_files: answer.skill_files, template } : summary);
+    if (!io.stdout.isTTY) return 0;
+    io.stderr.write(stored ? `Apply it: ${console_url}\n` : `Nothing stored. Install it: agentrun template install ${args[0]}${publisher_trusted ? "" : " --trust"}\n`);
+    return 0;
+  },
+};
+
 // `agentrun template eval DIR`: the package's eval cases run as real runs of its agent and graded (agentrun-serve
 // eval-template, templates/README.md "Running the evals"), on a server the command starts in its own process over a temp
 // data directory, or with --server on that one, its token found as every other command finds it (AGENTRUN_API_KEY, the

@@ -116,6 +116,7 @@ test("an import from GitHub: a dry run shows the package whole and stores nothin
   assert.equal(preview.status, 200, JSON.stringify(preview.body));
   assert.deepEqual([preview.body.template.id, preview.body.template.name, preview.body.template.bundled, preview.body.template.source, preview.body.template.sha, preview.body.template.publisher], [ID, "kyb", false, `${ID}@main`, SHA_A, "acme"]);
   assert.deepEqual([preview.body.stored, preview.body.publisher_trusted, preview.body.replaced], [false, false, null]);
+  assert.equal(new URL(preview.body.console_url).hash, `#/templates/install?src=${enc(`${ID}@main`)}`, "a dry run links to the install page");
   assert.equal(preview.body.instructions, readFileSync(join(KYB, "agent.md"), "utf8").replace(/^---[\s\S]*?\n---\n/, "").trim(), "the instructions in full");
   assert.equal(preview.body.skill_files["kyb/SKILL.md"], readFileSync(join(KYB, "skills/kyb/SKILL.md"), "utf8"), "each skill file in full");
   assert.ok(preview.body.skill_files["kyb/RED-FLAGS.md"], "the rules beside the skill");
@@ -134,6 +135,7 @@ test("an import from GitHub: a dry run shows the package whole and stores nothin
   const imported = await api("POST", "/templates/import", { source: `${ID}@main`, trust_publisher: true });
   assert.equal(imported.status, 201, JSON.stringify(imported.body));
   assert.deepEqual([imported.body.stored, imported.body.publisher_trusted, imported.body.template.sha], [true, true, SHA_A]);
+  assert.equal(new URL(imported.body.console_url).hash, `#/templates/${enc(ID)}`, "an import links to its apply page");
   const listed = (await api("GET", "/templates")).body.templates;
   assert.deepEqual(listed.filter((one) => one.name === "kyb").map((one) => [one.id, one.bundled]), [["kyb", true], [ID, false]], "the bundled kyb and the imported one are two packages");
 
@@ -211,4 +213,26 @@ test("the store keeps each imported package by id, its files as read: a put repl
   assert.equal(await rows.remove(ID), true);
   assert.equal(await rows.remove(ID), false);
   assert.deepEqual((await rows.list()).map((row) => row.id), ["github:acme/other"]);
+});
+
+test("a server open adds the imported packages' table to a store an earlier build of this schema version made, with no version change", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { DatabaseSync } = await import("node:sqlite");
+  const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-imported-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "store.db");
+  await (await openSqliteStore({ file, role: "server" })).close();
+  const raw = new DatabaseSync(file);
+  const version = raw.prepare("SELECT schema_version FROM store_meta").get().schema_version;
+  raw.exec("DROP TABLE imported_templates");
+  raw.close();
+  const reopened = await openSqliteStore({ file, role: "server" });
+  t.after(() => reopened.close());
+  await reopened.importedTemplates.put({ id: ID, source: ID, sha: SHA_A, publisher: "acme", files: {} });
+  assert.deepEqual((await reopened.importedTemplates.list()).map((row) => row.id), [ID]);
+  const after = new DatabaseSync(file, { readOnly: true });
+  assert.equal(after.prepare("SELECT schema_version FROM store_meta").get().schema_version, version, "the version is unchanged");
+  after.close();
 });

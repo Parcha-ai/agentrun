@@ -193,9 +193,31 @@ checked as `POST /v2/agents` and `POST /v2/triggers` check theirs (all but the a
 A tool the server does not bind, a trigger field or schedule it refuses, or a skill file's path is refused here, not at
 apply. A trigger's date is checked for its form only: one that has passed is refused at apply, never at a server's start. A package holds at most 256 files, each at most 256 KiB, and 1 MiB together (`POST /v2/agents`' own body limit).
 
+## Installing a package from GitHub
+
+A package on GitHub installs beside the bundled ones: `POST /v2/templates/import` with
+`{source, dry_run?, trust_publisher?}`, `agentrun template install <source> [--dry-run] [--trust]`, or the console's
+"Add from URL" box on Templates. The source is `github:<owner>/<repo>[/<path>][@<ref>]` (the package's folder at
+`<path>`, the default branch without a ref), or the folder's `https://github.com/<owner>/<repo>/tree/<ref>/<path>`.
+
+1. The ref is resolved to a full commit SHA, then that commit's tarball is read from GitHub (github.com,
+   api.github.com and codeload.github.com, no redirect elsewhere), with the server's GitHub App token when it has one,
+   else anonymously. Nothing is written to disk and nothing in the package runs.
+2. The folder at `<path>` is taken from it and checked as the bundled packages are: a symbolic or hard link, a special
+   file, more than 8 MiB of files, or an archive over 128 MiB is refused (`422`), as is a package that does not check.
+3. A dry run answers the package whole (its instructions and every skill file) and stores nothing. Otherwise it is
+   stored under its id, `github:<owner>/<repo>[/<path>]`, listed by `GET /v2/templates` with `bundled: false`, its
+   `source`, `sha` and `publisher`, and applied as below with that id URL-encoded. Importing the id again replaces it;
+   `DELETE /v2/templates/{id}` removes it (a bundled package is `403`). Agents applied from it stay as they are, each with
+   `template: {id, version, sha}`.
+
+The first package from a publisher (the GitHub owner) is stored only with `trust_publisher: true`, which the server
+remembers: read it first with a dry run. A trust says the owner's packages may be stored; it grants no tool. Each apply
+still asks for each grant.
+
 ## Apply
 
-`POST /v2/templates/{name}/apply` with `{parameters, grants?, overrides?: {model}}`:
+`POST /v2/templates/{id}/apply` with `{parameters, grants?, overrides?: {model}}` (a bundled package's id is its name):
 
 1. The parameters and `grants` are checked against the package (`422` naming each field: a grant is one of the
    package's MCP tools by its gate name, `mcp:<server>/<tool>`), then its secrets, its required MCP servers and, for a
