@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CAPS, foldLabel, groupTimeline, HOST_PHASE, registerLabel, registerTurnEnding, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, timelineReducer, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
+import { callWords, CAPS, foldLabel, groupTimeline, HOST_PHASE, registerLabel, registerTurnEnding, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, timelineReducer, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-lib-support.mjs";
 
 /** The root conversation of a Codex run in QA run 3 (F22: "Write a file called hello.md…", then "Now add a second line
@@ -975,4 +975,30 @@ test("a waiting row's words are the host's redact's: a browser hand-over's reaso
     assert.deepEqual(waiting.map((row) => row.summary), ["Waiting for you: Sign in with [redacted]", "Waiting for you: Use [redacted] to sign in"]);
     assert.ok(!JSON.stringify(rows).includes(held), "no held value in any row");
   }
+});
+
+test("a computer call in words, as the run page and a movie's caption say it: the app by its name, each step's element and chord, a wait, a failure", () => {
+  const at = "2026-11-14T12:00:00.000Z";
+  const call = (fields) => ({ started_at: at, ok: true, ms: 5, ...fields });
+  assert.deepEqual([
+    call({ method: "apps.launch", app: "com.apple.TextEdit" }),
+    call({ method: "apps.launch", app: "com.apple.systempreferences" }),
+    call({ method: "ui.observe", app: "com.apple.iCal" }),
+    call({ method: "ui.act", app: "com.apple.TextEdit", steps: [{ do: "key", keys: "super+a" }, { do: "type", on: { role: "textbox", name: "Pears: 41" } }, { do: "key", keys: "super+s" }] }),
+    call({ method: "ui.act", steps: [{ do: "press", on: { role: "button", name: "Save" } }, { do: "click", on: { role: "generic" } }, { do: "key" }, { do: "nav", nav: "back" }, { do: "press", error: "stale" }] }),
+    call({ method: "ui.act", app: "com.apple.Notes", steps: [], expect: "unmet" }),
+    call({ method: "ui.act", ok: false, code: "denied" }),
+    call({ method: "screen.shot" }),
+    call({ method: "ui.act", steps: [{ do: "key", keys: "enter" }, { do: "key", keys: "ctrl+shift+t" }, { do: "key", keys: "shift+tab" }] }),
+  ].map(callWords), [
+    "open TextEdit",
+    "open System Settings",
+    "look at Calendar",
+    "select all (⌘A); type into the text box “Pears: 41”; save (⌘S)",
+    "press “Save”; click the element; press a key; go back; press (refused: stale)",
+    "wait for Notes (not seen)",
+    "act (failed: denied)",
+    "take a screenshot",
+    "press Return; press ⌃⇧T; press ⇧Tab",
+  ]);
 });

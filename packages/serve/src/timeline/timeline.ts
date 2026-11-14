@@ -1,6 +1,7 @@
 import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, refusedLabel, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, saidSummary, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
+import type { ComputerCallRow } from "./computer.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -65,10 +66,11 @@ export type TimelineEvent = {
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
   learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
   /** On a tool call's `tool_result` row: each computer protocol call the tool made, in order (serve's computer-calls.ts):
-   *  its method, whether it answered, its ms, its error's code, and for ui.act each step's kind, route and readback.
-   *  Never a param's value or an answer's bytes. `computer_calls_dropped` counts the calls past the record's bound. This
-   *  projector writes none (store-reads/journal.ts withComputerCalls). */
-  computer_calls?: readonly { readonly method: string; readonly ok: boolean; readonly ms: number; readonly code?: string; readonly steps?: readonly { readonly do: string; readonly route?: string; readonly verified?: boolean; readonly error?: string }[]; readonly expect?: "met" | "unmet" }[];
+   *  its method, when it started, the app it named, whether it answered, its ms, its error's code, and for ui.act each
+   *  step's kind, the element it acted on (role and name, as the run's observes showed it), a key step's chord, a nav
+   *  step's place, its route and readback. Never a typed or set value or an answer's bytes. `computer_calls_dropped`
+   *  counts the calls past the record's bound. This projector writes none (store-reads/journal.ts withComputerCalls). */
+  computer_calls?: readonly ComputerCallRow[];
   computer_calls_dropped?: number;
 };
 
