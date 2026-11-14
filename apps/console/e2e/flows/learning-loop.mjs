@@ -35,7 +35,7 @@ const PROMOTIONS = [
   { workflow: WF, digest: D0, at: later(14, 10), decided: "hold", source: "replay", reason: "Held: it did worse than the agent on its graded inputs.", replay: REPLAY(20, 0.85, 0.94, 3) },
   { workflow: WF, digest: D1, at: later(18, 10), decided: "replaying", source: "replay", reason: "A new revision replays on the last 20 graded inputs.", runs: [] },
   { workflow: WF, digest: D1, at: later(21, 10), decided: "promote", source: "replay", reason: "As good as the agent on its graded inputs.", replay: REPLAY(20, 0.95, 0.94, 2) },
-  { workflow: WF, digest: D2, at: later(51, 10), decided: "promote", source: "refit", reason: "Refit: the cheapest thresholds within 2 pts.", replay: REPLAY(40, 0.95, 0.94, 3), refit: { from: D1, guards: [{ node: "classify", was: 0.7, threshold: 0.78 }] } },
+  { workflow: WF, digest: D2, at: later(51, 10), decided: "promote", source: "refit", reason: "refit sort-invoice's guards over its graded runs (40 rows): classify 0.7 -> 0.78", replay: REPLAY(40, 0.95, 0.94, 3), refit: { from: D1, guards: [{ node: "classify", was: 0.7, threshold: 0.78 }] } },
 ];
 // Each guarded step's runs: p from a fixed walk (no randomness), right or wrong where the workflow answered alone.
 const points = (from, to, threshold, low) => SAMPLE.runs.filter((r) => r.n >= from && r.n <= to && r.path !== "agent").map((r, i) => {
