@@ -30,7 +30,7 @@ test("pi's tool definitions reach the provider: the request the provider gets of
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(sent.length, 2, "the call's round and the answer's");
   for (const [i, body] of sent.entries()) {
-    assert.deepEqual((body.tools ?? []).map((tool) => tool.name).sort(), ["note", "read"], `request ${i} offers the session's tools`);
+    assert.deepEqual((body.tools ?? []).map((tool) => tool.name).sort(), ["codemode", "note", "read"], `request ${i} offers the session's tools and codemode, and no tools_search or tools_call: a run with no catalog tools lists every tool`);
   }
   // The session's own policy, on the very body the provider got: the turn's request, never a side call.
   assert.equal(piPolicy(MODEL, ["note", "read"]).answers(sent[0]), true, "the turn's answer request");

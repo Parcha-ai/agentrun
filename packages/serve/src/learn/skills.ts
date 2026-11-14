@@ -1,6 +1,8 @@
 // What a run may propose beside its notes: one skill, `skills/<name>/SKILL.md`, and workflow drafts,
 // `workflows/<name>/workflow.json` with its `README.md`. Their places in the learning folder and the shape each file must
 // have. check.ts checks them; nothing here reads a file, runs a draft or calls a model.
+import { mcpNameOf } from "../tool-names.js";
+import { repeatedLabels, workflowNodes } from "./workflow-nodes.js";
 import type { assertWorkflowCapabilities, desugarWorkflow, dryRunWorkflow, inspectWorkflow, resolveSchemaForWorkflow, validateWorkflow, Workflow } from "@parcha/agentrun-dsl";
 
 /** Where a skill and a workflow draft live in the folder. */
@@ -596,15 +598,83 @@ export function synthesisProblems(doc: unknown, dsl: SchemaResolver): string[] {
   return problems;
 }
 
+/** The JSON Schema keywords that constrain a value, never its shape: what a dry run's placeholder answer cannot decide. */
+const VALUE_KEYWORDS: ReadonlySet<string> = new Set(["pattern", "format", "enum", "const", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength", "minItems", "maxItems", "uniqueItems", "minProperties", "maxProperties", "contains", "minContains", "maxContains", "not", "if", "then", "else", "propertyNames", "contentEncoding", "contentMediaType"]);
+/** The schema keywords by shape (SCHEMA_MAPS: names to schemas, its keys never keywords; the rest a schema or a list). */
+const MAP_KEYWORDS: ReadonlySet<string> = new Set(SCHEMA_MAPS);
+const SUB_KEYWORDS: ReadonlySet<string> = new Set([...SCHEMA_LISTS, ...SCHEMA_ONES]);
+/** How deep shapeOf reads a schema: past it, anything goes. */
+const SHAPE_DEPTH = 64;
+/** A JSON value's schema type as a shape reads it: an integer is a number (a real number may be whole). */
+const jsonType = (value: unknown): string => (value === null ? "null" : Array.isArray(value) ? "array" : typeof value === "object" ? "object" : typeof value);
+
+/** `schema` with every value constraint taken out (VALUE_KEYWORDS): the answer's shape alone, what a dry run's
+ *  placeholder answer can decide. Its fields, their types, which are required and whether others may be added stay; an
+ *  `integer` reads as a number; an enum or const with no type of its own keeps the type its values share, so a type
+ *  that can't line up still fails. A `oneOf` reads as `anyOf`: with the values taken out its branches can read alike
+ *  (two consts, both a string), and a placeholder matching two of them says nothing a real answer would; one branch its
+ *  shape can meet is enough. Beside an `anyOf` of the schema's own, both hold (an allOf of the two). */
+function shapeOf(schema: unknown, depth = 0): unknown {
+  if (depth > SHAPE_DEPTH) return {};
+  if (Array.isArray(schema)) return schema.map((one) => shapeOf(one, depth + 1));
+  if (schema === null || typeof schema !== "object") return schema;
+  const spec = schema as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  let oneOf: unknown;
+  for (const [key, value] of Object.entries(spec)) {
+    if (VALUE_KEYWORDS.has(key)) continue;
+    if (key === "oneOf") oneOf = shapeOf(value, depth + 1);
+    else if (key === "type") out.type = Array.isArray(value) ? [...new Set(value.map((one) => (one === "integer" ? "number" : one)))] : value === "integer" ? "number" : value;
+    else if (MAP_KEYWORDS.has(key) && isRecord(value)) out[key] = Object.fromEntries(Object.entries(value).map(([name, sub]) => [name, shapeOf(sub, depth + 1)]));
+    else if (SUB_KEYWORDS.has(key)) out[key] = shapeOf(value, depth + 1);
+    else out[key] = value;
+  }
+  if (oneOf !== undefined) {
+    if (out.anyOf === undefined) out.anyOf = oneOf;
+    else out.allOf = [...(Array.isArray(out.allOf) ? out.allOf : []), { anyOf: oneOf }];
+  }
+  if (spec.type === undefined) {
+    const literals = spec.const !== undefined ? [spec.const] : Array.isArray(spec.enum) ? spec.enum : [];
+    const types = [...new Set(literals.map(jsonType))];
+    if (types.length === 1) out.type = types[0];
+    else if (types.length > 1) out.type = types;
+  }
+  return out;
+}
+
+/** The most values of an example realValuesOf reads. */
+const REAL_VALUES = 10_000;
+/** Every value an example input holds (each object, array and leaf, as JSON), but the ones a placeholder could be too
+ *  (null, false, 0, a string of x's or none, an empty array or object): what a dry run's answer holds for real when it
+ *  holds one of them. */
+function realValuesOf(input: unknown): Set<string> {
+  const real = new Set<string>();
+  const stack: unknown[] = [input];
+  for (let seen = 0; stack.length && seen < REAL_VALUES; seen++) {
+    const value = stack.pop();
+    const trivial = value === null || value === false || value === 0 || (typeof value === "string" && /^x*$/.test(value)) || (typeof value === "object" && value !== null && !Object.keys(value).length);
+    if (!trivial) real.add(JSON.stringify(value));
+    if (value !== null && typeof value === "object") stack.push(...Object.values(value));
+  }
+  return real;
+}
+
+/** The value at JSON Pointer `path` in `value` ("" is the whole). */
+const valueAt = (value: unknown, path: string): unknown =>
+  path === "" ? value : path.split("/").slice(1).reduce<unknown>((at, key) => (at !== null && typeof at === "object" ? (at as Record<string, unknown>)[key.replace(/~1/g, "/").replace(/~0/g, "~")] : undefined), value);
+
 /** A draft's workflow.json `json` dry-run by the workflow DSL (dryRunWorkflow) on `example` (its block's `example:`
  *  line, one JSON object), else on an input synthesized from its input schema. Every model, Jev and tool-call answer is
  *  synthesized from the node's output schema: no request is sent, nothing is paid, no tool runs, and no code it holds
  *  runs in this process (refuseCode). Only a draft the static checks pass is dry-run (propose.ts). It checks the wiring
  *  at run time (the state each step reads, its output's path and schema), never the answers. With `outputSchema` (the
  *  agent's), the output of a run that passed is held to it as a run serving the draft serves it (answer-json.ts
- *  answerAsServed over the tool's text, learned-workflow.ts learnedOutput): one that can't be shaped to it fails, in the
- *  schema's words, since every run it served would go back to the agent. A text answer is synthetic here, and serving
- *  takes text whose json block meets the schema, so text fails only against a schema that does not compile. */
+ *  answerAsServed over the tool's text, learned-workflow.ts learnedOutput) as far as its placeholders can decide: its
+ *  shape (shapeOf: the fields, their types, the required ones). One whose shape can't meet it fails, in the schema's
+ *  words, since every run it served would go back to the agent; a value constraint (a pattern, an enum, a bound) stays
+ *  undecided on a placeholder, and holds a value only where the dry run has a real one (its example's own, handed
+ *  through). A text answer is synthetic here, and serving takes text whose json block meets the schema, so text fails
+ *  only against a schema that does not compile, as every answer does. */
 export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunWorkflow } & SchemaResolver, json: string, example?: string, outputSchema?: unknown): Promise<DraftDryRun> {
   let doc: unknown;
   let input: Record<string, unknown> | undefined;
@@ -639,13 +709,24 @@ export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunW
     // The serving path's own two functions, loaded only for an agent with an output schema (learned-workflow.ts reads
     // this module).
     const [{ answerAsServed, schemaCheck }, { learnedOutput }] = await Promise.all([import("../answer-json.js"), import("../learned-workflow.js")]);
+    // A schema that does not compile refuses every answer serving gives, real or not.
+    const whole = schemaCheck(outputSchema);
+    if ("why" in whole) return { status: "failed", detail: `${DRY_RUN_FAILED}: the agent's output schema ${whole.why}`.slice(0, 600) };
     const text = learnedOutput(output.value);
-    const served = answerAsServed(text, outputSchema);
     // A text answer (learnedOutput hands one back as it is, any other as its JSON) is the model's own words, here a
-    // synthetic placeholder: serving reads a real one's fenced json block first, so text may carry the whole answer. It
-    // fails here only where serving would refuse every text: an output schema that does not compile.
+    // synthetic placeholder: serving reads a real one's fenced json block first, so text may carry the whole answer, and
+    // nothing more is decided here.
     const isText = text !== JSON.stringify(output.value ?? null);
-    if ("why" in served && (!isText || "why" in schemaCheck(outputSchema))) return { status: "failed", detail: `${DRY_RUN_FAILED}: ${served.why}`.slice(0, 600) };
+    if (!isText) {
+      // Its values are placeholders ("x" for a string): they decide the answer's shape alone (shapeOf), never a value
+      // constraint a real answer would meet ("5251" for a 4-digit pattern).
+      const served = answerAsServed(text, shapeOf(outputSchema));
+      if ("why" in served) return { status: "failed", detail: `${DRY_RUN_FAILED}: ${served.why}`.slice(0, 600) };
+      // A value the dry run holds for real (its example's own, handed through) is held to the whole schema.
+      const real = input ? realValuesOf(input) : undefined;
+      const misses = real ? whole.misses(served.value).filter(({ path }) => real.has(JSON.stringify(valueAt(served.value, path)))) : [];
+      if (misses.length) return { status: "failed", detail: `${DRY_RUN_FAILED}: its answer does not meet the agent's output schema: ${misses.slice(0, 3).map((miss) => miss.words).join("; ")}`.slice(0, 600) };
+    }
   }
   if (result.ok) return result.status === "passed" ? { status: "passed" } : { status: "not_run", detail: (result.skipped ?? []).join("; ").slice(0, 300) || "a check could not run" };
   return { status: "failed", detail: `${DRY_RUN_FAILED}${result.stage ? ` at "${result.stage.slice(0, 64)}"` : ""}: ${result.problems.join("; ").slice(0, 300)}` };
@@ -769,57 +850,32 @@ const gatedNodes = (dsl: DraftReader, doc: unknown, gated: Readonly<Record<strin
     return [{ rule: "workflow" as const, detail: `${words} (the call node at ${node.path})` }];
   });
 
-/** An MCP tool a learned workflow's call node may run, by its address (`via: "tool"`, `tool: "mcp:<server>/<tool>"`,
- *  LS-07): its server's name as a server is named (mcp-probe.ts MCP_SERVER_NAME) and one tool's name in MCP's own
- *  charset, never a wildcard. The one rule for it: the tools a draft may name (tools.ts learnedWorkflowTools), the
- *  end-of-run prompt that prints them (reflect.ts), and what the grader is told of a draft (grade.ts). */
-export const LEARNED_MCP_TOOL = /^mcp:[a-z][a-z0-9-]{0,31}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
-
 /** The MCP tools a draft's call nodes run, each once, in the order they come (LS-07): every call node in `doc`, nested
- *  ones too, whose tool is an MCP tool's address. Read from the JSON as it is, for the grader's words; never a check. */
+ *  ones too, whose tool is one MCP tool's name (`via: "tool"`, `tool: "mcp:<server>/<tool>"`, tool-names.ts mcpNameOf),
+ *  never a wildcard. Read from the JSON as it is, for the grader's words; never a check. */
 export function draftMcpTools(doc: unknown): string[] {
   const found = new Set<string>();
-  for (const node of callNodes(doc)) if (node.via === "tool" && typeof node.tool === "string" && LEARNED_MCP_TOOL.test(node.tool)) found.add(node.tool);
+  for (const node of callNodes(doc)) if (node.via === "tool" && typeof node.tool === "string" && mcpNameOf(node.tool)) found.add(node.tool);
   return [...found];
 }
 
-/** Every call node of `doc` (a parsed workflow.json), in document order: only the workflow's node positions, as the
- *  DSL's inspection visits them (its root, a chain's steps, a parallel's branches, a map's and a loop's body, a route's
- *  branches' bodies, a nested workflow's root), never an object in a call's args, a schema or any other data, however
- *  it is shaped. Walked with a stack of its own, never the call stack, so no draft's nesting can throw here. */
-function callNodes(doc: unknown): Record<string, unknown>[] {
-  const out: Record<string, unknown>[] = [];
-  const asNode = (value: unknown): Record<string, unknown> | undefined => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined);
-  const stack: unknown[] = [asNode(doc)?.root];
-  while (stack.length) {
-    const node = asNode(stack.pop());
-    if (!node) continue;
-    if (node.node === "call") out.push(node);
-    const children: unknown[] =
-      node.node === "chain" && Array.isArray(node.steps) ? node.steps
-        : node.node === "parallel" && Array.isArray(node.branches) ? node.branches
-          : (node.node === "map" || node.node === "loop") ? [node.body]
-            : node.node === "route" && asNode(node.branches) ? Object.values(node.branches as Record<string, unknown>).map((branch) => asNode(branch)?.body)
-              : node.node === "workflow" ? [asNode(node.workflow)?.root]
-                : [];
-    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
-  }
-  return out;
-}
+/** Every call node of `doc` (a parsed workflow.json), in document order: only the workflow's node positions
+ *  (workflow-nodes.ts), never an object in a call's args, a schema or any other data, however it is shaped. */
+const callNodes = (doc: unknown): Record<string, unknown>[] => workflowNodes(doc).flatMap(({ node }) => (node.node === "call" ? [node] : []));
 
 /** One step of a learned workflow that runs an MCP tool with no declared per-call price: its label, the tool and its
  *  server. */
 export type UnpricedCall = { readonly label: string; readonly tool: string; readonly server: string };
 
 /** The call nodes of a learned workflow (`doc`, its parsed workflow.json, nested ones too) whose tool is an MCP tool
- *  (LEARNED_MCP_TOOL) that `priceOf` gives no price for (mcp-probe.ts McpPrices: none declared). Such a tool runs "not
+ *  (tool-names.ts mcpNameOf) that `priceOf` gives no price for (mcp-probe.ts McpPrices: none declared). Such a tool runs "not
  *  metered", outside the run's cost and cap (mcp-gateway.ts), so a learned workflow that calls one unattended waits for
  *  its owner's OK whatever the grade (LS-07): a structural fact, held in code. Each step once, in order. */
 export function unpricedCalls(doc: unknown, priceOf: (tool: string) => number | undefined): UnpricedCall[] {
   return callNodes(doc).flatMap((node): UnpricedCall[] => {
-    if (node.via !== "tool" || typeof node.tool !== "string" || !LEARNED_MCP_TOOL.test(node.tool) || priceOf(node.tool) !== undefined) return [];
-    const [server, tool] = node.tool.slice("mcp:".length).split("/") as [string, string];
-    return [{ label: typeof node.label === "string" ? node.label : "(unnamed)", tool, server }];
+    const named = node.via === "tool" && typeof node.tool === "string" ? mcpNameOf(node.tool) : undefined;
+    if (!named || priceOf(node.tool as string) !== undefined) return [];
+    return [{ label: typeof node.label === "string" ? node.label : "(unnamed)", tool: named.tool, server: named.server }];
   });
 }
 
@@ -922,7 +978,8 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   let out: DraftProblem[];
   try {
-    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc, decisions), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...gatedDecisions(dsl, doc, decisions), ...[...synthesisProblems(doc, dsl), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
+    // A label names one step (workflow-nodes.ts repeatedLabels): its guard's threshold, replay score and refit included.
+    out = [...repeatedLabels(doc).map((label) => ({ rule: "workflow" as const, detail: `the label "${label}" names two steps: give each step its own label` })), ...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc, decisions), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...gatedDecisions(dsl, doc, decisions), ...[...synthesisProblems(doc, dsl), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
     // A learned workflow answers the value at its output's path: one that names none would answer its whole state, which
     // fails its output schema when the call ends, after every node spent.
     const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;

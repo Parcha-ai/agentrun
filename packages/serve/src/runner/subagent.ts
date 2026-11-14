@@ -11,14 +11,14 @@
 // agent's own bash policy (read-only) by that same gate. Its model is the agent's own, or a tier the agent declares when
 // the call names one (never a model the call names); it has no subagent tool of its own (depth 1), and at most
 // SUBAGENT_PARALLEL children of a run work at once; a call past that waits for one to end.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { configure, defineTool, type ModelRef, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 import { ASK_TOOL } from "../tools.js";
+import { durableWait } from "../workflow/pi-versions.js";
 import { HOST_TOOL_OUTPUT } from "./adapters/pi.js";
 import { cutAtLimit } from "./loop-contract.js";
 import { PI_STOP } from "./pi-stop.js";
-import { budgetOf, ConversationToolBudget } from "../tool-budget.js";
 
 export const SUBAGENT_TOOL = "subagent";
 /** The tiers a call may name for its child (its definition's model_tiers, else this server's tier); a call that names
@@ -47,12 +47,9 @@ export type SubagentOptions = {
   readonly tier: (tier: SubagentTier) => TierModel;
   /** Words before a child's own instructions (the environment line), when the host has any. */
   readonly preamble?: string;
-  /** The agent's tool-call budget (definition.max_tool_calls, tool-budget.ts), per conversation: a call's own narrows it
-   *  for its child, never widens it. */
-  readonly toolCalls?: number;
 };
 
-type Args = { prompt: string; tools?: string[]; model?: SubagentTier; max_tool_calls?: number; effort?: (typeof SUBAGENT_EFFORTS)[number] };
+type Args = { prompt: string; tools?: string[]; model?: SubagentTier; effort?: (typeof SUBAGENT_EFFORTS)[number] };
 
 /** One counter of free slots for the run's children (SUBAGENT_PARALLEL), handed out in call order. */
 function slots(count: number) {
@@ -129,7 +126,6 @@ export function subagentTool(options: SubagentOptions): ToolRegistration {
         prompt: { type: "string", minLength: 1, description: "The subagent's whole task, self-contained: it sees nothing else." },
         tools: { type: "array", items: { type: "string" }, uniqueItems: true, description: "The tools it may use, each one of your own tools by name. Absent or empty: none." },
         model: { enum: [...SUBAGENT_TIERS], description: "The model tier it runs on, one of this agent's own tiers. Absent: your own model." },
-        max_tool_calls: { type: "integer", minimum: 1, description: "The most tool calls it may make. It narrows your own budget for it, never widens it. Absent: your budget." },
         effort: { enum: [...SUBAGENT_EFFORTS], description: "How hard it thinks: low, medium or high. Absent: as you do." },
       },
       required: ["prompt"],
@@ -147,11 +143,7 @@ export function subagentTool(options: SubagentOptions): ToolRegistration {
       if (Number(api.conversationId) !== Number(ROOT_CONVERSATION_ID)) return fail("subagent: a subagent cannot start subagents of its own. Nothing ran.");
       const model = args.model === undefined ? undefined : options.tier(args.model);
       if (model && "why" in model) return fail(`subagent: the ${args.model} tier has no model here: ${model.why} Nothing ran.`);
-      if (args.max_tool_calls !== undefined && !(Number.isSafeInteger(args.max_tool_calls) && args.max_tool_calls > 0)) return fail("subagent: max_tool_calls is a whole number above 0. Nothing ran.");
       if (args.effort !== undefined && !SUBAGENT_EFFORTS.includes(args.effort)) return fail(`subagent: effort is one of ${SUBAGENT_EFFORTS.join(", ")}. Nothing ran.`);
-      // The child's own budget: the call's, held under the agent's (never wider); absent, the agent's holds it as it holds
-      // every conversation of the run.
-      const toolCalls = args.max_tool_calls === undefined ? undefined : budgetOf(options.toolCalls, args.max_tool_calls);
       const chosen = chosenTools(args.tools ?? [], options);
       if ("refused" in chosen) return fail(chosen.refused);
       // The registrations the parent's agent enables, by session name: exactly the ones the call named are the child's.
@@ -177,16 +169,16 @@ export function subagentTool(options: SubagentOptions): ToolRegistration {
             modelTools: null,
             instructions: [options.preamble, SUBAGENT_INSTRUCTIONS].filter(Boolean).join("\n\n"),
           });
-          if (toolCalls !== undefined) Object.assign(await tx.doc(ConversationToolBudget, created.id), { toolCalls });
           return created.id;
         }, context);
         // The call's details name its child: the run's timeline nests the child's rows under this call.
-        const details = { conversationId: Number(child), ...(args.model ? { model: args.model } : {}), tools: chosen.catalog, ...(toolCalls !== undefined ? { max_tool_calls: toolCalls } : {}), ...(args.effort ? { effort: args.effort } : {}) };
+        const details = { conversationId: Number(child), ...(args.model ? { model: args.model } : {}), tools: chosen.catalog, ...(args.effort ? { effort: args.effort } : {}) };
         await api.details(details as never, context);
         const handle = await api.conversation(child, context);
         if (!handle) return { ...fail("subagent: its conversation could not be opened. Nothing ran."), details };
         const submission = await handle.submit({ type: "input", content: args.prompt, requestId: `subagent:${String(api.taskId)}` }, context);
-        const settled = await submission.wait(context);
+        // Never on the call's signal (durableWait): a stop while it registers rejects this wait, never one unhandled.
+        const settled = await durableWait((at) => submission.wait(at), context);
         if (settled.status === "done" && settled.answer !== undefined) {
           const answer = await api.commit((tx) => tx.entry(settled.answer!), context);
           const message = answer?.model?.findLast((each) => each.role === "assistant") as { stopReason?: string; usage?: { output?: number } } | undefined;

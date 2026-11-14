@@ -6,8 +6,9 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { codeOfError } from "../dist/hosted/process.js";
 import * as registry from "../dist/providers.js";
-import { API_URL, fakeAgent37, fakeRest, KEY, keyPair, PROXY } from "./fake-agent37.mjs";
+import { API_URL, fakeAgent37, fakeRest, KEY, keyPair, MAX_SESSIONS, PROXY } from "./fake-agent37.mjs";
 
 const agent37 = await import("../dist/agent37.js");
 const { Agent37Provider, create, workspaceOf } = agent37;
@@ -101,7 +102,7 @@ test("kind desktop declares the screen and input besides the shell, as its descr
 	const { PROVIDERS } = await import("../dist/index.js");
 	const desktop = restOnly({ kind: "desktop" }).provider.capabilities();
 	assert.equal(desktop.kind, "desktop");
-	assert.deepEqual(desktop.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys"]);
+	assert.deepEqual(desktop.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"]);
 	assert.equal(desktop.daemon, "child");
 	assert.deepEqual(desktop.mount, ["archil"]);
 	const entry = PROVIDERS.find((one) => one.id === "agent37");
@@ -170,8 +171,8 @@ test("create posts the template, type, region, name, labels as metadata, deny-al
 	assert.equal(rest.calls[1].body.resources, undefined, "no size asked, none sent");
 });
 
-test("get reads an instance back as a machine; an unknown id is none; list matches labels over the whole workspace; delete twice is done", async () => {
-	const { rest, host } = restOnly();
+test("get reads an instance back as a machine; an unknown id is none; list answers the whole workspace, which the adapter matches by labels; delete twice is done", async () => {
+	const { rest, host, provider } = restOnly();
 	const { value } = await host.create(request({ "agentrun.conformance": "run-1" }), CTX);
 	await host.create(request({ "agentrun.conformance": "run-2" }), CTX);
 	const machine = (await host.get(value.id, CTX)).value;
@@ -183,13 +184,14 @@ test("get reads an instance back as a machine; an unknown id is none; list match
 	assert.deepEqual(machine.createdAt, new Date(1_800_000_000_000));
 	assert.equal(machine.drift, undefined);
 	assert.equal(machine.labels["agentrun.conformance"], "run-1");
-	assert.deepEqual((await host.get("zzzzzzzzzz", CTX)).value, undefined);
-	assert.deepEqual((await host.get("not an id", CTX)).value, undefined, "an id that is not Agent37's is none, never a URL");
-	const listed = (await host.list({ "agentrun.conformance": "run-1" }, CTX)).value;
-	assert.deepEqual(listed.map((one) => one.id), [value.id]);
-	assert.equal((await host.list({ [COMPUTER]: "1" }, CTX)).value.length, 2);
+	// get no longer catches 404: the adapter reads not_found as none (hosted-provider.test.mjs).
+	assert.equal(host.errorCode(await host.get("zzzzzzzzzz", CTX).catch((thrown) => thrown)), "not_found");
+	assert.equal(host.errorCode(await host.get("not an id", CTX).catch((thrown) => thrown)), "not_found", "an id that is not Agent37's is not found, never a URL");
+	// Agent37 filters nothing: its listing is the whole workspace, and the adapter keeps the machines that carry the labels.
+	assert.equal((await host.list({ "agentrun.conformance": "run-1" }, CTX)).value.length, 2);
+	assert.deepEqual((await provider.list({ "agentrun.conformance": "run-1" })).value.map((info) => info.ref.id), [value.id]);
 	assert.ok((await host.delete(value.id, CTX)).ok);
-	assert.ok((await host.delete(value.id, CTX)).ok, "a repeat's 404 is done");
+	assert.equal(host.errorCode(await host.delete(value.id, CTX).catch((thrown) => thrown)), "not_found", "a repeat's 404 is not_found, which the adapter's delete reads as done");
 	assert.equal(rest.instances.has(value.id), false);
 	rest.fail("GET", /^\/v1\/instances$/, new Response(JSON.stringify({ data: [], has_more: true }), { status: 200 }));
 	await assert.rejects(host.list({}, CTX), /would miss machines/);
@@ -288,7 +290,7 @@ test("the error codes: Agent37's envelope codes, then the status, flat transport
 	assert.equal(wrong.host.errorCode(refused), "denied");
 	assert.doesNotMatch(refused.message, new RegExp(BARE));
 	const timeout = Object.assign(new Error("slow"), { name: "TimeoutError" });
-	assert.equal(host.errorCode(timeout), "timeout");
+	assert.equal(codeOfError(host, timeout), "timeout");
 	assert.equal(host.errorCode(Object.assign(new Error("no"), { level: "client-authentication" })), "denied");
 });
 
@@ -399,12 +401,14 @@ test("a tunnel that fails to open is opened again, within the call's bound; afte
 	fake.ws.failNext(2);
 	assert.equal((await run(host, value.id, ["true"])).code, 0);
 	assert.equal(fake.ws.opened.length, 3, "two failed, the third opened");
+	// Each instance below is a fresh one: the first one's connection stays open for its next exec.
+	const second = (await host.create(request(), CTX)).value;
 	fake.ws.failNext(4);
-	await assert.rejects(host.exec(value.id, ["true"], { stdin: false }, CTX), /failed to open/);
+	await assert.rejects(host.exec(second.id, ["true"], { stdin: false }, CTX), /failed to open/);
 	assert.equal(fake.ws.opened.length, 7, "four tries in all");
 	fake.ws.failNext(10);
-	const error = await host.exec(value.id, ["true"], { stdin: false }, { timeoutMs: 300 }).catch((thrown) => thrown);
-	assert.equal(host.errorCode(error), "timeout", "the bound ends the retries");
+	const error = await host.exec(second.id, ["true"], { stdin: false }, { timeoutMs: 300 }).catch((thrown) => thrown);
+	assert.equal(codeOfError(host, error), "timeout", "the bound ends the retries");
 	fake.ws.failNext(0);
 });
 
@@ -414,7 +418,7 @@ test("a tunnel still opening when its call times out or is aborted is closed, no
 	const before = fake.ws.closedBy.length;
 	fake.ws.hangNext(1);
 	const timedOut = await host.exec(value.id, ["true"], { stdin: false }, { timeoutMs: 200 }).catch((thrown) => thrown);
-	assert.equal(host.errorCode(timedOut), "timeout");
+	assert.equal(codeOfError(host, timedOut), "timeout");
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(fake.ws.closedBy.slice(before), [0], "the opening tunnel was closed as the call gave up");
 	fake.ws.hangNext(1);
@@ -433,6 +437,132 @@ test("an SSH key the instance's sshd does not take is denied", async (t) => {
 	const { value } = await host.create(request(), CTX);
 	const error = await host.exec(value.id, ["true"], { stdin: false }, CTX).catch((thrown) => thrown);
 	assert.equal(host.errorCode(error), "denied");
+});
+
+// --- one SSH connection per instance ---
+
+/** A process exec started, its stdout kept as text as it comes and its stderr drained. */
+async function started(host, id, argv, stdin) {
+	const made = await host.exec(id, argv, { stdin }, CTX);
+	assert.ok(made.ok);
+	const proc = made.value;
+	const seen = { text: "" };
+	const reading = (async () => {
+		for await (const chunk of proc.stdout) seen.text += Buffer.from(chunk).toString();
+	})();
+	(async () => {
+		for await (const _ of proc.stderr);
+	})();
+	return { proc, seen, reading };
+}
+
+test("two execs on one instance share one WebSocket and one SSH handshake, together or one after the other; another instance has its own", async (t) => {
+	const { fake, host } = await setup(t);
+	const { value } = await host.create(request(), CTX);
+	// Together, as connect and the live view's watch can start.
+	const [a, b] = await Promise.all([run(host, value.id, ["echo", "a"]), run(host, value.id, ["echo", "b"])]);
+	assert.deepEqual([a.stdout, b.stdout], ["a\n", "b\n"]);
+	// One beside a long one (the bridge, then the watch), then one right after both ended.
+	const bridge = await started(host, value.id, ["cat"], true);
+	assert.equal((await run(host, value.id, ["echo", "watch"])).stdout, "watch\n");
+	await bridge.proc.end();
+	assert.equal(await bridge.proc.wait(), 0);
+	assert.equal((await run(host, value.id, ["true"])).code, 0);
+	assert.equal(fake.ws.opened.length, 1, "one WebSocket");
+	assert.equal(fake.sshd.state.logins, 1, "one SSH handshake");
+	const other = (await host.create(request(), CTX)).value;
+	assert.equal((await run(host, other.id, ["true"])).code, 0);
+	assert.equal(fake.ws.opened.length, 2);
+	assert.equal(fake.ws.opened[1].url, `wss://${other.id}-22022.${PROXY}/`);
+});
+
+test("past 10 channels at once (OpenSSH's MaxSessions) a second connection opens, and kills of 10 execs at once each get a channel", async (t) => {
+	const { fake, host } = await setup(t);
+	const { value } = await host.create(request(), CTX);
+	const procs = await Promise.all(Array.from({ length: MAX_SESSIONS + 1 }, () => started(host, value.id, ["cat"], true)));
+	assert.equal(fake.ws.opened.length, 2);
+	assert.equal(fake.sshd.state.logins, 2);
+	assert.equal(fake.sshd.state.sessions, MAX_SESSIONS + 1);
+	for (const { proc } of procs) await proc.end();
+	assert.deepEqual(await Promise.all(procs.map(({ proc }) => proc.wait())), Array(MAX_SESSIONS + 1).fill(0));
+	assert.equal((await run(host, value.id, ["true"])).code, 0);
+	assert.equal(fake.ws.opened.length, 2, "the next exec takes one of the two");
+	// A full connection's execs, all killed at once: their kills go on a connection with room, never refused.
+	const other = (await host.create(request(), CTX)).value;
+	const sleeps = await Promise.all(Array.from({ length: MAX_SESSIONS }, () => started(host, other.id, ["sh", "-c", "sleep 300 & echo $!; wait"], false)));
+	assert.ok(await until(() => sleeps.every(({ seen }) => seen.text.includes("\n"))));
+	const pids = sleeps.map(({ seen }) => Number(seen.text.trim()));
+	await Promise.all(sleeps.map(({ proc }) => proc.kill()));
+	assert.deepEqual(await Promise.all(sleeps.map(({ proc }) => proc.wait())), Array(MAX_SESSIONS).fill(-1));
+	assert.ok(await until(() => !pids.some(alive)), "every killed group is gone");
+});
+
+test("an exec that joins another's handshake keeps its own bound: when the shared one runs out of the first call's time, it opens its own", async (t) => {
+	const { fake, host } = await setup(t);
+	const { value } = await host.create(request(), CTX);
+	fake.ws.hangNext(1);
+	const short = host.exec(value.id, ["true"], { stdin: false }, { timeoutMs: 600 }).catch((thrown) => thrown);
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	const long = run(host, value.id, ["echo", "mine"]);
+	assert.equal(codeOfError(host, await short), "timeout");
+	assert.equal((await long).stdout, "mine\n");
+	assert.equal(fake.ws.opened.length, 2, "the hung one, then the late call's own");
+});
+
+test("kill closes its own channel and leaves another exec on the same connection running", async (t) => {
+	const { fake, host } = await setup(t);
+	const { value } = await host.create(request(), CTX);
+	const killed = await started(host, value.id, ["sh", "-c", "sleep 300 & echo $!; wait"], false);
+	const kept = await started(host, value.id, ["cat"], true);
+	assert.ok(await until(() => killed.seen.text.includes("\n")));
+	const pid = Number(killed.seen.text.trim());
+	await killed.proc.kill();
+	assert.equal(await killed.proc.wait(), -1);
+	assert.ok(await until(() => !alive(pid)), "the killed group is gone");
+	await kept.proc.write(Buffer.from("still here"));
+	assert.ok(await until(() => kept.seen.text === "still here"), "the other exec still runs");
+	await kept.proc.end();
+	assert.equal(await kept.proc.wait(), 0);
+	assert.equal(fake.ws.opened.length, 1);
+	assert.equal(fake.sshd.state.logins, 1);
+});
+
+test("a connection that died is never handed out: the next exec opens a fresh one, and a channel the sshd refuses is opened once more on a fresh connection", async (t) => {
+	const { fake, host } = await setup(t);
+	const { value } = await host.create(request(), CTX);
+	await run(host, value.id, ["true"]);
+	fake.sshd.dropAll();
+	assert.ok(await until(() => fake.sshd.state.live === 0));
+	assert.equal((await run(host, value.id, ["true"])).code, 0);
+	assert.equal(fake.ws.opened.length, 2, "after the close was seen");
+	fake.sshd.dropAll();
+	assert.equal((await run(host, value.id, ["true"])).code, 0);
+	assert.equal(fake.ws.opened.length, 3, "and as it closes");
+	fake.sshd.refuseSessions(1);
+	assert.equal((await run(host, value.id, ["true"])).code, 0);
+	assert.equal(fake.ws.opened.length, 4, "the refusing connection takes no more; a fresh one took the exec");
+	fake.sshd.refuseSessions(2);
+	await assert.rejects(host.exec(value.id, ["true"], { stdin: false }, CTX), /open failure/i);
+	assert.equal(fake.ws.opened.length, 5, "once more, no more");
+	assert.ok(await until(() => fake.sshd.state.live === 0), "the refusing connections ended, none holding them");
+});
+
+test("a connection with no channel left waits a moment for the next exec, then ends; delete ends it at once, channels and all", async (t) => {
+	const { fake, host } = await setup(t);
+	const { value } = await host.create(request(), CTX);
+	await run(host, value.id, ["true"]);
+	assert.equal(fake.sshd.state.live, 1, "kept for the next exec");
+	assert.ok(await until(() => fake.sshd.state.live === 0, 5_000), "then ended");
+	const long = await started(host, value.id, ["sh", "-c", "sleep 300 & wait"], false);
+	assert.equal(fake.sshd.state.live, 1);
+	// A refused channel retires the long one's connection, which the long one still holds; delete ends it all the same.
+	fake.sshd.refuseSessions(1);
+	const next = await started(host, value.id, ["sh", "-c", "sleep 301 & wait"], false);
+	assert.equal(fake.sshd.state.live, 2);
+	assert.ok((await host.delete(value.id, CTX)).ok);
+	assert.deepEqual(await Promise.all([long.proc.wait(), next.proc.wait()]), [-1, -1], "the channels closed with their connections");
+	assert.ok(await until(() => fake.sshd.state.live === 0, 1_000), "ended at once");
+	assert.equal(fake.ws.opened.length, 3);
 });
 
 // --- the registry and the conformance module ---

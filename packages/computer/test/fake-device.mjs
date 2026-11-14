@@ -72,13 +72,15 @@ const shift = ([x, y], dx, dy = 0) => [x + dx, y + dy];
 /**
  * The provider, and `made` (each computer's name and spec). Options: `kind` (desktop or android), `mode` (its daemon),
  * `groups`, `network`, `hello` (merged over the hello), `extend` and `stream` (whether those methods are there),
- * `maxLifetimeMs`, `chunk` (bytes a screen.shot or screen.read gives), and `broken`, one of: no-cap, screen-size,
+ * `maxLifetimeMs`, `chunk` (bytes a screen.shot or screen.read gives), `stockApps` (the ids of a desktop's apps), and
+ * `broken`, one of: no-cap, screen-size,
  * screen-region, screen-colors, screen-no-idat, screen-corrupt-idat, screen-region-corrupt, click-offset, type-case,
  * no-precheck, no-stop, no-release, tap-offset, swipe-stuck, pinch-together, terminate-stays, ui-role (ui.observe gives
  * the fixture's button its platform class as its role), extend-noop, extend-past-cap, extend-per-call,
  * extend-shortens, stream-http, fixture-never-ready, screen-huge-size, screen-endless,
  * launch-hidden (apps.list says Settings is in front, and neither the screen nor ui.observe shows it), watch-stale,
- * watch-size, watch-no-cursor, watch-corrupt-png and watch-corrupt-jpeg (screen.watch's).
+ * watch-size, watch-no-cursor, watch-corrupt-png and watch-corrupt-jpeg (screen.watch's), and capture-off-answers (a
+ * hello whose screen.capture is off, and screen.shot and screen.watch answered anyway).
  * `createMs` is how long each create takes on the clock, in turn (the last for every create after): a host slow to
  * start a computer. The lifetime counts from create's start, and a computer whose deadline passed before create
  * finished fails it as Docker's does, timeout.
@@ -125,6 +127,7 @@ export function fakeDevices({
 	maxLifetimeMs = 2 * 60 * 60_000,
 	createMs = [0],
 	chunk = 4096,
+	stockApps = [],
 	broken,
 } = {}) {
 	const os = kind === "desktop" ? "linux" : kind;
@@ -255,6 +258,9 @@ export function fakeDevices({
 			},
 		};
 		const ui = new UiEngine(uiSource, { quietMs: 0 });
+		// A hello that says screen.capture off refuses screen.shot and screen.watch with its reason (broken:
+		// capture-off-answers answers them anyway).
+		const captureOff = typeof hello?.features?.["screen.capture"] === "object" && broken !== "capture-off-answers" ? hello.features["screen.capture"].off : undefined;
 
 		const methods = {
 			hello: () => ok({ protocol: PROTOCOL_VERSION, version: "1.0.0", os, kind, arch: "amd64", groups, ...(kind === "android" ? { screen: { width, height, scale: 1 }, features: ui.features() } : {}), ...hello }),
@@ -291,6 +297,7 @@ export function fakeDevices({
 			},
 			"process.wait": ({ id }) => (c.processes.has(id) ? ok({ running: c.processes.get(id), exitCode: null, signal: c.processes.get(id) ? null : "KILL" }) : fail("not_found", `no process ${id}`)),
 			"screen.shot": ({ region } = {}) => {
+				if (captureOff !== undefined) return fail("denied", captureOff);
 				const [x, y, w, h] = region && broken !== "screen-region" ? region : [0, 0, width, height];
 				const bad = broken === "screen-no-idat" || broken === "screen-corrupt-idat" || (broken === "screen-region-corrupt" && region !== undefined);
 				const bytes = bad ? undecodable(w, h, broken) : png(w, h, (px, py) => screenColor(x + px, y + py));
@@ -311,6 +318,7 @@ export function fakeDevices({
 			// watch-no-cursor gives no cursor; watch-corrupt-png's pixels do not inflate; watch-corrupt-jpeg is a JPEG of
 			// the right size with no scan).
 			"screen.watch": ({ after } = {}) => {
+				if (captureOff !== undefined) return fail("denied", captureOff);
 				c.watch ??= { seq: 0, key: "", bytes: undefined };
 				const w = c.watch;
 				if (!Number.isSafeInteger(after) || after < 0 || after > w.seq) return fail("invalid", `after ${JSON.stringify(after)} is not a seq up to ${w.seq}`);
@@ -426,8 +434,9 @@ export function fakeDevices({
 				deadline: new Date(created + spec.lifetimeMs),
 				files: new Map(),
 				processes: new Map(),
-				// A phone comes with its stock Settings app, which apps.launch-terminate drives.
-				apps: new Map(kind === "android" ? [["com.android.settings", { id: "com.android.settings", name: "Settings" }]] : []),
+				// A phone comes with its stock Settings app, a desktop with the stock apps it is given: apps.launch-terminate
+				// drives one.
+				apps: new Map(kind === "android" ? [["com.android.settings", { id: "com.android.settings", name: "Settings" }]] : stockApps.map((app) => [app, { id: app, name: app }])),
 				foreground: null,
 				cursor: [0, 0],
 				held: new Set(),

@@ -75,7 +75,7 @@ test("an image of this serve passes, by the harnesses this serve really reports 
   const offers = await harnessOffers({ AGENTRUN_SERVE_DATA: data });
   const codex = offers.find((h) => h.id === "codex");
   assert.deepEqual([codex?.available, codex?.installs], [false, "on_first_use"], "with no key this serve offers codex as unavailable, installing on first use");
-  const r = await smoke(t, serving(offers.map(({ default_model: _model, run_memory_mib: _mib, ...offer }) => offer)));
+  const r = await smoke(t, serving(offers.map(({ default_model: _model, models: _models, run_memory_mib: _mib, ...offer }) => offer)));
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /codex: unavailable \(codex needs OPENAI_API_KEY[^\n]*\), installs on first use/);
 });

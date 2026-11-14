@@ -62,7 +62,7 @@ test("without a default model a revision that names none is refused before it st
   assert.match(keyless.body.error.message, /No OpenAI key here for openai\/gpt-6\.1-sol: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts\./);
   const unknown = await api("POST", "/agents", agent("unknown", { model: "openai/no-such-model" }));
   assert.equal(unknown.status, 422, "a model pi-ai does not know never runs here: refused at save (runnable.test.mjs)");
-  assert.match(unknown.body.error.fields[0].message, /knows no model no-such-model of openai/);
+  assert.match(unknown.body.error.fields[0].message, /On pi, a model is <provider>\/<model id>, like .*: openai\/no-such-model is not a model pi runs here/);
   assert.deepEqual((await api("GET", "/runs")).body, { runs: [], next_cursor: null }, "nothing started");
 });
 
@@ -174,10 +174,10 @@ test("an agent is created from a definition and skills, read back with its ETag,
 
 test("a definition field the store does not keep is refused by name, and an id already here is agent_exists", async (t) => {
   const { api } = await serve(t);
-  const kept = await api("POST", "/agents", agent("m", { input_schema: {} }));
+  const kept = await api("POST", "/agents", agent("m", { input_shape: {} }));
   assert.equal(kept.status, 422);
   assert.equal(kept.body.error.code, "input_invalid");
-  assert.deepEqual(kept.body.error.fields.map((f) => [f.field, f.reason]), [["definition.input_schema", "not_allowed"]]);
+  assert.deepEqual(kept.body.error.fields.map((f) => [f.field, f.reason]), [["definition.input_shape", "not_allowed"]]);
   assert.deepEqual((await api("POST", "/agents", agent("m", { thinking: "off" }))).body.error.fields.map((f) => [f.field, f.reason]), [["definition.thinking", "not_an_option"]], "thinking is never off");
   assert.deepEqual((await api("POST", "/agents", flowAgent("fm", answerFlow(), { thinking: "high" }))).body.error.fields.map((f) => [f.field, f.reason]), [["definition.thinking", "not_allowed"]]);
   assert.deepEqual((await api("POST", "/agents", agent("m", { model: "gpt" }))).body.error.fields.map((f) => [f.field, f.reason]), [["definition.model", "bad_format"]]);

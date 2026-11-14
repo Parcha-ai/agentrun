@@ -16,7 +16,6 @@ import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, HostTool, Se
 import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
 import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { CODEX_MCP_CLIENT } from "./mcp.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { markParked } from "./scripts.js";
 import { withCheckedBinary } from "./host/sandbox.js";
@@ -30,6 +29,14 @@ import { toolImageProblems } from "./tool-images.js";
 
 /** A name app-server accepts for a dynamic tool. */
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * The name Codex is given a host tool by. App-server reserves `mcp__` names for its own MCP client's tools and refuses a
+ * dynamic tool so named at the thread's start (`dynamic tool name is reserved`, 0.164.0, #1586), so a run's MCP tool
+ * (`mcp__<server>__<tool>`), a host tool like any other, is offered as `mcp_<server>__<tool>`. Every other name is
+ * as given. Inside the session only: the host's gate and the session's events name the call by the host's name.
+ */
+export const codexToolName = (name: string): string => (name.startsWith("mcp__") ? `mcp_${name.slice("mcp__".length)}` : name);
 
 /**
  * Codex's `tool_output_token_limit`: the host's result bound (HOST_RESULT_MAX_CHARS), as Codex counts it. Codex keeps a
@@ -90,18 +97,22 @@ export interface CodexAdapterOptions {
  *  line before it runs such a tool is a second guard (the transcript Codex resumes from), not the one that protects it. */
 export function kernelTool(tool: HostTool): KernelTool {
   return {
-    name: tool.name,
+    name: codexToolName(tool.name),
     // Codex strips some keywords from the schema its model is given: they are said in plain words in the description
     // (the schema itself is the host's, and every call is checked against it).
     description: describedDescription(tool.description, tool.inputSchema),
     inputSchema: tool.inputSchema,
     replay: tool.replay,
+    ...(tool.nests ? { nests: true as const } : {}),
+    ...(tool.deferred ? { deferred: true as const } : {}),
     async execute(input, io) {
       // The effect's step is `tool:<Codex call id>#<attempt>`: the host sees Codex's call id.
       const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
       // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
       const attempt = Number(/#(\d+)$/.exec(io.stepId ?? "")?.[1] ?? 0);
-      const result = await tool.call(input, { callId, signal: io.signal, attempt });
+      // A tool that nests calls (tools_call) names them by the host's names: the bridge holds them by Codex's.
+      const nested = io.nested && { call: (name: string, args: Record<string, unknown>, key: string) => io.nested!.call(codexToolName(name), args, key), memo: io.nested.memo };
+      const result = await tool.call(input, { callId, signal: io.signal, attempt, ...(nested ? { nested } : {}) });
       // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
       if (result.parked) await markParked(io.ctx, callId);
       if (result.isError) throw new Error(result.text);
@@ -117,12 +128,12 @@ export function kernelTool(tool: HostTool): KernelTool {
   };
 }
 
-/** The adapter's event for a harness live event, if it has one. */
-function adapterEvent(event: unknown): AdapterEvent | undefined {
+/** The adapter's event for a harness live event, if it has one: a tool's by the host's name for it (`hostName`). */
+function adapterEvent(event: unknown, hostName: (name: string) => string): AdapterEvent | undefined {
   const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown; truncated?: unknown };
   if (e?.type === "text" && typeof e.delta === "string") return { type: "text", delta: e.delta };
-  if (e?.type === "tool_start" && typeof e.name === "string") return { type: "tool_start", callId: String(e.callId ?? ""), name: e.name, args: e.args };
-  if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: e.name, isError: e.isError === true, ...(e.truncated === true ? { truncated: true as const } : {}) };
+  if (e?.type === "tool_start" && typeof e.name === "string") return { type: "tool_start", callId: String(e.callId ?? ""), name: hostName(e.name), args: e.args };
+  if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: hostName(e.name), isError: e.isError === true, ...(e.truncated === true ? { truncated: true as const } : {}) };
   return undefined;
 }
 
@@ -166,16 +177,19 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
 
   return {
     id: "codex",
-    capabilities: () => ({ mcpClient: CODEX_MCP_CLIENT }),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Codex sessions cannot fork another session's transcript; declare context: \"fresh\"");
-      const seen = new Set<string>();
+      // Each tool by the name Codex is given it (codexToolName): two that would reach Codex by one name are refused.
+      const seen = new Map<string, string>();
       for (const tool of spec.tools) {
+        const given = codexToolName(tool.name);
         if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one Codex accepts (letters, digits, _ and -, at most 64)`);
-        if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
-        if (skills.length && tool.name === READ_SKILL_FILE) problems.push(`the tool name ${READ_SKILL_FILE} is the adapter's own when it has skills`);
-        seen.add(tool.name);
+        const twin = seen.get(given);
+        if (twin === tool.name) problems.push(`the tool ${tool.name} is given twice`);
+        else if (twin !== undefined) problems.push(`the tools ${twin} and ${tool.name} both reach Codex as ${given}`);
+        if (skills.length && given === READ_SKILL_FILE) problems.push(`the tool name ${READ_SKILL_FILE} is the adapter's own when it has skills`);
+        if (twin === undefined) seen.set(given, tool.name);
         // What no harness takes (an object root, valid 2020-12, no remote $ref), then what Codex would drop or retype in
         // the tool's schema: refused here, by name, not found out mid-turn. A place the first already refused is not
         // refused again by the second.
@@ -202,6 +216,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       // With skills the model also reads their files (read_skill_file), from the session's own copy of them.
       const tools: HostTool[] = skills.length ? [...spec.tools, hostedTool(io, readSkillFileTool(join(sessionDir(dir, "codex-home"), SKILLS_DIR), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) }))))] : spec.tools;
 
+      // The host's name for each tool as Codex calls it: the gate and the session's events name a call by it.
+      const hostNames = new Map(tools.map((t) => [codexToolName(t.name), t.name] as const));
+      const hostName = (name: string) => hostNames.get(name) ?? name;
       const effort = spec.effort ?? spec.thinking;
       // The live search runs inside a model request, where no call reaches the gate: it is offered only while the host's
       // web_search setting allows it, read before each request (a deny or ask set mid-run drops it from the next one).
@@ -209,7 +226,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const harnessOptions: CodexHarnessOptions = {
         tools: tools.map(kernelTool),
         // The host's gate, asked about each host-tool call before its intent is written.
-        ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
+        ...(io.gate ? { gate: (call: GateCall) => io.gate!({ ...call, tool: hostName(call.tool) }) } : {}),
         builtins: false,
         // Codex's bundled skills (imagegen, skill-installer, ...), which it writes under `$CODEX_HOME/skills/.system` at every
         // start, are off in every session, skills or not: the model is shown the host's skills and no others.
@@ -238,11 +255,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             // (catalog.ts). A stand-in runs no Codex, so it has no catalog to read.
             ...(checked !== undefined ? { catalog: { command: checked, ...(options.log ? { log: options.log } : {}) } } : {}),
             ...(options.webSearch ? { webSearch: options.webSearch, ...(searchAllowed ? { searchAllowed } : {}) } : {}),
-            // A granted MCP server's tools: Codex's own MCP client calls them at the proxy (mcp.ts).
-            ...(spec.mcp?.servers.length ? { mcp: spec.mcp } : {}),
             proxy: {
               hooks: io.models,
-              tools: tools.map((t) => t.name),
+              tools: tools.map((t) => codexToolName(t.name)),
               ...(options.log ? { log: options.log } : {}),
               ...(options.price ? { price: options.price } : {}),
               ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
@@ -254,7 +269,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const harness = checked === undefined ? codexHarness(harnessOptions) : withCheckedBinary(checked, () => codexHarness(harnessOptions));
 
       const live = (event: unknown) => {
-        const mapped = adapterEvent(event);
+        const mapped = adapterEvent(event, hostName);
         if (mapped) io.onEvent(mapped);
       };
       // Every drive of this session writes through one serialized writer, so a drive opened after an interrupt reads only

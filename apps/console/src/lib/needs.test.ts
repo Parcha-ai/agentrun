@@ -60,19 +60,25 @@ describe("hasOwnRun", () => {
   });
 });
 
-// Run again starts the same task again: the run's whole first message, its effort and its spend cap, or a refusal that
-// says why it can't be.
+// Run again starts the same task again from the run's read: its input, whole, its files, its effort and its spend cap, or
+// a refusal that says why it can't be.
 describe("rerunBody", () => {
-  const base = run("x", { status: "failed", cost: { usd: 0.4, basis: "estimate", charge_state: null, cap_usd: 0.5 }, effort: "high" });
-  it("carries the first message, the effort and the spend cap", () => {
-    expect(rerunBody(base, "Check invoice INV-2299.")).toEqual({ body: { input: { content: "Check invoice INV-2299." }, effort: "high", max_cost_usd: 0.5 } });
-    expect(rerunBody({ ...base, effort: undefined, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null } }, "Go.")).toEqual({ body: { input: { content: "Go." } } });
+  const base = run("x", { status: "failed", cost: { usd: 0.4, basis: "estimate", charge_state: null, cap_usd: 0.5 }, effort: "high", input: { content: "Check invoice INV-2299." }, file_ids: [] });
+  it("carries the input, the effort and the spend cap", () => {
+    expect(rerunBody(base)).toEqual({ body: { input: { content: "Check invoice INV-2299." }, effort: "high", max_cost_usd: 0.5 } });
+    expect(rerunBody({ ...base, effort: undefined, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, input: { content: "Go." } })).toEqual({ body: { input: { content: "Go." } } });
   });
-  it("refuses a workflow run, and a first message the timeline cut, never starting a shortened task", () => {
-    expect(rerunBody({ ...base, kind: "workflow" }, "{}")).toHaveProperty("refusal");
-    const cut = `${"x".repeat(1997)}...`;
-    expect(rerunBody(base, cut)).toEqual({ refusal: `"x": its first message is longer than the timeline keeps; start it again from its agent's page` });
-    expect(rerunBody(base, undefined)).toEqual({ refusal: `"x": its first message could not be read` });
+  it("sends a message longer than the timeline keeps (2,000 characters) whole, typed fields and all", () => {
+    const content = `${"Check every line of invoice INV-2299. ".repeat(60)}End.`;
+    expect(content.length).toBeGreaterThan(2000);
+    const input = { content, company: "Acme", limit: 5, tags: ["a ``` b"] };
+    expect(rerunBody({ ...base, input })).toEqual({ body: { input, effort: "high", max_cost_usd: 0.5 } });
+  });
+  it("refuses a workflow run, and a run whose read serves no input, never sending an altered one", () => {
+    expect(rerunBody({ ...base, kind: "workflow" })).toEqual({ refusal: `"x" is a workflow run: start it again from its agent's page` });
+    const refusal = `"x": its input can't be read back exactly as it was given; start it again from its agent's page`;
+    expect(rerunBody({ ...base, input: null })).toEqual({ refusal });
+    expect(rerunBody({ ...base, input: undefined })).toEqual({ refusal });
   });
 });
 
@@ -91,17 +97,11 @@ describe("mergeNeeds", () => {
   });
 });
 
-// A run given files names them on a line after its first message (serve's "Files for this run: …"). A run started again
-// takes only a message, and its files' ids aren't on the run's read, so the files can't come along: refused, by name.
+// A run given files has their ids on its read: a run started again is given the same files.
 describe("rerunBody, a run that was given files", () => {
-  const base = run("r1", { title: "Summarize the report" });
-  it("refuses it, saying why, rather than start it without its files", () => {
-    const r = rerunBody(base, "Summarize the report.\n\nFiles for this run: inputs/report.pdf (12.0 KB), inputs/notes.md (1.2 KB).");
-    expect(r).toHaveProperty("refusal");
-    expect((r as { refusal: string }).refusal).toMatch(/was given files/);
-  });
-  it("starts one whose message only mentions files, with no line of its own", () => {
-    expect(rerunBody(base, "Files for this run: none. Just say hi.")).toEqual({ body: { input: { content: "Files for this run: none. Just say hi." } } });
+  it("sends its files' ids with its input", () => {
+    const r = run("r1", { title: "Summarize the report", input: { content: "Summarize the report." }, file_ids: ["file_a", "file_b"] });
+    expect(rerunBody(r)).toEqual({ body: { input: { content: "Summarize the report." }, file_ids: ["file_a", "file_b"] } });
   });
 });
 

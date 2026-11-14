@@ -1,13 +1,9 @@
 ---
 description: "Repeat. Pinecrest Media Inc.: its own status names a notice of intent to dissolve and its 2025 return is Overdue: RF09 and RF10 are real."
 max_cost_usd: 1.50
+input: { company: Pinecrest Media Inc., website: pinecrest.example, country: CA, reason: vendor }
 ---
-Run KYB on this company: we're about to sign a vendor agreement with them.
-
-- Company: Pinecrest Media Inc.
-- Domain: pinecrest.example
-- Country of incorporation: Canada
-- Why we're checking: vendor
+We're about to sign a vendor agreement with them.
 
 The web is not reachable from this run: the material below is everything there is, so cite it and don't fetch.
 

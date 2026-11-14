@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, follow, serve } from "./support.mjs";
+import { agent, follow, serve, withEnv } from "./support.mjs";
 
 test("a person grades an ended run; the agent's promotions read empty until a learned workflow is replayed", async (t) => {
   const { api, baseUrl } = await serve(t);
@@ -38,4 +38,21 @@ test("a person grades an ended run; the agent's promotions read empty until a le
   assert.deepEqual([promotions.status, promotions.body], [200, { agent: "grader", promotions: [], serving: [] }]);
   meets("/agents/{agent_id}/learning/promotions", "get", promotions.body);
   assert.equal((await api("GET", "/agents/nobody/learning/promotions")).status, 404);
+});
+
+// Review on #2644 (round 4, security): every text of a promotion record the route returns is cut of the host's secrets as
+// the other learning reads cut them, its reason and each refit guard's label as well as its workflow's name.
+test("the promotions list cuts a known secret from every text of a record: its workflow, its reason, a refit guard's label", async (t) => {
+  const value = ["promo", "pass", process.pid, Date.now().toString(36)].join("-");
+  withEnv(t, { PROMO_TEST_TOKEN: value });
+  const { api, store } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("promoted"))).status, 201);
+  const record = { workflow: `answer-${value}`, digest: "d2", at: "2026-11-14T00:00:00.000Z", decided: "promote", source: "refit", reason: `refit of answer-${value}: lowered guard check-${value}`, refit: { from: "d1", guards: [{ node: `check-${value}`, was: 0.5, threshold: 0.3 }] } };
+  await store.settings.put("learning.promotions.promoted", { v: 1, items: [record] });
+  const read = await api("GET", "/agents/promoted/learning/promotions");
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.body.promotions.length, 1);
+  assert.ok(!JSON.stringify(read.body).includes(value), `the secret shows: ${JSON.stringify(read.body)}`);
+  assert.deepEqual([read.body.promotions[0].workflow, read.body.serving[0].workflow], ["[redacted]", "[redacted]"]);
+  assert.equal(read.body.promotions[0].refit.guards[0].threshold, 0.3, "numbers are kept");
 });

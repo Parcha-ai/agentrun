@@ -40,7 +40,8 @@ test("a deny answers the model in the host's words and writes and runs nothing",
   const log = [];
   const bridge = toolBridge(drive, [payTool(log)], { gate: async () => ({ deny: 'Permission denied: pay is set to deny.' }), beforeNever: async () => { log.push(['flush']); } });
   const result = await bridge.call('pay', {}, 'c2');
-  assert.deepEqual(result, { text: 'Permission denied: pay is set to deny.', isError: true });
+  // Marked refused: a nested call (a script's, tools_call's) tells a refusal from a tool's own error by it.
+  assert.deepEqual(result, { text: 'Permission denied: pay is set to deny.', isError: true, refused: true });
   assert.deepEqual(log, [], 'no flush, no call');
   assert.deepEqual(await starts(records), [], 'no intent');
 });
@@ -102,4 +103,16 @@ test('a replay-safe call a crash cut, asked about again by the next drive, is as
     { callId: 'cut', tool: 'peek', args: { q: 'x' }, replayed: true },
     { callId: 'fresh', tool: 'peek', args: { q: 'y' } },
   ]);
+});
+
+test('a deferred tool is not listed to the model, yet a nested call and call() run it by name', async () => {
+  const { drive } = await driveOf('deferred');
+  const log = [];
+  const hidden = { ...payTool(log), name: 'hidden', deferred: true };
+  const outer = { name: 'outer', description: 'Calls hidden.', inputSchema: { type: 'object' }, replay: 'safe', nests: true, execute: async (_args, io) => (await io.nested.call('hidden', { n: 1 }, 'call')).text };
+  const bridge = toolBridge(drive, [payTool(log), hidden, outer]);
+  assert.deepEqual(bridge.tools.map((tool) => tool.name), ['pay', 'outer'], 'the model is listed the others');
+  assert.equal((await bridge.call('outer', {}, 'c5')).text, 'paid', 'a nested call ran the deferred tool');
+  assert.equal((await bridge.call('hidden', {}, 'c6')).text, 'paid', 'and so does a call by name');
+  assert.equal(log.length, 2);
 });

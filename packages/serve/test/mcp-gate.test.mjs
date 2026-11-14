@@ -13,6 +13,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
+import { callResults, withToolSearch } from "./fixtures/claude-tool-search.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { notedRequests, REQUESTS_ENV, rolesOf } from "./fixtures/faux-requests.mjs";
 import { noApproverText } from "../dist/tool-gate.js";
@@ -82,6 +83,14 @@ const allowFake = (api) => api("PUT", "/settings/tools", { "mcp:fake/*": { permi
 
 /** The gate's resume of call `callId` on run `runId`'s timeline: AgentRun's row (origin "server"), never a person's, with no
  *  call id in its summary or its text. */
+/** The last tool result a Messages conversation holds, as its text; undefined when it holds none. */
+function resultIn(messages) {
+  const results = messages.flatMap((message) => (Array.isArray(message.content) ? message.content : [])).filter((block) => block.type === "tool_result");
+  if (results.length === 0) return undefined;
+  const content = results.at(-1).content;
+  return typeof content === "string" ? content : (content ?? []).map((part) => part.text ?? "").join("");
+}
+
 async function resumeRowIsAgentRuns(api, runId, callId, tool, at) {
   const { rows } = await follow(api, runId, ["completed", "failed"]);
   const resume = rows.find((row) => row.origin === "server" && (row.summary ?? "").startsWith(`AgentRun: ${tool} `));
@@ -354,15 +363,15 @@ test("pi: a tool with no price runs, shown not metered on the timeline and in /u
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/UsageLine" }, tools), []);
 });
 
-test("claude-agent: with no setting the CLI's MCP call asks once (exactly one approval) and parks: the session is interrupted after its parked result with no model request between, the run reads input_required, and the owner's allow runs it once and resumes the run", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("claude-agent: with no setting the CLI's MCP call asks once (exactly one approval) and parks: the session is interrupted with the call held and no model request after it, the run reads input_required, and the owner's allow runs it once and resumes the run", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const anthropic = await fakeAnthropic({
-    reply: (request) => {
-      // The gate's resume of the answered call (the CLI may wrap it, so it is found in the conversation's text).
-      const at = request.text.lastIndexOf("[tool approval]");
-      if (at >= 0) return { text: `Resumed: ${request.text.slice(at).split("\n")[1] ?? ""}` };
-      if (Object.keys(request.results).length) return { text: `The tool said: ${Object.values(request.results)[0]}` };
-      return request.tools.includes("mcp__fake__add") ? { tool: { name: "mcp__fake__add", input: { a: 2, b: 3 } } } : { text: "Noted." };
-    },
+    // The MCP tool is deferred behind the CLI's ToolSearch: the model finds it first (withToolSearch).
+    reply: withToolSearch((request) => {
+      // The answered call's result, written into the CLI's transcript before it resumes: the resumed turn goes on past it.
+      const said = resultIn(request.messages);
+      if (said !== undefined) return { text: `Resumed: ${said}` };
+      return request.tools.includes("mcp__hands__mcp__fake__add") ? { tool: { name: "mcp__hands__mcp__fake__add", input: { a: 2, b: 3 } } } : { text: "Noted." };
+    }),
   });
   t.after(() => anthropic.close());
   const saved = { ...process.env };
@@ -378,29 +387,26 @@ test("claude-agent: with no setting the CLI's MCP call asks once (exactly one ap
   const runId = await started(server.api, "claude-asker", ["mcp:fake/add"], "Add 2 and 3 with the add tool.", { extra: { harness: "claude-agent", model: "anthropic/claude-haiku-5-5" } });
   const pending = await parked(server.api, runId);
   assert.deepEqual([pending.tool, pending.price], ["mcp:fake/add", "not metered"]);
-  // The parked result ended the turn: no model request carried it back.
-  assert.ok(!anthropic.requests.some((request) => Object.keys(request.results).length), "no request left after the parked result");
+  // The held call ended the turn: no model request carried its result back (ToolSearch's own result is not the call's).
+  assert.ok(!anthropic.requests.some((request) => Object.keys(callResults(request)).length), "no request left after the held call");
   const { rows } = await follow(server.api, runId, ["input_required"]);
-  // The CLI's parked result (the gate's waiting words) is a row of its own (#2061), as pi's is: the call, its result, its
-  // approval.
-  assert.deepEqual(rows.filter((row) => row.tool_use_id === pending.call_id).map((row) => row.kind), ["tool_use", "tool_result", "tool_approval_requested"], JSON.stringify(rows.map((row) => [row.kind, row.tool_name])));
-  const waiting = rows.find((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__add");
-  assert.match(waiting.tool_result_preview ?? waiting.text ?? "", /waits for a person's approval/, "in the gate's waiting words");
+  // The CLI is handed nothing while its call waits: the call and its approval, no result yet.
+  assert.deepEqual(rows.filter((row) => row.tool_use_id === pending.call_id).map((row) => row.kind), ["tool_use", "tool_approval_requested"], JSON.stringify(rows.map((row) => [row.kind, row.tool_name])));
   assert.equal(calls(fake).length, 0);
   assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
   const done = await follow(server.api, runId, ["completed", "failed"], { deadlineMs: 120_000 });
   assert.match(await answerOf(server.api, runId) ?? "", /^Resumed: 5\b/);
   assert.equal(calls(fake, "add").length, 1, "run once, by the gate");
-  // Answered and run, the call's result row is its outcome: the waiting words were never its end.
+  // Answered and run, the call's result row is its outcome.
   const results = done.rows.filter((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__add");
   assert.equal(results.length, 1, `one result row for the call: ${JSON.stringify(results.map((row) => row.tool_result_preview ?? row.text))}`);
   assert.doesNotMatch(results[0].tool_result_preview ?? results[0].text ?? "", /waits for a person's approval/, "its outcome, never the waiting words");
   await resumeRowIsAgentRuns(server.api, runId, pending.call_id, "mcp:fake/add", "claude-agent");
 });
 
-test("claude-agent: a priced call through the CLI's own MCP client is held and booked under the run's cap, and an unpriced one is marked not metered", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("claude-agent: a priced MCP call is held and booked under the run's cap, and an unpriced one is marked not metered", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const anthropic = await fakeAnthropic({
-    reply: (request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__fake__paid") ? { tool: { name: "mcp__fake__paid", input: { query: "ada" } } } : request.tools.includes("mcp__fake__add") ? { tool: { name: "mcp__fake__add", input: { a: 2, b: 3 } } } : { text: "Noted." }),
+    reply: withToolSearch((request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__hands__mcp__fake__paid") ? { tool: { name: "mcp__hands__mcp__fake__paid", input: { query: "ada" } } } : request.tools.includes("mcp__hands__mcp__fake__add") ? { tool: { name: "mcp__hands__mcp__fake__add", input: { a: 2, b: 3 } } } : { text: "Noted." })),
   });
   t.after(() => anthropic.close());
   const saved = { ...process.env };
@@ -433,13 +439,13 @@ function pausedForRoom(view, fake) {
   assert.equal(calls(fake).length, 0, "refused unsent");
 }
 
-/** The model a harness's own MCP client runs on, set in the env for the test: claude-agent's scripted Messages endpoint,
+/** The model a CLI harness runs on, set in the env for the test: claude-agent's scripted Messages endpoint,
  *  which calls the paid tool, or Codex's stand-in, its "model" the turn's text said through serve's gateway. The run's
  *  agent fields and prompt to match. */
 async function ownClient(t, harness) {
   if (harness === "claude-agent") {
     const anthropic = await fakeAnthropic({
-      reply: (request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__fake__paid") ? { tool: { name: "mcp__fake__paid", input: { query: "ada" } } } : { text: "Noted." }),
+      reply: withToolSearch((request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__hands__mcp__fake__paid") ? { tool: { name: "mcp__hands__mcp__fake__paid", input: { query: "ada" } } } : { text: "Noted." })),
     });
     t.after(() => anthropic.close());
     withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-5-5" }, ["AGENT_MODEL_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AGENT_MODEL"]);
@@ -465,12 +471,12 @@ async function ownClient(t, harness) {
     AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
     AGENT_MODEL_PRICE: "1,2,0.5",
   }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
-  return { extra: { harness }, content: 'mcp fake paid {"query":"ada"}' };
+  return { extra: { harness }, content: 'call mcp_fake__paid {"query":"ada"}' };
 }
 
 for (const harness of ["claude-agent", "codex"]) {
   const skip = harness === "claude-agent" && !existsSync("/usr/bin/setpriv") && "no setpriv here";
-  test(`${harness}: a call through the harness's own MCP client priced $0.05 under a $0.04 cap is refused unsent and pauses the run for a raise`, { timeout: 240_000, skip }, async (t) => {
+  test(`${harness}: an MCP call priced $0.05 under a $0.04 cap is refused unsent and pauses the run for a raise`, { timeout: 240_000, skip }, async (t) => {
     const { extra, content } = await ownClient(t, harness);
     const { api } = await serve(t, { faux: undefined });
     const fake = await addFake(t, api, { paid: 0.05 });
@@ -489,12 +495,11 @@ async function parkingServer(t, harness, { tool = "add", input = { a: 2, b: 3 } 
     return { server, answer: await owner(server), fake: await addFake(t, server.api), extra: {}, content: `Call mcp__fake__${tool} with ${JSON.stringify(input)}` };
   }
   const anthropic = await fakeAnthropic({
-    reply: (request) => {
-      const at = request.text.lastIndexOf("[tool approval]");
-      if (at >= 0) return { text: `Resumed: ${request.text.slice(at).split("\n")[1] ?? ""}` };
-      if (Object.keys(request.results).length) return { text: `The tool said: ${Object.values(request.results)[0]}` };
-      return request.tools.includes(`mcp__fake__${tool}`) ? { tool: { name: `mcp__fake__${tool}`, input } } : { text: "Noted." };
-    },
+    reply: withToolSearch((request) => {
+      const said = resultIn(request.messages);
+      if (said !== undefined) return { text: `Resumed: ${said}` };
+      return request.tools.includes(`mcp__hands__mcp__fake__${tool}`) ? { tool: { name: `mcp__hands__mcp__fake__${tool}`, input } } : { text: "Noted." };
+    }),
   });
   t.after(() => anthropic.close());
   const saved = { ...process.env };
@@ -545,7 +550,7 @@ test("a person's message while an MCP call is parked declines it with their word
     const sent = await api("POST", `/runs/${runId}/messages`, { content: said });
     assert.equal(sent.status, 202, JSON.stringify(sent.body));
     const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
-    // pi's model reads the refusal as the call's own result; the CLI's session is resumed with main's message.
+    // Each model reads the refusal as the call's own result (the CLI's written into its transcript before it resumes).
     const head = harness === "pi" ? "The tool said" : "Resumed";
     assert.match(await answerOf(api, runId) ?? "", new RegExp(`^${head}: The user denied this mcp:fake/add call\\. It was not run: nothing was sent and nothing was charged\\. Reason: ${said}`), harness);
     assert.match(rows.find((row) => row.kind === "tool_approval_requested")?.summary ?? "", /^Declined by your message: mcp:fake\/add /, harness);

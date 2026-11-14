@@ -9,7 +9,8 @@
 //            views leave the window, so their refs are stale there, and come back as the same elements.
 //
 // Its windows: home also holds "New window" (id open), which opens a second window titled "Another window" NEW_WINDOW_MS
-// after its press, in front, and "Close" (id close), which closes the window it is in; "Another window" holds its
+// after its press, in front, "Close" (id close), which closes the window it is in, and a "Code" text field (id code)
+// that takes back any value set into it TAKES_BACK_MS later; "Another window" holds its
 // heading and its own Close. Closing the last window leaves the app running with none, as a Mac app does, and opening
 // the app again (apps.launch) shows its main window on its home screen.
 //
@@ -28,6 +29,7 @@ let savedMs = 300
 let nextMs = 200
 let nextAnimateMs = 300
 let newWindowMs = 300
+let takesBackMs = 150
 let size = Spec.size
 
 /// A view whose frames read from the top left, as window points do.
@@ -52,6 +54,36 @@ final class Canvas: NSView {
 		clicks += 1
 		setAccessibilityValue("\(clicks)")
 		needsDisplay = true
+	}
+}
+
+/// The Code field's refusal: a value that shows in it is gone takesBackMs later. The field is read every 20 ms, so a
+/// value counts however it came (typed, pasted, or set through Accessibility, which sets the cell and tells no one).
+@MainActor
+final class TakesBack: NSObject {
+	let field: NSTextField
+	var shown = ""
+
+	private init(_ field: NSTextField) {
+		self.field = field
+	}
+
+	/// The timer keeps the watcher, for as long as the app runs.
+	static func watch(_ field: NSTextField) {
+		Timer.scheduledTimer(timeInterval: 0.02, target: TakesBack(field), selector: #selector(look), userInfo: nil, repeats: true)
+	}
+
+	@objc func look() {
+		let now = field.currentEditor()?.string ?? field.stringValue
+		guard now != shown else { return }
+		shown = now
+		NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(clear), object: nil)
+		if !now.isEmpty { perform(#selector(clear), with: nil, afterDelay: Double(takesBackMs) / 1000) }
+	}
+
+	@objc func clear() {
+		field.currentEditor()?.string = ""
+		field.stringValue = ""
 	}
 }
 
@@ -82,6 +114,14 @@ final class Fixture: NSObject, NSApplicationDelegate {
 		name.setAccessibilityLabel("Name")
 		mark(name, "name")
 		home.addSubview(name)
+
+		let code = NSTextField(frame: NSRect(x: 228, y: 56, width: 76, height: 28))
+		code.stringValue = ""
+		code.placeholderString = "Code"
+		code.setAccessibilityLabel("Code")
+		mark(code, "code")
+		home.addSubview(code)
+		TakesBack.watch(code)
 
 		let wifi = NSSwitch(frame: NSRect(x: 16, y: 96, width: 60, height: 28))
 		wifi.setAccessibilityLabel("Wi-Fi")

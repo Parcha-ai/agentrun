@@ -48,6 +48,7 @@
 import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
+import { isMcpName } from "../tool-names.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { boundTool, credentialInQuery, credentialInQueryWords, type McpTool, shownUrl } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
@@ -55,8 +56,8 @@ import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-probe.js";
-import { tokenLeftOf } from "../mcp-probe.js";
-import { openMcpCredential, openRunMcpAuth, sealMcpCredential, type McpCredential, type RunMcpAuth } from "../store/seal.js";
+import { type McpCredential, openRunMcpAuth, type RunMcpAuth } from "../store/seal.js";
+import { getMcpServer, keepRefreshedCredential, openMcpRow } from "../mcp-store.js";
 import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, type Store } from "../store/index.js";
 
 /** Every credential value of `headers`: each header's value, and its token alone with any one-word scheme taken off
@@ -211,7 +212,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     for (;;) {
       // Waiting before the read, so a holder that lets go between the read and the wait still wakes it.
       const wait = settledOf(store.where, name, MCP_SETTLE_POLL_MS, stop, timer);
-      const row = await store.mcp.server(name);
+      const row = await getMcpServer(store, name);
       // The lease is the store's: judged by the store's clock (refreshLapsed), never this claim's, which on another
       // machine may run ahead of it and read a live lease as lapsed.
       const lapsed = row?.refreshLapsed === true;
@@ -227,7 +228,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   const keep = async (row: McpServerRow, credential: OAuthCredential): Promise<boolean> => {
     const { origin: _origin, ...plain } = credential as OAuthCredential & { origin?: string };
     // The set's token life, measured on the clock that stamped it (this process's, mcp-oauth.ts): the store lays it on its own.
-    const { kept } = await store.mcp.keepRefreshed(row.name, { seen: row.sealed, sealed: sealMcpCredential(sealKey, row.name, plain as McpCredential, row.url), holder, tokenLeftMs: tokenLeftOf(plain) });
+    const kept = await keepRefreshedCredential(store, sealKey, row, plain as McpCredential, holder);
     if (!kept) log(`mcp ${row.name}: its credential changed while this claim refreshed it; the refreshed set was dropped and the server's current one is used`);
     return kept;
   };
@@ -236,7 +237,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
    *  its expiry, at the claim and before a call alike). `again`: a row another claim's refresh left,
    *  opened as it is, never refreshed from here once more. */
   const open = async (name: string, pinnedUrl: string, again?: McpServerRow): Promise<{ awaited: boolean }> => {
-    const row = again ?? (await store.mcp.server(name));
+    const row = again ?? (await getMcpServer(store, name));
     // Forgotten since the pin: its entry goes (an earlier open's URL and headers with it), so the gateway finds no URL
     // for it and refuses its calls unsent.
     if (!row) {
@@ -261,7 +262,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     if (row.auth === "per_run") return entry(await perRun(name, row.url)), { awaited: false };
     if (row.sealed === null) return entry({}), { awaited: false };
     // A seal problem first: no refresh is ever sent for a credential this runner cannot open.
-    const opened = openMcpCredential(sealKey, row);
+    const opened = openMcpRow(sealKey, row);
     if (!("credential" in opened)) return entry(opened.unusable === "none" ? {} : { unopened: UNUSABLE.damaged }), { awaited: false };
     const credential = opened.credential;
     if (credential.type === "headers") return entry({ headers: { ...credential.headers } }), { awaited: false };
@@ -317,7 +318,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
         // Read once more under the lease before anything is sent: a claim whose lease lapsed may have kept its set just
         // as this one was granted (keepRefreshed lands for whoever holds the lease), and its refresh token is the one the
         // provider has now. Ours is spent: never sent, the lease let go, the row opened as that claim left it.
-        const current = await store.mcp.server(name);
+        const current = await getMcpServer(store, name);
         if (!current || !sameSealed(current.sealed, lease.row.sealed)) {
           await store.mcp.releaseRefresh(name, holder).catch(() => undefined);
           if (!stop.aborted && !released) await takeLeft(current);
@@ -340,7 +341,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
           if (await keep(lease.row, { type: "oauth", set: got.set })) return settledEntry({ headers: bearer(got.set) });
           if (stop.aborted || released) return;
           // The credential changed while it refreshed (a newer set, an owner's save): use the row as it is now.
-          const left = await store.mcp.server(name);
+          const left = await getMcpServer(store, name);
           return void (await takeLeft(left));
         }
         if ("refused" in got) {
@@ -348,7 +349,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
           // meanwhile is the one to use.
           if (await keep(lease.row, { ...oauth, expired: true })) return settledEntry({ unopened: UNUSABLE.signedOut });
           if (stop.aborted || released) return;
-          return void (await takeLeft(await store.mcp.server(name)));
+          return void (await takeLeft(await getMcpServer(store, name)));
         }
         // No answer within its deadline. When its request left (held), the lease is held to its end: the refresh token may
         // be spent, and no claim sends it again before then. Otherwise (it never left, or the server answered and granted
@@ -464,7 +465,7 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
     }
     return pinned;
   }
-  if (!grants.some((name) => name.startsWith("mcp:"))) return undefined;
+  if (!grants.some(isMcpName)) return undefined;
   const rows = new Map((await store.mcp.servers()).map((row) => [row.name, row]));
   let made: McpPin;
   try {

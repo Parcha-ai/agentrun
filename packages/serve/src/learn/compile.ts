@@ -371,7 +371,8 @@ export function compileAgain(errors: readonly string[], attempt: number): string
 }
 
 /** A compile answer read: the draft's block whole (to check), its name and the notes it says it carries out (only ones
- *  the turn was given); `unchanged` for a revision the model kept as it is; else why it can't be read. */
+ *  the turn was given); `unchanged` for a revision the model kept as it is (never a held one's); else why it can't be
+ *  read. */
 export type CompileRead =
   | { readonly ok: true; readonly name: string; readonly block: string; readonly from_notes: readonly string[] }
   | { readonly ok: false; readonly unchanged: true }
@@ -379,7 +380,11 @@ export type CompileRead =
 
 /** The compile turn's answer, read: exactly one ````workflow <name> block (a revision's under its own name). */
 export function readCompile(answer: string, ask: CompileAsk): CompileRead {
-  if (ask.mode === "revise" && /^\s*`?No change\.?`?\s*$/i.test(answer)) return { ok: false, unchanged: true };
+  // `No change.` is a revision's answer only where its prompt offers it: a held one's never does (it stays held until a
+  // new revision), so there it is refused as any unreadable answer is, asked again, and recorded with its attempt.
+  if (ask.mode === "revise" && /^\s*`?No change\.?`?\s*$/i.test(answer)) {
+    return ask.held ? { ok: false, error: `\`${ask.workflow}\` is held until a new revision of it: \`No change.\` is no answer here; give it again whole under its name` } : { ok: false, unchanged: true };
+  }
   const parsed = parseReflection(answer);
   if (!parsed.ok) return { ok: false, error: parsed.reason === "empty" ? `the answer holds no \`\`\`\`${WORKFLOW_BLOCK} <name> block` : `the answer could not be read: ${parsed.detail}` };
   const drafts = parsed.workflows ?? [];

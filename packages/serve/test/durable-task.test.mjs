@@ -34,6 +34,12 @@ const pending = (promise, ms = 30) => Promise.race([promise.then(() => false), n
 const within = (promise, ms = 5000) => { let timer; return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), ms); })]).finally(() => clearTimeout(timer)); };
 /** Runs `body` with the document writes `when({ kind, content })` picks failing in SQLite: each is a revision of a
  *  document of that kind, with its content as stored. A failed commit poisons the Session: no later commit lands. */
+const rowsOf = (width, args) => {
+  if (args.length === 1 && typeof args[0] === 'string' && args[0].startsWith('[')) return JSON.parse(args[0]);
+  const rows = [];
+  for (let at = 0; at + width <= args.length; at += width) rows.push(args.slice(at, at + width));
+  return rows;
+};
 async function refusingWrites(when, body) {
   const { DatabaseSync } = await import('node:sqlite');
   const prepare = DatabaseSync.prototype.prepare;
@@ -45,8 +51,11 @@ async function refusingWrites(when, body) {
     return new Proxy(statement, { get(target, key) {
       if (key !== 'run') return typeof target[key] === 'function' ? target[key].bind(target) : target[key];
       return (...args) => {
-        if (table === 'documents') kinds.set(args[0], JSON.parse(args[1]));
-        else if (when({ kind: kinds.get(args[0]), content: String(args[4]) })) throw Object.assign(new Error('injected store write failure'), { code: 'ERR_SQLITE_ERROR' });
+        // pi-durable 1.5.2 writes many rows per statement: one JSON array of rows, or, for large rows, bound cells.
+        for (const row of rowsOf(table === 'documents' ? 9 : 5, args)) {
+          if (table === 'documents') kinds.set(row[0], JSON.parse(row[1]));
+          else if (when({ kind: kinds.get(row[0]), content: String(row[4]) })) throw Object.assign(new Error('injected store write failure'), { code: 'ERR_SQLITE_ERROR' });
+        }
         return target.run(...args);
       };
     } });
@@ -275,7 +284,7 @@ test('a run whose Session refuses its commits fails its waiters with its own fai
     if (!/^\s*INSERT INTO documents/i.test(String(sql))) return statement;
     return new Proxy(statement, { get(target, key) {
       if (key !== 'run') return typeof target[key] === 'function' ? target[key].bind(target) : target[key];
-      return (...args) => { if (args.some((arg) => arg === JSON.stringify('agentrun.effects'))) throw Object.assign(new Error('injected store write failure'), { code: 'ERR_SQLITE_ERROR' }); return target.run(...args); };
+      return (...args) => { if (rowsOf(9, args).some((row) => JSON.parse(row[1]) === 'agentrun.effects')) throw Object.assign(new Error('injected store write failure'), { code: 'ERR_SQLITE_ERROR' }); return target.run(...args); };
     } });
   };
   try {

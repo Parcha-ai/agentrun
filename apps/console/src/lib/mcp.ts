@@ -4,17 +4,34 @@ import type { Permission, SecretMeta } from "./v2";
 /** A tool as a remote MCP server lists it (`tools/list`, through the server's preview). */
 /** A tool as a server lists it; on a saved server's read, with its permission as this server applies it to an agent that
  *  sets none (`permission`, under the server's tool settings), the owner's default and those it may be set to. */
-export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[] };
+export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[];
+  /** A known meta tool (`grantable: false`, with the server's `reason`): never granted. */
+  grantable?: false; reason?: string;
+  /** Why a grant of it is refused where it would run, as the server says it (`*`: on every harness; else by harness id). */
+  grant_problems?: Record<string, string> };
 export type McpAuthType = "none" | "bearer" | "headers" | "oauth" | "github_app";
 /** The one address a `github_app` server may have: GitHub's hosted MCP (the save refuses any other, so the App's tokens go to
  *  GitHub alone). */
 export const GITHUB_MCP_URL = "https://api.githubcopilot.com/mcp/";
-/** `#/settings/mcp?add=<name>&auth=github_app`: the add form opened for a server a template needs, its name (and, for GitHub's
- *  own, its address and credential) filled. Undefined when the query asks for none. */
-export function addOf(query: string | undefined): { name: string; auth?: "github_app" } | undefined {
+/** Where a saved server's tools come from, which a template's MCP need is matched on with its toolkit. */
+export type McpSource = "composio" | "github" | "url";
+export const SOURCE_LABEL: Record<McpSource, string> = { composio: "Composio", github: "GitHub", url: "URL" };
+const TOOLKIT = /^[a-z][a-z0-9-]{0,31}$/;
+/** What `#/settings/mcp?add=` opens, for a server a template needs: the add form with its name (for GitHub's own, its
+ *  address and credential; for a url server, its toolkit) filled, or, with `preset=composio`, the Composio form with its
+ *  toolkit and the actions to tick. */
+export type McpAdd = { name: string; auth?: "github_app"; preset?: "composio"; toolkit?: string; tools?: string[] };
+/** `#/settings/mcp?add=<name>[&auth=github_app | &preset=composio&toolkit=<toolkit>&tools=<A,B>]`. Undefined when the query
+ *  asks for none. */
+export function addOf(query: string | undefined): McpAdd | undefined {
   const q = new URLSearchParams(query ?? "");
   const name = q.get("add");
-  if (!name || !/^[a-z][a-z0-9-]{0,31}$/.test(name)) return undefined;
+  if (!name || !TOOLKIT.test(name)) return undefined;
+  const toolkit = q.get("toolkit") ?? "";
+  if (q.get("preset") === "composio" && TOOLKIT.test(toolkit)) {
+    const tools = (q.get("tools") ?? "").split(",").filter((t) => /^[A-Za-z0-9_-]{1,128}$/.test(t)).slice(0, 64);
+    return { name, preset: "composio", toolkit, ...(tools.length ? { tools } : {}) };
+  }
   return { name, ...(q.get("auth") === "github_app" ? { auth: "github_app" as const } : {}) };
 }
 /** A saved MCP server as GET /v2/settings/mcp-servers shows it: never a credential, only its state (`credential`: null
@@ -25,6 +42,8 @@ export type McpServer = {
   /** Its credential as every secret is read: set or not, how it came, when it last changed. Never a value. */
   secret?: SecretMeta;
   name: string; url: string; auth: { type: McpAuthType; headers?: string[] }; tools: McpTool[]; protocol?: string; listed_at?: string; updated_at?: string;
+  /** Where its tools come from and the toolkit they are (none: a url server its owner named no toolkit for). */
+  source: McpSource; toolkit: string | null;
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: { expires_at?: string; scopes: string[]; client: string; client_id?: string };
   prices?: Record<string, number>;
@@ -49,25 +68,12 @@ export function grantOf(name: string): { server: string; tool: string } | null {
   return m ? { server: m[1]!, tool: m[2]! } : null;
 }
 
-/** The wire name budget a grant's `mcp__<server>__<tool>` must fit (packages/serve/src/catalog.ts, WIRE_NAME). */
-const WIRE_NAME = /^[A-Za-z0-9_-]{1,52}$/;
-/** Why the server's save refuses a grant by its name alone (packages/serve/src/runnable.ts): the server is named like
- *  the harnesses' own tools, or its wire name `mcp__<server>__<tool>` is not its own (a character a tool name can't
- *  carry) or is past the budget. Undefined when the name can be granted. */
-export function grantNameProblem(server: string, tool: string): string | undefined {
-  if (server === "hands") return "hands is the harnesses' own name: save this server under another to grant its tools";
-  const wire = `mcp__${server}__${tool}`;
-  if (WIRE_NAME.test(wire)) return undefined;
-  return /^[A-Za-z0-9_-]+$/.test(tool) ? `name too long to grant (${wire.length}/52)` : "its name has a character a tool name can't carry";
-}
-
-/** Why the save refuses a grant of `tool` on `harness`: its name (grantNameProblem), or, on claude-agent, a root
- *  `anyOf`, `allOf` or `oneOf` in its input schema, which the Claude Agent CLI drops the tool for (runnable.ts). The
- *  save's other schema checks are its own: a refusal of one is said at the field. */
-export function grantProblem(server: string, tool: McpTool, harness: string): string | undefined {
-  const schema = tool.input_schema;
-  const root = harness === "claude-agent" && schema && typeof schema === "object" ? ["anyOf", "allOf", "oneOf"].find((key) => key in schema) : undefined;
-  return grantNameProblem(server, tool.name) ?? (root ? `claude-agent drops a tool whose schema's root has ${root}` : undefined);
+/** Why the server refuses a grant of `tool` on `harness`, in its words, as its read of the saved server serves them
+ *  (`grantable`, `reason` and `grant_problems`: packages/serve/src/mcp-servers-store.ts, the same checks as the save's
+ *  422); undefined when nothing does. The console keeps no rule of its own. */
+export function grantProblem(tool: McpTool, harness: string): string | undefined {
+  if (tool.grantable === false) return `${tool.name} can't be granted: ${tool.reason ?? "it runs other actions by name."}`;
+  return tool.grant_problems?.["*"] ?? tool.grant_problems?.[harness];
 }
 
 /** Each `mcp:` grant in `tools` that no saved server answers for: its server is gone, or no longer lists the tool. */
@@ -154,10 +160,7 @@ export function signInOf(query: string | undefined): { server: string; ok: boole
  *  `hands` server is not one); null for any other name. */
 /** An MCP server's tool as a workflow's call node names it (`tool: "mcp:<server>/<tool>"`, the tool settings' key): its
  *  server and its tool, or null for any other tool. */
-export function mcpCallTool(tool: string): { server: string; tool: string } | null {
-  const m = /^mcp:([a-z][a-z0-9-]{0,31})\/(.+)$/.exec(tool);
-  return m ? { server: m[1]!, tool: m[2]! } : null;
-}
+export const mcpCallTool = grantOf;
 
 export function mcpToolLabel(name: string): string | null {
   const m = /^mcp__([a-z][a-z0-9-]{0,31})__(.+)$/.exec(name);

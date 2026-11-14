@@ -15,12 +15,12 @@ const validate = (dir) => spawnSync(process.execPath, [BIN, "template", "validat
 test("template validate checks a package folder as the server does", (t) => {
   const ok = validate(REVIEW);
   assert.equal(ok.status, 0, ok.stderr);
-  assert.deepEqual(JSON.parse(ok.stdout), { valid: true, name: "code-review", version: "0.3.0", skills: ["review"], evals: ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "re-review", "re-review-open", "repo-rule", "two-defects"] });
+  assert.deepEqual(JSON.parse(ok.stdout), { valid: true, name: "code-review", version: "0.4.0", skills: ["review"], evals: ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "re-review", "re-review-open", "repo-rule", "two-defects"] });
 
   const dir = join(mkdtempSync(join(tmpdir(), "agentrun-template-")), "code-review");
   t.after(() => rmSync(join(dir, ".."), { recursive: true, force: true }));
   cpSync(REVIEW, dir, { recursive: true });
-  writeFileSync(join(dir, "agent.md"), readFileSync(join(dir, "agent.md"), "utf8").replace("version: 0.3.0", "version: 1.0").replace("effort: medium", "effort: lots"));
+  writeFileSync(join(dir, "agent.md"), readFileSync(join(dir, "agent.md"), "utf8").replace(/^version: .*$/m, "version: 1.0").replace("effort: medium", "effort: lots"));
   const bad = validate(dir);
   assert.equal(bad.status, 1, bad.stdout);
   assert.equal(bad.stdout, "");
@@ -80,7 +80,7 @@ for (const spelling of [["template", "eval"], ["eval-template"]]) test(`agentrun
 });
 
 // SKIP (follow-up #2089): the eval's answer on the server has no fenced json block, so the case fails its findings check
-// (Un-skipping it: code-review 0.3.0 prefers a shell, [shell, none], so under AGENTRUN_BOXES=none it is made with no
+// (Un-skipping it: code-review prefers a shell, [shell, none], so under AGENTRUN_BOXES=none it is made with no
 // computer and without bash, and its reviewers read through the GitHub tools.)
 test.skip("template eval --server runs on that server with the token in AGENTRUN_API_KEY, and never prints it", { timeout: 300_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
@@ -114,4 +114,65 @@ test.skip("template eval --server runs on that server with the token in AGENTRUN
   assert.deepEqual(graders["schema.md"], [true, "the answer's json meets findings.schema.json"]);
   assert.equal(graders["finds.md"][0], false);
   assert.match(graders["finds.md"][1], /the grader's answer was not \{pass, reason\}/);
+});
+
+// `agentrun template install SOURCE`: one POST /v2/templates/import with the source and the flags as the body's fields,
+// the server's refusal as it is (with the --trust hint when it is the publisher's trust it wants), and what was imported
+// with the console page that applies it.
+test("template install imports a package from GitHub through the server and prints its apply page", async (t) => {
+  const { createServer } = await import("node:http");
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-template-install-"));
+  const seen = [];
+  const sha = "a".repeat(40);
+  const id = "github:acme/agents/templates/kyb";
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      const body = JSON.parse(raw);
+      seen.push([req.method, req.url, req.headers.authorization, body]);
+      if (!body.dry_run && !body.trust_publisher) {
+        res.writeHead(422, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: { code: "input_invalid", message: "The input is invalid.", fields: [{ field: "trust_publisher", reason: "missing", message: "acme has published no package this server has imported yet" }] } }));
+      }
+      const stored = !body.dry_run;
+      res.writeHead(stored ? 201 : 200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ template: { id, name: "kyb", source: body.source, sha, publisher: "acme" }, instructions: "Check the business.", skill_files: { "kyb/SKILL.md": "# kyb" }, publisher_trusted: stored, stored, replaced: null, console_url: stored ? `http://127.0.0.1/#/templates/${encodeURIComponent(id)}` : "http://127.0.0.1/#/templates/install" }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const env = { ...evalEnv(dir), AGENTRUN_BASE_URL: `http://127.0.0.1:${server.address().port}/v2`, AGENTRUN_API_KEY: "tok" };
+  const install = (...args) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [BIN, "template", "install", ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (chunk) => (out += chunk));
+    child.stderr.on("data", (chunk) => (err += chunk));
+    child.on("close", (status) => resolve({ status, out, err }));
+  });
+  const source = `${id}@main`;
+
+  const preview = await install(source, "--dry-run");
+  assert.equal(preview.status, 0, preview.err);
+  const shown = JSON.parse(preview.out);
+  assert.deepEqual([shown.id, shown.sha, shown.publisher, shown.stored, shown.instructions, shown.skill_files], [id, sha, "acme", false, "Check the business.", { "kyb/SKILL.md": "# kyb" }], "a dry run prints the package whole");
+
+  const untrusted = await install(source);
+  assert.equal(untrusted.status, 1, untrusted.err);
+  assert.equal(untrusted.out, "");
+  assert.match(untrusted.err, /"field":"trust_publisher"[\s\S]*run this again with --trust/);
+
+  const imported = await install(source, "--trust");
+  assert.equal(imported.status, 0, imported.err);
+  assert.deepEqual(JSON.parse(imported.out), { id, source, sha, publisher: "acme", publisher_trusted: true, stored: true, replaced: null, console_url: `http://127.0.0.1/#/templates/${encodeURIComponent(id)}` });
+
+  assert.deepEqual(seen.map(([method, url, auth, body]) => [method, url, auth, body]), [
+    ["POST", "/v2/templates/import", "Bearer tok", { source, dry_run: true }],
+    ["POST", "/v2/templates/import", "Bearer tok", { source }],
+    ["POST", "/v2/templates/import", "Bearer tok", { source, trust_publisher: true }],
+  ]);
 });

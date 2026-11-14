@@ -127,6 +127,33 @@ test("it fails where a program connects to a path unix socket that is not the co
 	assert.match(reasons(partial)[ID], /could not search .*\/workspace: the walk stopped after 50000 entries/);
 });
 
+test("it fails where something but computerd listens in the user's own network, naming the port; computerd's own listener passes, and every listener is recorded", async () => {
+	// The listener fence: the probe lists the TCP and UDP listeners in its own namespace (/proc/net/tcp, tcp6, udp, udp6),
+	// each tied to the process that holds it. Computerd listens on nothing there today, so a passing run lists none.
+	const quiet = await run({ vendorAgentPorts: [2280] });
+	assert.deepEqual(statuses(quiet), { [ID]: "pass" }, reasons(quiet)[ID]);
+	assert.ok(quiet.results[0].observed.includes("TCP and UDP listeners in the user's own network: none"), JSON.stringify(quiet.results[0].observed));
+	const own = { protocol: "tcp", address: "127.0.0.1", port: 3128, uid: 2510, owner: "pid 1 (computerd)", computerd: true };
+	const passing = await run({ vendorAgentPorts: [2280], listeners: [own] });
+	assert.deepEqual(statuses(passing), { [ID]: "pass" }, reasons(passing)[ID]);
+	assert.ok(passing.results[0].observed.some((line) => line.includes("tcp 127.0.0.1 port 3128 (pid 1 (computerd), computerd)")), JSON.stringify(passing.results[0].observed));
+	const stray = await run({ vendorAgentPorts: [2280], listeners: [own, { protocol: "tcp", address: "0.0.0.0", port: 8080, uid: 2510, owner: "pid 77 (python3)", computerd: false }] });
+	assert.equal(statuses(stray)[ID], "fail");
+	assert.match(reasons(stray)[ID], /tcp port 8080 listens in the user's own network \(on 0\.0\.0\.0, pid 77 \(python3\)\), and it isn't computerd's/);
+	assert.doesNotMatch(reasons(stray)[ID], /3128/, "computerd's own listener is not named as a stray");
+	// One whose holder the probe cannot see (another user's, or root's) is not computerd's either.
+	const unseen = await run({ vendorAgentPorts: [2280], listeners: [{ protocol: "udp6", address: "::", port: 5353, uid: 0, owner: "", computerd: false }] });
+	assert.equal(statuses(unseen)[ID], "fail");
+	assert.match(reasons(unseen)[ID], /udp6 port 5353 listens in the user's own network \(on ::, its owner not shown\), and it isn't computerd's/);
+	// A daemon whose probe lists no listeners, or a table it could not read, proves nothing: the case fails in words.
+	const unlisted = await run({ vendorAgentPorts: [2280], listeners: "no list" });
+	assert.equal(statuses(unlisted)[ID], "fail");
+	assert.match(reasons(unlisted)[ID], /no list of the TCP and UDP listeners/);
+	const partial = await run({ vendorAgentPorts: [2280], listenerSearchIncomplete: ["/proc/net/tcp6: permission denied"] });
+	assert.equal(statuses(partial)[ID], "fail");
+	assert.match(reasons(partial)[ID], /could not read every table of listeners.*\/proc\/net\/tcp6: permission denied/);
+});
+
 test("it is skipped in words where nothing is declared (Docker), and fails Core for a child daemon that declares nothing", async () => {
 	const docker = await run({});
 	assert.equal(statuses(docker)[ID], "skip");

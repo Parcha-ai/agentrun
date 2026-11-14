@@ -46,6 +46,11 @@ const { LEARNED_CLIP } = await import("../dist/learned-workflow.js");
 const { COST_WINDOW, costLineOf, workflowCostsOf, fits, workflowDigest, workflowFirstOf, pathMetrics, reviseOf, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
 const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
 const { recordPromotion } = await import("../dist/learn/promote.js");
+const { putSealedKey } = await import("../dist/server-keys.js");
+const { learningCommit } = await import("../dist/learn/commit.js");
+const { mergedNote } = await import("../dist/learn/notes.js");
+const { seedOf } = await import("../dist/learning.js");
+const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { answerAsServed, answerJson, structuredAnswer } = await import("../dist/answer-json.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -92,16 +97,30 @@ const until = async (done, what, ms = 40_000) => {
   }
 };
 
+/** Merges `notes` (`{ file, text }` each, a note's own text) into agent `agentId`'s learning folder under `data`, as a
+ *  run's graded merge lands them. */
+async function landNotes(data, agentId, notes) {
+  await seedOf(data, agentId);
+  const folder = learningWorkspace({ mode: "local", data, agentId });
+  try {
+    const merged = await learningCommit(folder.workspace, { kind: "merge", runId: "run-noted", reason: "noted", graded: {}, files: notes.map(({ file, text }) => ({ path: file, text: mergedNote(text, { origin: "run" }) })) });
+    assert.equal(merged.ok, true, JSON.stringify(merged));
+  } finally {
+    await folder.end();
+  }
+}
+
 /** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back);
  *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
  *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {} } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, notes = [], saved = {}, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {}, agentCall, holdNode } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  // `agentCall`: the agent's first answer is this tool call (its next, once a tool result is in, its text).
   const gw = await startFauxGateway({
-    call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: answer ?? (sure ? 42 : 41), sure } } } : undefined),
+    call: ({ body }) => (offers(body, "submit") ? (!hasResult(body) ? { name: "submit", input: { value: { answer: answer ?? (sure ? 42 : 41), sure } } } : undefined) : agentCall && !hasResult(body) ? agentCall : undefined),
     text: ({ body }) => (offers(body, "submit") ? "submitted" : AGENT_SAYS),
   });
   let runner;
@@ -115,14 +134,44 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], ...(learned ? { learning: true } : {}), ...(toolSettings ? { toolSettings } : {}), ...(outputSchema ? { outputSchema } : {}) } });
+  // `notes`: active notes merged before the workflows land, `{ file, text }` each.
+  if (learned && notes.length) await landNotes(dir, "agent-1", notes);
   const seed = learned ? await landWorkflows(dir, "agent-1", flows) : undefined;
   // `promotions`: the agent's promotion records before the run (learn/promote.ts), as its replays left them.
   for (const record of promotions) await recordPromotion(server.settings, "agent-1", record, () => true);
+  // `saved`: keys saved on the server after the learning landed (a value in a workflow or a note that became a secret).
+  for (const [name, value] of Object.entries(saved)) await putSealedKey(server, SEAL_KEY, name, value);
   const launch = { input, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...(learned ? { learning: startAt(seed) } : {}), ...(workflowFirst === false ? { workflowFirst: false } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
-  const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
+  // `holdNode(held)`: the workflow's node request never answers (a workflow that blocks): it ends only when its request is
+  // aborted, or when the test is over. `holdNode` is called once, as the first one is held, with `held` (`requests`: how
+  // many node requests reached the upstream; `aborted`: how many of them were cut).
+  const held = { requests: 0, aborted: 0, release: () => {} };
+  const released = new Promise((resolve) => (held.release = resolve));
+  t.after(() => held.release());
+  const upstream = !holdNode ? globalThis.fetch : async (url, init) => {
+    const text = typeof init?.body === "string" ? init.body : url instanceof Request ? await url.clone().text() : "";
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {}
+    if (!offers(body, "submit")) return globalThis.fetch(url, init);
+    held.requests += 1;
+    if (held.requests === 1) void holdNode(held, server).catch((error) => (held.error = error));
+    const signal = init?.signal ?? (url instanceof Request ? url.signal : undefined);
+    return new Promise((_resolve, reject) => {
+      const cut = () => {
+        held.aborted += 1;
+        reject(signal?.reason ?? new Error("aborted"));
+      };
+      if (signal?.aborted) return cut();
+      signal?.addEventListener("abort", cut, { once: true });
+      void released.then(() => reject(new Error("the test is over")));
+    });
+  };
+  const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: upstream };
   const logs = [];
   const crashingJournal = (journal) => new Proxy(journal, { get: (target, key) => (key === "commit" ? async (...args) => {
     const result = await target.commit(...args);
@@ -208,7 +257,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const entries = await runEntries(server, RUN, ctx);
   const kept = await server.learning.proposal(RUN);
   const reflect = await runReflect(server, RUN, ctx);
-  return { row, first, requests, turns, timeline, entries, kept, reflect, gateway: gw, seed, parked, logs, claims, server };
+  return { row, first, requests, turns, timeline, entries, kept, reflect, gateway: gw, seed, parked, logs, claims, server, held };
 }
 
 test("workflow alone: the run answers on its learned workflow with no agent-model request, path workflow, its node $ its cost", async (t) => {
@@ -268,28 +317,12 @@ test("handed back: the compile turn asks for the workflow's next revision by its
   assert.match(textOf(ask.body), /`answer` as it is now:/);
 });
 
-test("money rule, all-in: a workflow whose runs are cheap but whose grades push its all-in over the agent's by hand stops running first", async (t) => {
-  // Served runs at $0.1 each, by hand $0.2: under the line on their own cost; each served run's grade books $0.4, so
-  // all-in they cost $0.5 a run. The by-hand runs' grades are on their side too ($0.05 each: $0.25 all-in).
-  const past = pastRuns({ servedUsd: 0.1, byHandUsd: 0.2 });
-  const pastGrades = Object.fromEntries(past.map((run) => [run.id, run.metrics.path === "agent" ? 0.05 : 0.4]));
-  const { row, gateway, entries, logs } = await piRun(t, { past, pastGrades });
-  assert.equal(row.metrics?.path, "agent", `the agent took the run: ${JSON.stringify(row.metrics)}`);
-  assert.equal(gateway.requests.filter(isNode).length, 0, "the workflow never ran");
-  const revise = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST)?.data;
-  assert.deepEqual([revise?.outcome, revise?.served_usd, revise?.by_hand_usd, revise?.runs], ["needs_revision", 0.5, 0.25, COST_WINDOW], "the two numbers are all-in");
-  assert.ok(logs.some((line) => /answer cost \$0\.5 a run over its last 10 served runs, at or over \$0\.25 by hand, both all-in;/.test(line)), JSON.stringify(logs));
-});
-
-test("money rule, all-in: a served run whose grade's cost is unknown is left out of the mean and counted, never read as 0", async (t) => {
-  // 11 served runs, the newest at $5 with a grade of unknown cost, the 10 older at $0.1: read as 0 its grade would put
-  // it in the window ($0.59 a run, over the by-hand $0.2); left out, the 10 known are the window, under, and it serves.
-  const [newest, ...older] = pastRuns({ served: COST_WINDOW + 1, servedUsd: 0.1, byHandUsd: 0.2 });
-  const { row: under } = await piRun(t, { past: [{ ...newest, costUsd: 5 }, ...older], pastGrades: { "past-0": null } });
-  assert.equal(under.metrics?.path, "workflow", JSON.stringify(under.metrics));
-  // Only 10 served, the newest unknown: 9 known, under COST_WINDOW, so it serves though the 9 cost $0.5 a run.
-  const { row: few } = await piRun(t, { past: pastRuns({ servedUsd: 0.5, byHandUsd: 0.2 }), pastGrades: { "past-0": null } });
-  assert.equal(few.metrics?.path, "workflow", `an unknown run is never one of the window: ${JSON.stringify(few.metrics)}`);
+test("a learned workflow named as only a workflow may be (sort_invoice): handed back or stopped, the end-of-run turn still asks for its revision", async (t) => {
+  // And through a run: handed back, its end-of-run turn is placed and asks for it by that name.
+  const { gateway, kept } = await piRun(t, { sure: false, flows: [{ ...FLOWS[0], name: "sort_invoice" }] });
+  const ask = gateway.requests.find((request) => !isNode(request) && /Your learned workflow `sort_invoice` ran first on this run and handed it back to you/.test(textOf(request.body)));
+  assert.ok(ask, `the reflect turn asked about \`sort_invoice\`: ${gateway.requests.map((request) => textOf(request.body).slice(-300)).join("\n---\n")}`);
+  assert.ok(kept?.proposal, "the run's look-back was kept");
 });
 
 // A teacher's label sent after the run (a follow-up) is the feedback learning runs on: on a run its learned workflow served
@@ -382,6 +415,85 @@ test("learned_workflow set to ask: a stop that lands while the step is asked is 
   assert.equal(gateway.requests.length, 0, "the workflow never ran, the agent never asked");
 });
 
+/** Waits until the runner has handed the rows written so far on (commandPollMs is 30 ms): a row it holds back stays held. */
+const handedOn = () => new Promise((resolve) => setTimeout(resolve, 300));
+/** The command rows of the run, by kind. */
+const rowsOf = async (server) => Object.fromEntries((await server.commands(RUN, 0)).map((one) => [one.kind, one]));
+
+/** The run's journal kinds with their call ids and states, for a failure's message. */
+const kindsOf = (entries) => JSON.stringify(entries.map(({ kind, data }) => [kind, data?.callId ?? data?.state, data?.status]));
+
+test("a message while the workflow runs first never holds a later stop: the workflow is cut and the run ends stopped, then the message is its next turn", async (t) => {
+  const MESSAGE = "Also show your work.";
+  const { row, gateway, held, entries, server } = await piRun(t, {
+    holdNode: async (_held, server) => {
+      await sendCommand(server, RUN, { kind: "steer", body: { text: MESSAGE } });
+      await handedOn();
+      await sendCommand(server, RUN, { kind: "stop" });
+    },
+  });
+  assert.equal(held.error, undefined, String(held.error?.stack ?? held.error));
+  // The stop reached the running workflow: its call ends interrupted and the run's first end is the stop's.
+  const callEnd = entries.find((entry) => entry.kind === "agentrun.call.end" && entry.data?.callId === "workflow-first");
+  assert.equal(callEnd?.data?.status, "interrupted", `the workflow's call ends interrupted: ${kindsOf(entries)}`);
+  const firstEnd = entries.find((entry) => entry.kind === "agentrun.end");
+  assert.equal(firstEnd?.data?.state, "stopped", `the run's first end is the person's stop: ${kindsOf(entries)}`);
+  assert.equal(held.requests, 1, "the workflow spent nothing more after its stop: its one node request, no other");
+  assert.ok(!entries.some((entry) => entry.kind === WORKFLOW_FIRST), "the workflow never answered nor handed back");
+  // A message waiting at a person's stop is the run's next turn (store run-patch.ts refuseLeftovers, as main's stop leaves a
+  // message submitted before it to run): the agent takes the job with it, the cut workflow never run again.
+  const rows = await rowsOf(server);
+  assert.ok(rows.stop.takenAt !== null && rows.stop.refused === null, `the stop is taken by the stop's end: ${JSON.stringify(rows.stop)}`);
+  assert.ok(rows.steer.takenAt !== null && rows.steer.refused === null, `the message is taken by its turn: ${JSON.stringify(rows.steer)}`);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.ok(gateway.requests.length > 0 && gateway.requests.every((request) => !isNode(request)), "the agent's requests alone after the stop");
+  assert.match(textOf(gateway.requests[0].body), new RegExp(`${QUESTION}[\\s\\S]*${MESSAGE}`), "the agent's first input: the job, then the message");
+});
+
+test("a message while the workflow runs first never holds a later cancel: the workflow is cut, the run ends cancelled, nothing more spent", async (t) => {
+  const { row, gateway, held, entries, server } = await piRun(t, {
+    holdNode: async (_held, server) => {
+      await sendCommand(server, RUN, { kind: "steer", body: { text: "Also show your work." } });
+      await handedOn();
+      await sendCommand(server, RUN, { kind: "cancel" });
+    },
+  });
+  assert.equal(held.error, undefined, String(held.error?.stack ?? held.error));
+  assert.deepEqual({ state: row.state, outcome: row.outcome }, { state: "stopped", outcome: "cancelled" }, JSON.stringify(row));
+  const callEnd = entries.find((entry) => entry.kind === "agentrun.call.end" && entry.data?.callId === "workflow-first");
+  assert.equal(callEnd?.data?.status, "interrupted", `the workflow's call ends interrupted: ${kindsOf(entries)}`);
+  assert.equal(held.requests, 1, "nothing more spent: the workflow's one node request, no other");
+  assert.equal(gateway.requests.length, 0, "the agent never asked");
+  const rows = await rowsOf(server);
+  assert.ok(rows.cancel.takenAt !== null && rows.cancel.refused === null, `the cancel is taken by the run's end: ${JSON.stringify(rows.cancel)}`);
+  assert.ok(rows.steer.refused, `a cancel refuses the message waiting at it: ${JSON.stringify(rows.steer)}`);
+});
+
+test("a message while the workflow runs first never holds a later raise or browser hand-back: each reaches the run while it runs", async (t) => {
+  let whileRunning;
+  const { row, held } = await piRun(t, {
+    holdNode: async (theHeld, server) => {
+      await sendCommand(server, RUN, { kind: "steer", body: { text: "Also show your work." } });
+      await handedOn();
+      await sendCommand(server, RUN, { kind: "raise", body: { capUsd: 5 } });
+      await sendCommand(server, RUN, { kind: "browser_hand_back", body: { ask: "no-such-ask", outcome: "done" } });
+      // Each answered (this run has no cap and no hand-over: both refused in words) while the workflow still runs.
+      whileRunning = await until(async () => {
+        const rows = await rowsOf(server);
+        return rows.raise?.refused && rows.browser_hand_back?.refused && rows;
+      }, "the raise and the hand-back answered", 5_000).catch((error) => ({ error: error.message }));
+      whileRunning = { ...whileRunning, aborted: theHeld.aborted, state: (await server.runs.get(RUN)).state };
+      await sendCommand(server, RUN, { kind: "cancel" });
+    },
+  });
+  assert.equal(held.error, undefined, String(held.error?.stack ?? held.error));
+  assert.equal(whileRunning?.error, undefined, `the raise and the hand-back reached the run behind the message: ${JSON.stringify(whileRunning)}`);
+  assert.deepEqual({ state: whileRunning.state, aborted: whileRunning.aborted }, { state: "running", aborted: 0 }, "answered while the workflow still ran");
+  assert.match(whileRunning.raise.refused, /no cap to raise/);
+  assert.equal(held.requests, 1);
+  assert.deepEqual({ state: row.state, outcome: row.outcome }, { state: "stopped", outcome: "cancelled" }, JSON.stringify(row));
+});
+
 /** Earlier runs of the agent, newest first, as the store lists them: `served` runs of FLOWS' workflow at `digest` (path
  *  handed_back), each at `servedUsd`, then `byHand` runs on the agent's path, each at `byHandUsd`. */
 const pastRuns = ({ served = COST_WINDOW, servedUsd = 0.5, byHand = 3, byHandUsd = 0.2, digest = DIGEST } = {}) => {
@@ -442,6 +554,38 @@ test("held: a compile of it since the hold, past the last 4 runs, asks no revisi
   assert.ok(!asksRevision(since.gateway), "asked once already, 6 runs ago: never again for this hold");
   const before = await piRun(t, { promotions: [held], past, keptBefore: compiledAt(Date.parse(at) - 60_000) });
   assert.ok(asksRevision(before.gateway), "a compile before the hold was not this hold's ask");
+});
+
+// #2641 review (P1 security): every text the compile turn's facts gather passes the check the run's start makes
+// (learning.ts holdsSecret, as chooseWorkflows reads a workflow). A held workflow whose text holds a value saved as a
+// secret after it landed is never sent to the model: the start left it out, and so does its compile turn. A note holding
+// one is left out whole, never sent cut. Each is logged by name and count only.
+test("held: a workflow or a note holding a secret saved after it landed is left out of the compile turn, by name in the log, never its value", async (t) => {
+  const secret = `planted${"q8".repeat(12)}`;
+  const at = new Date().toISOString();
+  const holdOf = (flow) => ({ workflow: "answer", digest: workflowDigest({ workflow: JSON.stringify(flow) }), at, decided: "hold", source: "graded", reason: "20 graded runs it served were right 70.0% of the time" });
+  const sent = (gateway) => gateway.requests.filter((request) => JSON.stringify(request.body).includes(secret));
+  const revising = (gateway) => gateway.requests.find((request) => /One more turn: revise your learned workflow `answer`/.test(textOf(request.body)));
+  // The held workflow holds the value: the run is the agent's (its start left the workflow out), and no compile is asked.
+  const holding = { ...answerFlow, root: { ...answerFlow.root, steps: [{ ...answerFlow.root.steps[0], instructions: `Answer the question; send ${secret} with it.` }, answerFlow.root.steps[1]] } };
+  const flow = await piRun(t, { flows: [{ ...FLOWS[0], workflow: holding }], promotions: [holdOf(holding)], saved: { MONID_API_KEY: secret } });
+  assert.equal(flow.row.metrics?.path, "agent", JSON.stringify(flow.row.metrics));
+  assert.deepEqual(sent(flow.gateway).map((request) => textOf(request.body).slice(-400)), [], "the saved value reached no model request");
+  assert.equal(revising(flow.gateway), undefined, "no revision asked of a workflow holding a secret");
+  assert.ok(flow.logs.some((line) => /compile turn left out what holds a secret: workflow `answer`/.test(line)), JSON.stringify(flow.logs));
+  assert.ok(!flow.logs.some((line) => line.includes(secret)), "never the value in a log");
+  // A clean held workflow, a note holding the value: the revision is asked, the note left out whole (not sent cut).
+  const notes = [
+    { file: "key-rule.md", text: `---\nname: Key rule\ndescription: Which key a call sends\ntype: reference\n---\nSend ${secret} with each call.\n` },
+    { file: "retry-slowly.md", text: "---\nname: Retry slowly\ndescription: Back off between retries\ntype: reference\n---\nWait a little longer after each failed call.\n" },
+  ];
+  const noted = await piRun(t, { notes, promotions: [holdOf(answerFlow)], saved: { MONID_API_KEY: secret } });
+  const ask = revising(noted.gateway);
+  assert.ok(ask, "the clean held workflow's revision is asked");
+  assert.equal(sent(noted.gateway).length, 0, "the saved value reached no model request");
+  assert.match(textOf(ask.body), /retry-slowly\.md/);
+  assert.doesNotMatch(textOf(ask.body), /key-rule\.md/, "the note holding the secret is left out whole");
+  assert.ok(noted.logs.some((line) => /compile turn left out what holds a secret: 1 note/.test(line)), JSON.stringify(noted.logs));
 });
 
 test("money rule, all-in: a workflow whose runs are cheap but whose grades push its all-in over the agent's by hand stops running first", async (t) => {
@@ -571,6 +715,22 @@ test("an agent with an output schema: an output that cannot be shaped to it goes
   assert.ok(handed, "the agent's first input is the handback");
   assert.match(handed.text, /forty-two/, "the workflow's own answer is in it");
   assert.match(handed.text, /does not meet the agent's output schema: \/answer/, `the reason is in it: ${handed.text}`);
+});
+
+test("a claim that dies after a handback the agent never got: the next claim sends the same handback, why and all (schema, cut)", async (t) => {
+  const outputSchema = { type: "object", required: ["answer"], properties: { answer: { type: "number" } } };
+  // The second claim either serves the workflow again (recovering its end) or finds the money rule now stops it (the
+  // recovered step then knows the agent's schema from the stop alone): the same handback either way.
+  const stopped = { past: pastRuns({ servedUsd: 0.5, byHandUsd: 0.2, digest: workflowDigest({ workflow: JSON.stringify(textFlow) }) }), pastFromSecondClaim: true };
+  for (const [label, extra] of [["serving", {}], ["money rule stops it", stopped]]) {
+    const words = await piRun(t, { flows: TEXT_FLOWS, answer: "forty-two", outputSchema, crashOnHandback: true, ...extra });
+    assert.equal(words.row.state, "ended", `${label}: ${JSON.stringify(words.row)}`);
+    assert.ok(words.claims >= 2, `${label}: a second claim took the run: ${words.claims}`);
+    assert.deepEqual(words.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["handed_back"], label);
+    const firstAgent = words.gateway.requests.find((request) => !isNode(request));
+    assert.match(textOf(firstAgent.body), /forty-two/, `${label}: the workflow's own answer is in it`);
+    assert.match(textOf(firstAgent.body), /does not meet the agent's output schema: \/answer/, `${label}: the reason survives the crash: ${textOf(firstAgent.body)}`);
+  }
 });
 
 test("answerAsServed: one answer as served for serving, replay and grading; what it serves reads back as the value it shaped", () => {

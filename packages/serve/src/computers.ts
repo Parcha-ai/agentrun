@@ -52,6 +52,8 @@ export interface ProviderEntry {
   readonly keys: readonly { readonly name: string; readonly required: boolean; readonly picked?: boolean }[];
   /** The mounts its computers take; none means it cannot mount the run's folder. */
   readonly mounts: readonly string[];
+  /** Why its computers take none of these mounts, each in one sentence (Daytona's archil), as its descriptor says. */
+  readonly unmounted?: Readonly<Partial<Record<string, string>>>;
   /** The network forms its computers make ("none", "open", "allow"), as its descriptor declares them. Absent (a
    *  test's fixture): nothing is said of its network. */
   readonly network?: readonly string[];
@@ -210,7 +212,10 @@ export const COMPUTER_UNAVAILABLE = "computer_unavailable";
 export function modeRefusal(kind: ComputerKind, provider: ProviderEntry, mode: FolderMode): string | undefined {
   if (kind !== "sandbox") return undefined;
   if (mode === "local" && !provider.mounts.includes("bind")) return `${provider.label} can't mount this server's run folders (they are on its own disk): set this agent's computer to sandbox on Docker, or none (Settings → Computers)`;
-  if (mode === "disk" && !provider.mounts.includes("archil")) return `${provider.label} can't mount the owner's disk this server keeps run folders on: set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)`;
+  if (mode === "disk" && !provider.mounts.includes("archil")) {
+    const why = provider.unmounted?.archil;
+    return `${provider.label} can't mount the owner's disk this server keeps run folders on${why ? ` (${why})` : ""}: set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)`;
+  }
   return undefined;
 }
 

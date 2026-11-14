@@ -154,7 +154,10 @@ test("a batch refused: a body that is not whole is 422 by field; an agent that d
 });
 
 test("a reload reads the batch from the server: the same figures mid-run and after, and a server that stops mid-batch and starts again takes it up at its first unfinished row, never running a row twice", { timeout: 300_000 }, async (t) => {
-  const first = await serve(t, { learning: "on", faux: LEARN, batchPollMs: 50 });
+  // Its runner drains at the stop as the CLI's runner beside the server does (beside.ts DRAIN_TIMEOUT): a turn in flight
+  // finishes and is booked. A stop that cut a model request instead would leave that request's cost unknown for good
+  // (metrics.ts bookedSpend: the provider may bill what it streamed), and the batch stops `cost_unknown` on that row.
+  const first = await serve(t, { learning: "on", faux: LEARN, batchPollMs: 50, runnerTiming: { drainMs: 30_000 } });
   const id = "csv-reload";
   await made(first.api, learner(id));
   const refs = ["Job answer.", "Job answer.", "x", "Job answer.", "y"];
@@ -168,7 +171,8 @@ test("a reload reads the batch from the server: the same figures mid-run and aft
   assert.ok(reread.finished >= mid.finished && reread.total === 5);
   assert.deepEqual(reread.rows.slice(0, mid.finished).map((r) => r.run_id), mid.rows.slice(0, mid.finished).map((r) => r.run_id));
   const done = mid.rows.filter((r) => r.state === "done").map((r) => r.run_id);
-  // The whole start stopped, then a new one on the same data: the batch is still running there.
+  // The whole start stopped (the runner drained, then the server), then a new one on the same data: the batch is still
+  // running there.
   await first.stop();
   const second = await serve(t, { learning: "on", faux: LEARN, batchPollMs: 50, data: first.data });
   const end = await until(second.api, id, created.body.id, finished);

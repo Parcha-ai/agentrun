@@ -2,6 +2,7 @@
 import { type InputIssue, invalid } from "./errors.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
+import { likelyModel, modelShape } from "./model-form.js";
 import { placeIssues } from "./place.js";
 import { computerIssues, settingConflict } from "./computer-setting.js";
 import { settingsIssues } from "./tool-plane.js";
@@ -23,23 +24,29 @@ export const IDEMPOTENCY_TTL_S = 86_400;
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "model_tiers", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "cap_mode", "output_schema", "max_tool_calls", "checkout"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "model_tiers", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "cap_mode", "input_schema", "output_schema", "checkout"];
 /** What an agentic definition may ask the server to check out in each run's folder before its first turn
  *  (runner/pr-checkout.ts): `pull_request`, the pull request the run's GitHub event names, at its head, read-only, in
  *  `repo/`; `none` clears it on an edit. */
 export const CHECKOUTS = ["pull_request", "none"] as const;
-/** Why a field a definition may have elsewhere has no place in an agent store's revision. */
-export const NOT_KEPT: Record<string, string> = {
-  input_schema: "The agent store keeps no input_schema: an agentic run takes {content}, and a workflow checks its input against its own schema.",
-};
-/** The most tool calls an agent's budget (max_tool_calls, tool-budget.ts) may name. */
-export const MAX_TOOL_CALLS = 1_000;
 /** The most bytes an agent's output_schema takes, as JSON. */
 export const MAX_OUTPUT_SCHEMA_BYTES = 64 * 1024;
+/** The most bytes an agent's input_schema takes, as JSON. */
+export const MAX_INPUT_SCHEMA_BYTES = 64 * 1024;
 /** The tiers an agentic revision may name a model for (`model_tiers`): those a subagent runs on (runner/subagent.ts). */
 export const MODEL_TIER_NAMES = ["fast", "strong"] as const;
 /** `provider/model-id`. */
 export const MODEL_REF = /^[^/\s]+\/\S+$/;
+
+/** What a model that is no `provider/model-id` is told: the form `harness` takes, with examples, and the likely id when
+ *  one is obvious. Structural, so it knows no keys here: the likely id is named in both forms (the vendor's own, and
+ *  OpenRouter's), never one that a server with only the other key could not run. */
+function modelFormIssue(harness: string, given: unknown): string {
+  const own = typeof given === "string" ? likelyModel({}, harness, given) : undefined;
+  const routed = typeof given === "string" ? likelyModel({ OPENROUTER_API_KEY: "-" }, harness, given) : undefined;
+  const likely = own && routed && own !== routed ? `${own}, or ${routed} through OpenRouter` : own;
+  return `${modelShape({}, harness)}: ${typeof given === "string" ? `"${given}"` : "that"} is not one.${likely ? ` Did you mean ${likely}?` : ""}`;
+}
 const SKILL_FILE = "/SKILL.md";
 
 const issue = (field: string, reason: string, message: string, fix?: string): InputIssue => ({ field, reason, message, ...(fix ? { fix } : {}) });
@@ -65,7 +72,7 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (!isObject(definition)) return [issue(at, definition === undefined ? "missing" : "wrong_type", `${at} is not an object`)];
   const out: InputIssue[] = [];
   for (const key of Object.keys(definition)) {
-    if (!DEFINITION_FIELDS.includes(key)) out.push(issue(`${at}.${key}`, "not_allowed", NOT_KEPT[key] ?? `The definition keeps no field ${key}.`, `Remove ${at}.${key}.`));
+    if (!DEFINITION_FIELDS.includes(key)) out.push(issue(`${at}.${key}`, "not_allowed", `The definition keeps no field ${key}.`, `Remove ${at}.${key}.`));
   }
   const d = definition;
   if (creating && d.name === undefined) out.push(issue(`${at}.name`, "missing", `${at}.name is required`));
@@ -79,7 +86,7 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.workflow !== undefined && !isObject(d.workflow)) out.push(issue(`${at}.workflow`, "wrong_type", `${at}.workflow is not an object`));
   if (d.model !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.model`, "not_allowed", "A workflow revision keeps no model: its model nodes run on this host's default.", `Remove ${at}.model.`));
-    else if (typeof d.model !== "string" || !MODEL_REF.test(d.model)) out.push(issue(`${at}.model`, "bad_format", `${at}.model is "provider/model-id"`));
+    else if (typeof d.model !== "string" || !MODEL_REF.test(d.model)) out.push(issue(`${at}.model`, "bad_format", modelFormIssue(typeof d.harness === "string" ? d.harness : "pi", d.model)));
   }
   if (d.model_tiers !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.model_tiers`, "not_allowed", "A workflow revision keeps no model tiers: each model node names its tier, run on this host's model for it.", `Remove ${at}.model_tiers.`));
@@ -113,6 +120,12 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
       if ("why" in compiled) out.push(issue(`${at}.output_schema`, "bad_format", `${at}.output_schema ${compiled.why}`));
     }
   }
+  // An agentic revision's typed input: the JSON Schema each run's input meets (inputSchemaOf, the schema in force). A
+  // workflow's input is its workflow's own schema.
+  if (d.input_schema !== undefined) {
+    if (d.workflow !== undefined) out.push(issue(`${at}.input_schema`, "not_allowed", "A workflow revision keeps no input_schema: its runs' input is its workflow's own input schema.", `Remove ${at}.input_schema.`));
+    else out.push(...inputSchemaIssues(d.input_schema, `${at}.input_schema`));
+  }
   if (d.skills !== undefined) names(d.skills, `${at}.skills`, out);
   if (d.tools !== undefined) names(d.tools, `${at}.tools`, out);
   // The agent's own tool settings, over the server's (tool-plane.ts); an edit that leaves them out keeps none.
@@ -133,12 +146,6 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.checkout !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.checkout`, "not_allowed", "A workflow revision keeps no checkout: only an agentic run starts in a checkout.", `Remove ${at}.checkout.`));
     else if (!(CHECKOUTS as readonly unknown[]).includes(d.checkout)) out.push(issue(`${at}.checkout`, "not_an_option", `${at}.checkout is one of ${CHECKOUTS.join(", ")}: pull_request checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn; none clears it`));
-  }
-  // The tool calls each conversation of an agentic run may make (tool-budget.ts): above 0 sets the budget, 0 clears it, and
-  // an edit that leaves it out keeps the agent's, as the default cap is kept.
-  if (d.max_tool_calls !== undefined) {
-    if (d.workflow !== undefined) out.push(issue(`${at}.max_tool_calls`, "not_allowed", "A workflow revision keeps no tool-call budget: its nodes are its steps.", `Remove ${at}.max_tool_calls.`));
-    else if (!(Number.isSafeInteger(d.max_tool_calls) && (d.max_tool_calls as number) >= 0 && (d.max_tool_calls as number) <= MAX_TOOL_CALLS)) out.push(issue(`${at}.max_tool_calls`, "wrong_type", `${at}.max_tool_calls is a whole number from 0 to ${MAX_TOOL_CALLS}: above 0, the tool calls each conversation of a run may make before every further call is refused with words that say to answer now; 0 clears it`));
   }
   // How a run's cap prices its requests (cap.ts CapMode): kept, as the default cap is, by an edit that leaves it out.
   if (d.cap_mode !== undefined) {
@@ -190,38 +197,68 @@ export function checkDefinitionBody(body: Json, { creating = true } = {}): Defin
   return { definition: body.definition as Json, ...(body.skills !== undefined || creating ? { skills: (body.skills ?? {}) as Record<string, string> } : {}), ...(typeof body.note === "string" ? { note: body.note } : {}) };
 }
 
-const TYPE_CHECK: Record<string, (value: unknown) => boolean> = {
-  string: (v) => typeof v === "string",
-  number: (v) => typeof v === "number" && Number.isFinite(v),
-  integer: (v) => Number.isSafeInteger(v),
-  boolean: (v) => typeof v === "boolean",
-  object: isObject,
-  array: Array.isArray,
-  null: (v) => v === null,
-};
-
 /** The default input schema: `{content: string}`. */
 export const DEFAULT_INPUT_SCHEMA = { type: "object", required: ["content"], properties: { content: { type: "string" } } };
 
+/** What is wrong with an agentic definition's `input_schema`: an object schema (`type: object` at its top), at most
+ *  MAX_INPUT_SCHEMA_BYTES as JSON, that compiles (the compiler output_schema uses), and that names `content`, if at all,
+ *  as text: content is the run's message, its follow-ups' and a trigger's line. */
+export function inputSchemaIssues(schema: unknown, at = "definition.input_schema"): InputIssue[] {
+  if (!isObject(schema)) return [issue(at, "wrong_type", `${at} is a JSON Schema object`)];
+  if (Buffer.byteLength(JSON.stringify(schema)) > MAX_INPUT_SCHEMA_BYTES) return [issue(at, "too_long", `${at} is over ${MAX_INPUT_SCHEMA_BYTES} bytes as JSON`)];
+  if (schema.type !== "object") return [issue(at, "bad_format", `${at} is an object schema: its type is "object", as a run's input is an object`)];
+  const content = isObject(schema.properties) ? schema.properties.content : undefined;
+  if (content !== undefined && !(isObject(content) && content.type === "string")) return [issue(`${at}.properties.content`, "bad_format", `${at}.properties.content is {type: "string"}: content is reserved for the run's message`)];
+  const compiled = schemaCheck(schema);
+  return "why" in compiled ? [issue(at, "bad_format", `${at} ${compiled.why}`)] : [];
+}
+
 /**
- * An object against a JSON Schema at its top level (a run's input against `input_schema`, a submitted output against
- * `output_schema`): each required property present, each property of a declared type of that type. Deeper keywords
- * are not checked here.
+ * The input schema in force for an agentic revision whose definition has `schema` (none: DEFAULT_INPUT_SCHEMA). `content`
+ * is always taken, as text: a run's message, which a follow-up and a trigger's line add to. It stays required when the
+ * schema requires nothing else, as an agent with no schema requires it.
+ */
+export function inputSchemaOf(schema: unknown): Json {
+  if (!isObject(schema)) return DEFAULT_INPUT_SCHEMA;
+  const properties = isObject(schema.properties) ? schema.properties : {};
+  const required = Array.isArray(schema.required) ? schema.required.filter((key): key is string => typeof key === "string") : [];
+  return {
+    ...schema,
+    properties: { ...properties, content: properties.content ?? { type: "string" } },
+    required: required.some((key) => key !== "content") ? required : [...new Set([...required, "content"])],
+  };
+}
+
+/** Each JSON Schema keyword's issue reason (InputIssue.reason): a keyword not named here is `invalid`. */
+const KEYWORD_REASON: Record<string, string> = {
+  type: "wrong_type", enum: "not_an_option", const: "not_an_option", pattern: "bad_format", format: "bad_format",
+  minLength: "too_short", maxLength: "too_long", minItems: "too_few", maxItems: "too_many", minProperties: "too_few", maxProperties: "too_many", uniqueItems: "duplicate",
+};
+
+/**
+ * A run's input against the schema in force (inputSchemaOf), with the full compiler: every keyword, at every depth. Each
+ * problem is an issue at its own path under `at` (`input.company`, `input.topics.1`), a required property missing at
+ * its own name and a property a closed object does not take at its own, as a 422 names a field.
  */
 export function inputIssues(input: Json, schema: Json, at = "input"): InputIssue[] {
   const out: InputIssue[] = [];
-  const required = Array.isArray(schema.required) ? schema.required.filter((k): k is string => typeof k === "string") : [];
-  const properties = isObject(schema.properties) ? schema.properties : {};
-  for (const key of required) if (input[key] === undefined) out.push(issue(`${at}.${key}`, "missing", `${at}.${key} is required`));
-  for (const [key, value] of Object.entries(input)) {
-    const property = properties[key];
-    if (!isObject(property)) {
-      if (schema.additionalProperties === false) out.push(issue(`${at}.${key}`, "not_allowed", `${at} keeps no field ${key}`, `Remove ${at}.${key}.`));
-      continue;
-    }
-    const types = (Array.isArray(property.type) ? property.type : [property.type]).filter((t): t is string => typeof t === "string" && t in TYPE_CHECK);
-    if (types.length && !types.some((t) => TYPE_CHECK[t]!(value))) out.push(issue(`${at}.${key}`, "wrong_type", `${at}.${key} is not ${types.join(" or ")}`));
-    if (Array.isArray(property.enum) && !property.enum.some((option) => JSON.stringify(option) === JSON.stringify(value))) out.push(issue(`${at}.${key}`, "not_an_option", `${at}.${key} is not one of the options`));
+  const seen = new Set<string>();
+  const add = (path: string, reason: string, message: string, fix?: string) => {
+    if (seen.has(`${path}\n${reason}`)) return;
+    seen.add(`${path}\n${reason}`);
+    out.push(issue(path, reason, message, fix));
+  };
+  // The schema in force compiles: a save checks it (inputSchemaIssues).
+  const compiled = schemaCheck(schema);
+  if ("why" in compiled) throw new Error(`the input schema ${compiled.why}`);
+  for (const error of compiled.validator.Errors(input)[1]) {
+    const where = [at, ...error.instancePath.split("/").slice(1).map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"))].join(".");
+    const params = error.params as Record<string, unknown>;
+    if (error.keyword === "required") for (const key of (params.requiredProperties as string[] | undefined) ?? []) add(`${where}.${key}`, "missing", `${where}.${key} is required`);
+    else if (error.keyword === "additionalProperties") for (const key of (params.additionalProperties as string[] | undefined) ?? []) add(`${where}.${key}`, "not_allowed", `${where} keeps no field ${key}`, `Remove ${where}.${key}.`);
+    // A closed object's own refusal of each extra property, said once above by its name.
+    else if (error.keyword === "boolean" && error.schemaPath.endsWith("/additionalProperties")) continue;
+    else add(where, KEYWORD_REASON[error.keyword] ?? "invalid", `${where} ${error.message}`);
   }
   return out;
 }

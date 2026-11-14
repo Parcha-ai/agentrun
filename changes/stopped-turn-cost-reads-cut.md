@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+A pi run whose turn a stop or a cancel cut no longer reads its cost short in the moment between the turn reading over and the runner booking the cut. The run's status reads `input_required` as soon as pi settles the turn's message aborted, but the request the stop cut kept reading as in flight until the runner's end mark landed, which is after the session's proxy sees its upstream end and can come seconds later on a loaded machine. In that window `GET /runs/{id}` and its timeline's usage row left the cut request out of `unpriced`: a first stop read the known sum as the run's whole cost (`usd: 0.0003` where it is unknown), a second stop one charge with no price where there are two. A run read while its newest turn is cut now counts a marked request with no answer or end, and a paid call marked with no charge, as a charge with no price, as a settled read counts them; the end mark landing later changes nothing. A request the stop withdrew before it left reads cut at an unknown price until its withdrawal is written: never less than it cost.

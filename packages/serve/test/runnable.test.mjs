@@ -35,7 +35,7 @@ test("a model pi-ai does not know refuses the save, 422 at definition.model, say
   const refused = await api("POST", "/agents", agent("nope", { model: "nope/nope" }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.deepEqual(fields(refused), [["definition.model", "not_an_option"]]);
-  assert.match(refused.body.error.fields[0].message, /knows no model nope of nope/);
+  assert.match(refused.body.error.fields[0].message, /On pi, a model is <provider>\/<model id>, like .*: nope\/nope is not a model pi runs here/);
   await nothingSaved(api, "nope");
 });
 

@@ -434,7 +434,9 @@ export class PgConnection implements StoreConnection {
     // connectionTimeoutMillis bounds a new connection's connect and startup, and a wait for a pool client to come free.
     // keepAlive: this end's TCP keepalives, from KEEPALIVE_IDLE_S (pg's default delay, 0, is the OS's 2 h).
     const tcp = { keepAlive: true, keepAliveInitialDelayMillis: KEEPALIVE_IDLE_S * 1_000 };
-    const config: pg.PoolConfig = { connectionString: url, options: session, types, max: poolSize, allowExitOnIdle: true, application_name: "agentrun-store", connectionTimeoutMillis: connectMs, ...tcp };
+    // Every connection named for its schema, as the lease's and the owner lock's are: pg_stat_activity tells which
+    // store holds each one.
+    const config: pg.PoolConfig = { connectionString: url, options: session, types, max: poolSize, allowExitOnIdle: true, application_name: `agentrun-store:${schema}`, connectionTimeoutMillis: connectMs, ...tcp };
     let lock: OwnerSession | undefined;
     const waitMs = Math.max(0, Math.floor(ownerWaitMs));
     if (owner) {

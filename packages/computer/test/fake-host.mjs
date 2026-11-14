@@ -6,14 +6,14 @@
 // network, and no vendor SDK is loaded.
 import { createHash } from "node:crypto";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
-import { GOOD_PREFLIGHT, mountsOf, rootVerb } from "./fake-modal.mjs";
+import { GOOD_PREFLIGHT, mountsOf, rootVerb } from "./fake-archil.mjs";
 import { scriptOfWords } from "./fake-shell.mjs";
 import { netDevText } from "./net-dev.mjs";
 
 export const VERSION = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 export const DAEMON = "/opt/agentrun/computerd";
 export const LINUX_GROUPS = ["exec", "files", "processes"];
-export const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
+export const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"];
 const NO_CAPS = "0000000000000000";
 const STDIN_VERBS = new Set(["mount", "revoke"]);
 
@@ -78,16 +78,19 @@ const START = Date.now();
  *  - flaps: for a new machine, whether each listing after its create shows it (true) or leaves it out (false), in turn,
  *    until they run out; then every listing shows it;
  *  - born(n): the creation time of the n-th machine made (1, 2, ...), or undefined for none; default the order made;
- *  - size: the size every machine reads back;
+ *  - size: the size every machine reads back; a machine reads back the GPUs its create asked for;
  *  - sha: "ok" or "lie"; install: the install's exit code; initFails: words init writes before it exits;
  *  - notListening: how many bridges find no daemon before one does;
  *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
- *  - display: "ok", "never" or "dies"; drift: the vendor's own drift words a read gives;
+ *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager does not start) or
+ *    "manager dies" (it ends at once); drift: the vendor's own drift words a read gives;
  *  - network: the vendor's network read back, over what create asked ("none"/"open"/{ other });
  *  - lingers: { reads, lists } after a delete; fileApi: false for a host with no upload;
  *  - onStep(step, machine): at the start of every host call and daemon request, so a test can abort a signal there;
  *  - hang: a script's kind ("install", ...) whose process never ends; killHangs: a process's kill that never settles;
- *  - archil: root verbs' answers, as fake-modal's.
+ *  - archil: root verbs' answers, as fake-archil.mjs's;
+ *  - sockets: the path sockets every machine holds, which the sockets script closes where a pattern names them;
+ *    socketsFail: a path among them whose chmod fails.
  * fake.events records every exec by script or verb, every daemon method and every delete, per machine.
  */
 export function fakeHost({
@@ -113,6 +116,8 @@ export function fakeHost({
 	timer = "ok",
 	hang,
 	killHangs = false,
+	sockets = [],
+	socketsFail,
 } = {}) {
 	const machines = new Map();
 	const held = [];
@@ -169,6 +174,7 @@ export function fakeHost({
 		image: { resolved: `${m.image}-id` },
 		...(m.createdAt === undefined ? {} : { createdAt: new Date(m.createdAt) }),
 		...(size === undefined ? {} : { size: { ...size } }),
+		...(m.request?.gpu === undefined ? {} : { gpu: { ...m.request.gpu } }),
 		endsAt: new Date(m.endsAt),
 		timerMoved: m.timerMoved,
 		...(drift ? { drift: [...drift] } : {}),
@@ -181,7 +187,7 @@ export function fakeHost({
 		const displayUp = m.init?.display && m.displayUp;
 		if (method === "hello") {
 			const groups = displayUp ? [...DESKTOP_GROUPS] : [...LINUX_GROUPS];
-			if (m.xvfb && display === "ok") m.displayUp = true;
+			if (m.xvfb && (display === "ok" || display.startsWith("manager "))) m.displayUp = true;
 			return result({ ...m.box.hello, groups, kind: displayUp ? "desktop" : "linux", ...(m.box.helloPatch ?? {}) });
 		}
 		if (method === "files.read" && params.path === "/proc/self/mounts") return result({ data: Buffer.from(mountsOf(m.box)).toString("base64"), size: 0, eof: true });
@@ -216,11 +222,14 @@ export function fakeHost({
 			return result({ exitCode: 0, stdout: Buffer.from(`${argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 		}
 		if (method === "process.start") {
+			if (params.argv[0] === "dbus-run-session" && display === "manager missing") return error("not_found", "dbus-run-session: executable file not found in $PATH");
 			const entry = { id: `p${m.processes.length + 1}`, pid: 100 + m.processes.length, argv: params.argv, running: true, exitCode: null, signal: null, stderr: "" };
 			if (params.argv[0] === "Xvfb") {
 				m.xvfb = entry;
 				if (display === "dies") Object.assign(entry, { running: false, exitCode: 1, stderr: "(EE) Fatal server error:\n(EE) Cannot establish any listening sockets\n" });
 			}
+			// A window manager that starts and ends at once, as xfwm4 does with no session bus.
+			if (params.argv[0] === "dbus-run-session" && display === "manager dies") Object.assign(entry, { running: false, exitCode: 1, stderr: "Xfconf could not be initialized\n" });
 			m.processes.push(entry);
 			return result({ id: entry.id, pid: entry.pid });
 		}
@@ -368,6 +377,19 @@ export function fakeHost({
 			});
 			return proc;
 		}
+		if (kind === "sockets") {
+			// The script's patterns, matched as a shell's: * any characters but "/", the rest as written.
+			const named = (path) => script.args.some((pattern) => new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*")}$`).test(path));
+			queueMicrotask(() => {
+				let failed = 0;
+				for (const path of sockets.filter(named).sort()) {
+					if (path === socketsFail) failed = 1;
+					proc.out.push(`${path === socketsFail ? "failed" : "closed"} ${path}\n`);
+				}
+				proc.exit(failed);
+			});
+			return proc;
+		}
 		if (kind === "log") {
 			queueMicrotask(() => {
 				proc.out.push(m.initLog ?? "");
@@ -425,6 +447,7 @@ export function fakeHost({
 			arch: "amd64",
 			vendorAgentPorts: [7777],
 			networkReadBack: true,
+			gpuReadBack: true,
 			network: ["none"],
 			mounts: ["archil"],
 			release: ["delete"],

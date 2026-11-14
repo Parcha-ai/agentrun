@@ -11,7 +11,7 @@
 // bash can add its words to it. Only an abort throws, as the registry's executors do.
 import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";

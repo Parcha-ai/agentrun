@@ -23,7 +23,7 @@ function draw(data: LearningCost, on = true, width = 900) {
 }
 const text = (host: HTMLElement) => host.textContent ?? "";
 const run = (n: number, path: CostRun["path"], total: number | null): CostRun => ({ n, run_id: `run_${n}`, started_at: new Date(Date.UTC(2026, 9, 1, n)).toISOString(), path, workflow: path === "agent" ? null : "sort", learned_revision: "a".repeat(40), cost_usd: total, learning_usd: total === null ? null : 0, total_usd: total });
-const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, summary: { takeover: null, before: null, after: null, times_cheaper: null, ...summary }, workflows: [] });
+const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, ...summary }, workflows: [] });
 
 describe("the chart's arithmetic", () => {
   it("plots only runs whose all-in cost is known", () => {
@@ -137,6 +137,12 @@ describe("CostChart", () => {
     const xs = [...mix.querySelectorAll("svg g")].map((g) => g.querySelector("rect")).filter((r): r is SVGRectElement => !!r && r.getAttribute("fill-opacity") === "0").map((r) => Number(r.getAttribute("x")));
     expect(new Set(xs.map((v) => Math.round(v))).size).toBe(5);
   });
+  it("says how many runs' path and cost are not known, left out, never drawn as the agent's at $0", () => {
+    const host = draw({ ...sample, unknown_path_runs: 2 });
+    expect(text(host)).toContain("2 runs' path and cost are not known: left out.");
+    expect(text(draw({ ...sample, unknown_path_runs: 1 }))).toContain("1 run's path and cost are not known: left out.");
+    expect(text(draw(sample))).not.toContain("path and cost are not known");
+  });
   it("names each path in the legend with its runs, and colours its dots by a chart token", () => {
     const host = draw(sample);
     const legend = host.querySelector("figcaption")!.textContent!;
@@ -202,6 +208,13 @@ describe("CostChart", () => {
     expect(text(host)).toContain("No run with a known cost yet.");
     expect(host.querySelector('[data-testid="execution-mix"]')).not.toBeNull();
   });
+  it("says how many runs were left out in the empty card too, when none has a known cost", () => {
+    const host = draw({ ...series([]), total_runs: 3, unknown_cost_runs: 1, unknown_path_runs: 2 });
+    expect(host.querySelector("svg[aria-hidden] path")).toBeNull();
+    expect(text(host)).toContain("No run with a known cost yet.");
+    expect(text(host)).toContain("2 runs' path and cost are not known: left out.");
+    expect(text(host)).toContain("1 run's cost is not known: left out.");
+  });
   it("keeps the level after the takeover when the takeover is older than the runs read, without its marker", () => {
     const host = draw({ ...sample, runs: sample.runs.slice(40), total_runs: 80 });
     expect(text(host)).toContain("After takeover $0.128 · 7.0x cheaper");
@@ -236,7 +249,7 @@ describe("CostPerRun", () => {
     expect(text(host)).toContain("Workflow took over, run 21");
   });
   it("shows nothing under the tab's empty state until two runs have a cost, then the chart", async () => {
-    const empty: LearningCost = { agent: "a", runs: [], total_runs: 0, unknown_cost_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null }, workflows: [] };
+    const empty: LearningCost = { agent: "a", runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null }, workflows: [] };
     for (const [answer, shown] of [[empty, false], [sample, true]] as const) {
       const v2 = { learningCost: async () => answer } as unknown as Client;
       const host = document.body.appendChild(document.createElement("div"));

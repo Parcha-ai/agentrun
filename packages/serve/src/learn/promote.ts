@@ -10,6 +10,7 @@ import type { GuardRow } from "../learned-nodes.js";
 import type { RunPath } from "../learning-cost.js";
 import type { Settings } from "../store/store.js";
 import { answerJson } from "../answer-json.js";
+import { workflowNodes } from "./workflow-nodes.js";
 
 /** How many of the agent's newest graded inputs a replay runs on. */
 export const REPLAY_INPUTS = 20;
@@ -145,6 +146,13 @@ export const promotionOf = (records: readonly PromotionRecord[], workflow: strin
  *  (then the champion), or its own graded runs hold it (source graded: no champion until a revision is promoted). The
  *  money rule stops it on its own (runner/workflow-first.ts). Undefined: none. */
 export function championOf(records: readonly PromotionRecord[], workflow: string): PromotionRecord | undefined {
+  const last = lastPromotedOf(records, workflow);
+  const now = last === undefined ? undefined : promotionOf(records, workflow, last);
+  return now?.decided === "promote" ? now : undefined;
+}
+
+/** The digest of `workflow` promoted last: the one whose first promote record is the newest of every digest's first. */
+function lastPromotedOf(records: readonly PromotionRecord[], workflow: string): string | undefined {
   const seen = new Set<string>();
   let last: string | undefined;
   for (const one of records) {
@@ -152,8 +160,7 @@ export function championOf(records: readonly PromotionRecord[], workflow: string
     seen.add(one.digest);
     last = one.digest;
   }
-  const now = last === undefined ? undefined : promotionOf(records, workflow, last);
-  return now?.decided === "promote" ? now : undefined;
+  return last;
 }
 
 /** The revisions of `workflow` other than `digest` whose newest record still says replaying, newest first: at most one
@@ -179,7 +186,20 @@ export function servingOf(records: readonly PromotionRecord[]): { workflow: stri
   });
 }
 
-/** What a guarded promotion write did: `won`, whether this write kept its record (else `still` did not hold when it
+/** The promotions list as it leaves (GET /agents/{id}/learning/promotions): the records and what serves (servingOf), every
+ *  text in them cut by `shown` (learning.ts secretsShown, as the other learning reads cut theirs), at any depth and under
+ *  any field, so a field added later is cut too: a workflow's name whole (`shown.name`), any other text of its part
+ *  (`shown.text`: a reason, a refit guard's label, a digest, a run id). Numbers and the rest as they are. */
+export function promotionsShown(records: readonly PromotionRecord[], shown: { readonly text: (text: string) => string; readonly name: (name: string) => string }): { promotions: PromotionRecord[]; serving: ReturnType<typeof servingOf> } {
+  const cut = (value: unknown, key?: string): unknown =>
+    typeof value === "string" ? (key === "workflow" ? shown.name(value) : shown.text(value))
+    : Array.isArray(value) ? value.map((one) => cut(one))
+    : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([field, one]) => [field, cut(one, field)]))
+    : value;
+  return { promotions: records.map((one) => cut(one) as PromotionRecord), serving: servingOf(records).map((one) => cut(one) as ReturnType<typeof servingOf>[number]) };
+}
+
+/** What a guarded promotion write did:`won`, whether this write kept its record (else `still` did not hold when it
  *  wrote: another claim's decision came first); `record`, the newest record of its workflow at its digest after (the one
  *  written when won, else the one there, undefined when none). A claim acts on a decision (starts replay runs, refits,
  *  cancels) only when it won the write: the loser reads the winner's record, never its turn to act. */
@@ -202,21 +222,34 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
   return out;
 }
 
-/** The newest PROMOTIONS_KEPT records, in order, never dropping a champion (championOf): each workflow's champion keeps
- *  its first promote record (its place) and its newest, however many newer revisions replayed or were held since. */
+/** The newest records, at most PROMOTIONS_KEPT, in order, with each workflow's champion (championOf) the same after as
+ *  before, whatever was dropped. championOf reads two things, and the trim keeps both: the place of every digest it can
+ *  still see promoted (a promote record kept keeps its digest's first promote record beside it, so an older revision's
+ *  late graded check never reads as a newer promotion), and the digest promoted last, its first promote record and its
+ *  newest record (so a held last revision is never trimmed into handing the champion back). */
 export function trimPromotions(items: readonly PromotionRecord[]): PromotionRecord[] {
   if (items.length <= PROMOTIONS_KEPT) return [...items];
+  const firstPromote = new Map<string, number>();
+  items.forEach((one, i) => {
+    const at = JSON.stringify([one.workflow, one.digest]);
+    if (one.decided === "promote" && !firstPromote.has(at)) firstPromote.set(at, i);
+  });
+  const placeOf = (i: number): number | undefined => (items[i]!.decided === "promote" ? firstPromote.get(JSON.stringify([items[i]!.workflow, items[i]!.digest])) : undefined);
   const keep = new Set<number>();
   for (const workflow of new Set(items.map((one) => one.workflow))) {
-    const champion = championOf(items, workflow);
-    if (!champion) continue;
-    keep.add(items.lastIndexOf(champion));
-    keep.add(items.findIndex((one) => one.workflow === workflow && one.digest === champion.digest && one.decided === "promote"));
+    const last = lastPromotedOf(items, workflow);
+    if (last === undefined) continue;
+    keep.add(firstPromote.get(JSON.stringify([workflow, last]))!);
+    keep.add(items.findLastIndex((one) => one.workflow === workflow && one.digest === last));
   }
   for (let i = items.length - 1, room = PROMOTIONS_KEPT - keep.size; i >= 0 && room > 0; i--) {
     if (keep.has(i)) continue;
+    const place = placeOf(i);
+    const adds = place === undefined || keep.has(place) || place === i ? 1 : 2;
+    if (adds > room) break;
     keep.add(i);
-    room -= 1;
+    if (place !== undefined) keep.add(place);
+    room -= adds;
   }
   return items.filter((_, i) => keep.has(i));
 }
@@ -277,8 +310,9 @@ export function answerCorrect(answer: string | null, recorded: ReplayRow["record
   return sameAnswer(answer, recorded.answer) ? recorded.correct : false;
 }
 
-/** The thresholds a workflow's guards serve at, by step label (the guard rows' `node`): every node of the workflow's JSON
- *  with a `guard` and a `label`. */
+/** The thresholds a workflow's guards serve at, by step label (the guard rows' `node`): every step of the workflow
+ *  with a `guard` and a `label` (walkGuards). A label names one step: a learned draft that repeats one never runs
+ *  (skills.ts draftProblems, repeatedLabels), so no two steps' rows share a threshold here or in a refit. */
 export function thresholdsOf(workflowText: string): Map<string, number> {
   const out = new Map<string, number>();
   try {
@@ -293,19 +327,13 @@ export function thresholdsOf(workflowText: string): Map<string, number> {
 
 /** Each node of a workflow document with a guard, by its label as the DSL names its step when it runs, in document order:
  *  a step of a child workflow (a `workflow` node's `workflow`) as `parent/child`, as the DSL prefixes its events and its
- *  guard rows (scopeDepsToChild), so a nested guard's serving threshold and its refit read the rows it made. */
-export function walkGuards(node: unknown, visit: (label: string, guard: Record<string, unknown>) => void, prefix = ""): void {
-  if (Array.isArray(node)) {
-    for (const one of node) walkGuards(one, visit, prefix);
-    return;
-  }
-  if (!node || typeof node !== "object") return;
-  const object = node as Record<string, unknown>;
-  if (typeof object.label === "string" && object.guard && typeof object.guard === "object" && !Array.isArray(object.guard)) visit(`${prefix}${object.label}`, object.guard as Record<string, unknown>);
-  for (const [key, value] of Object.entries(object)) {
-    if (key === "guard") continue;
-    const child = key === "workflow" && object.node === "workflow" && typeof object.label === "string";
-    walkGuards(value, visit, child ? `${prefix}${object.label}/` : prefix);
+ *  guard rows (scopeDepsToChild), so a nested guard's serving threshold and its refit read the rows it made. Only the
+ *  workflow's node positions (workflow-nodes.ts): a call's args or a schema shaped like `{label, guard}` is data, never
+ *  a guard, so a replay or a refit never changes it. */
+export function walkGuards(doc: unknown, visit: (label: string, guard: Record<string, unknown>) => void): void {
+  for (const { node, prefix } of workflowNodes(doc)) {
+    const guard = node.guard;
+    if (typeof node.label === "string" && guard && typeof guard === "object" && !Array.isArray(guard)) visit(`${prefix}${node.label}`, guard as Record<string, unknown>);
   }
 }
 

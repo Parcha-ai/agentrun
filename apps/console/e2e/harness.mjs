@@ -199,6 +199,15 @@ export async function newContext(browser, origin, { allow = [] } = {}) {
   return { context, blocked, icons };
 }
 
+/** The server's own answer to a GET a flow routes (to change it before the page gets it): `route.fetch`, sent once more
+ *  on a connection reset only. Playwright sends it over a kept-alive socket with no idle timer of its own, and the server
+ *  closes a socket idle 5 s (+1 s): a request sent just as that timer is due, while the server is busy, finds its
+ *  socket closed with the request unread (ECONNRESET, "socket hang up"). Chrome sends such a request again by itself;
+ *  route.fetch does not unless asked. Only for an idempotent GET. */
+export function serverAnswer(route) {
+  return route.fetch({ maxRetries: 1 });
+}
+
 /** A page that records what went wrong in it: uncaught errors and console errors. */
 export async function newPage(context) {
   const page = await context.newPage();

@@ -112,7 +112,7 @@ test("a run on opencode goes through the adapter's proxy to serve's gateway, pri
   const gw = await gateway(t);
   const { api, standIn, data } = await opencodeServe(t, gw);
   // How many fit at once is this host's memory (admission.test.mjs).
-  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "opencode");
+  const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "opencode");
   assert.deepEqual(offer, { id: "opencode", available: true, steer: false, default_model: "agent-model/gpt-test", run_memory_mib: 704 });
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));

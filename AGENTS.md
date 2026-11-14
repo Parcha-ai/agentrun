@@ -48,7 +48,7 @@ npm ci --ignore-scripts
 npm run build
 npm test
 npm run check   # build, generated-file checks, typecheck, all tests, examples
-npm run build:daemon -w @parcha/agentrun-computer   # the Go computer daemon (Go on PATH): verify:packages needs it
+npm run build:daemon -w @parcha/agentrun-computer   # the computer daemon: Go builds it, else npm's same version when the daemon source matches; verify:packages needs it
 npm run verify:packages   # packs each package into a clean consumer (install needs network; CI packages shard)
 ```
 
@@ -141,6 +141,9 @@ counterexample, never deleted.
 - Before a pull request goes to the maintainer, its author runs the ship-pr skill
   (`.agents/skills/ship-pr/SKILL.md`): one gate for every package, from a fresh base to CI and
   review threads.
+- The ship skill (`.agents/skills/ship/SKILL.md`) orchestrates that gate, native stacks and
+  explicitly authorized delegated maintainer approval. Stack workers prepare only; the
+  coordinator owns approval and queue submission.
 - This repository is public. Keep machine paths, internal hostnames, credentials and customer data
   out of code, tests, commits and issues. `npm run export:source` rejects many of these.
 - Never publish from a local machine. Releases go through the reviewed workflow in

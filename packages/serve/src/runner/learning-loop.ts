@@ -13,10 +13,10 @@
 // merge's call merges once.
 
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { LearningProposal } from "../store/store.js";
-import { GENERAL_THRESHOLD, ONE_CASE, type GeneralScores, type GeneralSource } from "../learn/general.js";
+import { GENERAL_NO_BUDGET, GENERAL_THRESHOLD, ONE_CASE, type GeneralScores, type GeneralSource } from "../learn/general.js";
 import { CONTRADICTED_REASON, CONTRADICTED_TWICE_REASON, CONTRADICTION_ASK, gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict, type VerdictItem } from "../learn/grade.js";
 import { mergedNote, parseNoteFile, ruleOf } from "../learn/notes.js";
 import type { LearnedFile, NoteLearned, Tokens } from "../learning.js";
@@ -66,6 +66,34 @@ export interface GradeMain {
 
 export type Problem = { readonly rule: string; readonly path?: string; readonly detail: string };
 
+/** A grader call its learning run's cap refused before it was sent (learning-ask.ts bookedAsk: the run's cap left, its
+ *  launch's max_cost_usd): nothing of it was spent, and the grade is skipped, said so (said.noRoomToGrade), never run past
+ *  the cap, never a failure. `forGood`: no room could ever send it (its spend or price unknown), not only none now. */
+export class GradeOverCap extends Error {
+  /** `booked`: the grade's records when it was refused (GradeBooked), what it spent before it. */
+  constructor(message: string, readonly forGood: boolean, readonly booked?: GradeBooked) {
+    super(message);
+    this.name = "GradeOverCap";
+  }
+}
+
+/** A generality check its learning run's cap refused before any of its requests left (learning-dispatch.ts general: its
+ *  worst case over the cap left): nothing of it was sent or spent, and it is skipped as `unchecked` "no_budget"
+ *  (GENERAL_NO_BUDGET), said so, the grader then judged against the cap on its own. `forGood`: no room could ever send it
+ *  (its provider's price unknown here), not only none now. */
+export class GeneralOverCap extends Error {
+  constructor(message: string, readonly forGood: boolean) {
+    super(message);
+    this.name = "GeneralOverCap";
+  }
+}
+
+/** The grade's own records after an ask (learning-ask.ts bookedAsk: its session's booking): what every grade request of
+ *  the learning run spent, an earlier attempt's included (null: unknown, as a cut one's), and how many left. What the
+ *  grade ends with is read from these, never summed in memory alone: a runner that restarted before the grade was saved
+ *  holds no sum of what its earlier attempt spent. */
+export type GradeBooked = { readonly usd: number | null; readonly turns: number };
+
 /** The folder's one write (learn/commit.ts learningCommit), a merge. */
 export interface MergeChange {
   readonly kind: "merge";
@@ -110,8 +138,10 @@ export interface LearningLoopDeps {
   folder(agentId: string): { readonly workspace: unknown; end(): Promise<void> };
   /** Main as the grader reads it, from the folder's snapshot; problems when the proposal can't be graded on it. */
   readMain(ws: unknown, proposal: KeptProposal): Promise<GradeMain | { readonly problems: readonly Problem[] }>;
-  /** One grader call, through the kernel's model proxy and the cap, booked to the agent's learning meter. */
-  ask(request: { readonly prompt: string; readonly maxTokens: number }, signal: AbortSignal, run: GraderRun): Promise<{ readonly text: unknown; readonly usd: number | null; readonly tokens?: Tokens | null }>;
+  /** One grader call, through the kernel's model proxy and the cap, booked to the agent's learning meter. `beside`: what
+   *  the grade spent outside its records, at most (the generality check's dollars, else its worst case), which the cap's
+   *  room for the call leaves out. */
+  ask(request: { readonly prompt: string; readonly maxTokens: number; readonly beside?: number }, signal: AbortSignal, run: GraderRun): Promise<{ readonly text: unknown; readonly usd: number | null; readonly tokens?: Tokens | null; readonly booked?: GradeBooked }>;
   /** The folder's one write. */
   commit(ws: unknown, change: MergeChange): Promise<LearningCommitResult>;
   /** The texts main holds at these note paths (learn/commit.ts mainTexts): a note the merge keeps whose name main
@@ -127,8 +157,10 @@ export interface LearningLoopDeps {
    *  than the one it came from, by file, and what it cost. Undefined, or one that answers undefined (no Jev key on this
    *  host), skips it: every note goes to the grader. One that throws (Jev down) skips it too: what it spent is unknown, and
    *  the skip is kept on the grade's entry (`unchecked`) and said in the log. `sending` is called once, before its first
-   *  paid request leaves: the loop marks the check sent there, durably (journal-kinds.ts learningGeneralSent). */
-  general?(notes: readonly NoteText[], source: GeneralSource, signal: AbortSignal, run: string, sending?: () => Promise<void>): Promise<GeneralScores | undefined>;
+   *  paid request leaves, with their worst case under a cap (`held`): the loop marks the check sent there, durably
+   *  (journal-kinds.ts learningGeneralSent). Under a cap, `before` is what an earlier attempt's cut check may have spent
+   *  (its worst case), which the room for this one leaves out; one that doesn't fit throws GeneralOverCap, sending nothing. */
+  general?(notes: readonly NoteText[], source: GeneralSource, signal: AbortSignal, run: string, sending?: (held?: number) => Promise<void>, before?: number): Promise<GeneralScores | undefined>;
   /** The bar a note's score must reach to go on to the grader (default GENERAL_THRESHOLD). */
   generalThreshold?: number;
   /** One line of the runner's log. */
@@ -147,9 +179,13 @@ export type DroppedData = { readonly source: string; readonly reason: string; re
  *  with their words), which the run's learning end reads in place of the grade's (store-reads/learning.ts). */
 export type MergedData = { readonly source: string; readonly main: string; readonly commit: string; readonly files: readonly string[]; readonly detail: string; readonly verdict: Verdict };
 type UnavailableData = { readonly source: string; readonly error: string };
-/** The generality check's end (journal-kinds.ts learningGeneral): its scores, or why it could not run, and what it spent
- *  (null once unknown: a request that failed, or one an earlier attempt sent and a restart cut). */
-export type GeneralData = { readonly source: string; readonly scores?: Readonly<Record<string, number>>; readonly unchecked?: string; readonly usd: number | null };
+/** The generality check's end (journal-kinds.ts learningGeneral): its scores, or why it could not run (GENERAL_NO_BUDGET:
+ *  no room under the cap), and what it spent (null once unknown: a request that failed, or one an earlier attempt sent and
+ *  a restart cut). `held`: under a cap, the most every attempt's requests may have spent (each sent mark's worst case), the
+ *  bound the grader's room leaves out when `usd` is unknown. */
+export type GeneralData = { readonly source: string; readonly scores?: Readonly<Record<string, number>>; readonly unchecked?: string; readonly usd: number | null; readonly held?: number };
+/** A sent mark of the check (journal-kinds.ts learningGeneralSent): `held`, its requests' worst case under a cap. */
+type GeneralSentData = { readonly source: string; readonly held?: number };
 
 /** The graded item a proposal's file is judged as (grade.ts itemOf): a draft's README.md with its workflow.json, every
  *  other file as itself. */
@@ -440,11 +476,16 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const taken = new Map((main.taken ?? []).map(({ path, reason }) => [path, reason]));
             let grading = proposal.notes.filter(({ file }) => !taken.has(file));
             const settledItems: VerdictItem[] = [...taken].map(([file, reason]) => ({ file, keep: false, question: "Duplicate", why: reason === "same" ? SAME_NOTE : NOTE_NAME_TAKEN(file.replace(/\.md$/, "")) }));
-            // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
-            // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows. The
-            // generality pre-check's Jev requests count in its dollars.
+            // What the grader spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
+            // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows.
             let usd: number | null = 0;
             let tokens: Tokens | null = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
+            // What the generality pre-check's Jev requests spent (its kept dollars, null once unknown), outside the
+            // grader's records, and the most they may have spent (`beside`: those dollars, else their worst case), which
+            // each grader call's room under the cap leaves out. The grade ends with both: Jev's and the grader's.
+            let checkUsd: number | null = 0;
+            let beside = 0;
+            const spent = (): number | null => (checkUsd === null || usd === null ? null : checkUsd + usd);
             // The generality pre-check: a note Jev scores under the bar rests on its one input, and is dropped before the
             // grader reads it, its why said with the grader's items. Jev down or not set up here: every note is graded.
             let screened = false;
@@ -460,15 +501,21 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               // asked again with that unknown kept.
               let ended = [...entries].reverse().find((entry) => entry.kind === KINDS.learningGeneral)?.data as GeneralData | undefined;
               if (!ended) {
-                const cut = entries.some((entry) => entry.kind === KINDS.learningGeneralSent);
+                const sentMarks = entries.filter((entry) => entry.kind === KINDS.learningGeneralSent);
+                const cut = sentMarks.length > 0;
                 if (cut) learning.log?.(`learning run ${claim.runId}: a generality check an earlier attempt sent was cut, so what it spent is unknown; it is asked again`);
+                // Under a cap: the most the cut attempts' requests may have spent (each mark's worst case), and this one's.
+                const cutHeld = sentMarks.reduce((sum, entry) => sum + ((entry.data as GeneralSentData | undefined)?.held ?? 0), 0);
+                let sentHeld = 0;
                 let checked: GeneralScores | undefined;
                 let failed: string | undefined;
+                let overCap: GeneralOverCap | undefined;
                 try {
-                  checked = await learning.general(grading, { ...(source.instructions ? { job: source.instructions } : {}), ...(input !== undefined ? { input } : {}) }, AbortSignal.any([deps.signal, stopAsk.signal]), source.runId, async () => {
-                    await append(KINDS.learningGeneralSent, { source: source.runId });
+                  checked = await learning.general(grading, { ...(source.instructions ? { job: source.instructions } : {}), ...(input !== undefined ? { input } : {}) }, AbortSignal.any([deps.signal, stopAsk.signal]), source.runId, async (held) => {
+                    sentHeld += held ?? 0;
+                    await append(KINDS.learningGeneralSent, { source: source.runId, ...(held !== undefined ? { held } : {}) } satisfies GeneralSentData);
                     await deps.flush();
-                  });
+                  }, cutHeld);
                 } catch (error) {
                   // Cut by a stop, a lost claim or a shutdown: what it sent spent what nobody knows. A stop row ends the run
                   // stopped with that unknown; otherwise nothing more is written, and the next attempt finds it sent with no
@@ -477,15 +524,25 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
                     spend = null;
                     return (await halted()) ?? { state: "interrupted" };
                   }
-                  // Its requests were sent and one failed: what they spent is unknown, never 0 (as an ask that fails is).
-                  // Its error is kept and logged cut of the runner's secrets (LoopDeps.redact).
-                  const message = (error as Error)?.message ?? String(error);
-                  failed = deps.redact ? deps.redact(message) : message;
-                  learning.log?.(`learning run ${claim.runId}: the generality check could not run, so the grader reads every note: ${failed}`);
+                  // No room under the run's cap for its worst case: nothing sent, skipped, said so (never silent), and the
+                  // grader judged against the cap on its own.
+                  if (error instanceof GeneralOverCap) overCap = error;
+                  else {
+                    // Its requests were sent and one failed: what they spent is unknown, never 0 (as an ask that fails is).
+                    // Its error is kept and logged cut of the runner's secrets (LoopDeps.redact).
+                    const message = (error as Error)?.message ?? String(error);
+                    failed = deps.redact ? deps.redact(message) : message;
+                    learning.log?.(`learning run ${claim.runId}: the generality check could not run, so the grader reads every note: ${failed}`);
+                  }
                 }
-                if (checked) ended = { source: source.runId, scores: checked.scores, usd: cut ? null : checked.usd };
-                else if (failed !== undefined) ended = { source: source.runId, unchecked: failed, usd: null };
-                else if (cut) ended = { source: source.runId, unchecked: "no Jev is set up on this host now", usd: null };
+                const held = cutHeld + sentHeld;
+                const bound = held > 0 ? { held } : {};
+                if (checked) ended = { source: source.runId, scores: checked.scores, usd: cut ? null : checked.usd, ...bound };
+                else if (overCap) {
+                  learning.log?.(`learning run ${claim.runId}: the generality check has no room under the cap (${overCap.message}), so the grader reads every note`);
+                  ended = { source: source.runId, unchecked: GENERAL_NO_BUDGET, usd: cut ? null : 0, ...bound };
+                } else if (failed !== undefined) ended = { source: source.runId, unchecked: failed, usd: null, ...bound };
+                else if (cut) ended = { source: source.runId, unchecked: "no Jev is set up on this host now", usd: null, ...bound };
                 // Kept, durably, before the grader starts: a restart from here on asks Jev nothing.
                 if (ended) {
                   await append(KINDS.learningGeneral, ended);
@@ -493,7 +550,8 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
                 }
               }
               if (ended) {
-                usd = ended.usd;
+                checkUsd = ended.usd;
+                beside = ended.usd ?? ended.held ?? 0;
                 if (ended.unchecked !== undefined) unchecked = ended.unchecked;
                 if (ended.scores) {
                   screened = true;
@@ -511,8 +569,8 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               const verdict: Verdict = { merge: false, reason: settledItems.some(({ question }) => question === "General") ? "No new note holds beyond the one input it came from, or each is named like one the agent holds now." : "Every new note is named like one the agent holds now.", items: settledItems };
               // A proposal the generality check emptied is recorded as a grade (its verdict, each item's why, what the check
               // spent) before it is dropped, so the run's learning reads why each note was left out.
-              if (screened) await append(KINDS.learningGraded, { source: source.runId, verdict, usd, tokens, graded: main.graded } satisfies GradedData);
-              await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(verdict, lostOf(proposal)), usd, tokens } satisfies DroppedData, "ended");
+              if (screened) await append(KINDS.learningGraded, { source: source.runId, verdict, usd: spent(), tokens, graded: main.graded } satisfies GradedData);
+              await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(verdict, lostOf(proposal)), usd: spent(), tokens } satisfies DroppedData, "ended");
               return { state: "ended" };
             }
             const items = gradedItems(grading as NoteText[], (proposal.files ?? []) as NoteText[]);
@@ -520,6 +578,16 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded, proposed: grading,
               ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.drafted?.length ? { drafted: proposal.drafted } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(proposal.held ? { held: proposal.held } : {}),
             });
+            /** The asks of this attempt that answered: the records holding more requests than these is an earlier attempt's. */
+            let answered = 0;
+            // Once an ask read the grade's records (`booked`), its dollars are theirs: an earlier attempt's requests counted too.
+            const fromRecords = (booked: GradeBooked | undefined) => {
+              if (!booked) return;
+              usd = booked.usd;
+              // A request an earlier attempt sent (a restart before the grade was saved): its dollars are in the records,
+              // its tokens in nothing this attempt read, so they are unknown, never none.
+              if (booked.turns > answered) tokens = null;
+            };
             // `again`: what the grade is told after its last answer, below the same prompt.
             const ask = async (again?: string) => {
               // Stopped before this ask: nothing is sent, so nothing of it is spent (what it spent stays as it was).
@@ -527,15 +595,22 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               const timer = AbortSignal.timeout(GRADE_TIMEOUT_MS);
               let answer: Awaited<ReturnType<LearningLoopDeps["ask"]>>;
               try {
-                answer = await learning.ask({ prompt: again ? `${prompt}\n\n${again}` : prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer, stopAsk.signal]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
+                answer = await learning.ask({ prompt: again ? `${prompt}\n\n${again}` : prompt, maxTokens: GRADE_MAX_TOKENS, ...(beside > 0 ? { beside } : {}) }, AbortSignal.any([deps.signal, timer, stopAsk.signal]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
               } catch (error) {
-                usd = null;
-                tokens = null;
+                // A call the cap refused was never sent: it spent nothing, and what the grade spent before it stands, as its
+                // records hold it (an earlier attempt's included).
+                if (error instanceof GradeOverCap) fromRecords(error.booked);
+                else {
+                  usd = null;
+                  tokens = null;
+                }
                 throw error;
               }
+              answered += 1;
               usd = usd === null || answer.usd === null || !Number.isFinite(answer.usd) ? null : usd + answer.usd;
               const more = answer.tokens ?? null;
               tokens = tokens === null || more === null ? null : { input: tokens.input + more.input, cache_read: tokens.cache_read + more.cache_read, cache_write: tokens.cache_write + more.cache_write, output: tokens.output + more.output };
+              fromRecords(answer.booked);
               return answer.text;
             };
             let verdict: Verdict;
@@ -551,17 +626,24 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
                 verdict = again.reason === CONTRADICTED_REASON ? { ...again, reason: CONTRADICTED_TWICE_REASON } : again;
               }
             } catch (error) {
-              // What the asks spent: a cut one's unknown (null), kept on a stopped run's row as on a dropped one's.
-              spend = usd;
+              // What the asks spent (and the check before them): a cut one's unknown (null), kept on a stopped run's row as
+              // on a dropped one's.
+              spend = spent();
               const end = await halted();
               if (end) return end;
-              await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd, tokens, ...(unchecked !== undefined ? { unchecked } : {}) } satisfies DroppedData, "ended");
+              // No room under the run's cap for the grade (a call the cap refused): skipped, said so, with what it spent
+              // before (an earlier ask's), never a failure and never past the cap.
+              if (error instanceof GradeOverCap) {
+                await append(KINDS.learningDropped, { source: source.runId, reason: "no_budget", detail: error.forGood ? said.gradeUncapped : said.noRoomToGrade, usd: spent(), tokens, ...(unchecked !== undefined ? { unchecked } : {}) } satisfies DroppedData, "ended");
+                return { state: "ended" };
+              }
+              await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd: spent(), tokens, ...(unchecked !== undefined ? { unchecked } : {}) } satisfies DroppedData, "ended");
               void error;
               return { state: "ended" };
             }
             if (settledItems.length) verdict = { ...verdict, items: [...verdict.items, ...settledItems] };
-            graded = { source: source.runId, verdict, usd, tokens, graded: main.graded, ...(unchecked !== undefined ? { unchecked } : {}) };
-            spend = usd;
+            graded = { source: source.runId, verdict, usd: spent(), tokens, graded: main.graded, ...(unchecked !== undefined ? { unchecked } : {}) };
+            spend = graded.usd;
             await append(KINDS.learningGraded, graded);
             // The verdict is durable before the merge, its side effect.
             await deps.flush();
