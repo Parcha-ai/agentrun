@@ -148,6 +148,28 @@ describe("a run's page, the Grade control", () => {
     expect(t.section()!.textContent).toContain("Graded right");
   });
 
+  it("says a finished round's outcome after a reload, from the grade read back", async () => {
+    const t = await open(run(), { graded: { ...answer({ correct: false }, "look_back"), graded_at: "2026-11-14T10:02:00.000Z" } });
+    const text = t.section()!.textContent ?? "";
+    expect(text).toContain("Graded wrong");
+    expect(text).not.toContain("Reviewing");
+    expect(t.section()!.querySelector('[role="status"]')?.textContent).toBe("The agent looked back on your words.");
+    expect(t.button("Open the Timeline")).toBeTruthy();
+    expect(t.button("Grade again")).toBeTruthy();
+  });
+
+  it("is still reviewing after a reload while the round's learning settles: no Grade again until it has", async () => {
+    const settling = run({ learning: { ...LEARNS!, state: "reflecting", reason: null } });
+    const t = await open(settling, { graded: { ...answer({ correct: false }, "look_back"), graded_at: "2026-11-14T10:02:00.000Z" } });
+    const text = t.section()!.textContent ?? "";
+    expect(text).toContain("Reviewing");
+    expect(text).toContain("The agent is looking back on your words.");
+    expect(t.button("Grade again")).toBeUndefined();
+    await t.rerender(run());
+    expect(t.section()!.textContent).not.toContain("Reviewing");
+    expect(t.button("Grade again")).toBeTruthy();
+  });
+
   it("keeps a grade it sent across a tab switch: the run's learning is read again after it, and the round it opened stays said", async () => {
     // Right on an ungraded run: the run stays ended, so only the grade itself reads the learning again.
     const t = await open(run());

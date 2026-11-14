@@ -41,8 +41,9 @@ test("a person grades an ended run; the agent's promotions read empty until a le
 });
 
 // The console's Grade control reads a run's grade back from GET /runs/{id}/learning (`graded`): absent before one, then
-// the newest, a later grade replacing it. A wrong grade with words on a run the agent finished opens a look-back.
-test("a run's learning read says its grade: none before one, then the newest, never its expected", async (t) => {
+// the newest, a later grade replacing it, in the PUT's answer's shape without `expected`. A wrong grade with words on a
+// run the agent finished opens a look-back, and the read keeps which (`feedback`), so a page read again still says it.
+test("a run's learning read says its grade and the round it opened: none before one, then the newest, never its expected", async (t) => {
   const { api, baseUrl } = await serve(t, { learning: "on", faux: LEARN });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const meets = (value) => assert.deepEqual(schemaProblems(doc, doc.paths["/runs/{run_id}/learning"].get.responses["200"].content["application/json"].schema, value), [], JSON.stringify(value));
@@ -57,14 +58,17 @@ test("a run's learning read says its grade: none before one, then the newest, ne
   const right = await api("PUT", `/runs/${run}/grade`, { correct: true, expected: { answer: 42 } });
   assert.deepEqual([right.status, right.body.feedback], [200, null], "a right grade with no words asks nothing more");
   const read = (await api("GET", `/runs/${run}/learning`)).body;
-  assert.deepEqual(read.graded, { correct: true, source: "feedback", graded_at: right.body.graded_at });
+  const { expected: _, ...rightShown } = right.body;
+  assert.deepEqual(read.graded, rightShown, "the PUT's answer, without expected");
+  assert.deepEqual([read.graded.feedback, "expected" in read.graded], [null, false], "a right grade opened no round");
   meets(read);
 
   const wrong = await api("PUT", `/runs/${run}/grade`, { correct: false, label: "Review: the answer is 42, said as a number." });
   assert.deepEqual([wrong.status, wrong.body.feedback], [200, "look_back"], JSON.stringify(wrong.body));
   await ended(api, run);
   const again = (await api("GET", `/runs/${run}/learning`)).body;
-  assert.deepEqual(again.graded, { correct: false, source: "feedback", graded_at: wrong.body.graded_at }, "the newer grade replaces the older");
+  assert.deepEqual(again.graded, wrong.body, "the newer grade replaces the older");
+  assert.equal(again.graded.feedback, "look_back", "after the round ended, the read still says the grade opened a look-back");
   assert.ok(again.learned?.some((note) => note.file === "reviewed.md"), `the look-back kept the reviewer's words: ${JSON.stringify(again)}`);
   meets(again);
 });
