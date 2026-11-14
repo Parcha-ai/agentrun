@@ -201,7 +201,7 @@ describe("applying a template", () => {
     await pick(picker(t.host.querySelector('[data-mcp="slack"]')!, "Server for slack")!, "slack-work");
     expect(t.host.querySelector('[data-unpicked="slack"]')).toBeNull();
     await t.click(t.button(/^Apply/));
-    expect(t.sent[0].body.servers).toEqual({ slack: "slack-work" });
+    expect(t.sent[0].body.servers).toEqual({ slack: "slack-work", hubspot: "crm" });
   });
 
   it("asks consent one tool at a time, none ticked until the owner ticks it, and says what an allow means", async () => {
@@ -237,7 +237,7 @@ describe("applying a template", () => {
     await t.click(t.button(/^Apply/));
     expect(t.sent).toHaveLength(2);
     expect(t.sent[0].name).toBe("pr-reviewer");
-    expect(t.sent[0].body).toEqual({ parameters: { repo: "acme/web", max_files: 3 }, grants: ["mcp:github/create_review"], overrides: { approvals: "ask" } });
+    expect(t.sent[0].body).toEqual({ parameters: { repo: "acme/web", max_files: 3 }, grants: ["mcp:github/create_review"], servers: { github: "github" }, overrides: { approvals: "ask" } });
     expect(t.sent[0].key).toBeTruthy();
     expect(t.sent[1].key).toBe(t.sent[0].key);
   });

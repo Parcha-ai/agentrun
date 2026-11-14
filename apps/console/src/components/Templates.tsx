@@ -95,6 +95,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   // on its triggers with no one there), which the owner can switch.
   const [approvals, setApprovals] = useState<Approvals>(t.approvals_default ?? "ask");
   const [servers, setServers] = useState<McpServer[] | null>(null);
+  const [serversError, setServersError] = useState<Problem | null>(null);
+  const [serversTries, setServersTries] = useState(0);
   // The owner's pick, by toolkit, for a need several saved servers match (none picked: the apply's default).
   const [picks, setPicks] = useState<Record<string, string>>({});
   const [applying, setApplying] = useState(false);
@@ -111,20 +113,25 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const shown = useRef(true);
   // Set on every setup, not only the first: StrictMode runs setup, cleanup, then setup again.
   useEffect(() => { shown.current = true; return () => { shown.current = false; }; }, []);
-  // The MCP servers saved here (GET /v2/settings/mcp-servers): which of them each of the template's needs maps to.
+  // The MCP servers saved here (GET /v2/settings/mcp-servers): which of them each of the template's needs maps to. A read
+  // that fails is said with Try again, and Apply waits for the list.
   useEffect(() => {
     let live = true;
-    v2.listMcpServers().then((r) => { if (live) setServers(r.servers); }, () => {});
+    setServersError(null);
+    v2.listMcpServers().then((r) => { if (live) setServers(r.servers); }, (e) => { if (live) setServersError(problem(e, "the saved MCP servers")); });
     return () => { live = false; };
-  }, [v2]);
+  }, [v2, serversTries]);
   const grants = grantsOf(t, ticked);
   // Each need's matching servers, and the one it uses: its one match, else the owner's pick among several (never one picked
   // for them: the apply refuses several with no pick).
   const mapped = t.mcp.map((m) => { const matches = servers ? matchesOf(m, servers) : []; return { m, matches, uses: matches.length === 1 ? matches[0] : matches.includes(picks[m.toolkit] ?? "") ? picks[m.toolkit] : undefined }; });
-  // Sent for every need several servers match, so the server the screen shows is the one the agent gets.
-  const chosen = Object.fromEntries(mapped.flatMap(({ m, matches, uses }) => (matches.length > 1 && uses ? [[m.toolkit, uses]] : [])));
+  // Sent for every need the screen shows a server for, one match too, so the server shown is the one the agent gets: one
+  // deleted and replaced by another match before Apply is refused, never swapped in.
+  const chosen = Object.fromEntries(mapped.flatMap(({ m, uses }) => (uses ? [[m.toolkit, uses]] : [])));
   // A need several servers match that the owner hasn't picked one for: Apply waits for the pick.
   const unpicked = mapped.filter(({ matches, uses }) => matches.length > 1 && !uses).map(({ m }) => m.toolkit);
+  // A template with MCP needs waits for the saved servers to be read: until then no need is mapped or picked.
+  const unread = t.mcp.length > 0 && servers === null;
   const at = (field: string) => issuesAt(issues, field);
   // A parameter's value as typed or picked: an issue at it goes as soon as the value is one the server takes.
   const setParam = (key: string, value: string) => {
@@ -240,6 +247,9 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
 
       {t.mcp.length > 0 && (
         <Section title="Tools you allow" note="Nothing is granted until you tick it. A tool you leave unticked is not given to the agent, even when it never asks: you can add it later on the agent's page.">
+          {serversError && !servers && (
+            <div data-servers-unread className="px-4 py-3"><ProblemCard problem={serversError} onRetry={() => setServersTries((n) => n + 1)} className="" /></div>
+          )}
           {mapped.map(({ m, matches, uses }) => (
             <div key={m.toolkit} data-mcp={m.toolkit} className="px-4 py-3">
 
@@ -320,7 +330,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       </Section>
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
-        <Button size="sm" variant="solid" onClick={() => void apply()} disabled={applying || unpicked.length > 0} title={unpicked.length ? `Pick the server for ${unpicked.join(", ")} first` : undefined}>{applying ? "Applying…" : "Apply"}</Button>
+        <Button size="sm" variant="solid" onClick={() => void apply()} disabled={applying || unread || unpicked.length > 0} title={unread ? (serversError ? "The saved MCP servers couldn't be read: try again first" : "Reading the saved MCP servers…") : unpicked.length ? `Pick the server for ${unpicked.join(", ")} first` : undefined}>{applying ? "Applying…" : "Apply"}</Button>
         {said && (!said.withIssues || issues.length > 0) && <p className="min-w-0 flex-1 text-body text-destructive-text" role="alert">{said.text}</p>}
       </div>
       {issues.filter((i) => !placed(i)).length > 0 && <div className="mt-2"><Issues issues={issues.filter((i) => !placed(i))} named /></div>}
