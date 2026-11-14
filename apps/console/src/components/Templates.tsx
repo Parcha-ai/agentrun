@@ -13,7 +13,7 @@ import { keeper } from "@/lib/idempotency";
 import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
-import { type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, schemaFields } from "@/lib/inputForm";
+import { type FieldSpec, fieldIssueWords, fieldKind, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, schemaFields } from "@/lib/inputForm";
 import { grantsOf, issuesAt, matchesOf, needsOf, paramHelp, type ParameterText, setUpHref, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateImported, type TemplateView } from "@/lib/v2";
 
@@ -146,9 +146,21 @@ function InstallTemplate({ v2, source, go }: { v2: Client; source: string; go: (
       <p className="mt-3 text-lead leading-[1.6]">{t.description}</p>
       <Section title="What it makes">
         <dl className="space-y-1 px-4 py-3 font-mono text-small">
-          {needsOf(t).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0 text-muted-foreground">{what}</dt><dd className="min-w-0 break-words">{words}</dd></div>)}
+          {needsOf(t, { mcp: false }).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0 text-muted-foreground">{what}</dt><dd className="min-w-0 break-words">{words}</dd></div>)}
         </dl>
       </Section>
+      {t.mcp.length > 0 && (
+        <Section title="MCP tools it asks for" note="None is granted by installing: the Apply screen asks you to tick each one.">
+          {t.mcp.map((m) => (
+            <div key={m.toolkit} data-mcp={m.toolkit} className="px-4 py-3">
+              <NeedHead m={m} />
+              <p className="mt-1 break-words font-mono text-small">{m.tools.map((x) => x.name).join(", ")}</p>
+            </div>
+          ))}
+        </Section>
+      )}
+      <RunInputs t={t} />
+      <EvalCases t={t} />
       <Section title="Instructions" note="What the agent is told, in full: a package from someone else says this to your agent.">
         <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-small" data-instructions>{read.instructions}</pre>
       </Section>
@@ -183,9 +195,10 @@ function InstallTemplate({ v2, source, go }: { v2: Client; source: string; go: (
   );
 }
 
-/** A refusal in the server's words: its message, and each field's. */
+/** A refusal in the server's words: its message, and each field's, each sentence once (a 422's message is its first
+ *  field's when it names no other). */
 function refusalText(e: unknown): string {
-  if (e instanceof ClientError && e.fields?.length) return [e.message, ...e.fields.map((i) => i.message)].join(" ");
+  if (e instanceof ClientError && e.fields?.length) return [...new Set([e.message, ...e.fields.map((i) => i.message)])].join(" ");
   return e instanceof Error ? e.message : String(e);
 }
 
@@ -379,14 +392,9 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
           )}
           {mapped.map(({ m, matches, uses }) => (
             <div key={m.toolkit} data-mcp={m.toolkit} className="px-4 py-3">
-
-              <p className="flex flex-wrap items-center gap-2 font-mono text-body">
-                <span className="font-semibold">{m.toolkit}</span>
-                <Chip tone="muted">{SOURCE_LABEL[m.source]}</Chip>
-                <Chip tone={m.required ? "plain" : "muted"}>{m.required ? "Required" : "Optional"}</Chip>
+              <NeedHead m={m}>
                 {servers && matches.length < 2 && <span className="text-small text-muted-foreground">{uses ? `Uses ${uses}` : "Not set up here"}</span>}
-              </p>
-              {m.reason && <p className="mt-1 text-small text-muted-foreground">{m.reason}</p>}
+              </NeedHead>
               {/* Several saved servers are this source and toolkit (two Gmail accounts): the owner picks one, none picked to
                   start, and Apply waits for it. */}
               {servers && matches.length > 1 && (
@@ -450,6 +458,9 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
         {approvals === "never" && <p className="mt-2 text-small text-warning-text">{NEVER_ASK_LINE}</p>}
       </fieldset>
 
+      <RunInputs t={t} />
+      <EvalCases t={t} />
+
       <Section title="What it makes">
         <dl className="space-y-1 px-4 py-3 font-mono text-small">
           {needsOf(t, { secrets: false, mcp: false }).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0 text-muted-foreground">{what}</dt><dd className="min-w-0 break-words">{words}</dd></div>)}
@@ -462,6 +473,57 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       </div>
       {issues.filter((i) => !placed(i)).length > 0 && <div className="mt-2"><Issues issues={issues.filter((i) => !placed(i))} named /></div>}
     </div>
+  );
+}
+
+type Need = TemplateView["mcp"][number];
+/** An MCP need's head, on the Install and Apply screens alike: its toolkit, source, Required or Optional, and the reason the
+ *  template gives for it. `children`: what the screen says beside it (the server it uses here). */
+function NeedHead({ m, children }: { m: Need; children?: ReactNode }) {
+  return (
+    <>
+      <p className="flex flex-wrap items-center gap-2 font-mono text-body">
+        <span className="font-semibold">{m.toolkit}</span>
+        <Chip tone="muted">{SOURCE_LABEL[m.source]}</Chip>
+        <Chip tone={m.required ? "plain" : "muted"}>{m.required ? "Required" : "Optional"}</Chip>
+        {children}
+      </p>
+      {m.reason && <p className="mt-1 text-small text-muted-foreground" data-reason>{m.reason}</p>}
+    </>
+  );
+}
+
+/** The typed input each run takes (its input_schema), in the run form's words: each field's label (its key beside a
+ *  title), what it takes, Required or Optional, and its help. A schema the form can't draw as fields is shown whole; a
+ *  template with none takes a message, and says nothing here. */
+function RunInputs({ t }: { t: TemplateView }) {
+  if (!t.input_schema) return null;
+  const fields = schemaFields(t.input_schema, "content");
+  if (fields && !fields.length) return null;
+  return (
+    <Section title="Run inputs" note="What each run is given, as the run form asks for it.">
+      {fields ? fields.map(([key, f]) => (
+        <div key={key} data-input={key} className="px-4 py-3">
+          <p className="flex flex-wrap items-center gap-2 font-mono text-body">
+            <span className="font-semibold">{fieldLabel(key, f)}</span>
+            {f.title && <span className="text-small text-muted-foreground">{key}</span>}
+            <Chip tone="muted">{fieldKind(f)}</Chip>
+            <Chip tone={f.required ? "plain" : "muted"}>{f.required ? "Required" : "Optional"}</Chip>
+          </p>
+          {paramHelp(f) && <p className="mt-1 text-small text-muted-foreground">{paramHelp(f)}</p>}
+        </div>
+      )) : <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-small" data-input-schema>{JSON.stringify(t.input_schema, null, 2)}</pre>}
+    </Section>
+  );
+}
+
+/** The package's eval cases (evals/<case>/), by name: what the template is tested on. */
+function EvalCases({ t }: { t: TemplateView }) {
+  const n = t.evals.length;
+  return (
+    <Section title="Eval cases" note={n ? `The ${n === 1 ? "one case" : `${n} cases`} this template is tested on.` : undefined}>
+      <p className="break-words px-4 py-3 font-mono text-small" data-evals>{n ? t.evals.join(", ") : "None: this package ships no eval cases, so nothing tests it."}</p>
+    </Section>
   );
 }
 

@@ -26,6 +26,17 @@ export type GithubSource = { owner: string; repo: string; path: string | null; r
 
 const refused = (message: string) => invalid([{ field: "source", reason: "bad_format", message, expected: "github:<owner>/<repo>[/<path>][@<ref>]", example: "github:Parcha-ai/agentrun/packages/serve/templates/kyb@main" }]);
 
+/** A source's path part with its percent escapes read, in either form (a tree URL's are escaped, and a github: source
+ *  copied from one may be); a % that starts no escape is refused by name, never as a folder name's wrong letter. */
+function unescaped(part: string): string {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    const bad = /%(?![0-9A-Fa-f]{2}).{0,2}/s.exec(part)?.[0];
+    throw refused(bad ? `${JSON.stringify(part)} has ${JSON.stringify(bad)}, which is no percent escape: a % is followed by two hex digits (%25 is a % itself).` : `${JSON.stringify(part)} has percent escapes that spell no text.`);
+  }
+}
+
 /** `text` read as a package's source: `github:<owner>/<repo>[/<path>][@<ref>]`, or a GitHub web URL of the repository or of
  *  a folder in it (`https://github.com/<owner>/<repo>/tree/<ref>/<path>`, its ref the one segment after tree), made into
  *  the first form. Anything else is a 422 on `source`. */
@@ -42,13 +53,7 @@ export function parseSource(text: unknown): GithubSource {
     }
     if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password) throw refused(`A package is imported from github.com alone, over https: ${url.protocol}//${url.host} is not.`);
     if (url.search || url.hash) throw refused("A package's GitHub URL has no query or fragment.");
-    const parts = url.pathname.split("/").filter(Boolean).map((part) => {
-      try {
-        return decodeURIComponent(part);
-      } catch {
-        throw refused(`${given} has a % that is not an escape: it is not a GitHub URL.`);
-      }
-    });
+    const parts = url.pathname.split("/").filter(Boolean).map(unescaped);
     [owner = "", repo = ""] = parts;
     repo = repo.replace(/\.git$/, "");
     if (parts.length > 2 && parts[2] !== "tree") throw refused("A package's GitHub URL is the repository's, or a folder's: https://github.com/<owner>/<repo>/tree/<ref>/<path>.");
@@ -61,7 +66,7 @@ export function parseSource(text: unknown): GithubSource {
     // given a ref, as the source every install of the console pins to a commit is (<id>@<sha>).
     const body = given.slice("github:".length);
     const at = body.lastIndexOf("@");
-    const parts = (at < 0 ? body : body.slice(0, at)).split("/");
+    const parts = (at < 0 ? body : body.slice(0, at)).split("/").map(unescaped);
     [owner = "", repo = ""] = parts;
     rest = parts.slice(2);
     ref = at < 0 ? null : body.slice(at + 1);

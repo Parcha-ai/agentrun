@@ -214,6 +214,43 @@ describe("installing a template from GitHub", () => {
     await t.click(t.button(/^Apply$/));
     expect(t.sent.map((s) => s.name)).toEqual([ID]);
   });
+
+  // What the package says it does, from the view GET /v2/templates and the dry run serve: its typed run inputs in the run
+  // form's words, its eval cases by name, and each MCP need with its reason, the Apply screen's piece.
+  const INPUTS = { type: "object", required: ["company"], properties: {
+    company: { type: "string", title: "Company", description: "The company's legal name.", minLength: 1 },
+    limit: { type: "integer", description: "How many to read." },
+    topics: { type: "array", items: { type: "string" }, title: "Topics" },
+  } } as TemplateView["input_schema"];
+  const SAYS: TemplateView = { ...KYB_GH, input_schema: INPUTS, evals: ["clean-company", "injection-in-page"], mcp: REVIEWER.mcp };
+  const inputsOf = (host: HTMLElement) => [...host.querySelectorAll("[data-input]")].map((row) => [row.getAttribute("data-input"), row.textContent]);
+  const SAID = [
+    ["company", "CompanycompanytextRequiredThe company's legal name."],
+    ["limit", "limita whole numberOptionalHow many to read."],
+    ["topics", "Topicstopicsa list of textOptional"],
+  ];
+
+  it("the install page says what the package does: its run inputs, its eval cases, and each MCP need's reason and tools", async () => {
+    const t = await open(undefined, { install: `${ID}@main`, imported: async () => ({ ...answer(false, true), template: SAYS }) });
+    expect(inputsOf(t.host)).toEqual(SAID);
+    expect(t.host.querySelector('[aria-label="Eval cases"]')!.textContent).toContain("The 2 cases this template is tested on.");
+    expect(t.host.querySelector("[data-evals]")!.textContent).toBe("clean-company, injection-in-page");
+    const need = t.host.querySelector('[data-mcp="github"]')!;
+    expect(need.querySelector("[data-reason]")!.textContent).toBe("Reads the pull request and posts the review.");
+    expect(need.textContent).toContain("get_pull_request, create_review");
+    // Nothing granted here: no tick on the install page.
+    expect(need.querySelector('input[type="checkbox"]')).toBeNull();
+  });
+
+  it("the Apply screen says the same run inputs and eval cases; a package with none says it ships none", async () => {
+    const t = await open(ID, { templates: [SAYS] });
+    expect(inputsOf(t.host)).toEqual(SAID);
+    expect(t.host.querySelector("[data-evals]")!.textContent).toBe("clean-company, injection-in-page");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const bare = await open("pr-reviewer");
+    expect(bare.host.querySelector('[aria-label="Run inputs"]')).toBeNull();
+    expect(bare.host.querySelector("[data-evals]")!.textContent).toBe("None: this package ships no eval cases, so nothing tests it.");
+  });
 });
 
 describe("applying a template", () => {
