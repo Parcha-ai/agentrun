@@ -734,10 +734,9 @@ export class HostedProvider implements ComputerProvider {
 		return Math.min(START_POLL_MS, this.#timeouts.pollMs * 10);
 	}
 
-	/** The host's get, bounded by requestMs; a machine the vendor reports as not found is none, as release and settleGone read it. */
-	async #get(id: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
-		const read = await this.#call(`the read of ${id}`, (ctx) => this.host.get(id, ctx), this.#timeouts.requestMs, signal);
-		return !read.ok && read.error.code === "not_found" ? ok(undefined) : read;
+	/** The host's get, bounded by requestMs; a machine the vendor reports as not found is none. */
+	#get(id: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
+		return readMachine(this.host, id, this.#timeouts.requestMs, signal);
 	}
 
 	/** The machine running, read while it starts (within createMs); gone or failed is refused in words. */
@@ -997,7 +996,7 @@ export class HostedProvider implements ComputerProvider {
 	/** This provider's machine for ref, as the vendor reads it, or why not. */
 	async #own(ref: ComputerRef, signal?: AbortSignal): Promise<Result<Machine>> {
 		const found = await this.#get(ref.id, signal);
-		if (!found.ok) return found.error.code === "not_found" ? this.#fail("not_found", `no ${this.#label} computer is ${ref.name} (${ref.id})`) : found;
+		if (!found.ok) return found;
 		if (found.value === undefined) return this.#fail("not_found", `no ${this.#label} computer is ${ref.name} (${ref.id})`);
 		if (!ours(found.value.labels, ref.name)) return this.#fail("not_found", `no ${this.#label} computer named ${ref.name} has the id ${ref.id}`);
 		return ok(found.value);
@@ -1040,7 +1039,7 @@ export class HostedProvider implements ComputerProvider {
 			const id = given.id;
 			if (typeof id !== "string" || !MACHINE_ID.test(id)) return this.#fail("invalid", `${String(id)} is not ${a(this.#label)} machine id`);
 			const found = await this.#get(id, signal);
-			if (!found.ok) return found.error.code === "not_found" ? this.#fail("not_found", `no ${this.#label} computer has the id ${id}`) : found;
+			if (!found.ok) return found;
 			if (found.value === undefined || !ours(found.value.labels)) return this.#fail("not_found", `no ${this.#label} computer has the id ${id}`);
 			return this.#attached(found.value, signal);
 		}
@@ -1154,10 +1153,9 @@ export class HostedProvider implements ComputerProvider {
 			if (!ours(machine.labels) || !shown(machine)) continue;
 			if (this.host.facts.networkReadBack && machine.network === undefined) {
 				if (Date.now() >= until) return late(`${infos.length} computers were read back, ${machine.id} and any after it were not`);
-				const read = await this.#call(`the read of ${machine.id}`, (ctx) => this.host.get(item.id, ctx), Math.max(1, Math.min(requestMs, until - Date.now())), signal);
-				// A machine the vendor no longer has, between the listing and the read, is left out.
-				if (!read.ok && read.error.code === "not_found") continue;
+				const read = await readMachine(this.host, item.id, Math.max(1, Math.min(requestMs, until - Date.now())), signal);
 				if (!read.ok) return read.error.code === "timeout" ? late(read.error.message) : read;
+				// A machine the vendor no longer has, between the listing and the read, is left out (shown reads it so).
 				machine = read.value;
 				// The listing may be older than get: the machine is held to every label again, as get reads them.
 				if (!shown(machine) || !ours(machine.labels) || !Object.entries(labels).every(([key, value]) => machine?.labels[key] === value)) continue;
@@ -1304,7 +1302,7 @@ export class HostedProvider implements ComputerProvider {
 		const stop = this.host.stop?.bind(this.host);
 		if (how === "stop" && !(stop && this.host.facts.release.includes("stop"))) return this.#fail("unsupported", `${a(this.#label)} computer has no stop that this provider declares: release it with delete`);
 		const found = await this.#get(ref.id);
-		if (!found.ok) return found.error.code === "not_found" ? ok(undefined) : found;
+		if (!found.ok) return found;
 		if (found.value === undefined) return ok(undefined);
 		if (!ours(found.value.labels, ref.name)) return this.#fail("not_found", `no ${this.#label} computer is ${ref.name} (${ref.id}): the machine is not this provider's, so it is left as it is`);
 		// A stop and a delete alike let go of a running Archil computer's folder first: a stopped one holds no folder.
@@ -1353,6 +1351,12 @@ export async function listedBy(host: MachineHost, what: string, labels: Record<s
 	return listed.ok ? ok(listed.value.filter((machine) => Object.entries(labels).every(([key, value]) => machine.labels?.[key] === value))) : listed;
 }
 
+/** The host's get of one machine, bounded by ms: a machine the vendor reports as not found is none, never an error. */
+async function readMachine(host: MachineHost, id: string, ms: number, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
+	const read = await hostCall(host, `the read of ${id}`, (ctx) => host.get(id, ctx), ms, signal);
+	return !read.ok && read.error.code === "not_found" ? ok(undefined) : read;
+}
+
 /**
  * Waits, through waitUntil, until the host reads a machine as wanted, by get and by its name's listing alike, twice
  * running: gone (get answers none, or a state that is not alive, and the listing no longer shows it), or stopped (get
@@ -1380,12 +1384,12 @@ export async function settle(
 	let agreed = 0;
 	let last = "unread";
 	const read = async (readSignal: AbortSignal): Promise<Read> => {
-		const got = await hostCall(host, `the read of ${ref.id}`, (ctx) => host.get(ref.id, ctx), requestMs, readSignal);
-		if (!got.ok && got.error.code !== "not_found") {
+		const got = await readMachine(host, ref.id, requestMs, readSignal);
+		if (!got.ok) {
 			if (got.error.code === "aborted") return { last };
 			return { failed: fail(got.error.code, `${doing} of ${ref.name}: reading it back failed (${got.error.message}); it last read ${last}`) };
 		}
-		const machine = got.ok ? got.value : undefined;
+		const machine = got.value;
 		const state = machine?.state;
 		last = state ?? "gone (not found)";
 		if (ask !== undefined && state === "failed") return { failed: fail("vendor", `${doing} of ${ref.name}: it went to failed${machine?.why ? `: ${machine.why}` : ""}`) };
