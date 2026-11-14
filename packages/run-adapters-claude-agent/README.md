@@ -50,6 +50,10 @@ const runNode = createHarnessRunner(
   allowlist (`PATH`, `LANG`, `TZ`, its own homes and the proxy's address and key).
 - **Durable.** The CLI's transcript is mirrored into the session's records (the SDK's session store), so a session a
   process died inside resumes from them on any machine.
+- **Steers mid-turn.** A message `steer()` places while a turn runs goes to the CLI at once, at priority `next`; the CLI
+  hands it to the model at its next step, after the tool calls in flight finish, in the same turn. The session's
+  `message_taken` event says when the transcript holds it. One placed as the turn ends starts the next turn, and one
+  placed again under the same id places nothing.
 
 `./testing` has a scripted Agent SDK (no CLI, key or network) and a scripted Anthropic Messages API for the real CLI.
 
