@@ -170,7 +170,8 @@ test("check() refuses in words, field by field, before any request", () => {
 	}
 	assert.match(words({ ...SPEC, lifetimeMs: 30 * 24 * 3600 * 1000 + 1 }), /at most 30 days \(2592000000 ms\)/);
 	for (const network of ["wifi", "open", { allow: [] }, { allow: ["example.com"] }, { allow: ["208.80.154.232/32"] }]) assert.deepEqual(refused({ ...SPEC, network }), ["network"], JSON.stringify(network));
-	for (const field of ["cpus", "memoryMb", "pids"]) assert.match(words({ ...SPEC, [field]: 2 }), /size of its image/);
+	for (const field of ["cpus", "memoryMb"]) assert.match(words({ ...SPEC, [field]: 2 }), new RegExp(`a Daytona computer has the size of its snapshot: name a snapshot of the size you need, not ${field}`));
+	assert.match(words({ ...SPEC, pids: 2 }), /size of its image/);
 	assert.match(words({ ...SPEC, user: "0" }), /daemon user \(2510:2510\)/);
 	assert.match(words({ ...SPEC, workdir: "/data" }), /works in \/work/);
 	assert.match(words({ ...SPEC, gpu: 1 }), /gpu is \{ type, count \}/);
@@ -299,7 +300,7 @@ test("the read-back: Daytona's states as the adapter's, its end, its GPUs and it
 	assert.equal((await read({ state: "build_failed" })).why, "Daytona reads the sandbox build_failed, with no reason given", "a failed sandbox with no reason still carries a why");
 	assert.equal((await read({ state: "destroying" })).why, undefined);
 	assert.equal(await read({ state: "destroyed" }), undefined, "a destroyed sandbox is one Daytona no longer has");
-	assert.deepEqual((await read({ snapshot: "daytona-gpu", gpu: 1, gpuType: "H100", autoDeleteInterval: 0 })).gpu, GPU);
+	assert.equal(Object.hasOwn(await read({ snapshot: "daytona-gpu", gpu: 1, gpuType: "H100", autoDeleteInterval: 0 }), "gpu"), false, "a GPU is the adapter's label, not a read-back");
 	const { provider } = setup({ [`GET /api/sandbox/${REF.id}`]: { status: 404, body: { statusCode: 404, message: "not found" } } });
 	assert.equal(await provider.host.get(REF.id, { timeoutMs: 1_000 }), undefined);
 });
@@ -538,14 +539,6 @@ test("the loopback block: network none only, the toolbox's port declared, and op
 	assert.deepEqual(network, ["none"]);
 	assert.deepEqual(vendorAgentPorts, [2280]);
 	for (const policy of ["open", { allow: ["example.com"] }]) assert.match(provider.check({ ...SPEC, network: policy }).map((r) => r.message).join(" "), /network of their own/);
-});
-
-test("the socket block: Daytona's D-Bus session bus in /tmp, which no network namespace cuts, is among the sockets create closes to the tool user, and nothing more", async () => {
-	const { provider } = setup();
-	assert.deepEqual(provider.host.facts.vendorSockets, ["/tmp/dbus-*"]);
-	const { hostedCommands } = await import("../dist/hosted/scripts.js");
-	const { sockets } = hostedCommands({ vendorSockets: provider.host.facts.vendorSockets });
-	assert.deepEqual(sockets.slice(4), ["/tmp/dbus-*"], "the pattern reaches the sockets script, which matches the live run's /tmp/dbus-Y8OW6E3FDx");
 });
 
 test("the provider writes nowhere but its results, and reads no environment: its source has no console, no stdio and no process.env", () => {

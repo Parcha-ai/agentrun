@@ -174,11 +174,6 @@ test("check() refuses in words, field by field, with no SDK call", () => {
 	// A Modal computer works in its home: the daemon's working directory is read back as /work.
 	assert.deepEqual(refused({ ...SPEC, workdir: "/opt/app" }), ["workdir"]);
 	assert.match(words({ ...SPEC, workdir: "/opt/app" }, "workdir"), /works in \/work, its home/);
-	// Ten tags, five of them the adapter's own: a computer takes five labels of its caller's.
-	const six = Object.fromEntries([1, 2, 3, 4, 5, 6].map((n) => [`l${n}`, "v"]));
-	assert.deepEqual(refused({ ...SPEC, labels: six }), ["labels"]);
-	assert.match(words({ ...SPEC, labels: six }, "labels"), /a Modal computer takes 10 labels, 5 of them the provider's own: 6 is 1 too many/);
-	assert.deepEqual(provider.check({ ...SPEC, labels: Object.fromEntries(Object.entries(six).slice(1)) }), []);
 	for (const labels of [{ [COMPUTER]: "x" }, { [NAME]: "x" }, { a: 1 }, { "": "v" }, { "a\0": "v" }, []]) {
 		assert.deepEqual(refused({ ...SPEC, labels }), ["labels"], `labels ${JSON.stringify(labels)}`);
 	}
@@ -204,6 +199,18 @@ test("lifetime: maxLifetimeMs caps what check takes, in words, and create refuse
 	const root = await create(provider, { ...SPEC, user: "0" });
 	assert.equal(root.error?.code, "refused");
 	assert.deepEqual(rec.calls, [], "refused before any SDK call");
+});
+
+test("Modal takes 10 tags on a sandbox, five of them the adapter's own: past that its create refuses in words, before sandboxes.create", async () => {
+	const { provider, rec } = setup();
+	const six = Object.fromEntries([1, 2, 3, 4, 5, 6].map((n) => [`l${n}`, "v"]));
+	const made = await create(provider, { ...SPEC, labels: six });
+	assert.equal(made.error?.code, "invalid");
+	assert.match(made.error.message, /Modal takes at most 10 tags on a sandbox, and this one's would be 11/);
+	assert.ok(!rec.names().includes("sandboxes.create"), "refused before Modal was asked");
+	const five = setup();
+	await create(five.provider, { ...SPEC, labels: Object.fromEntries(Object.entries(six).slice(1)) });
+	assert.equal(Object.keys(five.rec.params().tags).length, 10, "ten tags go to Modal");
 });
 
 test("the janitor does not sweep Modal computers: Modal ends them at their lifetime", async () => {

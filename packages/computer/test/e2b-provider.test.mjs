@@ -199,6 +199,7 @@ test("check() takes a template as the image, network none, and labels; it refuse
 	assert.match(provider.check({ ...SPEC, network: { allow: ["example.com"] } })[0].message, /allowlists wait for a proxy/);
 	assert.deepEqual(fields({ ...SPEC, cpus: 2 }), ["cpus"]);
 	assert.deepEqual(fields({ ...SPEC, memoryMb: 1024 }), ["memoryMb"]);
+	assert.match(provider.check({ ...SPEC, cpus: 2 })[0].message, /an E2B computer has the size of its template: name a template of the size you need, not cpus/, "E2B's own check: the adapter passes sizes on");
 	assert.deepEqual(fields({ ...SPEC, pids: 10 }), ["pids"]);
 	assert.deepEqual(fields({ ...SPEC, user: "0" }), ["user"]);
 	assert.deepEqual(fields({ ...SPEC, workdir: "/tmp" }), ["workdir"]);

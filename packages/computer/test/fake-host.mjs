@@ -19,6 +19,21 @@ export const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.po
 const NO_CAPS = "0000000000000000";
 const STDIN_VERBS = new Set(["mount", "revoke"]);
 
+/** The fake's descriptor, as a vendor's (src/descriptors/*): its network, mounts and configurations. */
+export const FAKE_DESCRIPTOR = {
+	id: "fakehost",
+	label: "Fakehost",
+	network: ["none"],
+	mounts: ["archil"],
+	capabilities: [
+		{ kind: "linux", groups: [...LINUX_GROUPS] },
+		{ kind: "desktop", groups: [...DESKTOP_GROUPS] },
+	],
+};
+
+/** The fake's descriptor with GPUs on its linux configuration. */
+export const gpuDescriptor = (gpu) => ({ ...FAKE_DESCRIPTOR, capabilities: [{ kind: "linux", groups: [...LINUX_GROUPS], gpu }, FAKE_DESCRIPTOR.capabilities[1]] });
+
 export class NotFound extends Error {
 	name = "NotFound";
 }
@@ -81,13 +96,12 @@ const START = Date.now();
  *  - flaps: for a new machine, whether each listing after its create shows it (true) or leaves it out (false), in turn,
  *    until they run out; then every listing shows it;
  *  - born(n): the creation time of the n-th machine made (1, 2, ...), or undefined for none; default the order made;
- *    a machine reads back the GPUs its create asked for;
  *  - sha: "ok" or "lie"; install: the install's exit code; initFails: words init writes before it exits;
  *  - notListening: how many bridges find no daemon before one does;
  *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
  *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager does not start) or
  *    "manager dies" (it ends at once);
- *  - timer: "ok" or "limit" (setTimer throws a HostError limit); setTimer moves the end and the deadline label;
+ *  - timer: "ok" or "limit" (extend throws a HostError limit); extend moves the end and the deadline label;
  *  - lingers: { reads, lists } after a delete; fileApi: false for a host with no upload;
  *  - onStep(step, machine): at the start of every host call and daemon request, so a test can abort a signal there;
  *  - hang: a script's kind ("install", ...) whose process never ends; killHangs: a process's kill that never settles;
@@ -174,7 +188,6 @@ export function fakeHost({
 		labels: { ...m.labels },
 		state: m.deleted || m.why !== undefined ? "gone" : m.state,
 		...(m.createdAt === undefined ? {} : { createdAt: new Date(m.createdAt) }),
-		...(m.request?.gpu === undefined ? {} : { gpu: { ...m.request.gpu } }),
 		endsAt: new Date(m.endsAt),
 		...(m.why === undefined ? {} : { why: m.why }),
 	});
@@ -446,9 +459,6 @@ export function fakeHost({
 			maxLifetimeMs: 24 * 3_600_000,
 			arch: "amd64",
 			vendorAgentPorts: [7777],
-			gpuReadBack: true,
-			network: ["none"],
-			mounts: ["archil"],
 			...facts,
 		},
 		errorCode(error) {
@@ -464,7 +474,7 @@ export function fakeHost({
 			await onStep("create", undefined);
 			if (create === "fail") throw new Refused("400: no such image");
 			const make = () => {
-				const m = add({ labels: req.labels, network: req.network, image: req.image, lifetimeMs: req.lifetimeMs ?? 600_000, state: starting > 0 ? "starting" : "running", startingReads: starting });
+				const m = add({ labels: req.labels, network: req.egress ? "open" : "none", image: req.image, lifetimeMs: req.lifetimeMs, state: starting > 0 ? "starting" : "running", startingReads: starting });
 				m.hidden = unlisted;
 				m.flaps = [...flaps];
 				m.request = req;
@@ -541,13 +551,12 @@ export function fakeHost({
 					},
 				}
 			: {}),
-		async setTimer(id, { end, most }, ctx) {
+		async extend(id, endsAt, ctx) {
 			const m = machines.get(id);
-			await step("setTimer", ctx, m);
+			await step("extend", ctx, m);
 			if (gone(m)) throw new NotFound(`machine ${id} not found`);
 			if (timer === "limit") throw new HostError("limit", "no whole number of seconds reaches it; nothing moved");
-			m.endsAt = new Date(Math.min(end.getTime(), most.getTime()));
-			// A vendor that keeps no label change reads its moved end as the deadline label (src/host.ts, setTimer).
+			m.endsAt = new Date(endsAt);
 			m.labels[DEADLINE_LABEL] = m.endsAt.toISOString();
 		},
 	};
