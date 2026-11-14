@@ -64,11 +64,24 @@ export default {
       check(sent.label === WORDS && sent.expected?.account === "6400" && sent.correct === false, `${width}px: the grade sent ${JSON.stringify(sent)}`);
       await grade.getByText("Graded wrong").waitFor();
 
+      // Files and back: the Grade control comes back with the grade it sent, never the choice again.
+      const tabSwitch = async () => {
+        await page.getByRole("tab", { name: /^Files/ }).click();
+        await grade.waitFor({ state: "detached" });
+        await page.getByRole("tab", { name: "Report", exact: true }).click();
+        await grade.getByText("Graded wrong").waitFor();
+        check(!(await grade.getByText("Was the answer right?").isVisible()), `${width}px: the choice is back after a tab switch`);
+      };
+      await tabSwitch();
+
       // The round ends: the run ended again and its learning settled.
       await settled(runId);
       await grade.getByText("The agent looked back on your words.").waitFor({ timeout: 30_000 });
       check(!(await grade.getByText("Reviewing", { exact: true }).isVisible()), `${width}px: still reviewing after the round ended`);
       await shoot(grade, `grade-reviewed-${width}.png`);
+      // And once it ended: the round's outcome is still said.
+      await tabSwitch();
+      await grade.getByText("The agent looked back on your words.").waitFor();
 
       // The Timeline: the grade's words as "Your grade", and the round's learning row.
       await grade.getByRole("button", { name: "Open the Timeline" }).click();

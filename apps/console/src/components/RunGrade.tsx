@@ -22,8 +22,13 @@ const EXPECTED_NOTE = 'A JSON object of the fields a right answer holds, like {"
 const NOT_AN_OBJECT = 'Write it as a JSON object, like {"total": 42}, or leave it empty.';
 
 /** A grade this page sent, with the server's answer: the round it opened the run again on (`feedback`, null for none),
- *  and the run's end before it, so the page knows that round has ended once the run ends at another time. */
-type Sent = { correct: boolean; feedback: GradeAnswer["feedback"]; at: string; endedBefore: string | null; words: boolean };
+ *  the learned workflow a `revise` round revises, and the run's end before it, so the page knows that round has ended
+ *  once the run ends at another time. The run page keeps it (not the Grade control), so a tab switch never loses it. */
+export type SentGrade = { correct: boolean; feedback: GradeAnswer["feedback"]; workflow: string | null; at: string; endedBefore: string | null; words: boolean };
+
+/** The grade a page sent, from the server's answer, the body it sent and the run's end when it sent it. */
+export const sentGrade = (answer: GradeAnswer, body: GradeBody, endedBefore: string | null): SentGrade =>
+  ({ correct: answer.correct, feedback: answer.feedback, workflow: answer.workflow, at: answer.graded_at, endedBefore, words: !!body.label });
 
 /** The correct answer box: nothing, a JSON object (the API's `expected`), or why it is neither. */
 export function expectedOf(text: string): { value?: Record<string, unknown>; error?: string } {
@@ -41,20 +46,31 @@ function refusal(e: unknown): string {
 }
 
 /** What came of the grade, in words: the round it opened (running or done), or that it was kept with none. A grade read
- *  back from the server says only that the run is open again on it: which round it opened is not kept. */
-function outcome(sent: Sent | null, reviewing: boolean): string | null {
+ *  back from the server says only that the run is open again on it: which round it opened is not kept. A finished
+ *  `revise` round says "revised" only when the run's learning kept the workflow's revision (its newest round merged with
+ *  that workflow); a draft that failed its checks, a `No change.` or a grader that kept nothing of it changed nothing. */
+function outcome(sent: SentGrade | null, reviewing: boolean, learning: Run["learning"]): string | null {
   if (!sent) return reviewing ? "The run is open again on your grade." : null;
   if (sent.feedback === "look_back") return reviewing ? "The agent is looking back on your words." : "The agent looked back on your words.";
-  if (sent.feedback === "revise") return reviewing ? "The learned workflow that answered is being revised with your grade." : "The learned workflow that answered was revised with your grade.";
+  if (sent.feedback === "revise") {
+    if (reviewing) return "The learned workflow that answered is being revised with your grade.";
+    const kept = learning?.state === "merged" ? learning.workflows?.find((w) => !sent.workflow || w.name === sent.workflow) : undefined;
+    if (!kept) return "The agent looked back at your grade; nothing changed.";
+    return kept.pending ? "The learned workflow that answered was revised with your grade. The revision waits for your OK." : "The learned workflow that answered was revised with your grade.";
+  }
   if (sent.correct) return "Kept for this agent.";
   return sent.words ? "Kept for this agent. This run can't be opened again for a look-back." : "Kept for this agent. A look-back needs words.";
 }
 
 export type RunGradeProps = {
   run: Pick<Run, "status" | "learning" | "ended_at">;
-  /** The run's grade as its learning read gives it back (`graded`): null when it has none, or before the read. */
+  /** The run's grade as its learning read gives it back (`graded`), a grade this page sent taken into it: null when it
+   *  has none, or before the read. */
   graded: RunGraded | null;
-  /** Sends the grade (PUT /v2/runs/{id}/grade) and reads the run again; rejects when it was not taken. */
+  /** The grade this page sent and what the server answered, as the run page keeps it: null for none. */
+  sent: SentGrade | null;
+  /** Sends the grade (PUT /v2/runs/{id}/grade), keeps it on the page and reads the run again; rejects when it was not
+   *  taken. */
   onGrade?: (body: GradeBody) => Promise<GradeAnswer>;
   /** Opens the run's Timeline, where a grade's round shows; absent on the Timeline itself. */
   onOpenTimeline?: () => void;
@@ -63,8 +79,7 @@ export type RunGradeProps = {
 /** The Grade control on an ended run that learns: Right, or Wrong with the reviewer's words and, optionally, the fields
  *  a right answer holds. A graded run shows its grade (and "Reviewing" while the round it opened runs) and takes a new
  *  grade, which replaces it. Nothing for a run a grade doesn't teach, nor for one under way that has no grade. */
-export function RunGrade({ run, graded, onGrade, onOpenTimeline }: RunGradeProps) {
-  const [sent, setSent] = useState<Sent | null>(null);
+export function RunGrade({ run, graded, sent, onGrade, onOpenTimeline }: RunGradeProps) {
   // "auto": the choice while ungraded, closed once graded (the read can bring a grade after the first render).
   const [open, setOpen] = useState<"auto" | "closed" | "choose" | "wrong">("auto");
   const [words, setWords] = useState("");
@@ -85,7 +100,7 @@ export function RunGrade({ run, graded, onGrade, onOpenTimeline }: RunGradeProps
   const form = open === "auto" ? (shown ? "closed" : "choose") : open;
   const canGrade = ended && !reviewing;
   const exp = expectedOf(expected);
-  const said = outcome(mine, reviewing);
+  const said = outcome(mine, reviewing, run.learning);
 
   const send = async (correct: boolean) => {
     if (sending.current || !onGrade) return;
@@ -94,8 +109,7 @@ export function RunGrade({ run, graded, onGrade, onOpenTimeline }: RunGradeProps
     sending.current = true;
     setBusy(true); setRefused(null);
     try {
-      const answer = await onGrade({ correct, ...(label ? { label } : {}), ...(!correct && exp.value ? { expected: exp.value } : {}) });
-      setSent({ correct: answer.correct, feedback: answer.feedback, at: answer.graded_at, endedBefore: run.ended_at, words: !!label });
+      await onGrade({ correct, ...(label ? { label } : {}), ...(!correct && exp.value ? { expected: exp.value } : {}) });
       setOpen("auto"); setWords(""); setExpected(""); setTried(false);
     } catch (e) { setRefused(refusal(e)); }
     sending.current = false;
