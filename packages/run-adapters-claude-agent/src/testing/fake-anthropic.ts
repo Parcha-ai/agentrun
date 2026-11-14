@@ -68,6 +68,8 @@ type Thought = { thinking?: string; redacted?: string };
 export type FakeReply =
   | ({ text: string } & Thought)
   | ({ tool: { name: string; input: unknown; id?: string }; text?: string } & Thought)
+  /** Several calls in one answer, in this order (the model's parallel calls). */
+  | ({ tools: { name: string; input: unknown; id?: string }[]; text?: string } & Thought)
   /** The provider's own web search (the answer to a request with its web search tool): its call and results, then
    *  `text`, with `searches` (default 1) in `usage.server_tool_use.web_search_requests`. */
   | { search: { query: string; results: { title: string; url: string }[]; text: string; searches?: number } }
@@ -256,14 +258,15 @@ export async function fakeAnthropic(options: FakeAnthropicOptions): Promise<Fake
     if ('thinking' in reply && reply.thinking) blocks.push({ type: 'thinking', thinking: reply.thinking, signature: `sig_fake_${requests.length}` });
     if ('redacted' in reply && reply.redacted) blocks.push({ type: 'redacted_thinking', data: reply.redacted });
     if ('text' in reply && reply.text) blocks.push({ type: 'text', text: reply.text });
-    if ('tool' in reply) blocks.push({ type: 'tool_use', id: reply.tool.id ?? `toolu_fake_${String(++toolSeq).padStart(4, '0')}_${Date.now().toString(36)}`, name: reply.tool.name, input: reply.tool.input });
+    const calls = 'tool' in reply ? [reply.tool] : 'tools' in reply ? reply.tools : [];
+    for (const call of calls) blocks.push({ type: 'tool_use', id: call.id ?? `toolu_fake_${String(++toolSeq).padStart(4, '0')}_${Date.now().toString(36)}`, name: call.name, input: call.input });
     if ('search' in reply) {
       const id = `srvtoolu_fake_${String(++toolSeq).padStart(4, '0')}`;
       blocks.push({ type: 'server_tool_use', id, name: 'web_search', input: { query: reply.search.query } });
       blocks.push({ type: 'web_search_tool_result', tool_use_id: id, content: reply.search.results.map((r) => ({ type: 'web_search_result', title: r.title, url: r.url, encrypted_content: 'ZmFrZQ==', page_age: null })) });
       blocks.push({ type: 'text', text: reply.search.text });
     }
-    const stopReason = 'tool' in reply ? 'tool_use' : 'end_turn';
+    const stopReason = calls.length ? 'tool_use' : 'end_turn';
     // The real API's shape, nested objects included (a recorded response is in test/fixtures/).
     const searched = 'search' in reply ? { server_tool_use: { web_search_requests: reply.search.searches ?? 1 } } : {};
     const usage = { input_tokens: Math.ceil(text.length / 4), cache_creation_input_tokens: 0, cache_read_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 }, output_tokens: 12, output_tokens_details: { thinking_tokens: 0 }, service_tier: 'standard', ...searched };

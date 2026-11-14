@@ -191,6 +191,13 @@ test("pi: under allow_reads a read-only tool runs with no approval; a write park
   const unconfirmed = await answer(wipe, destructive.id, { decision: "allow" });
   assert.equal(unconfirmed.status, 422, JSON.stringify(unconfirmed.body));
   assert.ok(JSON.stringify(unconfirmed.body).includes("confirm_destructive"), JSON.stringify(unconfirmed.body));
+  // The refusal says, in its own words, what to send and when: a whole sentence with nothing tacked on after it (no
+  // generated ", e.g. true"), in the field's issue and the error's message alike. The field still carries its example.
+  const { message, fields } = unconfirmed.body.error;
+  const issue = fields.find((field) => field.field === "confirm_destructive");
+  assert.deepEqual([issue?.reason, issue?.example], ["missing", true], JSON.stringify(issue));
+  assert.equal(message, issue.message);
+  assert.equal(issue.message, `The tool call ${destructive.id} is one its MCP server marks destructive. To allow it, confirm a second time and send the allow again with confirm_destructive: true.`);
   assert.equal(calls(fake, "delete_thing").length, 0, "an unconfirmed allow sends nothing");
   assert.equal((await answer(wipe, destructive.id, { decision: "allow", confirm_destructive: true })).status, 204);
   await follow(api, wipe, ["completed"], { deadlineMs: 60_000 });
