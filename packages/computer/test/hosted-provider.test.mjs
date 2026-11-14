@@ -13,7 +13,7 @@ import { checkLifetime, computerNameFor as nameOf } from "../dist/index.js";
 import { HostError } from "../dist/host.js";
 import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescriptor, LINUX_GROUPS, NotFound, VERSION } from "./fake-host.mjs";
 
-const { hostedProvider } = await import("../dist/hosted/provider.js");
+const { HostedProvider } = await import("../dist/hosted/provider.js");
 const { hostedCommands } = await import("../dist/hosted/scripts.js");
 const { WINDOW_MANAGER } = await import("../dist/desktop.js");
 
@@ -40,9 +40,10 @@ test.after(() => rmSync(dir, { recursive: true, force: true }));
 /** Short bounds, so the waits in these tests take milliseconds. */
 const TIMEOUTS = { requestMs: 2_000, createMs: 2_000, uploadMs: 2_000, execMs: 2_000, helloMs: 1_000, probeMs: 1_000, listMs: 2_000, goneMs: 500, pollMs: 5, listedMs: 500, listedStableMs: 0, mountMs: 2_000 };
 
-function setup(options = {}, fakeOptions = {}) {
-	const fake = fakeHost(fakeOptions);
-	const provider = hostedProvider(fake.host, { descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, ...options });
+/** The fake host and a provider over it; a descriptor given goes on the host, which carries it (src/host.ts). */
+function setup({ descriptor, ...options } = {}, fakeOptions = {}) {
+	const fake = fakeHost({ ...fakeOptions, ...(descriptor === undefined ? {} : { descriptor }) });
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, ...options });
 	return { fake, provider };
 }
 let requests = 0;
@@ -69,7 +70,7 @@ async function nothingLeft(fake, what) {
 
 // --- capabilities and check ---
 
-test("capabilities come from the descriptor (network, mounts, the kind's groups and GPUs), the host's facts and the adapter's options alone", () => {
+test("capabilities come from the host's descriptor (network, mounts, the kind's groups and GPUs), its facts and the adapter's options alone", () => {
 	const { provider } = setup({ kind: "desktop" });
 	assert.deepEqual(provider.capabilities(), {
 		kind: "desktop",
@@ -89,10 +90,9 @@ test("capabilities come from the descriptor (network, mounts, the kind's groups 
 	assert.deepEqual(setup().provider.capabilities().groups, LINUX_GROUPS, "linux by default");
 	assert.equal(provider.id, "fakehost");
 	assert.equal(provider.version, VERSION);
-	assert.equal(typeof provider.extend, "function", "extend where the host has one");
-	const fixed = fakeHost();
-	delete fixed.host.extend;
-	assert.equal(hostedProvider(fixed.host, { descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH }).extend, undefined, "no extend where the host has none");
+	assert.equal(typeof provider.extend, "function", "extend with a vendor timer");
+	assert.equal(typeof setup({}, { facts: { lifetime: "janitor" } }).provider.extend, "function", "extend with the janitor's label: the host's extend either way");
+	assert.equal(setup({}, { timer: "none" }).provider.extend, undefined, "no extend where the host has none");
 	assert.throws(() => setup({ maxLifetimeMs: 25 * HOUR }), /at most 86400000 ms, the longest Fakehost keeps a computer/);
 	assert.throws(() => setup({ daemonUser: "0:0" }), /root or in root's group/);
 	// The descriptor is the network's and the mounts' one source: the host's facts name neither.
@@ -102,7 +102,6 @@ test("capabilities come from the descriptor (network, mounts, the kind's groups 
 	assert.deepEqual(setup(WITH_GPU).provider.capabilities().gpu, { types: ["H100"], max: 1 }, "the kind's GPUs, from its configuration");
 	assert.equal(setup({ ...WITH_GPU, kind: "desktop" }).provider.capabilities().gpu, undefined, "a desktop configuration offers none");
 	assert.throws(() => setup({ descriptor: { ...FAKE_DESCRIPTOR, capabilities: [FAKE_DESCRIPTOR.capabilities[0]] }, kind: "desktop" }), /Fakehost offers no desktop computer/);
-	assert.throws(() => setup({ descriptor: { ...FAKE_DESCRIPTOR, id: "other" } }), /the descriptor other is not the host fakehost's/);
 });
 
 test("check() refuses, with no host call, what no hosted computer is: open, an allowlist, pids, a user, a workdir, the adapter's own labels, a lifetime past the cap; sizes are the host's to refuse", () => {
@@ -125,7 +124,7 @@ test("check() refuses, with no host call, what no hosted computer is: open, an a
 
 test("a host's own rules (check) are held at check()", () => {
 	const fake = fakeHost();
-	const strict = hostedProvider({ ...fake.host, check: (spec) => (spec.image === "bad" ? [{ field: "image", message: "not a vendor image" }] : []) }, { descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH });
+	const strict = new HostedProvider({ ...fake.host, check: (spec) => (spec.image === "bad" ? [{ field: "image", message: "not a vendor image" }] : []) }, { daemonPath: DAEMON_PATH });
 	assert.deepEqual(strict.check({ ...SPEC, image: "bad" }), [{ field: "image", message: "not a vendor image" }]);
 	// The host's check is given an object, whatever the caller gave: it reads the fields with no check of its own.
 	for (const given of [null, undefined, "img", 7]) assert.deepEqual(strict.check(given).find(({ field }) => field === "image")?.message, "an image is required: the name of a Fakehost image", String(given));
@@ -304,8 +303,8 @@ test("create races: a second create of a request in flight with another spec is 
 
 test("a retry from another provider instance finds the machine still starting, waits until it is up, and returns it", async () => {
 	const fake = fakeHost();
-	const first = hostedProvider(fake.host, { descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
-	const second = hostedProvider(fake.host, { descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const first = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const second = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	const starting = fake.add({ labels: { [COMPUTER]: "1", [NAME]: nameOf("other-instance"), [DEADLINE]: new Date(Date.now() + 600_000).toISOString(), [MAX]: new Date(Date.now() + HOUR).toISOString(), "agentrun.computer.image": "img" }, state: "starting", startingReads: 2 });
 	const pending = second.create(SPEC, { requestId: "other-instance" });
 	// The first instance's create brings init up a moment later.
@@ -325,8 +324,8 @@ test("two provider instances racing one request each make a machine; both conver
 		["with no creation time: the lowest id", () => undefined, 0],
 	]) {
 		const fake = fakeHost({ create: "hold", born, lingers: { reads: 1, lists: 1 } });
-		const one = hostedProvider(fake.host, { descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
-		const two = hostedProvider(fake.host, { descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		const one = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		const two = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 		// Both read the name's listing and find nothing, then both creates are in flight at the vendor.
 		const pending = [one.create(SPEC, { requestId: "two-instances" }), two.create(SPEC, { requestId: "two-instances" })];
 		for (let i = 0; i < 100 && fake.creates() < 2; i++) await new Promise((done) => setImmediate(done));
@@ -381,7 +380,7 @@ test("a retry is held to the GPUs its computer's label records, on a host that r
 	assert.equal(made(await provider.create(SPEC, { requestId: "cpu-first" })).id, plain.id);
 	assert.equal(fake.creates(), 2, "never a second machine under one name");
 	// A restarted provider reads the same label: the GPUs need no vendor read-back.
-	const after = hostedProvider(fake.host, { ...WITH_GPU, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const after = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	assert.equal((await after.create({ ...SPEC, gpu: H100 }, { requestId: "cpu-first" })).error?.code, "exists");
 	assert.equal(made(await after.create({ ...SPEC, gpu: H100 }, { requestId: "gpu-first" })).id, withGpu.id);
 });
@@ -389,11 +388,11 @@ test("a retry is held to the GPUs its computer's label records, on a host that r
 test("a retry from a restarted provider, of a sized request, finds the computer the first made: the request carries the spec's sizes, and none is read back", async () => {
 	const fake = fakeHost();
 	const spec = { ...SPEC, cpus: 4, memoryMb: 8192 };
-	const before = hostedProvider(fake.host, { descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const before = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	const ref = made(await before.create(spec, { requestId: "sized-unread" }));
 	assert.deepEqual([only(fake).request.cpus, only(fake).request.memoryMb], [4, 8192], "the spec's sizes, as given");
 	assert.equal(only(fake).request.workdir, undefined, "no workdir: no host takes one");
-	const after = hostedProvider(fake.host, { descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const after = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	assert.equal(made(await after.create(spec, { requestId: "sized-unread" })).id, ref.id, "a size read back as nothing is not a drift");
 	assert.equal(fake.creates(), 1, "never a second machine under one name");
 });
@@ -451,6 +450,13 @@ test("a create whose answer is lost or broken is swept by its name: the machine 
 	assert.match(timedOut.error.message, /deleted as it lands/);
 	for (let i = 0; i < 100 && lost.fake.live().length > 0; i++) await new Promise((done) => setTimeout(done, 10));
 	await nothingLeft(lost.fake, "a lost create");
+	// Lost, answered as a Result: the host's own client timed out, so no answer comes later either. Swept by name the same.
+	const answered = setup({}, { create: "lost-answered" });
+	const gaveUp = await create(answered.provider);
+	assert.equal(gaveUp.error?.code, "timeout");
+	assert.match(gaveUp.error.message, /deleted as it lands/);
+	for (let i = 0; i < 100 && answered.fake.live().length > 0; i++) await new Promise((done) => setTimeout(done, 10));
+	await nothingLeft(answered.fake, "a create whose host answered a timeout");
 });
 
 test("a create that lands after an abort is deleted as it lands", async () => {
@@ -567,6 +573,25 @@ test("two extends of one computer run one after the other; a timer the vendor re
 	void fake;
 });
 
+test("a janitor host's extend moves its deadline label, and init takes the deadline the host reads back, not the one asked", async () => {
+	const { provider, fake } = setup({}, { facts: { lifetime: "janitor" } });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	const asked = Date.now() + 20 * 60_000;
+	const moved = made(await provider.extend(ref, 20 * 60_000));
+	// The fake writes the label rounded up to a whole second, as a vendor may: the read-back is what counts.
+	assert.equal(moved.deadline.getTime() % 1000, 0, "the deadline returned is the label read back, a whole second");
+	assert.ok(moved.deadline.getTime() >= asked);
+	assert.equal(m.labels[DEADLINE], moved.deadline.toISOString(), "the host moved its deadline label");
+	assert.equal(m.init.deadline, moved.deadline.toISOString(), "init took the deadline read back");
+	assert.deepEqual(
+		fake.calls.filter(([name]) => name === "extend" || name === "get").slice(-2).map(([name]) => name),
+		["extend", "get"],
+		"the end is read back by get after the host's extend",
+	);
+	assert.equal(made(await provider.list({}))[0].deadline.toISOString(), moved.deadline.toISOString(), "list reads the label");
+});
+
 test("the listing finds and get answers: a listing that keeps a deleted machine and shows create's end after an extend changes nothing list, release or a create answers", async () => {
 	const { provider, fake } = setup({}, { stale: true });
 	const ref = made(await create(provider, SPEC, { requestId: "stale" }));
@@ -581,7 +606,7 @@ test("the listing finds and get answers: a listing that keeps a deleted machine 
 	assert.equal(released.ok, true, `the wait after a delete reads get, not a listing that keeps the machine: ${released.error?.message}`);
 	assert.deepEqual(made(await provider.list({})), [], "a deleted machine the listing still shows is not listed");
 	// Another instance's create of the request: the listing still names the deleted machine, and get says it is gone.
-	const other = hostedProvider(fake.host, { descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const other = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	const again = made(await other.create(SPEC, { requestId: "stale" }));
 	assert.notEqual(again.id, ref.id, "a machine get reads gone is not the request's: a new one is made");
 	assert.deepEqual(made(await other.list({})).map((info) => info.ref.id), [again.id]);
@@ -594,7 +619,7 @@ test("a janitor host's extend writes its own deadline label: the adapter reads i
 		written.push(endsAt.toISOString());
 		fake.machines.get(id).labels[DEADLINE] = endsAt.toISOString();
 	};
-	const provider = hostedProvider(fake.host, { descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	assert.equal(provider.capabilities().lifetime, "janitor");
 	const ref = made(await create(provider));
 	assert.equal(only(fake).request.lifetimeMs, 600_000, "every request carries the lifetime: a janitor's host may ignore it");

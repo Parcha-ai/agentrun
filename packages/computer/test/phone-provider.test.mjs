@@ -16,7 +16,7 @@ import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { ADB_CODE, ADB_HOST, fakeClock, fakePhoneHarness, KEY, PHONED_JAR, PHONED_SERVICE } from "./fake-phone-harness.mjs";
 
 const phone = await import("../dist/phone-harness.js");
-const { create, MOUNT, memoryLedger, adbCli } = phone;
+const { create, memoryLedger, adbCli } = phone;
 const conformance = await import("../dist/conformance/phone-harness.js");
 
 const dir = mkdtempSync(join(tmpdir(), "computer-phone-"));
@@ -40,7 +40,7 @@ async function setup(fakeOptions = {}, options = {}) {
 const noKey = (value) => assert.ok(!JSON.stringify(value).includes(KEY), `the key is not in ${JSON.stringify(value).slice(0, 300)}`);
 
 test("create(options) builds the phone-harness provider from its options alone: an Android phone the provider answers for, no daemon, no mount", async () => {
-	assert.deepEqual(MOUNT, []);
+	assert.equal(phone.MOUNT, undefined, "its mounts are its descriptor's, exported nowhere else");
 	assert.equal(phone.ENV, undefined, "the provider file names no environment variable");
 	assert.equal(phone.fromEnv, undefined);
 	const { provider } = await setup();

@@ -10,7 +10,7 @@
 // The store's clock stays at T0; each claim's own clock is set apart from it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { queued, storeOn, T0 } from "./store-helpers.mjs";
+import { queued, registryPin, storeOn, T0 } from "./store-helpers.mjs";
 
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 const { sealMcpCredential } = await import("../dist/store/index.js");
@@ -55,7 +55,7 @@ async function setUp(t, leftMs, auth = "bearer") {
   const opened = await storeOn(t);
   const set = setOf(leftMs);
   await opened.store.mcp.put({ name: "fake", url: MCP_URL, auth, tools: [ADD], sealed: sealMcpCredential(KEY, "fake", { type: "oauth", set }, MCP_URL), tokenLeftMs: leftMs });
-  await queued(opened.store, "run-1");
+  await queued(opened.store, "run-1", { mcpPin: await registryPin(opened.store) });
   const claim = await opened.store.claim("run-1", "runner-a", { leaseMs: 600_000 });
   return { ...opened, claim };
 }
@@ -223,7 +223,7 @@ test("a row another claim's refresh left, its new token near its end but valid o
   // Claim A refreshes (the token run out) and keeps a set of two minutes' life; claim B, its clock an hour ahead of every
   // other clock here, waits on A's lease and opens the row A left: valid, inside the refresh margin, never refreshed again.
   const { store, claim } = await setUp(t, -1_000);
-  await queued(store, "run-2");
+  await queued(store, "run-2", { mcpPin: await registryPin(store) });
   const two = await store.claim("run-2", "runner-b", { leaseMs: 600_000 });
   let answer;
   const answered = new Promise((resolve) => (answer = resolve));

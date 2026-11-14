@@ -1,12 +1,13 @@
 // The kernel cap's one pricing rule, the same for every harness: a request's input bound (one token per UTF-8 byte of what
 // is sent, plus what its provider adds and its hosted tools read) at the dearer of the input and cache-write prices; under
-// "expected" (the default) the previous request's cache read at the cache-read price when it ended under 4 minutes ago on
-// the same model, so only a cache miss can pass the cap, by at most the request's bound; under "strict" every token
-// uncached. Its output held at what it is sent with, its thinking budget included. A model with no price, and a priced
-// model with no output ceiling, cannot be kept within a cap: under one they are refused for good.
+// "expected" (the default) the cache of a recent request of the session read at the cache-read price (one that ended under
+// 4 minutes ago on the same model, the biggest no bigger than this one), so only a cache miss can pass the cap, by at most
+// the request's bound; under "strict" every token uncached. Its output held at what it is sent with, its thinking budget
+// included. A model with no price, and a priced model with no output ceiling, cannot be kept within a cap: under one they
+// are refused for good.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CACHE_WARM_MS, CapRefused, previousAfter } from "../dist/kernel/cap/index.js";
+import { CACHE_WARM_MS, CapRefused, RECENT_REQUESTS_KEPT, recentAfter, warmFrom } from "../dist/kernel/cap/index.js";
 import { providerInputOverhead } from "../dist/host/index.js";
 import { capOn, FREE, GPT, modelRequest, SONNET, T0, UNPRICED, usd } from "./kernel-cap-support.mjs";
 
@@ -41,7 +42,7 @@ test("a request's least is the figure admit refuses it below: uncached with no p
   const { cap } = capOn(10);
   const cold = modelRequest(SONNET, 10_000);
   near(cap.leastUsd(cold), usd(10_000, 3.75) + usd(1_024, 15), "uncached, 1,024 answer tokens");
-  const hot = modelRequest(SONNET, 10_000, 4_096, { previous: warm({ cachedTokens: 9_000, inputTokens: 1_000, boundTokens: 10_000 }) });
+  const hot = modelRequest(SONNET, 10_000, 4_096, { recent: [warm({ cachedTokens: 9_000, inputTokens: 1_000, boundTokens: 10_000 })] });
   near(cap.leastUsd(hot), usd(9_000, 0.3) + usd(1_000, 3.75) + usd(1_024, 15), "read from the cache");
   const least = cap.leastUsd(cold);
   await assert.rejects(capOn(least - 0.0001).cap.admit(modelRequest(SONNET, 10_000)), CapRefused);
@@ -53,7 +54,7 @@ test("expected mode on a ~90% cached run spends at least 90% of a $0.50 cap and 
   let previous;
   let bound = 2_000;
   for (;;) {
-    const request = modelRequest(SONNET, bound, 1_100, previous ? { previous } : {});
+    const request = modelRequest(SONNET, bound, 1_100, previous ? { recent: [previous] } : {});
     let admitted;
     try {
       admitted = await cap.admit(request);
@@ -76,7 +77,7 @@ test("expected mode on a ~90% cached run spends at least 90% of a $0.50 cap and 
 
 test("strict mode holds the worst case with no bound", async () => {
   const { cap } = capOn(10, { mode: "strict" });
-  const admitted = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { previous: warm() }));
+  const admitted = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { recent: [warm()] }));
   near(admitted.heldUsd, admitted.worstUsd);
   assert.equal(admitted.boundUsd, 0);
 });
@@ -84,39 +85,65 @@ test("strict mode holds the worst case with no bound", async () => {
 test("the previous cache counts under 4 minutes: at 3:59.999 the expected cost, at 4:00.001 the worst case", async () => {
   assert.equal(CACHE_WARM_MS, 240_000);
   const { cap, clock } = capOn(10);
-  const fresh = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { previous: warm({ endedAt: clock.now - (CACHE_WARM_MS - 1) }) }));
+  const fresh = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { recent: [warm({ endedAt: clock.now - (CACHE_WARM_MS - 1) })] }));
   near(fresh.heldUsd, usd(90_000, 0.3) + usd(10_000, 3.75) + usd(1_000, 15), "expected");
   near(fresh.boundUsd, fresh.worstUsd - fresh.heldUsd, "the bound is what a miss can add");
-  const stale = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { previous: warm({ endedAt: clock.now - (CACHE_WARM_MS + 1) }) }));
+  const stale = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { recent: [warm({ endedAt: clock.now - (CACHE_WARM_MS + 1) })] }));
   near(stale.heldUsd, stale.worstUsd);
   assert.equal(stale.boundUsd, 0);
 });
 
 test("another model than the previous answer's counts no cache: worst case, no bound", async () => {
   const { cap } = capOn(10);
-  const admitted = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { previous: warm({ model: GPT.id }) }));
+  const admitted = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { recent: [warm({ model: GPT.id })] }));
   near(admitted.heldUsd, admitted.worstUsd);
   assert.equal(admitted.boundUsd, 0);
 });
 
 test("a request smaller than the previous one (a compaction, another conversation's) reads none of its cache: worst case, no bound", async () => {
   const { cap } = capOn(10);
-  const admitted = await cap.admit(modelRequest(SONNET, 40_000, 1_000, { previous: warm() }));
+  const admitted = await cap.admit(modelRequest(SONNET, 40_000, 1_000, { recent: [warm()] }));
   near(admitted.heldUsd, admitted.worstUsd, "never under what it can cost");
   assert.equal(admitted.boundUsd, 0);
 });
 
-test("history resets at a smaller request: it never sticks on the request the conversation left, and never prices from another's", () => {
-  const earlier = { ...warm(), counted: true };
-  const next = (overrides) => ({ ...earlier, boundTokens: 100_000, endedAt: T0, ...overrides });
-  assert.equal(previousAfter(undefined, next()).boundTokens, 100_000, "the first request is the previous");
-  assert.equal(previousAfter(earlier, next({ boundTokens: 120_000 })).boundTokens, 120_000, "a growing body continues it");
-  assert.equal(previousAfter(earlier, next({ boundTokens: 100_000 })).boundTokens, 100_000, "an equal body too");
-  assert.equal(previousAfter(earlier, next({ boundTokens: 30_000 })), undefined, "a compaction's smaller body resets history");
-  // Then the request after it starts a new history, warm for the one after that.
-  assert.equal(previousAfter(undefined, next({ boundTokens: 35_000 })).boundTokens, 35_000);
-  assert.equal(previousAfter(earlier, next({ model: GPT.id, boundTokens: 30_000 })).model, GPT.id, "another model's request replaces it");
-  assert.equal(previousAfter(earlier, next({ counted: false, boundTokens: 30_000 })).counted, false, "a bound measured another way is no comparison");
+test("a smaller request between two of a conversation's own (Codex's while a tool runs) leaves its next request warm from its last", async () => {
+  const main = (bound, endedAt) => ({ model: SONNET.id, cachedTokens: bound - 1_000, inputTokens: 1_000, boundTokens: bound, endedAt });
+  let recent = [];
+  recent = recentAfter(recent, main(100_000, T0 - 3_000));
+  recent = recentAfter(recent, main(110_000, T0 - 2_000));
+  recent = recentAfter(recent, main(40_000, T0 - 1_000));
+  assert.deepEqual(recent.map((one) => one.boundTokens), [100_000, 110_000, 40_000], "the smaller request is kept beside the others, never in their place");
+  assert.equal(warmFrom(120_000, recent, T0, SONNET.id).boundTokens, 110_000, "the conversation's next request: from its last, the biggest no bigger");
+  assert.equal(warmFrom(45_000, recent, T0, SONNET.id).boundTokens, 40_000, "the smaller one's next (a compacted conversation's): from it");
+  assert.equal(warmFrom(30_000, recent, T0, SONNET.id), undefined, "smaller than every one: uncached");
+  const { cap } = capOn(10);
+  const next = await cap.admit(modelRequest(SONNET, 120_000, 1_000, { recent }));
+  near(next.heldUsd, usd(109_000, 0.3) + usd(1_000 + 10_000, 3.75) + usd(1_000, 15), "held warm from the 110,000-token request");
+});
+
+test("the recent requests: warm ones only, the newer of one bound, at most RECENT_REQUESTS_KEPT; each priced only from its model's, warm, no bigger", () => {
+  const one = (boundTokens, endedAt, overrides = {}) => ({ model: SONNET.id, cachedTokens: 0, inputTokens: boundTokens, boundTokens, endedAt, ...overrides });
+  assert.deepEqual(recentAfter([one(50_000, T0 - CACHE_WARM_MS)], one(60_000, T0)).map((r) => r.boundTokens), [60_000], "one that ended 4 minutes before the new one goes");
+  assert.deepEqual(recentAfter([one(60_000, T0 - 10)], one(60_000, T0)).map((r) => r.endedAt), [T0], "one of the same bound: the newer");
+  assert.equal(recentAfter([one(60_000, T0 - 10, { counted: true })], one(60_000, T0)).length, 2, "one measured another way: both");
+  assert.equal(recentAfter([one(60_000, T0 - 10, { model: GPT.id })], one(60_000, T0)).length, 2, "another model's: both");
+  let many = [];
+  for (let k = 0; k < RECENT_REQUESTS_KEPT + 4; k += 1) many = recentAfter(many, one(1_000 + k, T0 + k));
+  assert.equal(many.length, RECENT_REQUESTS_KEPT);
+  assert.equal(many.at(-1).boundTokens, 1_000 + RECENT_REQUESTS_KEPT + 3, "the newest kept");
+  const recent = [one(80_000, T0 - 1_000), one(90_000, T0 - 1_000, { model: GPT.id }), one(95_000, T0 - CACHE_WARM_MS)];
+  assert.equal(warmFrom(100_000, recent, T0, SONNET.id).boundTokens, 80_000, "neither another model's nor a cold one is read");
+  assert.equal(warmFrom(100_000, [one(80_000, T0)], T0 - 1, SONNET.id), undefined, "a clock that reads before its end: none");
+  assert.equal(warmFrom(100_000, [one(80_000, T0 - 5), one(80_000, T0 - 1, { cachedTokens: 7 })], T0, SONNET.id).cachedTokens, 7, "of equal bounds, the newest");
+});
+
+test("a warm guess that misses (another conversation's request whose bound fit) costs at most the request's hold and its bound", async () => {
+  const { cap } = capOn(10);
+  const admitted = await cap.admit(modelRequest(SONNET, 120_000, 1_000, { recent: [warm({ boundTokens: 110_000 })] }));
+  const missed = usd(120_000, 3.75) + usd(admitted.outputTokensMax ?? 1_000, 15);
+  assert.ok(admitted.heldUsd < missed - 0.2, `held warm: $${admitted.heldUsd}`);
+  near(admitted.heldUsd + admitted.boundUsd, missed, "the bound covers the whole miss");
 });
 
 test("a request is held at the output it is sent with, its thinking budget included", async () => {

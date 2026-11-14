@@ -1,9 +1,10 @@
-// The machine host: what a vendor writes to put computers on its machines. A vendor answers seven calls about its own
-// machines (create, get, list, delete, exec, errorCode, and its static facts); hostedProvider (./hosted/provider.ts)
-// owns everything else a ComputerProvider does: the spec's check, the daemon's upload, install and start, the stdio
-// bridge, the read-back and the probe, labels, list and attach, the deadline and extend, the wait after a delete, the
-// sweep of a lost create, the Archil mount, and the words of every refusal. These doc comments are the
-// contract a new vendor reads (PROVIDERS.md, "The eight members").
+// The machine host: what a vendor writes to put computers on its machines. A host has eleven members: its descriptor
+// and its facts, five calls about its own machines (create, get, list, delete, exec), and four optional hooks (upload,
+// errorCode, extend, check). HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the
+// spec's check, the daemon's upload, install and start, the stdio bridge, the read-back and the probe, labels, list and
+// attach, the deadline and extend, the wait after a delete, the sweep of a lost create, the Archil mount, and the words
+// of every refusal. These doc comments are the contract a new vendor reads (PROVIDERS.md, "The eleven members").
+import type { ProviderDescriptor } from "./descriptor.js";
 import type { ComputerCapabilities, ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import type { ComputerErrorCode } from "./result.js";
 
@@ -14,8 +15,12 @@ import type { ComputerErrorCode } from "./result.js";
  * both on to its vendor call when it can.
  */
 export interface MachineHost {
-	/** The provider's descriptor id ("e2b"): the vendor named by every error of code vendor. */
-	readonly id: string;
+	/**
+	 * The provider's descriptor (./descriptors): its id names the vendor of every error of code vendor, its label is the
+	 * vendor in words, and capabilities() and check() read its network forms, mount kinds and unmounted kinds, and its
+	 * configuration of the adapter's kind: the groups and GPUs.
+	 */
+	readonly descriptor: HostDescriptor;
 	readonly facts: HostFacts;
 	/**
 	 * Makes one machine, by its options, and answers its id once the vendor has one. It does not wait for the machine to
@@ -68,10 +73,12 @@ export interface MachineHost {
 	 */
 	errorCode?(error: unknown): ComputerErrorCode;
 	/**
-	 * Moves the machine's end to endsAt: the vendor's own timer (facts.lifetime "vendor"), or the deadline label the
-	 * janitor reads (DEADLINE_LABEL, facts.lifetime "janitor"). After it, get reads the moved end back as the deadline
-	 * label. A refusal (a HostError limit, in words) when the vendor cannot end it there: nothing moves then. Optional: a
-	 * host without it has no extend.
+	 * Moves the machine's end to endsAt, never past its agentrun.computer.max-deadline label, the most it may live: the
+	 * vendor's own timer (facts.lifetime "vendor"), or the janitor's deadline label (facts.lifetime "janitor"). A refusal
+	 * (a HostError limit, in words) when no end the vendor takes lands there without moving it earlier than it is or past
+	 * the most: nothing moves then. The adapter reads the end back with get (deadlineOf, the deadline label: a vendor that
+	 * keeps no label change reads its moved timer as that label), and init's deadline follows it. Optional: a host without
+	 * it has no extend.
 	 */
 	extend?(id: string, endsAt: Date, ctx: HostCall): Promise<void>;
 	/**
@@ -79,8 +86,6 @@ export interface MachineHost {
 	 * spec is an object, as the caller gave it: its fields are not checked yet (an image may be a number).
 	 */
 	check?(spec: Partial<ComputerSpec>): Refusal[];
-	/** Settings' test, where a list would make something (an app); default: one list by the adapter's label, counted. */
-	testConnection?(ctx: HostCall): Promise<{ detail: string }>;
 }
 
 /** A host's failure whose code it knows: thrown by a host member, read by the adapter as that code, in these words. */
@@ -163,6 +168,12 @@ export interface MachineProcess {
 	/** Ends it, best effort, and lets go of its streams; never throws. */
 	kill(): Promise<void>;
 }
+
+/**
+ * What the host reads of its provider's descriptor: its id and label, its network forms and mounts, and its
+ * configurations, each kind's groups and GPUs.
+ */
+export type HostDescriptor = Pick<ProviderDescriptor, "id" | "label" | "network" | "mounts" | "unmounted" | "capabilities">;
 
 /**
  * What a vendor's machines are, static: with its descriptor (network, mounts, each kind's groups and GPUs) and the

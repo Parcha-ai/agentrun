@@ -197,7 +197,7 @@ export interface Computer {
 
 /** computer_observe: observe an app's window (or, with no ui group, the screen). */
 export interface ObserveArgs {
-	/** Default: the app in front. */
+	/** Default: the app in front. With no ui group, opened or brought in front first. */
 	app?: string;
 	/** Add the window's picture (always, with no ui group). */
 	image?: boolean;
@@ -207,7 +207,7 @@ export interface ObserveArgs {
 
 /** computer_act: run steps on an app, and check a condition after them. */
 export interface ActArgs {
-	/** Default: the state's app, else the app in front. */
+	/** Default: the state's app, else the app in front. With no ui group, opened or brought in front first. */
 	app?: string;
 	/** The state a step's point was read from. Default: the last observed. */
 	state?: string;

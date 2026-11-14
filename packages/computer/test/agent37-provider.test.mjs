@@ -179,13 +179,24 @@ test("get reads an instance back as a machine; an unknown id is none; list answe
 	assert.deepEqual(machine.createdAt, new Date(1_800_000_000_000));
 	assert.equal(machine.labels["agentrun.conformance"], "run-1");
 	// get no longer catches 404: the adapter reads not_found as none (hosted-provider.test.mjs).
-	assert.equal(host.errorCode(await host.get("zzzzzzzzzz", CTX).catch((thrown) => thrown)), "not_found");
-	assert.equal(host.errorCode(await host.get("not an id", CTX).catch((thrown) => thrown)), "not_found", "an id that is not Agent37's is not found, never a URL");
+	const thrown = (call) => call.then(
+		() => undefined,
+		(error) => error,
+	);
+	assert.equal(host.errorCode(await thrown(host.get("zzzzzzzzzz", CTX))), "not_found");
+	const notAnId = await thrown(host.get("not an id", CTX));
+	assert.equal(host.errorCode(notAnId), "not_found", "an id that is not Agent37's is not found, never a URL");
+	assert.doesNotMatch(notAnId.message, /https?:|agent37\.app/);
+	assert.equal(host.errorCode(await thrown(host.delete("not an id", CTX))), "not_found", "nor is it deleted");
+	assert.equal(host.errorCode(await thrown(host.extend("not an id", new Date(), CTX))), "not_found", "nor extended");
+	const unreached = await thrown(host.exec("not an id", ["true"], CTX));
+	assert.equal(host.errorCode(unreached), "not_found", "nor reached over SSH");
+	assert.doesNotMatch(unreached.message, /agent37\.app/, "never a host name");
 	// Agent37 filters nothing: its listing is the whole workspace, and the adapter keeps the machines that carry the labels.
 	assert.equal((await host.list({ "agentrun.conformance": "run-1" }, CTX)).length, 2);
 	assert.deepEqual((await provider.list({ "agentrun.conformance": "run-1" })).value.map((info) => info.ref.id), [value.id]);
 	assert.equal(await host.delete(value.id, CTX), undefined);
-	assert.equal(host.errorCode(await host.delete(value.id, CTX).catch((thrown) => thrown)), "not_found", "a repeat's 404 is not_found, which the adapter's delete reads as done");
+	assert.equal(host.errorCode(await thrown(host.delete(value.id, CTX))), "not_found", "a repeat's 404 is not_found, which the adapter's delete reads as done");
 	assert.equal(rest.instances.has(value.id), false);
 	rest.fail("GET", /^\/v1\/instances$/, new Response(JSON.stringify({ data: [], has_more: true }), { status: 200 }));
 	await assert.rejects(host.list({}, CTX), /would miss machines/);
@@ -584,7 +595,7 @@ test("the conformance module reads COMPUTER_AGENT37_* alone, needs its live swit
 	const desktop = await conformanceModule.createProvider({ env: { ...env, [ENV.live]: "1", [ENV.kind]: "desktop" }, ...doubles });
 	assert.equal(desktop.capabilities().kind, "desktop");
 	const host = await conformanceModule.createHost({ env, ...doubles });
-	assert.equal(host.id, "agent37");
+	assert.equal(host.descriptor.id, "agent37");
 	assert.equal(sweepScope({ env }), workspaceOf(KEY));
 	assert.doesNotMatch(sweepScope({ env }), new RegExp(KEY));
 	assert.notEqual(sweepScope({ env: { ...env, [ENV.key]: BARE } }), sweepScope({ env }), "another key is another workspace");
