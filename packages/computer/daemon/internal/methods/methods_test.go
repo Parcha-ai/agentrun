@@ -116,16 +116,15 @@ func TestHelloOfADesktopSaysItsDisplayAndALinuxComputerSaysNone(t *testing.T) {
 	_, name := x11fake.Listen(t, nil)
 	r := callWith(t, methods.Options{Display: desktop.New(name)}, `{"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"test"}}`)
 	var hello struct {
-		Kind     string          `json:"kind"`
-		Display  *string         `json:"display"`
-		Features map[string]bool `json:"features"`
+		Kind    string  `json:"kind"`
+		Display *string `json:"display"`
 	}
 	if r.Error != nil || json.Unmarshal(r.Result, &hello) != nil || hello.Kind != "desktop" || hello.Display == nil || *hello.Display != name {
 		t.Fatalf("hello of a desktop on %s: %+v %s", name, r.Error, r.Result)
 	}
-	// Its screen.watch takes an ask ahead, so the live view keeps two asks in flight.
-	if len(hello.Features) != 1 || !hello.Features["screen.ahead"] {
-		t.Fatalf("hello of a desktop: features %v; want screen.ahead", hello.Features)
+	// A desktop lists no features: its screen.watch takes one ask at a time.
+	if strings.Contains(string(r.Result), `"features"`) {
+		t.Fatalf("hello of a desktop: %s; want no features", r.Result)
 	}
 	for _, options := range []methods.Options{{}, {Display: desktop.New(":4242")}} {
 		r := callWith(t, options, `{"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"test"}}`)

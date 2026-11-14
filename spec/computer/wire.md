@@ -60,8 +60,8 @@ A computer with the `ui` group also says its screen and its features:
 - `screen`: the main screen's size in points and its scale (pixels per point). Present with the `ui` group.
 - `features`: what the computer can and cannot do inside its groups, each name `true`, or `{"off": "<why, in words>"}`.
   A feature that is off is refused with that sentence when asked for, never ignored. The names and what they mean are
-  `features` in [`protocol.json`](protocol.json): `screen.capture`, `screen.ahead`, `ui.tree`, `ui.image`,
-  `ui.background`, `ui.foreground`, `ui.page`, `ui.nav` and `apps.background`. Names stay the same on every OS; an OS name appears only
+  `features` in [`protocol.json`](protocol.json): `screen.capture`, `ui.tree`, `ui.image`, `ui.background`,
+  `ui.foreground`, `ui.page`, `ui.nav` and `apps.background`. Names stay the same on every OS; an OS name appears only
   in a reason. A computer of the `ui` group always declares `ui.tree`. A feature not declared is not offered, but for
   `screen.capture`: a computer of the `screen` group that does not declare it captures its screen, and one that declares
   it off refuses `screen.shot` and `screen.watch` with its reason (an attached Mac whose owner has not granted the

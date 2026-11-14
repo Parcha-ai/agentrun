@@ -97,6 +97,26 @@ test("frames are pull-paced: each next() is the ack of the frame before it, and 
 	await watch.close();
 });
 
+test("one ask is in flight while the screen is unchanged, whatever the hello's features say", async () => {
+	const fake = fakeConnection();
+	fake.connection.hello.features = { "screen.capture": true, "screen.ahead": true };
+	const watch = watchScreen(fake.connection);
+	const frames = watch.frames[Symbol.asyncIterator]();
+	const first = frames.next();
+	for (let i = 0; i < 5; i++) await tick();
+	assert.deepEqual(fake.watches().map((c) => c.params.after), [0], "one ask waits for the first frame");
+	fake.push([1]);
+	assert.equal((await first).value.seq, 1);
+	for (let i = 0; i < 5; i++) await tick();
+	assert.deepEqual(fake.watches().map((c) => c.params.after), [0], "nothing is asked before next() acks frame 1");
+	const second = frames.next();
+	for (let i = 0; i < 5; i++) await tick();
+	assert.deepEqual(fake.watches().map((c) => c.params.after), [0, 1], "the next ask acks frame 1, and is the only one in flight");
+	fake.push([2]);
+	assert.equal((await second).value.seq, 2);
+	await watch.close();
+});
+
 test("a frame over a chunk is read on with screen.read and given whole; a phone's PNG says so in format", async () => {
 	const fake = fakeConnection({ chunk: 4 });
 	const watch = watchScreen(fake.connection);

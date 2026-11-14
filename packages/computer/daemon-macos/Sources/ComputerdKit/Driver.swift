@@ -73,7 +73,6 @@ public final class Driver: Sendable {
 			FeatureName.foreground: platform.foregroundFeature,
 			FeatureName.page: .off("web pages through the browser's own protocol are not built yet: pages are read through the accessibility tree"),
 			FeatureName.nav: .off(FeatureName.navOff),
-			FeatureName.screenAhead: .off(FeatureName.screenAheadOff),
 		]
 	}
 

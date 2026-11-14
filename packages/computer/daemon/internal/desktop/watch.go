@@ -2,19 +2,17 @@ package desktop
 
 // screen.watch: the live view's frames. The caller asks with after, the seq of the last frame it has whole (its ack);
 // the answer is the next frame once the screen changed, or changed false once waitMs passed with none. An after older
-// than the newest frame gets the newest at once. An after one past the newest is an ask ahead (screen.ahead): a caller
-// keeps it waiting while the ask before it answers, so frames come at the computer's pace and not one each round trip,
-// and it waits as an ask for the newest does. A frame is a JPEG of the screen, scaled down to maxWidth at most; width
-// and height stay the screen's, the space input.actions takes. The pointer's place is part of what changes, so a move
-// with no pixel changed is a frame too.
+// than the newest frame gets the newest at once; one past the newest is invalid. A frame is a JPEG of the screen,
+// scaled down to maxWidth at most; width and height stay the screen's, the space input.actions takes. The pointer's
+// place is part of what changes, so a move with no pixel changed is a frame too.
 //
 // The X server says where the screen changed (DAMAGE, damage.go): a watch reads only the rectangles drawn since its last
 // read, into its own copy of the screen, and makes a frame when a pixel or the pointer's place changed, at most one
 // each frameGap. While nothing changes it reads no pixels at all, and looks only where the pointer is, each frameGap.
-// A display with no DAMAGE is read whole each pollEvery instead. Each read holds the display only while it reads, so
-// input.actions and screen.shot go on meanwhile. One connection keeps one watch (its seq, its copy of the screen and
-// the newest frame); a second watch on it waits its turn. The rest of each of the last two frames over a chunk is held
-// for screen.read, as screen.shot's PNG is, so an ask ahead never drops the frame before it.
+// An X server with no DAMAGE extension is refused, unsupported, in words: the watch has no other way to see a change.
+// Each read holds the display only while it reads, so input.actions and screen.shot go on meanwhile. One connection
+// keeps one watch (its seq, its copy of the screen and the newest frame); a second watch on it waits its turn. The
+// newest frame's rest over a chunk is held for screen.read, as screen.shot's PNG is.
 
 import (
 	"bytes"
@@ -39,13 +37,10 @@ const (
 	maxFrameWidth = 16_384
 )
 
-// frameGap is the least time between two frames of a watch on a display with DAMAGE: at most 15 frames a second.
-// Typing and a moving pointer look smooth at it, and each frame is one JPEG of the whole screen, the watch's cost on
-// the computer (about 20 ms of one core at 1280x800).
+// frameGap is the least time between two frames of a watch: at most 15 frames a second. Typing and a moving pointer
+// look smooth at it, and each frame is one JPEG of the whole screen, the watch's cost on the computer (about 20 ms of
+// one core at 1280x800).
 var frameGap = time.Second / 15
-
-// pollEvery is how often a watch reads the whole screen on a display with no DAMAGE: at most 5 frames a second.
-var pollEvery = 200 * time.Millisecond
 
 type watchParams struct {
 	After    *int `json:"after"`
@@ -73,15 +68,13 @@ type WatchResult struct {
 }
 
 // watching is one connection's watch: one call at a time (turn), its seq, its copy of the screen as last read, when it
-// last read pixels or made a frame (read), the newest frame, and the rests of the last two frames for screen.read
-// (held: its own, so a screen.shot never evicts them; next is the one the next frame's rest goes in). damage is the
-// display's damage it is subscribed to, nil while the display is polled; dirty is where the screen changed since its
-// last read, and wake is told of each change. dmu guards dirty.
+// last read pixels or made a frame (read), the newest frame, and its rest for screen.read (held: its own, so a
+// screen.shot never evicts it). damage is the display's damage it is subscribed to; dirty is where the screen changed
+// since its last read, and wake is told of each change. dmu guards dirty.
 type watching struct {
 	turn   chan struct{}
 	read   time.Time
-	held   [2]held
-	next   int
+	held   held
 	seq    int
 	screen *image.RGBA
 	jpeg   []byte
@@ -168,40 +161,29 @@ func (d *Display) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	defer func() { <-w.turn }()
 	after := *params.After
-	switch {
-	case after > w.seq+1:
-		return nil, rpc.Errorf(rpc.KindInvalid, "after %d is past the newest frame, %d, by more than the one an ask ahead may be", after, w.seq)
-	case after == w.seq+1:
-		// An ask ahead whose ask before it answered no change: it waits for the next frame.
-		after = w.seq
+	if after > w.seq {
+		return nil, rpc.Errorf(rpc.KindInvalid, "after %d is past the newest frame, %d", after, w.seq)
 	}
 	if after < w.seq {
 		return d.frame(w), nil
 	}
 	deadline := time.Now().Add(time.Duration(waitMs) * time.Millisecond)
 	for {
-		damage := d.damageFor(w)
-		gap := pollEvery
-		if damage {
-			gap = frameGap
+		if err := d.damageFor(ctx, w); err != nil {
+			return nil, err
 		}
-		// Pixels are read, and frames made, at most once each gap, across calls too: an animated screen acked at once
-		// is no faster than the cap.
-		if wait := time.Until(w.read.Add(gap)); wait > 0 {
+		// Pixels are read, and frames made, at most once each frameGap, across calls too: an animated screen acked at
+		// once is no faster than the cap.
+		if wait := time.Until(w.read.Add(frameGap)); wait > 0 {
 			if err := pause(ctx, wait, nil); err != nil {
 				return nil, err
 			}
 		}
-		region := everything
-		if damage {
-			region = w.take()
-		}
+		region := w.take()
 		cursor, changed, at, err := d.look(ctx, w, region)
 		if err != nil {
-			if damage {
-				// Not read (a cancel while input held the display, or the display went): the next look reads it.
-				w.damaged(region)
-			}
+			// Not read (a cancel while input held the display, or the display went): the next look reads it.
+			w.damaged(region)
 			return nil, err
 		}
 		if changed || w.cursor == nil || *w.cursor != cursor {
@@ -221,12 +203,8 @@ func (d *Display) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 		if left <= 0 {
 			return WatchResult{Seq: w.seq, Width: w.width, Height: w.height}, nil
 		}
-		// Until the screen changes, the pointer is looked at each gap; a change wakes the watch at once.
-		var wake chan struct{}
-		if damage {
-			wake = w.wake
-		}
-		if err := pause(ctx, min(left, gap), wake); err != nil {
+		// Until the screen changes, the pointer is looked at each frameGap; a change wakes the watch at once.
+		if err := pause(ctx, min(left, frameGap), w.wake); err != nil {
 			return nil, err
 		}
 		if time.Until(deadline) <= 0 {
@@ -309,15 +287,12 @@ func patch(screen, img *image.RGBA, at image.Point) bool {
 	return changed
 }
 
-// watchHeldOf is the rests of this connection's last two frames, for screen.read: the watch's own, apart from the
-// shot's.
-func watchHeldOf(ctx context.Context) []*held {
-	w := watchingOf(ctx)
-	return []*held{&w.held[0], &w.held[1]}
+// watchHeldOf is the newest frame's rest on this connection, for screen.read: the watch's own, apart from the shot's.
+func watchHeldOf(ctx context.Context) *held {
+	return &watchingOf(ctx).held
 }
 
-// frame is the newest frame as an answer: its first chunk, and the rest held for screen.read when it is over one, in
-// the slot the frame before last had.
+// frame is the newest frame as an answer: its first chunk, and the rest held for screen.read when it is over one.
 func (d *Display) frame(w *watching) WatchResult {
 	data := w.jpeg
 	first := data[:min(chunk, len(data))]
@@ -325,11 +300,9 @@ func (d *Display) frame(w *watching) WatchResult {
 	id := ""
 	if !eof {
 		id = fmt.Sprintf("w%d", d.shots.Add(1))
-		h := &w.held[w.next]
-		w.next = 1 - w.next
-		h.mu.Lock()
-		h.id, h.data = id, data
-		h.mu.Unlock()
+		w.held.mu.Lock()
+		w.held.id, w.held.data = id, data
+		w.held.mu.Unlock()
 	}
 	return WatchResult{
 		Seq: w.seq, Changed: true, ID: id, Size: len(data), Data: append([]byte{}, first...), EOF: &eof, Format: "jpeg",
