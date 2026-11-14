@@ -1,11 +1,12 @@
 // The Modal host: Modal sandboxes on the VM runtime, and on gVisor for a GPU computer (Modal's one GPU runtime), every
-// call through the host's own Modal JS SDK client, of which this package names only the slice it uses (ModalSdk) and
-// imports nothing. A Modal sandbox's command is its main process, so computerd is pid1: the sandbox's command is the
+// call through the host's own Modal JS SDK client, whose types it imports as types only (erased at build: nothing loads at
+// import). A Modal sandbox's command is its main process, so computerd is pid1: the sandbox's command is the
 // shared entrypoint, which waits for the daemon and becomes init, and Modal finishes the sandbox when init exits. Modal
 // has no file API, so the daemon goes in through exec's stdin; it has no kill for an exec (closing stdin ends one), and
 // reads no network back, so the probe from inside stands for network none. The rest of the computer is the shared
 // machine-host adapter's (./hosted/provider.ts). Every SDK fact below is cited in the README's Modal section, from
 // modal-client@64880502 (js/src) and Modal's docs.
+import type { App, Image, ModalClient, Sandbox, SandboxCreateParams } from "modal";
 import { MODAL, MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./descriptors/modal.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
@@ -22,72 +23,16 @@ import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
 /** This module's failures: one with code vendor names Modal. */
 const fail = failFor("modal");
 
-/** The App sandboxes are made in (modal-client@64880502:js/src/app.ts:32-61). */
-export interface ModalApp {
-	readonly appId: string;
-}
-
-/** An Image, built on Modal's side when a sandbox is created from it (js/src/image.ts:311-401). */
-export interface ModalImage {
-	dockerfileCommands(commands: string[]): ModalImage;
-}
-
-/** What sandboxes.create is given: every field is one of the SDK's SandboxCreateParams (js/src/sandbox.ts:356-474). */
-export interface ModalCreateParams {
-	/** vm, or gvisor for a GPU computer: Modal offers GPUs on gVisor only. */
-	runtime: ModalRuntime;
-	/** The GPUs, as the SDK takes them ("T4", "A100-80GB:4"): a GPU computer only. */
-	gpu?: string;
-	command: string[];
-	timeoutMs: number;
-	workdir: string;
-	cpu: number;
-	cpuLimit: number;
-	memoryMiB: number;
-	memoryLimitMiB: number;
-	blockNetwork?: true;
-	tags: Record<string, string>;
-}
-
-/** A program's stdin in binary mode: the SDK's ModalWriteStream (js/src/streams.ts:33-39) and WritableStream's close. */
-export interface ModalByteSink {
-	writeBytes(bytes: Uint8Array): Promise<void>;
-	close(): Promise<void>;
-}
-
-/** One program started by exec in binary mode: the part of the SDK's ContainerProcess read here (sandbox.ts:2774-2914). */
-export interface ModalProcess {
-	readonly stdin: ModalByteSink;
-	readonly stdout: AsyncIterable<Uint8Array>;
-	readonly stderr: AsyncIterable<Uint8Array>;
-	wait(): Promise<number>;
-}
-
-/** The part of the SDK's Sandbox called here (sandbox.ts:1624-2772). */
-export interface ModalSandbox {
-	readonly sandboxId: string;
-	exec(command: string[], params: { mode: "binary" }): Promise<ModalProcess>;
-	/** null while the sandbox runs, its exit code once it has finished. */
-	poll(): Promise<number | null>;
-	getTags(): Promise<Record<string, string>>;
-	terminate(): Promise<void>;
-}
-
-/** The part of the SDK's ModalClient this provider calls. The host passes its own client. */
-export interface ModalSdk {
-	readonly apps: { fromName(name: string, params: { createIfMissing: boolean }): Promise<ModalApp> };
-	/** fromId opens an image Modal already holds (im-..., as box/build-modal.py prints it); a spec naming one needs it. */
-	readonly images: { fromRegistry(tag: string): ModalImage; fromId?(id: string): Promise<ModalImage> };
-	readonly sandboxes: {
-		create(app: ModalApp, image: ModalImage, params: ModalCreateParams): Promise<ModalSandbox>;
-		fromId(id: string): Promise<ModalSandbox>;
-		list(params: { appId: string; tags: Record<string, string> }): AsyncIterable<ModalSandbox>;
-	};
-}
+/**
+ * The SDK's own types, imported as types only: erased at build, so nothing loads the SDK from here. The host passes its
+ * own client (or the constructor), which these name.
+ */
+export type ModalSdk = object;
+type SdkClient = ModalClient;
 
 /** The Modal provider's options: the client and the app, then the shared adapter's (HostedOptions). */
 export interface ModalProviderOptions extends Omit<HostedOptions, "label" | "kind" | "desktop" | "maxLifetimeMs"> {
-	/** The host's Modal client, or anything with the same slice. */
+	/** The host's Modal client. */
 	sdk: ModalSdk;
 	/** The Modal App the sandboxes live in; made when missing. */
 	app: string;
@@ -299,13 +244,13 @@ function tagProblem(tags: Record<string, string>): string | undefined {
 class ModalHost implements MachineHost {
 	readonly id = "modal";
 	readonly facts: HostFacts;
-	readonly #sdk: ModalSdk;
+	readonly #sdk: SdkClient;
 	readonly #appName: string;
 	/** Each sandbox create or a read gave, by id: let go of at its delete. */
-	readonly #sandboxes = new Map<string, ModalSandbox>();
-	#app: ModalApp | undefined;
+	readonly #sandboxes = new Map<string, Sandbox>();
+	#app: App | undefined;
 
-	constructor(sdk: ModalSdk, app: string) {
+	constructor(sdk: SdkClient, app: string) {
 		this.#sdk = sdk;
 		this.#appName = app;
 		this.facts = {
@@ -338,13 +283,13 @@ class ModalHost implements MachineHost {
 	}
 
 	/** The app, looked up (and made when missing) once per provider; a failed lookup is tried again next time. */
-	async #theApp(): Promise<ModalApp> {
+	async #theApp(): Promise<App> {
 		this.#app ??= await this.#sdk.apps.fromName(this.#appName, { createIfMissing: true });
 		return this.#app;
 	}
 
 	/** The sandbox with an id: the one create gave, or sandboxes.fromId, which throws NotFoundError for one Modal does not know. */
-	async #sandbox(id: string): Promise<ModalSandbox> {
+	async #sandbox(id: string): Promise<Sandbox> {
 		return this.#sandboxes.get(id) ?? this.#sdk.sandboxes.fromId(id);
 	}
 
@@ -383,7 +328,7 @@ class ModalHost implements MachineHost {
 		const tags = tagsOf(req.labels);
 		const problem = tagProblem(tags);
 		if (problem) return fail("refused", problem);
-		let base: ModalImage;
+		let base: Image;
 		if (MODAL_IMAGE_ID.test(req.image)) {
 			const fromId = this.#sdk.images.fromId;
 			if (typeof fromId !== "function") return fail("invalid", `the image ${req.image} is a Modal image id, and options.sdk has no images.fromId to open it: pass the SDK's own ModalClient`);
@@ -392,7 +337,7 @@ class ModalHost implements MachineHost {
 		const cpus = req.cpus ?? DEFAULT_CPUS;
 		const memoryMb = req.memoryMb ?? DEFAULT_MEMORY_MB;
 		const cpuLimit = cpus / CPUS_PER_CORE;
-		const params: ModalCreateParams = {
+		const params: SandboxCreateParams = {
 			runtime: this.facts.runtime?.(req) ?? "vm",
 			...(req.gpu === undefined ? {} : { gpu: modalGpu(req.gpu) }),
 			command: [...req.command],
@@ -422,7 +367,7 @@ class ModalHost implements MachineHost {
 	}
 
 	/** One sandbox read: none once it has finished or Modal no longer knows it. */
-	async #machine(sandbox: ModalSandbox): Promise<Machine | undefined> {
+	async #machine(sandbox: Sandbox): Promise<Machine | undefined> {
 		try {
 			if ((await sandbox.poll()) !== null) return undefined;
 			return { id: sandbox.sandboxId, labels: labelsOf(await sandbox.getTags()), state: "running" };
@@ -524,7 +469,8 @@ class ModalHost implements MachineHost {
  */
 export class ModalProvider extends HostedProvider {
 	constructor(options: ModalProviderOptions) {
-		const { sdk, app, maxLifetimeMs = MAX_LIFETIME_MS, timeouts = {}, ...rest } = options ?? ({} as ModalProviderOptions);
+		const { app, maxLifetimeMs = MAX_LIFETIME_MS, timeouts = {}, ...rest } = options ?? ({} as ModalProviderOptions);
+		const sdk = options?.sdk as SdkClient | undefined;
 		const lacks = [
 			["apps.fromName", sdk?.apps?.fromName],
 			["images.fromRegistry", sdk?.images?.fromRegistry],
@@ -537,6 +483,6 @@ export class ModalProvider extends HostedProvider {
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_LIFETIME_MS) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 hours (${MAX_LIFETIME_MS} ms), Modal's longest timeout`);
 		}
-		super(new ModalHost(sdk, app), { ...rest, label: "Modal", kind: "linux", maxLifetimeMs, timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
+		super(new ModalHost(sdk as SdkClient, app), { ...rest, label: "Modal", kind: "linux", maxLifetimeMs, timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
 	}
 }

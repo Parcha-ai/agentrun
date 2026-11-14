@@ -213,7 +213,7 @@ test("an import is refused, storing nothing: a source off GitHub, a ref GitHub d
   assert.ok(Date.now() - began < 10_000, `refused at once, in ${Date.now() - began} ms`);
   await refused({ source: `${ID}@hard` }, "package", /rules\/HARD\.md is a hard link/);
   await refused({ source: `${ID}@fifo` }, "package", /rules\/pipe\.md is not a regular file or a folder/);
-  await refused({ source: `${ID}@broken` }, "package", /a package's folders are skills\/, rules\/ and evals\//);
+  await refused({ source: `${ID}@broken` }, "package", /a package's folders are skills\/, rules\/, evals\/ and examples\//);
   await refused({ source: "github:acme/agents/templates/none@main" }, "source", /has no folder templates\/none/);
   await refused({ source: `${ID}@main`, dry_run: "yes" }, "dry_run", /dry_run is true or false/);
   assert.deepEqual((await api("GET", "/templates")).body.templates.filter((one) => !one.bundled), []);
