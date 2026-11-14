@@ -4,7 +4,7 @@
 // nothing here: a run's runner binds them from its workspace's registry (workspace/run-tools.ts), each call made on the
 // run's folder or its computer. `bash` and the background tools may be named only by an agent whose place is a box
 // (runnable.ts).
-import { blurbOf } from "./tool-blurbs.js";
+import { blurbOf, isHostTool } from "./tool-list.js";
 import { mcpNameOf, mcpToolName, parseToolName } from "./tool-names.js";
 import type { TSchema } from "typebox";
 import { appendFileSync } from "node:fs";
@@ -17,7 +17,6 @@ import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/in
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
-import { REPLAY } from "./host-tools.js";
 import { localFolderOf } from "./workspace/local.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
@@ -506,7 +505,7 @@ const browserTool: ToolEntry = {
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
     const price = browserPrice(providerName, host.env);
     // On the runner, the run's ledger (host.ledger): each call held and settled on its booking, and a session's release one
-    // more request there, never this process's own spend. Undefined on the old per-run process: browserSpend's own then.
+    // more request there. With none, every browser call is refused unsent (browserSpend).
     const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.ledger?.paid, pause: host.ledger?.pause, flush: host.ledger?.flush });
     // The run's own Workspace, the one its read opens (on the runner: Mode 1's local folder, Mode 2's folder on the run's
     // disk): the browser files its evidence there, and browser_upload chooses from it.
@@ -668,7 +667,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   "monid.inspect": monidTool("inspect"),
   "monid.run": monidTool("run"),
   // A pi run's subagent (runner/subagent.ts): a native tool of the run's root agent, bound by the runner's pi spec
-  // (adapter-run-spec.ts), never by this table; not a host tool (host-tools.ts REPLAY), so another harness refuses it.
+  // (adapter-run-spec.ts), never by this table; not a host tool (tool-list.ts `replay`), so another harness refuses it.
   subagent: {
     summary: "Run a subagent: a fresh conversation with only the call's prompt, on the agent's own model (or one of its model tiers, fast or strong, when the call names one), with a subset of the agent's own tools (bash among them, under the agent's bash policy), under the run's permissions and cap; answers with its final text. A call may narrow its child's tool-call budget (max_tool_calls) and set its effort (low, medium, high). Several calls in a turn run at once, at most 4 at a time; a subagent starts none of its own. pi only.",
     needs: [],
@@ -814,7 +813,7 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
     const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
-    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
+    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
 };
 

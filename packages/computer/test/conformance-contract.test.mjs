@@ -135,14 +135,21 @@ test("the phone harness passes both contract cases through the runner: its PROVI
 	assert.deepEqual(bare.results.find((r) => r.id === "health.no-key-in-errors").undeclared, ["secrets"]);
 });
 
-test("helloDrift refuses a daemon that speaks another protocol version; one with none is left to the version check", async () => {
+test("helloDrift: the protocol and the daemon version match the provider's exactly, older or newer, and a hello with no protocol is refused", async () => {
 	const { helloDrift } = await import("../dist/drift.js");
+	assert.equal(PROTOCOL_VERSION, "0.2", "the cases below are a 0.2 provider; move them with the version");
 	const expected = { version: "1.2.3", kind: "linux", groups: ["exec", "files", "processes"] };
 	const hello = { protocol: PROTOCOL_VERSION, version: "1.2.3", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 	assert.deepEqual(helloDrift(hello, expected), []);
-	assert.deepEqual(helloDrift({ ...hello, protocol: "9.0" }, expected), [`hello: the daemon speaks protocol 9.0, expected ${PROTOCOL_VERSION}`]);
-	const { protocol: _protocol, ...older } = hello;
-	assert.deepEqual(helloDrift(older, expected), [], "no protocol: no protocol words of its own");
+	// A 0.3 daemon against a 0.2 provider: a minor step ahead is still another wire.
+	assert.deepEqual(helloDrift({ ...hello, protocol: "0.3" }, expected), ["hello: the daemon speaks protocol 0.3, expected exactly 0.2"]);
+	assert.deepEqual(helloDrift({ ...hello, protocol: "0.1" }, expected), ["hello: the daemon speaks protocol 0.1, expected exactly 0.2"]);
+	const { protocol: _protocol, ...unversioned } = hello;
+	assert.deepEqual(helloDrift(unversioned, expected), ["hello: the daemon speaks protocol nothing, expected exactly 0.2"]);
+	// The daemon's own version: a patch either way is refused, as is a prerelease tag.
+	for (const version of ["1.2.4", "1.2.2", "1.2.3-drift"]) {
+		assert.deepEqual(helloDrift({ ...hello, version }, expected), [`hello: the daemon reports version ${version}, expected 1.2.3`], version);
+	}
 });
 
 test("spec/computer matches protocol.ts, and computerd's protocol version is the TypeScript side's", async () => {

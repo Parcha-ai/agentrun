@@ -13,11 +13,11 @@ import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool } from "../dist/learned-workflow.js";
-import { REPLAY } from "../dist/host-tools.js";
+import { replayOf } from "../dist/tool-list.js";
 import { learningWorkspace, localWorkspace } from "../dist/workspace/index.js";
 import { readSnapshot } from "../dist/learn/folder.js";
 import { entriesOf, git, resnap } from "./learn-support.mjs";
-import { agent, answerFlow, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, follow, paidCallsOf, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -99,7 +99,7 @@ async function upstreamAt(t) {
 
 test("learned_workflow is never run again after a crash, on any harness, and says each workflow and what it does", () => {
   assert.equal(LEARNED_WORKFLOW_TOOL, "learned_workflow");
-  assert.equal(REPLAY[LEARNED_WORKFLOW_TOOL], "never");
+  assert.equal(replayOf(LEARNED_WORKFLOW_TOOL), "never");
   const said = learnedWorkflowDescription([{ name: "answer", description: DESCRIPTION, workflow: "{}" }]);
   assert.match(said, /^- answer: Answers a question as a number/m);
 });
@@ -353,13 +353,15 @@ test("a learned workflow's call node through a paid web tool is booked under the
   const file = join(await scratch(t), "parallel.jsonl");
   withEnv(t, { PARALLEL_API_KEY: CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: file }, ["AGENTRUN_TEST_FAUX_PARALLEL_SEARCH"]);
   const { api, data } = await serve(t, { learning: "on", fauxParallel: new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname });
-  const { runId, rows, view } = await ran(api, data, "paid", "pi", flowFiles("answer", searchFlow()), ["web_search"], { extra: { tool_settings: { web_search: { provider: "parallel" } } } });
+  const { runId, rows, view } = await ran(api, data, "paid", "pi", flowFiles("answer", searchFlow()), ["web_search"], { extra: { tool_settings: { web_search: { provider: "parallel" } } }, fields: { max_cost_usd: 1 } });
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "success", JSON.stringify(result));
   assert.match(JSON.stringify(result), /registry\.example/, JSON.stringify(result));
   const use = rows.find((row) => row.kind === "tool_use" && row.tool_name === LEARNED_WORKFLOW_TOOL);
-  const paid = (await entriesOf({ data }, runId, ["agentrun.tool_started", "agentrun.tool_cost"]));
-  assert.deepEqual(paid.map((entry) => [entry.kind, entry.tool, entry.charged_by, entry.heldUsd ?? entry.usd]), [["agentrun.tool_started", "web_search", "parallel", 0.001], ["agentrun.tool_cost", "web_search", "parallel", 0.001]]);
+  // On the run's one ledger (its paid-tools session), as the run's own paid calls are.
+  const paid = paidCallsOf(data, runId);
+  // Named as the run's own Parallel searches are on the ledger (paid:<fee's name>), held at its price under the run's cap.
+  assert.deepEqual(paid.map((entry) => [entry.kind, entry.tool, entry.charged_by, entry.heldUsd ?? entry.usd]), [["agentrun.tool_started", "Parallel's search", "parallel", 0.001], ["agentrun.tool_cost", "Parallel's search", "parallel", 0.001]]);
   assert.ok(paid.every((entry) => entry.call === `${use.tool_use_id}/Search@${paid[0].call.split("@")[1]}`), `booked under the tool's call, as its node's own: ${paid.map((entry) => entry.call)}`);
   assert.equal(view.cost.usd, 0.001, "the faux model is $0: the run's cost is Parallel's fee");
 });

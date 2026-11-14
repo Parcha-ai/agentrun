@@ -48,11 +48,12 @@ import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
 import { computerReadyWords, imageWaitWords } from "../workspace/computer-deps.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, PI_WIRES, webHostTools, webToolNames } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
 import { openTierProxies, type TierProxies } from "./adapters/pi.js";
 import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
 import { mcpServersOf } from "../tool-gate.js";
+import { isWebHostTool } from "../tool-list.js";
 import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
@@ -510,7 +511,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The runner's one redactor (the loop's), else this spec's log cut: the claim's keys join it, and the answers of the tools
   // that run on them pass it.
   const held = run.redact ? heldRedactor(run.redact) : cut;
-  const webNames = webToolNames(granted);
+  const webNames = granted.filter(isWebHostTool);
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
   let webTools: HostTool[] = [];
   // The environment the web host tools run on (monid's quotes are kept per environment): the card's price reads the same one.
