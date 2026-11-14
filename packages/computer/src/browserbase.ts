@@ -58,7 +58,6 @@ import {
 	withoutCreateLabel,
 } from "./browser.js";
 import type { KindCapabilities } from "./kinds.js";
-import type { MountKind } from "./mount.js";
 import {
 	type AttachedComputer,
 	type BrowserFeatures,
@@ -122,11 +121,6 @@ export function browserbaseLabelsProblem(labels: unknown): string | undefined {
 	return undefined;
 }
 
-/** A browser takes no mount. */
-export const MOUNT: readonly MountKind[] = BROWSERBASE.mounts;
-
-/** The one configuration it offers, its descriptor's: a browser with a CDP target and a live view. */
-export const CAPABILITIES: readonly KindCapabilities[] = BROWSERBASE.capabilities;
 
 /** A session as Browserbase answers it; only what the provider reads. */
 export interface BrowserbaseSession {
@@ -332,7 +326,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 			isolation: "vm",
 			os: "linux",
 			daemon: "none",
-			groups: [...(CAPABILITIES[0] as KindCapabilities).groups],
+			groups: [...(BROWSERBASE.capabilities[0] as KindCapabilities).groups],
 			maxLifetimeMs: BROWSERBASE_MAX_LIFETIME_MS,
 			release: ["delete"],
 			browser: structuredClone(this.#browser),

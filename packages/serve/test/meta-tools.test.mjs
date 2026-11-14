@@ -445,3 +445,62 @@ for (const harness of HARNESSES.filter((one) => one.discovery)) {
     assert.match(said.join("\n"), /idle/, `the deferred tool ran: ${JSON.stringify(said)}`);
   });
 }
+
+// ---- the follow-ups of a live walk: one verdict on every harness, the three in the server's tool list, one name a script may call ----
+
+/** What claude-agent's adapter was opened with, for `tools` under `gate`: the host's verdict on deferring the catalog. */
+async function claudeVerdict(t, tools, gate) {
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  await queue(server, "run-1");
+  const seen = [];
+  const base = claudeAgentSpec({ script: [{ call: "read", args: {} }, { say: "done" }], tools, hooks: quiet });
+  const loop = createAdapterLoop(async (claim, run) => {
+    const spec = await base(claim, run);
+    return { ...spec, gate, adapter: { ...spec.adapter, open: (session, io) => (seen.push(session.deferCatalog), spec.adapter.open(session, io)) } };
+  }, { restartLimit: MAX_RESTARTS });
+  const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  await until(async () => {
+    const now = await server.runs.get("run-1");
+    return (now.state === "ended" || now.state === "failed") && now.runner === null && now;
+  }, "the run ended", 30_000);
+  return seen;
+}
+
+test("claude-agent: its own tool search follows the one verdict (over the threshold, both helpers allowed); either helper set to deny lists every tool", async (t) => {
+  const tools = { read: { name: "read", replaySafe: true, run: async () => "r" }, ...catalog(21) };
+  const settingOf = (denied) => Object.assign(() => "allow", { permission: async (name) => (name === denied ? "deny" : "allow") });
+  assert.deepEqual(await claudeVerdict(t, tools, settingOf(undefined)), [true], "21 catalog tools, nothing denied: deferred");
+  assert.deepEqual(await claudeVerdict(t, tools, settingOf(TOOLS_SEARCH)), [false], "tools_search set to deny: every tool listed, its own search off");
+  assert.deepEqual(await claudeVerdict(t, tools, settingOf(TOOLS_CALL)), [false], "tools_call set to deny: the same");
+  assert.deepEqual(await claudeVerdict(t, { read: tools.read, ...catalog(3) }, settingOf(undefined)), [false], "a few catalog tools: nothing deferred");
+});
+
+test("capabilities.tools lists tools_search, tools_call and codemode: each with a line for people, allow or deny, allow by default, and no grant", async () => {
+  const { toolsView } = await import("../dist/tools.js");
+  const listed = toolsView({}, { tools_search: { permission: "deny" } });
+  for (const name of [TOOLS_SEARCH, TOOLS_CALL, CODEMODE]) {
+    const row = listed.find((one) => one.name === name);
+    assert.ok(row, `${name} is listed`);
+    assert.equal(typeof row.blurb, "string");
+    assert.equal(row.meta, true, `${name} is no grant`);
+    assert.deepEqual(row.permissions, ["allow", "deny"], `${name}: allow or deny, never ask`);
+    assert.equal(row.default_permission, "allow");
+    assert.equal(row.permission, name === TOOLS_SEARCH ? "deny" : "allow", `${name}: its setting is in force`);
+  }
+  const { BOUND_TOOLS } = await import("../dist/tools.js");
+  assert.ok(![TOOLS_SEARCH, TOOLS_CALL, CODEMODE].some((name) => BOUND_TOOLS.includes(name)), "none is a tool an agent may name");
+});
+
+test("codemode's description names functions a script can call: the run's own tool names as `tools.<name>`, with the harness prefix said to be left off", async () => {
+  const calls = [];
+  const nested = { call: async (name, args, key) => (calls.push([name, key]), { text: "ran", fresh: true }), memo: async (_key, value) => value };
+  const prefixed = TOOLS.map((one) => ({ ...one, name: `mcp__hn__${one.name}` }));
+  const [, , codemode] = metaTools({ tools: () => prefixed, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const named = [...codemode.description.matchAll(/`tools\.([A-Za-z0-9_]+)`/g)].map((one) => one[1]).filter((name) => name !== "<name>");
+  assert.deepEqual(named, ["mcp__hn__write_file", "mcp__hn__web_search", "mcp__hn__send_email"], `its examples are the run's first tools: ${codemode.description}`);
+  assert.match(codemode.description, /never by the name your own tool list may show for it with a harness's prefix \(`hands_`, `mcp__hands__`\)/);
+  const answer = await codemode.call({ script: named.map((name) => `await tools.${name}({});`).join(" ") + " return 'ok';" }, { signal: new AbortController().signal, nested });
+  assert.equal(answer.isError, undefined, answer.text);
+  assert.deepEqual(calls.map(([name]) => name), prefixed.slice(0, 3).map((one) => one.name), "every name the description gave ran the tool it names");
+});

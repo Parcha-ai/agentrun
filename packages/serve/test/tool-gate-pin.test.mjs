@@ -221,3 +221,91 @@ test("pin_broken is the server's mark: only `true` on an MCP tool's own key of t
   assert.deepEqual(settingsIssues({ read: { pin_broken: true } }).map((i) => [i.field, i.reason]), [["read.pin_broken", "not_allowed"]]);
   assert.deepEqual(settingsIssues({ [SEND]: { pin_broken: true } }, "definition.tool_settings", "agent").map((i) => [i.field, i.reason]), [[`definition.tool_settings.${SEND}.pin_broken`, "not_allowed"]]);
 });
+
+// A keys pin ({keys: [...]}) fences an object argument: when given, it is an object whose keys are among the pin's, its
+// values free, so an unattended CRM write changes the one field its owner named and nothing else.
+const UPDATE = "mcp:hubspot/HUBSPOT_UPDATE_CONTACT";
+const NOT_RUN_WORDS = "It was not run: nothing was sent and nothing was charged.";
+
+test("a keys pin: the object argument may hold only the pinned keys, any values; left out, null or {} hold; any other refused in words", () => {
+  const agent = { [UPDATE]: { permission: "allow", pin: { properties: { keys: ["hs_lead_score"] } } } };
+  for (const args of [
+    { contact_id: "1", properties: { hs_lead_score: 80 } },
+    { contact_id: "1", properties: { hs_lead_score: { any: ["value", 1, null] } } },
+    { contact_id: "1", properties: {} },
+    { contact_id: "1" },
+    { contact_id: "1", properties: null },
+  ]) assert.equal(pinRefusal(UPDATE, args, {}, agent), undefined, JSON.stringify(args));
+  const extra = pinRefusal(UPDATE, { contact_id: "1", properties: { hs_lead_score: 80, email: "thief@example.net" } }, {}, agent);
+  assert.equal(extra.text, `${UPDATE} may only be called with properties keys in (hs_lead_score): its destination is fixed by the agent's settings. ${NOT_RUN_WORDS}`);
+  assert.deepEqual(extra.mismatched, ["properties"]);
+  assert.ok(pinRefusal(UPDATE, { properties: { email: "thief@example.net" } }, {}, agent), "only another key");
+  // Not an object: refused, a list of the key's name too.
+  for (const properties of ["hs_lead_score", ["hs_lead_score"], 80, true]) assert.deepEqual(pinRefusal(UPDATE, { properties }, {}, agent)?.mismatched, ["properties"], JSON.stringify(properties));
+  // Several keys, said in one form (each once, sorted), whatever order they were written in; any subset holds.
+  const two = { [UPDATE]: { pin: { properties: { keys: ["lifecyclestage", "hs_lead_score", "hs_lead_score"] } } } };
+  assert.match(pinRefusal(UPDATE, { properties: { email: "x" } }, {}, two).text, /may only be called with properties keys in \(hs_lead_score \| lifecyclestage\): /);
+  assert.equal(pinRefusal(UPDATE, { properties: { lifecyclestage: "lead", hs_lead_score: 1 } }, {}, two), undefined);
+  assert.equal(pinRefusal(UPDATE, { properties: { lifecyclestage: "lead" } }, {}, two), undefined);
+  // Beside a scalar pin of another argument: both hold.
+  const both = { [UPDATE]: { pin: { contact_id: "1", properties: { keys: ["hs_lead_score"] } } } };
+  assert.equal(pinRefusal(UPDATE, { contact_id: "1", properties: { hs_lead_score: 2 } }, {}, both), undefined);
+  assert.deepEqual(pinRefusal(UPDATE, { contact_id: "2", properties: { hs_lead_score: 2 } }, {}, both).mismatched, ["contact_id"]);
+  assert.match(pinRefusal(UPDATE, { contact_id: "2" }, {}, both).text, /may only be called with contact_id = 1, properties keys in \(hs_lead_score\): /);
+});
+
+test("two layers' keys pins of one argument hold as their keys in both; none in both refuses every call; beside a scalar pin only what both hold", () => {
+  const agent = { [UPDATE]: { pin: { properties: { keys: ["hs_lead_score", "lifecyclestage"] } } } };
+  const server = { [UPDATE]: { pin: { properties: { keys: ["email", "hs_lead_score"] } } } };
+  assert.equal(pinRefusal(UPDATE, { properties: { hs_lead_score: 1 } }, server, agent), undefined);
+  for (const key of ["lifecyclestage", "email"]) {
+    assert.equal(pinRefusal(UPDATE, { properties: { [key]: "x" } }, server, agent).text, `${UPDATE} may only be called with properties keys in (hs_lead_score): its destination is fixed by the agent's and this server's settings. ${NOT_RUN_WORDS}`, key);
+  }
+  // No key in both: no call can write the one field each layer means, so every call is refused, with the clash text.
+  const clash = pinRefusal(UPDATE, { properties: { hs_lead_score: 1 } }, { [UPDATE]: { pin: { properties: { keys: ["email"] } } } }, agent);
+  assert.equal(clash.text, `${UPDATE} can't be called: this agent's settings fix properties keys in (hs_lead_score | lifecyclestage) and this server's fix properties keys in (email), so no call can satisfy both. ${NOT_RUN_WORDS} Don't retry it: the owner makes the two agree.`);
+  assert.deepEqual(clash.mismatched, ["properties"]);
+  // A keys pin and a scalar pin of one argument: the scalars the keys pin holds, which is null (left out) alone.
+  assert.equal(pinRefusal(UPDATE, {}, { [UPDATE]: { pin: { properties: null } } }, agent), undefined);
+  assert.match(pinRefusal(UPDATE, { properties: { hs_lead_score: 1 } }, { [UPDATE]: { pin: { properties: [null, "x"] } } }, agent).text, /may only be called with properties in \(absent\): /);
+  assert.match(pinRefusal(UPDATE, { properties: { hs_lead_score: 1 } }, agent, { [UPDATE]: { pin: { properties: null } } }).text, /may only be called with properties absent: /, "either layer's");
+  assert.match(pinRefusal(UPDATE, {}, { [UPDATE]: { pin: { properties: "x" } } }, agent).text, /so no call can satisfy both/);
+});
+
+test("the one pin rule takes a keys pin: {keys: 1 to 16 key names}, nothing else in it; its one form sorts the keys, each once", async () => {
+  assert.deepEqual(pinIssues({ properties: { keys: ["hs_lead_score"] }, contact_id: "1" }, "pin", UPDATE), []);
+  assert.deepEqual(pinIssues({ properties: { keys: Array.from({ length: 16 }, (_, i) => `k${i}`) } }, "pin"), []);
+  assert.deepEqual(pinIssues({ properties: { keys: ["a b", "x-y.z", "${parameters.field}"] } }, "pin"), [], "a key is any text: an object's keys are");
+  const reasons = (pin) => pinIssues(pin, "pin").map((issue) => [issue.field, issue.reason]);
+  for (const bad of [{ keys: [] }, { keys: Array.from({ length: 17 }, (_, i) => `k${i}`) }, { keys: [""] }, { keys: [1] }, { keys: [null] }, { keys: "hs_lead_score" }, { keys: ["a"], values: ["x"] }, { key: ["a"] }, {}, { keys: ["x".repeat(1025)] }]) {
+    assert.deepEqual(reasons({ properties: bad }), [["pin.properties", "wrong_type"]], JSON.stringify(bad));
+  }
+  assert.match(pinIssues({ properties: { keys: [] } }, "pin")[0].message, /\{keys: \[/);
+  // Through the settings' check, the same rule; a keys pin in a list is no pin.
+  assert.deepEqual(settingsIssues({ [UPDATE]: { permission: "allow", pin: { properties: { keys: ["hs_lead_score"] } } } }), []);
+  assert.deepEqual(settingsIssues({ [UPDATE]: { pin: { properties: [{ keys: ["hs_lead_score"] }] } } }).map((issue) => [issue.field, issue.reason]), [[`${UPDATE}.pin.properties`, "wrong_type"]]);
+  assert.equal(JSON.stringify(sortedPin({ properties: { keys: ["lifecyclestage", "hs_lead_score", "lifecyclestage"] }, contact_id: "1" })), JSON.stringify({ contact_id: "1", properties: { keys: ["hs_lead_score", "lifecyclestage"] } }));
+  // Saved, read back and served as written in its one form; a stored one that does not read refuses every call.
+  const store = settingsStore();
+  const put = await saveToolSettings(store, { [UPDATE]: { permission: "allow", pin: { properties: { keys: ["hs_lead_score"] } } } });
+  assert.deepEqual(put[UPDATE], { permission: "allow", pin: { properties: { keys: ["hs_lead_score"] } } });
+  assert.deepEqual((await loadToolSettings(store)).settings[UPDATE], { permission: "allow", pin: { properties: { keys: ["hs_lead_score"] } } });
+  await store.settings.put(TOOL_SETTINGS_KEY, { [UPDATE]: { permission: "allow", pin: { properties: { keys: [] } } } });
+  const read = await loadToolSettings(store);
+  assert.equal(read.settings[UPDATE].brokenPin, true);
+  assert.match((await runnerGate({ settings: () => read }).decide(UPDATE, { properties: {} })).deny, /its pin in this server's tool settings does not read/);
+});
+
+test("the gate's decision with a keys pin: under allow the pinned key runs, an extra key is refused; under ask an extra key never asks", async () => {
+  const pin = { properties: { keys: ["hs_lead_score"] } };
+  const allowed = gateOf({ [UPDATE]: { permission: "allow", pin } });
+  assert.equal(await allowed.decide(UPDATE, { contact_id: "1", properties: { hs_lead_score: 9 } }), "allow");
+  assert.match((await allowed.decide(UPDATE, { contact_id: "1", properties: { hs_lead_score: 9, email: "x" } })).deny, /may only be called with properties keys in \(hs_lead_score\)/);
+  const asked = gateOf({ [UPDATE]: { pin } });
+  assert.ok((await asked.decide(UPDATE, { properties: { email: "x" } })).deny, "refused, never asked");
+  assert.equal(await asked.decide(UPDATE, { properties: { hs_lead_score: 9 } }), "ask");
+  // The server's keys pin binds a run the agent allowed.
+  const served = gateOf({ [UPDATE]: { permission: "allow" } }, { [UPDATE]: { pin } });
+  assert.match((await served.decide(UPDATE, { properties: { email: "x" } })).deny, /fixed by this server's settings/);
+  assert.equal(await served.decide(UPDATE, { properties: { hs_lead_score: 9 } }), "allow");
+});

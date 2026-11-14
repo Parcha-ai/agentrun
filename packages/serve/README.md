@@ -739,8 +739,12 @@ passes the binding's conformance cases (below) needs no change here.
   `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
   because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
   git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Modal, E2B or Agent37 sandbox mounts
-  the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
-  it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes.
+  the run's folder from its disk with a mount credential minted for that run alone, but only from an image with Archil's
+  client and helper (the computer package's box recipe). This server names a vendor's image only through its
+  descriptor's `imageEnv`, which none of the three declares, so each would start from its vendor's stock image: Settings
+  shows them not ready, an agent's save warns, and a run's start refuses them (409) before any computer is made. Docker's sandbox is refused, since
+  it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes. So in Mode 2 no sandbox
+  runs for now.
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
   `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
@@ -881,9 +885,13 @@ model with no price set that the catalog does not list in any form; null while `
 
 - `--faux MODULE`: every model is the module's (below), with no key and no network: `faux-1`, or for a tier the model
   id its variable names.
-- `AGENT_MODEL_BASE_URL`: every model id goes to that one OpenAI Responses endpoint, a gateway, at `<base>/v1/responses`
-  with one trailing `/v1` taken off the base first, as for every harness (OpenRouter's is `https://openrouter.ai/api` or
-  `https://openrouter.ai/api/v1`): a revision's `provider/model-id` is sent whole, as a gateway like OpenRouter names its
+- `AGENT_MODEL_BASE_URL`: every model id goes to that one gateway, with one trailing `/v1` taken off the base first, as
+  for every harness (OpenRouter's is `https://openrouter.ai/api` or `https://openrouter.ai/api/v1`): a Claude model on
+  Anthropic's Messages API at `<base>/v1/messages`, where pi marks its prompt for Anthropic's cache (the Responses API
+  carries no cache mark, so a gateway's bridge from it reads none), and every other model on OpenAI's Responses API at
+  `<base>/v1/responses`. A model is Claude's when its id names Anthropic as its vendor (`anthropic/claude-sonnet-5.5`)
+  or names none and pi-ai's catalog lists it under Anthropic (`claude-opus-5-5`); the gateway serves both APIs, as
+  LiteLLM's proxy and OpenRouter do, with `AGENT_MODEL_API_KEY` as a bearer token on either. A revision's `provider/model-id` is sent whole, as a gateway like OpenRouter names its
   models `vendor/model`, and `AGENT_MODEL`, `AGENT_MODEL_FAST` and `AGENT_MODEL_STRONG` are sent as they are. For a
   gateway that wants the id alone, `AGENT_MODEL_GATEWAY_IDS=bare` sends a revision's model without its provider. `AGENT_MODEL_API_KEY` is its key when it needs one. `AGENT_MODEL_PRICE` is `input,output,cacheRead[,cacheWrite]`
   in USD per million tokens, so a run's cost estimate has a price; `AGENT_MODEL_FAST_PRICE` and `AGENT_MODEL_STRONG_PRICE`
@@ -1671,8 +1679,10 @@ method, tool and whether an `Authorization` header came, never its value.
 ### Agents call a server's tools
 
 An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`, in `definition.tools`
-(`"tools": ["mcp:github/list_issues"]`). A save checks each one against the server's saved tools: a server that is not
-saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
+(`"tools": ["mcp:github/list_issues"]`). A save lists each server it grants a tool of, once, and checks each grant
+against that listing: a server that is not saved, or can't be listed right now, is `422` naming it ("save again once it
+answers"; an edit that grants nothing new from it keeps the agent's current pin for it instead), a tool it does not list
+is `422` naming the server's tools, and so is a name whose wire name,
 `mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
 property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi, claude-agent and codex run them (`features.mcp_client.harnesses`); on
 another harness the save warns that they are not bound there yet, and a run is refused. On claude-agent, a run with MCP
@@ -1695,9 +1705,12 @@ A saved server's read also gives each tool its `grant_problems` when a grant of 
 save's `422` says: under `*` for every harness (its wire name `mcp__<server>__<tool>` is past the 52 characters every harness's
 tool names share), or under a harness id when that harness's own MCP client would drop or retype its schema.
 
-- **Pinned.** A run's first launch keeps each granted tool as the server listed it when you saved it (its description
-  and schema) and the server's URL then, in the run's directory (`mcp-tools.json`). A refresh or a new save never
-  changes a running agent's tools. If the server's URL has changed since, that run's calls answer "the server's
+- **Pinned.** The save keeps each granted tool on the new revision as the server listed it then (its name,
+  description, input schema, annotations and price) with the server's URL then, shown as the agent's `mcp_pin` (never
+  the URL); each run of that revision calls those tools, and no run lists the server. A refresh never changes a
+  revision's tools; saving the agent again re-pins (an unchanged definition whose server changed a granted
+  tool is a new revision). A server that keeps no credential of its own (`per_run`), or an OAuth server, that refuses the
+  save's listing for its credential is pinned as its last save or refresh listed it. If the server's URL has changed since, that run's calls answer "the server's
   address changed since this run started" and nothing is sent, the new credential least of all.
 - **The credential.** A run whose revision grants a server's tool is handed that server's credential at each launch
   (so a new one counts at the next), over its secrets pipe, never its environment; a run that grants none of a
@@ -1741,7 +1754,17 @@ tool names share), or under a harness id when that harness's own MCP client woul
   list of 1 to 16 of them, the argument one of the list, compared strictly:
   `{"mcp:slack/slack_send_message": {"permission": "allow", "pin": {"channel_id": "C0123"}}}`,
   `{"mcp:github/pull_request_review_write": {"pin": {"event": [null, "COMMENT"], "method": ["create", "delete_pending", "submit_pending"]}}}`
-  (the `code-review` template's pin). The gate checks a pinned
+  (the `code-review` template's pin). An object argument may be pinned to its keys instead: `{"keys": [...]}`, 1 to 16
+  key names, holds a call whose argument, when given, is an object of those keys alone, any values (left out or `null`
+  holds too), so `{"mcp:hubspot/HUBSPOT_UPDATE_CONTACT": {"pin": {"properties": {"keys": ["hs_lead_score"]}}}}` lets a
+  write set that one field and no other, and refuses one that sets another with "properties keys in (hs_lead_score)".
+  Two layers' keys pins of one argument hold as the keys in both. A pinned tool takes only its listed arguments: a
+  call of a tool with a pin in either layer may carry only the top-level arguments its listing declares under its
+  inputSchema's `properties` (the listing the run pinned when it started, the one its model is offered), beside the
+  pinned ones. So an alias a server takes for a pinned argument, one its listing does not declare (Gmail's `to` for
+  `recipient_email`, Slack's `channel_id` for `channel`), is refused with "`to` is not an argument of
+  GMAIL_SEND_EMAIL; a pinned tool takes only its listed arguments (recipient_email is pinned)", and a pin need not
+  null aliases by hand. A listing with no `properties` object closes nothing, and a tool with no pin is not closed. The gate checks a pinned
   tool's call before it runs or asks anyone, whatever the permission (an allow, an ask, a grant): a call whose arguments
   are not as pinned is refused, never sent and never asked about, and the model reads "mcp:slack/slack_send_message may
   only be called with channel_id = C0123: its destination is fixed by the agent's settings". The run's process logs a

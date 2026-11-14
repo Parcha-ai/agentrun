@@ -33,9 +33,10 @@ export interface CapModel {
   readonly reasoning?: boolean;
 }
 
-/** The previous request of the conversation, as its usage reported it: what of its input was read from or written to
- *  the cache, the rest, its input bound (the unit this request's is in) and when it ended (ms), on which model. */
-export interface Previous {
+/** One of the session's recent requests (price.ts recentAfter), as its usage reported it: what of its input was read from
+ *  or written to the cache, the rest, its input bound (the unit a later request's is in) and when it ended (ms), on which
+ *  model. A later request reads its cache from one of them (price.ts warmFrom). */
+export interface RecentRequest {
   /** Its model as the cap prices it (CapModel.id), whatever id its client named it by. */
   readonly model: string;
   readonly cachedTokens: number;
@@ -67,7 +68,9 @@ export interface ModelCapRequest {
   readonly outputTokensLeast?: number;
   /** Its thinking budget, on an API whose thinking takes one beside the answer's output. */
   readonly thinkingBudget?: number;
-  readonly previous?: Previous;
+  /** The session's recent requests on its model, their bounds measured as this one's is: its input is expected to read
+   *  the cache of the one warmFrom picks, else none (priced uncached). */
+  readonly recent?: readonly RecentRequest[];
   /** A side call (a title, a summary), never its turn's own. */
   readonly side?: boolean;
   /** It carries the cap's wrap-up note (Cap.note) in its body, its bytes in `inputTokens`: told once it is answered. */
@@ -147,7 +150,7 @@ export interface CapOptions {
   endMarkWaitMs?: number;
 }
 
-/** How the cap prices a request's input: "expected" from the previous request's cache; "strict" every token uncached. */
+/** How the cap prices a request's input: "expected" from a recent request's cache; "strict" every token uncached. */
 export type CapMode = "expected" | "strict";
 
 export interface Cap {
