@@ -6,6 +6,7 @@ import { route } from "@/App";
 import { createClient } from "@/lib/client";
 import { type McpServer, PREVIEW_SCOPE_NOTE } from "@/lib/mcp";
 import recorded from "@/fixtures/mcp.requests.json";
+import { pick as choose, picker, valueOf } from "@/test/picker";
 
 // Settings → MCP servers over /v2/settings/mcp-servers: add a server, preview its tools, save it; each refusal in plain
 // words; OAuth's sign-in and its way back; the saved list with each credential's state, refresh and delete. A credential
@@ -27,7 +28,7 @@ const TOOLS = [
   { name: "slow_write", description: "Write a line after a wait.", input_schema: { type: "object" } },
 ];
 const PREVIEW = { protocol: "2026-07-28", server_info: { name: "fake-mcp", version: "1.0.0" }, tools: TOOLS };
-const saved = (extra: Partial<McpServer> = {}): McpServer => ({ name: "fake", url: VARS.url, auth: { type: "bearer" }, credential: "sealed", tools: TOOLS, protocol: "2026-07-28", listed_at: "2026-11-04T10:00:00Z", updated_at: "2026-11-04T10:00:00Z", ...extra });
+const saved = (extra: Partial<McpServer> = {}): McpServer => ({ name: "fake", url: VARS.url, auth: { type: "bearer" }, source: "url", toolkit: null, credential: "sealed", tools: TOOLS, protocol: "2026-07-28", listed_at: "2026-11-04T10:00:00Z", updated_at: "2026-11-04T10:00:00Z", ...extra });
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const refusal = (status: number, code: string, message: string, extra: Record<string, unknown> = {}) => json(status, { error: { code, message, retryable: false, ...extra } });
 
@@ -491,6 +492,61 @@ describe("Settings → MCP servers, GitHub App", () => {
     expect(route("#/settings/mcp?add=github&auth=github_app")).toMatchObject({ settings: "mcp", add: { name: "github", auth: "github_app" } });
     expect(route("#/settings/mcp?add=Not_A_Name")).not.toHaveProperty("add");
     expect(route("#/settings/mcp")).not.toHaveProperty("add");
+    // A Composio need's: the preset, its toolkit and the actions to tick (an action no tool can be named is dropped).
+    expect(route("#/settings/mcp?add=slack&preset=composio&toolkit=slack&tools=SLACK_SEND_MESSAGE,bad%20name,SLACK_FIND_CHANNELS").add)
+      .toEqual({ name: "slack", preset: "composio", toolkit: "slack", tools: ["SLACK_SEND_MESSAGE", "SLACK_FIND_CHANNELS"] });
+    expect(route("#/settings/mcp?add=slack&preset=composio&toolkit=Not_A_Toolkit").add).toEqual({ name: "slack" });
+  });
+
+  it("opens the add form for a template's url need with its toolkit filled, and saves the server as url and that toolkit", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved({ name: "hubspot" })) : undefined));
+    const p = await open(s.v2, { add: { name: "hubspot" } });
+    expect(p.input("mcp-name").value).toBe("hubspot");
+    expect(p.input("mcp-toolkit").value).toBe("hubspot");
+    expect(valueOf(picker(p.host, "Source")!)).toBe("url");
+    await p.type("mcp-url", VARS.url);
+    await p.click(/^Preview$/);
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/hubspot", body: { url: VARS.url, auth: { type: "none" }, source: "url", toolkit: "hubspot" } });
+  });
+
+  it("a new server with no toolkit sends no source, so the server says what its address is; GitHub App access is GitHub's own", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved()) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.type("mcp-name", "fake");
+    await p.type("mcp-url", VARS.url);
+    await p.click(/^Preview$/);
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)!.body).toEqual({ url: VARS.url, auth: { type: "none" } });
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const gh = await open(server([[]]).v2, { add: { name: "github", auth: "github_app" } });
+    expect(valueOf(picker(gh.host, "Source")!)).toBe("github");
+    expect(picker(gh.host, "Source")!.disabled).toBe(true);
+    expect(gh.input("mcp-toolkit").value).toBe("github");
+    expect(gh.input("mcp-toolkit").readOnly).toBe(true);
+  });
+
+  it("changes a saved server's toolkit and source, sending only what changed", async () => {
+    const s = server([[saved({ name: "crm" })]], (c) => (c.method === "PUT" ? json(200, saved({ name: "crm" })) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Change$/, p.row("crm"));
+    await p.type("mcp-toolkit", "hubspot");
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)!.body).toEqual({ url: VARS.url, auth: { type: "bearer" }, toolkit: "hubspot" });
+    await p.click(/^Change$/, p.row("crm"));
+    await choose(picker(p.host, "Source")!, "github");
+    expect(p.input("mcp-toolkit").value).toBe("github");
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)!.body).toEqual({ url: VARS.url, auth: { type: "bearer" }, source: "github", toolkit: "github" });
+  });
+
+  it("shows each saved server's source and toolkit", async () => {
+    const p = await open(server([[saved({ name: "slack", source: "composio", toolkit: "slack" }), saved()]]).v2);
+    expect(p.row("slack").textContent).toContain("Composio");
+    expect(p.row("slack").querySelector("[data-toolkit]")!.textContent).toBe("toolkit slack");
+    expect(p.row("fake").textContent).toContain("URL");
+    expect(p.row("fake").querySelector("[data-toolkit]")!.textContent).toBe("no toolkit");
   });
 
   it("opens the add form for a server a template needs, its name and GitHub App filled", async () => {
@@ -670,5 +726,22 @@ describe("Settings → MCP servers, the Composio preset", () => {
     const cancel = [...p.host.querySelectorAll("button")].find((b) => b.textContent === "Cancel");
     expect(cancel?.disabled).toBe(true);
     await act(async () => { finish(await json(200, { server: saved({ name: "gh" }) })); });
+  });
+
+  it("opens filled for a template's Composio need: its name and toolkit, and its actions ticked once they load", async () => {
+    const s = server([[]], answer);
+    const p = await open(s.v2, { add: { name: "gh", preset: "composio", toolkit: "github", tools: ["GITHUB_LIST_ISSUES"] } });
+    expect(p.host.querySelector('form[aria-label="Add from Composio"]')).toBeTruthy();
+    expect(p.host.querySelector('form[aria-label="Add an MCP server"]')).toBeNull();
+    expect(p.input("composio-toolkit").value).toBe("github");
+    expect(p.text()).toContain("A template uses GITHUB_LIST_ISSUES");
+    await p.type("composio-key", KEY);
+    await p.click(/^Load actions$/);
+    const box = (slug: string) => p.host.querySelector(`input[type="checkbox"][value="${slug}"]`) as HTMLInputElement;
+    expect(box("GITHUB_LIST_ISSUES").checked).toBe(true);
+    expect(box("GITHUB_STAR_REPO").checked).toBe(false);
+    expect(p.input("composio-name").value).toBe("gh");
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/gh/composio", body: { api_key: KEY, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"] } });
   });
 });

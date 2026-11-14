@@ -1,5 +1,6 @@
 import { dollars } from "./format";
 import type { FieldIssue } from "./client";
+import { type McpServer, SOURCE_LABEL } from "./mcp";
 import { browserZone } from "./schedules";
 import type { TemplateView } from "./v2";
 
@@ -21,7 +22,7 @@ const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 export function needsOf(t: TemplateView, { secrets = true, mcp = true } = {}): [string, string][] {
   const out: [string, string][] = [];
   if (secrets && t.secrets.length) out.push(["Keys", t.secrets.join(", ")]);
-  if (mcp && t.mcp.length) out.push(["MCP", t.mcp.map((m) => `${m.server}${m.required ? "" : " (optional)"}`).join(", ")]);
+  if (mcp && t.mcp.length) out.push(["MCP", t.mcp.map((m) => `${m.toolkit} (${SOURCE_LABEL[m.source]}${m.required ? "" : ", optional"})`).join(", ")]);
   if (t.triggers.length) out.push(["Triggers", count(t.triggers.length, "trigger")]);
   if (t.budget?.per_run_usd) out.push(["Budget", `${dollars(t.budget.per_run_usd)} a run`]);
   if (t.budget?.tool_calls) out.push(["Tool calls", `${count(t.budget.tool_calls, "call")} a conversation`]);
@@ -74,6 +75,22 @@ export function startValues(t: TemplateView): ParameterText {
     if (p.format === "cron") return typeof p.default === "string" ? [[key, p.default]] : [];
     return [];
   }));
+}
+
+type McpNeed = TemplateView["mcp"][number];
+/** The saved servers a template's MCP need matches, by name: those whose source and toolkit are the need's. Mirrors the
+ *  server's mapping, for display: the apply maps them itself. */
+export const matchesOf = (need: McpNeed, saved: readonly Pick<McpServer, "name" | "source" | "toolkit">[]): string[] =>
+  saved.filter((s) => s.source === need.source && s.toolkit === need.toolkit).map((s) => s.name).sort();
+/** The server an apply takes for a need among `matches` when the owner picks none: the one named as the toolkit, else the
+ *  first by name. */
+export const defaultServer = (need: McpNeed, matches: readonly string[]): string | undefined => (matches.includes(need.toolkit) ? need.toolkit : matches[0]);
+/** Where a need not set up here is set up (Settings → MCP servers, its add form filled): the Composio preset with the
+ *  toolkit and its actions, GitHub's server on the GitHub App, or a server under the toolkit's name. */
+export function setUpHref(need: McpNeed): string {
+  const toolkit = encodeURIComponent(need.toolkit);
+  if (need.source === "composio") return `#/settings/mcp?add=${toolkit}&preset=composio&toolkit=${toolkit}&tools=${need.tools.map((x) => encodeURIComponent(x.name)).join(",")}`;
+  return need.source === "github" ? "#/settings/mcp?add=github&auth=github_app" : `#/settings/mcp?add=${toolkit}`;
 }
 
 /** The gate names the owner ticked, in the template's order: the consent an apply sends (`grants`), nothing else. */

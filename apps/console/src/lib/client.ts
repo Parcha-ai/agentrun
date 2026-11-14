@@ -1,7 +1,7 @@
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NoteProblem, NoteText, Page } from "./learning";
-import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
+import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer, McpSource } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
 import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, WorkflowRevisions, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
@@ -322,8 +322,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     listMcpServers: () => call<{ servers: McpServer[] }>("GET", "/settings/mcp-servers"),
     /** `name`: the saved server an edit form previews, so its address as shown (origin and `/…`) is previewed at the saved endpoint. */
     previewMcpServer: (url: string, auth: McpAuth, name?: string) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth, ...(name ? { name } : {}) } }),
-    /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. */
-    saveMcpServer: (name: string, url: string, auth: McpAuth) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth } }),
+    /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. `source` and
+     *  `toolkit` only when given (a toolkit of null clears it); left out, the server keeps what it has. */
+    saveMcpServer: (name: string, url: string, auth: McpAuth, kind: { source?: McpSource; toolkit?: string | null } = {}) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth, ...kind } }),
     /** The Composio preset: a toolkit's actions, for the picker (the owner's session alone; the key goes to Composio). */
     composioTools: (api_key: string, toolkit: string) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit } }),
     /** Has Composio make a managed MCP server for the chosen actions and saves it as an MCP server; `connect_url` when the

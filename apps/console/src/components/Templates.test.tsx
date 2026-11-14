@@ -17,25 +17,28 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.u
 const REVIEWER: TemplateView = {
   name: "pr-reviewer", display_name: "PR reviewer", version: "1.0.0", description: "Reviews a pull request and leaves one review.",
   license: "MIT", author: null, repository: null, output: null, harness: ["claude-agent"], model: { tier: "balanced" }, effort: null, tools: null, tool_policy: null, computer: null, computer_here: null, checkout: null,
-  mcp: [{ server: "github", required: true, tools: [
+  mcp: [{ source: "github", toolkit: "github", required: true, reason: "Reads the pull request and posts the review.", tools: [
     { name: "get_pull_request", tool: "mcp:github/get_pull_request", asks: "allow" },
     { name: "create_review", tool: "mcp:github/create_review", asks: "ask" },
   ] }],
+  category: "engineering", tags: ["code-review", "github"], examples: [],
   parameters: {
     repo: { type: "string", required: true, description: "The repository, as owner/name", pattern: "^[^/]+/[^/]+$" },
     max_files: { type: "integer", required: false, description: "How many files it reads at most" },
   },
   secrets: ["PARALLEL_API_KEY"], budget: { per_run_usd: 0.5 }, learning: false, approvals_default: "ask", triggers: [{ kind: "github", events: ["pull_request"] }], skills: [], evals: [],
 };
-const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: {}, secrets: [], budget: null, triggers: [] };
+const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: {}, secrets: [], budget: null, triggers: [], category: null, tags: [] };
 
-type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[]; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void> };
+// A saved MCP server as the list reads it: its name, and the source and toolkit a need is matched on.
+type Saved = { name: string; source: "composio" | "github" | "url"; toolkit: string | null };
+type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: Saved[]; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void> };
 async function open(name?: string, fake: Fake = {}) {
   const went: string[] = [];
-  const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[]; overrides?: Record<string, unknown> }; key: string }[] = [];
+  const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[]; servers?: Record<string, string>; overrides?: Record<string, unknown> }; key: string }[] = [];
   const v2 = {
     listTemplates: async () => ({ templates: fake.templates ?? [REVIEWER, NOTES] }),
-    listMcpServers: async () => ({ servers: (fake.servers ?? ["github"]).map((n) => ({ name: n, url: `https://${n}.example/mcp`, auth: { type: "none" }, tools: [], credential: null })) }),
+    listMcpServers: async () => ({ servers: (fake.servers ?? [{ name: "github", source: "github", toolkit: "github" }]).map((s) => ({ ...s, url: `https://${s.name}.example/mcp`, auth: { type: "none" }, tools: [], credential: null })) }),
     // A trigger the apply made, read back (GET /triggers/{id}); one the fake doesn't have is a 404.
     getTrigger: async (id: string) => {
       if (fake.stallTriggers) return new Promise(() => {});
@@ -76,6 +79,10 @@ describe("the Templates page", () => {
     expect(reviewer).toContain("github");
     expect(reviewer).toContain("1 trigger");
     expect(reviewer).toContain("$0.50 a run");
+    // Its category and tags, small beside its name and under its description.
+    expect(reviewer).toContain("engineering");
+    expect(cards[0].querySelector('[aria-label="Tags"]')!.textContent).toBe("code-review · github");
+    expect(cards[1].querySelector('[aria-label="Tags"]')).toBeNull();
     // No display name: the template's name.
     expect(cards[1].textContent).toContain("meeting-notes");
     await t.click(cards[0].querySelector("button"));
@@ -123,6 +130,64 @@ describe("applying a template", () => {
     expect(set.host.querySelector("[data-missing-mcp]")).toBeNull();
   });
 
+  // A need maps to the saved servers whose source and toolkit are its own, never by name: a github server named slack is
+  // no Composio slack.
+  const LEAD_MCP: TemplateView = { ...REVIEWER, name: "inbound-lead", mcp: [
+    { source: "composio", toolkit: "slack", required: false, reason: null, tools: [
+      { name: "SLACK_SEND_MESSAGE", tool: "mcp:slack/SLACK_SEND_MESSAGE", asks: "allow" },
+      { name: "SLACK_FIND_CHANNELS", tool: "mcp:slack/SLACK_FIND_CHANNELS", asks: "ask" },
+    ] },
+    { source: "url", toolkit: "hubspot", required: false, reason: "Writes the brief back to the lead's record.", tools: [{ name: "create_note", tool: "mcp:hubspot/create_note", asks: "ask" }] },
+  ] };
+
+  it("a Composio need no saved server matches: Not set up here, with a link to the Composio preset with its toolkit and actions", async () => {
+    const t = await open("inbound-lead", { templates: [LEAD_MCP], servers: [{ name: "slack", source: "github", toolkit: "github" }] });
+    const row = t.host.querySelector('[data-mcp="slack"]')!;
+    expect(row.textContent).toContain("Composio");
+    expect(row.textContent).toContain("Not set up here");
+    const link = row.querySelector('[data-missing-mcp="slack"] a')!;
+    expect(link.getAttribute("href")).toBe("#/settings/mcp?add=slack&preset=composio&toolkit=slack&tools=SLACK_SEND_MESSAGE,SLACK_FIND_CHANNELS");
+    expect(link.textContent).toBe("Add slack from Composio");
+    // A url need's link opens the add form under its toolkit's name.
+    expect(t.host.querySelector('[data-missing-mcp="hubspot"] a')!.getAttribute("href")).toBe("#/settings/mcp?add=hubspot");
+    expect(route("#/settings/mcp?add=slack&preset=composio&toolkit=slack&tools=SLACK_SEND_MESSAGE,SLACK_FIND_CHANNELS").add)
+      .toEqual({ name: "slack", preset: "composio", toolkit: "slack", tools: ["SLACK_SEND_MESSAGE", "SLACK_FIND_CHANNELS"] });
+  });
+
+  it("a need one saved server matches says Uses it, whatever its name, with the need's reason; Apply sends no servers", async () => {
+    const t = await open("inbound-lead", { templates: [LEAD_MCP], servers: [{ name: "crm", source: "url", toolkit: "hubspot" }, { name: "hubspot", source: "url", toolkit: null }] });
+    const row = t.host.querySelector('[data-mcp="hubspot"]')!;
+    expect(row.textContent).toContain("URL");
+    expect(row.textContent).toContain("Uses crm");
+    expect(row.textContent).toContain("Writes the brief back to the lead's record.");
+    expect(row.querySelector("[data-missing-mcp]")).toBeNull();
+    expect(firstPicker(row)).toBeNull();
+    await t.click(t.tick("mcp:hubspot/create_note"));
+    await t.click(t.button(/^Apply/));
+    // Grants name the package's tool; the server moves it onto crm.
+    expect(t.sent[0].body.grants).toEqual(["mcp:hubspot/create_note"]);
+    expect(t.sent[0].body.servers).toBeUndefined();
+  });
+
+  it("a need several saved servers match: a picker at the one named as the toolkit, and Apply always sends the pick as servers", async () => {
+    const servers: Saved[] = [{ name: "slack-work", source: "composio", toolkit: "slack" }, { name: "slack", source: "composio", toolkit: "slack" }, { name: "crm", source: "url", toolkit: "hubspot" }];
+    const t = await open("inbound-lead", { templates: [LEAD_MCP], servers });
+    const row = t.host.querySelector('[data-mcp="slack"]')!;
+    const select = picker(row, "Server for slack")!;
+    expect(valueOf(select)).toBe("slack");
+    expect((await optionsOf(select)).map((o) => o.value)).toEqual(["slack", "slack-work"]);
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.servers).toEqual({ slack: "slack" });
+    await pick(picker(t.host.querySelector('[data-mcp="slack"]')!, "Server for slack")!, "slack-work");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[1].body.servers).toEqual({ slack: "slack-work" });
+  });
+
+  it("with no server named as the toolkit, several matches start at the first by name", async () => {
+    const t = await open("inbound-lead", { templates: [LEAD_MCP], servers: [{ name: "zz-slack", source: "composio", toolkit: "slack" }, { name: "team-slack", source: "composio", toolkit: "slack" }] });
+    expect(valueOf(picker(t.host.querySelector('[data-mcp="slack"]')!, "Server for slack")!)).toBe("team-slack");
+  });
+
   it("asks consent one tool at a time, none ticked until the owner ticks it, and says what an allow means", async () => {
     const t = await open("pr-reviewer");
     for (const tool of ["mcp:github/get_pull_request", "mcp:github/create_review"]) {
@@ -137,8 +202,11 @@ describe("applying a template", () => {
     expect(reads).toContain("The template asks you to allow this.");
     expect(writes).toContain("The template does not ask for this; unticked, it stays at your setting.");
     expect(t.host.textContent).not.toContain("asks you before each call");
-    // The MCP server, set up here or not, and the secrets by name only.
-    expect(t.host.querySelector('[data-mcp="github"]')!.textContent).toContain("Set up here");
+    // The MCP need, by its source and the saved server it uses, with its reason; and the secrets by name only.
+    const need = t.host.querySelector('[data-mcp="github"]')!.textContent ?? "";
+    expect(need).toContain("GitHub");
+    expect(need).toContain("Uses github");
+    expect(need).toContain("Reads the pull request and posts the review.");
     expect(t.host.querySelector('[data-secret="PARALLEL_API_KEY"]')!.textContent).toContain("PARALLEL_API_KEY");
   });
 

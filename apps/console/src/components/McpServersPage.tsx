@@ -8,7 +8,8 @@ import { Input } from "@/components/ui/field";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
-import { type ComposioTools, GITHUB_MCP_URL, type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, PREVIEW_SCOPE_NOTE, signInFailure } from "@/lib/mcp";
+import { Picker } from "@/components/ui/picker";
+import { type ComposioTools, GITHUB_MCP_URL, type McpAdd, type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, type McpSource, PREVIEW_SCOPE_NOTE, signInFailure, SOURCE_LABEL } from "@/lib/mcp";
 
 type Problem = ReturnType<typeof mcpProblem>;
 type SignIn = { server: string; ok: boolean; error?: string };
@@ -25,25 +26,28 @@ const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
  *  read, and cleared once sent to be kept: every credential is kept sealed under the server's seal key. `signIn`, the
  *  outcome an OAuth sign-in's way back names (`#/settings/mcp?server=&sign_in=`); `open` takes the browser to a sign-in. */
 /** `writable`: this session may type a credential (session.secrets_writable); `whyNot`, why not when it may not. */
-type Add = { name: string; auth?: "github_app" };
+type Add = McpAdd;
 export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", open = (url) => location.assign(url) }: { v2: Client; signIn?: SignIn; add?: Add; writable: boolean; whyNot?: SecretsWhyNot; open?: (url: string) => void }) {
   const [servers, setServers] = useState<McpServer[] | null>(null);
   const [loadError, setLoadError] = useState<Problem | null>(null);
+  // A template's Apply sent the person here to set up a server it needs: a Composio one opens the Composio form with its
+  // toolkit and actions filled (the key is a credential, so only where this session may type one), any other the add form.
+  const composioAdd = add?.preset === "composio" ? add : undefined;
   // The open form: a new server, or a saved one; `problem`, a saved row's refusal it opens with (its sign-in needs a
-  // Client ID), so the form keeps that guidance. `add`: a template's Apply sent the person here to set up the server it
-  // needs, so the add form opens with its name filled.
-  const [form, setForm] = useState<{ saved?: McpServer; problem?: Problem; add?: Add } | null>(add ? { add } : null);
-  // The form follows the `add` param on every location change: Back to a setup URL opens it again, with its fields reset.
-  const addName = add?.name;
-  const addAuth = add?.auth;
-  const seenAdd = useRef(`${addName ?? ""}|${addAuth ?? ""}`);
+  // Client ID), so the form keeps that guidance. `add`: the add form opens with its name filled.
+  const [form, setForm] = useState<{ saved?: McpServer; problem?: Problem; add?: Add } | null>(add && !composioAdd ? { add } : null);
+  // The Composio form, open (true), open filled from a template's need (its `add`), or closed.
+  const [composio, setComposio] = useState<boolean | Add>(composioAdd && writable ? composioAdd : false);
+  // The forms follow the `add` param on every location change: Back to a setup URL opens one again, with its fields reset.
+  const addKey = add ? JSON.stringify(add) : "";
+  const seenAdd = useRef(addKey);
   useEffect(() => {
-    const now = `${addName ?? ""}|${addAuth ?? ""}`;
-    if (now === seenAdd.current) return;
-    seenAdd.current = now;
-    setForm(addName ? { add: { name: addName, ...(addAuth ? { auth: addAuth } : {}) } } : null);
-  }, [addName, addAuth]);
-  const [composio, setComposio] = useState(false);
+    if (addKey === seenAdd.current) return;
+    seenAdd.current = addKey;
+    const next: Add | undefined = addKey ? JSON.parse(addKey) : undefined;
+    setForm(next && next.preset !== "composio" ? { add: next } : null);
+    setComposio(next?.preset === "composio" && writable ? next : false);
+  }, [addKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const asked = useRef(0);
   const load = () => {
     const n = ++asked.current;
@@ -82,7 +86,7 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
         )}
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
         {form && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}`} v2={v2} saved={form.saved} add={form.add} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
-        {composio && <ComposioForm v2={v2} onClose={() => setComposio(false)} onSaved={load} />}
+        {composio && <ComposioForm key={typeof composio === "object" ? addKey : "new"} v2={v2} add={typeof composio === "object" ? composio : undefined} onClose={() => setComposio(false)} onSaved={load} />}
         {servers && (servers.length
           ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
@@ -110,7 +114,9 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
       <div className="flex flex-wrap items-start gap-3">
         <Plug className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-prose font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip>{!!s.not_metered?.length && <Chip tone="plain">not metered</Chip>}</p>
+          <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-prose font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip>{!!s.not_metered?.length && <Chip tone="plain">not metered</Chip>}
+            {/* What a template's MCP need is matched on: where its tools come from and the toolkit they are. */}
+            {s.source && <><Chip tone="muted">{SOURCE_LABEL[s.source]}</Chip><span data-toolkit className="font-mono text-small text-muted-foreground">{s.toolkit ? `toolkit ${s.toolkit}` : "no toolkit"}</span></>}</p>
           <p className="mt-1.5 break-all font-mono text-small text-muted-foreground">{s.url}</p>
           {s.auth.type === "github_app" && <p className="mt-1 font-mono text-small text-muted-foreground">Signed with this server's GitHub App: a token narrowed to the run's repository is made for each run{s.auth.headers?.length ? ` · headers ${s.auth.headers.join(", ")}` : ""}</p>}
           {oauth && s.oauth &&<p className="mt-1 font-mono text-small text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.credential === "expired" ? " · sign-in expired: sign in again" : s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
@@ -196,11 +202,12 @@ function PrivateHosts({ v2 }: { v2: Client }) {
 /** Settings → MCP servers → Add from Composio: Composio is an MCP server like any other. The key and a toolkit load that
  *  toolkit's actions, the ones ticked are what the saved server grants, and the server saves it as an MCP server with the
  *  key sealed. A toolkit that needs your account answers a link to Composio's page to connect it. The key is an
- *  uncontrolled input, never filled from a read and cleared once sent. */
-function ComposioForm({ v2, onClose, onSaved }: { v2: Client; onClose: () => void; onSaved: () => void }) {
+ *  uncontrolled input, never filled from a read and cleared once sent. `add`: a template's need it opened for, its name
+ *  and toolkit filled and, once its actions load, the ones the template uses ticked. */
+function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; onClose: () => void; onSaved: () => void }) {
   const form = useRef<HTMLFormElement>(null);
-  const [toolkit, setToolkit] = useState("");
-  const [name, setName] = useState("");
+  const [toolkit, setToolkit] = useState(add?.toolkit ?? "");
+  const [name, setName] = useState(add?.name ?? "");
   const [listed, setListed] = useState<ComposioTools | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
   const [after, setAfter] = useState<{ connect?: string; notServed?: string[] } | null>(null);
@@ -216,7 +223,10 @@ function ComposioForm({ v2, onClose, onSaved }: { v2: Client; onClose: () => voi
     const mine = ++asked.current;
     setListed(null); setPicked([]);
     const answer = await v2.composioTools(key(), toolkit.trim().toLowerCase());
-    if (mine === asked.current) setListed(answer);
+    if (mine !== asked.current) return;
+    setListed(answer);
+    // The template's actions ticked, those of them the toolkit lists, while the toolkit is still the one it needs.
+    if (add?.tools && answer.toolkit === add.toolkit) setPicked(answer.tools.map((t) => t.slug).filter((slug) => add.tools!.includes(slug)));
   });
   const save = () => act(async () => {
     const answer = await v2.saveComposioServer(name.trim(), key(), listed!.toolkit, picked);
@@ -239,6 +249,7 @@ function ComposioForm({ v2, onClose, onSaved }: { v2: Client; onClose: () => voi
     <form ref={form} autoComplete="off" onSubmit={(e) => { e.preventDefault(); if (listed && picked.length && name.trim()) void save(); }} aria-label="Add from Composio" className="space-y-4 border bg-card p-4"
       onInput={(e) => { if ((e.target as HTMLInputElement).name === "composio-key") changed(); }}>
       <p className="text-small text-muted-foreground">Composio runs the toolkit's actions for you. This saves an MCP server that grants only the actions you tick, with your Composio key sealed like any credential.</p>
+      {add?.tools && <p role="note" className="text-small text-muted-foreground">A template uses {add.tools.join(", ")}: enter your key and load the actions, and those are ticked.</p>}
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Composio API key</span><Input name="composio-key" {...secret} /></label>
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Toolkit</span>
         <Input name="composio-toolkit" value={toolkit} onChange={(e) => { setToolkit(e.target.value); changed(); }} placeholder="github" spellCheck={false} /></label>
@@ -279,6 +290,21 @@ function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved
   const [url, setUrl] = useState(saved?.url ?? (add?.auth === "github_app" ? GITHUB_MCP_URL : ""));
   const [type, setType] = useState<McpAuth["type"]>(saved?.auth.type ?? add?.auth ?? "none");
   const [headerRows, setHeaderRows] = useState(Math.max(1, saved?.auth.headers?.length ?? 0));
+  // Where its tools come from and the toolkit they are, which a template's MCP need is matched on. A server a template's
+  // url need sent the person here for starts with that toolkit. On the GitHub App's tokens it is github/github, a github
+  // server's toolkit is github, and a Composio one's source is the preset's: the server holds it to those.
+  const [source, setSource] = useState<McpSource>(saved?.source ?? "url");
+  const [toolkit, setToolkit] = useState(saved?.toolkit ?? (add && !add.auth ? add.name : ""));
+  const shownSource: McpSource = type === "github_app" ? "github" : source;
+  const shownToolkit = shownSource === "github" ? "github" : toolkit.trim();
+  // What a save sends of them: only what differs from the saved server (a new one: only what was said), so a server at
+  // GitHub's address keeps what the server makes of it, and one on the GitHub App's tokens sends none.
+  const kind = (): { source?: McpSource; toolkit?: string | null } => {
+    if (type === "github_app") return {};
+    const named = shownToolkit || null;
+    if (saved) return { ...(shownSource !== saved.source ? { source: shownSource } : {}), ...(named !== saved.toolkit ? { toolkit: named } : {}) };
+    return shownSource === "url" && !named ? {} : { source: shownSource, toolkit: named };
+  };
   const [preview, setPreview] = useState<McpPreview | null>(null);
   // `given`: the refusal its row opened it with (a sign-in that needs a Client ID), kept until the next try.
   const [problem, setProblem] = useState<Problem | null>(given ?? null);
@@ -328,18 +354,24 @@ function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved
     if (type === "oauth" && (!saved || needsSignIn)) return void startSignIn();
     // No prices are sent: this form sets none, and the server keeps the saved ones for the tools still listed at the same
     // address when a PUT has none.
-    void act(async () => { await v2.saveMcpServer(name.trim(), url.trim(), auth()); form.current?.reset(); onSaved(); });
+    void act(async () => { await v2.saveMcpServer(name.trim(), url.trim(), auth(), kind()); form.current?.reset(); onSaved(); });
   };
   const canSave = !busy && !!name.trim() && !!url.trim() && (!!saved || !!preview);
   const keepNote = (what: string) => saved?.credential === "sealed" && saved.auth.type === type && <span className="-mt-1 mb-2 block text-small text-muted-foreground">Saved. {what}</span>;
   return (
     <form ref={form} autoComplete="off" onSubmit={submit} aria-label={saved ? `Change ${saved.name}` : "Add an MCP server"} className="space-y-4 border bg-card p-4"
-      onInput={(e) => { if ((e.target as HTMLInputElement).name !== "mcp-name") edited(); checkSignIn(); }}>
+      onInput={(e) => { if (!["mcp-name", "mcp-toolkit"].includes((e.target as HTMLInputElement).name)) edited(); checkSignIn(); }}>
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Name</span>
         <span className="-mt-1 mb-2 block text-small text-muted-foreground">Lowercase letters, digits and dashes: an agent grants its tools as mcp:{name.trim() || "<name>"}/&lt;tool&gt;.</span>
         <Input name="mcp-name" value={name} readOnly={!!saved} onChange={(e) => setName(e.target.value)} spellCheck={false} /></label>
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Address</span>
         <Input name="mcp-url" value={url} onChange={(e) => { setUrl(e.target.value); if (problem?.needsClient) setProblem(null); }} placeholder="https://mcp.example.com/mcp" spellCheck={false} /></label>
+      <div className="block"><span className="caps mb-2 block text-small font-semibold">Source</span>
+        <Picker label="Source" className="w-48" value={shownSource} disabled={type === "github_app" || saved?.source === "composio"} onChange={(v) => setSource(v as McpSource)}
+          options={(saved?.source === "composio" ? ["composio", "url", "github"] as const : ["url", "github"] as const).map((s) => ({ value: s, label: SOURCE_LABEL[s] }))} /></div>
+      <label className="block"><span className="caps mb-2 block text-small font-semibold">Toolkit</span>
+        <span className="-mt-1 mb-2 block text-small text-muted-foreground">The name a template gives these tools (mcp:{shownToolkit || "<toolkit>"}/&lt;tool&gt;): applying one uses this server for them.</span>
+        <Input name="mcp-toolkit" value={shownSource === "github" ? "github" : toolkit} readOnly={shownSource === "github"} onChange={(e) => setToolkit(e.target.value)} placeholder="hubspot" spellCheck={false} /></label>
       <fieldset>
         <legend className="caps mb-2 text-small font-semibold">Credential</legend>
         <div className="flex flex-wrap gap-4">

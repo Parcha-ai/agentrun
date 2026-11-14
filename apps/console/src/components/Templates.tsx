@@ -13,7 +13,8 @@ import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
-import { choiceOptions, grantsOf, issuesAt, needsOf, paramHelp, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
+import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
+import { choiceOptions, defaultServer, grantsOf, issuesAt, matchesOf, needsOf, paramHelp, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, setUpHref, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
@@ -54,8 +55,10 @@ function TemplateList({ templates, go }: { templates: TemplateView[]; go: (hash:
                   <LayoutTemplate className="size-4 shrink-0 self-center text-muted-foreground" aria-hidden />
                   <h2 className="min-w-0 break-words text-prose font-semibold">{titleOf(t)}</h2>
                   <span className="font-mono text-small text-muted-foreground">{t.version}</span>
+                  {t.category && <Chip tone="muted">{t.category}</Chip>}
                 </div>
                 <p className="mt-2 text-lead leading-[1.6]">{t.description}</p>
+                {t.tags.length > 0 && <p aria-label="Tags" className="mt-1.5 break-words font-mono text-small text-muted-foreground">{t.tags.join(" · ")}</p>}
                 <dl className="mt-3 space-y-1 font-mono text-small text-muted-foreground">
                   {needsOf(t).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0">{what}</dt><dd className="min-w-0 break-words text-foreground/80">{words}</dd></div>)}
                 </dl>
@@ -93,7 +96,9 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   // The agent's approvals, sent as overrides.approvals: the template's own (approvals_default: never for one that runs
   // on its triggers with no one there), which the owner can switch.
   const [approvals, setApprovals] = useState<Approvals>(t.approvals_default ?? "ask");
-  const [servers, setServers] = useState<Set<string> | null>(null);
+  const [servers, setServers] = useState<McpServer[] | null>(null);
+  // The owner's pick, by toolkit, for a need several saved servers match (none picked: the apply's default).
+  const [picks, setPicks] = useState<Record<string, string>>({});
   const [applying, setApplying] = useState(false);
   const [issues, setIssues] = useState<FieldIssue[]>([]);
   // The refusal's own words beside Apply; `withIssues` when it came with issues, so it goes once the last of them does.
@@ -108,13 +113,17 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const shown = useRef(true);
   // Set on every setup, not only the first: StrictMode runs setup, cleanup, then setup again.
   useEffect(() => { shown.current = true; return () => { shown.current = false; }; }, []);
-  // The MCP servers saved here (GET /v2/settings/mcp-servers): which of the template's servers are set up.
+  // The MCP servers saved here (GET /v2/settings/mcp-servers): which of them each of the template's needs maps to.
   useEffect(() => {
     let live = true;
-    v2.listMcpServers().then((r) => { if (live) setServers(new Set(r.servers.map((s) => s.name))); }, () => {});
+    v2.listMcpServers().then((r) => { if (live) setServers(r.servers); }, () => {});
     return () => { live = false; };
   }, [v2]);
   const grants = grantsOf(t, ticked);
+  // Each need's matching servers, and the one it uses: the owner's pick, else the apply's default.
+  const mapped = t.mcp.map((m) => { const matches = servers ? matchesOf(m, servers) : []; return { m, matches, uses: picks[m.toolkit] ?? defaultServer(m, matches) }; });
+  // Sent for every need several servers match, so the server the screen shows is the one the agent gets.
+  const chosen = Object.fromEntries(mapped.flatMap(({ m, matches, uses }) => (matches.length > 1 && uses ? [[m.toolkit, uses]] : [])));
   const at = (field: string) => issuesAt(issues, field);
   // A parameter's value as typed or picked: an issue at it goes as soon as the value is one the server takes.
   const setParam = (key: string, value: string) => {
@@ -125,7 +134,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const apply = async () => {
     setApplying(true); setIssues([]); setSaid(null);
     const sending = values;
-    const body = { parameters: parametersOf(t, sending), ...(grants.length ? { grants } : {}), overrides: { approvals } };
+    const body = { parameters: parametersOf(t, sending), ...(grants.length ? { grants } : {}), ...(Object.keys(chosen).length ? { servers: chosen } : {}), overrides: { approvals } };
     try {
       const done = await v2.applyTemplate(t.name, body, keys.keyFor(t.name, body));
       keys.done();
@@ -156,7 +165,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   };
   const params = Object.entries(t.parameters);
   // Issues the form has no place for (a trigger's, an override's) show above the button, in the server's words.
-  const placed = (i: FieldIssue) => /^(parameters|secrets|mcp)\./.test(i.field) || /^grants\.\d+$/.test(i.field);
+  const placed = (i: FieldIssue) => /^(parameters|secrets|mcp|servers)\./.test(i.field) || /^grants\.\d+$/.test(i.field);
   if (made) {
     return (
       <section aria-label="Applied" className="max-w-3xl">
@@ -246,22 +255,30 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
 
       {t.mcp.length > 0 && (
         <Section title="Tools you allow" note="Nothing is granted until you tick it. A tool you leave unticked stays at your own setting for it.">
-          {t.mcp.map((m) => (
-            <div key={m.server} data-mcp={m.server} className="px-4 py-3">
+          {mapped.map(({ m, matches, uses }) => (
+            <div key={m.toolkit} data-mcp={m.toolkit} className="px-4 py-3">
               <p className="flex flex-wrap items-center gap-2 font-mono text-body">
-                <span className="font-semibold">{m.server}</span>
+                <span className="font-semibold">{m.toolkit}</span>
+                <Chip tone="muted">{SOURCE_LABEL[m.source]}</Chip>
                 <Chip tone={m.required ? "plain" : "muted"}>{m.required ? "Required" : "Optional"}</Chip>
-                {servers && <span className="text-small text-muted-foreground">{servers.has(m.server) ? "Set up here" : "Not set up here"}</span>}
+                {servers && matches.length < 2 && <span className="text-small text-muted-foreground">{uses ? `Uses ${uses}` : "Not set up here"}</span>}
               </p>
-              {/* A server the template names that is not saved here: said before Apply, with the way to set it up, so an agent is
-                  never made without its tools unseen. `github` is GitHub's own, set up as a GitHub App. */}
-              {servers && !servers.has(m.server) && (
-                <p role="status" data-missing-mcp={m.server} className="mt-2 border border-warning/50 px-3 py-2 text-small text-warning-text">
-                  {m.required ? `${m.server} is required and not set up here: Apply is refused until it is.` : `${m.server} is not set up here: Apply makes the agent without its tools (${m.tools.map((x) => x.name).join(", ")}).`}{" "}
-                  <a href={`#/settings/mcp?add=${encodeURIComponent(m.server)}${m.server === "github" ? "&auth=github_app" : ""}`} className="font-mono text-primary-text underline-offset-2 hover:underline">{m.server === "github" ? "Set up GitHub App access" : `Set up ${m.server}`}</a>
+              {m.reason && <p className="mt-1 text-small text-muted-foreground">{m.reason}</p>}
+              {/* Several saved servers are this source and toolkit: the owner picks one, the apply's default to start. */}
+              {servers && matches.length > 1 && (
+                <label className="mt-2 flex flex-wrap items-center gap-2 text-small text-muted-foreground">Uses
+                  <Picker small label={`Server for ${m.toolkit}`} value={uses ?? ""} onChange={(v) => setPicks((was) => ({ ...was, [m.toolkit]: v }))} options={matches.map((s) => ({ value: s, label: s }))} />
+                </label>
+              )}
+              {/* A need no saved server matches: said before Apply, with the way to set it up, so an agent is never made without
+                  its tools unseen. Composio's opens the preset with its toolkit and actions; GitHub's is set up as a GitHub App. */}
+              {servers && !uses && (
+                <p role="status" data-missing-mcp={m.toolkit} className="mt-2 border border-warning/50 px-3 py-2 text-small text-warning-text">
+                  {m.required ? `${m.toolkit} is required and not set up here: Apply is refused until it is.` : `${m.toolkit} is not set up here: Apply makes the agent without its tools (${m.tools.map((x) => x.name).join(", ")}).`}{" "}
+                  <a href={setUpHref(m)} className="font-mono text-primary-text underline-offset-2 hover:underline">{m.source === "github" ? "Set up GitHub App access" : m.source === "composio" ? `Add ${m.toolkit} from Composio` : `Set up ${m.toolkit}`}</a>
                 </p>
               )}
-              <Issues issues={at(`mcp.${m.server}`)} />
+              <Issues issues={[...at(`mcp.${m.toolkit}`), ...at(`servers.${m.toolkit}`)]} />
               <ul className="mt-2 space-y-2">
                 {m.tools.map((tool) => {
                   const index = grants.indexOf(tool.tool);
