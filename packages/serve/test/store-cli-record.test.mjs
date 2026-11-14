@@ -146,7 +146,7 @@ test("a CLI's parked MCP call shows no result row while it waits, asked or sent;
   await commitWrites(j, [
     { type: "conversation", value: { id: ROOT } },
     entry(await j.mintId(), "agentrun.message", { role: "person", text: "Add 2 and 3." }),
-    entry(await j.mintId(), "agentrun.call.start", { callId: "c1", tool: "mcp__fake__add", input: { a: 2, b: 3 }, replaySafe: false, parked: true, bridge: true }),
+    entry(await j.mintId(), "agentrun.call.start", { callId: "c1", tool: "mcp__fake__add", input: { a: 2, b: 3 }, replaySafe: false, parked: true }),
   ], context);
   const kinds = async () => shown(await runTimeline(store, "run-1", context)).filter((r) => r.kind === "tool_use" || r.kind === "tool_result");
   assert.deepEqual((await kinds()).map((r) => r.kind), ["tool_use"], "at its gate: the call's row only");
@@ -160,45 +160,6 @@ test("a CLI's parked MCP call shows no result row while it waits, asked or sent;
   await commitWrites(j, [entry(await j.mintId(), "agentrun.call.end", { callId: "c1", status: "done", output: "5" })], context);
   const ended = await kinds();
   assert.deepEqual(ended.map((r) => [r.kind, r.tool_name, r.preview ?? null]), [["tool_use", "mcp__fake__add", null], ["tool_result", "mcp__fake__add", "5"]]);
-});
-
-// #2061: a CLI's MCP call parked at an earlier version's MCP door (its start parked, not the bridge's: door-parked.ts) got
-// the gate's waiting words as its result, which the record never kept as an end (an end would be read as its outcome, and
-// the call answered from it instead of run). The timeline shows those words as the call's result row from its ask on,
-// while it is parked and unsent, as pi's parked call shows them.
-test("a CLI's MCP call parked at an earlier version's door shows the gate's waiting words as its result row once asked; sent, it shows none until its end; ended, only its outcome", async (t) => {
-  const { store } = await storeOn(t);
-  const cli = await claimed(store);
-  const j = store.journal(cli);
-  const waitingWords = "This mcp:fake/add call waits for a person's approval; the run pauses here and continues with the result when they answer.";
-  const base = [
-    { type: "conversation", value: { id: ROOT } },
-    entry(await j.mintId(), "agentrun.message", { role: "person", text: "Add 2 and 3." }),
-    entry(await j.mintId(), "agentrun.call.start", { callId: "c1", tool: "mcp__fake__add", input: { a: 2, b: 3 }, replaySafe: false, parked: true }),
-  ];
-  const ask = entry(await j.mintId(), "agentrun.ask", { callId: "c1", tool: "mcp:fake/add", args: { a: 2, b: 3 }, requestedAt: new Date(T0).toISOString() });
-  // At its gate, before its ask: the call's row only.
-  await commitWrites(j, base, context);
-  const kinds = async () => shown(await runTimeline(store, "run-1", context)).filter((r) => r.kind === "tool_use" || r.kind === "tool_result");
-  assert.deepEqual((await kinds()).map((r) => r.kind), ["tool_use"], "not asked yet: no result");
-  // Asked: the waiting words as its result row, after the ask.
-  await commitWrites(j, [ask], context);
-  const all = shown(await runTimeline(store, "run-1", context));
-  const result = all.find((r) => r.kind === "tool_result");
-  assert.ok(result, `the parked result shows: ${JSON.stringify(all.map((r) => r.kind))}`);
-  assert.equal(result.tool_name, "mcp__fake__add");
-  assert.equal(result.preview, waitingWords);
-  assert.notEqual(result.tool_status, "failed", "a parked call is no failure");
-  // Asked again while it waits (a resume, a cap raised meanwhile): still one waiting result for the call.
-  await commitWrites(j, [entry(await j.mintId(), "agentrun.ask", { callId: "c1", tool: "mcp:fake/add", args: { a: 2, b: 3 }, requestedAt: new Date(T0).toISOString() })], context);
-  assert.deepEqual((await kinds()).map((r) => [r.kind, r.preview ?? null]), [["tool_use", null], ["tool_result", waitingWords]], "asked twice: one waiting result");
-  // Allowed and sent: in flight, no result until its end.
-  await commitWrites(j, [entry(await j.mintId(), "agentrun.answer", { callId: "c1", decision: "allow" }), entry(await j.mintId(), "agentrun.call.sent", { callId: "c1" })], context);
-  assert.deepEqual((await kinds()).map((r) => r.kind), ["tool_use"], "sent: no waiting words, no result yet");
-  // Ended: its outcome, once.
-  await commitWrites(j, [entry(await j.mintId(), "agentrun.call.end", { callId: "c1", status: "done", output: "5" })], context);
-  const ended = await kinds();
-  assert.deepEqual(ended.map((r) => [r.kind, r.preview ?? null]), [["tool_use", null], ["tool_result", "5"]]);
 });
 
 test("a CLI's parked MCP call ended without being sent (refused, or withdrawn by a stop) shows its end's words, never the waiting words too", async (t) => {

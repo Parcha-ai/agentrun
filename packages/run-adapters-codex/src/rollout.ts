@@ -91,24 +91,6 @@ export function isSessionMeta(line: string | undefined): boolean {
   return !!line && parseLine(line)?.type === 'session_meta';
 }
 
-/** A dynamic tool as thread/start gives it to Codex, and as Codex keeps it in the thread's `session_meta`. */
-export type DynamicTool = { type: 'function'; name: string; description: string; inputSchema: unknown };
-
-/** The rollout with the host's MCP tools (`mcp_<server>__<tool>`) its `session_meta` lacks added to that line's dynamic
- *  tools: Codex resumes a thread with those (thread/resume sends none). A thread an earlier version started gave its MCP
- *  tools to Codex's own MCP client, never as dynamic tools, and would never be offered them again. Unchanged when none
- *  is missing, or with no `session_meta` first. */
-export function withMcpTools(lines: readonly string[], tools: readonly DynamicTool[]): readonly string[] {
-  const meta = isSessionMeta(lines[0]) ? (JSON.parse(lines[0]!) as { payload?: { dynamic_tools?: unknown } }) : undefined;
-  if (!meta?.payload) return lines;
-  const kept = Array.isArray(meta.payload.dynamic_tools) ? (meta.payload.dynamic_tools as { name?: unknown }[]) : [];
-  const names = new Set(kept.map((tool) => tool?.name));
-  const missing = tools.filter((tool) => tool.name.startsWith('mcp_') && !names.has(tool.name));
-  if (missing.length === 0) return lines;
-  meta.payload.dynamic_tools = [...kept, ...missing];
-  return [JSON.stringify(meta), ...lines.slice(1)];
-}
-
 export function summarizeRollout(lines: readonly string[]): RolloutSummary {
   const calls: RolloutCall[] = [];
   const outputs = new Set<string>();

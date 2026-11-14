@@ -187,12 +187,9 @@ export interface CallStartData {
   /** May run again after a crash (it changes nothing outside the run): the tool registry's own flag. */
   readonly replaySafe: boolean;
   /** Written as its CLI's tool bridge's gate asked about it (adapter-loop.ts bridgeGate), before any answer: nothing is sent
-   *  until its agentrun.call.sent mark (KINDS.callSent). */
+   *  until its agentrun.call.sent mark (KINDS.callSent). The bridge holds the call and hands the CLI nothing while it waits,
+   *  so no waiting result shows for it, as on pi. */
   readonly parked?: true;
-  /** Parked in its CLI's tool bridge (adapter-loop.ts bridgeGate): the bridge holds the call and hands the CLI nothing while
-   *  it waits, so no waiting result shows for it, as on pi. A start parked without it was parked at the MCP door of an
-   *  earlier version, which answered the CLI the waiting words (runner/door-parked.ts, store-reads/journal.ts). */
-  readonly bridge?: true;
   /** The harness's working directory (a CLI's), which an absolute path in `input` is built from: the run's rows name a
    *  path under it by its name in the workspace (store-reads/journal.ts runTimeline). */
   readonly cwd?: string;

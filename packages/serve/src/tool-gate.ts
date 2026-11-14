@@ -291,9 +291,6 @@ function settingFrom(name: string, server: PermissionSettings, agent: Permission
  *  workflow's call nodes'. */
 export const permissionOf = (name: string, server: PermissionSettings, agent: PermissionSettings = {}, approvals: Approvals = "ask"): Permission => permissionFrom(name, server, agent, approvals).permission;
 
-/** A call's answer as the model reads it: its text, and whether it failed. */
-export type ToolAnswer = { text: string; isError: boolean };
-
 /** An approval's price for the person who answers it: USD where the tool declares one (booked through the spend cap's
  *  paidCall), else "not metered" (an unpriced MCP call, the owner's ruling of 11-04). */
 export type ApprovalPrice = number | "not metered";
@@ -318,9 +315,6 @@ export type PendingApproval = {
 export { type DenyFrom, deniedText, denyPlace, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
 export const noApproverText = (tool: string, ran: "no" | "unknown" = "no"): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
-/** What an earlier version's MCP door answered a CLI's parked call (runner/door-parked.ts): the run pauses here. Its
- *  Timeline still shows it as that call's result while the call waits (store-reads/journal.ts). */
-export const waitingText = (tool: string): string => `This ${tool} call waits for a person's approval; the run pauses here and continues with the result when they answer.`;
 
 /** The Timeline row of a call that waits for an approval. */
 export const APPROVAL_ROW = "tool_approval_requested" as const;
@@ -351,26 +345,6 @@ export type ApprovalRequest = { id: string; tool: string; call_id: string; args:
 export function previewOf(text: string): string {
   const bytes = Buffer.from(text, "utf8");
   return bytes.length <= ARGS_PREVIEW_BYTES ? bytes.toString("utf8") : `${bytes.subarray(0, ARGS_PREVIEW_BYTES - 3).toString("utf8").replace(/\uFFFD+$/, "")}…`;
-}
-/** `args` as JSON, at most ARGS_PREVIEW_BYTES: the request's own record of them, never shown as it is. */
-export const argsPreview = (args: unknown): string => previewOf(JSON.stringify(args ?? {}) ?? "");
-
-/** How the resume message of a call parked at an earlier version's MCP door starts (runner/door-parked.ts). */
-export const RESUME_PREFIX = "[tool approval] ";
-
-/** The head of that resume message: the call it answers, its arguments as shown (`shown`) cut again at 300 characters,
- *  and the words that say it is not the person's. */
-export function resumeHead(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string): string {
-  const args = shown.length > 300 ? `${shown.slice(0, 299)}…` : shown;
-  return `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
-}
-/** The last line of that message (one, after every call it answers): the message arrives as a new turn, and a model that
- *  reads only results there answers about the approval, not the person's request (Claude Code, live). */
-export const RESUME_GO_ON = "Go on with the person's request from where you stopped, using these results; don't call these tools again for them.";
-/** The part of that message for one call: its head, then the call's result once allowed, or the refusal. */
-export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
-  const head = resumeHead(request, shown);
-  return decision === "allow" ? `${head} They allowed it, and it ran${result.isError ? " and failed" : ""}. Its result:\n${result.text}` : `${head}\n${result.text}`;
 }
 
 /** The gate of the run `runId` whose folder is `where`, on its pinned revision. `serverSettings`: the server's tool

@@ -60,7 +60,6 @@ import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
 import type { ClaimMcp } from "./mcp-run.js";
-import { doorParkedFollowUp } from "./door-parked.js";
 import { budgetOf, type RequestFigures, reserveFor, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
 
 /** The end of a harness's own call (Claude Code's WebSearch) the gate held and then let run: the host ran nothing of it,
@@ -441,8 +440,8 @@ interface CliRecord {
   /** A call's start, before it runs (once per call id). A call parked at its gate (park) gets its sent mark here instead,
    *  committed before the send: only a parked call with that mark may have been sent. */
   start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
-  /** A call its tool bridge's gate asks about: its start, marked parked (nothing sent until start() writes its sent mark)
-   *  and the bridge's (CallStartData.bridge), so it shows on the record while it waits (once per call id). */
+  /** A call its tool bridge's gate asks about: its start, marked parked (nothing sent until start() writes its sent mark),
+   *  so it shows on the record while it waits (once per call id). */
   park(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
   /** A call its tool bridge's gate refused (a deny set, no one to approve, or a person's deny of its ask): its start and
    *  its end, refused in the gate's words, in one commit, as pi writes a refused call and its error result (once per call
@@ -636,7 +635,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       await flushText();
       await inTurn(async () => {
         if (started.has(callId)) return;
-        await append(KINDS.callStart, { callId, tool, input, replaySafe, parked: true, bridge: true, ...(cwd ? { cwd } : {}) });
+        await append(KINDS.callStart, { callId, tool, input, replaySafe, parked: true, ...(cwd ? { cwd } : {}) });
         started.set(callId, false);
         parked.add(callId);
       });
@@ -1888,11 +1887,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // The gate a CLI's tool bridge asks before anything of a call: a call it refuses never reaches its host tool, so its
         // start and its end, refused in the gate's words, go on the record here, as pi writes a refused call and its error
         // result (a deny set, no one to approve, or a person's deny of its ask on the claim that resumes it). A call it asks
-        // about goes on the record first, its start marked parked and the bridge's (once per call id): the bridge hands the
-        // CLI nothing while it waits, so no waiting result shows, as on pi. Its row shows while it waits, before its
-        // approval; the claim that runs it once allowed writes its sent mark on that one start (start()), and a stop
-        // withdraws it never sent (unsentParked). A start refused because another call of the round parked the run first
-        // (the journal sealed) leaves this call held as that one is.
+        // about goes on the record first, its start marked parked (once per call id): the bridge hands the CLI nothing while it
+        // waits, so no waiting result shows, as on pi. Its row shows while it waits, before its approval; the claim that runs
+        // it once allowed writes its sent mark on that one start (start()), and a stop withdraws it never sent
+        // (unsentParked). A start refused because another call of the round parked the run first (the journal sealed) leaves
+        // this call held as that one is.
         const replaySafe = (name: string) => tools.find((one) => one.name === name)?.replay === "safe";
         const askingGate = record
           ? preIntentGate(spec, hooks, wrapUp, (call) =>
@@ -2072,44 +2071,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             const followUpId = raiseFollowUpId(state.lastRaise.pause);
             await markServerFollowUp(harness, root, followUp, followUpId);
             await session!.send(followUp, { id: followUpId });
-            followedUp = true;
-          }
-        }
-        if (!followedUp && mcp !== undefined && cliRecord) {
-          // MCP calls an earlier version's door parked on this run (door-parked.ts): each answered once (an allow runs it, a
-          // deny is told), then the session goes on with that version's resume message for them, written on the record
-          // before it is sent (as the person's input is). A call still waiting parks the run again.
-          const wrapped = new Map(tools.map((tool) => [tool.name, tool]));
-          const claimMcp = mcp;
-          const follow = await doorParkedFollowUp(claimMcp, {
-            entries: await entriesOf(gate.journal, root.id, context),
-            // As the gate before an intent does: a call still waiting on its person whose tool now reads allow is answered by
-            // the setting (allowedBySetting); any other waits for the person's answer.
-            answer: async (call, price) => {
-              const now = await spec.gate?.({ callId: call.callId, tool: call.tool as never, args: call.args });
-              const bySetting = now === "allow" && (await askStands(call.callId));
-              return bySetting ? allowedBySetting(call, price, call.tool) : answerOf(call, price);
-            },
-            deniedNow: async (call) => {
-              // The gate is Promise-capable on purpose (run-cap's and the approvals' gates may look things up), so await it.
-              const now = await spec.gate?.({ callId: call.callId, tool: call.tool as never, args: call.args });
-              return now === "deny" ? setToDenyText(call.tool) : typeof now === "object" ? now.deny : undefined;
-            },
-            run: (call) => wrapped.get(claimMcp.tools.find((tool) => claimMcp.catalogOf(tool.name) === call.tool)!.name)!.call(call.args, { callId: call.callId, signal: deps.signal }),
-            // A parked call refused ends on the run's record (its start was written at its park), in the refusal's words.
-            refused: async (call, text) => cliRecord?.end(call.callId, "refused", text),
-          });
-          if (follow === "park") {
-            // A person's stop (or cancel) waiting here is taken: the run ends stopped, its waiting calls withdrawn in the
-            // end's commit. Released parked instead, its untaken stop would have it claimed again at once, and again.
-            if (stopReason?.kind === "command") return await writeEnd(harness, root, gate, stopEnd(stopReason.cancel), [stopReason.commandId], await cutRows(claim, spec, "stopped"));
-            gate.seal(new Parked());
-            return { state: "parked" };
-          }
-          if (follow) {
-            const theRoot = root;
-            await harness.commit((tx) => tx.appendEntry(theRoot.id, { kind: KINDS.message, data: { role: "person", text: follow.text, origin: { kind: "server", reason: "approval" }, at: now() } as unknown as JsonValue }), context);
-            await session!.send(follow.text, { id: `agentrun:approval:${follow.callIds[0]}` });
             followedUp = true;
           }
         }
