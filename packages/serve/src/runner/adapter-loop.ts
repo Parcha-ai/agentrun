@@ -3215,6 +3215,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
   }
 
+  /** What end-of-run turn `requestId` kept as it was first asked, for a harness that keeps its own record (pi): the first
+   *  ask's `keep` on the run's root (KINDS.endOfRunKept), an earlier claim's when it asked first, else `keep`, written
+   *  there now, before the turn's first request leaves. A CLI's record keeps it with the turn's prompt (answering). */
+  async function keptOnRoot(on: Harness, journal: Gate["journal"], conversation: Conversation, requestId: string, keep: EndOfRunKept | undefined): Promise<EndOfRunKept | undefined> {
+    const first = (await entriesOf(journal, conversation.id, context)).find((entry) => entry.kind === KINDS.endOfRunKept && (entry.data as { requestId?: unknown } | undefined)?.requestId === requestId);
+    if (first) {
+      const kept = (first.data as { kept?: unknown }).kept;
+      return kept && typeof kept === "object" && !Array.isArray(kept) ? (kept as EndOfRunKept) : undefined;
+    }
+    if (!keep) return undefined;
+    await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.endOfRunKept, data: { requestId, kept: keep } as unknown as JsonValue }), context);
+    return keep;
+  }
+
   /** The end-of-run turn: one more turn through the run's session, its request id one per round of the run (a repeat is
    *  answered from its submission, so a later claim never asks the model again; a follow-up's end is the next `round`,
    *  asked anew), its writes under work/.learning/ refused while it runs. `again`: its re-ask, a request of its own (one
@@ -3246,7 +3260,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       let kept = theRecord?.keptOf(requestId);
       const withKept = <T extends EndOfRunAnswer>(answer: T): EndOfRunAnswer => (kept ? { ...answer, kept } : answer);
       if (!known) {
-        kept = await theRecord?.answering(requestId, prompt, keep);
+        kept = theRecord ? await theRecord.answering(requestId, prompt, keep) : await keptOnRoot(on, gate.journal, conversation, requestId, keep);
         await theSession.send(prompt, { id: requestId });
         const turn = theSession.turnEnd();
         const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), deadlineMs)));

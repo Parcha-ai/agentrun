@@ -92,11 +92,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   const env = deps.env ?? process.env;
   // The grade model the server named at the run's start (its learning start's), none: the agent's own grades it.
   const gradeModel = start.gradeModel;
-  const hookFor = (runId: string, round: number, before: ReflectDeps["before"]) => {
-  // The workflow this end's compile turn revises and the commit of main it read it at (compileAskOf's `base`): the
-  // conflict base of that workflow's files in every check after the ask (the compile turn's), whatever the run started from.
-  let revised: { workflow: string; base: string } | undefined;
-  return createReflectHook({
+  const hookFor = (runId: string, round: number, before: ReflectDeps["before"]) => createReflectHook({
     round,
     ...(before ? { before } : {}),
     // reflectSkip's facts: a run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be
@@ -114,11 +110,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     nothingNew: async (runId) => onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
     promptFacts: async () => ({ active: start.seedNotes ?? start.given.length }),
     // A notes run (`learning: "notes"`) compiles nothing.
-    ...(start.notesOnly ? {} : { compileFacts: async (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => {
-      const ask = await compileAskOf(deps, { ...input, input: launch.input, ...(start.seedNotes !== undefined ? { seedNotes: start.seedNotes } : {}), seedWorkflows: start.workflows?.length ?? 0 });
-      revised = ask?.mode === "revise" && ask.base ? { workflow: ask.workflow, base: ask.base } : undefined;
-      return ask;
-    } }),
+    ...(start.notesOnly ? {} : { compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => compileAskOf(deps, { ...input, input: launch.input, ...(start.seedNotes !== undefined ? { seedNotes: start.seedNotes } : {}), seedWorkflows: start.workflows?.length ?? 0 }) }),
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
       const hearing = new Hearing();
@@ -142,14 +134,15 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       }
       return runnerSecrets(env, [...(deps.handed ?? []), ...stored, ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)]);
     },
-    check: async ({ runId, agentId, turn, outcome, refuse }) => {
+    check: async ({ runId, agentId, turn, outcome, refuse, revised }) => {
       if (start.seed === null) throw new Error("the run's learning start names no commit of main to propose against");
       // A later round checks against the main the earlier rounds merged into, not the seed the run started from: a note
       // round 1 added and a reviewer corrected is a supersedes target round 2 may name.
       // The skills and workflows keep the seed the run was laid from as their conflict base (the merge refuses a file main
       // changed since), so only the notes are checked against that main; but a workflow the compile turn revised from
-      // main's text (`revised`) has the commit it read it at as its base, so a change to it before that read is what the
-      // revision was written over, and only one after it is a conflict.
+      // main's text (`revised`, in the compile turn's checks) has the commit its first ask read it at as its base (kept with
+      // that ask, so a restart that replays its answer never reads main again), so a change to it before that read is what
+      // the revision was written over, and only one after it is a conflict.
       const notesSeed = round > 1 ? await mainOf(deps, agentId) : undefined;
       return checkedOf(deps, { runId, agentId, seed: start.seed, ...(notesSeed ? { notesSeed } : {}), ...(revised ? { revised } : {}), turn, outcome, refuse, ...(start.notesOnly ? { workflows: false as const } : {}) });
     },
@@ -159,7 +152,6 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     ...(launch.maxCostUsd !== undefined ? { gradeCap: (runId: string) => gradeCapOf(deps.store, runId, round, launch.maxCostUsd!) } : {}),
     ...(gradeModel ? { gradeModel } : {}),
   });
-  };
   return async (input) => {
     // No seed, no end-of-run turn (seedFailed): a run that started from no commit of main has nothing to propose against,
     // so it is never asked to look back (no model request). Why, as its start recorded it: a folder that could not be

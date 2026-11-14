@@ -81,6 +81,11 @@ export const KINDS = {
    *  same submission pi's adapter writes, so the step reads both alike. Neither a call nor a message: the reader passes
    *  over it, and the turn is never on the run's visible record. */
   endOfRunTurn: "agentrun.end-of-run.turn",
+  /** What an end-of-run turn kept as it was first asked (its `keep`, by its `requestId`), for a harness that keeps its own
+   *  record (pi; a CLI's record keeps it on its endOfRunTurn prompt): written once, before the turn's first request, so a
+   *  later claim that asks the same turn again reads the first ask's (the commit of main a compile turn was asked at among
+   *  them), never its own. Neither a call nor a message: the reader passes over it. */
+  endOfRunKept: "agentrun.end-of-run.kept",
   /** What a learning run's claim laid of its seed: the learned skills it was given (`skills`, by name) and the learned
    *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
    *  what the run was given. Neither a call nor a message. */
