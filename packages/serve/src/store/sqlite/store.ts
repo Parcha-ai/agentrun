@@ -303,11 +303,6 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // counted refused answers: the server rebuilds it, so a second answer to one approval is refused on every store. A
     // store such a build left may hold two unrefused answers to one approval: the earliest stands (the one the runner
     // acted on) and each later one is refused in the same write, before the index, so the store opens. None is deleted.
-    // An earlier build of this version made the runs table with no labels: the server adds the column, nullable, so its
-    // runs read as given none.
-    if (role === "server" && !(await connection.get<{ name: string }>("SELECT name FROM pragma_table_info('runs') WHERE name = 'labels'"))) {
-      await connection.write([{ sql: `ALTER TABLE runs ADD COLUMN labels TEXT CHECK (labels IS NULL OR json_valid(labels))` }], { full: true });
-    }
     if (role === "server") {
       await connection.write([
         { sql: "DROP TABLE IF EXISTS browser_viewers" },
