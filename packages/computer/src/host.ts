@@ -4,7 +4,7 @@
 // bridge, the read-back and the probe, labels, list and attach, the deadline and extend, delete-then-wait-gone, the
 // sweep of a lost create, the Archil mount, and the words of every refusal. These doc comments are the contract a new
 // vendor reads (PROVIDERS.md, "The eight members").
-import type { MountKind } from "./mount.js";
+import type { MountKind, Unmounted } from "./mount.js";
 import type { ComputerCapabilities, ComputerSpec, GpuCapability, GpuSpec, NetworkForm, NetworkPolicy, Refusal } from "./provider.js";
 import type { ComputerErrorCode, Result } from "./result.js";
 
@@ -184,6 +184,8 @@ export interface HostFacts {
 	network: NetworkForm[];
 	/** The mount kinds it takes: of its descriptor's. */
 	mounts?: MountKind[];
+	/** Why it takes none of these mount kinds, each in check()'s words: of its descriptor's. */
+	unmounted?: Unmounted;
 	/** How release may end one; "stop" needs host.stop. */
 	release: Array<"stop" | "delete">;
 	stopDeletes?: boolean;

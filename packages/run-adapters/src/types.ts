@@ -65,21 +65,10 @@ export interface McpTool {
   annotations?: Record<string, unknown>;
 }
 
-/** What an MCP tool call answers the model: its text, and whether the tool said it failed. */
+/** What an MCP tool call answers: its text, and whether the tool said it failed. */
 export interface McpCallResult {
   content: { type: "text"; text: string }[];
   isError?: boolean;
-  /** The host parked the call for a person's approval: it did not run, and the text says it waits. The harness's own
-   *  client never sees this flag (the door sends `content` and `isError`). */
-  parked?: true;
-}
-
-/** A session's remote MCP servers: each one's granted tools, and the call that reaches them through the host, which holds
- *  their credentials. A harness with its own MCP client points it at the session's model proxy (`/mcp/<server>`). */
-export interface SessionMcp {
-  servers: readonly { name: string; tools: readonly McpTool[] }[];
-  /** Never throws: a failure is an `isError` result the model reads. `callId` is the harness's id for the call. */
-  call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string }): Promise<McpCallResult>;
 }
 
 /** One durable record of a session, in the order it was appended. */
@@ -119,10 +108,8 @@ export interface SessionSpec {
   label: string;
   executionPath?: string;
   system: string[];
-  /** Exactly these tools; the harness's own stay off. */
+  /** Exactly these tools (a run's remote MCP tools among them, as host tools); the harness's own stay off. */
   tools: HostTool[];
-  /** The remote MCP servers it may call, for a harness that has its own MCP client. */
-  mcp?: SessionMcp;
   context: "fresh" | "fork";
   tier?: NodeRequest["tier"];
   effort?: NodeRequest["effort"];
@@ -385,8 +372,6 @@ export interface AdapterFacts {
   readonly recoversCutAnswers?: number;
   /** What one run of it holds in memory, in MiB: the host admits runs by it. */
   readonly runMib: number;
-  /** Whether it binds a session's remote MCP servers (its own MCP client, at the session's gateway). */
-  readonly mcp: boolean;
   /** The thinking levels it takes, lowest first: a run's level above its highest runs at that highest. */
   readonly thinking: readonly ("low" | "medium" | "high" | "xhigh" | "max")[];
   /** Its own web search, when the provider runs it: `native`, the provider's search through the session's proxy (its
@@ -400,9 +385,9 @@ export interface AdapterFacts {
   /** How it is installed and pinned: the line that installs it into a project, the package it pins, and the codes its
    *  own setup errors carry when installing (`install`) or the pinned build (`pins`) is the fix. */
   readonly install: { npmLine: string; spec: string; codes: { install: string; pins: string } };
-  /** The problems its own MCP client has with a tool's input schema (`tool` as it names it, `mcp__<server>__<tool>`):
-   *  shapes it drops or retypes, measured on its pinned build, so a grant of that tool would offer the model another
-   *  tool than the one granted. None: its client takes any schema the kernel's check does. */
+  /** The problems it has with a host tool's input schema (`tool` by its name, a run's MCP tool's `mcp__<server>__<tool>`):
+   *  shapes it drops or retypes, measured on its pinned build, so a grant of an MCP tool would offer the model another
+   *  tool than the one granted. None: it takes any schema the kernel's check does. */
   schemaProblems?(tool: string, schema: Record<string, unknown>): string[];
   /** A name its client calls a session's MCP tool by beside `mcp__<server>__<tool>` (OpenCode's `<server>_<tool>`). */
   readonly toolAlias?: RegExp;
@@ -425,22 +410,8 @@ export interface SessionPort {
   api: "anthropic-messages" | "openai-responses";
 }
 
-export interface AdapterCapabilities {
-  /** Its harness's own MCP client, when it has one: it calls `spec.mcp`'s servers at the session proxy's `/mcp/<server>`,
-   *  which the kernel's model proxy mounts from the session's MCP and this fact (ModelProxyOptions.mcp). */
-  mcpClient?: McpClient;
-}
-
-/** A harness's own MCP client, as its adapter declares it: the `_meta` key of a `tools/call` that carries the harness's
- *  own id for the call (Claude Code's `claudecode/toolUseId`, Codex's `callId`), the id its timeline and gate know the
- *  call by. The route reads that key and no other. */
-export interface McpClient {
-  callIdMeta: string;
-}
-
 export interface AgentAdapter {
   readonly id: string;
-  capabilities(): AdapterCapabilities;
   /** Problems with a session before anything is spent; an empty list opens it. */
   check(spec: SessionSpec): string[];
   /** Opens the session, restoring it from `io.writer` when its key has records. */

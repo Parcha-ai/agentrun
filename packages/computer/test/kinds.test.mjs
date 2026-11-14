@@ -202,6 +202,7 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 	const good = { id: "acme-cloud", label: "Acme", keys: [{ name: "ACME_KEY", option: "apiKey", required: true }], metered: true, mounts: [], network: ["none"], capabilities: [{ kind: "linux", groups: ["exec"] }], load: async () => ({}) };
 	assert.equal(defineProvider(good), good);
 	assert.deepEqual(descriptorProblems(good), []);
+	assert.deepEqual(descriptorProblems({ ...good, unmounted: { archil: "Archil's client hangs here" } }), [], "a kind it doesn't take, with why");
 	for (const [change, words] of [
 		[{ id: "Acme Cloud" }, /id "Acme Cloud" is not lowercase letters, digits and hyphens/],
 		[{ label: " " }, /label is not a name in words/],
@@ -210,6 +211,10 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 		[{ keys: [{ name: "ACME_KEY", option: "apiKey" }] }, /each key says whether it is required/],
 		[{ capabilities: [] }, /capabilities is not a list of one configuration or more/],
 		[{ mounts: ["nfs"] }, /mounts is not a list of mount kinds/],
+		[{ unmounted: { nfs: "no NFS here" } }, /unmounted maps mount kinds \(bind, archil\) to why, in words/],
+		[{ unmounted: { archil: " " } }, /unmounted maps mount kinds \(bind, archil\) to why, in words/],
+		[{ unmounted: ["archil"] }, /unmounted maps mount kinds \(bind, archil\) to why, in words/],
+		[{ mounts: ["archil"], unmounted: { archil: "it hangs" } }, /unmounted names a mount kind that mounts declares/],
 		[{ network: [] }, /network is not a list of the network forms/],
 		[{ network: ["vpn"] }, /network is not a list of the network forms/],
 		[{ load: "./acme.js" }, /load is not a function/],

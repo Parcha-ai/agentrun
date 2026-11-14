@@ -20,7 +20,6 @@ const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 function sameCallTwice(tool, answers) {
   return {
     id: "stand-in-cli",
-    capabilities: () => ({}),
     check: () => [],
     async open(spec, io) {
       let state = "new";
