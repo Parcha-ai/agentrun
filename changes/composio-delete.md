@@ -7,3 +7,5 @@ Deleting a Composio preset server in Settings → MCP servers also deletes the M
 Saving a Composio server whose picked actions Composio serves none of (HACKERNEWS_GET_FRONTPAGE, say) now answers 422 naming those actions, instead of a bare 424 "Method not found", and the server it made on Composio is removed again. Only the server's own "Method not found" answer says that: Composio's MCP server being down, slow or erroring still answers 424. A preset server whose saved key can't be opened here is still forgotten, and the answer says to remove it in Composio yourself. The Composio server is deleted only after our row's checked removal succeeds, and is the one that row named.
 
 The generated TypeScript and Python clients now type an operation that documents 204 beside a 2xx body as the body or nothing (`X | undefined`, `X | None`).
+
+Saving a preset server over to another address (an ordinary save with a different URL) makes it that service's server, no longer Composio's: deleting it never sends the key it holds to Composio, whatever the new path looks like, and the answer is the remove-it-yourself note.

@@ -258,7 +258,11 @@ export class McpServersOverStore {
     // What the server is (its source and toolkit, mcp-sources.ts): from what made it and the owner's toolkit, over what it
     // is now, checked before anything is listed; written once the server is, for the row it wrote.
     const sourceIssues: InputIssue[] = [];
-    const source = sourceToWrite(made ?? standIn, toolkit,await this.sourceOf({ name, auth: auth.type, createdAt: was?.createdAt }), auth.type, sourceIssues);
+    const wasSource = await this.sourceOf({ name, auth: auth.type, createdAt: was?.createdAt });
+    const written = sourceToWrite(made ?? standIn, toolkit, wasSource, auth.type, sourceIssues);
+    // An ordinary save that moves a Composio preset row to another address makes it another service's server: it stops being
+    // Composio's, whatever its path looks like, so its delete never sends the key it holds to Composio.
+    const source = !made && !standIn && was && wasSource.source === "composio" && was.url !== url.href ? { source: "url" as const, toolkit: null } : written;
     if (sourceIssues.length) throw invalid(sourceIssues);
     const send = await this.reached(auth.type, url, stop);
     // The credential this save may write over: the one the secret-write gate let it through against (`checkedAgainst`,
