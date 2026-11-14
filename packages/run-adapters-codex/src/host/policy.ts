@@ -26,8 +26,11 @@
 // limit), each `data:` line parsed as JSON on its own, never matched as text. OpenAI counts cached and cache-write tokens
 // inside `input_tokens`; they are booked apart (as pi-ai books them), and reasoning tokens inside `output_tokens`. The
 // searches a response ran are read from the same event, its `tool_usage.web_search.num_requests`.
+//
+// A request's input bound is its bytes less the escapes in the text it carries (the kernel's `responsesInputOverhead`);
+// on a route straight to OpenAI, also OpenAI's own count of it when that is lower (`OPENAI_INPUT_COUNTER`).
 import type { IncomingHttpHeaders } from "node:http";
-import { NATIVE_SEARCH_USD, providerInputOverhead, ProxyRefusal, responsesImagesIn, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { NATIVE_SEARCH_USD, OPENAI_INPUT_COUNTER, ProxyRefusal, responsesInputOverhead, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },
@@ -378,26 +381,6 @@ export function webSearchesOf(text: string): number | undefined {
   return typeof count === "number" && Number.isInteger(count) && count >= 0 ? count : undefined;
 }
 
-/** The items of `type` in `value`, at any depth (a tool's output holds them). */
-function itemsIn(value: unknown, type: string): number {
-  if (Array.isArray(value)) return value.reduce((n: number, item) => n + itemsIn(item, type), 0);
-  if (!isPlain(value)) return 0;
-  return (value.type === type ? 1 : 0) + Object.values(value).reduce((n: number, item) => n + itemsIn(item, type), 0);
-}
-
-/**
- * The input tokens the provider bills for `body` that it does not carry (`providerInputOverhead`, with its sources). The
- * Responses API documents no prompt of its own that it adds on these routes (no hosted tool passes the policy but a
- * session's live web search, below), and the framing it puts around each input item and tool definition is a few tokens
- * each, fewer than the bytes of the JSON keys that item already spends in the body. An image is billed by its area, not
- * its bytes: each counts at the most it can be billed as, in place of the bytes its data URL takes in the body. A file input (a PDF, billed by its pages) has no stated bound, so a
- * body with one cannot be measured: this throws, and the request's input is unknown.
- */
-export function responsesServerInputOverhead(body: Record<string, unknown>): number {
-  if (itemsIn(body.input, "input_file") > 0) throw new Error("a file input's billed size has no stated bound");
-  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: responsesImagesIn(body.input), ...(typeof body.model === "string" ? { model: body.model } : {}) }) as number;
-}
-
 /** The text of a tool output item: a string, or the text of each of its parts. */
 /** Codex's status header of a tool output: the text it starts with (its first part), never what the script printed after it. */
 function statusText(item: Record<string, unknown>): string {
@@ -619,18 +602,20 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     watch: options.announce ? () => watchResponse(options.announce!) : undefined,
     unwatched: options.announce ? () => options.announce!.failed() : undefined,
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
-    // The content a web search feeds the model is billed as input, and neither it nor the searches one response runs has a
-    // stated bound: a body that offers web search has no input bound (undefined), so its input is unmeasured.
     outputAsked: responsesOutputAsked,
     outputLeast: responsesOutputLeast,
     reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),
     reasoningBytesOf: responsesReasoningBytes,
     contentBytesOf: responsesContentBytes,
     limitOutput: limitResponsesOutput,
+    // The content a web search feeds the model is billed as input, and neither it nor the searches one response runs has a
+    // stated bound: a body that offers web search has no input bound (undefined), so its input is unmeasured (and never
+    // counted into a number).
     serverInputOverhead: search ? (body) => {
       if (Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search")) return undefined;
-      return responsesServerInputOverhead(body);
-    } : responsesServerInputOverhead,
+      return responsesInputOverhead(body);
+    } : responsesInputOverhead,
+    countInput: OPENAI_INPUT_COUNTER,
   };
 
   /** The body the provider gets, the live search offered only when `searchNow`. */

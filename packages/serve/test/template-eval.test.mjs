@@ -100,7 +100,7 @@ test("a case that does not check fails before anything runs, each problem named"
     /all-pass\/prompt\.md: no field max_cost/, /all-pass\/prompt\.md: runs is a whole number/,
     /graders\/regex\.md: its pattern does not compile/, /graders\/file\.md: a file_exists grader names a path in the run's work folder/,
     /graders\/wrote\.md: mcp:nowhere\/thing is neither a tool this server binds nor an MCP tool the package lists/, /graders\/wrote\.md: args are checked on a faked MCP tool's calls alone/,
-    /learned\/case\.yaml: parameters\.colour: The package evalpkg takes no parameter colour/, /learned\/case\.yaml: learning names "fixtures\/missing\/", not a folder in the case/,
+    /learned\/case\.yaml: parameters\.colour: parameters keeps no field colour/, /learned\/case\.yaml: learning names "fixtures\/missing\/", not a folder in the case/,
     /mcp-match\/fixtures\/crm\.json: tools\.get_contact is \{description, input/, /mcp-mismatch\/case\.yaml: grants\.0: grants\.0 is not a tool of the package evalpkg/,
   ]) assert.match(said, expected);
   assert.throws(() => readCases(dir, ["nope"]), (e) => e instanceof CaseError && /evals\/nope: no such case/.test(e.message));
@@ -195,6 +195,11 @@ test("a background shell call keeps its own name in the grading record, as the g
   const record = { answer: "", calls: callsOf(rows, "pi", ["crm"]), mcpCalls: [], files: [] };
   assert.equal(gradeDeterministic({ file: "bg.md", type: "tool_used", tools: ["bash_background"], expect: "called" }, record, []).pass, true);
   assert.equal(gradeDeterministic({ file: "sh.md", type: "tool_used", tools: ["bash"], count: 1 }, record, []).pass, true, "bash counts its own call alone");
+  // A need an owner's saved server filled under another name (my-crm for crm): its calls are graded by the package's name.
+  const owned = [{ kind: "tool_use", tool_use_id: "5", tool_name: "mcp__my-crm__get_contact", tool_input_preview: "{}" }];
+  const renamed = { answer: "", calls: callsOf(owned, "claude-agent", ["my-crm"], { "my-crm": "crm" }), mcpCalls: [], files: [] };
+  assert.deepEqual(renamed.calls.map((c) => c.tool), ["mcp:crm/get_contact"]);
+  assert.equal(gradeDeterministic({ file: "got.md", type: "tool_used", tools: ["mcp:crm/get_contact"], expect: "called" }, renamed, []).pass, true);
 });
 
 test("the eval's exit code is 1 when any case failed, however many passed beside it, and 0 only when every case passed", () => {
@@ -357,6 +362,22 @@ test("on another server, a package that differs in what runs (budget, effort, to
   const report = await evalTemplate({ dir: PKG, cases: ["learned"], server: { baseUrl, token } });
   assert.equal(report.pass, false);
   assert.match(report.cases[0].error, /the server's evalpkg package is not this folder's: it differs in budget, effort, tools/);
+});
+
+test("on another server, a need the owner's server fills under another name is this folder's package still: its text is compared on that server's names", { timeout: 300_000 }, async (t) => {
+  const shipped = join(await scratch(t), "templates");
+  const dir = join(shipped, "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  writeFileSync(join(dir, "agent.md"), readFileSync(join(dir, "agent.md"), "utf8").replace("You answer for", "Read a contact with mcp:crm/get_contact. You answer for"));
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: shipped });
+  const owner = await startFake("my-crm", readCases(PKG, ["mcp-match"]).cases[0].mcp.crm);
+  t.after(() => owner.close());
+  assert.equal((await api("PUT", "/settings/mcp-servers/my-crm", { url: owner.url, auth: { type: "none" }, toolkit: "crm" })).status, 200);
+  const report = await evalTemplate({ dir, cases: ["learned"], server: { baseUrl, token } });
+  assert.equal(report.cases[0].error, undefined, report.cases[0].error);
+  assert.equal(report.cases[0].runs.length, 1, JSON.stringify(report.cases[0]));
+  const agent = (await api("GET", `/agents/${report.cases[0].runs[0].agent_id}`)).body;
+  assert.match(agent.definition.instructions, /mcp:my-crm\/get_contact/, "apply put the need on the owner's server");
 });
 
 test("a stop asked after the last run is waited for still stops the eval: no report", { timeout: 300_000 }, async () => {

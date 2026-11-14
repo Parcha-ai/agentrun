@@ -1,5 +1,6 @@
 import { ArrowLeft, Check, LayoutTemplate } from "lucide-react";
 import { FieldInput, FieldIssues as Issues } from "@/components/FieldInput";
+import { Picker } from "@/components/ui/picker";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
 import { SecretOnce } from "@/components/Schedules";
@@ -11,7 +12,9 @@ import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
-import { grantsOf, issuesAt, needsOf, paramHelp, paramIssueWords, paramLabel, parameterField, parameterFields, parametersOf, paramValid, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
+import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
+import { type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, schemaFields } from "@/lib/inputForm";
+import { grantsOf, issuesAt, matchesOf, needsOf, paramHelp, type ParameterText, setUpHref, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateImported, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
@@ -78,10 +81,12 @@ function TemplateList({ v2, templates, go, onRemoved }: { v2: Client; templates:
                   <LayoutTemplate className="size-4 shrink-0 self-center text-muted-foreground" aria-hidden />
                   <h2 className="min-w-0 break-words text-prose font-semibold">{titleOf(t)}</h2>
                   <span className="font-mono text-small text-muted-foreground">{t.version}</span>
+                  {t.category && <Chip tone="muted">{t.category}</Chip>}
                   {!t.bundled && <Chip tone="muted">Imported</Chip>}
                 </div>
                 <Provenance t={t} />
                 <p className="mt-2 text-lead leading-[1.6]">{t.description}</p>
+                {t.tags.length > 0 && <p aria-label="Tags" className="mt-1.5 break-words font-mono text-small text-muted-foreground">{t.tags.join(" · ")}</p>}
                 <dl className="mt-3 space-y-1 font-mono text-small text-muted-foreground">
                   {needsOf(t).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0">{what}</dt><dd className="min-w-0 break-words text-foreground/80">{words}</dd></div>)}
                 </dl>
@@ -201,14 +206,21 @@ function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
 }
 
 function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView }) {
-  // The form starts at the template's served defaults for its checkboxes (a box shows what is sent); a text field
-  // starts empty, its default as its hint, and is left out untouched for the server to apply that default.
-  const [values, setValues] = useState<ParameterText>(() => startValues(t));
+  // The parameters, served compiled as inputs are, drawn and sent by the run form's own code (lib/inputForm.ts): a field
+  // left blank is left out, and the server applies its default.
+  const form = { fields: schemaFields(t.parameters) ?? [], contentRequired: false };
+  // A box with no default starts unticked and is sent as it shows (false): a parameter may fill a trigger's input whole,
+  // where a boolean left out would be missing.
+  const [values, setValues] = useState<ParameterText>(() => ({ ...Object.fromEntries(form.fields.filter(([, f]) => f.type === "boolean" && !f.array).map(([key]) => [key, "false"])), ...fieldStartText(form) }));
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   // The agent's approvals, sent as overrides.approvals: the template's own (approvals_default: never for one that runs
   // on its triggers with no one there), which the owner can switch.
   const [approvals, setApprovals] = useState<Approvals>(t.approvals_default ?? "ask");
-  const [servers, setServers] = useState<Set<string> | null>(null);
+  const [servers, setServers] = useState<McpServer[] | null>(null);
+  const [serversError, setServersError] = useState<Problem | null>(null);
+  const [serversTries, setServersTries] = useState(0);
+  // The owner's pick, by toolkit, for a need several saved servers match (none picked: the apply's default).
+  const [picks, setPicks] = useState<Record<string, string>>({});
   const [applying, setApplying] = useState(false);
   const [issues, setIssues] = useState<FieldIssue[]>([]);
   // The refusal's own words beside Apply; `withIssues` when it came with issues, so it goes once the last of them does.
@@ -223,24 +235,35 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const shown = useRef(true);
   // Set on every setup, not only the first: StrictMode runs setup, cleanup, then setup again.
   useEffect(() => { shown.current = true; return () => { shown.current = false; }; }, []);
-  // The MCP servers saved here (GET /v2/settings/mcp-servers): which of the template's servers are set up.
+  // The MCP servers saved here (GET /v2/settings/mcp-servers): which of them each of the template's needs maps to. A read
+  // that fails is said with Try again, and Apply waits for the list.
   useEffect(() => {
     let live = true;
-    v2.listMcpServers().then((r) => { if (live) setServers(new Set(r.servers.map((s) => s.name))); }, () => {});
+    setServersError(null);
+    v2.listMcpServers().then((r) => { if (live) setServers(r.servers); }, (e) => { if (live) setServersError(problem(e, "the saved MCP servers")); });
     return () => { live = false; };
-  }, [v2]);
+  }, [v2, serversTries]);
   const grants = grantsOf(t, ticked);
+  // Each need's matching servers, and the one it uses: its one match, else the owner's pick among several (never one picked
+  // for them: the apply refuses several with no pick).
+  const mapped = t.mcp.map((m) => { const matches = servers ? matchesOf(m, servers) : []; return { m, matches, uses: matches.length === 1 ? matches[0] : matches.includes(picks[m.toolkit] ?? "") ? picks[m.toolkit] : undefined }; });
+  // Sent for every need the screen shows a server for, one match too, so the server shown is the one the agent gets: one
+  // deleted and replaced by another match before Apply is refused, never swapped in.
+  const chosen = Object.fromEntries(mapped.flatMap(({ m, uses }) => (uses ? [[m.toolkit, uses]] : [])));
+  // A need several servers match that the owner hasn't picked one for: Apply waits for the pick.
+  const unpicked = mapped.filter(({ matches, uses }) => matches.length > 1 && !uses).map(({ m }) => m.toolkit);
+  // A template with MCP needs waits for the saved servers to be read: until then no need is mapped or picked.
+  const unread = t.mcp.length > 0 && servers === null;
   const at = (field: string) => issuesAt(issues, field);
   // A parameter's value as typed or picked: an issue at it goes as soon as the value is one the server takes.
-  const setParam = (key: string, value: string) => {
+  const setParam = (key: string, p: FieldSpec, value: string) => {
     setValues((was) => ({ ...was, [key]: value }));
-    const p = t.parameters[key];
-    if (p && paramValid(parameterField(p), value)) setIssues((was) => was.filter((i) => i.field !== `parameters.${key}`));
+    if (fieldValid(p, value)) setIssues((was) => was.filter((i) => fieldOfIssue(i.field, "parameters") !== key));
   };
   const apply = async () => {
     setApplying(true); setIssues([]); setSaid(null);
     const sending = values;
-    const body = { parameters: parametersOf(t, sending), ...(grants.length ? { grants } : {}), overrides: { approvals } };
+    const body = { parameters: fieldValues(form, sending), ...(grants.length ? { grants } : {}), ...(Object.keys(chosen).length ? { servers: chosen } : {}), overrides: { approvals } };
     try {
       const done = await v2.applyTemplate(t.id, body, keys.keyFor(t.id, body));
       keys.done();
@@ -265,13 +288,18 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       setSchedules(scheduled);
       setMade(done);
     } catch (e) {
-      if (e instanceof ClientError && e.fields?.length) { setIssues(e.fields); setSaid({ text: e.message, withIssues: true }); }
+      if (e instanceof ClientError && e.fields?.length) {
+        setIssues(e.fields); setSaid({ text: e.message, withIssues: true });
+        // A server choice refused (one deleted or changed while the page was open): the saved servers are read again, so
+        // the screen and the next Apply show what is saved now.
+        if (e.fields.some((i) => i.field.startsWith("servers.") || i.field.startsWith("mcp."))) setServersTries((n) => n + 1);
+      }
       else setSaid({ text: e instanceof Error ? e.message : String(e), withIssues: false });
     } finally { setApplying(false); }
   };
-  const params = Object.entries(parameterFields(t));
+  const params = form.fields;
   // Issues the form has no place for (a trigger's, an override's) show above the button, in the server's words.
-  const placed = (i: FieldIssue) => /^(parameters|secrets|mcp)\./.test(i.field) || /^grants\.\d+$/.test(i.field);
+  const placed = (i: FieldIssue) => /^(parameters|secrets|mcp|servers)\./.test(i.field) || /^grants\.\d+$/.test(i.field);
   if (made) {
     return (
       <section aria-label="Applied" className="max-w-3xl">
@@ -337,8 +365,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
         <Section title="Parameters">
           {params.map(([key, p]) => (
             <div key={key} data-field={`parameters.${key}`} className="px-4 py-3">
-              <FieldInput field={p} label={paramLabel(key, p)} help={paramHelp(p)} value={values[key] ?? ""} onChange={(v) => setParam(key, v)} />
-              <Issues issues={at(`parameters.${key}`)} words={(i) => paramIssueWords(i, key, p)} />
+              <FieldInput field={p} label={fieldLabel(key, p)} help={paramHelp(p)} value={values[key] ?? ""} onChange={(v) => setParam(key, p, v)} />
+              <Issues issues={issues.filter((i) => fieldOfIssue(i.field, "parameters") === key)} words={(i) => fieldIssueWords(i, key, p)} />
             </div>
           ))}
         </Section>
@@ -346,22 +374,36 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
 
       {t.mcp.length > 0 && (
         <Section title="Tools you allow" note="Nothing is granted until you tick it. A tool you leave unticked is not given to the agent, even when it never asks: you can add it later on the agent's page.">
-          {t.mcp.map((m) => (
-            <div key={m.server} data-mcp={m.server} className="px-4 py-3">
+          {serversError && !servers && (
+            <div data-servers-unread className="px-4 py-3"><ProblemCard problem={serversError} onRetry={() => setServersTries((n) => n + 1)} className="" /></div>
+          )}
+          {mapped.map(({ m, matches, uses }) => (
+            <div key={m.toolkit} data-mcp={m.toolkit} className="px-4 py-3">
+
               <p className="flex flex-wrap items-center gap-2 font-mono text-body">
-                <span className="font-semibold">{m.server}</span>
+                <span className="font-semibold">{m.toolkit}</span>
+                <Chip tone="muted">{SOURCE_LABEL[m.source]}</Chip>
                 <Chip tone={m.required ? "plain" : "muted"}>{m.required ? "Required" : "Optional"}</Chip>
-                {servers && <span className="text-small text-muted-foreground">{servers.has(m.server) ? "Set up here" : "Not set up here"}</span>}
+                {servers && matches.length < 2 && <span className="text-small text-muted-foreground">{uses ? `Uses ${uses}` : "Not set up here"}</span>}
               </p>
-              {/* A server the template names that is not saved here: said before Apply, with the way to set it up, so an agent is
-                  never made without its tools unseen. `github` is GitHub's own, set up as a GitHub App. */}
-              {servers && !servers.has(m.server) && (
-                <p role="status" data-missing-mcp={m.server} className="mt-2 border border-warning/50 px-3 py-2 text-small text-warning-text">
-                  {m.required ? `${m.server} is required and not set up here: Apply is refused until it is.` : `${m.server} is not set up here: Apply makes the agent without its tools (${m.tools.map((x) => x.name).join(", ")}).`}{" "}
-                  <a href={`#/settings/mcp?add=${encodeURIComponent(m.server)}${m.server === "github" ? "&auth=github_app" : ""}`} className="font-mono text-primary-text underline-offset-2 hover:underline">{m.server === "github" ? "Set up GitHub App access" : `Set up ${m.server}`}</a>
+              {m.reason && <p className="mt-1 text-small text-muted-foreground">{m.reason}</p>}
+              {/* Several saved servers are this source and toolkit (two Gmail accounts): the owner picks one, none picked to
+                  start, and Apply waits for it. */}
+              {servers && matches.length > 1 && (
+                <label className="mt-2 flex flex-wrap items-center gap-2 text-small text-muted-foreground">Uses
+                  <Picker small label={`Server for ${m.toolkit}`} value={uses ?? ""} placeholder="Pick one" onChange={(v) => setPicks((was) => ({ ...was, [m.toolkit]: v }))} options={matches.map((s) => ({ value: s, label: s }))} />
+                  {!uses && <span data-unpicked={m.toolkit}>{matches.length} saved servers are {SOURCE_LABEL[m.source]} {m.toolkit}: pick the one the agent uses.</span>}
+                </label>
+              )}
+              {/* A need no saved server matches: said before Apply, with the way to set it up, so an agent is never made without
+                  its tools unseen. Composio's opens the preset with its toolkit and actions; GitHub's is set up as a GitHub App. */}
+              {servers && matches.length === 0 && (
+                <p role="status" data-missing-mcp={m.toolkit} className="mt-2 border border-warning/50 px-3 py-2 text-small text-warning-text">
+                  {m.required ? `${m.toolkit} is required and not set up here: Apply is refused until it is.` : `${m.toolkit} is not set up here: Apply makes the agent without its tools (${m.tools.map((x) => x.name).join(", ")}).`}{" "}
+                  <a href={setUpHref(m)} className="font-mono text-primary-text underline-offset-2 hover:underline">{m.source === "github" ? "Set up GitHub App access" : m.source === "composio" ? `Add ${m.toolkit} from Composio` : `Set up ${m.toolkit}`}</a>
                 </p>
               )}
-              <Issues issues={at(`mcp.${m.server}`)} />
+              <Issues issues={[...at(`mcp.${m.toolkit}`), ...at(`servers.${m.toolkit}`)]} />
               <ul className="mt-2 space-y-2">
                 {m.tools.map((tool) => {
                   const index = grants.indexOf(tool.tool);
@@ -415,7 +457,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       </Section>
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
-        <Button size="sm" variant="solid" onClick={() => void apply()} disabled={applying}>{applying ? "Applying…" : "Apply"}</Button>
+        <Button size="sm" variant="solid" onClick={() => void apply()} disabled={applying || unread || unpicked.length > 0} title={unread ? (serversError ? "The saved MCP servers couldn't be read: try again first" : "Reading the saved MCP servers…") : unpicked.length ? `Pick the server for ${unpicked.join(", ")} first` : undefined}>{applying ? "Applying…" : "Apply"}</Button>
         {said && (!said.withIssues || issues.length > 0) && <p className="min-w-0 flex-1 text-body text-destructive-text" role="alert">{said.text}</p>}
       </div>
       {issues.filter((i) => !placed(i)).length > 0 && <div className="mt-2"><Issues issues={issues.filter((i) => !placed(i))} named /></div>}

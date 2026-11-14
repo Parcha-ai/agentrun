@@ -73,6 +73,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
+import { type Grade, GRADE_SOURCES, type GradeSource, gradeView, promotionsOf, promotionsShown, putGrade } from "./learn/promote.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -92,7 +93,7 @@ import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentCostOverStore, agentLearningOverStore, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
 import { figuresOf, LearningBatches, type RunSnap } from "./learning-batch.js";
-import { costCsv, learningCostQuery } from "./learning-cost.js";
+import { costCsv, learningCostQuery, RUN_PATHS } from "./learning-cost.js";
 import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
@@ -101,6 +102,7 @@ import { signInsOverStore } from "./sign-ins-store.js";
 import { MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type ComposioControl, composioSave, composioTools } from "./composio-preset.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
+import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
@@ -121,9 +123,9 @@ import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
-import { isMcpWildcard, mcpToolName } from "./tool-names.js";
+import { isMcpWildcard, mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
 import { deleteTemplate, importTemplate, loadImported, type TemplateImportDeps } from "./template-import.js";
 import { templateInstallLink, templateLink } from "./console-links.js";
 import { GITHUB_HOSTS } from "./template-source.js";
@@ -211,6 +213,9 @@ export type ServeOptions = {
    *  alone use): an MCP server's URL may be on loopback, at its save, preview and sign-in, and for the runner beside it.
    *  Never inferred; absent, loopback is refused there in words saying how to say so. */
   mcpLoopback?: boolean;
+  /** A template eval's own scratch server (template-eval.ts), never set by the CLI: an MCP server's save may say, in its
+   *  `source`, which package need the eval's fake stands in for. Every other server records what made a server. */
+  mcpStandIns?: boolean;
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
    *  the only lock: put TLS in front of it. */
   host?: string;
@@ -442,6 +447,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/cancel$/, name: "cancelRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/approvals\/([^/]+)$/, name: "answerApproval" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/archive$/, name: "archiveRun" },
+  // A person's or an eval's grade of an ended run (learn/promote.ts): what promotion by replay reads.
+  { method: "PUT", pattern: /^\/runs\/([^/]+)\/grade$/, name: "gradeRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/unarchive$/, name: "unarchiveRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/graph$/, name: "getRunGraph" },
   { method: "POST", pattern: /^\/workflows\/validate$/, name: "validateWorkflow" },
@@ -535,6 +542,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/promotions$/, name: "listLearningPromotions" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "createLearningBatch" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "listLearningBatches" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)$/, name: "getLearningBatch" },
@@ -964,13 +972,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   toolKeys.view();
   const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
+  mcpServers.standIns = options.mcpStandIns === true;
   // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the run-grant checks read in
   // step (blockersOf's `mcp`, and the template apply): the server is the one writer of these rows (a save, refresh, sign-in
   // or delete), so the snapshot is refreshed after each of those and reads what is saved now. The runner reads the registry,
   // pins and credentials from the store at a run's claim (runner/mcp-claim.ts); this server hands a run no MCP source.
-  let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[] }>();
+  // Each with what it is (its source and toolkit, mcp-sources.ts), which a template's apply maps its MCP needs on.
+  let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[]; source: SourceRecord }>();
   const refreshMcpMeta = async (): Promise<void> => {
-    mcpMeta = new Map((await listMcpServers(store)).map((row) => [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [] }]));
+    mcpMeta = new Map(await Promise.all((await listMcpServers(store)).map(async (row) => [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [], source: await mcpServers.sourceOf(row) }] as const)));
   };
   await refreshMcpMeta();
   // Each saved server's tools in the harnesses' shape (the registry keeps input_schema; a bound tool takes inputSchema),
@@ -1930,16 +1940,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`; a
    *  github trigger GitHub is not connected for is skipped instead, with a warning there, and one made is said there. A webhook
    *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
-  async function applyTemplate(pkg: Package, body: Json) {
-    const { parameters, grants, model: override, approvals } = applyBodyOf(pkg, body);
-    const missing = pkg.secrets.filter((name) => !secret(name, storedKeys));
-    const saved = pkg.mcp.filter((need) => mcpMeta.has(need.server));
-    const unsaved = pkg.mcp.filter((need) => !saved.includes(need));
+  async function applyTemplate(template: Package, body: Json) {
+    const { parameters, grants: asked, servers: picks, model: override, approvals } = applyBodyOf(template, body);
+    const missing = template.secrets.filter((name) => !secret(name, storedKeys));
+    // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
+    // one: several and no pick is a 422); the package's
+    // tool names, mcp:<toolkit>/<tool>, read as that server's from here on (templates.ts onServers).
+    const mapped = serversFor(template, [...mcpMeta].map(([name, meta]) => ({ name, ...meta.source })), picks);
+    const servers = Object.fromEntries(mapped.flatMap(({ need, server }) => (server ? [[need.toolkit, server]] : [])));
+    const pkg = onServers(template, servers);
+    const saved: McpServed[] = mapped.flatMap(({ need, server }) => (server ? [{ ...need, server }] : []));
+    const unsaved = mapped.filter(({ server }) => !server).map(({ need }) => need);
+    // A grant of a need with no server here grants nothing: dropped before the names move, so it never reads as a tool
+    // of a saved server that happens to be named as its toolkit.
+    const grants = asked.filter((tool) => Object.hasOwn(servers, mcpToolOf(tool)?.server ?? "")).map((tool) => onServerName(tool, servers));
     const needed = unsaved.filter((need) => need.required);
     if (missing.length || needed.length) {
       const fix = "Add it in Settings → Model keys or Settings → Tool keys, or set it where AgentRun starts, then apply the template again.";
-      const server = "Add it in Settings → MCP servers, under that name, then apply the template again.";
-      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server }))] });
+      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `a ${need.source} MCP server of the toolkit ${need.toolkit}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}.`, fix: mcpSetUp(need) }))] });
     }
     // The package's computer list: the first entry this server meets now (templates.ts pickComputer), written as the
     // agent's computer; a fallback, or a shell tool that computer does not run, said under `computer`. A list none of
@@ -1948,7 +1966,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (pick && "refused" in pick) throw new ApiError("agent_not_runnable", pick.refused, { fields: [{ field: "computer", reason: NOT_SET_UP, message: pick.refused, fix: COMPUTER_FIX }] });
     const computerWarnings: InputIssue[] = pick?.note ? [{ field: "computer", reason: pick.entry === "none" ? NOT_SET_UP : "not_an_option", message: pick.note }] : [];
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
-    const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server, so the agent was made without its tools (${need.tools.join(", ")}). Save it in Settings → MCP servers and apply again to grant them.` }));
+    const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}, so the agent was made without its tools (${need.tools.join(", ")}).`, fix: mcpSetUp(need) }));
     const harness = pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
     const picked = override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
     const model = picked.model;
@@ -2026,7 +2044,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
     // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...appShort] };
+    // Which saved server each MCP need runs on (null: none here, said under mcp.<toolkit>).
+    const used = Object.fromEntries(mapped.map(({ need, server }) => [need.toolkit, server]));
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...appShort] };
     return { applied, minted };
   }
 
@@ -2944,6 +2964,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
       }
+      case "gradeRun": {
+        const row = ID.test(id) ? await store.runs.get(id) : undefined;
+        if (!row) throw new ApiError("not_found", `no run ${id}`);
+        const body = await bodyOf(req);
+        const extra = unknownFields(body, ["correct", "expected", "source"]);
+        if (extra.length) throw invalid(extra);
+        if (typeof body.correct !== "boolean") throw invalid([{ field: "correct", reason: body.correct === undefined ? "missing" : "wrong_type", message: "correct is true or false: whether the run's answer was right" }]);
+        if (body.expected !== undefined && !isObject(body.expected)) throw invalid([{ field: "expected", reason: "wrong_type", message: "expected is an object: the fields a right answer's JSON holds" }]);
+        if (body.source !== undefined && !GRADE_SOURCES.includes(body.source as never)) throw invalid([{ field: "source", reason: "not_an_option", message: `source is one of ${GRADE_SOURCES.join(", ")}` }]);
+        if (!FINAL_STATES.includes(row.state)) throw invalid([{ field: "run_id", reason: "not_allowed", message: "A run is graded once it has ended." }]);
+        const m = (isObject(row.metrics as Json) ? row.metrics : {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown };
+        if (m.path === "replay") throw invalid([{ field: "run_id", reason: "not_allowed", message: "A replay run is never graded: its answer is scored against the run it replays." }]);
+        const path = RUN_PATHS.includes(m.path as never) ? (m.path as Grade["path"]) : "agent";
+        const grade: Grade = {
+          run: row.id, correct: body.correct, ...(body.expected !== undefined ? { expected: body.expected as Record<string, unknown> } : {}), source: (body.source as GradeSource | undefined) ?? "feedback", at: new Date().toISOString(), path,
+          ...(typeof m.workflow === "string" ? { workflow: m.workflow } : {}), ...(typeof m.workflow_digest === "string" ? { digest: m.workflow_digest } : {}),
+        };
+        await putGrade(store.settings, row.agentId, grade);
+        return send(res, 200, gradeView(grade));
+      }
       case "archiveRun":
       case "unarchiveRun": {
         const run = await needRun(id);
@@ -3224,7 +3264,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);
         const body = await bodyOf(req);
-        const answer = await composioSave(body, options.composioControl ?? {}, (mcp) => mcpServers.save(id, mcp, stopping.signal), id, stopping.signal, async () => (await mcpServers.get(id)).url);
+        const answer = await composioSave(body, options.composioControl ?? {}, (mcp, made) => mcpServers.save(id, mcp, stopping.signal, undefined, made), id, stopping.signal, async () => (await mcpServers.get(id)).url);
         await refreshMcpMeta();
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
@@ -3316,6 +3356,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           return void res.end(costCsv(cost.runs));
         }
         return send(res, 200, { agent: id, ...cost });
+      }
+      case "listLearningPromotions": {
+        await needAgent(id);
+        // Each learned workflow's promotion records, oldest first (learn/promote.ts): its replays' numbers and decisions,
+        // its refits, its holds. Aggregates only; every text in them cut as the other learning reads cut theirs
+        // (promotionsShown: a reason and a refit guard's label as well as each workflow's name).
+        return send(res, 200, { agent: id, ...promotionsShown(await promotionsOf(store.settings, id), await learningShown(id)) });
       }
       case "createLearningBatch": {
         await needAgent(id);

@@ -500,7 +500,7 @@ provider declares, either way.
 
 | group | methods |
 | --- | --- |
-| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. `screen.watch({ after, waitMs?, maxWidth?, quality? })`: the live view's frames, paced by the caller's ack (`after`, the seq of the last frame it has whole; an older one gets the newest frame at once; on a computer whose hello lists `screen.ahead`, one past the newest waits as the newest does, so two asks can be in flight): the next frame once the screen or the pointer changed, else `changed: false` when `waitMs` (default 2000, at most 10000) is over. Computerd on a desktop learns what changed from the X server's DAMAGE extension and gives at most 15 frames a second. A frame is `{ seq, changed, format, frameWidth, frameHeight, width, height, cursor? }` and its bytes as a shot's (`data`, `id` and `screen.read`); `format` is `jpeg` from computerd (scaled to `maxWidth`, default 1280, at `quality`, default 60) and `png` from the phone client. One watch per connection. |
+| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. `screen.watch({ after, waitMs?, maxWidth?, quality? })`: the live view's frames, paced by the caller's ack (`after`, the seq of the last frame it has whole; an older one gets the newest frame at once; on a computer whose hello lists `screen.ahead`, one past the newest waits as the newest does, so two asks can be in flight): the next frame once the screen or the pointer changed, else `changed: false` when `waitMs` (default 2000, at most 10000) is over. Computerd on a desktop learns what changed from the X server's DAMAGE extension and gives at most 15 frames a second; on an X server without DAMAGE, `screen.watch` is refused, `unsupported`, in words. A frame is `{ seq, changed, format, frameWidth, frameHeight, width, height, cursor? }` and its bytes as a shot's (`data`, `id` and `screen.read`); `format` is `jpeg` from computerd (scaled to `maxWidth`, default 1280, at `quality`, default 60) and `png` from the phone client. One watch per connection. |
 | `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
@@ -1216,7 +1216,7 @@ const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600
 ```
 
 Modal runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/modal.ts` is Modal's `MachineHost`,
-its SDK slice (`ModalSdk`: apps, images, sandboxes and five methods of a sandbox) and the client it is made with, and
+the SDK's types (`import type`, erased at build) and the client it is made with, and
 `src/hosted/provider.ts` does everything below that is not Modal's own. `create` takes the caller's request id
 (`{ requestId }`, serve's is the run's claim): the computer's name is `computer-` and the first 12 hex digits of its
 sha256, and a retry of the same request finds the computer the first made instead of making a second. A Modal sandbox
@@ -1720,7 +1720,7 @@ const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: 
 ```
 
 E2B runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/e2b.ts` is E2B's `MachineHost`, its
-SDK slice and the mapping of a sandbox to a machine, and `src/hosted/provider.ts` does everything below that is not
+SDK types (`import type`, erased at build) and the mapping of a sandbox to a machine, and `src/hosted/provider.ts` does everything below that is not
 E2B's own. `create` takes the caller's request id (`{ requestId }`, serve's is the run's claim): the computer's name is
 `computer-` and the first 12 hex digits of its sha256, and a retry of the same request finds the computer the first
 made instead of making a second.
@@ -1729,8 +1729,8 @@ An E2B computer is a sandbox made from an E2B template, by default `desktop`, E2
 Xfce, x11vnc and noVNC, e2b-dev/desktop `template/template.py:3-65`). It is kind `desktop`: computerd starts the X
 server itself, as on a Docker desktop, and its X11 shim drives it. With `kind: "linux"` it is kind `linux`
 on any template, `base` by default, with no display: the same provider, minus the X server, so it costs nothing to
-offer. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, of which `src/e2b.ts` names
-only the slice it calls (`E2BSandboxClass`) and imports nothing at load; the package is the host's to install, as
+offer. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, whose types `src/e2b.ts` imports
+as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import; the package is the host's to install, as
 Modal's is. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
 and with no bound or abort (`@e2b/desktop@2.5.0` `dist/index.mjs:387-415`), and the provider needs none of its other
 calls.
@@ -1785,8 +1785,10 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
    shared with Docker). Then xfwm4, which the template has, starts the same way on it (`dbus-run-session -- xfwm4
    --compositor=off --sm-client-disable`, `WINDOW_MANAGER`: xfwm4 reads its settings over a session bus and exits
-   without one), so the apps an agent opens are framed and focused. The template has no passwd entry for 2510, and a
-   session bus closes every connection of a uid it cannot look up, so a desktop's init, still root, first names the
+   without one), so the apps an agent opens are framed and focused. It and every app `apps.launch` opens get
+   `NO_AT_BRIDGE=1`: the template has at-spi2-core, so GTK's accessibility bridge would start an at-spi bus, a
+   socket of the user's at `/work/.cache/at-spi/bus_0` that nothing of ours uses. The template has no passwd entry
+   for 2510, and a session bus closes every connection of a uid it cannot look up, so a desktop's init, still root, first names the
    user `agentrun-tool` (home the computer's, shell `/bin/sh`), as the box image does (`daemon.NameUser`). A window
    manager that ends within a second of its start fails create with its last words. Hello re-checks the
    display on every call, so `connect()` refuses a desktop whose X server has gone (it reads back kind `linux`).

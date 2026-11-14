@@ -22,7 +22,7 @@ export type ToolName = "effect" | "read" | "slow" | "asked";
 export type MetaToolName = "tools_search" | "tools_call" | "codemode";
 
 export interface SuiteTool {
-  readonly name: ToolName;
+  readonly name: string;
   /** May run again after a crash: it changes nothing outside the run. */
   readonly replaySafe: boolean;
   /** The gate asks a person before it runs: the run parks. */
@@ -56,7 +56,7 @@ export interface KernelHooks {
 
 export interface ConformanceSetup {
   readonly script: readonly ScriptStep[];
-  readonly tools: Readonly<Record<ToolName, SuiteTool>>;
+  readonly tools: Readonly<Record<string, SuiteTool>>;
   readonly hooks: KernelHooks;
   /** The run's agent, for the subject's spec to name (AdapterRunSpec.agentId): the end-of-run step is asked with it. */
   readonly agentId?: string;
@@ -91,6 +91,7 @@ export type ConformanceCase =
   | "meta-call-park"
   | "meta-call-deny"
   | "meta-codemode-park"
+  | "meta-codemode-stop"
   | "meta-codemode-crash";
 
 export interface ConformanceSubject {
@@ -103,7 +104,7 @@ export interface ConformanceSubject {
   readonly process?: { readonly module: string; readonly export: string };
   /** The facts its adapter declares (AdapterFacts), the cases they rule out derived from them (harness.ts, `factsRuleOut`):
    *  a fact the adapter changes moves its cases with it, never a list kept by hand. */
-  readonly facts?: { readonly id: string; readonly steer: boolean; readonly rerunsStarted?: false; readonly recoversCutAnswers?: number; readonly ownCodemode?: true };
+  readonly facts?: { readonly id: string; readonly steer: boolean; readonly rerunsStarted?: false; readonly recoversCutAnswers?: number; readonly ownCodemode?: true; readonly ownToolSearch?: true };
   /** False for a loop that gives its sessions no tools_search, tools_call or codemode (they are the adapter loop's,
    *  runner/meta-tools.ts): their cases are skipped, saying so. */
   readonly metaTools?: false;

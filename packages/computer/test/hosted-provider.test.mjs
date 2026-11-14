@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, computerNameFor as nameOf } from "../dist/index.js";
-import { DAEMON, DESKTOP_GROUPS, deferred, fakeHost, LINUX_GROUPS, VERSION } from "./fake-host.mjs";
+import { DAEMON, DESKTOP_GROUPS, deferred, fakeHost, LINUX_GROUPS, NotFound, VERSION } from "./fake-host.mjs";
 
 const { hostedProvider } = await import("../dist/hosted/provider.js");
 const { hostedCommands } = await import("../dist/hosted/scripts.js");
@@ -110,6 +110,8 @@ test("a host's own rules (check), label budget and label names are held at check
 	const fake = fakeHost();
 	const strict = hostedProvider({ ...fake.host, check: (spec) => (spec.image === "bad" ? [{ field: "image", message: "not a vendor image" }] : []) }, { label: "Fakehost", daemonPath: DAEMON_PATH });
 	assert.deepEqual(strict.check({ ...SPEC, image: "bad" }), [{ field: "image", message: "not a vendor image" }]);
+	// The host's check is given an object, whatever the caller gave: it reads the fields with no check of its own.
+	for (const given of [null, undefined, "img", 7]) assert.deepEqual(strict.check(given).find(({ field }) => field === "image")?.message, "an image is required: the name of a Fakehost image", String(given));
 });
 
 // --- create ---
@@ -592,27 +594,69 @@ test("release never touches a machine that is not this provider's, and refuses s
 	assert.equal((await provider.connect({ id: stranger.id, name: "computer-0123456789ab" })).error?.code, "not_found");
 });
 
-test("release stop, where the host declares it, goes through the host's stop, bounded by goneMs, and keeps the machine; never another's; no stop hook is unsupported", async () => {
+test("release stop, where the host declares it: the host only asks, and the adapter waits until get and the listing read it stopped, asking again while it reads running; it keeps the machine; never another's; no stop hook is unsupported", async () => {
 	const { provider, fake } = setup({}, { facts: { release: ["stop", "delete"], stopDeletes: false } });
-	const stops = [];
+	const asks = [];
+	let lost = 1;
 	fake.host.stop = async (id, ctx) => {
-		stops.push([id, ctx.timeoutMs]);
+		asks.push([id, ctx.timeoutMs]);
+		// The first ask is lost: the machine reads running still, so the adapter asks again.
+		if (lost-- <= 0) Object.assign(fake.machines.get(id), { state: "stopping", stoppingReads: 3 });
 		return { ok: true, value: undefined };
+	};
+	const reading = fake.host.get;
+	fake.host.get = async (id, ctx) => {
+		const m = fake.machines.get(id);
+		if (m?.state === "stopping" && --m.stoppingReads <= 0) m.state = "stopped";
+		return reading(id, ctx);
 	};
 	assert.deepEqual(provider.capabilities().release, ["stop", "delete"]);
 	const ref = made(await create(provider));
 	assert.deepEqual(await provider.release(ref, "stop"), { ok: true, value: undefined });
-	assert.deepEqual(stops, [[ref.id, TIMEOUTS.goneMs]], "the host's stop, bounded by goneMs");
+	assert.equal(fake.machines.get(ref.id).state, "stopped", "answered once the machine read stopped, not once the host took the ask");
+	assert.deepEqual(asks, [[ref.id, TIMEOUTS.requestMs], [ref.id, TIMEOUTS.requestMs]], "asked again while it read running, each ask bounded by requestMs");
 	assert.equal(fake.live().length, 1, "a stop keeps the machine");
+	assert.deepEqual(await provider.release(ref, "stop"), { ok: true, value: undefined });
+	assert.equal(asks.length, 2, "a machine that reads stopped is not asked");
 	const stranger = fake.add({ labels: { team: "x" } });
 	assert.equal((await provider.release({ id: stranger.id, name: "computer-0123456789ab" }, "stop")).error?.code, "not_found");
-	assert.equal(stops.length, 1, "another's machine is never stopped");
-	fake.host.stop = async () => ({ ok: false, error: { code: "timeout", message: "it last read stopping" } });
-	const slow = await provider.release(ref, "stop");
+	assert.equal(asks.length, 2, "another's machine is never stopped");
+	// One that goes to failed ends the wait; one that never reads stopped is bounded by goneMs, saying what it last read.
+	fake.host.stop = async (id) => ((fake.machines.get(id).state = "failed"), { ok: true, value: undefined });
+	const failed = await provider.release(made(await create(provider)), "stop");
+	assert.equal(failed.error?.code, "vendor");
+	assert.match(failed.error.message, /went to failed/);
+	fake.host.stop = async (id) => (Object.assign(fake.machines.get(id), { state: "stopping", stoppingReads: Number.POSITIVE_INFINITY }), { ok: true, value: undefined });
+	const slow = await provider.release(made(await create(provider)), "stop");
 	assert.equal(slow.error?.code, "timeout");
-	assert.match(slow.error.message, /it last read stopping/);
+	assert.match(slow.error.message, /read it stopping/);
+	fake.host.stop = async () => ({ ok: false, error: { code: "denied", message: "the key may not stop it" } });
+	assert.equal((await provider.release(made(await create(provider)), "stop")).error?.code, "denied", "a stop the vendor refused is the answer");
 	delete fake.host.stop;
 	assert.equal((await provider.release(ref, "stop")).error?.code, "unsupported", "declared, but with no stop hook: unsupported");
+});
+
+test("release stop of a computer whose stop deletes it (stopDeletes, or a GPU's where gpu.stopDeletes) waits until it is gone", async () => {
+	const { provider, fake } = setup({}, { facts: { release: ["stop", "delete"], stopDeletes: false, gpu: { types: ["H100"], max: 1, stopDeletes: true } } });
+	fake.host.stop = async (id) => ((fake.machines.get(id).state = "stopped"), { ok: true, value: undefined });
+	const reading = fake.host.get;
+	fake.host.get = async (id, ctx) => {
+		const m = fake.machines.get(id);
+		// The vendor deletes a GPU machine a few reads after it stops.
+		if (m?.request?.gpu !== undefined && m.state === "stopped" && !m.deleted && (m.reads = (m.reads ?? 0) + 1) >= 3) m.deleted = true;
+		return reading(id, ctx);
+	};
+	const gpu = made(await create(provider, { ...SPEC, gpu: { type: "H100", count: 1 } }));
+	assert.deepEqual(await provider.release(gpu, "stop"), { ok: true, value: undefined });
+	assert.equal(fake.machines.get(gpu.id).deleted, true, "answered once the GPU computer was gone");
+	const plain = made(await create(provider));
+	assert.deepEqual(await provider.release(plain, "stop"), { ok: true, value: undefined });
+	assert.equal(fake.machines.get(plain.id).deleted, false, "a computer with no GPU is kept, stopped");
+	// A GPU computer that goes to failed on its stop ends the wait, as a kept one does, not at goneMs.
+	fake.host.stop = async (id) => ((fake.machines.get(id).state = "failed"), { ok: true, value: undefined });
+	const failed = await provider.release(made(await create(provider, { ...SPEC, gpu: { type: "H100", count: 1 } })), "stop");
+	assert.equal(failed.error?.code, "vendor");
+	assert.match(failed.error.message, /the stop of computer-[0-9a-f]{12}: it went to failed/);
 });
 
 // --- connect, list, attach, network ---
@@ -716,6 +760,41 @@ test("testConnection lists by the adapter's label and counts this provider's mac
 	made(await create(provider));
 	fake.add({ labels: { [COMPUTER]: "1", [NAME]: "someone-else" } });
 	assert.match(made(await provider.testConnection()).detail, /^Fakehost answered: 1 computer of this provider$/);
+});
+
+test("a listing as the vendor reads it (no network, more machines than carry the labels): list reads each one it keeps by get, attach and a retry find theirs, and testConnection counts with no get", async () => {
+	const { provider, fake } = setup();
+	const a = made(await provider.create({ ...SPEC, labels: { team: "a" } }, { requestId: "listing-a" }));
+	made(await create(provider, { ...SPEC, labels: { team: "b" } }));
+	// The listing filters by the adapter's label alone, and carries no network and none of the vendor's drift or timer.
+	// stale: labels a listing older than get still shows.
+	const listing = fake.host.list;
+	const stale = new Map();
+	fake.host.list = async (labels, ctx) => {
+		const read = await listing({ [COMPUTER]: "1" }, ctx);
+		return read.ok ? { ok: true, value: read.value.map(({ id, labels: carried, state, createdAt }) => ({ id, labels: stale.get(id) ?? carried, state, createdAt })) } : read;
+	};
+	const gets = () => fake.calls.filter(([name]) => name === "get").length;
+	let before = gets();
+	const listed = made(await provider.list({ team: "a" }));
+	assert.deepEqual(listed.map((info) => [info.ref.id, info.network, info.state]), [[a.id, "none", "running"]]);
+	assert.equal(gets() - before, 1, "one get: of the one computer kept");
+	assert.equal(made(await provider.attach({ labels: { team: "a" } })).id, a.id);
+	assert.equal(made(await provider.create({ ...SPEC, labels: { team: "a" } }, { requestId: "listing-a" })).id, a.id, "a retry reads its computer by get");
+	before = gets();
+	assert.match(made(await provider.testConnection()).detail, /^Fakehost answered: 2 computers of this provider$/);
+	assert.equal(gets(), before, "Settings' test reads the listing alone");
+	assert.equal(fake.creates(), 2);
+	// A listing older than get: the labels get reads are the ones held to the filter.
+	stale.set(a.id, { ...fake.machines.get(a.id).labels });
+	fake.machines.get(a.id).labels.team = "c";
+	assert.deepEqual(made(await provider.list({ team: "a" })), [], "relabelled since the listing: not team a");
+	// A machine the vendor lost between the listing and the read (get is not_found) is left out, not a failed list.
+	stale.delete(a.id);
+	fake.machines.get(a.id).labels.team = "a";
+	const read = fake.host.get;
+	fake.host.get = async (id, ctx) => (id === a.id ? { ok: false, error: { code: "not_found", message: `${id} is gone` } } : read(id, ctx));
+	assert.deepEqual(made(await provider.list({ team: "a" })), [], "gone since the listing: left out");
 });
 
 // --- Archil ---
@@ -892,7 +971,7 @@ test("a desktop's window manager starts once the display answers, with DISPLAY; 
 	const m = only(managed.fake);
 	const [server, manager, ...more] = starts(managed.fake, m.id);
 	assert.equal(server.argv[0], "Xvfb", "the X server first");
-	assert.deepEqual(manager, { argv: ["xfwm4", "--compositor=off"], env: { DISPLAY: ":0" } }, "then the window manager, on the display");
+	assert.deepEqual(manager, { argv: ["xfwm4", "--compositor=off"], env: { DISPLAY: ":0", NO_AT_BRIDGE: "1" } }, "then the window manager, on the display, with no accessibility bus");
 	assert.deepEqual(more, []);
 	const order = managed.fake.requests.filter(({ machine }) => machine === m.id).map(({ method, params }) => (method === "process.start" ? params.argv[0] : method));
 	const between = order.slice(order.indexOf("Xvfb") + 1, order.indexOf("xfwm4"));
@@ -1149,4 +1228,35 @@ test("a conformance run of a hosted provider sweeps its label through the host a
 	assert.deepEqual(report.cleanup.sweep, { swept: 0, gone: 0, stillThere: [], leftAlone: 0 });
 	assert.deepEqual(report.cleanup.errors, []);
 	assert.deepEqual(report.cleanup.left, []);
+});
+
+test("a host's get that answers not_found, by a throw or by a result, is a machine that is gone", async () => {
+	for (const style of ["throw", "result"]) {
+		const { provider, fake } = setup({}, { starting: 2 });
+		const made = fake.host.create;
+		fake.host.create = async (...args) => {
+			const result = await made(...args);
+			fake.host.get = async () => {
+				if (style === "throw") throw new NotFound("no such machine");
+				return { ok: false, error: { code: "not_found", vendor: "fakehost", message: "no such machine" } };
+			};
+			return result;
+		};
+		const result = await create(provider);
+		assert.equal(result.error?.code, "gone", style);
+		assert.match(result.error.message, /was gone before it ran/, style);
+	}
+});
+
+test("the adapter reads AbortError and TimeoutError by name; a host with no errorCode answers vendor for the rest", async () => {
+	for (const [name, code] of [["TimeoutError", "timeout"], ["AbortError", "aborted"], ["Whatever", "vendor"]]) {
+		const { provider, fake } = setup();
+		const ref = made(await create(provider));
+		delete fake.host.errorCode;
+		fake.host.get = async () => {
+			throw Object.assign(new Error("boom"), { name });
+		};
+		const result = await provider.connect(ref);
+		assert.equal(result.error?.code, code, name);
+	}
 });
