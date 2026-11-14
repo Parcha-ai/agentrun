@@ -2,6 +2,9 @@
 
 AgentRun defines workflows that combine tools, code, Jev system one decisions, and agents. Models return typed results; code checks schemas and controls execution.
 
+Looking for the agent console? [Get started with AgentRun Cloud, a local server or self-hosting](getting-started.md).
+This guide covers the workflow language you can embed in your own application.
+
 <a id="quickstart"></a>
 ## Start with an example
 
