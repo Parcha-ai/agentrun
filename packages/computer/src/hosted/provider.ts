@@ -83,7 +83,7 @@ export interface HostedTimeouts {
 	probeMs: number;
 	/** One whole listing, every page; each listed machine's get after it has requestMs. */
 	listMs: number;
-	/** From a delete to a machine get reads gone. */
+	/** From a delete to get answering none for the machine. */
 	goneMs: number;
 	/** The first pause between two reads while release waits; the pauses double up to 5 s. */
 	pollMs: number;
@@ -648,7 +648,7 @@ export class HostedProvider implements ComputerProvider {
 		return ok({ ref: { id: created.value.id, name }, made: { deadline, maxDeadline, labels, daemon, sha256, commands, user, ...(runtime === undefined ? {} : { runtime }) } });
 	}
 
-	/** Deletes a machine create gives up on, then waits, under the caller's signal, until the vendor reads it gone. */
+	/** Deletes a machine create gives up on, then waits, under the caller's signal, until get answers none for it. */
 	async #abandon(ref: ComputerRef, error: { code: ComputerError["code"]; message: string; vendor?: string }, signal?: AbortSignal, mounted = false): Promise<Result<never>> {
 		this.#end(ref.name);
 		// A computer create made whole (its Archil folder mounted) lets go of the folder first, as release does.
@@ -1212,8 +1212,8 @@ export class HostedProvider implements ComputerProvider {
 	/**
 	 * delete reads the machine back to check it is this provider's, then deletes it, both never signalled, so a release
 	 * after an abort, or one aborted during the read, still sends the delete; it is idempotent: one the vendor no longer
-	 * has is ok. The vendor answers a delete before the machine is gone, so release then waits (#settle) until the vendor
-	 * reads it gone (get, twice running), within goneMs and the caller's signal, the one step the signal ends. A running
+	 * has is ok. The vendor answers a delete before the machine is gone, so release then waits (#settle) until get
+	 * answers none (twice running), within goneMs and the caller's signal, the one step the signal ends. A running
 	 * Archil computer lets go of the run's folder first (archilRelease: the final sync through computerd, then checkin as
 	 * root); the delete runs whatever that answers. A folder not let go cleanly loses nothing (every call that changed it
 	 * synced, and the next claim revokes the hold), so it is said through onNote, and the release succeeds once the
@@ -1239,7 +1239,7 @@ export class HostedProvider implements ComputerProvider {
 
 	/**
 	 * The one delete: machine's folder let go first (where it is a running Archil computer, as read; none for undefined),
-	 * then the host's delete, then the wait until the vendor reads it gone. The callers word what failed.
+	 * then the host's delete, then the wait until get answers none for it. The callers word what failed.
 	 */
 	async #remove(ref: ComputerRef, machine: Machine | undefined, signal?: AbortSignal): Promise<{ letGo: Result<void>; gone: Result<void> }> {
 		const letGo = await this.#letGoOf(ref, machine, signal);
@@ -1313,9 +1313,10 @@ async function readMachine(host: MachineHost, id: string, ms: number, signal?: A
 }
 
 /**
- * Waits, through waitUntil, until get reads a machine gone after its delete, twice running: none, or gone. A listing
- * may show a deleted machine for a while (MachineHost.list), so it is not read. Pauses double from pollMs to 5 s,
- * bounded by goneMs and the caller's signal; a failed read ends the wait with that error. Shared with the live sweep.
+ * Waits, through waitUntil, until get answers none for a machine after its delete, twice running: the vendor no longer
+ * has it. A machine read gone is still going (a vendor still destroying it), so it holds the wait like any other state.
+ * A listing may show a deleted machine for a while (MachineHost.list), so it is not read. Pauses double from pollMs to
+ * 5 s, bounded by goneMs and the caller's signal; a failed read ends the wait with that error. Shared with the live sweep.
  */
 export async function settle(
 	host: MachineHost,
@@ -1334,7 +1335,7 @@ export async function settle(
 		}
 		const state = got.value?.state;
 		last = state ?? "gone (not found)";
-		if (state !== undefined && alive(state)) {
+		if (state !== undefined) {
 			agreed = 0;
 			return { last };
 		}

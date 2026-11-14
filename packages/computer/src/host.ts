@@ -40,7 +40,10 @@ export interface MachineHost {
 	 * a vendor may see a second create deleted.
 	 */
 	list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]>;
-	/** Deletes a machine; not found is ok. It answers once the vendor took the delete: the adapter waits for gone. */
+	/**
+	 * Deletes a machine; not found is ok. It answers once the vendor took the delete: the adapter then waits until get
+	 * answers none, twice running (a machine get reads gone is still going, and holds the wait).
+	 */
 	delete(id: string, ctx: HostCall): Promise<void>;
 	/**
 	 * Starts argv in the machine as root (the vendor's own command user when it is root, else one with passwordless

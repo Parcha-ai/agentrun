@@ -140,7 +140,8 @@ don't carry every label (your API filters by some, or none): AgentRun keeps the 
 ```
 
 **`delete(id, ctx)`** deletes a machine and answers once your API accepts the delete. A machine that is already gone is
-fine. AgentRun then waits until `get` reads it gone, twice running. Delete is the only release: AgentRun never stops a
+fine. AgentRun then waits until `get` answers `undefined` (or `not_found`), twice running: a machine `get` still reads
+`gone`, one your API is still deleting, holds the wait. Delete is the only release: AgentRun never stops a
 machine and keeps it.
 
 ```ts
@@ -389,9 +390,9 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
   caller gave up. When two creates race, it keeps the oldest machine and deletes the rest. Then it waits for the machine
   to run, holds your read-back to the request, uploads the daemon and checks its sha256, starts it, and probes from
   inside that the network is none. If any step fails after the machine exists, it deletes the machine and waits until
-  it reads gone.
+  `get` no longer finds it.
 - **The rest** covers `attach`, `list`, `connect`, `network` (fixed at create), `extend` (where your host has
-  `extend`), `release` (delete, then wait until `get` reads it gone; a stop is refused: a computer here is
+  `extend`), `release` (delete, then wait until `get` no longer finds it; a stop is refused: a computer here is
   deleted, never stopped and kept), `watch` and `testConnection`.
   Every refusal uses the codes above, and `vendor` carries your API's own words.
 
