@@ -161,11 +161,17 @@ async function deniedSibling(api, fake, answer, start, seen, id) {
   assert.equal(calls(fake, "add").length, 1, "the read ran with no one asked");
   assert.equal(calls(fake, "note").length, 0, "the write waits");
   const before = seen().length;
+  // The read is denied from here on: the gate reads the settings at each call, so a replay that asked it again would
+  // hand the model a refusal, not the read's result. An allow by the setting leaves no row, so the rows alone can't tell.
+  assert.equal((await api("PUT", "/settings/tools", { ...READS, "mcp:fake/add": { permission: "deny" } })).status, 200);
   assert.equal(await answer(runId, pending.id, { decision: "deny" }), 204);
-  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 });
+  const { last, rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 });
+  assert.equal((await api("PUT", "/settings/tools", READS)).status, 200);
   const final = (await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "";
   assert.equal(last.status, "completed", final);
   assert.equal(calls(fake, "add").length, 1, "the read ran once, never again");
+  const asked = rows.filter((row) => row.kind === "tool_approval_requested");
+  assert.deepEqual(asked.map((row) => row.tool_name), ["mcp:fake/note"], `one approval row, the write's: the read's replay asks no one ${JSON.stringify(asked.map((row) => row.summary))}`);
   assert.equal(calls(fake, "note").length, 0, "denied: never sent");
   return { final, after: seen().slice(before) };
 }
