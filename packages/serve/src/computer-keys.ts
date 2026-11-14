@@ -11,6 +11,7 @@
 // here answers that its test is not available. No key is ever in an answer: each value is scrubbed from the provider's
 // words, and the words this module adds name keys only by their names.
 import { PROVIDERS, type ProviderEntry } from "@parcha/agentrun-computer";
+import { keyShaped } from "./secret-name.js";
 
 /** One key a provider takes: its name in its descriptor, the create() option it fills, and whether it is needed. */
 export interface ProviderKey {
@@ -68,6 +69,11 @@ export function keyTableOf(entries: readonly Pick<ProviderEntry, "id" | "label" 
 
 /** Serve's table: every provider the computer package declares. */
 export const KEY_TABLE: KeyTable = keyTableOf(PROVIDERS);
+
+/** The computer providers' keys that are secrets: each name a descriptor declares that is named like a key (keyShaped:
+ *  DAYTONA_API_KEY, MODAL_TOKEN_ID, AGENT37_SSH_KEY; not DAYTONA_API_URL or ORGO_WORKSPACE_ID). Each is on the launcher's
+ *  list, so a key set where the server starts is held in memory (secrets.ts), never left in its environment. */
+export const COMPUTER_KEY_NAMES: readonly string[] = [...new Set(PROVIDERS.flatMap((entry) => entry.keys.map((key) => key.name)).filter(keyShaped))];
 
 const has = (record: object, key: string): boolean => Object.prototype.hasOwnProperty.call(record, key);
 const labelOf = (providerId: string, table: KeyTable): string => (has(table.labels, providerId) ? table.labels[providerId]! : providerId);

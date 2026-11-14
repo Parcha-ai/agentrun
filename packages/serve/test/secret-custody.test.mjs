@@ -14,7 +14,10 @@ import { SECRET_NAMES } from "../dist/secrets.js";
 import { PROVIDER_KEYS } from "../dist/model.js";
 import { keyShaped } from "../dist/secret-cut.js";
 import { BOX_KEYS } from "../dist/place-offers.js";
+import { TOOL_FIELDS } from "../dist/tool-keys.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
+import { ARCHIL_API_KEY_ENV } from "../dist/workspace/archil-key.js";
+import { PROVIDERS as COMPUTER_PROVIDERS } from "@parcha/agentrun-computer";
 import { openSqliteStore } from "../dist/store/index.js";
 import { STORE_FILE } from "../dist/store/sqlite/store.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
@@ -254,6 +257,35 @@ test("started by its launcher, no process of its user holds a secret in its envi
   await follow(api, run.run_id, ["cancelled", "stopped", "failed", "completed"]);
   // And once it ended: nothing it started left a secret behind.
   noSecretAnywhere(root, canary);
+});
+
+/** The account keys serve reads for its computer providers and for Archil, by the modules that name them: each key a
+ *  computer descriptor declares that is named like a key (not DAYTONA_API_URL or ORGO_WORKSPACE_ID), and Archil's. */
+const ACCOUNT_KEYS = [...new Set([...COMPUTER_PROVIDERS.flatMap((provider) => provider.keys.map((key) => key.name)).filter(keyShaped), ARCHIL_API_KEY_ENV])];
+
+// A key the launcher does not name stays in the server's environment, where any process of its user reads it and any
+// child spawned with process.env inherits it: every account key serve reads is on the list, and only the server's and the
+// runner's own code reads one, so no run is handed one but a key a run's `browser` tool takes (Browserbase's, Kernel's).
+test("every computer provider's key and Archil's account key is on the launcher's list, and no run is handed one but a browser tool's", async () => {
+  const { RUN_SECRETS } = await import("../dist/run-secrets.js");
+  for (const name of ACCOUNT_KEYS) assert.ok(SECRET_NAMES.includes(name), `${name} is on the launcher's list of secrets`);
+  for (const name of ACCOUNT_KEYS.filter((one) => !TOOL_FIELDS.includes(one))) assert.ok(!RUN_SECRETS.includes(name), `${name} is the server's own: no run is handed it`);
+});
+
+// Started by its launcher with the Archil account key and a computer provider's key set, the server holds neither in its
+// environment, and still reads each where it was started: Archil's settings and Settings → Computers say `source: "env"`.
+test("started by its launcher with ARCHIL_API_KEY and E2B_API_KEY set, neither is in the server's environment, and Archil still reads its key from where it started", { timeout: 120_000 }, async (t) => {
+  // Under --faux, as this file's other launcher starts are: the launcher's hand-over is the same, and the server reaches
+  // no vendor. Archil's routes are not faux, so they read the account key as a real start does. Settings → Computers is
+  // faux's under --faux, so its reader (the same withSecrets(process.env, "own") as Archil's) is not checked here.
+  const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
+  const { root, api } = await launched(t, { AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN-${"t".repeat(16)}`, AGENTRUN_STORE_URL: undefined, [ARCHIL_API_KEY_ENV]: `${canary}-archil`, E2B_API_KEY: `${canary}-e2b` });
+  const environ = read(`/proc/${root}/environ`).toString().split("\0");
+  for (const name of [ARCHIL_API_KEY_ENV, "E2B_API_KEY"]) assert.ok(!environ.some((entry) => entry.startsWith(`${name}=`)), `no ${name} in the server's environment`);
+  noSecretAnywhere(root, canary);
+  const archil = await api("GET", "/workspace/archil");
+  assert.equal(archil.status, 200);
+  assert.deepEqual([archil.body.secret.set, archil.body.secret.source], [true, "env"], "Archil reads the account key the server was started with");
 });
 
 // The store URL holds a database password: it reaches the server over the launcher's pipe, so no process of the user holds it in

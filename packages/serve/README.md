@@ -3319,7 +3319,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   `SENTRY_DSN`, `DB_PWD`; never `PWD` or `OLDPWD`), whether the launcher's list names it or not. The rule is
   `keyShaped` (`src/secret-cut.ts`), which an import's cut and a harness's log take too. The keys a
   run needs are read from the store at its claim, opened with the seal key, and are put on that run's environment alone.
-  It gets none of the boxes' keys ([Sandbox](#sandbox)). A tool key reaches it only when its
+  It gets none of the computer providers' account keys ([Sandbox](#sandbox)) and not the Archil account key
+  (`ARCHIL_API_KEY`), from which the claim mints the run's own mount credential. A tool key reaches it only when its
   revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` and `KERNEL_API_KEY` `browser`; a workflow's
   tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
   from the revision at each claim, a resume after a restart included.
@@ -3356,7 +3357,8 @@ carries no cost at all, as from a provider that does not price the model. The te
 - The launcher hands the server every secret on its list that is set over one pipe, which holds 4,096 bytes for sure
   before the server reads it: each set secret costs its name, its value and two bytes. Past that it refuses to start,
   saying `the secrets come to N bytes, more than the 4096 a pipe is sure to hold`, and starts nothing. A long value adds up
-  fast (an AWS session token is often over 1,000 bytes): set only the keys the server needs where it starts.
+  fast (an AWS session token is often over 1,000 bytes, an RSA `AGENT37_SSH_KEY` over 3,000): set only the keys the
+  server needs where it starts, and save a long one in Settings instead.
 
 ### Known gaps
 
