@@ -9,7 +9,7 @@
 // workflow text and what changed out; runner/promotion.ts reads the rows (replays and graded served runs) and writes the
 // revision.
 import type { GuardRow } from "../learned-nodes.js";
-import { PROMOTE_BAR, type RefitGuard, SOFT_ESCALATE_THRESHOLD, softEscalatesOf, walkGuards } from "./promote.js";
+import { answerCorrect, PROMOTE_BAR, type RefitGuard, type ReplayRow, type ReplayScore, sameAnswer, SOFT_ESCALATE_THRESHOLD, softEscalatesOf, walkGuards } from "./promote.js";
 import { workflowNodes } from "./workflow-nodes.js";
 
 /** A switch set off: the guard or the escalate never hands back. Never a threshold the DSL takes (one is in (0, 1)). */
@@ -21,28 +21,40 @@ export const THRESHOLD_MIN = 0.001;
 export const THRESHOLD_MAX = 0.999;
 export const FIT_MIN_WRONG = 5;
 
-/** One row a refit reads: the guard rows of one input (each step's p known up to where it stopped, `escalated` on the one
- *  that handed it back), whether the workflow answered it alone with every guard passing record-only (`answered`), and if
- *  so whether that answer was right (`wfCorrect`; null: unknown); `agentCorrect`, the chance the agent's answer to it is
- *  right (its grade, 1 or 0, when known; the agent's mean accuracy when not). */
+/** One row the scorer (scoreRows) reads: the guard rows of one input (each step's p known up to where it stopped,
+ *  `escalated` on the one that handed it back), whether the workflow answered it alone with every guard passing
+ *  record-only (`answered`), and if so whether that answer was right (`wfCorrect`; null: unknown) and said what the
+ *  agent's recorded answer said (`agrees`); `agentCorrect`, the chance the agent's answer to it is right (its grade, 1 or
+ *  0, when known; the agent's mean accuracy when not); `of`, the graded run a replayed row replays (refitRowsOf; a served
+ *  run's row has none). */
 export interface RefitRow {
   readonly guards: readonly GuardRow[];
   readonly answered: boolean;
   readonly wfCorrect: boolean | null;
+  readonly agrees?: boolean;
   readonly agentCorrect: number;
+  readonly of?: string;
 }
 
 /** What a refit chose: the workflow's new text (undefined when nothing changed), each guard it changed, and the rows'
- *  accuracies at the new thresholds (`agent_acc`, `wf_acc`, `delta`, `handed_back` of `n`). */
-export interface Refit {
+ *  score at the new thresholds (scoreRows). */
+export interface Refit extends ReplayScore {
   readonly text?: string;
   readonly guards: RefitGuard[];
-  readonly n: number;
-  readonly agent_acc: number;
-  readonly wf_acc: number;
-  readonly delta: number;
-  readonly handed_back: number;
 }
+
+/** A replay's rows as the scorer reads them: those its workflow answered or handed back, never one it failed on or skipped
+ *  (no evidence either way: the replay ran without what the graded run had, or stopped at a write it never runs). Answered
+ *  alone only when every guard read a p (record-only, none handed back). */
+export const refitRowsOf = (rows: readonly ReplayRow[]): RefitRow[] =>
+  rows.flatMap((row) => {
+    if (row.outcome !== "answered" && row.outcome !== "handed_back") return [];
+    const answered = row.outcome === "answered" && row.guards.every((guard) => guard.p !== null);
+    return [{
+      of: row.of, guards: row.guards, answered, agentCorrect: row.recorded.correct ? 1 : 0,
+      wfCorrect: answered ? answerCorrect(row.answer, row.recorded) : null, agrees: answered && sameAnswer(row.answer, row.recorded.answer),
+    }];
+  });
 
 const sigmoid = (z: number) => 1 / (1 + Math.exp(-z));
 const round = (value: number, places = 4) => Math.round(value * 10 ** places) / 10 ** places;
@@ -93,14 +105,15 @@ function solve(a: number[][], b: number[]): number[] | undefined {
   return m.map((row, i) => row[n]! / row[i]!);
 }
 
-/** The rows' accuracies with p read through `pOf` and each step held to `thresholds`: a row any guard of hands back on
+/** The rows' score, unrounded (scoreRows rounds it; the refit's search compares it as it is), with p read through `pOf`
+ *  and each step held to `thresholds`: a row any guard of hands back on
  *  takes the agent's answer; one that answered alone, its grade. A row that did not answer alone because a guard handed
  *  it back (one of its guards escalated) and that no guard would hand back at `thresholds` would have answered with an
  *  answer nobody read: counted wrong, so a threshold never comes down past hand-backs with no evidence of what the
  *  workflow says there. One that did not answer for another reason (a step failed, an escalate node) takes the agent's
  *  answer at every threshold. A switch OFF never hands back, a missing p or not. */
-function scoreAt(rows: readonly RefitRow[], pOf: (row: GuardRow) => number | null, thresholds: ReadonlyMap<string, number>) {
-  let [wf, agent, handed] = [0, 0, 0];
+function scoreAt(rows: readonly RefitRow[], thresholds: ReadonlyMap<string, number>, pOf: (row: GuardRow) => number | null) {
+  let [wf, agent, handed, agree] = [0, 0, 0, 0];
   for (const row of rows) {
     agent += row.agentCorrect;
     const under = row.guards.some((guard) => {
@@ -113,10 +126,24 @@ function scoreAt(rows: readonly RefitRow[], pOf: (row: GuardRow) => number | nul
     if (under || (!known && !row.guards.some((guard) => guard.escalated))) {
       handed += 1;
       wf += row.agentCorrect;
-    } else if (known && row.wfCorrect) wf += 1;
+      continue;
+    }
+    if (known && row.wfCorrect) wf += 1;
+    if (row.agrees) agree += 1;
   }
   const n = rows.length || 1;
-  return { wf_acc: wf / n, agent_acc: agent / n, handed_back: handed };
+  return { n: rows.length, agree, wf_acc: wf / n, agent_acc: agent / n, handed_back: handed };
+}
+
+/** The one score of a workflow over rows (a replay's, a refit's, a serving check's), each step held to `thresholds` (a step
+ *  not named, its row's own threshold) with p read through `pOf` (the row's p): `n` rows; `agree`, how many it answered
+ *  alone with the agent's recorded answer; `agent_acc`, the agent's accuracy; `wf_acc`, the workflow's, a hand-back
+ *  counting as the agent's answer (scoreAt); `delta` = wf_acc - agent_acc; `handed_back` (it answered n - handed_back
+ *  alone: answersAlone). Accuracies to 1e-4, as the promotion record keeps them. */
+export function scoreRows(rows: readonly RefitRow[], thresholds: ReadonlyMap<string, number>, pOf: (row: GuardRow) => number | null = (row) => row.p): ReplayScore {
+  const score = scoreAt(rows, thresholds, pOf);
+  const [agent_acc, wf_acc] = [round(score.agent_acc), round(score.wf_acc)];
+  return { n: score.n, agree: score.agree, agent_acc, wf_acc, delta: round(wf_acc - agent_acc), handed_back: score.handed_back };
 }
 
 /** How good one raise is, compared first to last: any accuracy gained before none; then accuracy per input handed back
@@ -149,7 +176,7 @@ export function refitGuards(text: string, rows: readonly RefitRow[], now: string
   try {
     doc = JSON.parse(text);
   } catch {
-    return { guards: [], n: rows.length, agent_acc: 0, wf_acc: 0, delta: 0, handed_back: 0 };
+    return { guards: [], n: rows.length, agree: 0, agent_acc: 0, wf_acc: 0, delta: 0, handed_back: 0 };
   }
   const guards: { label: string; guard: Record<string, unknown>; node: Record<string, unknown> }[] = [];
   walkGuards(doc, (label, guard, node) => guards.push({ label, guard, node }));
@@ -174,8 +201,8 @@ export function refitGuards(text: string, rows: readonly RefitRow[], now: string
   };
   const was = new Map(guards.map(({ label, guard }) => [label, typeof guard.threshold === "number" ? guard.threshold : OFF]));
   const thresholds = new Map([...was, ...escalates.map((label) => [label, SOFT_ESCALATE_THRESHOLD] as const)]);
-  const agentAcc = scoreAt(rows, pOf, thresholds).agent_acc;
-  const meets = (at: ReadonlyMap<string, number>) => scoreAt(rows, pOf, at).wf_acc >= agentAcc - PROMOTE_BAR - 1e-9;
+  const agentAcc = scoreAt(rows, thresholds, pOf).agent_acc;
+  const meets = (at: ReadonlyMap<string, number>) => scoreAt(rows, at, pOf).wf_acc >= agentAcc - PROMOTE_BAR - 1e-9;
   // Each guard's candidates: OFF (hands back nothing), THRESHOLD_MIN (nothing but a missing p or one under it), each p its
   // rows read within the DSL's range, its own threshold, and THRESHOLD_MAX; a step no row reached keeps its own. Each
   // recorded escalate's: off or on.
@@ -190,11 +217,11 @@ export function refitGuards(text: string, rows: readonly RefitRow[], now: string
   // per input it hands back. Taking the steps in order instead traps the refit: the first step alone meets the bar only by
   // handing back every input, and the step whose guard tells right from wrong is then never raised.
   for (const [label, candidates] of candidatesOf) thresholds.set(label, candidates[0]!);
-  for (let now = scoreAt(rows, pOf, thresholds); !meets(thresholds); ) {
+  for (let now = scoreAt(rows, thresholds, pOf); !meets(thresholds); ) {
     let best: { label: string; at: number; rank: number[]; next: ReturnType<typeof scoreAt> } | undefined;
     for (const [label, candidates] of candidatesOf) {
       for (const at of candidates.filter((c) => c > thresholds.get(label)!)) {
-        const next = scoreAt(rows, pOf, new Map([...thresholds, [label, at]]));
+        const next = scoreAt(rows, new Map([...thresholds, [label, at]]), pOf);
         const rank = raiseRank(next.wf_acc - now.wf_acc, next.handed_back - now.handed_back);
         if (!best || rankAbove(rank, best.rank)) best = { label, at, rank, next };
       }
@@ -232,14 +259,5 @@ export function refitGuards(text: string, rows: readonly RefitRow[], now: string
     }
     for (const label of off) changed.push({ node: label, was: null, threshold: null, escalate: true });
   }
-  const score = scoreAt(rows, pOf, thresholds);
-  return {
-    ...(changed.length ? { text: JSON.stringify(doc) } : {}),
-    guards: changed,
-    n: rows.length,
-    agent_acc: round(score.agent_acc),
-    wf_acc: round(score.wf_acc),
-    delta: round(score.wf_acc - score.agent_acc),
-    handed_back: score.handed_back,
-  };
+  return { ...(changed.length ? { text: JSON.stringify(doc) } : {}), guards: changed, ...scoreRows(rows, thresholds, pOf) };
 }

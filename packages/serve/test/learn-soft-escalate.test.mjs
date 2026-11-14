@@ -14,8 +14,8 @@ import { CANARY } from "./fixtures/faux-jev.mjs";
 import { scratch, withEnv } from "./support.mjs";
 import { learnedWorkflowTool } from "../dist/learned-workflow.js";
 import { guardsOf } from "../dist/learned-nodes.js";
-import { answersAlone, clears, escalates, replayScore, SOFT_ESCALATE_THRESHOLD, softEscalatesOf } from "../dist/learn/promote.js";
-import { refitGuards } from "../dist/learn/refit.js";
+import { answersAlone, clears, SOFT_ESCALATE_THRESHOLD, softEscalatesOf } from "../dist/learn/promote.js";
+import { refitGuards, refitRowsOf, scoreRows } from "../dist/learn/refit.js";
 import { replayCalls } from "../dist/learn/replay-calls.js";
 import { decisionProvidersIn } from "../dist/decisions.js";
 
@@ -157,7 +157,7 @@ test("a replay goes on past an escalate on a judge's field to the draft, and rec
   assert.deepEqual(replayed.rows, [{ node: "unsupported", signal: "escalate", p: 0, threshold: SOFT_ESCALATE_THRESHOLD, escalated: false, workflow: "answer" }]);
   // Scored at the serving setting, it is a hand-back: the replay records it, it does not take it away.
   const row = { of: "g1", recorded: { answer: "42", correct: true }, outcome: "answered", answer: "42", guards: replayed.rows };
-  assert.equal(escalates(row, new Map()), true);
+  assert.equal(scoreRows(refitRowsOf([row]), new Map()).handed_back, 1);
   const served = await call(t, judged());
   assert.equal(served.said.isError, true, served.text);
   assert.equal(served.ended, "escalated", "serving obeys it");
@@ -186,7 +186,7 @@ test("refit: an escalate that stops right drafts is switched off, its node dropp
     draftRow({ right: false, fired: false, agent: 0 }),
   ];
   const text = JSON.stringify(judged());
-  const before = replayScore(rows.map((r, i) => ({ of: `g${i}`, recorded: { answer: "x", correct: r.agentCorrect === 1 }, outcome: "answered", answer: null, guards: r.guards })), new Map());
+  const before = scoreRows(rows, new Map());
   assert.equal(before.handed_back, 8);
   const refit = refitGuards(text, rows, NOW);
   assert.deepEqual(refit.guards, [{ node: "unsupported", was: null, threshold: null, escalate: true }]);
@@ -232,7 +232,7 @@ test("refit: a guard whose p says nothing of right and wrong is switched off; a 
 
 test("a replay that hands back every input never clears the bar, however close its accuracy: it would never answer alone", () => {
   const rows = Array.from({ length: 6 }, (_, i) => ({ of: `g${i}`, recorded: { answer: "42", correct: true }, outcome: "answered", answer: "42", guards: [esc(true)] }));
-  const score = replayScore(rows, new Map());
+  const score = scoreRows(refitRowsOf(rows), new Map());
   assert.deepEqual(score, { n: 6, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 6 });
   assert.equal(clears(score), false);
   assert.equal(clears({ ...score, handed_back: 5 }), true, "one answered alone");
