@@ -1,7 +1,7 @@
 // Makes an H.264 movie from mini-demos.py's frames (each already cut to the demo's window by window-frames.swift), at a
 // steady 30 frames a second: each frame shown from its time until the next, the window centered on a dark backdrop
-// with its shadow, the task's title above it and the current step's caption below. AVFoundation only, so a Mac with
-// Xcode has all it needs.
+// with its shadow, the task's title above it and the current step's caption below. A still stretch past its first
+// second plays at 4× with a mark saying so. AVFoundation only, so a Mac with Xcode has all it needs.
 //
 //   swift frames-to-movie.swift TIMELINE.txt OUT.mp4
 //
@@ -165,19 +165,31 @@ func draw(_ picture: CGImage, caption: String) -> CVPixelBuffer {
 }
 
 // Every 1/30 s from the start (the task's, else the first frame's) to the end: the latest frame and caption at that
-// time. Before the first frame, the first frame.
-let start = from ?? frames[0].at
+// time. A frame from well before the start is the setup's (Notes' welcome sheet, answered before the task): the movie
+// starts at the task's first frame instead.
+var start = from ?? frames[0].at
 let last = end > start ? end : frames.last!.at + 1.2
 // A caption from before the start is the setup's, not the task's.
 captions.removeAll { $0.at < start }
+if let first = frames.firstIndex(where: { $0.at >= start - 0.5 }) {
+	frames.removeFirst(first)
+	start = max(start, frames[0].at)
+} else {
+	frames = [frames.last!]
+}
+// A still stretch (no new frame, no new caption) plays at `fast` times its speed after its first `still` seconds, with a
+// mark in the corner saying so: an agent's turns wait on its model, and a window that does not change for ten seconds
+// shows nothing. The movie's time is the run's elsewhere.
+let still = 1.0
+let fast = 4.0
+let small = CTFontCreateWithName("Helvetica Neue Medium" as CFString, fontSize * 0.8, nil)
 var index = 0
 var caption = 0
 var picture = image(frames[0].path)!
 var shown = -1
 var count = 0
-while true {
-	let t = start + Double(count) / fps
-	if t > last { break }
+var t = start
+while t <= last {
 	while index + 1 < frames.count && frames[index + 1].at <= t { index += 1 }
 	if index != shown, let next = image(frames[index].path) {
 		picture = next
@@ -185,9 +197,25 @@ while true {
 	}
 	while caption < captions.count && captions[caption].at <= t { caption += 1 }
 	let words = caption > 0 ? captions[caption - 1].text : ""
+	let changed = max(frames[index].at, caption > 0 ? captions[caption - 1].at : start, start)
+	let sped = t - changed > still
+	let buffer = draw(picture, caption: words)
+	if sped {
+		CVPixelBufferLockBaseAddress(buffer, [])
+		if let context = CGContext(
+			data: CVPixelBufferGetBaseAddress(buffer), width: width, height: height, bitsPerComponent: 8,
+			bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: space, bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
+		) {
+			// Above the window's top right corner, in the gap between it and the title.
+			write("\(Int(fast))× while nothing changes", font: small, color: CGColor(red: 0.6, green: 0.65, blue: 0.75, alpha: 1),
+				centerX: CGFloat(width - pad) - 150, midY: CGFloat(height - band - pad / 2), maxWidth: 300, in: context)
+		}
+		CVPixelBufferUnlockBaseAddress(buffer, [])
+	}
 	while !input.isReadyForMoreMediaData { usleep(2000) }
-	adaptor.append(draw(picture, caption: words), withPresentationTime: CMTime(value: CMTimeValue(count), timescale: CMTimeScale(fps)))
+	adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(count), timescale: CMTimeScale(fps)))
 	count += 1
+	t += (sped ? fast : 1) / fps
 }
 input.markAsFinished()
 writer.endSession(atSourceTime: CMTime(value: CMTimeValue(count), timescale: CMTimeScale(fps)))

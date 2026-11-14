@@ -69,11 +69,17 @@ jobs:
           npm install --global npm@11.21.0 --ignore-scripts
           node scripts/npm-ci-retry.mjs --ignore-scripts
           npm run build -w @parcha/agentrun-computer
+          node scripts/build-workspaces.mjs --only @parcha/agentrun-serve
       - name: Seed the runner's grants
         if: ${{ !cancelled() }}
         run: scripts/seed-tcc.sh build/Computerd.app
+      # The demo tasks run scripted, then by an agent: with a model key here, Sonnet 5.5 (and GPT-6.1 Terra through
+      # OpenRouter); with none, the scripted model (smoke.sh).
       - name: Peer check and the conformance cases
         if: ${{ !cancelled() }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: scripts/smoke.sh build/Computerd.app
       - name: Probe (temporary) the capture approvals and the windows on screen
         if: ${{ !cancelled() }}

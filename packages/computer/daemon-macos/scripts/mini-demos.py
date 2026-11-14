@@ -2,7 +2,17 @@
 the running Computerd's own computerd command by ui.observe and ui.act with batched steps. Each call's latency is
 logged. With --movie, each is recorded from screen.watch to a movie of its own window, with the step on screen.
 
-    python3 -I mini-demos.py PATH/TO/computerd COMPUTERD_HOME OUT_DIR [--movie] [--ask-grants] [--answer-alerts] [TASK ...]
+    python3 -I mini-demos.py PATH/TO/computerd COMPUTERD_HOME OUT_DIR [--movie] [--ask-grants] [--answer-alerts]
+        [--agent=MODEL ...] [TASK ...]
+
+--agent=MODEL (repeatable: one run of each task per model) has an agent do the tasks in place of the script: the task
+in plain words to an agent on agentrun-serve, started here from packages/serve's build, with this Mac paired to it for
+the run (Computerd's policy.json lets it touch only the five apps and see the screen; the old policy is put back after,
+and the Mac unpaired). The agent is pi's code mode on the computer surface. MODEL is a model as serve names one
+(anthropic/claude-sonnet-5-5, openrouter/openai/gpt-6.1-terra), its key in this environment, or faux: a scripted model
+(agent-faux.mjs) for the TextEdit task alone, which proves the path with no key. The harness makes each task's sandbox
+and checks the outcome as the scripted task does; the movie follows the app's front window, captioned with the agent's
+own words and each script's first comment.
 
 TASK is a task's id (mac.notes.new-note, ...); none runs all five. Without --movie nothing is recorded (no frames, no
 movie). --movie works only on a demo machine, and refuses before anything is made otherwise: a CI runner
@@ -59,24 +69,33 @@ bench's task checks.
 
 import base64
 import contextlib
+import datetime
 import fcntl
 import json
 import os
 import pwd
+import re
+import secrets
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
-flags = {a for a in sys.argv[1:] if a.startswith("--")}
+flags = {a for a in sys.argv[1:] if a.startswith("--") and not a.startswith("--agent=")}
+models = [a[len("--agent="):] for a in sys.argv[1:] if a.startswith("--agent=")]
 if len(args) < 3:
     sys.exit(__doc__)
 if flags - {"--movie", "--ask-grants", "--answer-alerts"}:
     sys.exit(f"unknown option {' '.join(sorted(flags - {'--movie', '--ask-grants', '--answer-alerts'}))}\n{__doc__}")
+if "faux" in models and len(models) > 1:
+    sys.exit("--agent=faux runs alone: its server answers every model request from the faux module")
 helper, home, out = args[0], args[1], os.path.abspath(args[2])
 only = set(args[3:])
 movie = "--movie" in flags
@@ -156,6 +175,10 @@ class Cropper:
         """{"bounds": [x, y, w, h], "above": [...]}, or None when the window is not on screen."""
         reply = self.ask({"op": "where", "window": str(window)})
         return reply if reply.get("bounds") else None
+
+    def front(self, owner):
+        """The app's front window's id, by its owner name in the window list, or None: an agent's task names none."""
+        return self.ask({"op": "front", "owner": owner}).get("window")
 
     def park(self):
         """The real pointer to the display's corner, out of the movie (a demo machine's pointer is no one's)."""
@@ -613,7 +636,7 @@ def redact(node):
 class Task:
     """One run of one task: its calls, timed, its observations, its movie's captions, and what it made."""
 
-    def __init__(self, c, tid, app, cropper):
+    def __init__(self, c, tid, app, cropper, agent=False):
         self.c, self.id, self.app = c, tid, app
         self.calls, self.notes = [], []
         self.observed = 0
@@ -621,11 +644,15 @@ class Task:
         # The window the task last observed: the movie's frames are cut to it until the task pins one.
         self.shown = None
         self.inspector = False
+        # What the agent's run did (--agent): its model, run id, scripts, computer calls, cost and answer.
+        self.agent = None
         self.folder = os.path.join(out, tid)
         self.t0 = time.monotonic()
         # The movie's start and end on the recorder's clock: the task itself, without its setup and teardown.
         self.span = [None, None]
         aim = lambda: self.window or self.shown  # noqa: E731
+        if agent:  # the agent's window is the app's front one: the harness pins none
+            aim = lambda: cropper.front(APPS[app])  # noqa: E731
         self.rec = Recorder(os.path.join(self.folder, "frames"), lambda: time.monotonic() - self.t0, aim, cropper) if cropper else None
 
     def say(self, text):
@@ -1157,6 +1184,320 @@ TITLES = {
 }
 
 
+# --- an agent does the tasks (--agent=MODEL) ---------------------------------------------------------------------------
+
+SERVE_CLI = os.path.normpath(os.path.join(here, "..", "..", "..", "serve", "dist", "cli.js"))
+FAUX = os.path.join(here, "agent-faux.mjs")
+INSTRUCTIONS = (
+    "You work on a Mac through code mode: `computer` in your scripts is the Mac. Do the task you are given, then say in "
+    "one sentence what you did. Open a file or a folder with computer.apps.open(appId, { url, background: true }). "
+    "Start every script with a // comment that says in a few plain words what it does: people watching the run read it. "
+    "Touch nothing the task does not name."
+)
+# Each model's name in a movie's title and file name.
+MODEL_NAMES = {"faux": "a scripted model", "anthropic/claude-sonnet-5-5": "Sonnet 5.5", "openrouter/anthropic/claude-sonnet-5.5": "Sonnet 5.5",
+               "openrouter/openai/gpt-6.1-terra": "GPT-6.1 Terra"}
+
+
+def model_name(model):
+    return MODEL_NAMES.get(model, model.split("/")[-1])
+
+
+class Serve:
+    """agentrun-serve on this Mac, the platform the agent runs on: one for the run, with a data directory, a port and a
+    token of its own. Computerd is paired with it for the run, and unpaired after (close)."""
+
+    def __init__(self, faux):
+        if not os.path.isfile(SERVE_CLI):
+            raise Failed(f"packages/serve is not built ({SERVE_CLI}): node scripts/build-workspaces.mjs --only @parcha/agentrun-serve")
+        self.data = tempfile.mkdtemp(prefix="agentrun-demo-serve-")
+        self.token = "ar_test_" + secrets.token_hex(20)
+        self.log = open(os.path.join(out, "serve.log"), "w")
+        argv = ["node", SERVE_CLI, "--data", os.path.join(self.data, "agents"), "--port", "0"] + (["--faux", FAUX] if faux else [])
+        env = dict(os.environ, AGENTRUN_ACCOUNTS="0", AGENTRUN_TOKEN=self.token)
+        self.p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=self.log, stdin=subprocess.DEVNULL, text=True, env=env)
+        self.url, self.computer, self.policy = None, None, None
+        killer = threading.Timer(120, self.p.kill)
+        killer.start()
+        banner = re.compile(r"agentrun-serve on (http://127\.0\.0\.1:\d+)/v2 ")
+        try:
+            while self.url is None:
+                line = self.p.stdout.readline()
+                if not line:
+                    raise Failed(f"agentrun-serve ended before it listened: {self.tail()}")
+                self.log.write(line)
+                found = banner.search(line)
+                self.url = found.group(1) if found else None
+        finally:
+            killer.cancel()
+        threading.Thread(target=self.drain, daemon=True).start()
+        print(f"agentrun-serve on {self.url}" + (" (faux model)" if faux else ""), flush=True)
+
+    def drain(self):
+        for line in self.p.stdout:
+            self.log.write(line)
+            self.log.flush()
+
+    def tail(self):
+        self.log.flush()
+        with open(self.log.name) as f:
+            return " / ".join(f.read().strip().splitlines()[-5:])
+
+    def api(self, method, path, body=None, timeout=30):
+        request = urllib.request.Request(f"{self.url}/v2{path}", method=method, data=None if body is None else json.dumps(body).encode(),
+                                         headers={"authorization": f"Bearer {self.token}", "content-type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as r:
+                return r.status, json.loads(r.read() or b"null")
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read() or b"null")
+            except ValueError:
+                return e.code, None
+
+    def pair(self):
+        """Computerd paired with this server for the run, its policy first: the five apps, and the screen. The owner's
+        policy as it was is kept, and put back by close."""
+        policy = os.path.join(home, "policy.json")
+        self.policy = open(policy, "rb").read() if os.path.exists(policy) else b""
+        with open(policy, "w") as f:
+            json.dump({"apps": sorted(APPS), "server": ["screen"]}, f)
+        status, made = self.api("POST", "/computers/pairings", {})
+        if status != 201:
+            raise Failed(f"POST /computers/pairings: {status} {made}")
+        done = subprocess.run([helper, "pair", self.url, made["code"], f"agentrun-demo-{RUN}"], env=dict(os.environ, COMPUTERD_HOME=home),
+                              capture_output=True, text=True, timeout=60)
+        if done.returncode != 0:
+            raise Failed(f"computerd pair: {(done.stderr or done.stdout).strip()}")
+        deadline = time.monotonic() + 30
+        while True:
+            _, listed = self.api("GET", "/computers")
+            online = [one for one in (listed or {}).get("paired") or [] if one.get("online")]
+            if online:
+                self.computer = online[0]["id"]
+                print(f"paired: {self.computer}, groups {online[0].get('groups')}", flush=True)
+                return
+            if time.monotonic() > deadline:
+                raise Failed(f"the paired Mac is not online after 30 s: {listed}")
+            time.sleep(0.5)
+
+    def close(self):
+        if self.policy is not None:
+            subprocess.run([helper, "unpair"], env=dict(os.environ, COMPUTERD_HOME=home), capture_output=True, timeout=30)
+            policy = os.path.join(home, "policy.json")
+            if self.policy:
+                with open(policy, "wb") as f:
+                    f.write(self.policy)
+            elif os.path.exists(policy):
+                os.unlink(policy)
+        self.p.terminate()
+        try:
+            self.p.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            self.p.kill()
+        self.log.close()
+        shutil.rmtree(self.data, ignore_errors=True)
+
+
+def first_comment(code):
+    """A script's first // comment: what it does, in the agent's words."""
+    for line in (code or "").splitlines():
+        line = line.strip()
+        if line.startswith("//"):
+            return line.lstrip("/ ").strip()
+    return None
+
+
+def first_sentence(text):
+    text = " ".join((text or "").split())
+    found = re.match(r"(.+?[.!?])(\s|$)", text)
+    return (found.group(1) if found else text)[:160]
+
+
+def epoch(stamp):
+    return datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+
+
+def agent_run(t, serve, model, prompt):
+    """One run of the agent on the task: made, followed on its timeline to its end, each row printed and captioned at
+    its own time (the agent's words, each script's first comment, a failed script's error). Answers what the run did."""
+    t.say(f"the agent gets the task: {prompt}")
+    # The recorder's clock is monotonic from the task's start: a row's wall time maps onto it.
+    wall0 = time.time() - (time.monotonic() - t.t0)
+    agent = f"mac-demo-{RUN}-{secrets.token_hex(3)}"
+    # On the runner: no box and no shell, the Mac its one computer.
+    definition = {"id": agent, "version": 1, "name": agent, "instructions": INSTRUCTIONS, "skills": [], "tools": [], "harness": "pi",
+                  "place": {"mode": "runner"}, "computer": {"kind": "desktop", "provider": serve.computer}}
+    if model != "faux":
+        definition["model"] = model
+    status, made = serve.api("POST", "/agents", {"definition": definition})
+    if status != 201:
+        raise Failed(f"POST /agents: {status} {made}")
+    status, started = serve.api("POST", f"/agents/{agent}/runs", {"input": {"content": prompt}})
+    if status not in (200, 201, 202):
+        raise Failed(f"POST /agents/{agent}/runs: {status} {started}")
+    run = started["run_id"]
+    print(f"    run {run} ({model})", flush=True)
+    did = {"model": model, "run": run, "scripts": 0, "computerCalls": 0, "failedScripts": 0, "usd": None, "answer": None}
+    seen, after, deadline = set(), 0, time.monotonic() + 600
+    while True:
+        status, page = serve.api("GET", f"/runs/{run}/timeline?wait_ms=2000" + (f"&after={after}" if after else ""), timeout=30)
+        if status != 200:
+            raise Failed(f"the run's timeline: {status} {page}")
+        for row in page.get("rows") or []:
+            if row["id"] in seen:
+                continue
+            seen.add(row["id"])
+            kind, words = row.get("kind"), None
+            if kind == "text_block":
+                words = first_sentence(row.get("text"))
+            elif kind == "tool_use":
+                did["scripts"] += row.get("tool_name") == "codemode"
+                words = first_comment(row.get("tool_input_preview")) or row.get("summary")
+            elif kind == "tool_result":
+                calls = row.get("computer_calls") or []
+                did["computerCalls"] += len(calls)
+                print(f"    {row.get('tool_name')} {row.get('tool_status')}: {len(calls)} computer calls"
+                      + "".join(f"\n      {x['method']} {x['ms']} ms" + (f" [{', '.join(s['do'] + ' ' + s.get('route', s.get('error', '')) for s in x['steps'])}]" if x.get("steps") else "")
+                                + (f" expect {x['expect']}" if x.get("expect") else "") + ("" if x["ok"] else f" {x.get('code')}") for x in calls), flush=True)
+                if row.get("tool_status") == "failed":
+                    print(f"      {(row.get('tool_result_preview') or '')[:500]}".replace("\n", "\n      "), flush=True)
+                    did["failedScripts"] += 1
+                    words = "the script failed: " + first_sentence(row.get("tool_result_preview") or "")
+            elif kind in ("final_answer", "error"):
+                words = first_sentence(row.get("text") or row.get("summary"))
+                if kind == "final_answer":
+                    did["answer"] = (row.get("text") or "")[:400]
+            elif kind == "usage":
+                did["usd"] = (row.get("usage") or {}).get("usd")
+            if kind in ("tool_use", "text_block", "final_answer", "error"):
+                print(f"    [{kind}] {(row.get('tool_input_preview') if kind == 'tool_use' else words) or ''}".replace("\n", "\n      "), flush=True)
+            if words and t.rec:
+                t.rec.captions.append((epoch(row["timestamp"]) - wall0, words))
+        after = page.get("next_after", after)
+        ended = page.get("status") in ("completed", "failed", "cancelled")
+        if ended and page.get("final", True):
+            did["status"] = page["status"]
+            break
+        if time.monotonic() > deadline:
+            serve.api("POST", f"/runs/{run}/cancel", {})
+            raise Failed(f"the agent's run {run} did not end in 10 minutes")
+    t.notes.append(f"agent: {model_name(model)}, run {run} {did['status']}, {did['scripts']} scripts, {did['computerCalls']} computer calls"
+                   + (f", ${did['usd']:.3f}" if isinstance(did["usd"], (int, float)) else ""))
+    t.agent = did
+    if did["status"] != "completed":
+        _, read = serve.api("GET", f"/runs/{run}")
+        raise Failed(f"the agent's run {did['status']}: {((read or {}).get('error') or {}).get('message') or did['answer'] or 'no answer'}")
+    return did
+
+
+def poll(label, read, want, seconds=10):
+    """read() until it answers want, at most seconds; the last answer."""
+    deadline = time.monotonic() + seconds
+    while (got := read()) != want and time.monotonic() < deadline:
+        time.sleep(0.5)
+    return got
+
+
+def agent_textedit(t):
+    folder = sandbox_folder(t, "textedit")
+    path = f"{folder}/totals-{RUN}.txt"
+    t.write(path, "Apples: 3\nPears: 41\nPlums: 7\n", "write the totals file")
+    want = ["Apples: 3", "Pears: 42", "Plums: 7"]
+
+    def check():
+        read = lambda: base64.b64decode((t.c.call("files.read", {"path": path}).get("result") or {}).get("data", "")).decode(errors="replace").splitlines()  # noqa: E731
+        if (got := poll("the totals file", read, want)) != want:
+            raise Failed(f"the totals file holds {got}, not {want}")
+        t.notes.append("the totals file saved with Pears: 42, the other lines kept")
+    return f"Open the file {path} in TextEdit, change Pears from 41 to 42, and save it.", check
+
+
+def agent_finder(t):
+    folder = sandbox_folder(t, "finder")
+    t.write(f"{folder}/draft.txt", "the draft\n", "write draft.txt")
+    t.write(f"{folder}/other.txt", "another file\n", "write other.txt")
+    want = ["final.txt", "other.txt"]
+
+    def check():
+        listed = lambda: sorted(n for n in (os.path.basename(e.get("path") or "") for e in (t.c.call("files.list", {"path": folder}).get("result") or {}).get("entries", [])) if not n.startswith("."))  # noqa: E731
+        if (got := poll("the folder", listed, want)) != want:
+            raise Failed(f"the folder holds {got}, not {want}")
+        t.notes.append("the folder holds final.txt and other.txt")
+    return f"In Finder, open the folder {folder} and rename draft.txt in it to final.txt.", check
+
+
+def agent_notes(t):
+    t.say("make the task's Notes folder (AppleScript)")
+    t.run_exec(["/usr/bin/osascript", "-e", MAKE_FOLDER, NAME], "make the task's folder")
+    title, line = f"{NAME} groceries", "Oat milk and eggs"
+    count = """on run argv
+  tell application "Notes" to return count (notes of folder (item 1 of argv) whose name is (item 2 of argv))
+end run"""
+
+    def check():
+        if (got := poll("the note", lambda: t.run_exec(["/usr/bin/osascript", "-e", count, NAME, title], "count the note").strip(), "1")) != "1":
+            raise Failed(f"the task's folder holds {got} notes titled {title!r}, not 1")
+        t.notes.append(f"the note \"{title}\" is in the task's folder")
+    return f"In Notes, write a new note in the folder \"{NAME}\": its first line \"{title}\", its second line \"{line}\".", check
+
+
+def agent_calendar(t):
+    t.say("make the task's calendar (AppleScript)")
+    t.run_exec(["/usr/bin/osascript", "-e", MAKE_CALENDAR, NAME], "make the calendar")
+    t.inspector = True  # the teardown closes an inspector the agent left open, before it deletes the calendar
+    title = event_title(RUN)
+    count = """on run argv
+  tell application "Calendar" to return count (events of calendar (item 1 of argv) whose summary is (item 2 of argv))
+end run"""
+
+    def check():
+        if (got := poll("the event", lambda: t.run_exec(["/usr/bin/osascript", "-e", count, NAME, title], "count the event").strip(), "1")) != "1":
+            where = f"; the calendars holding it: {osa(t.c, EVENT_CALENDARS, title).strip() or 'none'}" if CI else ""
+            raise Failed(f"the task's calendar holds {got} events titled {title!r}, not 1{where}")
+        t.notes.append(f"the event \"{title}\" is in the task's calendar")
+    return f"In Calendar, add an event titled \"{title}\" today, in the calendar \"{NAME}\".", check
+
+
+# The agent's tasks: the scripted ones' ids and sandboxes, in plain words. Safari's is not among them: a runner's
+# WebKit draws no page (see smoke.sh), so its movie would show an empty window.
+AGENT_TASKS = [
+    ("mac.notes.new-note", "com.apple.Notes", notes_prepare, agent_notes),
+    ("mac.finder.rename-file", "com.apple.finder", None, agent_finder),
+    ("mac.textedit.edit-number", "com.apple.TextEdit", None, agent_textedit),
+    ("mac.calendar.new-event", "com.apple.iCal", calendar_prepare, agent_calendar),
+]
+
+
+def agent_tasks(serve):
+    """Each agent task once per model, as the main loop runs a task: (id, app, prepare, drive), the movie's title in
+    TITLES."""
+    tasks = []
+    for model in models:
+        slug = re.sub(r"[^a-z0-9]+", "-", model_name(model).lower()).strip("-")
+        for tid, app, prepare, setup in AGENT_TASKS:
+            if model == "faux" and tid != "mac.textedit.edit-number":
+                continue
+
+            def drive(t, setup=setup, model=model):
+                prompt, check = setup(t)
+                agent_run(t, serve, model, prompt)
+                t.say("check the outcome")
+                check()
+            TITLES[f"{tid}.{slug}"] = f"{model_name(model)}: {AGENT_PROMPTS[tid]}"
+            tasks.append((f"{tid}.{slug}", app, prepare, drive))
+    return tasks
+
+
+# Each agent task's movie title, after the model's name.
+AGENT_PROMPTS = {
+    "mac.notes.new-note": "write a note in its own Notes folder",
+    "mac.finder.rename-file": "rename draft.txt to final.txt in Finder",
+    "mac.textedit.edit-number": "change Pears from 41 to 42 in TextEdit, and save",
+    "mac.calendar.new-event": "add an event to its own calendar",
+}
+
+
 def close_inspector(c, t):
     """Calendar's event inspector (or its quick event field, or its calendar menu), closed by escape while its event is
     still there: an inspector left open on a deleted event saved a new, untitled one in the default calendar when it was
@@ -1319,7 +1660,9 @@ def clear_alerts(c, wait=0):
             return
         r = c.call("ui.observe", {"target": {"app": "com.apple.UserNotificationCenter"}})
         if "error" in r:
-            print(f"  (the system alert could not be read: {r['error'].get('message')})", flush=True)
+            # Still running a moment after its alert was answered, with no window: nothing is on screen.
+            if (r["error"].get("data") or {}).get("kind") != "not_found":
+                print(f"  (the system alert could not be read: {r['error'].get('message')})", flush=True)
             return
         nodes = r["result"].get("nodes", [])
         words = [n.get("name") or n.get("value") for n in nodes if n.get("role") in ("text", "statictext", "heading") and (n.get("name") or n.get("value"))]
@@ -1363,6 +1706,7 @@ def main():
     report = []
     interrupted = None
     cropper = None
+    serve = None
     try:
         for app in started:
             c.call("apps.launch", {"id": app, "background": True})
@@ -1386,12 +1730,15 @@ def main():
         still = quit_apps(started)
         if still:
             raise Failed(f"{', '.join(still)}, which the run started, did not quit after the sweep")
+        if models:
+            serve = Serve(faux=models == ["faux"])
+            serve.pair()
         if movie:
             cropper = Cropper()
-        for tid, app, prepare, drive in TASKS:
-            if only and tid not in only:
+        for tid, app, prepare, drive in agent_tasks(serve) if models else TASKS:
+            if only and not any(tid == one or tid.startswith(one + ".") for one in only):
                 continue
-            t = Task(c, tid, app, cropper)
+            t = Task(c, tid, app, cropper, agent=bool(models))
             os.makedirs(t.folder, exist_ok=True)
             print(f"{tid} ({APPS[app]})", flush=True)
             if t.rec:
@@ -1471,6 +1818,8 @@ def main():
                 "observes": sum(1 for x in t.calls if x["method"] == "ui.observe"),
                 "frames": frames, "movie": t.movie, "notes": t.notes, "calls": t.calls,
             }
+            if t.agent:
+                entry["agent"] = t.agent
             if t.rec:
                 entry["framesDropped"] = t.rec.dropped
                 entry["paintedOver"] = t.rec.painted
@@ -1496,6 +1845,11 @@ def main():
             print(f"  (could not quit the apps the run started: {e})", flush=True)
         if cropper:
             cropper.close()
+        if serve:
+            try:
+                serve.close()
+            except Exception as e:
+                print(f"  (could not stop agentrun-serve or unpair: {e})", flush=True)
         c.close()
         os.unlink(LOCK)
         held.close()

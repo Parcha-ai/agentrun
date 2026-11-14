@@ -11,6 +11,9 @@
 //   {"op": "crop", "jpeg": BASE64, "bounds": [...], "above": [...], "out": PATH, "quality": 70}
 //     -> {"width": W, "height": H}   the screen frame cut to the bounds, each overlapping window painted black, written
 //        to PATH as a JPEG. The frame covers the main display, at any scale.
+//   {"op": "front", "owner": "TextEdit"} -> {"window": "1234"}   the app's frontmost ordinary window on screen (layer 0,
+//        200 by 150 points or more), by its owner name; {"window": null} when it shows none. An agent's task names no
+//        window: its movie follows this one.
 //   {"op": "park"} -> {"parked": [x, y]}   the real pointer moved to the main display's bottom right corner, out of
 //        the demo's window (a demo machine's pointer is no one's; the demo's steps are drawn by Computerd's live view).
 //
@@ -174,6 +177,21 @@ while let line = readLine(strippingNewline: true) {
 		var place = locate(id)
 		place["changes"] = changes
 		answer(place)
+	case "front":
+		// An agent's task names no window: the app's frontmost ordinary window (layer 0) on screen that is at least a
+		// window's size (not a sheet's sliver or a field editor), by the app's owner name in the window list.
+		guard let owner = request["owner"] as? String else {
+			answer(["error": "front needs an owner"])
+			continue
+		}
+		let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+		let front = windows.first { info in
+			guard info[kCGWindowOwnerName as String] as? String == owner, number(info, kCGWindowLayer) == 0,
+				let d = info[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: d as CFDictionary)
+			else { return false }
+			return r.width >= 200 && r.height >= 150
+		}
+		if let id = front.flatMap({ number($0, kCGWindowNumber) }) { answer(["window": String(id)]) } else { answer(["window": NSNull()]) }
 	case "park":
 		// The real pointer, out of the movie: to the main display's bottom right corner, where no demo window is. The
 		// demo's own steps are drawn by Computerd's live view (its marks); this pointer is no one's on a demo machine.
@@ -189,6 +207,6 @@ while let line = readLine(strippingNewline: true) {
 			answer(["error": "\(error)"])
 		}
 	default:
-		answer(["error": "op is where, park or crop"])
+		answer(["error": "op is where, front, park or crop"])
 	}
 }

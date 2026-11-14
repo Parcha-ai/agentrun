@@ -59,8 +59,9 @@ peer=0
 reply="$(printf '{"jsonrpc":"2.0","id":1,"method":"ping"}\n' | nc -U -w 5 "$home/computerd.sock" 2>&1 || true)"
 if [[ "$reply" == *"refused this client"* ]]; then echo "PASS the socket refuses a client not signed as Computerd"; else echo "FAIL the socket answered an unsigned client: $reply"; peer=1; fi
 
-# macOS 26 raises its screen capture alert for Computerd on its first capture, over every window: the ui fixture could
-# not come in front of it (ui.fixture-shape), and every demo's movie had it painted over. Raised and answered first.
+# A system alert sits over every window: the ui fixture could not come in front of macOS 26's screen capture alert
+# (ui.fixture-shape), and every demo's movie had it painted over. seed-tcc.sh marks that one answered; one screen shot
+# here shows whether any alert comes up all the same, and it is answered (and named in the log) before the cases.
 python3 -I "$here/mini-demos.py" "$app/Contents/Helpers/computerd" "$home" "$home/demos" --answer-alerts || echo "the system alerts were not answered: see above"
 
 # The protocol's conformance cases, on the same running app (a missing build fails the run).
@@ -81,6 +82,14 @@ killall UIFixture 2>/dev/null || true
 # tiles are never drawn. Only Safari's own chrome and the page's background colour show; every capture (screen.shot,
 # the window's own image, screencapture) agrees. A Mac with its GPU draws them.
 python3 -I "$here/mini-demos.py" "$app/Contents/Helpers/computerd" "$home" "$home/demos" --movie || echo "the demo tasks failed: see above"
+# Then an agent does them, from the task in plain words, on agentrun-serve started here (packages/serve's build): Sonnet
+# 5.5 with Anthropic's key in the environment, GPT-6.1 Terra beside it with OpenRouter's; with neither, the scripted
+# model (agent-faux.mjs), which proves the path for the TextEdit task. Reported, not a verdict, as the scripted ones.
+agents=()
+if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then agents+=(--agent=anthropic/claude-sonnet-5-5); fi
+if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then agents+=(--agent=openrouter/openai/gpt-6.1-terra); fi
+if [[ ${#agents[@]} -eq 0 ]]; then echo "no model key in the environment: the agent demos run the scripted model"; agents=(--agent=faux); fi
+python3 -I "$here/mini-demos.py" "$app/Contents/Helpers/computerd" "$home" "$home/demos/agent" --movie "${agents[@]}" || echo "the agent's demo tasks failed: see above"
 # The grants asked of TCC while the tests and demos ran, counted by service: a grant the sandbox's AppleScript needs
 # and seed-tcc.sh does not seed shows up here.
 echo "TCC requests in the last 15 minutes, by service:"
