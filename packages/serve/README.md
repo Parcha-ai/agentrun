@@ -1639,8 +1639,9 @@ method, tool and whether an `Authorization` header came, never its value.
 ### Agents call a server's tools
 
 An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`, in `definition.tools`
-(`"tools": ["mcp:github/list_issues"]`). A save checks each one against the server's saved tools: a server that is not
-saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
+(`"tools": ["mcp:github/list_issues"]`). A save lists each server it grants a tool of, once, and checks each grant
+against that listing: a server that is not saved, or can't be listed right now, is `422` naming it ("save again once it
+answers"), a tool it does not list is `422` naming the server's tools, and so is a name whose wire name,
 `mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
 property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi, claude-agent and codex run them (`features.mcp_client.harnesses`); on
 another harness the save warns that they are not bound there yet, and a run is refused. A workflow's nodes bind no MCP
@@ -1658,9 +1659,12 @@ action it runs and deny could target none. Reads mark it `grantable: false` with
 each of these providers has a direct mode. The list is closed: a meta tool it doesn't know is an MCP tool like any other,
 asked by default.
 
-- **Pinned.** A run's first launch keeps each granted tool as the server listed it when you saved it (its description
-  and schema) and the server's URL then, in the run's directory (`mcp-tools.json`). A refresh or a new save never
-  changes a running agent's tools. If the server's URL has changed since, that run's calls answer "the server's
+- **Pinned.** The save keeps each granted tool on the new revision as the server listed it then (its name,
+  description, input schema, annotations and price) with the server's URL then, shown as the agent's `mcp_pin` (never
+  the URL); each run of that revision calls those tools, and no run lists the server. A refresh never changes a
+  revision's tools; saving the agent again re-pins (an unchanged definition whose server changed a granted
+  tool is a new revision). A server that keeps no credential of its own (`per_run`), or an OAuth server, that refuses the
+  save's listing for its credential is pinned as its last save or refresh listed it. If the server's URL has changed since, that run's calls answer "the server's
   address changed since this run started" and nothing is sent, the new credential least of all.
 - **The credential.** A run whose revision grants a server's tool is handed that server's credential at each launch
   (so a new one counts at the next), over its secrets pipe, never its environment; a run that grants none of a

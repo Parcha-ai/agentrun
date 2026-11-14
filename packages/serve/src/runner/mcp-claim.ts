@@ -1,11 +1,10 @@
 // The runner's MCP claim step: once per claim, before the run's loop starts.
 //
-// The pin. A run's pin (the granted MCP tools as their servers listed them, each server's URL then, its prices) is made
-// at its first claim by mcpPinOf over the registry's rows and written by store.mcp.pinOnce: in its own store transaction,
-// behind the claim's epoch fence, inserted only when the run has none. So it exists before anything is sent, is written
-// once and never rewritten, and a crash between it and the loop's first commit leaves it for the next claim to read as
-// written (the first claim's snapshot, by design), rather than in the same commit as the first journal entries. A pin
-// that cannot be made refuses the claim in its words.
+// The pin. A run's pin (the granted MCP tools as their servers listed them, each server's URL then, its prices) is its
+// revision's, made when the revision was saved (the server's save lists each granted server once, mcp-gateway.ts
+// mcpPinOf) and read here (store.mcp.pin): a claim never lists a server, and every claim of the run reads the same pin.
+// A granted MCP tool its revision's pin does not hold (a revision written without a save's pin) refuses the claim in
+// words, nothing sent: saving the agent again pins it.
 // At every claim the pin is checked again: a pinned tool that is a meta tool now refuses the claim in words, nothing sent.
 //
 // The credentials. The pinned servers' credentials are unsealed (store/seal.ts openMcpCredential) into this step's
@@ -47,9 +46,9 @@
 // it), waited on only when it has run out. Concurrent calls to one server share one such open.
 import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
-import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
+import { type McpCredentials, type McpPin, mcpNameOf } from "../mcp-gateway.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
-import { boundTool, credentialInQuery, credentialInQueryWords, type McpTool, shownUrl } from "../mcp-probe.js";
+import { credentialInQuery, credentialInQueryWords, shownUrl } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
@@ -444,43 +443,47 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   return { pin, credentials, fresh, release, beforeCall };
 }
 
-/** The run's pin: read, and checked against the meta tools known now; or made at its first claim and written once. */
+/** The run's pin: its revision's, as its save made it, held to the run's grants and checked against the meta tools known
+ *  now; undefined when it grants no MCP tool. A granted tool the pin does not hold refuses the claim in words. */
 async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN }: McpClaimOptions): Promise<McpPin | undefined> {
   // A github_app server anywhere but GitHub's hosted MCP ends the run here, before any token is minted or anything sent:
   // the App's tokens go to GitHub alone (github.ts githubMcpUrl, the one check).
   const offGithub = (server: string, url: string, auth: string | undefined) => {
-    // A URL with a credential in its query (a row saved before the save refused one) ends the run before it is pinned or
-    // anything sent; the URL is never named, its credential with it.
+    // A URL with a credential in its query (a row saved before the save refused one) ends the run before anything is
+    // sent; the URL is never named, its credential with it.
     const inQuery = credentialInQuery(url);
     if (inQuery) throw new McpClaimRefused(`The MCP server ${server} can't be used: ${credentialInQueryWords(inQuery)} Nothing was sent.`);
     if (auth === "github_app" && !githubMcpUrl(url, githubMcpOrigin)) throw new McpClaimRefused(`The MCP server ${server} (${shownUrl(url)}) can't be used: ${GITHUB_MCP_ONLY}. Nothing was sent.`);
   };
-  const stored = await store.mcp.pin(claim.runId);
-  if (stored) {
-    const pinned = stored.body as McpPin;
-    for (const [server, { url, tools }] of Object.entries(pinned)) {
-      for (const tool of tools) if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
-      offGithub(server, url, (await store.mcp.server(server))?.auth);
-    }
-    return pinned;
+  const granted = grants.flatMap((name) => {
+    const parsed = mcpNameOf(name);
+    return parsed ? [{ name, ...parsed }] : [];
+  });
+  if (!granted.length) return undefined;
+  const saved = ((await store.mcp.pin(claim.runId))?.body ?? {}) as McpPin;
+  // Every tool the revision pinned, granted or not, against the meta tools known now (the list grows after a save).
+  for (const [server, { url, tools }] of Object.entries(saved)) {
+    for (const tool of tools) if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
   }
-  if (!grants.some((name) => name.startsWith("mcp:"))) return undefined;
-  const rows = new Map((await store.mcp.servers()).map((row) => [row.name, row]));
-  let made: McpPin;
-  try {
-    made = mcpPinOf(grants, {
-      server: (name) => {
-        const row = rows.get(name);
-        // The registry keeps each tool as its server listed it (input_schema); the pin holds the harnesses' shape.
-        return row && { url: row.url, tools: ((row.tools ?? []) as McpTool[]).map(boundTool), ...(row.prices ? { prices: row.prices as Record<string, number> } : {}) };
-      },
-    });
-  } catch (error) {
-    throw new McpClaimRefused((error as Error).message);
+  // The granted tools alone, keyed by server with no prototype (a server named `constructor` is a server like any other).
+  const pinned: McpPin = Object.create(null);
+  for (const { name, server, tool } of granted) {
+    const at = Object.hasOwn(saved, server) ? saved[server]! : undefined;
+    const listed = at?.tools.find((one) => one.name === tool);
+    if (!at || !listed) throw new McpClaimRefused(`The MCP tool ${name} was not pinned when this agent's revision was saved, so this run cannot call it. Save the agent again to pin it. Nothing was sent.`);
+    const kept = (pinned[server] ??= { url: at.url, tools: [] });
+    if (!kept.tools.some((one) => one.name === listed.name)) kept.tools.push(listed);
+    const price = at.prices && Object.hasOwn(at.prices, listed.name) ? at.prices[listed.name] : undefined;
+    if (price !== undefined) (kept.prices ??= Object.create(null) as Record<string, number>)[listed.name] = price;
   }
-  if (!Object.keys(made).length) return undefined;
-  for (const [server, { url }] of Object.entries(made)) offGithub(server, url, rows.get(server)?.auth);
-  return (await store.mcp.pinOnce(claim as Claim, made)).body as McpPin;
+  for (const [server, { url, tools }] of Object.entries(pinned)) {
+    const row = await store.mcp.server(server);
+    // A server moved to a provider's host since the save: its pinned tool is a meta tool there.
+    for (const tool of tools) if (row && metaToolOf(row.url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+    offGithub(server, url, row?.auth);
+  }
+  // As plain JSON, as the stored pin reads (the harnesses and the run's directory take it as such).
+  return JSON.parse(JSON.stringify(pinned)) as McpPin;
 }
 
 /** The claim still the run's: its epoch unchanged, else Fenced. */

@@ -1,8 +1,9 @@
 // A run's remote MCP servers: the one place every harness's MCP call goes through. A claimed run's spec builds one per
 // claim from its MCP claim step (runner/mcp-run.ts mcpForClaim); pi calls it through the runner's host tools, and a
 // harness with its own MCP client through the session proxy's /mcp/<server> (@parcha/agentrun-kernel/host mcpRoute).
-//  - What a run may call is pinned (mcpPinOf): each granted tool as the server listed it when its owner saved it, and
-//    the server's URL then. A later refresh of the server never changes a running agent's tools.
+//  - What a run may call is pinned (mcpPinOf) when its agent's revision is saved: each granted tool as its server listed
+//    it then, and the server's URL then. A later change or refresh of the server never changes the revision's tools;
+//    saving the agent again pins them anew.
 //  - Its credentials come from the claim step, only for the servers it grants, with each server's URL now, read at every
 //    call and every request: one whose URL is not the pinned one is never sent anything.
 //  - One upstream client per server (the official SDK), connected at its first call; no redirect is followed, so a
@@ -42,7 +43,7 @@ export type McpPin = Record<string, { url: string; tools: McpTool[]; prices?: Re
 /** Each granted server's URL now, and its credential's headers when that URL is the pinned one (the claim step's). */
 export type McpCredentials = Record<string, { url: string; headers?: Record<string, string>; /** Why its saved credential did not open: its calls are refused unsent. */ unopened?: string; /** When its credential ends (ms): a token minted for the run's launch (a github_app server's), whose calls past it are refused unsent, in words. */ expires_at?: number }>;
 
-/** The servers saved on this server, as a claim's pin reads them. */
+/** The servers a save pins from: each one's URL, its tools as it lists them now, and its owner's prices. */
 export interface McpServerSource {
   server(name: string): { url: string; tools: readonly McpTool[]; prices?: Readonly<Record<string, number>> } | undefined;
 }
@@ -108,10 +109,10 @@ export function mcpHeaderProblem(inputSchema: unknown): string | undefined {
   return undefined;
 }
 
-/** The pin of a run granted `names`: each MCP tool among them, as its server's snapshot holds it. Keyed by server name
- *  with no prototype, as every map of names here is: a server named `constructor` is a server like any other. A granted
- *  tool that cannot be pinned (its server no longer saved, the tool gone since a refresh, a header declaration it cannot
- *  send) throws, naming it and why: the run is refused, never started without it. */
+/** The pin of a revision granted `names`: each MCP tool among them, as its server lists it (the save's listing). Keyed by
+ *  server name with no prototype, as every map of names here is: a server named `constructor` is a server like any
+ *  other. A granted tool that cannot be pinned (its server not saved, a tool it does not list, a header declaration it
+ *  cannot send) throws, naming it and why: the save is refused, never kept without it. */
 export function mcpPinOf(names: readonly string[], source: McpServerSource): McpPin {
   const pin: McpPin = Object.create(null);
   for (const name of names) {
@@ -119,9 +120,9 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
     const saved = parsed && source.server(parsed.server);
     const tool = saved?.tools.find((t) => t.name === parsed!.tool);
     if (!parsed) continue;
-    // Gone since the run's check (deleted, or a refresh removed the tool): the run is refused, never started without it.
-    if (!saved) throw new Error(`The MCP tool ${name} cannot be pinned: the MCP server ${parsed.server} is no longer saved.`);
-    if (!tool) throw new Error(`The MCP tool ${name} cannot be pinned: ${parsed.tool} is no longer one of its tools since the last refresh.`);
+    // Gone since the save's check (deleted, or the server stopped listing the tool): the save is refused.
+    if (!saved) throw new Error(`The MCP tool ${name} cannot be pinned: no MCP server ${parsed.server} is saved.`);
+    if (!tool) throw new Error(`The MCP tool ${name} cannot be pinned: the MCP server ${parsed.server} does not list ${parsed.tool}.`);
     // A meta tool granted before the rule (mcp-meta.ts): refused here, never run.
     const meta = metaToolOf(saved.url, tool.name);
     if (meta) throw new Error(`${name} can't be granted: ${meta.reason}`);

@@ -1,4 +1,4 @@
-// The store's one schema, version 11 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// The store's one schema, version 12 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
 // store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
 // version 3 numbers each save of a sign-in (sign_ins.save); version 4 stamps an MCP token's end (mcp_servers.token_until);
@@ -8,7 +8,8 @@
 // run-change feed (run_changes), each channel post's tries (channel_attempts) and the claim a post's try settles under
 // (channel_posts.claim); version 9 adds where a live viewer answers (computer_viewers.host, a runner's live host,
 // live-reach.ts); version 10 pairs a person's own computer (paired_computers, pairing_codes); version 11 keeps a command's answer
-// (commands.answer).
+// (commands.answer); version 12 pins an agent's MCP tools on its revision when it is saved (revisions.mcp_pin), in place of
+// each run's pin at its first claim (the mcp_pins table, gone).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -16,11 +17,11 @@
 // STORE_DDL is the control plane and the runs: agents and revisions (with a template's package), runs (state, the claim's
 // epoch, runner, claimed_until and wake_at, cost, metrics, summary), commands, idempotency, triggers (their scopes,
 // firings, conversations and settings), the channel outbox and told ledger, the review ledger, settings, sealed keys,
-// learning state, the MCP registry, pending MCP sign-ins, each run's MCP pin, and the computer ledger. PI_DDL is pi-durable's
+// learning state, the MCP registry, pending MCP sign-ins, and the computer ledger. PI_DDL is pi-durable's
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -61,6 +62,8 @@ export const STORE_DDL: readonly string[] = [
   // read and copied whole with its files. Null is none (a revision with no skills).
   // `parent_id`: the revision that was the agent's current one when this revision was committed (null for its first), kept
   // for the v2 revisions view. `note`: the optional note a revision was committed with (the v2 note), null for none.
+  // `mcp_pin`: the MCP tools the revision grants, as their servers listed them when it was saved (mcp-gateway.ts McpPin:
+  // per server its URL then, the granted tools, their prices), which every run of it calls; null when it grants none.
   `CREATE TABLE IF NOT EXISTS revisions (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents (id),
@@ -71,7 +74,8 @@ export const STORE_DDL: readonly string[] = [
     ${json("package", true)},
     note TEXT,
     external_version TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    ${json("mcp_pin", true)}
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS revisions_by_agent ON revisions (agent_id, created_at)`,
   // `external_version`: for a revision of an externally owned agent, the version it maps there (one revision per version),
@@ -424,11 +428,6 @@ export const STORE_DDL: readonly string[] = [
     -- The sign-in's non-secret working state the callback rebuilds (url, was, scope, kind, discovery, resource): no secret.
     ${json("working", true)},
     expires_at INTEGER NOT NULL
-  ) STRICT`,
-  `CREATE TABLE IF NOT EXISTS mcp_pins (
-    run_id TEXT PRIMARY KEY REFERENCES runs (id),
-    ${json("body")},
-    pinned_at INTEGER NOT NULL
   ) STRICT`,
 
   // A run's launch record: the one body the server writes when it starts a run (start = INSERT run), read by the runner at

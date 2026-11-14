@@ -1,6 +1,7 @@
 // The runner's MCP claim step (runner/mcp-claim.ts, mcpClaim), once per claim before the loop starts, on the real store
-// with a fake MCP server and a fake OAuth server: the run's pin written once, at its first claim, in its own fenced store
-// transaction, and never rewritten; re-checked at every claim (a pinned meta tool refuses the claim in words, nothing
+// with a fake MCP server and a fake OAuth server: the run's pin is its revision's, made at the agent's save, read at every
+// claim and never made there (no claim lists a server); a granted tool it does not hold refuses the claim in words;
+// re-checked at every claim (a pinned meta tool refuses the claim in words, nothing
 // sent); the pinned servers' credentials unsealed into the loop's memory only (never into a journal entry, a command
 // row or a log line), and dropped at release or when the claim's signal aborts; one fresh()
 // hook that refreshes an expired OAuth token (bounded, its calls refused unsent in words when the sign-in server is
@@ -37,13 +38,17 @@ const quick = { requestMs: 200, tries: 2 };
 const sealed = (name, url, credential) => sealMcpCredential(KEY, name, credential, url);
 const headersCredential = (url, name = "fake") => sealed(name, url, { type: "headers", headers: { authorization: `Bearer ${TOKEN}` } });
 
-/** A store with run-1 queued and claimed, and the fake MCP server saved under "fake" (with `tools`, sealed as `seal`). */
+/** The pin an agent's save makes of the fake server's `tools`: its URL then and each tool in the harnesses' shape. */
+const pinFor = (url, tools = [ADD]) => ({ fake: { url, tools } });
+
+/** A store with the fake MCP server saved under "fake" (with `tools`, sealed as `seal`), and run-1 queued and claimed,
+ *  of a revision whose save pinned those tools. */
 async function setUp(t, { tools = [ADD], seal = headersCredential, mcp } = {}) {
   const opened = await storeOn(t);
   const fake = mcp ?? (await startFakeMcp({ token: TOKEN }));
   if (!mcp) t.after(() => fake.close());
   await opened.store.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools: tools.map(listed), sealed: seal(fake.url) });
-  await queued(opened.store, "run-1");
+  await queued(opened.store, "run-1", { mcpPin: pinFor(fake.url, tools) });
   const claim = await opened.store.claim("run-1", "runner-a", { leaseMs: LEASE });
   return { ...opened, fake, claim };
 }
@@ -52,42 +57,50 @@ const claimOf = (store, claim, grants, extra = {}) => mcpClaim({ loopback: true,
 const calls = (fake) => fake.log.filter((entry) => entry.method === "tools/call");
 const bearer = (step) => step.credentials.fake?.headers?.authorization;
 
-test("M1: the pin is written once, at the first claim, the granted tool as its server listed it, and a later claim reads it as written though the registry changed", async (t) => {
+test("M1: the claim reads the pin its revision's save made, the granted tool as its server listed it, never listing the server, and a later claim reads it as saved though the registry changed", async (t) => {
   const { store, clock, fake, claim } = await setUp(t);
   const first = await claimOf(store, claim, ["mcp:fake/add"]);
   // The server's url and the granted tool in the harnesses' shape (inputSchema), every field its server listed.
   const expected = { fake: { url: fake.url, tools: [{ name: "add", title: "Add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } }] } };
   assert.deepEqual(JSON.parse(JSON.stringify(first.pin)), expected, "the pin of the granted tools");
-  assert.deepEqual((await store.mcp.pin("run-1"))?.body, expected, "written to the run's pin row");
+  assert.deepEqual((await store.mcp.pin("run-1"))?.body, expected, "the run's revision's pin");
+  assert.deepEqual(fake.log.filter((entry) => entry.method === "tools/list"), [], "the claim listed nothing");
   first.release();
   // The registry changes (the tool is gone, another listed); the run's next claim reads its pin as written.
   await store.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools: [listed(DELETE)], sealed: headersCredential(fake.url) });
   clock.now = T0 + LEASE + 1;
   const next = await store.claim("run-1", "runner-b", { leaseMs: LEASE });
   const second = await claimOf(store, next, ["mcp:fake/add"]);
-  assert.deepEqual(JSON.parse(JSON.stringify(second.pin)), expected, "never rewritten");
+  assert.deepEqual(JSON.parse(JSON.stringify(second.pin)), expected, "the revision's pin, unchanged");
   assert.deepEqual((await store.mcp.pin("run-1"))?.body, expected);
 });
 
-test("M2: a run that grants no mcp: tool has no pin row", async (t) => {
-  const { store, claim } = await setUp(t);
+test("M2: a run that grants no mcp: tool has no pin, and a revision saved with none has no pin row", async (t) => {
+  const { store, fake, claim } = await setUp(t);
   const step = await claimOf(store, claim, ["read", "write"]);
   assert.equal(step.pin, undefined);
-  assert.equal(await store.mcp.pin("run-1"), undefined);
+  assert.deepEqual(fake.log, [], "nothing was sent");
+  await queued(store, "run-2");
+  assert.equal(await store.mcp.pin("run-2"), undefined);
 });
 
 test("M3: a pinned tool that is a meta tool now refuses the claim in words, and the MCP server receives nothing", async (t) => {
+  // A revision pinned before the tool was known as a meta tool (the list grows after agents are saved).
   const { store, fake, claim } = await setUp(t, { tools: [META] });
-  // A pin made before the tool was known as a meta tool (the list grows after runs are pinned).
-  await store.mcp.pinOnce(claim, { fake: { url: fake.url, tools: [META] } });
   await assert.rejects(claimOf(store, claim, ["mcp:fake/COMPOSIO_MULTI_EXECUTE_TOOL"]), (error) => error instanceof McpClaimRefused && error.message === `mcp:fake/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${META_REASON}`);
   assert.deepEqual(fake.log, [], "nothing was sent");
 });
 
-test("M4: a pin that cannot be made refuses the first claim in words, and no pin row is written", async (t) => {
-  const { store, claim } = await setUp(t);
-  await assert.rejects(claimOf(store, claim, ["mcp:gone/add"]), (error) => error instanceof McpClaimRefused && error.message === "The MCP tool mcp:gone/add cannot be pinned: the MCP server gone is no longer saved.");
-  assert.equal(await store.mcp.pin("run-1"), undefined);
+test("M4: a granted tool the revision's pin does not hold refuses the claim in words, nothing listed or sent", async (t) => {
+  const { store, fake, claim } = await setUp(t);
+  const unpinned = (name) => `The MCP tool ${name} was not pinned when this agent's revision was saved, so this run cannot call it. Save the agent again to pin it. Nothing was sent.`;
+  await assert.rejects(claimOf(store, claim, ["mcp:gone/add"]), (error) => error instanceof McpClaimRefused && error.message === unpinned("mcp:gone/add"));
+  await assert.rejects(claimOf(store, claim, ["mcp:fake/add", "mcp:fake/delete_thing"]), (error) => error instanceof McpClaimRefused && error.message === unpinned("mcp:fake/delete_thing"));
+  // A run of a revision saved with no pin at all (granting before saves pinned) is refused the same way.
+  await queued(store, "run-2");
+  const other = await store.claim("run-2", "runner-b", { leaseMs: LEASE });
+  await assert.rejects(claimOf(store, other, ["mcp:fake/add"]), (error) => error instanceof McpClaimRefused && error.message === unpinned("mcp:fake/add"));
+  assert.deepEqual(fake.log, [], "nothing was listed or sent");
 });
 
 test("M5: the claim and its gateway's call write no byte of the credential: not in the store file, its WAL or a log line", async (t) => {
@@ -219,10 +232,10 @@ test("M8: a claim lost while its refresh waited never starts its loop: fresh() r
   const hold = oauth.holdNext();
   // Its outcome kept from the start: whenever it settles, nothing is left unhandled.
   const pending = claimOf(store, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 60_000, tries: 1 } }).then(() => "started", (error) => error);
-  // The pin is written and the refresh is in flight (its request granted, its answer held): only then does the claim
+  // The pin is read and the refresh is in flight (its request granted, its answer held): only then does the claim
   // lapse and another runner take the run, to completion, so it is the confirm after the refresh that finds it gone.
   await hold.granted;
-  assert.ok(await store.mcp.pin("run-1"), "the pin was written under the claim before the refresh");
+  assert.ok(await store.mcp.pin("run-1"), "the run's pin is its revision's");
   clock.now = T0 + LEASE + 1;
   assert.ok(await store.claim("run-1", "runner-b", { leaseMs: LEASE }));
   hold.answer();
@@ -272,9 +285,9 @@ test("M10: a token still valid but near its expiry never holds the claim: it is 
 });
 
 test("M13: two claims refreshing the same expired token at once make one network refresh, and both get the winner's token", async (t) => {
-  const { store, oauth, claim } = await oauthSetUp(t, { expiresAt: T0 - 1_000 });
+  const { store, oauth, claim, fake } = await oauthSetUp(t, { expiresAt: T0 - 1_000 });
   // A second run of another agent's runner, granted the same server, claimed at the same time.
-  await queued(store, "run-2");
+  await queued(store, "run-2", { mcpPin: pinFor(fake.url) });
   const other = await store.claim("run-2", "runner-b", { leaseMs: LEASE });
   const [a, b] = await Promise.all([claimOf(store, claim, ["mcp:fake/add"], { now: () => T0 }), claimOf(store, other, ["mcp:fake/add"], { now: () => T0 })]);
   assert.equal(refreshes(oauth), 1, "one refresh: a rotated refresh token is never spent twice");

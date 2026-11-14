@@ -182,17 +182,24 @@ test("a tool whose schema Codex would drop or retype (a not) is refused on codex
   assert.equal((await retried(api)("POST", "/agents",agent("codex-name", { harness: "codex", tools: ["mcp:fake/name"] }))).status, 201, "codex takes a bound it only strips");
 });
 
-test("a tool whose header declaration a refresh made unsendable refuses the run in words, naming it, and nothing is sent", { timeout: 90_000 }, async (t) => {
+test("a tool whose header declaration the server made unsendable since: saving the agent again is refused in words, naming it, the revision keeps its pin, and nothing is sent", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await startFakeMcp({ token: TOKEN });
   fake.tools.tagged = { description: "Tagged.", input: { type: "object", properties: { region: { type: "string", "x-mcp-header": "Region" } } }, run: () => ({ content: [{ type: "text", text: "ok" }] }) };
   await addFake(t, api, "fake", fake);
   assert.equal((await retried(api)("POST", "/agents",agent("tagged", { tools: ["mcp:fake/tagged"], tool_settings: ALLOW_FAKE }))).status, 201);
+  const before = (await api("GET", "/agents/tagged")).body;
   fake.tools.tagged.input = { type: "object", properties: { region: { type: "object", "x-mcp-header": "Region" } } };
   assert.equal((await api("POST", "/settings/mcp-servers/fake/refresh")).status, 200);
-  const refused = await api("POST", "/agents/tagged/runs", { input: { content: 'Call mcp__fake__tagged with {"region":{}}' } });
-  assert.equal(refused.status, 409, JSON.stringify(refused.body));
-  assert.match(refused.body.error?.message ?? "", /tool tagged declares a header it cannot send: region: x-mcp-header is only allowed on a string, integer or boolean/);
+  const definition = { ...before.definition };
+  delete definition.version;
+  // The save lists the server again to re-pin it: the tool it lists now cannot be sent, so the save is refused.
+  const refused = await api("PUT", "/agents/tagged/definition", { definition });
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.match(JSON.stringify(refused.body), /tool tagged declares a header it cannot send: region: x-mcp-header is only allowed on a string, integer or boolean/);
+  const after = (await api("GET", "/agents/tagged")).body;
+  assert.deepEqual([after.revision, after.mcp_pin], [before.revision, before.mcp_pin], "the revision and its pin as saved");
+  assert.equal(after.mcp_pin.fake.tools[0].input_schema.properties.region.type, "string", "pinned as it was sendable");
   assert.equal(calls(fake).length, 0);
 });
 
@@ -389,11 +396,12 @@ test("pi: a saved credential that can't be opened refuses the call before anythi
   const open = await startFakeMcp({});
   t.after(() => open.close());
   assert.equal((await api("PUT", "/settings/mcp-servers/open", { url: open.url, auth: { type: "none" } })).status, 200);
+  // Saved (and pinned) while the credential opens; damaged at rest after.
+  assert.equal((await retried(api)("POST", "/agents",agent("unopened", { tools: ["mcp:fake/add", "mcp:open/add"], tool_settings: { ...ALLOW_FAKE, "mcp:open/*": { permission: "allow" } } }))).status, 201);
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   t.after(() => store.close().catch(() => undefined));
   const row = await store.mcp.server("fake");
   await store.mcp.put({ name: row.name, url: row.url, auth: row.auth, protocol: row.protocol, tools: row.tools, serverInfo: row.serverInfo, instructions: row.instructions, sealed: sealMcpCredential(randomBytes(32), "fake", { type: "headers", headers: { authorization: `Bearer ${TOKEN}` } }, row.url) });
-  assert.equal((await retried(api)("POST", "/agents",agent("unopened", { tools: ["mcp:fake/add", "mcp:open/add"], tool_settings: { ...ALLOW_FAKE, "mcp:open/*": { permission: "allow" } } }))).status, 201);
   const before = fake.log.length;
   const runId = await runOf(api, "unopened", 'Call mcp__fake__add with {"a":2,"b":3}');
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
@@ -546,13 +554,13 @@ test("codex: a run killed mid-call shows the call's row while it runs and its in
 test("codex: a call refused before anything is sent lists its call row before its failed result, as a sent call does", { timeout: 90_000 }, async (t) => {
   const { api, data } = await codexServe(t);
   await addFake(t, api);
-  // The sealed bearer damaged at rest (the registry's store row, as one sealed under another seal key reads): the gateway
-  // refuses the call at once, unsent.
+  assert.equal((await retried(api)("POST", "/agents",agent("codex-refused", { harness: "codex", tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
+  // The sealed bearer damaged at rest after the save pinned the tool (the registry's store row, as one sealed under
+  // another seal key reads): the gateway refuses the call at once, unsent.
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   t.after(() => store.close().catch(() => undefined));
   const row = await store.mcp.server("fake");
   await store.mcp.put({ name: row.name, url: row.url, auth: row.auth, protocol: row.protocol, tools: row.tools, serverInfo: row.serverInfo, instructions: row.instructions, sealed: sealMcpCredential(randomBytes(32), "fake", { type: "headers", headers: { authorization: `Bearer ${TOKEN}` } }, row.url) });
-  assert.equal((await retried(api)("POST", "/agents",agent("codex-refused", { harness: "codex", tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
   const runId = await runOf(api, "codex-refused", 'mcp fake add {"a":2,"b":3}');
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));

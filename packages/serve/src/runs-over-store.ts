@@ -576,7 +576,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   try {
     return await withHeldFiles(deps, runId, launch, () => store.runs.createInline({
       agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
-      revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}) },
+      revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}), ...(revision.mcpPin !== undefined ? { mcpPin: revision.mcpPin } : {}) },
       run: { id: runId, ...(origin ? { origin } : {}) },
       launch: { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId) } : {}) },
     }));

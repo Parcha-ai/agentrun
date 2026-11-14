@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { queued, storeOn, T0 } from "./store-helpers.mjs";
+import { queued, registryPin, storeOn, T0 } from "./store-helpers.mjs";
 
 const { checkPrivateHosts, MCP_PRIVATE_HOSTS_KEY, privateOAuthHosts, savePrivateOAuthHosts } = await import("../dist/mcp-private-hosts.js");
 const { refreshed } = await import("../dist/mcp-oauth.js");
@@ -217,7 +217,7 @@ test("the runner's refresh reads the setting from the store: unlisted, the call 
   const url = "https://mcp.example.test/mcp";
   const set = setAt(`https://${AS}/token`, T0 - 1_000);
   await store.mcp.put({ name: "corp", url, auth: "oauth", tools: [{ name: "add", inputSchema: { type: "object" } }], sealed: sealMcpCredential(KEY, "corp", { type: "oauth", set }, url) });
-  await queued(store, "run-1");
+  await queued(store, "run-1", { mcpPin: await registryPin(store) });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const network = networkOf({ [AS]: ["10.20.30.40"] });
   const claimOf = () => mcpClaim({ store, claim, grants: ["mcp:corp/add"], sealKey: KEY, signal: new AbortController().signal, bounds: { requestMs: 500, tries: 2 }, now: () => T0, network });

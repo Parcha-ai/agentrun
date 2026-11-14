@@ -382,6 +382,29 @@ const TOOL_SETTINGS_ANSWER = {
   properties: Object.fromEntries(PICKABLE.map((name) => [name, { type: "object", additionalProperties: false, required: ["provider"], properties: { provider: { enum: [...PROVIDERS[name]] }, permission: PERMISSION } }])),
   additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN } },
 };
+/** A revision's MCP pin as the API shows it (agents-store.ts pinView): per server, the granted tools as its save listed
+ *  them and their prices; never the server's URL. */
+const MCP_PIN = {
+  type: ["object", "null"],
+  additionalProperties: {
+    type: "object", additionalProperties: false, required: ["tools"],
+    properties: {
+      tools: {
+        type: "array",
+        items: {
+          type: "object", additionalProperties: false, required: ["name", "input_schema"],
+          properties: {
+            name: { type: "string" }, title: { type: "string" }, description: { type: "string" },
+            input_schema: { type: "object", description: "The tool's input schema as the server listed it at the save." },
+            annotations: { type: "object", description: "The tool's annotations as the server listed them at the save (readOnlyHint, destructiveHint and the rest)." },
+          },
+        },
+      },
+      prices: { type: "object", additionalProperties: { type: "number", minimum: 0 }, description: "The price in USD its owner set for each pinned tool that has one." },
+    },
+  },
+  "x-agentrun-serve": "mcppin/1",
+};
 /** GET /agents/{agent_id}'s `tools`: each tool the agent's current revision grants, in capabilities.tools' order; one
  *  with a provider choice with the provider in force, where it came from, the server's (its default), and what it
  *  resolves to on the agent's harness and model; a tool of bash's family its computer leaves out, unavailable. */
@@ -1445,6 +1468,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
                   revision: { type: "string" }, version: { type: "integer", minimum: 1 }, parent: { type: ["string", "null"] },
                   kind: { type: "string", enum: ["agentic", "workflow"] }, current: { type: "boolean" }, note: { type: ["string", "null"] },
                   created_at: ref("schemas/Timestamp"), definition: ref("schemas/Definition"),
+                  mcp_pin: { ...MCP_PIN, description: "The MCP tools this revision grants, as its save pinned them: every run of it calls these. Null when it grants none." },
                 },
               },
             },
@@ -2578,6 +2602,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       },
       "x-agentrun-serve": "serve/1",
     },
+    mcp_pin: { ...MCP_PIN, description: "The MCP tools the current revision grants, pinned when it was saved: per server, each granted tool as the server listed it then (name, title, description, input schema, annotations) and the prices its owner set. Every run of the revision calls these, whatever the server lists by then; a call the server no longer takes as pinned is the server's to refuse. Saving the agent again lists the servers and pins them anew (a new revision when they changed). Null when the revision grants no MCP tool, or the agent has none." },
     own_computer: {
       oneOf: [
         {

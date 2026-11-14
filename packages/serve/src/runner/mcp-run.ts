@@ -1,7 +1,7 @@
 // A claimed run's remote MCP servers on the runner (tl-mcp's note, sections 4 to 6). A spec builder calls mcpForClaim once
 // per claim, inside the adapter loop's spec step: after the loop's Gate and Harness are open, before its session. It runs
-// the claim step (mcp-claim.ts: the pin made at the first claim or read as written, checked against the meta tools known
-// now, the pinned servers' credentials opened into this claim's memory) and builds ONE gateway (mcp-gateway.ts) for the
+// the claim step (mcp-claim.ts: the pin its revision's save made, read and checked against the meta tools known now, the
+// pinned servers' credentials opened into this claim's memory) and builds ONE gateway (mcp-gateway.ts) for the
 // claim, never shared with another, reading those credentials live. The builder puts what it returns in its spec
 // (AdapterRunSpec.mcp); the loop does the rest:
 // - pi (no MCP client of its own) gets one host tool per pinned tool (`tools`), under its wire name with the pinned
@@ -102,7 +102,7 @@ export interface ClaimMcp {
 
 const said = (text: string, isError = false): McpCallResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
 
-/** The run's MCP for one claim: undefined when it grants no MCP tool. Throws McpClaimRefused (a pin that cannot be made,
+/** The run's MCP for one claim: undefined when it grants no MCP tool. Throws McpClaimRefused (a granted tool its pin lacks,
  *  a pinned tool that is a meta tool now: the loop ends the run in those words, before its session opens) or Fenced (the
  *  claim lost while a refresh was awaited: the loop ends interrupted). A builder calls it before it takes anything it
  *  would have to let go, since a throw here leaves its spec unbuilt and its release uncalled. */

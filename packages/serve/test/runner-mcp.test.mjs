@@ -52,12 +52,22 @@ const lastResult = (sent) => {
   return typeof content === "string" ? content : (content ?? []).map((part) => part.text ?? "").join("");
 };
 
+/** The pin the agent's save makes on its revision (server.ts, mcp-gateway.ts mcpPinOf): each granted tool of "fake" as
+ *  the server lists it, with its price; none when it grants no MCP tool. */
+function savePin({ url, tools, prices, grants }) {
+  const names = grants.flatMap((name) => (name.startsWith("mcp:fake/") ? [name.slice("mcp:fake/".length)] : []));
+  const pinned = tools.filter((tool) => names.includes(tool.name));
+  if (!pinned.length) return undefined;
+  const priced = Object.fromEntries(Object.entries(prices ?? {}).filter(([name]) => names.includes(name)));
+  return { fake: { url, tools: pinned, ...(Object.keys(priced).length ? { prices: priced } : {}) } };
+}
+
 /**
- * A store with the fake MCP server saved as "fake" and run-1 queued, and a runner on the adapter loop running pi on
+ * A store with the fake MCP server saved as "fake" and run-1 queued (its revision pinned as its save would), and a runner on the adapter loop running pi on
  * `script` with the run's MCP (`grants`), its gate the tool gate's permissions over `settings` (an mcp: tool asks by
  * default). Runs until the run is not running, or `until(row)` says so.
  */
-async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, onCommand, network, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, launchSealed, held, timing = STEADY, opened = [], serverNow, inspect, beforeIntent = async () => {} }) {
+async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, pin = savePin, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, onCommand, network, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, launchSealed, held, timing = STEADY, opened = [], serverNow, inspect, beforeIntent = async () => {} }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-"));
   // `serverNow`: the test's own handle on the store reads its clock (a claim taken over when it is moved past the lease);
   // the runner's handle keeps the wall clock.
@@ -73,7 +83,9 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
     rmSync(dir, { recursive: true, force: true });
   });
   await server.mcp.put({ name: "fake", url: fake.url, auth, tools: tools.map(listed), ...(prices ? { prices } : {}), sealed: auth === "github_app" || auth === "per_run" ? null : seal(fake.url) });
-  await server.agents.create({ id: "agent-1", name: "Mcp" }, { id: "rev-1", kind: "agentic", body: {} });
+  // The revision as the agent's save made it: the granted tools pinned on it, as the server listed them then.
+  const mcpPin = pin({ url: fake.url, tools, prices, grants });
+  await server.agents.create({ id: "agent-1", name: "Mcp" }, { id: "rev-1", kind: "agentic", body: {}, ...(mcpPin ? { mcpPin } : {}) });
   // `launchSealed(url)`: the run's launch row, its sealed column what the server's start writes for a run's mcp_auth.
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, ...(launchSealed ? [{ body: { input: { content: "go" }, title: "go", place: { mode: "runner" } }, sealed: launchSealed(fake.url) }] : []));
   await before?.({ server, store, fake });
@@ -243,13 +255,8 @@ test("R7: a pinned tool that is a meta tool now refuses the claim in words: the 
   const { row, sent, fake } = await mcpRun(t, {
     script,
     grants: ["mcp:fake/COMPOSIO_MULTI_EXECUTE_TOOL"],
+    // A revision pinned before the tool was known as a meta tool (the list grows after agents are saved).
     tools: [META],
-    // A pin made before the tool was known as a meta tool (the list grows after runs are pinned).
-    before: async ({ server, fake }) => {
-      const claim = await server.claim("run-1", "runner-earlier", { leaseMs: 60_000 });
-      await server.mcp.pinOnce(claim, { fake: { url: fake.url, tools: [META] } });
-      await server.release(claim);
-    },
   });
   assert.equal(row.state, "failed", JSON.stringify(row));
   assert.equal(row.summary, `mcp:fake/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${META_REASON}`);
@@ -396,7 +403,7 @@ test("R11: a command row handed to a running loop makes its MCP credentials fres
   assert.deepEqual(events, ["request", "tool", "token", "request"], "the run-out token refreshed before the next request");
 });
 
-test("R12: a resumed claim calls the tools its run was pinned with, read as written, after the registry changed", async (t) => {
+test("R12: a resumed claim calls the tools its revision was pinned with, read as saved, after the registry changed", async (t) => {
   const script = [{ call: "mcp__fake__add", args: { a: 4, b: 5 } }, { sayLastResult: true }];
   const run = await mcpRun(t, { script, grants: ["mcp:fake/add"] });
   assert.equal(run.row.state, "parked", JSON.stringify(run.row));
@@ -408,7 +415,7 @@ test("R12: a resumed claim calls the tools its run was pinned with, read as writ
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(lastResult(run.sent), "9", "the pinned tool ran");
   assert.equal(toolCalls(run.fake, "add").length, 1, "once");
-  assert.deepEqual((await run.server.mcp.pin("run-1")).body.fake.tools.map((tool) => tool.name), ["add"], "the pin row is as written");
+  assert.deepEqual((await run.server.mcp.pin("run-1")).body.fake.tools.map((tool) => tool.name), ["add"], "the revision's pin is as saved");
 });
 
 test("R13: a claim lost while a call is out drops the gateway's credentials at once: the call is cut upstream, a late call sends nothing, and the next claim never sends it again", async (t) => {

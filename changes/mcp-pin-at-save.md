@@ -1,0 +1,11 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-client, @parcha/agentrun
+kind: breaking
+---
+An agent's MCP tools are pinned when the agent is saved, not when a run starts.
+- Saving an agent (POST /agents, PUT /agents/{agent_id}/definition, an inline agent's first run of a version, a template's apply) lists each MCP server it grants a tool of, once, and keeps the granted tools on the new revision as the server listed them: name, title, description, input schema, annotations, and the prices set for them. Every run of that revision calls those tools, whatever the server lists by then. A call the server no longer takes as pinned is the server's to refuse, as before.
+- A save is refused (422, on the tool's field) when a granted server can't be listed right now (`The MCP server <name> could not be listed to pin its tools: ...`), or no longer lists a granted tool (`The MCP server <name> has no tool <tool>; ...`). Nothing is saved: save again once the server answers. A server that keeps no credential of its own (`per_run`), or an OAuth server whose access token only a run refreshes, and that refuses the listing for its credential, is pinned as its last save or refresh listed it.
+- Saving the agent again re-pins: an unchanged definition saved after a server changed a granted tool is a new revision with the new tools; saved again with nothing changed, no revision.
+- GET /agents/{agent_id} and GET /agents/{agent_id}/revisions show the pin as `mcp_pin`: per server, the pinned tools and their prices (never the server's URL); null when the revision grants no MCP tool.
+- A run no longer lists an MCP server at its first claim. A run of a revision that grants an MCP tool its pin does not hold is refused before it starts (409 agent_not_runnable), and at its claim, saying to save the agent again.
+- **Breaking for a SQLite data directory.** The store's SQLite schema is now version 12 (a revision keeps its MCP pin; the per-run pin table is gone). A server or runner of this release refuses a data directory an earlier release set up, with `SchemaVersionUnknown`: start this release on a new, empty data directory and add your agents, MCP servers, keys and sign-ins there again, or keep the old directory with the earlier release. A Postgres store migrates itself (migration 0010).

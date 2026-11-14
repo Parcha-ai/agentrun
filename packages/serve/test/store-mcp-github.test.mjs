@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { queued, storeOn } from "./store-helpers.mjs";
+import { queued, registryPin, storeOn } from "./store-helpers.mjs";
 
 /** A tool as the registry keeps it: as its server listed it (input_schema). */
 const listed = ({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema });
@@ -36,7 +36,7 @@ async function setUp(t, { answers = [] } = {}) {
   const opened = await storeOn(t);
   const { store, clock } = opened;
   await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [listed(ADD)], sealed: null });
-  await queued(store, "run-1");
+  await queued(store, "run-1", { mcpPin: await registryPin(store) });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const mints = [];
   const mint = async (target) => {

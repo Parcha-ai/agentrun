@@ -1,5 +1,5 @@
 // The store's one schema: every table the rewrite's modules write (A's runs and commands, E's triggers and the channel
-// outbox, the review ledger, the MCP registry and pins, idempotency, the computer ledger), every time an INTEGER epoch ms,
+// outbox, the review ledger, the MCP registry, each revision's MCP pin, idempotency, the computer ledger), every time an INTEGER epoch ms,
 // and foreign keys enforced. A run update can carry rows in the same commit (a journal commit's staged patch: the outbox),
 // and a fenced one writes none of them.
 import assert from "node:assert/strict";
@@ -14,7 +14,7 @@ import { queued, storeOn, T0 } from "./store-helpers.mjs";
 import { raw, sqliteOnly } from "./store-target.mjs";
 
 const TABLES = [
-  "agents", "channel_attempts", "channel_posts", "channel_told", "commands", "computer_ledger", "computer_viewers", "idempotency", "learning", "learning_proposals", "mcp_oauth_pending", "mcp_pins",
+  "agents", "channel_attempts", "channel_posts", "channel_told", "commands", "computer_ledger", "computer_viewers", "idempotency", "learning", "learning_proposals", "mcp_oauth_pending",
   "mcp_servers", "paired_computers", "pairing_codes", "review_ledger", "revisions", "run_changes", "run_launch", "run_live", "run_origins", "runs", "sealed_keys", "settings", "sign_in_tombstones", "sign_ins", "store_meta",
   "trigger_conversations", "trigger_firings", "trigger_scopes", "trigger_settings", "triggers",
 ];
@@ -43,6 +43,7 @@ test("the schema has every table, and every time column is an INTEGER", async (t
     assert.ok(times.some(([table, name]) => table === "runs" && name === "wake_at"), "runs.wake_at");
     assert.ok(times.some(([table, name]) => table === "runs" && name === "left_running_at"), "runs.left_running_at (the Browserbase settle window reads it)");
     assert.ok((await columnsOf("revisions")).some((column) => column.name === "package"), "revisions.package");
+    assert.ok((await columnsOf("revisions")).some((column) => column.name === "mcp_pin"), "revisions.mcp_pin (an agent's MCP tools, pinned at its save)");
     assert.ok((await columnsOf("commands")).some((column) => column.name === "refused"), "commands.refused");
     // An externally owned agent keeps its source reference; each of its revisions keeps the external version it maps.
     assert.ok((await columnsOf("agents")).some((column) => column.name === "external_ref"), "agents.external_ref");
