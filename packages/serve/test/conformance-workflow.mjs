@@ -70,6 +70,8 @@ export function workflowSubject() {
   const cut = "a workflow has no free-text model answer for an output limit to cut: its model nodes deliver a record through the submit tool, and the suite's `say` steps (a model's text answer) are left out of the workflow";
   return {
     name: "workflow",
+    // A workflow's calls are its DSL's, never a model's tools_search, tools_call or codemode.
+    metaTools: false,
     createLoop(setup) {
       const workflow = workflowOfScript(setup.script);
       const runEffect = runEffectOf(setup);

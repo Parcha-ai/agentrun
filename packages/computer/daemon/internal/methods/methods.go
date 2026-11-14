@@ -93,6 +93,9 @@ type HelloResult struct {
 	// root) or "userns-netns" (made inside a user namespace of its own, where root may not make one); absent when its
 	// programs have no network of their own.
 	Fence string `json:"fence,omitempty"`
+	// Features is what this computer's groups can do here past each group's methods, by the names in protocol.ts's
+	// FEATURES: a desktop's screen.watch takes an ask ahead (screen.ahead).
+	Features map[string]bool `json:"features,omitempty"`
 }
 
 type ExecRunParams struct {
@@ -119,10 +122,12 @@ func Handlers(version string, table *process.Table, options Options) map[string]
 	handlers := map[string]rpc.Handler{
 		"hello": func(context.Context, json.RawMessage) (any, error) {
 			kind, groups, name := Kind, slices.Clone(Groups), ""
+			var features map[string]bool
 			if extra := display.Groups(); len(extra) > 0 {
 				kind, groups, name = "desktop", append(groups, extra...), display.Name()
+				features = map[string]bool{"screen.ahead": true}
 			}
-			return HelloResult{Protocol: ProtocolVersion, Version: version, OS: runtime.GOOS, Kind: kind, Arch: runtime.GOARCH, Groups: groups, Display: name, Fence: options.Fence}, nil
+			return HelloResult{Protocol: ProtocolVersion, Version: version, OS: runtime.GOOS, Kind: kind, Arch: runtime.GOARCH, Groups: groups, Display: name, Fence: options.Fence, Features: features}, nil
 		},
 		"ping": func(context.Context, json.RawMessage) (any, error) {
 			return struct{}{}, nil

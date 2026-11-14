@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
+import { withToolSearch } from "./fixtures/claude-tool-search.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { agent, call, clientOwnerSession, follow, scratch, serve as serveOf, whenFree, withEnv } from "./support.mjs";
@@ -89,12 +90,13 @@ async function setup(t, harness, { tool = "add", args = { a: 2, b: 3 } } = {}) {
   if (harness === "claude-agent") {
     const anthropic = await fakeAnthropic({
       // A model that answers from the call's result wherever the conversation holds it: on a resume the CLI goes on
-      // past the parked call's result (written into its transcript before it starts) with a turn of its own.
-      reply: (request) => {
+      // past the parked call's result (written into its transcript before it starts) with a turn of its own. The MCP tool
+      // is deferred behind the CLI's ToolSearch: the model finds it first (withToolSearch).
+      reply: withToolSearch((request) => {
         const said = resultIn(request.messages);
         if (said !== undefined) return { text: `The tool said: ${said}` };
         return request.tools.includes(`mcp__hands__mcp__fake__${tool}`) ? { tool: { name: `mcp__hands__mcp__fake__${tool}`, input: args } } : { text: "Noted." };
-      },
+      }),
     });
     t.after(() => anthropic.close());
     const saved = { ...process.env };

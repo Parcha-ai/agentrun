@@ -6,58 +6,88 @@ import { SecretOnce } from "@/components/Schedules";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { Input } from "@/components/ui/field";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { grantsOf, issuesAt, needsOf, paramHelp, paramIssueWords, paramLabel, parameterField, parameterFields, parametersOf, paramValid, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
-import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
+import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateImported, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
 
-/** The server's templates (GET /v2/templates): the list (no `name`), or one template's Apply screen. */
-export function TemplatesPage({ v2, name, go }: Props & { name?: string }) {
+/** The server's templates (GET /v2/templates): the list (no `name`), one template's Apply screen (`name`, its id), or a
+ *  package on GitHub read before it is installed (`install`, its source). */
+export function TemplatesPage({ v2, name, install, go }: Props & { name?: string; install?: string }) {
   const [templates, setTemplates] = useState<TemplateView[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
   useEffect(() => {
+    if (install !== undefined) return;
     let live = true;
     setError(null);
     v2.listTemplates().then((r) => { if (live) setTemplates(r.templates); }, (e) => { if (live) setError(problem(e, "the templates")); });
     return () => { live = false; };
-  }, [v2, tries]);
-  const shown = name === undefined ? undefined : templates?.find((t) => t.name === name);
+  }, [v2, tries, install]);
+  if (install !== undefined) return <div className="p-5 md:p-8"><InstallTemplate v2={v2} source={install} go={go} /></div>;
+  const shown = name === undefined ? undefined : templates?.find((t) => t.id === name);
   return (
     <div className="p-5 md:p-8">
       {error && !templates ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
         : !templates ? <ListSkeleton label="Loading the templates" rows={3} />
-        : name === undefined ? <TemplateList templates={templates} go={go} />
-        : shown ? <ApplyTemplate key={shown.name} v2={v2} template={shown} go={go} />
+        : name === undefined ? <TemplateList v2={v2} templates={templates} go={go} onRemoved={() => setTries((n) => n + 1)} />
+        : shown ? <ApplyTemplate key={shown.id} v2={v2} template={shown} go={go} />
         : <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground" role="alert">This server offers no template named {name}. <a href="#/templates" className="underline">See its templates</a>.</p>}
     </div>
   );
 }
 
-function TemplateList({ templates, go }: { templates: TemplateView[]; go: (hash: string) => void }) {
+/** An imported package's provenance in one line: its source, the commit it was read at, its publisher. */
+function Provenance({ t }: { t: Pick<TemplateView, "source" | "sha" | "publisher"> }) {
+  if (!t.source) return null;
+  return <p className="mt-1 break-all font-mono text-small text-muted-foreground" data-provenance>{t.source} at {t.sha?.slice(0, 12)}, published by {t.publisher}</p>;
+}
+
+/** The list, with the "Add from URL" box: a package on GitHub is read and shown whole (the install page) before it is stored. */
+function TemplateList({ v2, templates, go, onRemoved }: { v2: Client; templates: TemplateView[]; go: (hash: string) => void; onRemoved: () => void }) {
+  const [source, setSource] = useState("");
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [said, setSaid] = useState<string | null>(null);
+  const remove = async (t: TemplateView) => {
+    setRemoving(t.id); setSaid(null);
+    try { await v2.deleteTemplate(t.id); onRemoved(); } catch (e) { setSaid(e instanceof Error ? e.message : String(e)); } finally { setRemoving(null); }
+  };
   return (
     <>
       <h1 className="mb-5 font-mono text-2xl font-semibold">Templates</h1>
+      <form aria-label="Add from URL" className="mb-5 flex flex-wrap items-end gap-2 border bg-card px-4 py-3" onSubmit={(e) => { e.preventDefault(); if (source.trim()) go(installHash(source.trim())); }}>
+        <label className="min-w-0 flex-1">
+          <span className="caps text-small font-semibold">Add from URL</span>
+          <span className="mb-1.5 block text-small text-muted-foreground">A package on GitHub: github:owner/repo/path@ref, or its github.com/…/tree/… address. You read it whole before anything is stored.</span>
+          <Input type="text" value={source} placeholder="github:owner/repo/templates/name@main" onChange={(e) => setSource(e.target.value)} />
+        </label>
+        <Button size="sm" variant="solid" type="submit" disabled={!source.trim()}>Read it</Button>
+      </form>
+      {said && <p className="mb-3 text-body text-destructive-text" role="alert">{said}</p>}
       {!templates.length ? <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground">This server offers no templates yet.</p> : (
         <ul className="grid gap-3 md:grid-cols-2">
           {templates.map((t) => (
-            <li key={t.name}>
+            <li key={t.id}>
               <article aria-label={titleOf(t)} className="flex h-full flex-col border bg-card px-5 py-4">
                 <div className="flex flex-wrap items-baseline gap-2">
                   <LayoutTemplate className="size-4 shrink-0 self-center text-muted-foreground" aria-hidden />
                   <h2 className="min-w-0 break-words text-prose font-semibold">{titleOf(t)}</h2>
                   <span className="font-mono text-small text-muted-foreground">{t.version}</span>
+                  {!t.bundled && <Chip tone="muted">Imported</Chip>}
                 </div>
+                <Provenance t={t} />
                 <p className="mt-2 text-lead leading-[1.6]">{t.description}</p>
                 <dl className="mt-3 space-y-1 font-mono text-small text-muted-foreground">
                   {needsOf(t).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0">{what}</dt><dd className="min-w-0 break-words text-foreground/80">{words}</dd></div>)}
                 </dl>
-                <div className="mt-auto pt-4">
-                  <Button size="sm" variant="solid" onClick={() => go(templateHash(t.name))}>Apply</Button>
+                <div className="mt-auto flex gap-2 pt-4">
+                  <Button size="sm" variant="solid" onClick={() => go(templateHash(t.id))}>Apply</Button>
+                  {!t.bundled && <Button size="sm" onClick={() => void remove(t)} disabled={removing === t.id}>{removing === t.id ? "Removing…" : "Remove"}</Button>}
                 </div>
               </article>
             </li>
@@ -67,6 +97,94 @@ function TemplateList({ templates, go }: { templates: TemplateView[]; go: (hash:
     </>
   );
 }
+
+/** A package on GitHub read before it is installed (a dry run): its publisher, the commit, what it makes, its instructions
+ *  and every skill file in full. The first package from a publisher installs only once "I trust <owner>" is ticked; the
+ *  server keeps that. Install stores it and opens its Apply screen, where nothing is granted until it is ticked. */
+function InstallTemplate({ v2, source, go }: { v2: Client; source: string; go: (hash: string) => void }) {
+  const [read, setRead] = useState<TemplateImported | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [trusted, setTrusted] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    if (!source) { setError("Give a package's source: github:owner/repo/path@ref."); return; }
+    v2.importTemplate(source, { dryRun: true }).then((r) => { if (live) setRead(r); }, (e) => { if (live) setError(refusalText(e)); });
+    return () => { live = false; };
+  }, [v2, source]);
+  const install = async () => {
+    setInstalling(true); setSaid(null);
+    try {
+      // The commit the preview showed, never the ref again: a branch moved since is not what the owner read.
+      if (!read) return;
+      const done = await v2.importTemplate(`${read.template.id}@${read.template.sha}`, { trustPublisher: trusted });
+      go(templateHash(done.template.id));
+    } catch (e) { setSaid(refusalText(e)); } finally { setInstalling(false); }
+  };
+  const back = <a href="#/templates" className="caps mb-4 inline-flex items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>;
+  if (error) return <div className="max-w-3xl">{back}<p className="border px-4 py-6 font-mono text-body text-destructive-text" role="alert">{error}</p></div>;
+  if (!read) return <ListSkeleton label="Reading the package from GitHub" rows={3} />;
+  const t = read.template;
+  const owner = t.publisher ?? "";
+  const files = Object.entries(read.skill_files);
+  return (
+    <section aria-label="Install from GitHub" className="max-w-3xl">
+      {back}
+      <h1 className="font-mono text-2xl font-semibold">{titleOf(t)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></h1>
+      <dl className="mt-3 space-y-1 border bg-card px-4 py-3 font-mono text-small">
+        <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted-foreground">Publisher</dt><dd data-publisher>{owner}{read.publisher_trusted ? " (trusted here)" : " (new here)"}</dd></div>
+        <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted-foreground">Commit</dt><dd className="break-all" data-sha>{t.sha}</dd></div>
+        <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted-foreground">Source</dt><dd className="break-all">{t.source}</dd></div>
+        <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted-foreground">Installs as</dt><dd className="break-all">{t.id}{read.replaced ? `, replacing the one read at ${read.replaced.slice(0, 12)}` : ""}</dd></div>
+      </dl>
+      <p className="mt-3 text-lead leading-[1.6]">{t.description}</p>
+      <Section title="What it makes">
+        <dl className="space-y-1 px-4 py-3 font-mono text-small">
+          {needsOf(t).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0 text-muted-foreground">{what}</dt><dd className="min-w-0 break-words">{words}</dd></div>)}
+        </dl>
+      </Section>
+      <Section title="Instructions" note="What the agent is told, in full: a package from someone else says this to your agent.">
+        <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-small" data-instructions>{read.instructions}</pre>
+      </Section>
+      {t.output?.json_schema && (
+        // Each run is told the answer's schema whole (its output contract), each description in it included.
+        <Section title="Output schema" note={`What the agent is told to answer in (${t.output.schema}), in full: its descriptions are instructions too.`}>
+          <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-small" data-output-schema>{JSON.stringify(t.output.json_schema, null, 2)}</pre>
+        </Section>
+      )}
+      {files.length > 0 && (
+        <Section title="Skill files" note="Every file the agent is given, in full.">
+          {files.map(([path, text]) => (
+            <details key={path} className="px-4 py-2" data-skill-file={path}>
+              <summary className="cursor-pointer font-mono text-body">{path}</summary>
+              <pre className="mt-2 max-h-[32rem] overflow-auto whitespace-pre-wrap break-words font-mono text-small">{text}</pre>
+            </details>
+          ))}
+        </Section>
+      )}
+      {!read.publisher_trusted && (
+        <label className="mt-6 flex items-start gap-2.5 border border-warning/50 px-4 py-3">
+          <input type="checkbox" className="mt-1 accent-primary" checked={trusted} onChange={(e) => setTrusted(e.target.checked)} />
+          <span><span className="font-mono text-body">I trust {owner}</span><span className="block text-small text-muted-foreground">This server has no package from {owner} yet. Ticked, it remembers that you trust them.</span></span>
+        </label>
+      )}
+      <div className="mt-6 flex flex-wrap items-center gap-3">
+        <Button size="sm" variant="solid" onClick={() => void install()} disabled={installing || (!read.publisher_trusted && !trusted)}>{installing ? "Installing…" : "Install"}</Button>
+        <span className="text-small text-muted-foreground">Installing stores it; nothing runs and nothing is granted until you apply it.</span>
+        {said && <p className="w-full text-body text-destructive-text" role="alert">{said}</p>}
+      </div>
+    </section>
+  );
+}
+
+/** A refusal in the server's words: its message, and each field's. */
+function refusalText(e: unknown): string {
+  if (e instanceof ClientError && e.fields?.length) return [e.message, ...e.fields.map((i) => i.message)].join(" ");
+  return e instanceof Error ? e.message : String(e);
+}
+
+const installHash = (source: string) => `#/templates/install?src=${encodeURIComponent(source)}`;
 
 
 /** One template's Apply screen: its parameters, the owner's consent (one tick per MCP tool, none ticked until the owner
@@ -124,7 +242,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
     const sending = values;
     const body = { parameters: parametersOf(t, sending), ...(grants.length ? { grants } : {}), overrides: { approvals } };
     try {
-      const done = await v2.applyTemplate(t.name, body, keys.keyFor(t.name, body));
+      const done = await v2.applyTemplate(t.id, body, keys.keyFor(t.id, body));
       keys.done();
       // Each trigger the apply made, read back: a schedule shows when it runs next. One that can't be read, or isn't
       // answered within TRIGGER_READ_MS, is left out (the Triggers page has it): a slow read never holds the result back.
@@ -212,6 +330,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
     <div className="max-w-3xl">
       <a href="#/templates" className="caps mb-4 inline-flex items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
       <h1 className="font-mono text-2xl font-semibold">{titleOf(t, values)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></h1>
+      <Provenance t={t} />
       <p className="mt-2 text-lead leading-[1.6]">{t.description}</p>
 
       {params.length > 0 && (

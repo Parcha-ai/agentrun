@@ -497,7 +497,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // store at each decide — adapterRunGate (RunGate.decide: deny with its words, a pin, allow, ask). The end-of-run turn's
   // refusal of writes under .learning/ is the adapter loop's own (it knows the turn), never a file's. The run's MCP servers
   // (mcpServersOf its grants) hold a harness's own name for an MCP tool to that tool's settings.
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted), mcp && ((name) => mcp.effectOf(name)));
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted), mcp ? { effectOf: (name) => mcp.effectOf(name) } : {});
   // What a script's shell and files are held to: this gate, so a denied bash or write holds inside computer_script too.
   tools.computer?.guard.install(async (tool, args) => {
     await gate.permissions.refresh();
@@ -663,7 +663,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // session, and its decisions (a learned workflow's decision nodes) are the run's cost too, as the pi spec's.
       const total = runEndCost({ model, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
       // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
-      return { costUsd: total, metrics: { ...metrics, ...pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning) : undefined) } };
+      return { costUsd: total, metrics: { ...metrics, ...pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning) : undefined, entries as never) } };
     },
     // A run started with hold: true holds its computer for its owner (computer-held.ts), as the pi spec's.
     ...(heldComputer ? { held: heldComputer } : {}),

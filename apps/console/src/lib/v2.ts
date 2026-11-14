@@ -54,6 +54,8 @@ export type TemplateView = Answer<"listTemplates">["templates"][number];
 export type TemplateApply = Body<"applyTemplate">;
 /** What an apply made: the agent, its triggers, and its warnings. */
 export type TemplateApplied = Answer<"applyTemplate">;
+/** A package read from GitHub (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
+export type TemplateImported = Answer<"importTemplate">;
 
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null. */
 export type Cost = components["Cost"];

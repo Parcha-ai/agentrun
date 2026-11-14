@@ -13,6 +13,9 @@ export const PROXY = "agent37.test";
 
 const { Server, utils } = ssh2;
 
+/** OpenSSH's MaxSessions default: the sessions one connection takes at once (sshd_config(5)). */
+export const MAX_SESSIONS = 10;
+
 /**
  * A key pair in OpenSSH form, as `agent37 ssh-keys add` registers one. ssh2's generator writes a private key its own
  * parser refuses ("Malformed OpenSSH private key") about once in 250 ed25519 pairs, so a pair it can't read back is made again.
@@ -103,14 +106,26 @@ export function fakeRest({ key = KEY } = {}) {
 /**
  * An instance's sshd: ssh2's Server on 127.0.0.1, taking the one public key given, as root. Each exec runs under
  * `bash -c` (root's login shell on Agent37's base template), detached so it leads its own session as sshd's does, and
- * its exit-status, or exit-signal, is sent as OpenSSH sends them. commands lists each command line.
+ * its exit-status, or exit-signal, is sent as OpenSSH sends them. commands lists each command line; state.logins counts
+ * the handshakes that ended in a login, state.live the connections open now, state.sessions the sessions open now. A
+ * connection takes MAX_SESSIONS sessions at once and refuses the next, as OpenSSH's sshd does by default (MaxSessions).
+ * refuseSessions(n) refuses the next n session channels besides, dropAll() cuts every connection from the server's
+ * side, and close() ends them all, then the server.
  */
 export async function fakeSshd({ publicKey }) {
 	const host = keyPair();
 	const allowed = utils.parseKey(publicKey);
 	const commands = [];
 	const children = new Set();
+	const clients = new Set();
+	const state = { logins: 0, live: 0, sessions: 0, refusing: 0 };
 	const server = new Server({ hostKeys: [host.private] }, (client) => {
+		clients.add(client);
+		state.live++;
+		client.on("close", () => {
+			clients.delete(client);
+			state.live--;
+		});
 		client.on("error", () => {});
 		client.on("authentication", (ctx) => {
 			const key = ctx.method === "publickey" ? ctx.key : undefined;
@@ -120,8 +135,20 @@ export async function fakeSshd({ publicKey }) {
 			ctx.accept();
 		});
 		client.on("ready", () => {
-			client.on("session", (accept) => {
+			state.logins++;
+			let open = 0;
+			client.on("session", (accept, reject) => {
+				if (state.refusing > 0 || open >= MAX_SESSIONS) {
+					if (open < MAX_SESSIONS) state.refusing--;
+					return reject();
+				}
 				const session = accept();
+				open++;
+				state.sessions++;
+				session.on("close", () => {
+					open--;
+					state.sessions--;
+				});
 				session.on("exec", (acceptExec, _reject, { command }) => {
 					commands.push(command);
 					const stream = acceptExec();
@@ -158,9 +185,15 @@ export async function fakeSshd({ publicKey }) {
 		});
 	});
 	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const dropAll = () => {
+		for (const client of clients) client.end();
+	};
 	return {
 		port: server.address().port,
 		commands,
+		state,
+		refuseSessions: (count) => (state.refusing = count),
+		dropAll,
 		close: async () => {
 			for (const child of children) {
 				try {
@@ -169,6 +202,7 @@ export async function fakeSshd({ publicKey }) {
 					// Gone.
 				}
 			}
+			dropAll();
 			await new Promise((resolve) => server.close(resolve));
 		},
 	};

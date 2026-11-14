@@ -29,6 +29,7 @@ import { LEARNED_DIR } from "./learning.js";
 import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
 import type { Workspace } from "./workspace/workspace.js";
 import { builtinHarness } from "./harness-table.js";
+import { META_TOOLS } from "./meta-tool-names.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { SHELL_TOOLS } from "./background.js";
 import { DECISION_PROVIDER_KEYS, KIND_KEYS, SERVE_OWN_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
@@ -378,8 +379,8 @@ export function previewOf(text: string): string {
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
  *  claim). The gate reads nothing of the run's own files: they are the agent's to write. `mcpServers`: the run's MCP
  *  servers (mcpServersOf its grants), so a harness's own name for an MCP tool is held to that tool's settings. */
-export function runGate(where: { root: string; work: string; computer?: boolean; mcpServers?: readonly string[]; effectOf?: (name: string) => ToolEffect | undefined }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.mcpServers ? { mcpServers: where.mcpServers } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+export function runGate(where: { root: string; work: string; computer?: boolean; mcpServers?: readonly string[]; computerCodemode?: boolean; effectOf?: (name: string) => ToolEffect | undefined }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.mcpServers ? { mcpServers: where.mcpServers } : {}), ...(where.computerCodemode ? { computerCodemode: true } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
 /** A run's folder as its spec names it: the run's Workspace (Mode 2: its folder on the run's disk, never a folder of this
@@ -394,7 +395,7 @@ export class RunGate {
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
   /** `where.effectOf`: an MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf), what "allow reads" reads;
    *  never a live listing, so a server can't widen a run's access mid-run. */
-  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; mcpServers?: readonly string[]; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; mcpServers?: readonly string[]; computer?: boolean; /** The run's `codemode` is pi's on a desktop or a phone (runner/adapters/pi-computer.ts), not the host's. */ computerCodemode?: boolean; effectOf?: (name: string) => ToolEffect | undefined }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
   private names?: NameMap;
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
@@ -410,6 +411,11 @@ export class RunGate {
    *  the call is run again after an earlier attempt that may have been sent (a replay-safe call rerun after a crash), so a
    *  refusal says whether it took effect is not known, never that nothing was sent. */
   async decide(name: string, args: unknown, options: { readonly replayed?: boolean } = {}): Promise<"allow" | "ask" | { deny: string }> {
+    // tools_search, tools_call and the host's codemode (runner/meta-tools.ts) run: each call they make is asked about here
+    // as its own tool, by its own name. pi's code mode on a run with a desktop or a phone is not the host's: its scripts
+    // reach the computer themselves, so it is held to the kind's setting (KIND_TOOLS).
+    const own = name.replace(/^mcp__hands__/, "");
+    if (META_TOOLS.has(own) && !(own === CODEMODE_TOOL_NAME && this.where.computerCodemode)) return "allow";
     const key = this.keyOf(name) ?? name;
     const tool = this.askedAs(name);
     const ran = options.replayed ? "unknown" : "no";
