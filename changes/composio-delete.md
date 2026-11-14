@@ -8,4 +8,4 @@ Saving a Composio server whose picked actions Composio serves none of (HACKERNEW
 
 The generated TypeScript and Python clients now type an operation that documents 204 beside a 2xx body as the body or nothing (`X | undefined`, `X | None`).
 
-Saving a preset server over to another address (an ordinary save with a different URL) makes it that service's server, no longer Composio's: deleting it never sends the key it holds to Composio, whatever the new path looks like, and the answer is the remove-it-yourself note.
+Saving a preset server over to another address (an ordinary save with a different URL) makes it that service's server, no longer Composio's: deleting it never sends the key it holds to Composio, whatever the new path looks like, and the delete is an ordinary one (204). The Composio server the preset made stays in your Composio account until you remove it there.

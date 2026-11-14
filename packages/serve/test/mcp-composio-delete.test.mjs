@@ -93,9 +93,7 @@ test("a preset row the owner edited to another service (same path shape, another
   assert.equal(edited.status, 200, JSON.stringify(edited.body));
   const before = s.composio.calls.length;
   const res = await s.api("DELETE", "/settings/mcp-servers/hn");
-  assert.equal(res.status, 200, JSON.stringify(res.body));
-  assert.equal(res.body.composio.removed, false);
-  assert.match(res.body.composio.note, /Remove hn in Composio yourself/);
+  assert.equal(res.status, 204, "it is another service's server now, deleted as any other");
   assert.equal(s.composio.calls.length, before, "Composio got no call at all from the delete");
   assert.equal(s.composio.calls.filter((call) => call.method === "DELETE").length, 0);
   assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "our row is gone");
