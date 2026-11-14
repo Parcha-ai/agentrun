@@ -17,9 +17,7 @@ test("the computer's tools are the desktop's and the phone's, each under its kin
   assert.deepEqual(computerToolDefs("phone", []).map((def) => [def.name, def.settingsKey]), COMPUTER_TOOLS.map((name) => [name, "phone"]));
   for (const name of COMPUTER_TOOLS) {
     for (const harness of ["pi", "claude-agent", "codex", "opencode"]) {
-      assert.equal(settingsKeyOf(harness, name), "desktop", `${harness} ${name}: named by the desktop's key in words`);
-      assert.equal(settingsKeyOf(harness, `mcp__hands__${name}`), "desktop", `${harness} mcp__hands__${name}`);
-    }
+      assert.equal(settingsKeyOf(harness, name), "desktop", `${harness} ${name}: named by the desktop's key in words`);    }
   }
 });
 

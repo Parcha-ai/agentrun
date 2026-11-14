@@ -35,9 +35,9 @@ test("1. a server deny is absolute through the runner: the agent's own ask or al
 });
 
 test("2. a pin refuses through the runner: a server-pinned MCP tool called outside its pin is refused before it is asked or sent; as pinned it goes", async (t) => {
-  // The settings key is mcp:<server>/<tool>; the run calls the tool by the name its harness gives it (mcp__<server>__<tool>).
+  // The settings key is mcp:<server>/<tool>, the name the gate is asked (the loop reads a wire name back to it first).
   const pinned = "mcp:fake/send_message";
-  const called = "mcp__fake__send_message";
+  const called = pinned;
   for (const approvals of ["ask", "never"]) {
     const { spec } = await specFor(t, {
       body: { tools: ["web_search"], approvals },

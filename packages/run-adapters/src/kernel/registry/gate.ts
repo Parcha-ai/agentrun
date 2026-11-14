@@ -1,4 +1,4 @@
-// The tool gate's shell family, moved from serve's tool-gate.ts unchanged, and the host tools' default permissions by
+// The tool gate's shell family (serve's tool-gate.ts reads it from here), and the host tools' default permissions by
 // where the run's shell is (the cutover's ruled change: with no computer, bash runs in the run's folder and is asked
 // first, and the background tools are refused).
 import { BACKGROUND_TOOLS, SHELL_TOOLS } from "./limits.js";
@@ -18,12 +18,9 @@ export const SHELL_WATCHERS: ReadonlySet<string> = new Set(["bash_output", "bash
 /** Shell tool `name`'s permission, given bash's: a watcher's ask is allow; any other keeps bash's. */
 export const shellPermission = (name: string, bash: Permission): Permission => (bash === "ask" && SHELL_WATCHERS.has(name) ? "allow" : bash);
 
-/** The shell tool a call named `name` is, under claude-agent's host-tool name too (`mcp__hands__bash_background`), when
- *  it is one held to another's setting: its own name, which its request, its refusal and its approved call keep. */
-export const shellToolOf = (name: string): string | undefined => {
-  const own = name.replace(/^mcp__hands__/, "");
-  return Object.hasOwn(SHELL_FAMILY, own) && SHELL_FAMILY[own] !== own ? own : undefined;
-};
+/** The shell tool a call named `name` is, when it is one held to another's setting: its own name, which its request, its
+ *  refusal and its approved call keep. */
+export const shellToolOf = (name: string): string | undefined => (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name ? name : undefined);
 
 /** A host tool's permission when no setting names it, by where the run's shell is. On a computer every host tool is
  *  allowed, as main's defaults are. With no computer, bash runs in the run's own folder on this machine, so it is asked

@@ -19,6 +19,7 @@ import { journalEntries, journalRecords, recordOf } from "../runner/journal-read
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
 import { bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
+import { mcpToolName } from "../tool-names.js";
 import { Turns } from "../turns.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
@@ -225,7 +226,19 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // message of the job's (feedbackMarked).
   const rendered = feedbackMarked(timelineOf(withPaidCosts(withFeedback(piShaped(entries))), read), entries);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
-  return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries, options.redact));
+  return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, await catalogNamed(store, runId, rows)), entries, options.redact), entries, options.redact));
+}
+
+/** `rows` with each tool row of an MCP tool or a monid endpoint named as its settings and its notices name it, by catalog
+ *  name (`mcp:<server>/<tool>`), never the wire name the harness called it by: read from the run's pins by lookup (catalog.ts
+ *  wireName of each pinned tool), so one call reads one way. A row of any other tool is as it was. */
+async function catalogNamed(store: Store, runId: string, rows: TimelineEvent[]): Promise<TimelineEvent[]> {
+  if (!rows.some((row) => row.tool_name !== null && /^(?:mcp|monid)_/.test(row.tool_name))) return rows;
+  const run = await store.runs.get(runId);
+  const pinned = Object.entries((await store.mcp.pin(runId))?.body ?? {}).flatMap(([server, one]) => ((one as { tools?: { name: string }[] }).tools ?? []).map((tool) => mcpToolName(server, tool.name)));
+  const monid = Object.keys(((run && (await store.agents.revision(run.revisionId)))?.body as { monidPin?: object } | undefined)?.monidPin ?? {});
+  const catalog = new Map([...pinned, ...monid].map((name) => [wireName(name), name]));
+  return rows.map((row) => (row.tool_name !== null && catalog.has(row.tool_name) ? { ...row, tool_name: catalog.get(row.tool_name)! } : row));
 }
 
 /** Whether the run's newest turn is over, cut (turns.ts: no message of the run's open, the newest one's end interrupted),

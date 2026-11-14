@@ -1479,7 +1479,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // What was spent beside them on the run's behalf (its spec's runCap.beside) is read with them at each admission
         // (runBooking), the spec's once it is known.
         const besideNow = async (): Promise<number | null> => (specNow?.runCap?.beside ? await specNow.runCap.beside() : 0);
-        const sessions = Object.assign(journalSessions(harness, context, { flush: () => deps.flush() }), { beside: besideNow });
+        const sessions = Object.assign(journalSessions(harness, context, { flush: () => deps.flush(), claim }), { beside: besideNow });
         let capBuilt: RunCap | undefined;
         /** The session's recent requests, as the cap's `expected` pricing reads them (the kernel's recentAfter and
          *  warmFrom): the harness's own requests that answered under CACHE_WARM_MS ago, each one's input as its usage
@@ -2068,6 +2068,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           granted: async (name) => !settingOf || (await settingOf(mcp?.catalogOf(name) ?? name).catch(() => "deny" as const)) !== "deny",
           codemode: facts?.ownCodemode !== true && (await allowed(CODEMODE)),
           discovery: { search: offered, call: offered },
+          ...(facts?.hostName ? { hostName: facts.hostName } : {}),
         }).filter((meta) => ![...own, ...native].some((one) => one.name === meta.name));
         const tools: HostTool[] = [...own.map((one): HostTool => (offered && isCatalogName(one.name) ? { ...one, deferred: true } : one)), ...metas.map(hosted)];
         // An MCP tool of the run by its catalog name, as wrapped above: what a learned workflow's MCP node calls.

@@ -3,6 +3,23 @@
 AgentRun is an open-source platform for running AI agents. It gives each agent a computer, a sandbox or a desktop, on
 a vendor's machines. This page shows how to add your machines in one pull request.
 
+## The first 30 minutes
+
+Conformance comes first: each step ends on a command that tells you whether it's done. Run them from the repository root.
+
+1. Check that your API has the [two things AgentRun needs](#what-your-api-needs).
+2. Write your host's constructor, `exec` and `createHost`, then run the [exec pre-check](#step-one-run-the-exec-pre-check)
+   on a machine you made by hand until it prints `exec PASS`:
+   `npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>`
+3. Copy `e2b.ts` into [the four files](#what-you-write) and fill in [the eleven members](#the-eleven-members).
+4. Run the [whole suite between two sweeps](#prove-it) until its last line reads `core PASS`:
+   `npm run conformance -w @parcha/agentrun-computer -- --provider <vendor>`
+5. [Open the pull request](#send-it) with the report and the sweep's last line.
+
+To see a pass before you write anything, point the pre-check at a stub. It takes seconds and needs no key. Make a module
+that exports `createHost = async () => fakeExecHost()`, from `packages/computer/test/fake-exec-host.mjs` (its `exec`
+runs local processes), and pass its path to `--provider`, with `--machine local --quick`.
+
 ## How to contribute a provider
 
 ### What your API needs
@@ -21,9 +38,10 @@ that says what your API offers.
 ### Step one: run the exec pre-check
 
 Before you write anything else, write your host's constructor and its `exec` (see [the eleven members](#the-eleven-members)
-below). Then write a `createHost({ env })` in your conformance module that builds the host from your key, and point to
-that module from your provider file with `conformance`, as `e2b.ts` does. E2B's `createHost` in
-`src/conformance/e2b.ts` is three lines. Make a machine by hand in your console, then run, from the repository root:
+below). Then write a `createHost({ env = process.env } = {})` in your conformance module that builds the host from
+your key (the pre-check calls it with `{}`, the sweep with `{ env }`), and point to that module from your provider file
+with `conformance`, as `e2b.ts` does. E2B's `createHost` in `src/conformance/e2b.ts` is three lines. Make a machine by
+hand in your console, then run, from the repository root:
 
 ```sh
 npm ci --ignore-scripts && npm run build
@@ -57,8 +75,8 @@ You add four things under `packages/computer/src/`, each copied from E2B's:
 A host has eleven members: `descriptor`, `facts`, `create`, `get`, `list`, `delete` and `exec`, then the optional
 `upload`, `errorCode`, `extend` and `check`. Every snippet below is cut from E2B's host in `src/e2b.ts`, and `// …`
 marks a cut. A member answers its value, or throws. AgentRun reads a thrown error's code: a `HostError(code, message)`
-carries its own, and any other error goes through `errorCode`, then defaults to `"vendor"`. Each call gets `ctx` with a
-`timeoutMs` and sometimes a `signal`. Pass both to your client where you can.
+(from `src/host.ts`) carries its own, and any other error goes through `errorCode`, then defaults to `"vendor"`. Each
+call gets `ctx` with a `timeoutMs` and sometimes a `signal`. Pass both to your client where you can.
 
 **`descriptor`** is your descriptor (below). Errors with code `vendor` name its id, refusals name its label, and the
 provider's network, mounts, and each kind's groups and GPUs are the ones it declares.
@@ -100,7 +118,7 @@ vendor whose size is its image's refuses them in its own `check`.
 ```ts
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		const timeoutMs = Math.ceil(req.lifetimeMs / 1000) * 1000;
-		const options: E2BCreateOptions = {
+		const options: SandboxOpts = {
 			...this.#api(ctx.timeoutMs),
 			timeoutMs,
 			metadata: { ...req.labels, [TIMEOUT_LABEL]: String(timeoutMs) },
@@ -113,11 +131,17 @@ vendor whose size is its image's refuses them in its own `check`.
 	}
 ```
 
-**`get(id, ctx)`** reads one machine as your API sees it now. It returns a `Machine`: its `id`, its `labels`, its
-`state` (`starting`, `running`, `stopped` or `gone`) and, where your API reports it, `endsAt`, when your timer ends it.
-A machine that failed to start is `gone`, with your API's words for why in `why`. A machine that no longer exists is
-`undefined`, or an error that maps to `not_found`; neither is a failure. Don't read back what create sent: AgentRun
-checks the machine from inside.
+**`get(id, ctx)`** reads one machine as your API sees it now, as a `Machine`:
+`{ id, labels, state, endsAt?, createdAt?, why? }`.
+
+- `state` is `starting`, `running`, `stopped` (there but not running, such as paused) or `gone` (being deleted,
+  ended, or failed).
+- `endsAt` is when your timer ends it, with `lifetime: "vendor"`.
+- `createdAt` is when your API made it. Of two racing creates' machines, AgentRun keeps the oldest.
+- `why` is your API's words for a machine that failed to start, which is `gone`.
+
+A machine that no longer exists is `undefined`, or an error that maps to `not_found`; neither is a failure. Don't read
+back what create sent: AgentRun checks the machine from inside.
 
 ```ts
 	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
@@ -167,8 +191,8 @@ E2B's SDK hands `commands.run` output over as text, decoded as UTF-8, which brea
 ```ts
 	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		const sandbox = await this.#sandbox(id, ctx);
-		// …
-		const events = sandbox.commands.rpc.start(
+		// … ProcessRpc types the slice of envd's stream it reads: the SDK keeps rpc protected
+		const events = (sandbox.commands as unknown as { rpc: ProcessRpc }).rpc.start(
 			{ process: { cmd: "/bin/bash", args: ["-l", "-c", shellLine(argv)], envs: {} }, stdin: true },
 			{ headers: { Authorization: ROOT, [KEEPALIVE_HEADER]: KEEPALIVE_S }, signal: stream.signal, timeoutMs: 0 },
 		)[Symbol.asyncIterator]();
@@ -184,12 +208,11 @@ E2B's SDK hands `commands.run` output over as text, decoded as UTF-8, which brea
 	}
 ```
 
-**`errorCode(error)`** is optional. It maps an error your client threw to one of AgentRun's [codes](#refusals), and
-anything you don't map is `"vendor"`. Throw a `HostError(code, message)` from `src/host.ts` where you know the code
-yourself. AgentRun reads an `AbortError` as `aborted` and a `TimeoutError` as `timeout`
-itself, so map the rest. Map your vendor's not-found exception to `not_found`: AgentRun reads that from `get` as a
-machine that is gone and from `delete` as done, so those two need no catch of their own. E2B's `errorCode` returns
-`codeOf(error)`:
+**`errorCode(error)`** is optional. It maps an error your client threw to one of AgentRun's [codes](#refusals).
+AgentRun reads a `HostError`'s own code, an `AbortError` as `aborted` and a `TimeoutError` as `timeout` itself, and
+anything you don't map is `"vendor"`. Map your vendor's not-found exception to `not_found`: AgentRun reads that from
+`get` as a machine that is gone and from `delete` as done, so those two need no catch of their own. E2B's `errorCode`
+returns `codeOf(error)`:
 
 ```ts
 function codeOf(error: unknown): ComputerErrorCode {
@@ -201,12 +224,14 @@ function codeOf(error: unknown): ComputerErrorCode {
 ```
 
 **Optional hooks.** `upload(id, path, bytes, ctx)` puts a file in the machine. E2B has one because it has a file API;
-without it, AgentRun streams its daemon through `exec`'s stdin. Two more hooks each cover one vendor need. `extend`
-moves a machine's end when an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's deadline
-label with `"janitor"`. AgentRun reads the end back through `get`, from the deadline label: if your API keeps no label
-change, `get` reads your moved timer as that label. `check` adds your own rules for a spec, such as image names; the
-spec it gets is an object whose fields aren't checked yet. Leave out what you don't need. Settings' test of your keys is
-one `list` by AgentRun's label, so a `list` must never create anything.
+without it, AgentRun streams its daemon through `exec`'s stdin. `extend(id, endsAt, ctx)` moves a machine's end when
+an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's deadline label with `"janitor"`. Never
+move it past its `agentrun.computer.max-deadline` label. When no end your API takes lands there, throw
+`HostError("limit", <why>)` and move nothing. AgentRun reads the end back through `get`, from the deadline label: if
+your API keeps no label change, `get` reads your moved timer as that label. Without `extend`, a computer can't be
+extended. `check(spec)` adds your own rules for a spec, such as image names; the spec it gets is an object whose fields
+aren't checked yet. Leave out what you don't need. Settings' test of your keys is one `list` by AgentRun's label, so a
+`list` must never create anything.
 
 ### Wire it up
 
@@ -217,7 +242,7 @@ the rest of AgentRun calls.
 export class E2BProvider extends HostedProvider {
 	constructor(options: E2BProviderOptions) {
 		// … check the options
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, kind, maxLifetimeMs });
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), timeoutsOf(rest.timeouts).requestMs), { ...rest, kind, maxLifetimeMs });
 	}
 }
 ```
@@ -259,8 +284,9 @@ lifecycle against one fake host, and your live run is the proof.
 ### Prove it
 
 Without Go, `build:daemon` takes AgentRun's daemon from the same version on npm, as long as your checkout's daemon
-source is that version's. If you or your branch changed the daemon, you need Go to build it. The drift case always needs Go on your PATH, because it compiles a second copy of the daemon that reports another
-version. Build, then run the suite with your own key between two sweeps, from the repository root:
+source is that version's. If you or your branch changed the daemon, you need Go to build it. The drift case always
+needs Go on your PATH, because it compiles a second copy of the daemon that reports another version. Build, then run
+the suite with your own key between two sweeps, from the repository root:
 
 ```sh
 npm ci --ignore-scripts && npm run build
@@ -348,9 +374,10 @@ Talk to us first, in [an issue](https://github.com/Parcha-ai/agentrun/issues).
 
 ### Refusals
 
-Every call answers `{ ok: true, value }` or `{ ok: false, error: { code, message, vendor? } }` and never throws. The
-message is words a person can act on. It never holds a key, a token or a bearer URL, and `health.no-key-in-errors`
-plants keys to check. The codes are a closed set (`ComputerErrorCode` in `src/result.ts`). A provider never adds one.
+Every `ComputerProvider` call answers `{ ok: true, value }` or `{ ok: false, error: { code, message, vendor? } }` and
+never throws. Your host throws instead, and AgentRun turns what it throws into one of these. The message is words a
+person can act on. It never holds a key, a token or a bearer URL, and `health.no-key-in-errors` plants keys to check.
+The codes are a closed set (`ComputerErrorCode` in `src/result.ts`). A provider never adds one.
 
 | Code | When |
 | --- | --- |
@@ -384,17 +411,19 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
 
 ### What AgentRun does for your host
 
-- **`check(spec)`** applies the shared rules (lifetime and its cap, network none, the label namespace, sizes, users,
-  GPUs, the Archil mount), then your `check`.
+- **`check(spec)`** applies the shared rules (lifetime and its cap, network none, the label namespace and your
+  `labels` bound, sizes, users, GPUs, the Archil mount), then your `check`.
 - **`create(spec, { requestId })`** names the machine `computer-` plus the first 12 hex digits of the request id's
   sha256, so a retried create finds the machine it already made. It deletes a machine whose create landed after the
-  caller gave up. When two creates race, it keeps the oldest machine and deletes the rest. Then it waits for the machine
-  to run, holds your read-back to the request, uploads the daemon and checks its sha256, starts it, and probes from
-  inside that the network is none. If any step fails after the machine exists, it deletes the machine and waits until
-  `get` no longer finds it.
+  caller gave up. When two creates race, it keeps the oldest machine and deletes the rest. A GPU computer's GPUs go in
+  the label `agentrun.computer.gpu` (`<type>:<count>`), which a retry and `attach` read back. Then it waits for the
+  machine to run, checks the labels `get` reads back, closes the session buses in `/tmp` (`/tmp/dbus-*`) to the
+  computer's user on a `child` host, uploads the daemon and checks its sha256, starts it, and probes from inside that
+  the network is none and the kernel is the runtime you declare. If any step fails after the machine exists, it
+  deletes the machine and waits until `get` answers none, twice running.
 - **The rest** covers `attach`, `list`, `connect`, `network` (fixed at create), `extend` (where your host has
-  `extend`), `release` (delete, then wait until `get` no longer finds it; a stop is refused: a computer here is
-  deleted, never stopped and kept), `watch` and `testConnection`.
+  `extend`), `release` (delete, then the same wait; a stop is refused: a computer here is deleted, never stopped and
+  kept), `watch` and `testConnection`.
   Every refusal uses the codes above, and `vendor` carries your API's own words.
 
 ### The live sweep
