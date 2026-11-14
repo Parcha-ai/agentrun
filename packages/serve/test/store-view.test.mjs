@@ -60,6 +60,8 @@ test("a completed run's view reads the whole answer, cost and shape from the sto
     status: "completed",
     state: "idle",
     title: "Book a room",
+    input: { message: "Book the room." },
+    file_ids: [],
     place: { mode: "runner" },
     claim: null,
     created_at: iso(T0),
@@ -105,7 +107,7 @@ test("a queued run (created, not yet claimed) reads queued and working, its cost
   const view = await viewOverStore(store, "run-1", deps);
   assert.deepEqual(view, {
     run_id: "run-1", agent_id: "agent-1", agent_version: 1, console_url: `${ORIGIN}/#/runs/run-1`, revision: "rev-1", kind: "agentic", sha: null,
-    status: "queued", state: "working", title: "Queued run", place: { mode: "runner" }, claim: null,
+    status: "queued", state: "working", title: "Queued run", input: { message: "Hi" }, file_ids: [], place: { mode: "runner" }, claim: null,
     created_at: iso(T0), updated_at: iso(T0), ended_at: null,
     result: null, error: null, review: null, pending: null,
     cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: null },
@@ -137,7 +139,7 @@ test("a working run reads working/working and live, its updated_at and last_prog
   const view = await viewOverStore(store, "run-1", liveDeps);
   assert.deepEqual(view, {
     run_id: "run-1", agent_id: "agent-1", agent_version: 1, console_url: `${ORIGIN}/#/runs/run-1`, revision: "rev-1", kind: "agentic", sha: null,
-    status: "working", state: "working", title: "Working run", place: { mode: "runner" }, claim: { runner: "runner-a", epoch: 1, until: iso(T0 + 60_000) },
+    status: "working", state: "working", title: "Working run", input: { message: "Do it." }, file_ids: [], place: { mode: "runner" }, claim: { runner: "runner-a", epoch: 1, until: iso(T0 + 60_000) },
     created_at: iso(T0), updated_at: iso(T0 + 10_000), ended_at: null,
     result: null, error: null, review: null, pending: null,
     cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: null },
@@ -473,7 +475,7 @@ test("a failed run's view serves its error from the row, with an unknown cost", 
   const view = await viewOverStore(store, "run-1", deps);
   assert.deepEqual(view, {
     run_id: "run-1", agent_id: "agent-1", agent_version: 1, console_url: `${ORIGIN}/#/runs/run-1`, revision: "rev-1", kind: "agentic", sha: null,
-    status: "failed", state: "idle", title: "Try it", place: { mode: "runner" }, claim: null,
+    status: "failed", state: "idle", title: "Try it", input: {}, file_ids: [], place: { mode: "runner" }, claim: null,
     created_at: iso(T0), updated_at: iso(T0 + 3_000), ended_at: iso(T0 + 3_000),
     result: null, error: { code: "run_failed", message: "The model refused.", retryable: false }, review: null, pending: null,
     cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null },
@@ -613,7 +615,8 @@ test("a run's view reads its whole answer once per held value set: a second view
   const { store } = await storeOn(t);
   await agent(store);
   const answer = `${"p".repeat(3000)} ${KEY} the end`;
-  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Say it." }, title: "Polled", place: { mode: "runner" } } });
+  // No input text: the view's input is read each time, as its output is, so the passes counted are the answer's alone.
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: {}, title: "Polled", place: { mode: "runner" } } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   await conversation(store, claim, { ask: "Say it.", answer, usd: 0.01 });
   await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Polled.", costUsd: 0.01, endedAt: T0 + 1_000 });
@@ -633,6 +636,17 @@ test("a run's view reads its whole answer once per held value set: a second view
   held = [];
   const fourth = (await viewOverStore(store, "run-1", polled)).result.final_answer;
   assert.equal(fourth, answer, "a key deleted since: the answer as the smaller set serves it");
+});
+
+test("a run's view serves its input whole, a long message and its typed fields, with a held value cut from it, and its files", async (t) => {
+  const KEY = ["not-a-secret", "input-key", "0123456789abcdef"].join("-");
+  const { store } = await storeOn(t);
+  await agent(store);
+  const content = `${"Read every line. ".repeat(200)}Use ${KEY} to sign in.`;
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content, company: "Acme", limit: 5 }, files: ["file-b", "file-a"], title: "Long", place: { mode: "runner" } } });
+  const view = await viewOverStore(store, "run-1", { ...deps, serverSecrets: () => [KEY] });
+  assert.deepEqual(view.input, { content: `${"Read every line. ".repeat(200)}Use [redacted] to sign in.`, company: "Acme", limit: 5 });
+  assert.deepEqual(view.file_ids, ["file-b", "file-a"]);
 });
 
 test("a value handed to the run (its agent's saved sign-in), straddling the old 2000-character cut of its answer, is served with no piece of it, the answer whole around it", async (t) => {
