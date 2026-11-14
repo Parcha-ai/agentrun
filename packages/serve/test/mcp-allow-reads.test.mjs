@@ -242,6 +242,52 @@ test("pi: through tools_call and a codemode script, as called directly: under al
   assert.equal(calls(fake, "delete_thing").length, 0, "denied: never sent");
 });
 
+test("a save that only turns Allow reads on counts as a change and wakes a run whose read-only MCP call waits, by the effect the run pinned; a run whose waiting call is a write stays parked", async () => {
+  const { permissionsChanged, wakeAnsweredBySetting } = await import("../dist/settings-wake.js");
+  assert.equal(permissionsChanged({}, READS), true, "allow_reads turned on");
+  assert.equal(permissionsChanged(READS, {}), true, "and off");
+  const ask = (tool) => ({ id: 1, conversationId: 1, kind: "agentrun.ask", data: { callId: "c1", tool, args: {}, requestedAt: "" } });
+  const journalOf = (entry) => ({ scanConversations: async () => ({ items: [{ id: 1 }] }), scanEntries: async () => ({ items: [entry] }), scanTasks: async () => ({ items: [] }), scanSubmissions: async () => ({ items: [] }) });
+  const journals = { "r-read": journalOf(ask("mcp:fake/add")), "r-write": journalOf(ask("mcp:fake/note")) };
+  // The run's pin, as its first claim wrote it: add read-only, note a write. The server's listing is never read.
+  const pin = { fake: { url: "https://mcp.invalid/mcp", tools: [{ name: "add", annotations: { readOnlyHint: true } }, { name: "note", annotations: { readOnlyHint: false, destructiveHint: false } }] } };
+  const woken = [];
+  const store = {
+    runs: { list: async () => [{ id: "r-read", revisionId: "v1" }, { id: "r-write", revisionId: "v1" }], wake: async (id) => (woken.push(id), true) },
+    agents: { revision: async () => ({ body: {} }) },
+    mcp: { pin: async () => ({ body: pin }) },
+    readJournal: (id) => journals[id],
+  };
+  assert.deepEqual(await wakeAnsweredBySetting(store, { settings: READS, problems: [] }, {}), ["r-read"]);
+  assert.deepEqual(woken, ["r-read"]);
+});
+
+test("pi: a read parked under ask runs with no one's answer once Allow reads is turned on (the save wakes its run); a write parked beside it keeps waiting", { timeout: 180_000 }, async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const answer = await owner(server);
+  const fake = await addFake(t, api);
+  const read = await started(api, "parked-read", ["mcp:fake/add"], 'Call mcp__fake__add with {"a":2,"b":3}');
+  const readAsk = await parked(api, read);
+  assert.equal(readAsk.tool, "mcp:fake/add");
+  const write = await started(api, "parked-write", ["mcp:fake/note"], 'Call mcp__fake__note with {"text":"hi"}');
+  const writeAsk = await parked(api, write);
+  assert.equal(calls(fake).length, 0, "nothing sent while they wait");
+  // No one answers: the save alone wakes the read's run, whose claim finds its ask lifted by Allow reads.
+  assert.equal((await api("PUT", "/settings/tools", READS)).status, 200);
+  const { last, rows } = await follow(api, read, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed");
+  assert.match(await answerOf(api, read), /5/);
+  assert.equal(calls(fake, "add").length, 1, "run exactly once");
+  assert.deepEqual(rows.filter((row) => row.kind === "tool_approval_requested").map((row) => row.summary.split(":")[0]), ["Allowed by the tool's setting"], JSON.stringify(rows.map((row) => [row.kind, row.summary])));
+  const still = (await api("GET", `/runs/${write}`)).body;
+  assert.deepEqual([still.status, still.pending?.id], ["input_required", writeAsk.id], "the write keeps waiting on its person");
+  assert.equal(calls(fake, "note").length, 0);
+  assert.equal((await answer(write, writeAsk.id, { decision: "deny" })).status, 204);
+  await follow(api, write, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(calls(fake, "note").length, 0, "denied: never sent");
+});
+
 test("pi: the gate reads the mark the run's pin holds: a tool its server marks read-only only after the run was pinned still asks in that run, while a run pinned after it runs unasked", { timeout: 180_000 }, async (t) => {
   const server = await serve(t);
   const { api } = server;

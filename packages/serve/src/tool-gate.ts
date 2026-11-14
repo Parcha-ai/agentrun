@@ -242,6 +242,16 @@ export function toolEffect(annotations: unknown): ToolEffect {
   return hints.destructiveHint === true ? "destructive" : "write";
 }
 
+/** MCP tool `name`'s (`mcp:<server>/<tool>`) effect as a run's pin holds it (its annotations then, toolEffect): what the
+ *  run's gate (ClaimMcp.effectOf) and a settings save's wake (settings-wake.ts) read, never a live listing. Undefined for a
+ *  tool the pin does not hold. */
+export function pinnedEffect(pin: Readonly<Record<string, { readonly tools: readonly { readonly name: string; readonly annotations?: unknown }[] }>>, name: string): ToolEffect | undefined {
+  const parsed = /^mcp:([^/]+)\/(.+)$/.exec(name);
+  const pinned = parsed && Object.hasOwn(pin, parsed[1]!) ? pin[parsed[1]!] : undefined;
+  const tool = pinned?.tools.find((one) => one.name === parsed![2]);
+  return tool ? toolEffect(tool.annotations) : undefined;
+}
+
 /** Whether "allow reads" lifts the ask of MCP tool `name`, one its run's pin marks read-only (permissionFrom's `effect`):
  *  its server's wildcard in this server's settings carries `allow_reads`, the ask came from the server's settings or
  *  the default (an agent's own ask holds), the tool's own key sets no permission on this server (an explicit setting

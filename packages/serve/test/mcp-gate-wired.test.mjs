@@ -222,6 +222,20 @@ for (const harness of HARNESSES) {
     assert.deepEqual(rows.filter((r) => r.kind === "tool_approval_requested").map((r) => r.summary.split(":")[0]), ["Allowed by the tool's setting"], shown);
   });
 
+  if (harness === "claude-agent") test(`${harness}: a read parked under ask, then Allow reads turned on, runs with no one's answer: the save alone wakes the run, and its approval row reads allowed by the setting`, { timeout: 240_000 }, async (t) => {
+    const { api, fake, run } = await setup(t, harness);
+    const runId = await run(`reads-wake-${harness}`);
+    await follow(api, runId, ["input_required"], { deadlineMs: 180_000 });
+    assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.tool, "mcp:fake/add");
+    assert.equal(calls(fake).length, 0, "nothing sent while it waits");
+    assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { allow_reads: true } })).status, 200);
+    const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 });
+    assert.match(await answerOf(api, runId), /5/);
+    assert.equal(calls(fake).length, 1, "run exactly once");
+    const shown = JSON.stringify(rows.map((r) => `${r.kind}: ${r.summary}`));
+    assert.deepEqual(rows.filter((r) => r.kind === "tool_approval_requested").map((r) => r.summary.split(":")[0]), ["Allowed by the tool's setting"], shown);
+  });
+
   test(`${harness}: mcp:fake/* with allow_reads runs the read-only add (its pin's mark) once with no one asked`, { timeout: 240_000 }, async (t) => {
     const { api, fake, run } = await setup(t, harness);
     assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { allow_reads: true } })).status, 200);
