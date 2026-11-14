@@ -543,7 +543,7 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
   const said = `on ${plural(score.n, "graded input")}: the workflow ${pts(score.wf_acc)} (${score.handed_back} handed back, the agent's answer), the agent ${pts(score.agent_acc)}, ${score.delta >= 0 ? "+" : ""}${(score.delta * 100).toFixed(1)} pts${aside ? ` (${aside})` : ""}`;
   const reserved = record.runs?.length ?? 0;
   const reason = reserved && read.unstarted === reserved
-    ? `none of its ${plural(reserved, "replay run")} started by the replay's deadline (its launch was interrupted: the server stopped after reserving it, say): nothing was replayed`
+    ? `none of its ${plural(reserved, "replay run")} started by the replay's deadline (its launch was interrupted: the server stopped after reserving it, say): nothing was replayed; start it again with POST .../learning/workflows/${workflow.name}/revisions/${digest}/replays`
     : read.rows.length && skipped === read.rows.length
     ? hint ? `nothing was replayed on its ${plural(skipped, "graded input")}: ${skipWhy}` : `every one of its ${plural(skipped, "graded input")} ${SKIPPED_WRITE}: a replay never runs a write, so nothing was replayed`
     : scored.length < REPLAY_MIN
@@ -728,44 +728,33 @@ export type ReplayView = {
   readonly decided?: PromotionRecord["decided"]; readonly reason?: string;
 };
 
-/** The claim's ports a replay's read settles and relaunches it through (replayView), at its learning commit (a refit lands
- *  as a merge from it): a replay run's own launch and revision, the first of its runs that exists; else, none created
- *  (its launch was interrupted before the first), a run's launch as its owner's start makes one now on its first graded
- *  input (ask.launchOf), at the replay's commit. `launches` false when neither could be made: it is then only decided
- *  (past its deadline), never relaunched. */
-async function readPorts(ask: ReplayAsk, record: PromotionRecord): Promise<{ deps: PromotionDeps; launches: boolean }> {
+/** The claim's ports a replay's read settles it through (replayView), at its learning commit (a refit lands as a merge
+ *  from it): a replay run's own launch and revision, the first of its runs that exists; else (none created: its launch
+ *  was interrupted before the first) a bare launch at the replay's commit, enough to decide it and never to start a run. */
+async function readPorts(ask: ReplayAsk, record: PromotionRecord): Promise<PromotionDeps> {
   const ports = (launch: RunLaunch, revisionId: string) => claimPromotion({ ...ask, runId: "", revisionId, launch });
   for (const id of record.runs ?? []) {
     const row = await ask.store.runs.get(id);
     const launch = row ? await ask.store.runs.launch(id).then((one) => readLaunchBody(one.body), () => undefined) : undefined;
-    if (row && launch) return { deps: ports(launch, row.revisionId), launches: true };
+    if (row && launch) return ports(launch, row.revisionId);
   }
-  const of = record.inputs?.[0];
-  const input = of ? (await ask.store.runs.launch(of).then((one) => readLaunchBody(one.body), () => undefined))?.input : undefined;
-  const made = input !== undefined ? await ask.launchOf(input as Json).catch(() => undefined) : undefined;
-  if (made?.launch.learning && !made.launch.learning.notesOnly) {
-    const seed = record.commit ?? made.launch.learning.seed;
-    return { deps: ports({ ...made.launch, learning: { ...made.launch.learning, ...(seed ? { seed } : {}) } }, made.revisionId), launches: true };
-  }
-  // Nothing to launch from: a bare launch, enough to decide (its record names its commit) and never to start a run.
-  return { deps: ports({ input: {}, title: "", place: { mode: "runner" } } as RunLaunch, ""), launches: false };
+  return ports({ input: {}, title: "", place: { mode: "runner" } } as RunLaunch, "");
 }
 
-/** Reads replay `id` of `name` at `digest`, moving it on first as a claim of its revision would: an interrupted launch
- *  finished (relaunch: its reserved runs not created past the launch grace), then settled (the claim path's settle) once
- *  its runs ended or its deadline passed. So a replay of a revision no claim lays (an older, held one) is decided too, and
- *  one whose server stopped before its first run existed is never running forever. Refused (missing) when the agent has
- *  no such replay. */
+/** Reads replay `id` of `name` at `digest`, settling it first as a claim of its revision would (the claim path's settle)
+ *  once its runs ended or its deadline passed: it writes only the decision. A read never starts a run: a replay whose
+ *  launch was interrupted (reserved runs never created) reads running until its deadline, then is decided held, read as
+ *  failed, its reason saying none of its runs started and to start it again with POST. So a replay of a revision no claim
+ *  lays (an older, held one) is decided too, and never running forever. Refused (missing) when the agent has no such
+ *  replay. */
 export async function replayView(ask: ReplayAsk, name: string, digest: string, id: string): Promise<ReplayView> {
   const find = async () => (await promotionsOf(ask.store.settings, ask.agentId)).findLast((one) => one.workflow === name && one.digest === digest && one.replay_id === id);
   let record = await find();
   if (!record) throw new ReplayRefused("missing", `${name} at ${digest} has no replay ${id}.`);
   const text = record.commit ? (await workflowsAt(ask, record.commit).catch(() => [])).find((one) => one.name === name && workflowDigest(one) === digest) : undefined;
   if (record.decided === "replaying" && text) {
-    const { deps, launches } = await readPorts(ask, record);
-    if (launches) await relaunch(deps, text, digest, record);
     // Read back by its id: whatever settled it (this read, a claim, another read), never another replay's record.
-    await settle(deps, text, digest, record);
+    await settle(await readPorts(ask, record), text, digest, record);
     record = (await find()) ?? record;
   }
   const decided = record.decided === "replaying" ? undefined : record.decided;
