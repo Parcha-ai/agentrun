@@ -174,7 +174,8 @@ test("the Agent37 build's recipe is box/Dockerfile plus Xvfb, xfwm4 and the apps
   assert.ok(programs.includes("Xvfb"), "the build checks the X server is there");
   // The window manager's programs beyond Debian's essential ones (unshare, util-linux's, and sh).
   assert.equal(WINDOW_MANAGER[0], "unshare");
-  for (const program of ["dbus-run-session", "xfwm4"]) {
+  // xsetroot paints the desktop's background before xfwm4 starts, so a desktop with no window open is not a black screen.
+  for (const program of ["dbus-run-session", "xfwm4", "xsetroot"]) {
     assert.ok(WINDOW_MANAGER.some((arg) => arg.includes(`${program} `)), `the window manager runs ${program}`);
     assert.ok(programs.includes(program), `the build checks the window manager's ${program} is there`);
   }

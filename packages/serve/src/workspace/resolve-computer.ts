@@ -136,10 +136,14 @@ export const vendorNetworkOnly = (network: readonly string[] | undefined): boole
  *  phone, a hosted browser, Local Chrome). */
 export const needsNetwork = (network: readonly string[] | undefined): boolean => network !== undefined && network.length > 0 && !network.includes("none");
 
+/** A provider's label after its article, as it is said: "a Modal", "an E2B" (every label is said by its first letter's
+ *  sound). `start`: at a sentence's start, "A"/"An". */
+export const aLabel = (label: string, start = false): string => `${start ? "A" : "a"}${/^[AEIOU]/i.test(label) ? "n" : ""} ${label}`;
+
 /** Why a computer that needs a network is refused where this server's AGENTRUN_BOX_ALLOW is none, in words that name the
  *  fix: the operator said no network at all, and the computer can't run without one. */
 export const noNetworkRefusal = (label: string, kind: string): string =>
-  `This agent's computer is a ${label} ${kind}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or set AGENTRUN_BOX_ALLOW to a host list.`;
+  `This agent's computer is ${aLabel(label)} ${kind}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or set AGENTRUN_BOX_ALLOW to a host list.`;
 
 /** Whether an agent's computer `setting` can be had in `mode` now, by the answers the claim gives (resolveComputer: the
  *  kind, the provider and what it serves, the mode's mount, the provider's keys by `keyOf`): ok, or its refusal in words
@@ -169,7 +173,7 @@ export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, r
     const said = await answers(entry.id);
     // It names the box whose probe said no (a refusal's details.box), as the box check did.
     if (!said.up && said.absent) return { refused: noDockerWords(resolved.kind, registry.PROVIDERS, mode), box: entry.id };
-    if (!said.up) return { refused: `This agent's computer is a ${entry.label} ${resolved.kind}, and this server cannot run it: ${said.reason.replace(/[.!?]+$/, "")}.`, box: entry.id };
+    if (!said.up) return { refused: `This agent's computer is ${aLabel(entry.label)} ${resolved.kind}, and this server cannot run it: ${said.reason.replace(/[.!?]+$/, "")}.`, box: entry.id };
   }
   const host = entry ? hostWhy?.(entry.id) : undefined;
   if (host) return { refused: `This agent's computer is a ${entry!.label} ${resolved.kind}, and this server cannot run it: ${host.replace(/[.!?]+$/, "")}.` };
@@ -323,10 +327,10 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   // folder, and the agent may run programs there (a folder is mounted for its shell).
   const mounts = !noPrograms(setting) && mountsFolder(kind, entry, [configuration], mode);
   if (kind === "sandbox" && !mounts) {
-    if (mode === 1) return { refused: `Mode 1 runs a sandbox only on Docker: a ${entry.label} sandbox can't reach the run's folder on this machine. Pick Docker for this agent's computer in ${SETTINGS}, or another kind of computer.` };
+    if (mode === 1) return { refused: `Mode 1 runs a sandbox only on Docker: ${aLabel(entry.label)} sandbox can't reach the run's folder on this machine. Pick Docker for this agent's computer in ${SETTINGS}, or another kind of computer.` };
     if (entry.mounts.includes("bind")) return { refused: `Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them. Pick a remote sandbox for this agent's computer in ${SETTINGS}, or no computer.` };
     const why = entry.unmounted?.archil;
-    return { refused: `A ${entry.label} sandbox can't mount the run's folder from Archil${why ? ` (${why})` : ""}: pick another sandbox for this agent's computer in ${SETTINGS}.` };
+    return { refused: `${aLabel(entry.label, true)} sandbox can't mount the run's folder from Archil${why ? ` (${why})` : ""}: pick another sandbox for this agent's computer in ${SETTINGS}.` };
   }
 
   // Its GPUs, a sandbox's alone: in gpuRefused's words, against what the configuration the setting selected declares,
@@ -336,14 +340,14 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   if (gpu) {
     const refused = gpuRefused(gpu, configuration.gpu, { kind: mode === 1 ? "bind" : "archil" }, entry.label);
     if (refused?.folder) return { refused: refused.words };
-    if (refused) return { refused: `A ${entry.label} sandbox can't have this agent's GPUs: ${refused.words}. Change the GPUs or the provider for this agent's computer in ${SETTINGS}.` };
+    if (refused) return { refused: `${aLabel(entry.label, true)} sandbox can't have this agent's GPUs: ${refused.words}. Change the GPUs or the provider for this agent's computer in ${SETTINGS}.` };
   }
 
   // The agent's own computer, kept between its runs: only where the configuration keeps one, and never one that mounts
   // the run's folder (a later run would find an earlier run's folder in it).
   const persistent = setting.persistent === true;
-  if (persistent && configuration.persistence === undefined) return { refused: `A ${entry.label} ${kind} keeps no computer for an agent between runs (it declares no persistence): turn persistent off, or pick a computer that keeps one, for this agent's computer in ${SETTINGS}.` };
-  if (persistent && mounts) return { refused: `A ${entry.label} ${kind} mounts each run's folder, so it can't be kept between runs: turn persistent off for this agent's computer in ${SETTINGS}.` };
+  if (persistent && configuration.persistence === undefined) return { refused: `${aLabel(entry.label, true)} ${kind} keeps no computer for an agent between runs (it declares no persistence): turn persistent off, or pick a computer that keeps one, for this agent's computer in ${SETTINGS}.` };
+  if (persistent && mounts) return { refused: `${aLabel(entry.label, true)} ${kind} mounts each run's folder, so it can't be kept between runs: turn persistent off for this agent's computer in ${SETTINGS}.` };
 
   // Its keys: every required one saved, before anything starts; only declared names go to the provider.
   const saved = await side.keysOf(entry.id);

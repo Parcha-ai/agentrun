@@ -39,13 +39,21 @@ export function computerToolsFor(groups: readonly string[]): readonly string[] {
   return [...(observe ? ["computer_observe"] : []), ...(act ? ["computer_act"] : []), ...(has("screen") ? ["computer_screenshot"] : []), ...(observe || act ? [SCRIPT_TOOL] : []), HANDOFF_TOOL];
 }
 
-const def = (kind: CapabilityKind, name: (typeof COMPUTER_TOOLS)[number], description: string, replaySafe: boolean): ToolDef => ({
+/** computer_act's parameters on a computer with no ui group: no expect, which only the ui group checks, so neither the
+ *  expect nor the wait on one (an empty act with an expect) is offered there. */
+const ACT_WITHOUT_UI: object = (() => {
+  const schema = COMPUTER_TOOL_SCHEMAS.computer_act as { properties: { steps: { description?: string }; expect?: unknown } };
+  const { expect: _, ...properties } = schema.properties;
+  return { ...schema, properties: { ...properties, steps: { ...properties.steps, description: "Run in order." } } };
+})();
+
+const def = (kind: CapabilityKind, name: (typeof COMPUTER_TOOLS)[number], description: string, replaySafe: boolean, parameters: object = COMPUTER_TOOL_SCHEMAS[name as keyof typeof COMPUTER_TOOL_SCHEMAS]): ToolDef => ({
   name,
   source: "host",
   gateName: `host:${kind}/${name}`,
   settingsKey: kind,
   description,
-  parameters: COMPUTER_TOOL_SCHEMAS[name as keyof typeof COMPUTER_TOOL_SCHEMAS],
+  parameters,
   replaySafe,
 });
 
@@ -54,7 +62,7 @@ const def = (kind: CapabilityKind, name: (typeof COMPUTER_TOOLS)[number], descri
 export function computerToolDefs(kind: CapabilityKind, groups: readonly string[]): readonly ToolDef[] {
   return Object.freeze([
     def(kind, "computer_observe", OBSERVE, true),
-    def(kind, "computer_act", ACT, false),
+    def(kind, "computer_act", ACT, false, groups.includes("ui") ? undefined : ACT_WITHOUT_UI),
     def(kind, "computer_screenshot", SCREENSHOT, true),
     def(kind, "computer_script", scriptWords(groups), false),
     handoffDef(kind),

@@ -3014,7 +3014,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             return computerViewerLink(store, sealKey, run.id, answers);
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family)),
-          session: (kind) => sessionIn(kind, entries),
+          session: (kind) => sessionIn(kind, entries, run.terminal),
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.

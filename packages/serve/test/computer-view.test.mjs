@@ -79,3 +79,9 @@ test("a desktop or a phone opens with the run's claim: opening until its viewer 
     assert.equal(sessionIn(kind, [call("c1", "snapshot"), result("c1")]), "opening", "browser steps are no desktop's");
   }
 });
+
+test("an ended run's computer is never opening: its desktop or phone closed with the run, as did a browser step left unanswered", () => {
+  for (const kind of ["desktop", "phone"]) assert.equal(sessionIn(kind, [], true), "closed", kind);
+  assert.equal(sessionIn("browser", [call("c1", "snapshot")], true), "closed", "a browser step the run ended under");
+  assert.equal(sessionIn("browser", [call("c1", "web_fetch"), result("c1")], true), "unopened", "a browser no step opened stays unopened");
+});

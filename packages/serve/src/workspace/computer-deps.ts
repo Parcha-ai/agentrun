@@ -32,7 +32,7 @@ import type { Store } from "../store/index.js";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type OpenComputerView } from "./computer-for-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
-import { type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
+import { aLabel, type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
 
 type ComputerKindOf = Exclude<ComputerSettingKind, "none">;
 
@@ -193,7 +193,7 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
     if (entry.prepareImage && kind === "sandbox") return DEFAULT_DOCKER_IMAGE;
     const image = entry.defaultImage?.[kind];
     if (image !== undefined) return image;
-    if (entry.prepareImage && kind === "desktop") throw refused(`A ${entry.label} desktop needs an image with an X server; set one for desktops.`);
+    if (entry.prepareImage && kind === "desktop") throw refused(`${aLabel(entry.label, true)} desktop needs an image with an X server; set one for desktops.`);
     throw refused(`${entry.label} has no image for a ${kind} computer here: pick another provider for this agent's computer in Settings → Computers.`);
   };
   const limits = dockerLimitsOf(env);

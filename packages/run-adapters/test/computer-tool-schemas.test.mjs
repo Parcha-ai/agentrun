@@ -6,7 +6,7 @@
 //    Gemini reads, no `const` (it ignores it), enums of strings or numbers.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { COMPUTER_TOOL_SCHEMAS } from "@parcha/agentrun-kernel/kernel";
+import { COMPUTER_TOOL_SCHEMAS, computerToolDefs } from "@parcha/agentrun-kernel/kernel";
 
 const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 /** The keywords OpenAI's strict mode takes. */
@@ -72,6 +72,18 @@ test("computer_act types its steps: one anyOf of the protocol's nine step shapes
   }
   assert.deepEqual(shapes[1].required.sort(), ["set", "value"]);
   assert.ok(!JSON.stringify(steps.items).includes('"description"'), "no words below the tool's own parameters");
+});
+
+test("computer_act offers an expect only where the ui group checks one: a desktop without it has no expect, and no wait on one", () => {
+  const act = (groups) => computerToolDefs("desktop", groups).find((def) => def.name === "computer_act").parameters;
+  const withUi = act(["screen", "input.pointer", "ui"]);
+  assert.ok(withUi.properties.expect);
+  assert.match(withUi.properties.steps.description, /expect/);
+  const without = act(["screen", "input.pointer", "input.keys", "apps"]);
+  assert.equal(without.properties.expect, undefined);
+  assert.doesNotMatch(JSON.stringify(without), /expect/);
+  assert.deepEqual(without.properties.steps.items, withUi.properties.steps.items, "the same steps");
+  assert.deepEqual(openAiStrictProblems(strictOf(without)), []);
 });
 
 for (const [tool, schema] of Object.entries(COMPUTER_TOOL_SCHEMAS)) {
