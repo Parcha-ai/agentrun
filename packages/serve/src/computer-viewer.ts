@@ -38,8 +38,8 @@ const html = `<!doctype html>
 const css = `* { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: #111; color: #eee; font: 14px system-ui, sans-serif; }
 body { display: flex; flex-direction: column; }
-#bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; background: #222; border-bottom: 1px solid #333; }
-#bar button { background: #333; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+#bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 8px; background: #222; border-bottom: 1px solid #333; }
+#bar button { background: #333; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
 #bar button:hover { background: #444; }
 #bar button:disabled { opacity: 0.5; cursor: not-allowed; }
 #bar #hands { background: #1f4d2b; border-color: #2f6b3d; }
@@ -47,7 +47,8 @@ body { display: flex; flex-direction: column; }
 #hands[hidden], #phone[hidden], #notice[hidden] { display: none; }
 #phone { display: inline-flex; gap: 6px; }
 #spacer { flex: 1; }
-#drive { min-width: 9em; text-align: right; color: #aaa; }
+/* Who drives takes the bar's room left over, and on a frame as narrow as a phone's a line of its own: never clipped. */
+#drive { flex: 0 1 auto; min-width: 0; text-align: right; color: #aaa; }
 #drive.agent, #drive.pending { color: #f0b429; }
 #drive.person { color: #6cc070; }
 .not-held #screen { cursor: not-allowed; }

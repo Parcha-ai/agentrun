@@ -5,7 +5,7 @@
   "title": "Add a contact with a mobile number in Contacts",
   "split": "dev",
   "tags": ["contacts", "create"],
-  "needs": { "os": "android", "kind": "phone", "apps": ["com.google.android.contacts", "com.android.contacts", "com.samsung.android.app.contacts"] },
+  "needs": { "os": "android", "kind": "phone", "apps": [["com.google.android.contacts", "com.android.contacts", "com.samsung.android.app.contacts"]] },
   "params": {
     "who": {
       "pick": [

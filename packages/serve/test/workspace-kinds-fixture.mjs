@@ -7,11 +7,11 @@ export { PROVIDERS, SETTING_KINDS, servingRefusals };
 
 /** The module as the resolver takes it. */
 export const KINDS = { SETTING_KINDS, servingRefusals, PROVIDERS };
-/** The same, with Daytona's GPU computers taking an Archil mount, as one made from a GPU snapshot that has root and the
- *  Archil client would: the registry's own daytona-gpu takes none (DAYTONA_GPU.mounts is empty). */
+/** The same, with Modal's GPU computers taking an Archil mount, as they will once Archil's FUSE mount is proven on their
+ *  runtime: the registry's own Modal GPU takes none yet (MODAL_GPU.mounts is empty). */
 export const GPU_ARCHIL_KINDS = {
   ...KINDS,
   PROVIDERS: PROVIDERS.map((one) =>
-    one.id === "daytona" ? { ...one, capabilities: one.capabilities.map((c) => (c.gpu ? { ...c, gpu: { ...c.gpu, mounts: ["archil"] } } : c)) } : one,
+    one.id === "modal" ? { ...one, capabilities: one.capabilities.map((c) => (c.gpu ? { ...c, gpu: { ...c.gpu, mounts: ["archil"] } } : c)) } : one,
   ),
 };

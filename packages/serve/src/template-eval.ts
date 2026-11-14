@@ -255,6 +255,8 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     const body = typeof prompt === "string" ? "" : prompt.body.trim();
     const fields = f.input === undefined ? undefined : isObject(f.input) && !Object.hasOwn(f.input, "content") ? f.input : (bad(`${at}/prompt.md: input is a mapping of the run's typed input, by field (the body is its content)`), undefined);
     for (const issue of inputIssues(runInput(body, fields), inputSchemaOf(pkg.inputSchema))) bad(`${at}/prompt.md: ${issue.message}`);
+    // The Input: block is the server's, made from `input:` as for a run started through the API: never the body's own.
+    if (/^Input:[ \t]*\r?\n[ \t]*`{3,}/m.test(body)) bad(`${at}/prompt.md: its body holds an Input: block, which the server writes from input: (the front matter): give the fields there`);
     const spec = lstatSync(join(root, "case.yaml"), { throwIfNoEntry: false })?.isFile() ? yamlOf(readFileSync(join(root, "case.yaml"), "utf8")) : {};
     const c = typeof spec === "string" ? (bad(`${at}/case.yaml: ${spec}`), {}) : isObject(spec) ? spec : (bad(`${at}/case.yaml: is not a mapping`), {});
     for (const field of unknown(c, CASE_FIELDS)) bad(`${at}/case.yaml: no field ${field}: its fields are ${CASE_FIELDS.join(", ")}`);
