@@ -345,7 +345,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       )}
 
       {t.mcp.length > 0 && (
-        <Section title="Tools you allow" note="Nothing is granted until you tick it. A tool you leave unticked is not given to the agent, even when it never asks: you can add it later on the agent's page.">
+        <Section title="Tools you grant" note="Nothing is granted until you tick it. A tool you tick is granted: a write asks you first unless you choose Never ask, and a read runs without asking where you turned on Allow reads for its server. A tool you leave unticked is not given to the agent, even when it never asks: you can add it later on the agent's page.">
           {t.mcp.map((m) => (
             <div key={m.server} data-mcp={m.server} className="px-4 py-3">
               <p className="flex flex-wrap items-center gap-2 font-mono text-body">
@@ -371,10 +371,9 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
                         <input type="checkbox" className="mt-1 accent-primary" checked={ticked.has(tool.tool)} onChange={() => setTicked((s) => { const n = new Set(s); if (n.has(tool.tool)) n.delete(tool.tool); else n.add(tool.tool); return n; })} />
                         <span className="min-w-0">
                           <span className="font-mono text-body">{tool.name}</span> <span className="font-mono text-label text-muted-foreground">{tool.tool}</span>
-                          {/* A tick is a grant, and the server stores every granted tool as allow: that is what the tick says. What the
-                              template asks for is said apart. */}
-                          <span className="block text-small">Allow: the agent may call this without asking you.</span>
-                          <span className="block text-small text-muted-foreground">{tool.asks === "allow" ? "The template asks you to allow this." : "The template does not ask for this; unticked, the agent doesn't get it."}</span>
+                          {/* A tick is a grant, with no permission set: the section's note says what a granted tool then does.
+                              What the template asks for is said apart. */}
+                          <span className="block text-small text-muted-foreground">{tool.asks === "allow" ? "The template asks you to grant this." : "The template does not ask for this; unticked, the agent doesn't get it."}</span>
                         </span>
                       </label>
                       {index >= 0 && <Issues issues={at(`grants.${index}`)} />}
@@ -398,7 +397,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       <fieldset aria-label="Approvals" className="mt-6">
         <legend className="caps text-small font-semibold">Approvals</legend>
         <div className="mt-2 divide-y border">
-          {([["ask", "Ask me", "A call whose permission is ask waits for your answer."], ["never", "Never ask (run unattended)", "For an agent that runs on its triggers, with no one there to answer."]] as const).map(([value, label, note]) => (
+          {([["ask", "Ask me", "A call that asks waits for your answer: every write, and a read unless you turned on Allow reads for its server."], ["never", "Never ask (run unattended)", "Runs without asking you, even for writes. Pick this if a trigger starts the agent while you're away."]] as const).map(([value, label, note]) => (
             <label key={value} className="flex items-start gap-3 px-4 py-3">
               <input type="radio" name="approvals" value={value} className="mt-1 accent-primary" checked={approvals === value} onChange={() => setApprovals(value)} />
               <span><span className="font-mono text-body">{label}</span><span className="block text-small text-muted-foreground">{note}</span></span>
