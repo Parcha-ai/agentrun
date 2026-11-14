@@ -31,16 +31,18 @@ async function rowsNow(api, runId) {
   return [...body.rows].sort((a, b) => a.seq - b.seq);
 }
 
-/** One parked call as a person reads it: its own rows say it was held, its approval row follows, then its resume row
- *  (the outcome, matched by `outcome`). */
+/** One parked call as a person reads it: its call, its approval row, its result, then its resume row (the outcome,
+ *  matched by `outcome`); its own rows say it was held, or, once it ran, what it did. */
 function readsInOrder(rows, callId, outcome, at) {
   const shown = rows.map((r) => `${r.kind}: ${r.summary}`);
   const own = rows.flatMap((r, i) => ((r.kind === "tool_use" || r.kind === "tool_result") && r.tool_use_id === callId ? [i] : []));
   const ask = rows.findIndex((r) => r.kind === "tool_approval_requested" && r.tool_use_id === callId);
-  // Its own outcome: the first after its approval row (two calls' outcomes may read the same).
-  const resume = rows.findIndex((r, i) => i > ask && r.origin === "server" && outcome.test(r.summary ?? ""));
-  assert.ok(own.length > 0 && ask > Math.max(...own), `${at}: the approval row follows the call's own rows: ${JSON.stringify(shown)}`);
-  assert.ok(resume > ask, `${at}: the outcome (the resume row) follows the approval row: ${JSON.stringify(shown)}`);
+  // Its own outcome: the first after its approval row and its own rows (two calls' outcomes may read the same).
+  const resume = rows.findIndex((r, i) => i > Math.max(ask, ...own) && r.origin === "server" && outcome.test(r.summary ?? ""));
+  const calls = own.filter((i) => rows[i].kind === "tool_use");
+  const results = own.filter((i) => rows[i].kind === "tool_result");
+  assert.ok(own.length > 0 && ask > Math.max(...calls) && ask < Math.min(...results), `${at}: the approval row follows the call and sits above its result: ${JSON.stringify(shown)}`);
+  assert.ok(resume > ask, `${at}: the outcome (the resume row) follows the approval row and the call's own rows: ${JSON.stringify(shown)}`);
   // One that ran reads as any call, its result saying how it came to run; one that did not run says only that it was held.
   const ran = /^AgentRun: \S+ ran( once you allowed it|, as its setting allows it)/.exec(rows[resume].summary ?? "");
   if (!ran) return assert.deepEqual(own.map((i) => rows[i].summary), own.map(() => "Held for your approval"), `${at}: the call's own rows say only that it was held: ${JSON.stringify(shown)}`);

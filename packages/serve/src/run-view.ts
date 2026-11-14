@@ -770,8 +770,9 @@ const approvalRowId = (callId: string) => `approval:${callId}`;
 
 /** The rows of a run whose calls waited for approval, as the runner writes it (store-view.ts): the gate's ask
  *  (agentrun.ask, `asks`) and the person's answer (agentrun.answer, `answers`) are journal entries, and an allowed call runs
- *  in place, so its result row is its real result; a denied one's is the refusal. Each such call reads in order: its own
- *  rows, then the approval row, then, once there is one, the outcome row; its own rows say only that it was held once the
+ *  in place, so its result row is its real result; a denied one's is the refusal. Each such call reads in order: its call,
+ *  then the approval row at the ask's time, then its result, then, once there is one, the outcome row (before a result is
+ *  in, the approval row and any outcome follow its own rows); its own rows say only that it was held once the
  *  outcome shows below, and before that what came of the approval so far. Arguments and notes go through `redact`, the
  *  run's redactor, before any cut. The rows this function makes are dropped first, so a pass over its own output gives the
  *  same rows. */
@@ -802,15 +803,22 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     const own: TimelineEvent = ran ? (row.kind === "tool_result" && !row.summary?.endsWith(said) ? { ...row, summary: row.summary ? `${row.summary} ${said}` : said } : row)
       : answer?.decision === "deny" && answer.by === "setting" ? { ...row, summary: DENIED_SINCE }
       : { ...row, summary: outcome ? HELD : callSays(answer), tool_status: null };
-    if (lastOf.get(approval.call_id) !== row.id) return [own];
+    // The approval row sits above the call's result once there is one (the ask came before the call ran), else below its
+    // last own row; the outcome rows below its last own row.
+    const askHere = row.id === (result?.id ?? lastOf.get(approval.call_id));
+    const last = lastOf.get(approval.call_id) === row.id;
+    if (!askHere && !last) return [own];
     const args = shownArgs(approval, redact);
-    // A served row keeps the place it was first served at (rows.ts). The call's result comes in after the answer (the park
-    // writes none), so the approval and outcome rows take a new id once it is there: served anew below the result, the
-    // call's own rows, then its approval, then what came of it, as a person reads it.
+    // A served row keeps the place it was first served at (rows.ts). The approval row is served while the call waits, above
+    // the result yet to come, so it keeps its id. The call's result comes in after the answer (the park writes none), so the
+    // outcome rows take a new id once it is there: served anew below the result, as a person reads it.
     const at = result ? `${approvalRowId(approval.call_id)}:after` : approvalRowId(approval.call_id);
     const head = !answer ? "Waiting for your approval" : answer.decision === "canceled" ? "Withdrawn when the run was cancelled" : answer.decision === "withdrawn" ? (answer.ended ? "Withdrawn when the run ended" : "Withdrawn when the run was stopped") : answer.by === "message" ? "Declined by your message" : answer.by === "setting" ? (answer.decision === "deny" ? "Denied by the tool's setting on this server" : "Allowed by the tool's setting") : "Asked your approval";
-    const asked: TimelineEvent = { ...unrefused(row), id: at, kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
-    if (!outcome) return [own, asked];
+    // Its time is the ask's (the gate's requestedAt), never the row it was made from.
+    const when = approval.requested_at ? { timestamp: approval.requested_at, created_at: approval.requested_at } : {};
+    const asked: TimelineEvent = { ...unrefused(row), ...when, id: approvalRowId(approval.call_id), kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
+    const placed = !askHere ? [own] : result ? [asked, own] : [own, asked];
+    if (!last || !outcome) return placed;
     const failed = answer!.decision === "allow" && result?.tool_status === "failed";
     // The result's words: a tool_result row keeps them as its preview (the renderer's, redacted and cut), its text empty.
     const told: TimelineEvent = { ...unrefused(result ?? row), id: `${at}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
@@ -820,8 +828,8 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
       const words = redact(answer!.note);
       const { origin: _origin, ...base } = unrefused(result ?? row);
       const theirs: TimelineEvent = { ...base, id: `${at}:message`, kind: "user_message", summary: clip(`You: ${words.split("\n", 1)[0]}`, 500), text: words, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
-      return [own, asked, theirs, told];
+      return [...placed, theirs, told];
     }
-    return [own, asked, told];
+    return [...placed, told];
   });
 }
