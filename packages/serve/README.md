@@ -1545,9 +1545,11 @@ same: a saved credential never goes to another origin unless you send it again.
 
 Each saved server records where its tools come from, `source` and `toolkit`, which a template's `mcp` needs are matched
 on at apply ([templates](templates/README.md#agentmd)): the Composio preset records `composio` and its toolkit, a
-`github_app` server or one at GitHub's MCP address `github`/`github`, and any other `url` with no toolkit until you set
-one (`toolkit` in the `PUT`, or Settings → MCP servers). A `PUT` that names neither keeps the record, and `DELETE`
-removes it with the server.
+`github_app` server or one at GitHub's MCP address `github`/`github`, one on Composio's hosts saved by hand `composio`
+with no toolkit until you name it, and any other `url` with no toolkit until you set one (`toolkit` in the `PUT`, in
+`POST .../oauth/start` for a server you sign in to, or Settings → MCP servers). A `PUT` that names neither keeps the
+record, and `DELETE` removes it with the server. A record counts only for the server it was saved with: a server saved
+again under the same name after a `DELETE` starts afresh.
 
 `GET /v2/settings/mcp-servers` and `GET .../{name}` show each server with `credential`: `sealed`, `unreadable` (sealed
 under another key, or damaged: a `PUT` with the credential seals it again) or `expired` (an OAuth sign-in whose refresh

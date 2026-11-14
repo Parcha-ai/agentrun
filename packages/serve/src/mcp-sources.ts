@@ -4,6 +4,9 @@
 // github_app) is always github/github, and one at GitHub's hosted MCP address is github/github unless its owner says
 // otherwise; any other is url with the toolkit its owner gives it in Settings, else none. What the owner (or the preset)
 // said is one row of store.settings per server (mcpSourceKey), written by a save that names it, removed with the server.
+// That row is a write of its own after the server's: it names the server row it was written for (`of`, the row's
+// created_at, which a save over the row keeps), and is read only for that row. One left behind by a removal that raced a
+// save, or by a removal cut short, is never read as what a server saved again under the name is.
 import type { InputIssue } from "./errors.js";
 import { githubMcpUrl } from "./github.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
@@ -19,21 +22,44 @@ export const mcpSourceKey = (name: string): string => `mcp.source/${name}`;
 
 const GITHUB: SourceRecord = { source: "github", toolkit: "github" };
 
-/** A stored record read, or undefined when it is not one (fail to the default, never to another server's toolkit). */
-function recordOf(value: unknown): SourceRecord | undefined {
-  if (!isObject(value) || !(MCP_SOURCES as readonly unknown[]).includes(value.source)) return undefined;
+/** A saved server row as its record is bound to it: created_at, kept by every save over the row (none: no row yet). */
+export type RecordedRow = { url: string; auth: string; createdAt?: number };
+
+/** The settings value a record is stored as, bound to the server row it was written for. */
+export const storedSource = (record: SourceRecord, row: { createdAt: number }): SourceRecord & { of: number } => ({ ...record, of: row.createdAt });
+
+/** Whether the stored value `value` was written for another server row than the one created at `createdAt`: a record left
+ *  behind, which a removal of this row leaves for the row it is. */
+export const recordedForAnother = (value: unknown, createdAt: number): boolean => isObject(value) && typeof value.of === "number" && value.of !== createdAt;
+
+/** A stored record read for the row created at `createdAt`, or undefined when it is not one or was written for another row
+ *  (fail to the default, never to another server's toolkit). */
+function recordOf(value: unknown, createdAt: number | undefined): SourceRecord | undefined {
+  if (!isObject(value) || createdAt === undefined || value.of !== createdAt || !(MCP_SOURCES as readonly unknown[]).includes(value.source)) return undefined;
   const toolkit = value.toolkit === null ? null : typeof value.toolkit === "string" && MCP_SERVER_NAME.test(value.toolkit) ? value.toolkit : undefined;
   return toolkit === undefined ? undefined : { source: value.source as McpSource, toolkit };
 }
 
-/** What a server with no record of its own is: github/github at GitHub's hosted MCP address, else url with no toolkit. */
-const derived = (row: { url: string; auth: string }, githubOrigin: string): SourceRecord => (row.auth === "github_app" || githubMcpUrl(row.url, githubOrigin) ? { ...GITHUB } : { source: "url", toolkit: null });
+/** Whether `url` is on Composio's own hosts (composio.dev and its subdomains), where its MCP servers are served. */
+const composioUrl = (url: string): boolean => {
+  try {
+    return /(^|\.)composio\.dev$/.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+};
+
+/** What a server with no record of its own is: github/github at GitHub's hosted MCP address; composio with no toolkit yet
+ *  on Composio's hosts (one saved before records were, or by hand: its owner names the toolkit, as a composio record
+ *  must, for a template's need to match it); else url with no toolkit. */
+const derived = (row: { url: string; auth: string }, githubOrigin: string): SourceRecord =>
+  row.auth === "github_app" || githubMcpUrl(row.url, githubOrigin) ? { ...GITHUB } : { source: composioUrl(row.url) ? "composio" : "url", toolkit: null };
 
 /** What the saved server `row` is: github/github whatever was recorded when it runs on the GitHub App's tokens, else its
- *  record, else what its address says (derived). */
-export function sourceOf(row: { url: string; auth: string }, recorded: unknown, githubOrigin: string): SourceRecord {
+ *  record (the one written for this row), else what its address says (derived). */
+export function sourceOf(row: RecordedRow, recorded: unknown, githubOrigin: string): SourceRecord {
   if (row.auth === "github_app") return { ...GITHUB };
-  return recordOf(recorded) ?? derived(row, githubOrigin);
+  return recordOf(recorded, row.createdAt) ?? derived(row, githubOrigin);
 }
 
 /** A save body's `source` and `toolkit`, each checked when given (a toolkit of null clears it); an issue for each that is

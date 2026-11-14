@@ -541,6 +541,28 @@ describe("Settings → MCP servers, GitHub App", () => {
     expect(s.writes().at(-1)!.body).toEqual({ url: VARS.url, auth: { type: "bearer" }, source: "github", toolkit: "github" });
   });
 
+  it("marks a saved server composio with its toolkit, as one saved before the preset recorded it needs", async () => {
+    const s = server([[saved({ name: "slack" })]], (c) => (c.method === "PUT" ? json(200, saved({ name: "slack", source: "composio", toolkit: "slack" })) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Change$/, p.row("slack"));
+    expect(picker(p.host, "Source")!.disabled).toBe(false);
+    await choose(picker(p.host, "Source")!, "composio");
+    await p.type("mcp-toolkit", "slack");
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)!.body).toEqual({ url: VARS.url, auth: { type: "bearer" }, source: "composio", toolkit: "slack" });
+  });
+
+  it("a sign-in carries the toolkit, so the server it saves is matched by a template's need", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/oauth/start") ? json(200, { authorization_url: "http://127.0.0.1:4300/authorize?state=t" }) : undefined));
+    const p = await open(s.v2, { add: { name: "notion" } });
+    await p.type("mcp-url", VARS.oauth_url);
+    await p.pick("oauth");
+    await p.settle();
+    await p.click(/^Sign in$/);
+    expect(s.writes().at(-1)).toEqual({ method: "POST", path: "/v2/settings/mcp-servers/notion/oauth/start", body: { url: VARS.oauth_url, source: "url", toolkit: "notion" } });
+    expect(p.opened).toEqual(["http://127.0.0.1:4300/authorize?state=t"]);
+  });
+
   it("shows each saved server's source and toolkit", async () => {
     const p = await open(server([[saved({ name: "slack", source: "composio", toolkit: "slack" }), saved()]]).v2);
     expect(p.row("slack").textContent).toContain("Composio");

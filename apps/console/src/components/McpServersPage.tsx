@@ -292,7 +292,8 @@ function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved
   const [headerRows, setHeaderRows] = useState(Math.max(1, saved?.auth.headers?.length ?? 0));
   // Where its tools come from and the toolkit they are, which a template's MCP need is matched on. A server a template's
   // url need sent the person here for starts with that toolkit. On the GitHub App's tokens it is github/github, a github
-  // server's toolkit is github, and a Composio one's source is the preset's: the server holds it to those.
+  // server's toolkit is github, and a composio one names its toolkit (one saved before the preset recorded it is marked
+  // here): the server holds it to those.
   const [source, setSource] = useState<McpSource>(saved?.source ?? "url");
   const [toolkit, setToolkit] = useState(saved?.toolkit ?? (add && !add.auth ? add.name : ""));
   const shownSource: McpSource = type === "github_app" ? "github" : source;
@@ -338,7 +339,8 @@ function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved
   const startSignIn = () => act(() => {
     const scopes = value("mcp-scopes").split(/\s+/).filter(Boolean);
     const client = value("mcp-client-id");
-    return signIn(name.trim(), { url: url.trim(), ...(scopes.length ? { scopes } : {}), ...(client ? { client_id: client, ...(value("mcp-client-secret") ? { client_secret: value("mcp-client-secret") } : {}) } : {}) });
+    // Its source and toolkit go with the sign-in: the server writes them for the server the sign-in saves.
+    return signIn(name.trim(), { url: url.trim(), ...(scopes.length ? { scopes } : {}), ...(client ? { client_id: client, ...(value("mcp-client-secret") ? { client_secret: value("mcp-client-secret") } : {}) } : {}), ...kind() });
   });
   const runPreview = () => {
     const asked = edits.current;
@@ -367,8 +369,8 @@ function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Address</span>
         <Input name="mcp-url" value={url} onChange={(e) => { setUrl(e.target.value); if (problem?.needsClient) setProblem(null); }} placeholder="https://mcp.example.com/mcp" spellCheck={false} /></label>
       <div className="block"><span className="caps mb-2 block text-small font-semibold">Source</span>
-        <Picker label="Source" className="w-48" value={shownSource} disabled={type === "github_app" || saved?.source === "composio"} onChange={(v) => setSource(v as McpSource)}
-          options={(saved?.source === "composio" ? ["composio", "url", "github"] as const : ["url", "github"] as const).map((s) => ({ value: s, label: SOURCE_LABEL[s] }))} /></div>
+        <Picker label="Source" className="w-48" value={shownSource} disabled={type === "github_app"} onChange={(v) => setSource(v as McpSource)}
+          options={(["url", "composio", "github"] as const).map((s) => ({ value: s, label: SOURCE_LABEL[s] }))} /></div>
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Toolkit</span>
         <span className="-mt-1 mb-2 block text-small text-muted-foreground">The name a template gives these tools (mcp:{shownToolkit || "<toolkit>"}/&lt;tool&gt;): applying one uses this server for them.</span>
         <Input name="mcp-toolkit" value={shownSource === "github" ? "github" : toolkit} readOnly={shownSource === "github"} onChange={(e) => setToolkit(e.target.value)} placeholder="hubspot" spellCheck={false} /></label>

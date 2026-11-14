@@ -333,7 +333,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
     deleteMcpServer: (name: string) => call<unknown>("DELETE", mcpServer(name)),
     /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */
-    startMcpSignIn: (name: string, body: { url: string; scopes?: string[]; client_id?: string; client_secret?: string }) => call<{ authorization_url: string }>("POST", `${mcpServer(name)}/oauth/start`, { body }),
+    startMcpSignIn: (name: string, body: { url: string; scopes?: string[]; client_id?: string; client_secret?: string; source?: McpSource; toolkit?: string | null }) => call<{ authorization_url: string }>("POST", `${mcpServer(name)}/oauth/start`, { body }),
     /** The private-network hosts an MCP server's authorization server may be on; none by default. */
     mcpPrivateHosts: () => call<McpPrivateHosts>("GET", "/settings/mcp-servers/oauth/private-hosts"),
     /** Replaces them (the owner's password session alone): the list as the server keeps it. */
