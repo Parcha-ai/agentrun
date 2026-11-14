@@ -11,7 +11,8 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   wire: "anthropic-messages",
   // A message that comes mid-turn waits for the turn's end.
   steer: false,
-  // A call that started is never run again (the CLI answers it "[Tool call interrupted]"); only the model calls again.
+  // A call that started is never run again (one cut off the CLI answers "[Tool call interrupted]"; one that ended gets its
+  // recorded result); only the model calls again.
   rerunsStarted: false,
   // Its own tool search defers an MCP server's tools (ENABLE_TOOL_SEARCH, on under the kernel's defersCatalog), so the host offers no tools_search or tools_call beside it.
   ownToolSearch: true,

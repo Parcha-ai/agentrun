@@ -1,10 +1,11 @@
 // Claude Code's part of a resume, for a host-tool call its transcript left dangling (a `tool_use` with no `tool_result`):
 // which calls those are, read from the transcript the drive is about to resume, and how one's result is written into
-// it. The decision (run it, or leave it to the CLI's own repair) is the shared one, `resumeUnstartedCalls`: only a call
-// with no effect of its own on the run's journal runs here, through the tool bridge (the host's gate first, then its
-// intent, the call and its result), and only then is its result written here, before the CLI starts again. A call
-// that has an effect is left as before: the CLI answers it "[Tool call interrupted]", and the recovery note says what
-// the log knows of it.
+// it. The decision (run it, settle it, or leave it to the CLI's own repair) is the shared one, `resumeUnstartedCalls`: a
+// call with no effect of its own on the run's journal runs here, through the tool bridge (the host's gate first, then its
+// intent, the call and its result), and only then is its result written here, before the CLI starts again. A call that
+// ran to its end before the CLI wrote its result (a read beside the call a park held: the park let the CLI go first) gets
+// the result the journal holds, never run again. A call cut off is left as before: the CLI answers it
+// "[Tool call interrupted]", and the recovery note says what the log knows of it.
 import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
 import { askGate, type CallOutcome, type DanglingCall, resumeUnstartedCalls, type ToolBridge, unstartedCalls } from './host/process.js';
 import type { DriveContext } from './host/kernel.js';
@@ -144,9 +145,10 @@ export function resultLine(lines: readonly TranscriptLine[], call: DanglingCall,
 }
 
 /**
- * Before the CLI resumes the transcript: each dangling host-tool call that never started runs through `bridge`, and its
- * result is written into the transcript and committed, so the CLI starts again past it. A gate that parks rejects out
- * of here with nothing written, and the call keeps the id the model gave it.
+ * Before the CLI resumes the transcript: each dangling host-tool call that never started runs through `bridge`, and each
+ * one that ended before the CLI wrote its result is read back through it (the journal's result: nothing runs again);
+ * either result is written into the transcript and committed, so the CLI starts again past it. A gate that parks rejects
+ * out of here with nothing written, and the call keeps the id the model gave it.
  */
 export async function resumeDanglingCalls(ctx: DriveContext, bridge: ToolBridge, store: JournalSessionStore): Promise<void> {
   const dangling = danglingCalls(store.lines());
