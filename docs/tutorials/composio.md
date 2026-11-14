@@ -22,8 +22,8 @@ TOKEN=$(cat ~/.agentrun/.token)
 COMPOSIO_API_KEY=...                    # from Composio's dashboard
 read -rs PASSWORD                       # your console password
 umask 077
-curl -sS -c jar.txt -X POST "$BASE/v2/auth/sign-in" -H "origin: $BASE" -H "content-type: application/json" \
-  -d "{\"password\": \"$PASSWORD\"}"
+jq -n --arg p "$PASSWORD" '{password: $p}' | curl -sS -c jar.txt -X POST "$BASE/v2/auth/sign-in" \
+  -H "origin: $BASE" -H "content-type: application/json" --data-binary @-
 ```
 
 </details>
@@ -131,12 +131,29 @@ press **Create webhook**.
 The trigger's page shows its URL. Composio has to reach it, so your server needs a public address
 ([Deploy it](../../README.md#deploy-it), or `AGENTRUN_PUBLIC_URL` behind your own proxy). Then, on Composio's side:
 
-1. Make a webhook subscription that points at the trigger's URL: `POST https://backend.composio.dev/api/v3.1/webhook_subscriptions`
-   with `{"webhook_url": "<the trigger's URL>", "enabled_events": ["composio.trigger.message"], "version": "V3"}`.
-   Composio answers with a `secret`.
-2. Turn on the event for your repository: `POST https://backend.composio.dev/api/v3/trigger_instances/GITHUB_ISSUE_CREATED_TRIGGER/upsert`
-   with `{"connected_account_id": "<your GitHub account's id on Composio>", "trigger_config": {"owner": "<owner>", "repo": "<repo>"}}`.
-   This trigger polls GitHub, so it needs no webhook on the repository.
+1. Make a webhook subscription that points at the trigger's URL (its `hook_url`). Composio answers with a `secret`:
+
+   ```sh
+   curl -sS -X POST https://backend.composio.dev/api/v3.1/webhook_subscriptions \
+     -H "x-api-key: $COMPOSIO_API_KEY" -H "content-type: application/json" \
+     -d '{"webhook_url": "<hook_url>", "enabled_events": ["composio.trigger.message"], "version": "V3"}'
+   ```
+
+2. Find your GitHub connection's id (`ca_...`) for the `user_id` you saved the github server with (`agentrun`
+   unless you sent another):
+
+   ```sh
+   curl -sS "https://backend.composio.dev/api/v3/connected_accounts?toolkit_slugs=github&user_ids=<user_id>" \
+     -H "x-api-key: $COMPOSIO_API_KEY" | jq -r '.items[] | select(.status == "ACTIVE") | .id'
+   ```
+
+3. Turn on the event for your repository. This trigger polls GitHub, so it needs no webhook on the repository:
+
+   ```sh
+   curl -sS -X POST https://backend.composio.dev/api/v3/trigger_instances/GITHUB_ISSUE_CREATED_TRIGGER/upsert \
+     -H "x-api-key: $COMPOSIO_API_KEY" -H "content-type: application/json" \
+     -d '{"connected_account_id": "<ca_...>", "trigger_config": {"owner": "<owner>", "repo": "<repo>"}}'
+   ```
 
 Back on the trigger's page, press **Set secret** and paste Composio's `secret`. Until you do, the trigger refuses every
 request.
