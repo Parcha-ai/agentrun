@@ -67,7 +67,7 @@ function savePin({ url, tools, prices, grants }) {
  * `script` with the run's MCP (`grants`), its gate the tool gate's permissions over `settings` (an mcp: tool asks by
  * default). Runs until the run is not running, or `until(row)` says so.
  */
-async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, pin = savePin, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, onCommand, network, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, launchSealed, held, timing = STEADY, opened = [], serverNow, inspect, beforeIntent = async () => {} }) {
+async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, pin = savePin, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, onCommand, network, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, launchSealed, held, timing = STEADY, opened = [], serverNow, inspect, beforeIntent = async () => {}, revisionBody = {} }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-"));
   // `serverNow`: the test's own handle on the store reads its clock (a claim taken over when it is moved past the lease);
   // the runner's handle keeps the wall clock.
@@ -83,9 +83,10 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
     rmSync(dir, { recursive: true, force: true });
   });
   await server.mcp.put({ name: "fake", url: fake.url, auth, tools: tools.map(listed), ...(prices ? { prices } : {}), sealed: auth === "github_app" || auth === "per_run" ? null : seal(fake.url) });
-  // The revision as the agent's save made it: the granted tools pinned on it, as the server listed them then.
+  // The revision as the agent's save made it: the granted tools pinned on it, as the server listed them then. `revisionBody`:
+  // its definition, which a revision saved with no pin is pinned from at its claim (mcp-pin-first.ts pinFirst).
   const mcpPin = pin({ url: fake.url, tools, prices, grants });
-  await server.agents.create({ id: "agent-1", name: "Mcp" }, { id: "rev-1", kind: "agentic", body: {}, ...(mcpPin ? { mcpPin } : {}) });
+  await server.agents.create({ id: "agent-1", name: "Mcp" }, { id: "rev-1", kind: "agentic", body: revisionBody, ...(mcpPin ? { mcpPin } : {}) });
   // `launchSealed(url)`: the run's launch row, its sealed column what the server's start writes for a run's mcp_auth.
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, ...(launchSealed ? [{ body: { input: { content: "go" }, title: "go", place: { mode: "runner" } }, sealed: launchSealed(fake.url) }] : []));
   await before?.({ server, store, fake });
@@ -97,7 +98,7 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const loop = createAdapterLoop(async (claim, run) => {
     // As a spec builder does: the claim's MCP first (mcpForClaim), before anything the spec would have to let go.
-    const mcp = await mcpForClaim({ loopback: true, claim, store: { mcp: store.mcp, runs: store.runs, settings: store.settings, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(held ? { hold: (values) => held.push(...values) } : {}), ...(network ? { network } : {}), ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
+    const mcp = await mcpForClaim({ loopback: true, claim, store: { mcp: store.mcp, runs: store.runs, agents: store.agents, settings: store.settings, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(held ? { hold: (values) => held.push(...values) } : {}), ...(network ? { network } : {}), ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
     if (mcp) opened.push(mcp);
     return {
       ...(await base(claim, run)),
@@ -483,6 +484,19 @@ test("R14: a github_app server's token is minted for the claim from the run's la
   assert.deepEqual(asked[0], { input: launchInput, sealKey: true, reads: true }, "asked with the store, the seal key and the launch input");
   assert.deepEqual(asked[1], { target: { repo: "acme/widgets" } }, "minted for the run's repository");
   assert.equal(toolCalls(run.fake, "add")[0]?.authorization, true);
+  await assertNowhere(GH_TOKEN, run, lines);
+});
+
+test("R14b: a run of a revision saved with no pin that grants a github_app tool is pinned at its claim with a listing token the App mints for the run's repository, metadata read only, and the call answers", async (t) => {
+  const lines = captureLines(t);
+  const mints = [];
+  const githubAppAccess = async () => ({ mint: async (target, permissions) => (mints.push({ target, permissions }), { ok: true, token: GH_TOKEN, expires_at: Date.now() + 3_600_000 }), target: { repo: "acme/widgets" } });
+  const script = [{ call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "github_app", fakeToken: GH_TOKEN, githubAppAccess, launchInput: { content: "Fix https://github.com/acme/widgets" }, pin: () => undefined, revisionBody: { tools: ["mcp:fake/add"] } });
+  assert.equal(run.row.state, "ended", JSON.stringify(run.row));
+  assert.equal(lastResult(run.sent), "5");
+  assert.deepEqual(mints[0], { target: { repo: "acme/widgets" }, permissions: { metadata: "read" } }, "the listing's token: the run's repository, metadata read");
+  assert.deepEqual((await run.server.agents.revision("rev-1"))?.mcpPin?.fake?.tools?.map((tool) => tool.name), ["add"], "the claim pinned the revision");
   await assertNowhere(GH_TOKEN, run, lines);
 });
 

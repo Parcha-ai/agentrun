@@ -297,6 +297,33 @@ test("a run queued before the upgrade whose server is down at its claim fails in
   assert.equal((await store.agents.revision(started.body.revision))?.mcpPin ?? null, null);
 });
 
+test("a revision with no pin that grants a tool of a server deleted since is not pinned in part: its claim fails and writes nothing, and once the server is saved again a run pins both", { timeout: 240_000 }, async (t) => {
+  const { api, data, store } = await setup(t, { serving: { runner: false } });
+  const other = await startFakeMcp();
+  t.after(() => other.close());
+  const save = async () => assert.equal((await api("PUT", "/settings/mcp-servers/other", { url: other.url, auth: { type: "none" } })).status, 200);
+  await save();
+  const OTHER = "mcp:other/add";
+  assert.equal((await retried(api)("POST", "/agents", agent("two-servers", { tools: [ADD, OTHER], tool_settings: { ...ALLOW, [OTHER]: { permission: "allow" } } }))).status, 201);
+  const started = await api("POST", "/agents/two-servers/runs", { input: ADD_CALL });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  unpin(data, started.body.revision);
+  assert.equal((await api("DELETE", "/settings/mcp-servers/other")).status, 204);
+  const stopRunner = await startInProcessRunner(data, { faux: FAUX_MCP });
+  try {
+    assert.equal((await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 180_000 })).last.status, "failed");
+    assert.equal((await store.agents.revision(started.body.revision))?.mcpPin ?? null, null, "no pin of the one server left: the revision stays unpinned");
+    // The server saved again: the revision's next run pins both servers and completes.
+    await save();
+    const again = await api("POST", "/agents/two-servers/runs", { input: ADD_CALL });
+    assert.equal(again.status, 202, JSON.stringify(again.body));
+    await completes(api, again.body.run_id);
+  } finally {
+    await stopRunner();
+  }
+  assert.deepEqual(Object.keys((await store.agents.revision(started.body.revision))?.mcpPin ?? {}).sort(), ["fake", "other"]);
+});
+
 test("a follow-up to a run that ended before the upgrade pins its revision at the claim and the run goes on", { timeout: 240_000 }, async (t) => {
   const { api, data, store } = await setup(t);
   assert.equal((await retried(api)("POST", "/agents", agent("followed", { tools: [ADD], tool_settings: ALLOW }))).status, 201);

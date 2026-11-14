@@ -103,7 +103,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       sealKey: options.sealKey,
       signal: held.signal,
       // A run whose revision has no pin (one made before the upgrade) pins it here, listing as a save does.
-      pinListing: registryListing(options.store, options.sealKey, { loopback: options.loopback === true, ...(options.network ? { network: options.network } : {}) }),
+      pinListing: registryListing(options.store, options.sealKey, { loopback: options.loopback === true, ...(options.network ? { network: options.network } : {}), ...(githubApp ? { githubApp } : {}), ...(options.githubMcpOrigin ? { appOrigin: options.githubMcpOrigin } : {}) }),
       ...(options.bounds ? { bounds: options.bounds } : {}),
       ...(options.network ? { network: options.network } : {}),
       ...(options.loopback ? { loopback: true } : {}),
