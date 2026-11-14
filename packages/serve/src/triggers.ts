@@ -75,6 +75,23 @@ const ENDED = new Set(["completed", "failed", "cancelled"]);
 /** Why a message_run trigger turned itself off: the run it messages is gone. */
 const RUN_DELETED = "its run was deleted";
 
+/** What a source's sender keeps of a trigger, set up from here (composio-triggers.ts: Composio's trigger instance): made
+ *  before the trigger is kept and undone when it is not, kept in step as the owner turns the trigger on and off, removed
+ *  after it. What it could not do there is answered beside the change (`said`, by its source's name: `{composio: {done:
+ *  false, note}}`), and the change here holds. */
+export type TriggerUpstream = {
+  /** A trigger `id` of `source` being made (on or not): what it needs there made, the source to keep (with what was made
+   *  named in it), and how to undo it when the trigger is not kept. Throws the refusal when it can't be made. */
+  make(source: Source, id: string, enabled: boolean): Promise<{ source: Source; undo(): Promise<void> }>;
+  /** A PATCH's source for the trigger that keeps `was`: the source to keep, or the refusal (thrown) of a change to what
+   *  was made there. */
+  patched(was: Source, given: Source): Source;
+  /** The trigger `id` of `source`, turned on or off here: the same there. */
+  turned(source: Source, id: string, on: boolean): Promise<Json | undefined>;
+  /** The trigger `id` of `source`, deleted here: removed there. */
+  removed(source: Source, id: string): Promise<Json | undefined>;
+};
+
 /** `max_cost_usd`: each run's cap; absent, the agent's default as it stands when the firing starts (one of the two is
  *  required: server.ts targetIssues and start). */
 export type Target = { kind: "start_run"; agent_id: string; input: Json; max_cost_usd?: number; effort?: string } | { kind: "message_run"; run_id: string; input: Json };
@@ -126,6 +143,8 @@ export type TriggerDeps = {
   /** The address people and senders reach this server at (AGENTRUN_PUBLIC_URL), with no trailing slash: a pushed
    *  trigger's hook_url starts with it. None: the hook's path alone. */
   publicUrl?: string;
+  /** What source `kind`'s sender keeps of its triggers, when it is set up from here (TriggerUpstream); none for the rest. */
+  upstream?(kind: string): TriggerUpstream | undefined;
 };
 
 const REAL_CLOCK: TriggerClock = {
@@ -316,14 +335,19 @@ export class Triggers {
     if (enabled) await this.needAgentOn(agentId);
     // A scope belongs to one trigger: told before anything is minted or written (the store's scope rows are the backstop).
     if (enabled) await this.scopeFree(source, id);
-    // Its secrets are kept before the trigger is: one whose secret cannot be kept makes none.
-    const minted = await this.mint(source, id);
+    // What its sender keeps of it is made first (Composio's instance), and undone when the trigger is not kept.
+    const made = await this.deps.upstream?.(source.kind)?.make(source, id, enabled);
+    const kept = made?.source ?? source;
     const name = typeof body.name === "string" ? body.name.trim() : id;
     let row: TriggerRow;
+    let minted: Record<string, string>;
     try {
-      row = await this.store.triggers.create({ id, agentId, name, enabled, source, target, nextAt: enabled ? nextAfter(this.adapter(source), source, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S, ...(typeof settings.max_active_runs === "number" ? { maxActiveRuns: settings.max_active_runs } : {}) }, this.scopesOf(source));
+      // Its secrets are kept before the trigger is: one whose secret cannot be kept makes none.
+      minted = await this.mint(kept, id);
+      row = await this.store.triggers.create({ id, agentId, name, enabled, source: kept, target, nextAt: enabled ? nextAfter(this.adapter(kept), kept, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S, ...(typeof settings.max_active_runs === "number" ? { maxActiveRuns: settings.max_active_runs } : {}) }, this.scopesOf(kept));
     } catch (error) {
-      throw (await this.scopeTaken(error, source, id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, name);
+      await made?.undo().catch((undone: unknown) => this.deps.say({ condition: "trigger_upstream_undo_failed", trigger: id, error: String((undone as Error)?.message ?? undone) }));
+      throw (await this.scopeTaken(error, kept, id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, name);
     }
     // Armed before the answer: a create that answered is in effect, its first time on the timer (arm reads the store).
     await this.arm();
@@ -368,6 +392,12 @@ export class Triggers {
    *  triggers choose their own events (its adapter's takes) reads, for each event. */
   async listening(kind: string): Promise<{ id: string; source: Source }[]> {
     return (await this.store.triggers.all()).map(asTrigger).filter((t) => t.enabled && t.source.kind === kind).map((t) => ({ id: t.id, source: t.source }));
+  }
+
+  /** Every trigger of source `kind`, on or off, with its name and source: what a source's sender keeps of them is shared
+   *  between some (composio-triggers.ts: one Composio instance per server, event and config). */
+  async ofKind(kind: string): Promise<{ id: string; name: string; enabled: boolean; source: Source }[]> {
+    return (await this.store.triggers.all()).map(asTrigger).filter((t) => t.source.kind === kind).map((t) => ({ id: t.id, name: t.name, enabled: t.enabled, source: t.source }));
   }
 
   /** Every trigger of source `kind` that is on, turned off because the connection it needs is gone (`disabled: {reason:
@@ -460,7 +490,7 @@ export class Triggers {
   async update(id: string, body: Json) {
     const was = await this.need(id);
     const issues = unknownFields(body, WRITABLE);
-    const source = body.source === undefined ? undefined : sourceOf(this.adapters, body.source, this.clock.now(), issues);
+    let source = body.source === undefined ? undefined : sourceOf(this.adapters, body.source, this.clock.now(), issues);
     const target = body.target === undefined ? undefined : targetOf(body.target, issues);
     const settings = settingsOf(body, issues);
     // A cap kept, or set, needs a pushed source and a target that starts runs: a PATCH that aims a capped trigger at a run
@@ -473,6 +503,9 @@ export class Triggers {
     if (issues.length || (body.source !== undefined && !source) || (body.target !== undefined && !target)) throw invalid(issues);
     const trigger = await this.need(id);
     if (source && source.kind !== trigger.source.kind) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "A trigger's source kind is fixed: make a new trigger for another." }]);
+    // What its sender keeps of it stays as it was made (Composio's instance): only what reads it here changes.
+    const upstream = this.deps.upstream?.(trigger.source.kind);
+    if (source && upstream) source = upstream.patched(trigger.source, source);
     // Whose secret it keeps (the sender's, or one this server made) is fixed with its scheme: make a new trigger for the other.
     if (source && (this.adapter(source).givesSecret?.(source) === true) !== (this.adapter(trigger.source).givesSecret?.(trigger.source) === true)) throw invalid([{ field: "source.signature", reason: "not_allowed", message: "A trigger's signature cannot move between a secret its sender gives (composio) and one this server makes: make a new trigger for the other." }]);
     const now = this.clock.now();
@@ -503,14 +536,18 @@ export class Triggers {
     });
     if (!row) throw new ApiError("not_found", `no trigger ${id}`);
     await this.arm();
-    return this.view(asTrigger(row));
+    // Turned on or off by the owner: the same at its sender, once it holds here; what could not be done there is said.
+    const said = upstream && enabled !== trigger.enabled ? await upstream.turned(row.source as Source, id, enabled) : undefined;
+    return { ...(await this.view(asTrigger(row))), ...said };
   }
 
-  async remove(id: string): Promise<void> {
+  /** The trigger deleted, and what its sender keeps of it removed after (said, when it could not be: the delete holds). */
+  async remove(id: string): Promise<Json | undefined> {
     const trigger = await this.need(id);
     await this.store.triggers.remove(id);
     if (this.adapter(trigger.source)?.settings?.scope === "trigger") await this.deps.settings(trigger.source.kind)?.remove(id);
     await this.arm();
+    return this.deps.upstream?.(trigger.source.kind)?.removed(trigger.source, id);
   }
 
   /** Run now: one firing per Idempotency-Key, driven before the answer. `created` false: the key's firing, as it stands. */
@@ -860,7 +897,7 @@ export class Triggers {
   private async view(trigger: Trigger) {
     const [last] = await this.store.triggers.firings(trigger.id);
     const adapter = adapterIn(this.adapters, trigger.source.kind);
-    const hook = adapter?.push ? `/v2/hooks/${adapter.settings?.scope === "server" ? adapter.id : trigger.id}` : undefined;
+    const hook = adapter?.push ? `/v2/hooks/${adapter.hookOf?.(trigger.source) ?? (adapter.settings?.scope === "server" ? adapter.id : trigger.id)}` : undefined;
     return {
       ...(hook ? { hook_url: `${this.deps.publicUrl ?? ""}${hook}` } : {}),
       id: trigger.id, name: trigger.name, enabled: trigger.enabled, source: trigger.source, target: trigger.target, catchup_window_s: trigger.catchupWindowS ?? CATCHUP_WINDOW_S,

@@ -121,7 +121,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun files`: create, delete, get, list, upload
 - `agentrun home`: delete, list, read, write
 - `agentrun learning`: batch, batch-cancel, batch-start, batches, cost, evals, get, log, notes, read, record-eval, retire, workflow-revisions, write
-- `agentrun local`: create-pairing, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-workspace-archil, list-computer-choices, list-computers, test-computer, test-workspace-archil
+- `agentrun local`: create-pairing, delete-composio-subscription, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, receive-hook-composio, rotate-composio-secret, test-computer, test-workspace-archil
 - `agentrun login`: Check a server's token, read from stdin, and keep it with the server's address in the config file
 - `agentrun logout`: Remove the config file login wrote, its address and token
 - `agentrun mcp-servers`: delete, get, list, oauth-client, private-hosts, refresh

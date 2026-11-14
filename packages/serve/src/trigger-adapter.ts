@@ -63,6 +63,9 @@ export type TriggerAdapter = {
   /** A pushed source's requests (push-handler.ts), served at /v2/hooks/{trigger_id} when its settings are a trigger's,
    *  else at /v2/hooks/{its id}, with no token: the request's check is its credential. */
   push?: Push;
+  /** For a pushed source whose hook is not the one its settings' scope gives (a source that keeps a key per scope, served
+   *  at /v2/hooks/{its id}/{scope}): the path under /v2/hooks/ a trigger of `source` is delivered at, its `hook_url`. */
+  hookOf?(source: Source): string;
   /** For a pushed source whose settings are the server's: the scope a trigger of it listens on, matched to each event's
    *  `scope` to find the triggers it fires. */
   scopeOf?(source: Source): string;
@@ -84,6 +87,10 @@ export type Push = {
   maxBodyBytes: number;
   /** The settings field it checks a request with. */
   key: string;
+  /** For a source whose settings are the server's: it keeps its key per scope (a Composio project's subscription, by its
+   *  hook), and is served at /v2/hooks/{its id}/{scope} alone, each request checked with that scope's key; its events'
+   *  `scope` is that scope, for its takes. */
+  scoped?: true;
   /** Why the headers alone are refused, before a byte of the body is read. */
   headers?(headers: Headers, nowMs: number): string | undefined;
   /** Why the request is not the sender's under `key`, or undefined when it is (and fits `source`, when given). */
