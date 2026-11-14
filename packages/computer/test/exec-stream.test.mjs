@@ -71,6 +71,21 @@ test("large holds one deadline across its writes: slow writes fail it once large
 	assert.ok(Date.now() - started < 30_000);
 });
 
+test("large says its deadline ran out even when the timer the deadline cut short fires before the clock reads the deadline", async () => {
+	// A timer and Date.now() keep different clocks: a timer may fire a millisecond before Date.now() reads its end. Here
+	// Date.now() runs 1% slow, so the write that the deadline bounds always times out with the deadline not yet "passed".
+	const real = Date.now;
+	const from = real();
+	Date.now = () => from + Math.floor((real() - from) * 0.99);
+	try {
+		const { byId } = await run({ slowWriteMs: 400 }, { largeMs: 1_000 });
+		assert.equal(byId.large.status, "fail");
+		assert.match(byId.large.words, /^writing 1048576 random bytes ran past 1 s, with \d+ bytes written/);
+	} finally {
+		Date.now = real;
+	}
+});
+
 test("an exec that holds stdin until end() fails stdin-live, and names stdin since output streams", async () => {
 	const { byId } = await run({ holdStdin: true });
 	assert.equal(byId["stdout-live"].status, "pass");
