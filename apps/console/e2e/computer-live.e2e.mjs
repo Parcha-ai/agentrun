@@ -125,8 +125,8 @@ try {
 
   // Hand back: the agent drives again; let go, the run ends, which ends the view.
   await hands.click();
-  await viewer.locator("#notice", { hasText: "You handed the computer back" }).waitFor({ timeout: 20_000 }).catch(() => {});
-  check("the viewer says the computer went back", (await viewer.locator("#notice").innerText()).includes("You handed the computer back"));
+  await viewer.locator("#notice", { hasText: "You handed the desktop back" }).waitFor({ timeout: 20_000 }).catch(() => {});
+  check("the viewer says the desktop went back, once", (await viewer.locator("#notice").innerText()) === "You handed the desktop back.");
   letGo();
   await until(async () => (await api("GET", `/runs/${runId}`)).body?.status === "completed", "the run ends").catch(() => {});
   check("the run ends once the desktop is handed back", (await api("GET", `/runs/${runId}`)).body?.status === "completed");

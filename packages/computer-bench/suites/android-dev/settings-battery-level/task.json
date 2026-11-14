@@ -1,0 +1,41 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.settings.battery-level",
+  "version": 1,
+  "title": "Read the battery level from Settings",
+  "split": "heldout",
+  "tags": ["settings", "info", "answer"],
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "params": {
+    "level": { "int": [13, 94] }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Pin the level BatteryService reports to a picked number, so the answer is known to the checks and differs from run to run. Settings, the status bar and the battery broadcast all read this value.",
+      "params": { "argv": ["sh", "-c", "dumpsys battery set level {{level}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open Settings at its home page, whatever screen an earlier run left it on.",
+      "params": { "argv": ["am", "start", "-W", "--activity-clear-task", "-a", "android.settings.SETTINGS"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "What is the phone's battery level right now, in percent? Give the number in your final answer. Don't change anything.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "level",
+      "kind": "answer",
+      "why": "The final answer holds the level setup pinned, {{level}}, as a number on its own (not part of a longer number). An agent that answers nothing fails.",
+      "text": { "matches": "(?<!\\d){{level}}(?!\\d)" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Give BatteryService back the real battery readings.",
+      "params": { "argv": ["dumpsys", "battery", "reset"], "timeoutMs": 20000 }
+    }
+  ]
+}

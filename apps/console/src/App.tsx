@@ -535,7 +535,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     try {
       for (const r of rs) {
         const first = r.kind === "workflow" ? undefined : (await v2.getTimeline(r.run_id)).rows.find((row) => row.kind === "user_message");
-        const start = rerunBody(r, first?.text);
+        // A typed agent's run reads its typed fields back from that message (its agent's input_schema says it has some).
+        const start = rerunBody(r, first?.text, agents?.find((a) => a.agent_id === r.agent_id)?.definition.input_schema);
         if ("refusal" in start) throw new Error(start.refusal);
         const key = againKeys.get(r.run_id) ?? uuid();
         againKeys.set(r.run_id, key);

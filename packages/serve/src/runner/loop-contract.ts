@@ -15,9 +15,13 @@ export type { AlsoRow, Claim, Command, Journal };
 export const cutAtLimit = (tokens?: number): string =>
   `the model stopped at its output limit${tokens !== undefined && Number.isSafeInteger(tokens) && tokens > 0 ? ` (${tokens} tokens)` : ""} before finishing its answer`;
 
+/** What the step keeps with its end-of-run turn as the turn is first asked (EndOfRunTurn ask's `keep`): written with the
+ *  turn's prompt, durable before the turn's first request leaves. */
+export type EndOfRunKept = Readonly<Record<string, string | number | boolean | null>>;
+
 /** How an end-of-run turn the loop asked ended: its answer's text, its deadline passed (the turn is aborted), or it
- *  failed. */
-export type EndOfRunAnswer = { readonly ended: true; readonly answer: string } | { readonly timedOut: true } | { readonly failed: { readonly code: string; readonly message: string } };
+ *  failed. `kept`: what the turn's first ask kept (its `keep`), an earlier claim's when that claim asked it first. */
+export type EndOfRunAnswer = ({ readonly ended: true; readonly answer: string } | { readonly timedOut: true } | { readonly failed: { readonly code: string; readonly message: string } }) & { readonly kept?: EndOfRunKept };
 
 /**
  * The end-of-run step (the learning lane's end-of-run turn): asked once, after the job's last turn ended and before the
@@ -38,8 +42,15 @@ export type EndOfRunTurn = (input: {
   readonly cut?: "stopped" | "stopped-looking" | "faulted";
   /** `again`: the turn asked once more in the same session (its first answer out of format), as its own request.
    *  `round`: which end of the run this is (1, its first, when absent): an end after a follow-up opened the run again is
-   *  a later round, asked of the model anew under a request of its own. */
-  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true; readonly round?: number }): Promise<EndOfRunAnswer>;
+   *  a later round, asked of the model anew under a request of its own. `keep`: what the step keeps with the turn as it
+   *  is first asked (the run's spend and time as it starts), written with its prompt before its first request leaves; a
+   *  turn an earlier claim asked answers with that claim's (`kept`), never this one's, so a restart mid-turn never moves
+   *  what the earlier attempt spent into the job's. A loop that keeps no record of its own (pi's) keeps none. */
+  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true; readonly round?: number; readonly keep?: EndOfRunKept }): Promise<EndOfRunAnswer>;
+  /** What round `round`'s turn kept as it was first asked (its ask's `keep`), when it was asked already: a look-back an
+   *  earlier claim (or this one) started, readable before `ask`, so a step that skips or is cut never asks, and still
+   *  closes that look-back with its first ask's figures. Undefined when none asked it, or the loop keeps no record (pi's). */
+  keptOf?(round: number): EndOfRunKept | undefined;
   readonly signal: AbortSignal;
 }) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
 

@@ -152,7 +152,13 @@ test("an import from GitHub: a dry run shows the package whole and stores nothin
   assert.deepEqual(agent.template, { id: ID, version: "0.1.0", sha: SHA_A }, "the agent keeps the package it came from and its commit");
   const bundledApplied = await api("POST", "/templates/kyb/apply", { parameters: {} });
   assert.equal(bundledApplied.status, 201, JSON.stringify(bundledApplied.body));
-  assert.deepEqual((await api("GET", `/agents/${bundledApplied.body.agent_id}`)).body.template, { id: "kyb", version: "0.1.0", sha: null });
+  const bundledAgent = (await api("GET", `/agents/${bundledApplied.body.agent_id}`)).body;
+  assert.deepEqual(bundledAgent.template, { id: "kyb", version: "0.1.0", sha: null });
+  // A package with typed run input (manifest inputs) keeps it imported: the agent takes the input the bundled one does.
+  const typed = bundledAgent.definition?.input_schema;
+  assert.deepEqual(Object.keys(typed?.properties ?? {}).sort(), ["company", "country", "reason", "registration_number", "website"], JSON.stringify(Object.keys(bundledAgent)));
+  assert.deepEqual(agent.definition.input_schema, typed, "the imported package's agent takes the same typed input");
+  assert.deepEqual(preview.body.template.input_schema, typed, "and its preview shows it");
 
   // The publisher is trusted from now on: a re-import at a new SHA needs no tick, and replaces the package.
   github.refs.main = SHA_B;
