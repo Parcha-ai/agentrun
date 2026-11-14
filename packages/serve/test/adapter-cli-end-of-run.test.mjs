@@ -140,22 +140,10 @@ test("an unparsed answer is asked again once: the runner's reflect hook on a CLI
   assert.ok(await opened.server.runs.get("run-1-learning"), "one learning run queued");
 });
 
-/** One batch of a CLI's session journal as the kernel keeps it (run-adapters process/records.ts: a `journal:<n>` effect
- *  whose input holds the batch): the transcript entries of a turn, as Codex's and Claude's journals write them. */
-function journalBatch(n, entries) {
-  const stepId = `journal-step-${n}`;
-  return [
-    { kind: "kernel.start", data: { key: `journal:${n}`, stepId, name: "journal", replay: "safe", input: { v: 1, n, streams: { transcript: { from: 0, entries: entries.map((data) => ({ data })) } } }, placed: [], attempt: 1, startedAt: new Date().toISOString() } },
-    { kind: "kernel.end", data: { stepId, status: "completed", output: null } },
-  ];
-}
-
 /** A CLI stand-in whose session survives its runner: what it was sent and what it finished are in the session's own
- *  records (each answer also in its transcript, journalBatch), so a process opened after a crash finds the turn it was in
- *  (open_turn) and recover() resumes that turn. A turn `hold` says yes to never ends (its runner is killed under it).
- *  `silent`: recover() finds the cut turn finished, as Codex does when only the turn's end was not in its log: it keeps
- *  the answer in the transcript and says no text. */
-function durableCli(log, hold, { silent = false } = {}) {
+ *  records, so a process opened after a crash finds the turn it was in (open_turn); recover() resumes that turn and
+ *  settleOpenTurn() closes it unanswered. A turn `hold` says yes to never ends (its runner is killed under it). */
+function durableCli(log, hold) {
   return {
     id: "stand-in-cli",
     capabilities: () => ({}),
@@ -166,13 +154,12 @@ function durableCli(log, hold, { silent = false } = {}) {
       const done = records.filter((record) => record.kind === "stand-in.done").length;
       let state = sent.length === 0 ? "new" : sent.length > done ? "open_turn" : "idle";
       const cut = sent.at(-1)?.data?.text;
-      let batches = records.filter((record) => record.kind === "kernel.start" && record.data?.name === "journal").length;
       let turn;
-      const answer = (text, quiet = false) => {
+      const answer = (text) => {
         const say = text === INPUT ? "the job's answer" : /graded/.test(text) ? "the round's note" : "a note";
         turn = (async () => {
-          await io.writer.append([{ kind: "stand-in.done", data: null }, ...journalBatch(batches++, [{ type: "message", role: "assistant", text: say }, { type: "turn", status: "completed" }])]);
-          if (!quiet) io.onEvent({ type: "text", delta: say });
+          await io.writer.append([{ kind: "stand-in.done", data: null }]);
+          io.onEvent({ type: "text", delta: say });
           io.onEvent({ type: "turn_end", status: "completed" });
           return { status: "completed" };
         })();
@@ -189,9 +176,12 @@ function durableCli(log, hold, { silent = false } = {}) {
         async recover() {
           log.recovered.push(cut);
           state = "idle";
-          answer(cut, silent);
+          answer(cut);
         },
-        async settleOpenTurn() { state = "idle"; },
+        async settleOpenTurn() {
+          log.settled.push(cut);
+          state = "idle";
+        },
         turnEnd: () => turn,
         async interrupt() {},
         async close() {},
@@ -200,10 +190,10 @@ function durableCli(log, hold, { silent = false } = {}) {
   };
 }
 
-for (const silent of [false, true]) test(`a CLI feedback round whose runner died mid look-back: the next claim recovers that turn and asks it nothing again (#2648 review)${silent ? "; a turn its CLI finds finished and restores without saying it again is read from the session's transcript (#2648 review)" : ""}`, async (t) => {
+test("a CLI feedback round whose runner died mid look-back: the next claim settles that turn, never recovers it as the job's, and asks it again once (#2668)", async (t) => {
   const opened = await stores({ runners: 2 });
   await queue(opened.server, "run-1");
-  const log = { sent: [], recovered: [] };
+  const log = { sent: [], recovered: [], settled: [] };
   let held = 0;
   const hold = (text) => /graded/.test(text) && held++ === 0;
   let round = 1;
@@ -213,7 +203,7 @@ for (const silent of [false, true]) test(`a CLI feedback round whose runner died
     return undefined;
   };
   const loop = createAdapterLoop((claim) => ({
-    adapter: claim.runId === "run-1" ? durableCli(log, hold, { silent }) : standInCli([]),
+    adapter: claim.runId === "run-1" ? durableCli(log, hold) : standInCli([]),
     session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },
     input: INPUT,
     runCap: { capUsd: () => undefined, modelOf: () => undefined },
@@ -242,7 +232,8 @@ for (const silent of [false, true]) test(`a CLI feedback round whose runner died
     return now.state === "ended" && now.runner === null && now.endedAt > once.endedAt && now;
   }, "the round ended and released", 10_000);
   const looks = log.sent.filter((text) => /graded/.test(text));
-  assert.equal(looks.length, 1, `the look-back was sent once, never again under the next claim: ${JSON.stringify(log.sent)}`);
-  assert.deepEqual(log.recovered, looks, "the next claim recovered the cut look-back");
-  assert.deepEqual(answers.at(-1), { ended: true, answer: "the round's note" }, "the step read the recovered turn's answer");
+  assert.equal(looks.length, 2, `the look-back was sent once on each claim, never twice on one: ${JSON.stringify(log.sent)}`);
+  assert.deepEqual(log.recovered, [], "the cut look-back is never recovered as the job's turn");
+  assert.deepEqual(log.settled, looks.slice(0, 1), "the next claim settled the cut look-back");
+  assert.deepEqual(answers.at(-1), { ended: true, answer: "the round's note" }, "the step read the second ask's answer");
 });
