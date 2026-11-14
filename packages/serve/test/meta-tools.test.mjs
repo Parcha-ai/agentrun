@@ -90,12 +90,12 @@ test("a script reads a nested call's value: its structured value, else its one t
     read_file: { text: '"just a string"' },
   };
   const nested = { call: async (name) => ({ ...answers[name], fresh: true }), memo: async (_key, value) => value };
-  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true });
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
   const script = "const r = await tools.write_file({});\nconst s = await tools.web_search({});\nconst m = await tools.send_email({});\nconst f = await tools.read_file({});\nreturn [`${r.default_branch} branch, ${r.stars} stars`, s[0].url, m.id, f, typeof (await tools.write_file({}))];";
   const answer = await codemode.call({ script }, { signal: new AbortController().signal, nested });
   assert.equal(answer.isError, undefined, answer.text);
   assert.deepEqual(answer.structured, ["main branch, 0 stars", "https://example.test", "m-1", '"just a string"', "object"], answer.text);
-  const [, call] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true });
+  const [, call] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
   const direct = await call.call({ name: "write_file", args: {} }, { signal: new AbortController().signal, nested });
   assert.equal(direct.text, answers.write_file.text, "the text the model reads is the call's text, unchanged");
 });
