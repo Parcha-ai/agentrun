@@ -1,5 +1,5 @@
 import { workflowGraph } from "@dsl/graph";
-import { ArrowLeft, Bot, ChevronRight, Pencil, Workflow } from "lucide-react";
+import { ArrowLeft, Bot, ChevronRight, ExternalLink, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
 import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
@@ -12,7 +12,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { SignIns } from "@/components/SignIns";
 import { LearningTab } from "@/components/Learning";
 import { LearningChips, WaitingCount } from "@/components/LearningChips";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Tabs } from "@/components/ui/tabs";
@@ -240,9 +240,29 @@ function RunsTab({ agent, v2 }: TabProps) {
       {!agent.archived_at && <p className="mt-2 text-body text-muted-foreground">Start one above: its timeline shows here as the agent works.</p>}
     </div>
   );
+  // A newer success is not a quiet moment if another loaded run is still working or waiting for attention.
+  const quiet = runs.every((r) => r.archived_at || (runEnded(r.status) && !r.review && (r.status !== "completed" || (!r.error && !r.result?.output_error))));
+  const offerProduction = !agent.archived_at && runs[0].agent_id === agent.agent_id && !runs[0].archived_at && runs[0].status === "completed" && quiet;
   return (
     <>
       <LatestRun key={runs[0].run_id} v2={v2} run={runs[0]} onRun={(r) => setRuns((xs) => xs && xs.map((x) => (x.run_id === r.run_id ? r : x)))} />
+      {offerProduction && (
+        <section aria-label="Production onboarding" className="mb-6 flex flex-wrap items-center justify-between gap-4 border p-4">
+          <div className="max-w-prose">
+            <h2 className="text-body font-semibold">Taking this to production?</h2>
+            <p className="mt-1 text-body text-muted-foreground">Talk with us about a hosted AgentRun setup for your team. Cloud setup is separate from this server.</p>
+          </div>
+          {/* Plain external links: no agent, run, prompt, configuration or referring URL is sent to either destination. */}
+          <div className="flex flex-wrap items-center gap-4">
+            <a href="https://calendly.com/d/dtwn-dsp-nx5/agentrun" target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className={buttonVariants({ size: "sm" })}>
+              Talk to us <ExternalLink aria-hidden /><span className="sr-only"> (opens in a new tab)</span>
+            </a>
+            <a href="https://console.agentrun.ai/" target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="inline-flex h-control-sm items-center text-small text-muted-foreground underline underline-offset-2 hover:text-foreground">
+              Sign in to Cloud<span className="sr-only"> (opens in a new tab)</span>
+            </a>
+          </div>
+        </section>
+      )}
       <p className="mb-3 font-mono text-small text-muted-foreground">{runs.length}{cursor ? "+" : ""} {runs.length === 1 && !cursor ? "run" : "runs"}</p>
       <ul className="border" aria-label="Runs">
         {runs.map((r) => (
