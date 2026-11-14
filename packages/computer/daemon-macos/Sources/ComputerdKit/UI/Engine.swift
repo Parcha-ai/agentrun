@@ -357,7 +357,7 @@ public actor UIEngine {
 			}
 		}
 
-		var read = try await final(&aim, reuse: refused ? nil : settled)
+		var read = try await final(&aim, reuse: refused ? nil : settled, from: params.steps.isEmpty ? first : nil)
 		// A set holds: the final view is read again setHoldMs after the first, where an app that took the value back (the
 		// Finder's name field outside its rename mode shows the new name, then the old one, and renames nothing) answers
 		// false. The hold is waited out even when the window closed: a value that cannot be read after it is not verified.
@@ -444,11 +444,11 @@ public actor UIEngine {
 
 	/// The act's own window, settled or one look: the aimed one, or the app's next main window once it closed (which
 	/// the act then follows); nil when none is left.
-	func aimed(_ aim: inout Aim, settled: Bool) async throws -> View? {
+	func aimed(_ aim: inout Aim, settled: Bool, from first: View? = nil) async throws -> View? {
 		if aim.closed { return nil }
 		let window = aim.window
 		do {
-			return settled ? try await settle(window) : try await look(window)
+			return settled ? try await settle(window, from: first) : try await look(window)
 		} catch let none as RPCError where none.kind == .notFound {
 			if aim.windowless { return nil }
 			guard let app = aim.app else { throw none }
@@ -474,10 +474,10 @@ public actor UIEngine {
 	/// The act's final view, read after its last settle: its own window, and for a window expect the app's main window,
 	/// each settled. Every verdict of the act reads this one view: a set's hold, the expect, and the state it answers. A
 	/// look that is not final (a poll's) only says when to read it again. The first read takes the look the last step
-	/// settled on, when one did.
-	func final(_ aim: inout Aim, reuse: View? = nil) async throws -> (own: View?, front: View?) {
+	/// settled on, when one did, and an act with no steps settles from its first look.
+	func final(_ aim: inout Aim, reuse: View? = nil, from first: View? = nil) async throws -> (own: View?, front: View?) {
 		let own: View?
-		if let reuse { own = reuse } else { own = try await aimed(&aim, settled: true) }
+		if let reuse { own = reuse } else { own = try await aimed(&aim, settled: true, from: first) }
 		guard aim.waitsForWindow, !aim.closed, aim.window?.window != nil else { return (own, own) }
 		return (own, try await frontLook(aim, settled: true))
 	}
@@ -884,17 +884,16 @@ public actor UIEngine {
 		}
 	}
 
-	/// Looks until two looks quietMs apart are the same, or settleMaxMs passed: the settled look. Apart is from the start
-	/// of one look to the start of the next, as far apart as each node's two reads are: a look that itself took quietMs
-	/// (System Settings on CI: 250 to 700 ms) needs no sleep after it.
-	func settle(_ target: Target?) async throws -> View {
+	/// Looks until two looks quietMs apart are the same, or settleMaxMs passed: the settled look. Apart is the time
+	/// between the end of one look and the start of the next, however long a look took: an app answers a look on the
+	/// thread it draws on, so the quiet is time it is left alone to draw. A settle starts from `first` when the act
+	/// already took that look and nothing ran since.
+	func settle(_ target: Target?, from first: View? = nil) async throws -> View {
 		let until = clock.now() + timing.settleMaxMs
-		var lastAt = clock.now()
-		var last = try await look(target)
+		var last: View
+		if let first { last = first } else { last = try await look(target) }
 		while timing.quietMs > 0 && clock.now() < until {
-			let wait = min(timing.quietMs - (clock.now() - lastAt), until - clock.now())
-			if wait > 0 { try await sleep(wait) }
-			lastAt = clock.now()
+			try await sleep(min(timing.quietMs, max(0, until - clock.now())))
 			let next = try await look(target)
 			let quiet = next.fingerprint == last.fingerprint
 			last = next
