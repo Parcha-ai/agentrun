@@ -61,7 +61,12 @@ export const permissionsOf = (name: string): readonly Permission[] => (Object.ha
 /** A tool's permission as this server applies it to an agent that sets none, as capabilities and an MCP server's read
  *  give it: the one in force under the server's settings (`permission`), the owner's default (`default_permission`) and
  *  those it may be set to. An agent's read gives the same, the agent's own layer over it (agentTools). */
-export const serverGate = (name: string, settings: ToolSettingsMap, effect?: ToolEffect) => ({ permission: permissionOf(name, settings as never, {}, "ask", effect), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)] });
+export const serverGate = (name: string, settings: ToolSettingsMap, effect?: ToolEffect) => {
+  const permission = permissionOf(name, settings as never, {}, "ask", effect);
+  // `allow_reads`: the allow is its server's "allow reads" (a read-only tool's ask lifted), not a setting or a default.
+  const lifted = effect === "read" && permission === "allow" && permissionOf(name, settings as never) === "ask";
+  return { permission, ...(lifted ? { allow_reads: true as const } : {}), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)] };
+};
 /** The run's own tools beyond the table, each its own settings key, allowed by default like a table tool: the learned
  *  workflow a run's pin names runs as `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL). */
 export const SERVE_OWN_TOOLS: readonly string[] = ["learned_workflow"];

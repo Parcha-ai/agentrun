@@ -51,9 +51,11 @@ export const ASK_OFF = "Ask is off on this server: approving a call takes the ow
  *  refused by the server's deny, which holds for every agent (SERVER_DENY, said under it); `locked`, whether that also
  *  holds its permission at deny here (an agent's table: its own setting holds nothing over it). An MCP tool's row may
  *  carry its effect's mark (`effectOf`), a line under its name (`detailOf`), and a shorter name (`labelOf`); setting one
- *  that `confirmAllowOf` names (a destructive tool) to allow asks again in place, and only "Allow without asking" saves it. */
-export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, refused = () => false, locked = false, unattended = false, noteOf, labelOf, detailOf, effectOf, confirmAllowOf = () => false, onEdit }: {
+ *  that `confirmAllowOf` names (a destructive tool) to allow asks again in place, and only "Allow without asking" saves it.
+ *  `fallbackWordOf`: where a row's fallback is not its default, what it is instead ("allow reads"), said in its place. */
+export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, refused = () => false, locked = false, unattended = false, noteOf, labelOf, detailOf, effectOf, confirmAllowOf = () => false, fallbackWordOf, onEdit }: {
   label: string;
+  fallbackWordOf?: (name: string) => string | undefined;
   labelOf?: (name: string) => ReactNode;
   detailOf?: (name: string) => ReactNode;
   effectOf?: (name: string) => ToolEffect | undefined;
@@ -107,6 +109,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
               const permission = held ? "deny" : chosen;
               const setPermission = (next: Permission) => onEdit((current) => withPermission(current, name, next, gateFallback));
               const effect = effectOf?.(name);
+              const fallbackWord = fallbackWordOf?.(name) ?? "default";
               const detail = detailOf?.(name);
               return (
                 <Fragment key={name}>
@@ -118,9 +121,9 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                     {permissions && <td className="px-3 py-2">
                       {gate ? <>
                         <Picker small label={`${name} permission`} value={permission} disabled={busy || held} onChange={(v) => { const next = v as Permission; if (next === "allow" && next !== permission && confirmAllowOf(name)) setConfirming(name); else setPermission(next); }}
-                          className={cn("w-36", permissionSet && "border-primary text-primary")}
-                          options={gate.permissions.map((p) => ({ value: p, label: `${p}${p === gateFallback ? " (default)" : ""}`, ...(p === "ask" && gate.ask_needs === "password" && !unattended ? { disabled: true, title: "No one can approve a call here: it takes the owner's password sign-in." } : {}) }))} />
-                        {permissionSet && !held && <span className="mt-1 block font-mono text-label text-muted-foreground">default: {gateFallback}</span>}
+                          className={cn(fallbackWordOf ? "w-48" : "w-36", permissionSet && "border-primary text-primary")}
+                          options={gate.permissions.map((p) => ({ value: p, label: `${p}${p === gateFallback ? ` (${fallbackWord})` : ""}`, ...(p === "ask" && gate.ask_needs === "password" && !unattended ? { disabled: true, title: "No one can approve a call here: it takes the owner's password sign-in." } : {}) }))} />
+                        {permissionSet && !held && <span className="mt-1 block font-mono text-label text-muted-foreground">default: {gateFallback}{fallbackWord === "default" ? "" : ` (${fallbackWord})`}</span>}
                         {denied && <span className="mt-1 block max-w-[260px] text-label text-warning-text">{SERVER_DENY}</span>}
                         {permission === "deny" && <span className="mt-1 block max-w-[260px] text-label text-muted-foreground">{DENY_ONLY}</span>}
                         {permission === "ask" && unattended && !denied && <span className="mt-1 block max-w-[220px] text-label text-warning-text">Runs without asking: Never ask is on.</span>}

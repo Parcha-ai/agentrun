@@ -185,6 +185,7 @@ function AllowReads({ server: s, settings, busy, onSettings }: { server: McpServ
   const on = settings[wildcard]?.allow_reads === true;
   const reads = s.tools.filter((t) => t.effect === "read").length;
   const id = `allow-reads-${s.name}`;
+  const words = `${id}-words`;
   const flip = (next: boolean) => onSettings((current) => {
     const { [wildcard]: old, ...rest } = current;
     const { allow_reads: _gone, ...kept } = old ?? {};
@@ -192,17 +193,21 @@ function AllowReads({ server: s, settings, busy, onSettings }: { server: McpServ
     return Object.keys(now).length ? { ...rest, [wildcard]: now } : rest;
   });
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-3">
-      <Switch checked={on} onChange={flip} busy={busy} labelledBy={id} />
-      <p id={id} className="text-small"><span className="caps font-semibold">Allow reads</span> <span className="text-muted-foreground">{reads} of {s.tools.length} tool{s.tools.length === 1 ? "" : "s"} read-only, as the server marks them: {on ? "they run without asking" : "on, they run without asking"}. Writes keep their permission.</span></p>
+    <div className="mt-2">
+      <div className="flex items-center gap-2">
+        <Switch checked={on} onChange={flip} busy={busy} labelledBy={id} />
+        <span id={id} className="caps text-small font-semibold">Allow reads</span>
+      </div>
+      <p id={words} className="mt-1 text-small text-muted-foreground">{reads} of {s.tools.length} tool{s.tools.length === 1 ? "" : "s"} read-only, as the server marks them: {on ? "they run without asking" : "on, they run without asking"}. Writes keep their permission.</p>
     </div>
   );
 }
 
 /** A saved server's tools, each with its effect's mark and what a call costs; and, where this server's tool settings
- *  read, its permission here (`mcp:<server>/<tool>`), saved at once. A row's default is what applies with no setting of
- *  its own: the server's wildcard, else the owner's default, lifted to allow for a read-only tool under Allow reads. A
- *  destructive tool's allow takes a second click. */
+ *  read, its permission here (`mcp:<server>/<tool>`), saved at once. A row's fallback is what applies with no setting of
+ *  its own: allow where the server's read says Allow reads lets it run (`allow_reads`, the server's word: never worked
+ *  out here), named "allow reads"; else the server's wildcard, else the owner's default. A destructive tool's allow takes
+ *  a second click. */
 function ServerTools({ server: s, settings, busy, onSettings }: { server: McpServer; settings: ToolSettings | null; busy: boolean; onSettings: (edit: (current: ToolSettings) => ToolSettings) => void }) {
   const wildcard = settings?.[keyOf(s.name, "*")];
   const byKey = new Map(s.tools.map((t) => [keyOf(s.name, t.name), t]));
@@ -222,10 +227,8 @@ function ServerTools({ server: s, settings, busy, onSettings }: { server: McpSer
       effectOf={(name) => byKey.get(name)?.effect}
       confirmAllowOf={(name) => byKey.get(name)?.effect === "destructive"}
       refused={(_, permission) => permission === "deny"}
-      permissionFallbackOf={(g) => {
-        const base = wildcard?.permission ?? g.default_permission;
-        return base === "ask" && wildcard?.allow_reads && byKey.get(g.name)?.effect === "read" ? "allow" : base;
-      }} />
+      fallbackWordOf={(name) => (byKey.get(name)?.allow_reads ? "allow reads" : undefined)}
+      permissionFallbackOf={(g) => (byKey.get(g.name)?.allow_reads ? "allow" : wildcard?.permission ?? g.default_permission)} />
   );
 }
 

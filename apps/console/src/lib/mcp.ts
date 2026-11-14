@@ -7,7 +7,9 @@ import type { Permission, SecretMeta } from "./v2";
 /** What a tool does by its server's annotations (the server's read): read-only, destructive (marked destructiveHint),
  *  or a write (any other, one its server says nothing about included). */
 export type ToolEffect = "read" | "write" | "destructive";
-export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[]; effect?: ToolEffect };
+export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[]; effect?: ToolEffect;
+  /** On a saved server's read: its permission is allow because of its server's Allow reads (the server's word). */
+  allow_reads?: true };
 export type McpAuthType = "none" | "bearer" | "headers" | "oauth" | "github_app";
 /** The one address a `github_app` server may have: GitHub's hosted MCP (the save refuses any other, so the App's tokens go to
  *  GitHub alone). */
