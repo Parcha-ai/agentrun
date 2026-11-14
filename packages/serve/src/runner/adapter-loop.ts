@@ -3362,8 +3362,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // A cancel's calls read cancelled with their run; a stop's, withdrawn.
     const withdrawn = byPerson ? withdrawnAnswers(await entriesOf(theGate.journal, conversation.id, context), isoNow(), stopReason?.kind === "command" && stopReason.cancel ? "canceled" : "withdrawn") : [];
     // A CLI's call on the record from its gate and never sent (parked, or its runner gone before its send): its record ends
-    // with the run's, in the same commit, saying it was not run (never interrupted: it never left).
-    const recordEnds = cliRecord?.unsentParked() ?? [];
+    // with the run's, in the same commit, saying it was not run (never interrupted: it never left). pi's nested calls
+    // (nestedGate) are on a record of their own, read here from the journal: a stop can end a parked run before this claim
+    // opened a session.
+    const ends = cliRecord ?? (await openCliRecord(on, theGate.journal, context, now, undefined, true));
+    const recordEnds = ends.unsentParked();
     const notRun = data.state === "stopped" ? STOPPED_WHILE_WAITING : ENDED_WHILE_WAITING;
     const ended = theGate.expect(writesEntry(KINDS.end), { run, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
     // A seal while the end is committed fails it before it is awaited: handled here, read by the await below.
@@ -3383,7 +3386,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       throw error;
     }
     await ended;
-    for (const callId of recordEnds) cliRecord?.noteEnd(callId, "refused", notRun);
+    for (const callId of recordEnds) ends.noteEnd(callId, "refused", notRun);
     return data.state === "failed" ? { state: "failed", error: { code: "run-failed", message: data.summary ?? "the run failed" } } : { state: data.state };
   }
 
