@@ -340,8 +340,12 @@ test("a follow-up to a run that ended before the upgrade pins its revision at th
 
 test("through tools_search and tools_call a run keeps its revision's pin: the tool as saved, and a value its setting does not pin refused unsent", { timeout: 240_000 }, async (t) => {
   const { api, fake } = await setup(t);
+  // A run is offered tools_search and tools_call only past 20 catalog tools (#2759): 21 idle read-only tools are granted beside add.
+  const idle = Array.from({ length: 21 }, (_, index) => `idle_${index}`);
+  for (const name of idle) fake.tools[name] = { description: `Idle tool ${name}.`, input: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true }, run: () => ({ content: [{ type: "text", text: "idle" }] }) };
+  await refresh(api);
   // Its setting pins add's `a` to 2 (tool-gate.ts pinRefusal), and its save pins the tool as the fake listed it then.
-  assert.equal((await retried(api)("POST", "/agents", agent("through", { tools: [ADD], tool_settings: { [ADD]: { permission: "allow", pin: { a: 2 } } } }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents", agent("through", { tools: [ADD, ...idle.map((name) => `mcp:fake/${name}`)], tool_settings: { [ADD]: { permission: "allow", pin: { a: 2 } } } }))).status, 201);
   fake.tools.add.description = "Add two numbers, then some.";
   await refresh(api);
   const calls = () => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === "add").length;
