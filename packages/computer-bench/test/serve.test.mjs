@@ -121,13 +121,13 @@ async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, la
 			// tool call is a tool_use row and its tool_result row, which carries the computer calls it made, as serve's does.
 			const { surface, exec } = run.definition.computer ?? {};
 			let uses = 0;
-			const toolCall = async (name, input, work) => {
+			const toolCall = async (name, input, work, extra = {}) => {
 				const use = `call-${(uses += 1)}`;
 				row({ kind: "tool_use", tool_name: name, tool_use_id: use, tool_input_preview: input });
 				const calls = [];
 				const answer = await work(calls);
 				const ok = answer?.ok !== false;
-				row({ kind: "tool_result", tool_name: name, tool_use_id: use, tool_status: ok ? "success" : "failed", tool_result_preview: ok ? "ok" : (answer.error?.message ?? ""), ...(calls.length > 0 ? { computer_calls: calls.slice(0, maxCalls) } : {}), ...(calls.length > maxCalls ? { computer_calls_dropped: calls.length - maxCalls } : {}) });
+				row({ kind: "tool_result", tool_name: name, tool_use_id: use, tool_status: ok ? "success" : "failed", tool_result_preview: ok ? "ok" : (answer.error?.message ?? ""), ...(calls.length > 0 ? { computer_calls: calls.slice(0, maxCalls) } : {}), ...(calls.length > maxCalls ? { computer_calls_dropped: calls.length - maxCalls } : {}), ...extra });
 				return answer;
 			};
 			const computerCall = async (calls, method, params) => {
@@ -139,7 +139,9 @@ async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, la
 			const given = {
 				call: (method, params) => (surface === "code" ? Promise.resolve({ ok: false, error: { code: "denied", message: "code mode: no per-step tool" } }) : toolCall(`computer_${method.replace(".", "_")}`, JSON.stringify(params), (calls) => computerCall(calls, method, params))),
 				...(surface === "tools" ? {} : { script: (fn) => toolCall("codemode", "a script", (calls) => fn({ call: (method, params) => computerCall(calls, method, params) })) }),
-				tool: (name) => toolCall(name, "{}", async () => ({ ok: true, value: {} })),
+				// A non-computer tool call: answered, failed ("failed"), or refused before it ran ("refused", serve's row
+				// then says refused: true).
+				tool: (name, how) => toolCall(name, "{}", async () => (how ? { ok: false, error: { message: `${name} ${how}` } } : { ok: true, value: {} }), how === "refused" ? { refused: true } : {}),
 			};
 			agent(given, { task: run.task, signal: new AbortController().signal }).then((result) => {
 				run.answer = result.answer;
@@ -355,6 +357,28 @@ test("serve: an exec deny task runs on its own agent whose computer has exec fal
 		);
 		const header = recordOf(s, denied.run)[0].data;
 		assert.deepEqual(header.agent, { surface: "tools", exec: "deny", groups: ["files", "screen", "input.pointer", "input.keys", "apps", "ui"], id: definitions[2].id });
+	} finally {
+		await serve.close();
+	}
+});
+
+test("serve: a shell tool call refused before it ran is no program; one that ran and failed is", async () => {
+	const gated = async (given) => {
+		await given.tool("bash", "refused");
+		await given.tool("bash", "failed");
+		return { outcome: "done" };
+	};
+	const serve = await fakeServe({ agents: { gated } });
+	try {
+		const s = store();
+		const backend = withTask(serveBackend({ baseUrl: serve.baseUrl, token: TOKEN, pollMs: 5 }), serve);
+		const [result] = await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("gated")], seeds: [1], backend, store: s, grade: "never" });
+		assert.deepEqual([result.tool_calls, result.steps, result.exec_calls], [2, 0, 1]);
+		const turns = recordOf(s, result.run).filter((entry) => entry.kind === ENTRY.step && entry.data.phase === "tool").map((entry) => [entry.data.method, entry.data.error?.code]);
+		assert.deepEqual(turns, [
+			["bash", "tool_refused"],
+			["bash", "tool_failed"],
+		]);
 	} finally {
 		await serve.close();
 	}

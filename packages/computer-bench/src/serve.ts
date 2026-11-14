@@ -55,6 +55,8 @@ interface TimelineRow {
 	 *  none of. */
 	computer_calls?: ComputerCall[];
 	computer_calls_dropped?: number;
+	/** On a tool_result row: the call was refused before it ran (a gate's deny, a person's). */
+	refused?: true;
 }
 
 /** A computer call as serve's record keeps it (serve's computer-calls.ts): never a param's value or an answer's bytes.
@@ -320,7 +322,7 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 							t_ms: Math.max(0, start - t0),
 							ms: Math.max(0, at - start),
 							ok: row.tool_status === "success",
-							...(row.tool_status === "failed" ? { error: { code: "tool_failed", message: row.tool_result_preview ?? "" } } : {}),
+							...(row.tool_status === "failed" ? { error: { code: row.refused ? "tool_refused" : "tool_failed", message: row.tool_result_preview ?? "" } } : {}),
 							turn,
 							tool,
 						});

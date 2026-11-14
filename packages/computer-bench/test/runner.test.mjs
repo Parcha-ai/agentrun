@@ -365,13 +365,14 @@ test("exec deny: the agent's grant has no exec or processes, the record and resu
 	assert.equal(allowed.platform, "macos desktop");
 });
 
-test("a program ran when it started: a command cut by its timeout or a failed shell tool call counts, a call refused before it started does not", () => {
+test("a program ran when it started: a command cut by its timeout or a failed shell tool call counts, a call refused or stopped before it started does not", () => {
 	const step = (fields) => ({ n: 1, phase: "agent", method: "exec.run", params: {}, t_ms: 0, ms: 1, ok: true, ...fields });
 	const cases = [
 		[step({}), true],
 		[step({ ok: false, error: { code: "timeout", message: "ran past 30 s" } }), true],
-		[step({ method: "process.wait", ok: false, error: { code: "aborted", message: "stopped" } }), true],
+		[step({ method: "process.wait", ok: false, error: { code: "aborted", message: "stopped before it was sent" } }), false],
 		[step({ phase: "tool", method: "bash", ok: false, error: { code: "tool_failed", message: "exit 1" } }), true],
+		[step({ phase: "tool", method: "bash", ok: false, error: { code: "tool_refused", message: "a gate denied it" } }), false],
 		[step({ ok: false, error: { code: "denied", message: "no exec group" } }), false],
 		[step({ ok: false, error: { code: "limit", message: "budget" } }), false],
 		[step({ ok: false, error: { code: "not_found", message: "no such program" } }), false],

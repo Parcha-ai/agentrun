@@ -182,7 +182,8 @@ Then per arm: success with a 95% interval clustered by task (the task is the uni
 task count), tasks passed on every seed (pass^k), mean steps and turns, $ per run and per success, wall time, budget
 stops, infra re-runs and final, refusals, the queue, the route mix (semantic, page, background, foreground, raw input,
 error), stale steps per run, no-op acts and verified steps; the passes that ran a program (exec.run, a process, a
-shell tool); each arm's paired difference against the first, over the task × seed pairs both arms scored; the failure
+shell tool, counted once it started: a command its timeout cut or a shell call that failed ran one, a call refused or
+stopped before it started did not); each arm's paired difference against the first, over the task × seed pairs both arms scored; the failure
 loci; and a table per task.
 
 ## Suites
