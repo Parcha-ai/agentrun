@@ -22,7 +22,7 @@ import { shownUrl } from "./mcp-probe.js";
 import { MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName } from "./tool-names.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
-import { applyBodyOf, compiled, filledPins, onServers, type Package, packageView, readPackage } from "./templates.js";
+import { applyBodyOf, compiled, filledPins, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
@@ -636,13 +636,16 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
 
 /** The calls in a run's rows: each tool_use row by its gate name, with its result's status and preview. */
 /** A run's tool calls, each named as a grader names it: the gate's own rule (RunGate.enter), its settings key, but a
- *  shell tool held to bash's setting (bash_background, bash_output, ...) keeps its own name, so its grader sees it. */
-export function callsOf(rows: readonly Json[], harness: string, servers: readonly string[]): ToolCall[] {
+ *  shell tool held to bash's setting (bash_background, bash_output, ...) keeps its own name, so its grader sees it. A
+ *  call on a saved server `toolkits` names ({<saved server>: <the package's toolkit>}, a need an owner's server filled
+ *  under another name) is named on the package's toolkit, as the package's graders name it. */
+export function callsOf(rows: readonly Json[], harness: string, servers: readonly string[], toolkits: Readonly<Record<string, string>> = {}): ToolCall[] {
   const results = new Map(rows.filter((row) => row.kind === "tool_result" && row.tool_use_id).map((row) => [String(row.tool_use_id), row]));
   return rows.filter((row) => row.kind === "tool_use" && typeof row.tool_name === "string").map((row) => {
     const name = row.tool_name as string;
     const result = results.get(String(row.tool_use_id));
-    return { tool: shellToolOf(name) ?? settingsKeyOf(harness, name, servers) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, status: (result?.tool_status as string | undefined) ?? null, result: (result?.tool_result_preview as string | undefined) ?? null };
+    const key = settingsKeyOf(harness, name, servers);
+    return { tool: shellToolOf(name) ?? (key === undefined ? undefined : onServerName(key, toolkits)) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, status: (result?.tool_status as string | undefined) ?? null, result: (result?.tool_result_preview as string | undefined) ?? null };
   });
 }
 
@@ -898,7 +901,9 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   for (const id of Array.isArray(applied.trigger_ids) ? (applied.trigger_ids as unknown[]).map(String) : []) made.triggers.add(id);
   await deleteTriggers(api, made, true);
   const agent = expectOk(`reading the agent ${agentId}`, await api("GET", `/agents/${encodeURIComponent(agentId)}`));
-  await sameAsLocal(ctx, one, agent, applied.servers);
+  // The saved server the apply gave each need ({toolkit: server}; null for a need it left unset).
+  const used = Object.fromEntries(Object.entries(isObject(applied.servers) ? applied.servers : {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  await sameAsLocal(ctx, one, agent, used);
   stopped();
   for (const note of one.learning) {
     expectOk(`seeding the note ${note.file}`, await api("PUT", `/agents/${encodeURIComponent(agentId)}/learning/files/${encodeURIComponent(note.file)}`, note.text, { "if-none-match": "*" }));
@@ -908,7 +913,7 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // A run started is paid for: whatever fails after this (a read, a grade) still gives it a result, with its cost where
   // the server says it, so the case's total never drops it.
   try {
-    return await ranOnce(ctx, one, n, fakes, agent, agentId, runId);
+    return await ranOnce(ctx, one, n, fakes, agent, agentId, runId, used);
   } catch (error) {
     if (!(error instanceof ApiFailure)) throw error;
     const cost = await api("GET", `/runs/${runId}`).then((read) => (read.status === 200 && isObject(read.body) ? costOf(read.body) : null), () => null);
@@ -916,8 +921,9 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   }
 }
 
-/** The started run `runId` of `agentId` waited on, read and graded. */
-async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[], agent: Json, agentId: string, runId: string): Promise<RunResult> {
+/** The started run `runId` of `agentId` waited on, read and graded; its calls on the saved servers `used` gave its needs
+ *  ({toolkit: server}) named on the package's toolkits. */
+async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[], agent: Json, agentId: string, runId: string, used: Readonly<Record<string, string>>): Promise<RunResult> {
   const { api, options } = ctx;
   const stopped = () => options.signal?.throwIfAborted();
   const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS), options.signal, options.queueTimeoutMs);
@@ -931,7 +937,7 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const harness = isObject(agent.definition) && typeof agent.definition.harness === "string" ? agent.definition.harness : "pi";
   const record: RunRecord = {
     answer: typeof result.final_answer === "string" ? result.final_answer : "",
-    calls: callsOf(ended.rows, harness, Object.keys(one.mcp)),
+    calls: callsOf(ended.rows, harness, [...new Set([...Object.keys(one.mcp), ...Object.values(used)])], Object.fromEntries(Object.entries(used).map(([toolkit, server]) => [server, toolkit]))),
     mcpCalls: fakes.flatMap((fake) => fake.calls.map((call) => ({ ...call }))),
     files: await (async () => {
       const listed = await filesOf(api, runId);
@@ -996,8 +1002,7 @@ async function gradeLlm(ctx: Ctx, agentId: string, input: string): Promise<{ pas
  *  another version, and its eval would measure that one: the case fails, naming each field that differs. The folder's
  *  text is compared as the apply wrote it, on the saved servers its answer's `servers` names (onServers): a need the
  *  owner's server fills under another name is the same package. */
-async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json, servers: unknown): Promise<void> {
-  const used = Object.fromEntries(Object.entries(isObject(servers) ? servers : {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json, used: Readonly<Record<string, string>>): Promise<void> {
   const { pkg } = ctx;
   // The view (GET /v2/templates) is the package as shipped; the agent's text is the package on the servers used.
   const applied = onServers(pkg, used);
