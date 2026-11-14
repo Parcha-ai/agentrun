@@ -177,12 +177,41 @@ test('a required path-filter skip needs a source, reason, exact head and merge-g
 test('non-required red needs demonstrated base parity; it never excuses required red', () => {
   const facts = snapshot(); facts.prs[1].ci.checks[2].conclusion = 'failure';
   rejects(facts, 'Check not passing: stranger');
-  facts.prs[1].ci.exceptions = [{ name: 'stranger', head: facts.prs[1].head, run: 'run:4',
+  Object.assign(facts.prs[1].ci.checks[2], { checkId: 301, runId: 401, attempt: 1,
+    workflow: 'stranger.yml', event: 'pull_request', pr: 11, baseRef: 'branch-10' });
+  facts.prs[1].ci.exceptions = [{ name: 'stranger', head: facts.prs[1].head,
+    run: 'api:checks/11/stranger', check: { checkId: 301, runId: 401, attempt: 1,
+      appId: 15368, workflow: 'stranger.yml', event: 'pull_request', pr: 11, baseRef: 'branch-10' },
     baseRun: 'run:main:5', cause: 'same recorded base failure' }];
   assert.equal(planShip(facts, { phase: 'queue' }).ready, true);
   facts.prs[1].ci.checks[0].conclusion = 'failure';
   facts.prs[1].ci.exceptions.push({ ...facts.prs[1].ci.exceptions[0], name: 'verify' });
   rejects(facts, 'Check not passing: verify');
+});
+
+test('a base-parity exception cannot cover another failed check, run, attempt or applicable context', () => {
+  const facts = snapshot();
+  Object.assign(facts.prs[1].ci.checks[2], { conclusion: 'failure', checkId: 301,
+    runId: 401, attempt: 1, workflow: 'stranger.yml', event: 'pull_request', pr: 11, baseRef: 'branch-10' });
+  facts.prs[1].ci.exceptions = [{ name: 'stranger', head: facts.prs[1].head,
+    run: 'api:checks/11/stranger', check: { checkId: 301, runId: 401, attempt: 1,
+      appId: 15368, workflow: 'stranger.yml', event: 'pull_request', pr: 11, baseRef: 'branch-10' },
+    baseRun: 'run:main:399', cause: 'same recorded base failure' }];
+  assert.equal(planShip(facts, { phase: 'queue' }).ready, true);
+  for (const [field, value] of Object.entries({ checkId: 302, runId: 402, attempt: 2,
+    appId: 999, workflow: 'other.yml', event: 'pull_request_target', pr: 12,
+    baseRef: 'main', source: 'api:checks/11/stranger/run/402' })) {
+    const changed = structuredClone(facts); changed.prs[1].ci.checks[2][field] = value;
+    const result = planShip(changed, { phase: 'queue' });
+    assert.equal(result.ready, false, `Exception must not cover changed ${field}`);
+    assert.equal(result.ownerProbeAllowed, false);
+  }
+  const incomplete = structuredClone(facts);
+  delete incomplete.prs[1].ci.checks[2].checkId;
+  delete incomplete.prs[1].ci.exceptions[0].check.checkId;
+  rejects(incomplete, 'Check not passing: stranger');
+  delete facts.prs[1].ci.exceptions[0].check;
+  rejects(facts, 'Check not passing: stranger');
 });
 
 test('a newer successful run supersedes cancelled attempts only within the same complete context', () => {

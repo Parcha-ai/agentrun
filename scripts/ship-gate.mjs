@@ -35,6 +35,14 @@ export function bindingFor(facts, number) {
     dependencies: chain.filter(n => n !== number).map(n => revision(facts.prs.find(p => p.number === n))) };
 }
 
+function failedCheckIdentity(check) {
+  const ids = ['checkId', 'runId', 'attempt', 'appId', 'pr'];
+  const context = ['workflow', 'event', 'baseRef'];
+  if (ids.some(key => !Number.isSafeInteger(check[key]) || check[key] < 1) ||
+    context.some(key => !source(check[key]))) return null;
+  return Object.fromEntries([...ids, ...context].map(key => [key, check[key]]));
+}
+
 function checkCI(facts, pr, block) {
   const checks = pr.ci?.checks;
   if (!Array.isArray(checks) || !source(pr.ci.source)) { block('CI data missing'); return; }
@@ -64,8 +72,10 @@ function checkCI(facts, pr, block) {
     if (check.status !== 'completed') { block(`Check pending: ${check.name}`); continue; }
     if (check.conclusion === 'success') continue;
     if (check.conclusion === 'skipped' && skip(check.name, pr.head)) continue;
-    const exception = !required?.includes(check.name) && pr.ci.exceptions?.some(e =>
-      e.name === check.name && e.head === pr.head && source(e.run) && source(e.baseRun) && source(e.cause));
+    const identity = failedCheckIdentity(check);
+    const exception = identity && !required?.includes(check.name) && pr.ci.exceptions?.some(e =>
+      e.name === check.name && e.head === pr.head && e.run === check.source &&
+      isDeepStrictEqual(e.check, identity) && source(e.baseRun) && source(e.cause));
     if (!exception) block(`Check not passing: ${check.name}`);
   }
 }

@@ -53,12 +53,17 @@ npm 11), never by hand. Push with `--force-with-lease=<branch>:<old-head>`.
 
 ```bash
 npm ci --ignore-scripts && npm run build
+npm run build:daemon -w @parcha/agentrun-computer  # before check when Docker-backed serve/client demos apply
 npm run check
 node scripts/changes.mjs --check --base origin/main
 npm run export:source && node scripts/check-generated.mjs
 npm run verify:source
 npm run verify:packages          # when a package's files, manifest or the lock change
 ```
+
+Docker-backed serve/client demos need the computer daemon in a fresh checkout. Build it after
+the initial package build and before `npm run check`; the check's rebuild does not remove it.
+Package-consumer verification still needs the daemon built as `CONTRIBUTING.md` requires.
 
 Then `node scripts/stranger.mjs <name>` for every package whose README, `bin`, exports or demo the
 pull request touches (specs in `scripts/stranger/`).

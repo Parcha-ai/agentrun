@@ -85,8 +85,14 @@ the current base. Never hide an actual latest applicable failure.
 For a legitimate workflow/path-filter skip, `ci.skips` contains `{name, head, source,
 reason, mergeGroup: true}`, after verifying the workflow's trigger and queue coverage.
 `ci.exceptions` is only for demonstrated **non-required** base-parity failures:
-`{name, head, run, baseRun, cause}`. Disclose each exception in the batch/handoff. Required
-red/pending checks cannot be exempted, and absent required checks cannot simply disappear.
+`{name, head, run, check, baseRun, cause}`. `run` must equal the failed check's exact `source`.
+`check` must exactly match that check's immutable identity: positive numeric `checkId`,
+`runId`, `attempt`, `appId` and `pr`, plus `workflow`, `event` and `baseRef`. Put those
+identity fields on the check itself too. Missing identities or mismatched check/run IDs,
+attempts, Apps, workflows or contexts block the exception, even on the same head and name.
+Keep the separate authenticated `baseRun` and shared-cause evidence; matching an identity
+does not prove base parity. Disclose each exception in the batch/handoff. Required red/pending
+checks cannot be exempted, and absent required checks cannot simply disappear.
 
 Approval-phase `consents` entries have `{pr, kind: "task"|"standing", actor,
 actorVerified: true, repository, actions: ["approve", "queue"], source, binding}`. Verify
