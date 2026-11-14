@@ -1555,7 +1555,13 @@ export interface operations {
   };
   deleteMcpServer: {
     body: never;
-    answer: never;
+    answer: {
+      deleted: true;
+      composio: {
+        removed: false;
+        note: string;
+      };
+    };
   };
   deleteTemplate: {
     body: never;
