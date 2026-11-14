@@ -292,10 +292,13 @@ test("the API: a definition keeps max_tool_calls, an edit that leaves it out kee
   const flow = await api("POST", "/agents", flowAgent("flow", answerFlow(), { max_tool_calls: 5 }));
   assert.equal(flow.status, 422);
   assert.ok(JSON.stringify(flow.body).includes("definition.max_tool_calls"), JSON.stringify(flow.body));
-  // On another harness the budget would hold nothing: the save is refused, never an agent whose runs go without it.
-  const codex = await api("POST", "/agents", agent("on-codex", { harness: "codex", max_tool_calls: 5 }));
-  assert.equal(codex.status, 422, JSON.stringify(codex.body));
-  assert.deepEqual(codex.body.error.fields.map((field) => field.field), ["definition.max_tool_calls"]);
+  // On another harness the budget would hold nothing (its calls, and the calls its tools_call, codemode or Codex's own code
+  // mode make, are not counted): the save is refused, never an agent whose runs go without it.
+  for (const harness of ["claude-agent", "codex", "opencode"]) {
+    const refused = await api("POST", "/agents", agent(`on-${harness}`, { harness, max_tool_calls: 5 }));
+    assert.equal(refused.status, 422, `${harness}: ${JSON.stringify(refused.body)}`);
+    assert.deepEqual(refused.body.error.fields.map((field) => field.field), ["definition.max_tool_calls"], harness);
+  }
 });
 
 const REVIEW = new URL("../templates/code-review/", import.meta.url).pathname;
