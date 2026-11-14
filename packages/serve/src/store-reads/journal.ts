@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
-import { CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
+import { CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, FEEDBACK_SUFFIX, isFeedbackRow, isMessageRow, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -169,6 +169,38 @@ const inWorkspace = (cwd: string) => (path: string): string => {
   return path.startsWith(`${root}/`) && path.length > root.length + 1 ? path.slice(root.length + 1) : path;
 };
 
+/** A grade's feedback round's words (runner/feedback-round.ts, KINDS.feedback) as the reviewer's message: a host's
+ *  user entry, which the Timeline shows and pi never reads (the entry on the journal carries no model message). */
+export function withFeedback(entries: readonly EntryLike[]): EntryLike[] {
+  return entries.map((entry) => {
+    if (entry.kind !== KINDS.feedback) return entry;
+    const data = (entry.data ?? {}) as { text?: unknown; at?: unknown };
+    return { ...entry, model: [{ role: "user", content: typeof data.text === "string" ? data.text : "", ...(typeof data.at === "number" ? { timestamp: data.at } : {}) }] } as EntryLike;
+  });
+}
+
+/** `rows` (rendered over `entries`) with each grade's words' row (withFeedback's: the row of a FEEDBACK entry) marked
+ *  FEEDBACK_SUFFIX: shown as the reviewer's message, and never a message a turn of the job's took (isMessageRow passes
+ *  over it), so no reader of the rows (the answer, the path, the messages a stop stands after) reads a grade as one. */
+function feedbackMarked(rows: readonly TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
+  const words = new Set(entries.filter((entry) => entry.kind === KINDS.feedback && entry.id !== undefined).map((entry) => `:${entry.id}`));
+  if (!words.size) return [...rows];
+  return rows.map((row) => (row.kind === "user_message" && words.has(row.id.slice(row.id.lastIndexOf(":"))) ? { ...row, id: `${row.id}${FEEDBACK_SUFFIX}` } : row));
+}
+
+/** The job's turns: a run's timeline `rows` (runTimeline's) with every grade's feedback round left out, from its words'
+ *  row (FEEDBACK_SUFFIX) up to the run's next message. A round asks the agent no turn of the job's, so what the job did is
+ *  what is left (a follow-up's turns, a person's, included). The one view every reader of what the job's turns said
+ *  reads (the answer, the path, nothing new, a run's trace). */
+export function withoutFeedbackRounds<Row extends { readonly id: string; readonly kind: string; readonly origin?: string }>(rows: readonly Row[]): Row[] {
+  let inRound = false;
+  return rows.filter((row) => {
+    if (isFeedbackRow(row)) inRound = true;
+    else if (isMessageRow(row)) inRound = false;
+    return !inRound;
+  });
+}
+
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
  *  (withPaidCosts). A run whose record carries no per-request cost (a CLI harness's, a workflow's: metrics.ts
@@ -190,8 +222,9 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // price, never one in flight: never the known sum as its cost while the run reads stopped.
   const read = { ...options, ...(cwd ? { path: inWorkspace(cwd.cwd) } : {}), ...(!options.settled && turnCutOf(records, reflect) ? { turnCut: true } : {}) };
   // Shaped on pi too: its own entries pass through as they are, and the calls its tools nested (on the loop's record) read
-  // as a CLI's calls do.
-  const rendered = timelineOf(withPaidCosts(piShaped(entries)), read);
+  // as a CLI's calls do. A grade's feedback round's words read as the reviewer's message (withFeedback), marked as no
+  // message of the job's (feedbackMarked).
+  const rendered = feedbackMarked(timelineOf(withPaidCosts(withFeedback(piShaped(entries))), read), entries);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
   return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, await catalogNamed(store, runId, rows)), entries, options.redact), entries, options.redact));
 }

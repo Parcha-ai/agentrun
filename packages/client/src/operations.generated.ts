@@ -2459,6 +2459,7 @@ export type GradeRunBody = {
   correct: boolean;
   expected?: Record<string, unknown>;
   source?: "feedback" | "eval";
+  label?: string;
 };
 export type GradeRunResponse = {
   run_id: string;
@@ -2468,6 +2469,7 @@ export type GradeRunResponse = {
   path: "agent" | "handed_back" | "workflow" | "replay";
   workflow: string | null;
   workflow_digest: string | null;
+  feedback: "revise" | "look_back" | null;
   expected?: Record<string, unknown>;
 };
 
