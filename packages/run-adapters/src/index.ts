@@ -2,6 +2,7 @@ export { answeredUnpriced, createHarnessRunner, modelPortFor, sessionSpendOf, SU
 export { runBooking, type RunSessions } from "./run-booking.js";
 export type { Admission, BeforeRequest, Refusal, HarnessRunner, HarnessRunnerOptions, InFlight, ModelBooking, ModelPortEvent, ModelPortOptions, SessionCost } from "./runner.js";
 export { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
+export { CODEMODE, DEFER_CATALOG_OVER, defersCatalog, isCatalogName, META_TOOLS, TOOLS_CALL, TOOLS_SEARCH } from "./tool-deferral.js";
 export { toolSchemaProblems } from "./schema-check.js";
 export { READ_SKILL_FILE, readSkillFileTool, SKILL_BYTES, skillProblems } from "./skill-files.js";
 export type { HostSkill, SkillFileList } from "./skill-files.js";

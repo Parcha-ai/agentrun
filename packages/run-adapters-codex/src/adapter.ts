@@ -104,6 +104,7 @@ export function kernelTool(tool: HostTool): KernelTool {
     inputSchema: tool.inputSchema,
     replay: tool.replay,
     ...(tool.nests ? { nests: true as const } : {}),
+    ...(tool.deferred ? { deferred: true as const } : {}),
     async execute(input, io) {
       // The effect's step is `tool:<Codex call id>#<attempt>`: the host sees Codex's call id.
       const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");

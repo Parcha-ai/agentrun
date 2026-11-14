@@ -76,6 +76,7 @@ import { bookedIn } from "../paid-calls.js";
 import { type HostCalls, withHostCalls } from "../host-calls.js";
 import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
+import { CODEMODE, defersCatalog, isCatalogName, TOOLS_CALL, TOOLS_SEARCH } from "@parcha/agentrun-kernel";
 import { metaTools } from "./meta-tools.js";
 import { builtinHarness } from "../harness-table.js";
 import { Fenced } from "../store/index.js";
@@ -1261,9 +1262,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const servedAnswer = reopen && !reopen.sent && session.state === "new" && root !== undefined ? servedAnswerOf(await entriesOf(gate.journal, root.id, context)) : undefined;
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
     // A message that may not answer a person (a trigger's), delivered once the run waits on its person (in its claim, or
-    // between the question's turn end and that wait): never the wait's answer, never placed, refused in the words the
-    // server refuses one with while the run waits (runs-over-store.ts WAITS_ON_A_PERSON).
-    if (followUp && (askedLast || (reopen !== undefined && (reopen === waitTurn || reopen === askReopen)))) return { refused: "The run is waiting on a person." };
+    // between the question's turn end and that wait): never the wait's answer, never placed now. Its firing reads sent (the
+    // door took the row), so it is never refused either: left untaken, it runs as a turn of its own after the person's
+    // answer, as a parked run's does (the store's park takes no wake from it; the run's end opens the run again with it).
+    if (followUp && (askedLast || (reopen !== undefined && (reopen === waitTurn || reopen === askReopen)))) return { later: "the run is waiting on a person: the message runs as a turn of its own after the answer" };
     // A reopened run's follow-up, its session idle: sent as a turn of its own, tracked to its end (as the input and a raise's
     // follow-up are), its row taken in its submission's commit; the claim waits on it before the run's next end.
     if (reopen && !reopen.sent && (session.state === "idle" || session.state === "new")) {
@@ -1987,12 +1989,23 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           replay: "never",
           call: async () => ({ text: `${one.name} is run by the harness itself, as a nested call of tools_call or a script.`, isError: true }),
         }));
+        // One discovery system (tool-deferral.ts): a run whose catalog tools pass DEFER_CATALOG_OVER does not list them; the
+        // model finds them with tools_search and runs them with tools_call (still the tool's own call at the gate). Claude
+        // Code defers them itself (its ToolSearch, on under the same test), so it is offered neither. Under the threshold
+        // every tool is listed and there is no search or call. codemode is offered as it always was.
+        const facts = builtinHarness(spec.adapter.id)?.facts;
+        // A meta tool whose setting is deny is not offered at all, rather than offered and refused.
+        const allowed = async (name: string) => !settingOf || (await settingOf(name).catch(() => "deny" as const)) !== "deny";
+        // Deferred only when the model can both find and run what it hid: with either helper denied every tool stays listed,
+        // so denying a helper never takes an otherwise allowed tool out of reach.
+        const deferred = !facts?.ownToolSearch && defersCatalog(own.map((one) => one.name)) && (await allowed(TOOLS_SEARCH)) && (await allowed(TOOLS_CALL));
         const metas = metaTools({
           tools: () => [...own, ...native],
           granted: async (name) => !settingOf || (await settingOf(mcp?.catalogOf(name) ?? name).catch(() => "deny" as const)) !== "deny",
-          codemode: builtinHarness(spec.adapter.id)?.facts?.ownCodemode !== true,
+          codemode: facts?.ownCodemode !== true && (await allowed(CODEMODE)),
+          discovery: { search: deferred, call: deferred },
         }).filter((meta) => ![...own, ...native].some((one) => one.name === meta.name));
-        const tools: HostTool[] = [...own, ...metas.map(hosted)];
+        const tools: HostTool[] = [...own.map((one): HostTool => (deferred && isCatalogName(one.name) ? { ...one, deferred: true } : one)), ...metas.map(hosted)];
         // An MCP tool of the run by its catalog name, as wrapped above: what a learned workflow's MCP node calls.
         mcpHosted = (catalog) => {
           const wire = mcp?.tools.find((one) => mcp?.catalogOf(one.name) === catalog);
