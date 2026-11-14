@@ -3,6 +3,7 @@
 // (store-reads/learning.ts), fed through the run view's pure functions (run-view.ts) so the figures and words a person or a
 // model sees do not change. runs.ts still answers the API from files; this is the store-backed path the server cut switches
 // onto. viewOverStore answers the run read, summaryOverStore the run list, momentOverStore the one acceptance each act reads.
+import { isDeepStrictEqual } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { CAPS, isMessageRow, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
@@ -484,9 +485,11 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     // A withheld run's title is a short fixed line (WITHHELD_TITLE), never its stored title: the title can repeat the
     // sign-in this server can't read back to cut, so it is not served. The full withheld sentence is in error and review.
     title: unshown ? WITHHELD_TITLE : shownWords(launch?.title ?? ""),
-    // The input the run was started with, as its launch keeps it, whole (never the first message the timeline caps), cut
-    // as its output is: what "Run again" sends again. Null for a withheld run, or one whose launch holds no input object.
-    input: !unshown && isObject(launch?.input) ? redactedOutput(launch?.input, values) : null,
+    // The input the run was started with, as its launch keeps it, whole (never the first message the timeline caps): what
+    // "Run again" sends again. Served only when the cut its output gets (redactedOutput) leaves it as it was; null when
+    // that cut would change it (a held value, a long run with no whitespace), so no altered task is ever sent again. Null
+    // too for a withheld run, or one whose launch holds no input object.
+    input: !unshown && isObject(launch?.input) && isDeepStrictEqual(redactedOutput(launch?.input, values), launch?.input) ? launch?.input : null,
     file_ids: [...(launch?.files ?? [])],
     place: launch?.place ?? { mode: "runner" },
     // The runner holding the run now, when one does (a running run with a live claim): its id, the claim's count (up one each

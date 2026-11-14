@@ -2474,7 +2474,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     input: {
       type: ["object", "null"],
       additionalProperties: true,
-      description: "On the run read (GET /v2/runs/{run_id}), never a list's: the input the run was started with, whole (`content` and its typed fields, or a workflow's input), each value this server holds cut as the run's words are; what starting it again sends. Null for a run whose words are withheld.",
+      description: "On the run read (GET /v2/runs/{run_id}), never a list's: the input the run was started with, whole and exactly as given (`content` and its typed fields, or a workflow's input): what starting it again sends. Null when serving it would change it (it holds a value this server keeps, or a run of text the run's words are cut of), and for a run whose words are withheld.",
       "x-agentrun-serve": "runinput/1",
     },
     file_ids: { type: "array", items: { type: "string" }, description: "On the run read, never a list's: the uploaded files the run was started with (RunCreate `file_ids`), in order; empty for none.", "x-agentrun-serve": "runinput/1" },

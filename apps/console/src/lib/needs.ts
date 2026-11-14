@@ -60,10 +60,11 @@ export function ago(iso: string, now: number): string {
 
 /** The start of "Run again", from the run's read (a list's run carries no input): its input as the read serves it, whole,
  *  and its files, with its effort and its spend cap; or why it can't be started again from here: a workflow run starts
- *  from its agent's page, and a run whose input is withheld has none to send. */
+ *  from its agent's page, and a run whose read serves no input (withheld, or one the server can't serve exactly as it was
+ *  given) has none to send: never an altered one. */
 export function rerunBody(run: Run): { body: { input: Record<string, unknown>; file_ids?: string[]; effort?: string; max_cost_usd?: number } } | { refusal: string } {
   if (run.kind === "workflow") return { refusal: `"${run.title}" is a workflow run: start it again from its agent's page` };
-  if (!run.input) return { refusal: `"${run.title}": its input could not be read` };
+  if (!run.input) return { refusal: `"${run.title}": its input can't be read back exactly as it was given; start it again from its agent's page` };
   const cap = run.cost?.cap_usd;
   return { body: { input: run.input, ...(run.file_ids?.length ? { file_ids: run.file_ids } : {}), ...(run.effort ? { effort: run.effort } : {}), ...(typeof cap === "number" ? { max_cost_usd: cap } : {}) } };
 }
