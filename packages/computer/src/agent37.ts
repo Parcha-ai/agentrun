@@ -11,7 +11,6 @@
 import { createHash } from "node:crypto";
 import { Duplex } from "node:stream";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
-import { WINDOW_MANAGER } from "./desktop.js";
 import { DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
@@ -352,6 +351,8 @@ class Agent37Host implements MachineHost {
 			maxLifetimeMs: DAY_MS,
 			arch: "amd64",
 			vendorAgentPorts: [AGENT37_SSH_PORT, AGENT37_TTYD_PORT],
+			// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
+			windowManager: true,
 			networkReadBack: true,
 			network: [...AGENT37.network],
 			mounts: [...MOUNT],
@@ -568,9 +569,7 @@ export class Agent37Provider extends HostedProvider {
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);
 		if (region !== "us" && type !== "vm") throw new Error(`Agent37 runs type default in us alone: ${region} takes type vm`);
 		const host = new Agent37Host({ apiKey, sshKey: privateKey, ssh2, fetch: fetcher, WebSocket, apiUrl: api.href.replace(/\/+$/, ""), proxyDomain, type, region });
-		// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
-		const desktop = { windowManager: WINDOW_MANAGER, ...rest.desktop };
-		super(host, { ...rest, desktop, label: "Agent37", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
+		super(host, { ...rest, label: "Agent37", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
 	}
 }
 
