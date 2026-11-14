@@ -611,19 +611,27 @@ const jsonType = (value: unknown): string => (value === null ? "null" : Array.is
 /** `schema` with every value constraint taken out (VALUE_KEYWORDS): the answer's shape alone, what a dry run's
  *  placeholder answer can decide. Its fields, their types, which are required and whether others may be added stay; an
  *  `integer` reads as a number; an enum or const with no type of its own keeps the type its values share, so a type
- *  that can't line up still fails. */
+ *  that can't line up still fails. A `oneOf` reads as `anyOf`: with the values taken out its branches can read alike
+ *  (two consts, both a string), and a placeholder matching two of them says nothing a real answer would; one branch its
+ *  shape can meet is enough. Beside an `anyOf` of the schema's own, both hold (an allOf of the two). */
 function shapeOf(schema: unknown, depth = 0): unknown {
   if (depth > SHAPE_DEPTH) return {};
   if (Array.isArray(schema)) return schema.map((one) => shapeOf(one, depth + 1));
   if (schema === null || typeof schema !== "object") return schema;
   const spec = schema as Record<string, unknown>;
   const out: Record<string, unknown> = {};
+  let oneOf: unknown;
   for (const [key, value] of Object.entries(spec)) {
     if (VALUE_KEYWORDS.has(key)) continue;
-    if (key === "type") out.type = Array.isArray(value) ? [...new Set(value.map((one) => (one === "integer" ? "number" : one)))] : value === "integer" ? "number" : value;
+    if (key === "oneOf") oneOf = shapeOf(value, depth + 1);
+    else if (key === "type") out.type = Array.isArray(value) ? [...new Set(value.map((one) => (one === "integer" ? "number" : one)))] : value === "integer" ? "number" : value;
     else if (MAP_KEYWORDS.has(key) && isRecord(value)) out[key] = Object.fromEntries(Object.entries(value).map(([name, sub]) => [name, shapeOf(sub, depth + 1)]));
     else if (SUB_KEYWORDS.has(key)) out[key] = shapeOf(value, depth + 1);
     else out[key] = value;
+  }
+  if (oneOf !== undefined) {
+    if (out.anyOf === undefined) out.anyOf = oneOf;
+    else out.allOf = [...(Array.isArray(out.allOf) ? out.allOf : []), { anyOf: oneOf }];
   }
   if (spec.type === undefined) {
     const literals = spec.const !== undefined ? [spec.const] : Array.isArray(spec.enum) ? spec.enum : [];

@@ -613,6 +613,26 @@ test("a draft's dry run decides its answer's shape alone on placeholders: a 4-di
   assert.deepEqual(await draftDryRun(dsl, through, JSON.stringify({ answer: { mcc: "5251", description: "Hardware", confidence: 0.9 } }), MCC), { status: "passed" }, "the example's own value meets it");
 });
 
+// #2641 review r6 (P1): taking out the value constraints can leave a `oneOf`'s branches alike ({const: "ok"} and
+// {const: "error"} both read as a string), so a placeholder would match more than one branch and be refused where a real
+// answer matches exactly one. The shape reads a `oneOf` as `anyOf`: a branch the answer's shape can meet is enough. A
+// shape no branch can meet still fails.
+test("a draft's dry run reads the agent's oneOf as anyOf on placeholders: branches told apart only by value never refuse a draft; a type no branch takes still fails", async () => {
+  const input = JSON.stringify({ content: "Acme Hardware" });
+  const KIND = { type: "object", additionalProperties: false, required: ["mcc", "description", "confidence"], properties: {
+    mcc: { type: "string", pattern: "^[0-9]{4}$" },
+    description: { oneOf: [{ const: "Hardware" }, { const: "Grocery" }] },
+    confidence: { type: "number" },
+  } };
+  assert.deepEqual(await draftDryRun(dsl, shapeDraft(SHAPE), input, KIND), { status: "passed" });
+  // Beside an anyOf of its own, both still hold.
+  const both = { ...KIND, properties: { ...KIND.properties, mcc: { anyOf: [{ type: "string" }, { type: "null" }], oneOf: [{ pattern: "^5" }, { pattern: "^7" }] } } };
+  assert.deepEqual(await draftDryRun(dsl, shapeDraft(SHAPE), input, both), { status: "passed" });
+  // Shape still decides: the draft answers a number where every branch is a string.
+  const typed = await draftDryRun(dsl, shapeDraft({ ...SHAPE, properties: { ...SHAPE.properties, description: { type: "number" } } }), input, KIND);
+  assert.equal(typed.status, "failed", JSON.stringify(typed));
+});
+
 // #2641 review r5 (P2): a held revision's prompt offers no `No change.` (it stays held until a new revision). Answered so
 // anyway, the reply is refused as an unreadable one is: asked again, and every attempt recorded, so the once-per-hold
 // check sees the compile and later runs never pay for the same held revision again.
