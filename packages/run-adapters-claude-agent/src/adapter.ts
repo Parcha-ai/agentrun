@@ -325,11 +325,13 @@ function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls:
       // A tool that nests calls (tools_call, codemode) gets the session's tools as its nested calls, through the bridge.
       const result = await tool.call(input, { callId, signal: effect.signal, attempt, ...(effect.nested ? { nested: effect.nested } : {}) });
       if (result.isError) throw new Error(result.text);
-      if (!result.images?.length) return result.text;
+      // Its value, recorded with the outcome: a script's nested call is answered it (meta-tools.ts), as Codex's adapter keeps it.
+      const structured = result.structured !== undefined ? { structured: result.structured } : {};
+      if (!result.images?.length) return result.structured === undefined ? result.text : { text: result.text, ...structured };
       // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
       const wrong = toolImageProblems(tool.name, result.images, maxImageBytes);
       if (wrong) throw new Error(wrong);
-      return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })) };
+      return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })), ...structured };
     },
   };
 }

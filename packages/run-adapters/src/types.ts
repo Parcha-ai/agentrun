@@ -451,6 +451,9 @@ export interface SessionPort {
 
 export interface AgentAdapter {
   readonly id: string;
+  /** Tools the harness runs itself beside the session's host tools (pi's subagent tool, its browser's): offered to the
+   *  model as the host tools are, so the host's tools_search lists them and a nested call reaches one by its name. */
+  readonly ownTools?: readonly { readonly name: string; readonly description: string; readonly inputSchema: Record<string, unknown> }[];
   /** Problems with a session before anything is spent; an empty list opens it. */
   check(spec: SessionSpec): string[];
   /** Opens the session, restoring it from `io.writer` when its key has records. */

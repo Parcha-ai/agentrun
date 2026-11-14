@@ -15,7 +15,7 @@ import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type Cursor, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type HookApi, type JsonObject, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
-import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionPort, type SessionSpec, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionPort, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
@@ -103,6 +103,9 @@ export interface PiAdapterOptions {
 }
 
 const PROVIDER = "agentrun-session";
+/** A host tool's value (HostTool's `structured`) in its pi result's details, which the model never reads: what a call
+ *  nested in tools_call or a script reads (piNested). */
+const HOST_VALUE = "agentrun.value";
 const INPUT_REQUEST = "agentrun:input";
 
 /** pi as an AgentAdapter for one claim's run. */
@@ -110,6 +113,9 @@ export function piAdapter(options: PiAdapterOptions): AgentAdapter {
   return {
     // pi is the default harness: its id is the harness table's, never a literal of its own.
     id: DEFAULT_HARNESS,
+    // Its native tools (the subagent tool, the browser's): the host's tools_search lists them, and tools_call or a script
+    // calls one as pi's own nested tool task (piNested).
+    ownTools: [...(options.extensions ?? []).flatMap((extension) => extension.tools ?? []), ...(options.tools ?? [])].map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters as unknown as Record<string, unknown> })),
     check: () => [],
     open: (spec, io) => openPi(options, spec, io as PiSessionIO),
   };
@@ -516,12 +522,25 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
       const codes = result.diagnostics.map((one) => one.code);
       const refused = (result.details as { [CALL_REFUSED]?: unknown } | undefined)?.[CALL_REFUSED] === true || codes.includes("blocked") || codes.includes("tool_unavailable");
       const interrupted = codes.some((code) => code === "interrupted" || code === "abandoned" || code === "restart_limit");
+      // A schema-less tool's output for programs is its output parts: its text, and the images it shows.
       const value = result.structuredOutput;
-      const said = typeof value === "string" ? value : Array.isArray(value) ? value.map((part) => (part && typeof part === "object" && "text" in part ? String((part as { text: unknown }).text) : "")).join("") : "";
+      const parts = Array.isArray(value) ? (value as { type?: unknown; text?: unknown; data?: unknown; mimeType?: unknown }[]) : [];
+      const said = typeof value === "string" ? value : parts.map((part) => (part && typeof part === "object" && "text" in part ? String(part.text) : "")).join("");
+      const images: ToolImage[] = parts.flatMap((part) => (part?.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string" ? [{ data: part.data, mimeType: part.mimeType }] : []));
+      // A host tool's value rides its result's details (piTool), recorded with it: a script's call is answered it.
+      const structured = (result.details as { [HOST_VALUE]?: JsonValue } | undefined)?.[HOST_VALUE];
       // A refusal in the gate's words (this session's), or, answered from an earlier session's record, said so.
       const words = refused ? (refusals.get(callId) ?? `${name} was refused (the run's tool settings or a person's answer), and it did not run.`) : undefined;
       const text = words ?? (said || result.diagnostics.map((one) => one.message).join("\n"));
-      return { text, ...(result.isError ? { isError: true } : {}), ...(refused ? { refused: true as const } : {}), ...(interrupted ? { interrupted: true as const } : {}), fresh: touched.has(callId) };
+      return {
+        text,
+        ...(result.isError ? { isError: true } : {}),
+        ...(!refused && images.length ? { images } : {}),
+        ...(!refused && structured !== undefined ? { structured } : {}),
+        ...(refused ? { refused: true as const } : {}),
+        ...(interrupted ? { interrupted: true as const } : {}),
+        fresh: touched.has(callId),
+      };
     },
     memo: (key, value) => api.memo(`nested:${key}`, value, context),
   };
@@ -556,7 +575,10 @@ function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => 
       });
       io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: answer.text });
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
-      return { output: [{ type: "text" as const, text: answer.text }, ...images], ...(answer.isError ? { isError: true } : {}) } as never;
+      // A nested call's (its id `<callId>/<key>`) value in the result's details (which the model never reads), recorded
+      // with it: what tools_call or a script reads (piNested). A call the model made itself keeps its result as it was.
+      const value = answer.structured !== undefined && api.callId.includes("/") ? { details: { [HOST_VALUE]: answer.structured } } : {};
+      return { output: [{ type: "text" as const, text: answer.text }, ...images], ...(answer.isError ? { isError: true } : {}), ...value } as never;
     },
   });
 }

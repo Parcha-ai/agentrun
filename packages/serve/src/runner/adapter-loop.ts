@@ -1912,11 +1912,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // each but one that runs scripts of its own): what they call is called nested, each call asked about and recorded
         // as its own tool's. A search finds a tool whose setting is not deny; an MCP tool's setting is its catalog name's.
         const settingOf = spec.gate?.permission;
+        // The harness's own tools beside them (pi's subagent, its browser's): found and called by name as the host's are,
+        // run by the harness as its own nested calls. Never called here: a nested call reaches them through the harness.
+        const native: HostTool[] = (spec.adapter.ownTools ?? []).filter((one) => !own.some((tool) => tool.name === one.name)).map((one) => ({
+          name: one.name,
+          description: one.description,
+          inputSchema: one.inputSchema,
+          replay: "never",
+          call: async () => ({ text: `${one.name} is run by the harness itself, as a nested call of tools_call or a script.`, isError: true }),
+        }));
         const metas = metaTools({
-          tools: () => own,
+          tools: () => [...own, ...native],
           granted: async (name) => !settingOf || (await settingOf(mcp?.catalogOf(name) ?? name).catch(() => "deny" as const)) !== "deny",
           codemode: builtinHarness(spec.adapter.id)?.facts?.ownCodemode !== true,
-        }).filter((meta) => !own.some((one) => one.name === meta.name));
+        }).filter((meta) => ![...own, ...native].some((one) => one.name === meta.name));
         const tools: HostTool[] = [...own, ...metas.map(hosted)];
         // An MCP tool of the run by its catalog name, as wrapped above: what a learned workflow's MCP node calls.
         mcpHosted = (catalog) => {
