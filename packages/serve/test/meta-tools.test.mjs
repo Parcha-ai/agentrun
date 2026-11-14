@@ -261,7 +261,8 @@ for (const harness of HARNESSES) {
     const { runTimeline } = await import("../dist/store-reads/journal.js");
     const add = { name: "add", replaySafe: false, run: async () => "5" };
     // One run each: a scripted CLI stand-in makes its script's first call alone.
-    const runs = [[TOOLS_CALL, { name: "add", args: {} }], ...(harness.codemode ? [[CODEMODE, { script: "await tools.add({}); await tools.add({}); return 'two';" }]] : [])];
+    // (Claude Code defers MCP tools itself, so it is never offered tools_call.)
+    const runs = [...(harness.discovery ? [[TOOLS_CALL, { name: "add", args: {} }]] : []), ...(harness.codemode ? [[CODEMODE, { script: "await tools.add({}); await tools.add({}); return 'two';" }]] : [])];
     for (const [name, args] of runs) {
       const { row, server } = await metaRun(t, harness, [{ call: name, args }, { say: "done" }], { add });
       assert.equal(row.state, "ended", JSON.stringify(row));
