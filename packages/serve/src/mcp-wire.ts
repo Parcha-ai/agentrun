@@ -7,10 +7,10 @@ export const MAX_RESPONSE = 4 * 1024 * 1024;
 
 /** `text` with every credential value in `values` replaced, whole and as its bare token (with any one-word scheme, such
  *  as `Bearer ` or `Basic `, taken off): an upstream answer or error that echoes a header, or only its token, never shows
- *  it to the model, the harness, the owner's save or the run's files. A value under 8 characters is not cut (it would
- *  cut ordinary words). */
+ *  it to the model, the harness, the owner's save or the run's files. A value of any length is cut (a short token is a
+ *  valid credential); only an empty one is skipped. */
 export const scrub = (text: string, values: Iterable<string>): string =>
-  [...values].flatMap((value) => [value, value.replace(/^[A-Za-z][A-Za-z0-9_-]*\s+(?=\S+$)/, "")]).sort((a, b) => b.length - a.length).reduce((out, value) => (value.length >= 8 ? out.split(value).join("[redacted]") : out), text);
+  [...values].flatMap((value) => [value, value.replace(/^[A-Za-z][A-Za-z0-9_-]*\s+(?=\S+$)/, "")]).sort((a, b) => b.length - a.length).reduce((out, value) => (value.length > 0 ? out.split(value).join("[redacted]") : out), text);
 
 /** `res` with its body cut off at MAX_RESPONSE: past it the body errors, and `over` is told. */
 export function capped(res: Response, over?: () => void): Response {

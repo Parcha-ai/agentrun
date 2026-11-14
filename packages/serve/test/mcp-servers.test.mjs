@@ -213,6 +213,21 @@ test("a preview's failure cuts the bare token of any header scheme a server echo
   }
 });
 
+test("a preview's failure cuts a short credential (under 8 characters) a server echoes, as the probe always did", async (t) => {
+  const { api } = previews;
+  const echo = await plain(t, async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const id = JSON.parse(body || "{}").id ?? null;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: "key k9x2q is not allowed here" } }));
+  });
+  const echoed = await api("POST", "/settings/mcp-servers/preview", { url: `${echo}/mcp`, auth: { type: "headers", headers: { "x-api-key": "k9x2q" } } });
+  assert.equal(echoed.status, 424, JSON.stringify(echoed.body));
+  assert.ok(!JSON.stringify(echoed.body).includes("k9x2q"), "a short echoed credential is cut");
+  assert.match(echoed.body.error.message, /key \[redacted\] is not allowed here/);
+});
+
 test("PUT seals the credential: reads say `sealed` and never hold it, nor does the file; a PUT without one keeps it; refresh says what was added, removed and changed; DELETE forgets", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
   const { api, data } = await serve(t, { runner: false });
