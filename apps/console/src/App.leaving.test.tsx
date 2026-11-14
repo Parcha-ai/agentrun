@@ -210,13 +210,12 @@ describe("App, leaving the agent editor with nothing unsaved", () => {
     expect(confirms).toEqual([]);
   });
 
-  it("leaves a new agent's form untouched without asking: its default instructions are no edit", async () => {
+  it("opens the new-agent handoff without creating an agent, and leaves its empty brief freely", async () => {
     const page = await open("#/agents/new");
-    await page.wait(() => !!page.instructions(), "the new agent's editor");
-    expect(page.instructions()!.value).not.toBe("");
-    expect(page.unloadAsks()).toBe(false);
+    await page.wait(() => !!page.host.querySelector('textarea[placeholder]'), "the brief composer");
+    expect(asked.filter((request) => request === "POST /v2/agents")).toEqual([]);
     await page.click(page.sidebar("Agents"));
-    await page.wait(() => location.hash === "#/agents", "on the agents list");
+    await page.wait(() => location.hash === "#/agents", "the connected agents list");
     expect(confirms).toEqual([]);
   });
 
@@ -231,25 +230,23 @@ describe("App, leaving the agent editor with nothing unsaved", () => {
     expect(confirms).toEqual([]);
   });
 
-  it("a new agent's Create opens its page without asking", async () => {
+  it("opens a blank create request from the new-agent page without sending it", async () => {
     const page = await open("#/agents/new");
-    await page.wait(() => !!page.instructions(), "the new agent's editor");
-    await page.type(page.host.querySelector("#agent-name"), "Made");
-    await page.type(page.instructions(), "Answer.");
-    await page.click(page.button(/^Create$/));
-    await page.wait(() => location.hash === "#/agents/made", "on the new agent's page");
+    const blank = () => [...page.host.querySelectorAll("a")].find((link) => link.textContent === "start from a blank agent");
+    await page.wait(() => !!blank(), "the blank request link");
+    await page.click(blank());
+    await page.wait(() => !!page.host.querySelector('[aria-label="Name"]'), "the create request form");
+    expect(location.hash).toContain("operation=create-agent");
+    expect(asked.filter((request) => request === "POST /v2/agents")).toEqual([]);
     expect(confirms).toEqual([]);
   });
 
-  it("a new agent's Create opens its page under StrictMode too, as main.tsx renders the console", async () => {
+  it("builds the handoff under StrictMode without posting a definition", async () => {
     const page = await open("#/agents/new", { strict: true });
-    await page.wait(() => !!page.instructions(), "the new agent's editor");
-    await page.type(page.host.querySelector("#agent-name"), "Made");
-    await page.type(page.instructions(), "Answer.");
-    await page.click(page.button(/^Create$/));
-    await page.wait(() => location.hash === "#/agents/made", "on the new agent's page");
-    expect(asked.filter((a) => a === "POST /v2/agents")).toHaveLength(1);
-    expect(confirms).toEqual([]);
+    await page.wait(() => !!page.host.querySelector('textarea[placeholder]'), "the brief composer");
+    await page.type(page.host.querySelector('textarea[placeholder]'), "Answer carefully.");
+    expect(page.host.querySelector('textarea[readonly]')?.textContent).toContain("Answer carefully.");
+    expect(asked.filter((request) => request === "POST /v2/agents")).toEqual([]);
   });
 });
 
@@ -332,104 +329,78 @@ describe("App, Back or Forward cancelled with unsaved changes", () => {
   });
 });
 
-// A Create that answers after its editor is gone neither opens the new agent's page nor lifts another editor's guard.
-describe("App, a Create that lands after its editor is gone", () => {
-  it("leaves the next editor's unsaved changes guarded, and moves nowhere", async () => {
-    hold = new Promise<void>((r) => { release = r; });
-    const page = await open("#/agents/new");
-    await page.wait(() => !!page.instructions(), "the new agent's editor");
-    await page.type(page.host.querySelector("#agent-name"), "Made");
-    await page.type(page.instructions(), "Answer.");
-    await act(async () => { page.button(/^Create$/)!.click(); });
-    await page.wait(() => asked.includes("POST /v2/agents"), "the Create is under way");
-    answer = true;
-    await page.click(page.sidebar("Agents"));
-    await page.wait(() => location.hash === "#/agents", "left the new agent's editor");
-    await act(async () => { location.hash = "#/agents/calc/edit"; });
-    await page.wait(() => !!page.instructions(), "another agent's editor");
-    await page.type(page.instructions(), "Answer, then check the sum.");
-    await act(async () => { release(); });
-    await page.settle(); await page.settle();
-    expect(location.hash).toBe("#/agents/calc/edit");
-    answer = false;
-    const before = confirms.length;
-    await page.click(page.sidebar("Runs"));
-    expect(confirms.length).toBe(before + 1);
-    await page.wait(() => location.hash === "#/agents/calc/edit", "still the editor");
-    expect(page.instructions()?.value).toBe("Answer, then check the sum.");
-  });
-});
-
-// A new agent's form fills in the server's defaults (its tools, and the place a new agent gets, a box when the server
-// serves one) as the capabilities arrive: they are no edit, so leaving an untouched new agent asks nothing.
-describe("App, an untouched new agent", () => {
-  it("leaves without asking, its defaults filled in", async () => {
-    capsTools = [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "write", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }];
-    capsPlaces = { modes: ["runner", "sandbox"], default: "runner", boxes: [{ id: "docker", available: true }], default_place: { mode: "sandbox", box: "docker" } };
-    const page = await open("#/agents/new");
-    await page.wait(() => !!page.instructions(), "the new agent's editor");
-    await page.settle();
-    // The editor's own Computer step (the rail inside the page), where the place a new agent gets shows.
-    await page.click([...page.host.querySelectorAll("main ol button")].find((b) => /Computer/.test(b.textContent ?? "")));
-    await page.wait(() => !!page.host.querySelector<HTMLInputElement>('input[name="place"][value="sandbox"], input[name="computer-kind"][value="sandbox"]')?.checked, "the served default place is filled in");
-    expect(page.unloadAsks()).toBe(false);
-    await page.click(page.sidebar("Agents"));
-    await page.wait(() => location.hash === "#/agents", "on the agents list");
-    expect(confirms).toEqual([]);
-  });
-});
-
-// While a Create is under way the new agent's form is read-only: nothing can change between the request and its answer,
-// so the page it opens never asks, and no second Create can be sent. A refused Create gives the form back as it was.
-describe("App, no edit can be made while Create is under way", () => {
-  const pending = async () => {
-    hold = new Promise<void>((r) => { release = r; });
-    const page = await open("#/agents/new");
-    await page.wait(() => !!page.instructions(), "the new agent's editor");
-    await page.type(page.host.querySelector("#agent-name"), "Made");
-    await page.type(page.instructions(), "Answer.");
-    await act(async () => { page.button(/^Create$/)!.click(); });
-    await page.wait(() => asked.includes("POST /v2/agents"), "the Create is under way");
+// Creation now uses an explicit API request. It stays on the response, with an Open agent link; it never
+// navigates automatically. The historical builder's in-flight Create rules are exercised at this current surface.
+describe("App, creating through the API playground", () => {
+  const pending = async ({ strict = false } = {}) => {
+    hold = new Promise<void>((resolve) => { release = resolve; });
+    const page = await open("#/playground?operation=create-agent", { strict });
+    await page.wait(() => !!page.host.querySelector('[aria-label="Name"]'), "the create request");
+    await page.type(page.host.querySelector('[aria-label="Name"]'), "Made");
+    await page.type(page.host.querySelector('[aria-label="Instructions"]'), "Answer.");
+    await act(async () => page.button(/^Send request$/)!.click());
+    await page.wait(() => asked.includes("POST /v2/agents"), "the request is under way");
     return page;
   };
-
-  it("the fields are disabled and typing changes nothing; the button reads Creating", async () => {
+  it("leaves another editor's unsaved changes guarded when a detached creation request finishes", async () => {
     const page = await pending();
-    const name = page.host.querySelector<HTMLInputElement>("#agent-name")!;
-    expect(page.instructions()!.matches(":disabled")).toBe(true);
-    expect(name.matches(":disabled")).toBe(true);
-    expect(page.button(/^Creating/)).toBeTruthy();
+    // Detach deliberately: the unsaved request now asks before leaving, even while it is pending.
+    answer = true;
+    await act(async () => { location.hash = "#/agents/calc/edit"; });
+    await page.wait(() => !!page.instructions(), "another agent's editor");
+    expect(confirms).toEqual([LEAVE]);
+    answer = false;
     await page.type(page.instructions(), "Answer, then check the sum.");
-    await page.settle();
-    await act(async () => { release(); });
-    await page.wait(() => location.hash === "#/agents/made", "on the new agent's page");
+    await act(async () => release()); await page.settle();
+    expect(location.hash).toBe("#/agents/calc/edit");
+    await page.click(page.sidebar("Runs"));
+    expect(confirms).toEqual([LEAVE, LEAVE]);
+    expect(page.instructions()?.value).toBe("Answer, then check the sum.");
+  });
+  for (const strict of [false, true]) it(`sends no duplicate while pending and links the created agent after the response${strict ? " under StrictMode" : ""}`, async () => {
+    const page = await pending({ strict });
+    expect(page.button(/^Sending$/)?.disabled).toBe(true);
+    await act(async () => page.button(/^Sending$/)!.click());
+    expect(asked.filter((request) => request === "POST /v2/agents")).toHaveLength(1);
+    await act(async () => release());
+    await page.wait(() => !!page.host.querySelector('a[href="#/agents/made"]'), "the result's agent link");
+    expect(location.hash).toBe("#/playground?operation=create-agent");
     expect(posted?.instructions).toBe("Answer.");
-    expect(confirms).toEqual([]);
+    expect(page.button(/^Send request$/)?.disabled).toBe(true);
+    await page.click(page.host.querySelector('a[href="#/agents/made"]'));
+    await page.wait(() => location.hash === "#/agents/made", "the created agent page");
   });
-
-  it("a click on Create while it is pending sends nothing: one POST, and the new agent's page opens without asking", async () => {
-    const page = await pending();
-    await act(async () => { page.button(/^Creat/)!.click(); });
+  it("leaves an untouched blank request freely after its defaults arrive", async () => {
+    const page = await open("#/playground?operation=create-agent");
+    await page.wait(() => !!page.host.querySelector('[aria-label="Instructions"]'), "the blank creation request");
     await page.settle();
-    expect(asked.filter((a) => a === "POST /v2/agents")).toHaveLength(1);
-    await act(async () => { release(); });
-    await page.wait(() => location.hash === "#/agents/made", "on the new agent's page");
-    expect(asked.filter((a) => a === "POST /v2/agents")).toHaveLength(1);
+    expect(page.unloadAsks()).toBe(false);
+    await page.click(page.sidebar("Agents"));
+    await page.wait(() => location.hash === "#/agents", "the agents list");
     expect(confirms).toEqual([]);
+    expect(asked.filter((request) => request === "POST /v2/agents")).toEqual([]);
   });
-
-  it("a refused Create gives the form back, editable, with its edits", async () => {
+  it("keeps newer edits dirty when an earlier creation request finishes", async () => {
+    const page = await pending();
+    await page.type(page.host.querySelector('[aria-label="Instructions"]'), "Answer, then check the sum.");
+    await act(async () => release());
+    await page.wait(() => !!page.host.querySelector('a[href="#/agents/made"]'), "the earlier request's response");
+    expect(posted?.instructions).toBe("Answer.");
+    expect(page.host.querySelector<HTMLTextAreaElement>('[aria-label="Instructions"]')?.value).toBe("Answer, then check the sum.");
+    expect(page.unloadAsks()).toBe(true);
+    await page.click(page.sidebar("Runs"));
+    expect(confirms).toEqual([LEAVE]);
+    expect(location.hash).toBe("#/playground?operation=create-agent");
+  });
+  it("reports an uncertain server failure and requires reconciliation before another Create", async () => {
     createFails = true;
     const page = await pending();
-    await act(async () => { release(); });
-    await page.settle(); await page.settle();
-    expect(location.hash).toBe("#/agents/new");
-    expect(page.host.textContent).toContain("The store is busy.");
-    expect(page.instructions()!.matches(":disabled")).toBe(false);
-    expect(page.instructions()!.value).toBe("Answer.");
-    expect(page.host.querySelector<HTMLInputElement>("#agent-name")!.value).toBe("Made");
-    await page.type(page.instructions(), "Answer, then check the sum.");
-    expect(page.instructions()!.value).toBe("Answer, then check the sum.");
+    await act(async () => release());
+    await page.wait(() => !!page.host.textContent?.includes("The store is busy."), "the server's failure");
+    expect(page.host.textContent).toContain("may have succeeded");
+    expect(page.button(/^Send request$/)?.disabled).toBe(true);
+    expect(page.host.querySelector<HTMLInputElement>('[aria-label="Name"]')?.value).toBe("Made");
+    expect(asked.filter((request) => request === "POST /v2/agents")).toHaveLength(1);
   });
 });
 

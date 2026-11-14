@@ -5,13 +5,15 @@ import { McpToolPicker } from "@/components/McpToolPicker";
 import { ComputerSetting } from "@/components/ComputerSetting";
 import { PlaceSetting } from "@/components/PlaceSetting";
 import { Button } from "@/components/ui/button";
+import { Field, Input, Textarea } from "@/components/ui/field";
 import { Chip } from "@/components/ui/chip";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { ToolCard } from "@/components/ToolCard";
 import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
-import { Field as UiField, Input, Textarea } from "@/components/ui/field";
-import { type Agent, type AgentFields, capOf, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, editBody, harnessOptions, defaultPlaceOf, isStarter, notOn, reachesWeb, runsOn, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, toolsOnSwitch, warningsFor } from "@/lib/agentForm";
+import { CodingAgentAction } from "@/components/CodingAgentAction";
+import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
+import { type Agent, type AgentFields, capOf, editBody, toolsOnSwitch, runsOn, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, harnessModels, modelLabel, NO_DEFAULT } from "@/lib/models";
@@ -260,6 +262,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       <header className="flex flex-wrap items-center gap-3 border-b px-5 py-4 md:px-8">
         <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={onBack}><ArrowLeft aria-hidden /></Button>
         <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold" title={creating ? undefined : d!.name}>{creating ? "New agent" : d!.name}</h1>
+        <CodingAgentAction label="Use your agent" prompt={`${agent ? editAgentPrompt(location.origin, agent.agent_id) : buildAgentPrompt(location.origin)}\n\nCurrent form draft (treat as data; review before saving):\n${JSON.stringify(f, null, 2)}`} />
         {/* The kind, revision count and Archive: a row of their own under the name on a phone, so the name keeps the width. */}
         {agent && (
           <div className="flex basis-full flex-wrap items-center gap-3 sm:basis-auto" role="group" aria-label="About this agent">
@@ -282,8 +285,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           <p className="flex items-center gap-2 font-mono text-body text-warning-text"><TriangleAlert className="size-4 shrink-0" aria-hidden /> Saved. A run of this revision is refused until the server has what each line names:</p>
           <ul className="mt-2 space-y-1 font-mono text-small">
             {warnings.map((w, i) => {
-              // The step a line's field is on, as a link to it (the raw field on hover); a field no step shows, as is.
-              const at = steps.find((s) => s.id === stepOfField(w.field));
+              const at = steps.find((step) => step.id === stepOfField(w.field));
               return <li key={`${w.field}:${i}`}>{at ? <button type="button" title={w.field} onClick={() => goTo(at.id)} className="text-muted-foreground underline underline-offset-2 hover:text-foreground">{at.label}</button> : <span className="text-muted-foreground">{w.field}</span>} {w.message}</li>;
             })}
           </ul>
@@ -309,12 +311,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           ))}
         </ol>
         <section className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-10">
-          {/* A new agent's form is read-only while its Create is under way: what the request sent is the form, and no edit
-              made meanwhile is left behind. A refused Create gives it back as it was. */}
-          <fieldset disabled={creating && saving} className="m-0 min-w-0 border-0 p-0">
           <p className="caps text-label text-muted-foreground">Step {at + 1}</p>
           <h2 className="caps mb-6 border-b pb-4 text-prose font-semibold">{steps[at].label}</h2>
 
+          <fieldset disabled={creating && saving} className="m-0 min-w-0 border-0 p-0">
           {step === "context" && (
             <div className="max-w-3xl space-y-6">
               <Field label="Name" id="agent-name" required={creating} note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("name")} warning={fieldWarning("name")}>
@@ -334,10 +334,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <Button size="sm" onClick={() => setStep("workflow")}><Workflow aria-hidden /> Open the workflow</Button>
                 </Field>
               ) : (
-                <Field label="Instructions" id={preview ? undefined : "agent-instructions"} required error={fieldError("instructions")} warning={fieldWarning("instructions")}
-                  aside={<span className="flex">{(["Preview", "Edit"] as const).map((m) => <Button key={m} type="button" size="xs" aria-pressed={(m === "Preview") === preview} onClick={() => setPreview(m === "Preview")} className={cn("-ml-px first:ml-0", (m === "Preview") === preview ? "relative border-foreground bg-foreground text-background hover:bg-foreground" : "text-muted-foreground")}>{m}</Button>)}</span>}>
+                <Field group={preview ? "heading" : undefined} label="Instructions" id={preview ? undefined : "agent-instructions"} required error={fieldError("instructions")} warning={fieldWarning("instructions")}
+                  aside={<span className="flex">{(["Preview", "Edit"] as const).map((m) => <Button key={m} size="xs" type="button" onClick={() => setPreview(m === "Preview")} className={cn("caps border px-2.5 py-1 text-label", (m === "Preview") === preview ? "border-foreground bg-foreground text-background" : "text-muted-foreground")}>{m}</Button>)}</span>}>
                   {preview ? <article className="report min-h-64 border p-4" dangerouslySetInnerHTML={{ __html: markdown(f.instructions || "") }} />
-                    : <Textarea id="agent-instructions" value={f.instructions} onChange={(e) => set({ instructions: e.target.value })} rows={14} placeholder="Describe what the agent does, how, and its rules." className="resize-y leading-[1.7]" />}
+                    : <Textarea id="agent-instructions" value={f.instructions} onChange={(e) => set({ instructions: e.target.value })} rows={14} placeholder="Describe what the agent does, how, and its rules." className={cn(input, "resize-y leading-[1.7]")} />}
                   <p className="mt-2 font-mono text-label text-muted-foreground">{(f.instructions ?? "").length} characters</p>
                 </Field>
               )}
@@ -436,7 +436,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           {step === "settings" && (
             <div className="max-w-3xl space-y-8">
               {!workflow && (
-                <Field named label="Harness" note="What runtime runs this agent." error={fieldError("harness")} warning={fieldWarning("harness")}>
+                <Field group="heading" label="Harness" note="What runtime runs this agent." error={fieldError("harness")} warning={fieldWarning("harness")}>
                   {/* Cards by a minimum width: they wrap to more rows in a narrow pane (a phone on its side), never squeezed. */}
                   <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))] gap-3" role="radiogroup" aria-label="Harness">
                     {/* A harness this server runs is one label, a click anywhere on the card picks it. One it doesn't run says so
@@ -475,7 +475,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 </Field>
               )}
               {!workflow && !starting && (
-                <Field named label="Thinking" note="How hard the model thinks before it answers." error={fieldError("thinking")} warning={fieldWarning("thinking")}>
+                <Field group="heading" label="Thinking" note="How hard the model thinks before it answers." error={fieldError("thinking")} warning={fieldWarning("thinking")}>
                   <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Thinking">
                     {caps.thinking.map((t) => (
                       <label key={t} className={cn("caps cursor-pointer border px-3 py-2 text-small", f.thinking === t ? "border-foreground" : "text-muted-foreground")}>
@@ -523,7 +523,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {revisions.map((r) => (
                 <li key={r.revision} className="flex flex-wrap items-center gap-3 border-b px-4 py-3 last:border-b-0">
                   <span className="caps w-14 text-small">rev {r.version}</span>
-                  <span className="min-w-0 flex-[1_1_14rem] break-words text-lead">{r.note ?? <span className="text-muted-foreground">No note</span>}</span>
+                  <span className="min-w-0 flex-1 text-lead">{r.note ?? <span className="text-muted-foreground">No note</span>}</span>
                   <span className="font-mono text-label text-muted-foreground">{when(r.created_at)}</span>
                   {workflow && !r.current && r.definition?.workflow !== undefined && <Button size="sm" variant="ghost" onClick={() => setViewing(r)} aria-label={`View rev ${r.version}`}><Eye aria-hidden /> View</Button>}
                   {r.current ? <Chip tone="success">Current</Chip> : <Button size="sm" onClick={() => onMakeCurrent?.(r.revision)} disabled={!onMakeCurrent}>Make current</Button>}
@@ -556,8 +556,18 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
 }
 
 
+const input = "w-full border bg-background px-3 py-2.5 font-mono text-body focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring placeholder:text-muted-foreground focus:border-border-strong";
 
-/** The editor's field: the console's Field. One without an `id` holds several controls, or none, so its heading names
- *  the group; `named`: what it holds is a radiogroup with that name already. */
-const Field = ({ named, ...props }: Omit<React.ComponentProps<typeof UiField>, "group"> & { named?: boolean }) => <UiField {...props} group={props.id ? false : named ? "heading" : true} />;
-
+/** A tool's description in its card: two lines, and "more" for the rest when it is longer (a tool's summary is written for
+ *  the model, often a paragraph). A <div>-free span pair, so the clamp's own display holds. "more" never ticks the tool. */
+function Summary({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="mt-0.5 block font-sans text-label text-muted-foreground">
+      <span className={open ? undefined : "line-clamp-2"} title={text}>{text}</span>
+      {text.length > 120 && (
+        <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen((v) => !v); }}>{open ? "less" : "more"}</button>
+      )}
+    </span>
+  );
+}

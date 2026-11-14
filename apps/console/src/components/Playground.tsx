@@ -1,9 +1,13 @@
+import { nativeReadinessOf } from "@/lib/native";
+import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { ToolBlockers } from "@/components/ToolBlockers";
 import { ArrowRight, Copy, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FieldInput, FieldIssues } from "@/components/FieldInput";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
+import { CodingAgentAction } from "@/components/CodingAgentAction";
+import { playgroundPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { Picker } from "@/components/ui/picker";
 import { Input, Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
@@ -15,6 +19,8 @@ import { type ParameterText, paramHelp } from "@/lib/templatePackages";
 import { SpendCapMinimum } from "@/lib/spendCap";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
+
+const NOTES = { "input.content": "Required. The run's first message.", file_ids: "Empty names none.", revision: "Empty runs the current revision.", effort: "How hard the model thinks. Empty uses the agent's own.", max_cost_usd: "A spend cap in dollars; empty means none.", repo: "The GitHub repository the run reaches, owner/name. It must be one the agent is bound to; empty takes the agent’s one repository." } as const;
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
 
@@ -52,6 +58,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     else if (!agents.some((a) => a.agent_id === agentId)) setAgentId(agents[0]?.agent_id ?? "");
   }, [agents, initialAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const agent = agents.find((a) => a.agent_id === agentId);
+  const native = nativeReadinessOf(agent);
+  const sdk = backendSdkOf(agent?.definition);
   const kind = agent?.kind ?? "agentic";
   const [text, setText] = useState("");
   const [revision, setRevision] = useState("");
@@ -118,8 +126,9 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
     : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId || "{agent_id}"}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_API_KEY}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
+  const nativeBlocked = !!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch || !!cap.trim() || !!effort || !!repo.trim() || attachments.fileIds.length > 0 || attachments.busy);
   const send = async () => {
-    if (!built.ok || !onSend || attachments.busy) return;
+    if (sdk || nativeBlocked || !built.ok || !onSend || attachments.busy) return;
     setSending(true);
     const r = await submitStart(keys, agentId, built.body, onSend);
     setSending(false); setResult(r); setPane("response"); setShowCode(true);
@@ -127,119 +136,96 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     if (r.status >= 200 && r.status < 300) attachments.clear();
   };
   const placeholder = !json ? `The run's ${form ? "message" : "first message"}, e.g. Summarize the standup: we ship Friday.` : kind === "workflow" ? '{ "subject": "...", "body": "..." }' : "The agent's input, as JSON";
+  if (!agents.length) return <section aria-label="Request" className="space-y-4 p-5 md:p-8"><h2 className="text-lg font-semibold">Start a run</h2><p className="text-body text-muted-foreground">Connect an existing native agent or create an agent before starting a run.</p><a href="#/agents/connect" className="block text-body underline underline-offset-2">Connect agent</a><a href="#/agents/new" className="block text-body underline underline-offset-2">Create an agent</a><a href="#/templates" className="block text-body underline underline-offset-2">Browse templates</a><dl className="space-y-2">{Object.entries(NOTES).map(([name, note]) => <div key={name}><dt className="font-mono text-body">{name}</dt><dd className="text-small text-muted-foreground">{note}</dd></div>)}</dl><code className="text-small">/v2/agents/{"{agent_id}"}/runs</code></section>;
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <div aria-label="Playground agent" className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
-        {/* No agent to pick: no field stands here, and the Request panel below says how to make the first one. */}
-        {agents.length > 0 && (
-          <div className="flex min-w-0 items-center gap-2 text-small">
-            <label htmlFor="playground-agent" className="caps text-muted-foreground">Agent</label>
-            <Picker id="playground-agent" label="Agent" placeholder="Pick an agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
-              options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
-          </div>
-        )}
-        <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>
+        <div className="flex min-w-0 items-center gap-2 text-small">
+          <label htmlFor="playground-agent" className="caps text-muted-foreground">Agent</label>
+          <Picker id="playground-agent" label="Agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
+            options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
+        </div>
+        {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk.runtime)} · Your backend</span> : <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
         <span className="flex-1" />
-        <span className="caps text-label text-muted-foreground">Live API</span>
-        <Button type="button" size="xs" onClick={() => setShowCode((s) => !s)} aria-expanded={showCode} className="hidden text-muted-foreground hover:text-foreground short:inline-flex">{showCode ? "Hide code" : "Show code"}</Button>
+        {!sdk && <span className="caps text-label text-muted-foreground">Live API</span>}
+        {!sdk && <Button size="sm" type="button" onClick={() => setShowCode((s) => !s)} aria-expanded={showCode} className="caps hidden border px-3 py-1.5 text-label text-muted-foreground hover:text-foreground short:inline-flex">{showCode ? "Hide code" : "Show code"}</Button>}
       </div>
       {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width. */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:[@media(min-height:501px)]:grid-cols-2">
+      {sdk ? <section className="space-y-4 p-5 md:p-8">
+        <h2 className="text-lg font-semibold">Run through your backend</h2>
+        <p className="text-body text-muted-foreground">This agent keeps its existing SDK, tools and job entrypoint. Your coding agent can run it there; AgentRun records its progress and learning.</p>
+        <CodingAgentAction variant="primary" label="Run agent" prompt={runAgentPrompt(origin, agentId, sdk.runtime)} />
+      </section> : <div className="grid min-h-0 flex-1 grid-cols-1 lg:[@media(min-height:501px)]:grid-cols-2">
         <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r", showCode && "short:hidden")}>
-          {agents.length === 0 ? (
-            // No agents: a form that cannot send helps no one. The way to the first agent, then what a request takes.
-            <>
-              <header className="flex items-center justify-between border-b px-5 py-3 md:px-6"><span className="pb-1 text-lead font-semibold">Request</span></header>
-              <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
-                <div className="border border-primary/50 bg-primary/5 p-5">
-                  <p className="caps text-label text-primary-text">No agents yet</p>
-                  <h2 className="mt-2 text-xl font-semibold">Start a run</h2>
-                  <p className="mt-1 text-lead text-muted-foreground">Runs start from an agent. Make one, then send its first request here.</p>
-                  <div className="mt-5 flex flex-wrap gap-2">
-                    <a href="#/agents/new" className={buttonVariants({ variant: "solid", size: "lg" })}>Create an agent</a>
-                    <a href="#/templates" className={buttonVariants({ variant: "outline", size: "lg" })}>Browse templates</a>
+          <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
+            <span className="text-lead font-semibold">Request</span>
+            <span className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-primary" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
+          </header>
+          <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
+            {native && <div className="space-y-2 border p-4 text-small" role="status"><p>Native execution on {native.machine_id}: {native.project}. It reuses your native model, profile and sign-in. Native spend caps are unavailable. Use files already in the source project; uploaded attachments and effort overrides are unsupported.</p>{nativeBlocked && <p className="text-warning-text">{repo.trim() ? "This request selects a repository. Native execution uses its source project." : cap.trim() ? "This request has a spend cap. Native execution cannot enforce it." : effort || attachments.fileIds.length ? "This request has managed effort or attachments. Native execution uses its source configuration and project files." : "Verify a connected native launch before sending a run."}</p>}{!!repo.trim() && <Button size="sm" onClick={() => setRepo("")}>Use native source repository</Button>}{!!effort && <Button size="sm" onClick={() => setEffort("")}>Use native configured effort</Button>}{attachments.fileIds.length > 0 && <Button size="sm" onClick={() => attachments.clear()}>Remove uploaded attachments</Button>}{!!cap.trim() && <Button size="sm" onClick={() => setCap("")}>Remove cap for native execution</Button>}<a href={`#/agents/${encodeURIComponent(agentId)}`} className="underline underline-offset-2">Open native connection</a></div>}
+
+            <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-body text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
+            {view === "json" ? (
+              <>
+                <pre className="overflow-auto border bg-card p-4 font-mono text-small leading-[1.7]">{JSON.stringify(body, null, 2)}</pre>
+                {/* The files the request's file_ids come from, and how far they are sent, in this view too. */}
+                {!native && <Label name="file_ids" note={NOTES.file_ids}>
+                  <FilePicker attachments={attachments} limits={limits} />
+                </Label>}
+              </>
+            ) : (
+              <>
+                <Label name={json ? "input" : "input.content"} required={!form || form.contentRequired} optional={!!form && !form.contentRequired} error={!built.ok && built.field === "input" && text ? built.message : undefined}>
+                  <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={json ? 7 : 4} placeholder={placeholder} className={field} />
+                  {example && (
+                    <p className="mt-1 font-mono text-label text-muted-foreground">
+                      {exampleHint(example, "start", kind === "workflow" ? "workflow" : "agent")}
+                      {example.fields.length > 0 && <> Fields: {example.fields.map((f, k) => <span key={f.name} title={f.note}>{k ? ", " : ""}<span className="text-foreground">{f.name}</span></span>)}.</>}
+                    </p>
+                  )}
+                </Label>
+                {form?.fields.map(([key, f]) => (
+                  <div key={key} data-field={`input.${key}`}>
+                    <FieldInput field={f} label={fieldLabel(key, f)} help={paramHelp(f)} value={values[key] ?? ""} onChange={(v) => setField(key, f, v)} />
+                    <FieldIssues issues={issuesAt(key)} words={(i) => fieldIssueWords(i, key, f)} />
                   </div>
-                </div>
-                <div>
-                  <h3 className="caps text-label text-muted-foreground">What a request takes</h3>
-                  <dl className="mt-3 divide-y border-y">
-                    {Object.entries(NOTES).map(([name, note]) => (
-                      <div key={name} className="flex flex-wrap items-baseline gap-x-4 gap-y-1 py-3"><dt className="w-40 font-mono text-body">{name}</dt><dd className="text-small text-muted-foreground">{note}</dd></div>
-                    ))}
-                  </dl>
-                </div>
-              </div>
-            </>
-          ) : (
-            <>
-            <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
-              <span className="text-lead font-semibold">Request</span>
-              <span className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-foreground" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
-            </header>
-            <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
-              <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-body text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
-              {view === "json" ? (
-                <>
-                  <pre className="overflow-auto border bg-card p-4 font-mono text-small leading-[1.7]">{JSON.stringify(body, null, 2)}</pre>
-                  {/* The files the request's file_ids come from, and how far they are sent, in this view too. */}
-                  <Label name="file_ids" note={NOTES.file_ids}>
-                    <FilePicker attachments={attachments} limits={limits} />
+                ))}
+                {!native && <Label name="file_ids" note={NOTES.file_ids}>
+                  <FilePicker attachments={attachments} limits={limits} />
+                </Label>}
+                <Label name="revision" note="Empty runs the current revision.">
+                  <Picker label="Revision" value={revision} onChange={setRevision} className="w-full"
+                    options={[{ value: "", label: "The current revision" }, ...revisions.map((r) => ({ value: r.revision, label: `rev ${r.version}${r.current ? " (current)" : ""}${r.note ? `: ${r.note}` : ""}` }))]} />
+                </Label>
+                {!native && <Label name="effort" note="How hard the model thinks. Empty uses the agent's own.">
+                  <Picker label="Effort" value={effort} onChange={setEffort} className="w-full"
+                    options={["", ...efforts].map((value) => ({ value, label: value || "Agent default" }))} />
+                </Label>}
+                {kind === "agentic" && !native && <Label name="repo" note={NOTES.repo} error={!built.ok && built.field === "repo" ? built.message : undefined}>
+                  <Input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" />
+                </Label>}
+                {kind === "agentic" && !native && (
+                  <Label name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
+                    <Input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />
+                    <p className="mt-1.5 text-small text-muted-foreground"><SpendCapMinimum /></p>
                   </Label>
-                </>
-              ) : (
-                <>
-                  <Label name={json ? "input" : "input.content"} required={!form || form.contentRequired} optional={!!form && !form.contentRequired} error={!built.ok && built.field === "input" && text ? built.message : undefined}>
-                    <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={json ? 7 : 4} placeholder={placeholder} />
-                    {example && (
-                      <p className="mt-1 font-mono text-label text-muted-foreground">
-                        {exampleHint(example, "start", kind === "workflow" ? "workflow" : "agent")}
-                        {example.fields.length > 0 && <> Fields: {example.fields.map((f, k) => <span key={f.name} title={f.note}>{k ? ", " : ""}<span className="text-foreground">{f.name}</span></span>)}.</>}
-                      </p>
-                    )}
-                  </Label>
-                  {/* The agent's typed input fields, drawn as a template's parameters are. */}
-                  {form?.fields.map(([key, f]) => (
-                    <div key={key} data-field={`input.${key}`}>
-                      <FieldInput field={f} label={fieldLabel(key, f)} help={paramHelp(f)} value={values[key] ?? ""} onChange={(v) => setField(key, f, v)} />
-                      <FieldIssues issues={issuesAt(key)} words={(i) => fieldIssueWords(i, key, f)} />
-                    </div>
-                  ))}
-                  <Label name="file_ids" note={NOTES.file_ids}>
-                    <FilePicker attachments={attachments} limits={limits} />
-                  </Label>
-                  <Label name="revision" note={NOTES.revision}>
-                    <Picker label="Revision" value={revision} onChange={setRevision} className="w-full"
-                      options={[{ value: "", label: "The current revision" }, ...revisions.map((r) => ({ value: r.revision, label: `rev ${r.version}${r.current ? " (current)" : ""}${r.note ? `: ${r.note}` : ""}` }))]} />
-                  </Label>
-                  <Label name="effort" note={NOTES.effort}>
-                    <div className="flex gap-2">{["", ...efforts].map((e) => <Button key={e || "default"} type="button" size="sm" aria-pressed={effort === e} onClick={() => setEffort(e)} className={effort === e ? "border-foreground hover:border-foreground" : "text-muted-foreground"}>{e || "default"}</Button>)}</div>
-                  </Label>
-                  {kind === "agentic" && (
-                    <Label name="repo" note={NOTES.repo} error={!built.ok && built.field === "repo" ? built.message : undefined}>
-                      <Input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" />
-                    </Label>
-                  )}
-                  {kind === "agentic" && (
-                    <Label name="max_cost_usd" note={NOTES.max_cost_usd} error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
-                      <Input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" />
-                      <p className="mt-1.5 text-small text-muted-foreground"><SpendCapMinimum /></p>
-                    </Label>
-                  )}
-                </>
-              )}
+                )}
+              </>
+            )}
+          </div>
+          <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
+            <span className="text-small text-muted-foreground">Sends a real request to this server.</span>
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <CodingAgentAction label="Use your agent" prompt={playgroundPrompt(origin, agentId, body)} disabled={nativeBlocked || !built.ok || !agentId || attachments.busy} />
+              <Button variant="primary" size="lg" onClick={send} disabled={nativeBlocked || !built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
             </div>
-            <footer className="flex shrink-0 items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
-              <span className="text-small text-muted-foreground">Sends a real request to this server.</span>
-              <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
-            </footer>
-            </>
-          )}
+          </footer>
         </section>
         <section aria-label="Code and response" className={cn("flex min-h-0 flex-col", !showCode && "short:hidden")}>
           <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
             <span className="flex gap-4 text-body">
-              <button type="button" onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-foreground" : "border-transparent text-muted-foreground")}>Code</button>
-              <button type="button" onClick={() => setPane("response")} disabled={!result} className={cn("border-b pb-1 disabled:opacity-45", pane === "response" ? "border-foreground" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
+              <button type="button" onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-primary" : "border-transparent text-muted-foreground")}>Code</button>
+              <button type="button" onClick={() => setPane("response")} disabled={!result} className={cn("border-b pb-1 disabled:opacity-45", pane === "response" ? "border-primary" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
             </span>
             {pane === "code" && <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>}
           </header>
@@ -271,21 +257,12 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             </>
           )}
         </section>
-      </div>
+      </div>}
     </div>
   );
 }
 
-/** What each field of a start request is, said once: under the form's fields, and as the read-only list a server
- *  with no agents shows in the form's place. */
-const NOTES = {
-  "input.content": "Required. The run's first message.",
-  file_ids: "Empty names none.",
-  revision: "Empty runs the current revision.",
-  effort: "How hard the model thinks. Empty uses the agent's own.",
-  max_cost_usd: "A spend cap in dollars; empty means none.",
-  repo: "The GitHub repository the run reaches, owner/name. It must be one the agent is bound to; empty takes the agent's one repository.",
-} as const;
+const field = "w-full border bg-card px-3 py-2.5 font-mono text-body outline-none placeholder:text-muted-foreground focus:border-border-strong";
 
 function Label({ name, required, optional, note, error, children }: { name: string; required?: boolean; optional?: boolean; note?: string; error?: string; children: React.ReactNode }) {
   return (

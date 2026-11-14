@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 cpSync(join(root, "src", "openapi"), join(root, "dist", "openapi"), { recursive: true });
 cpSync(join(root, "src", "llms.txt"), join(root, "dist", "llms.txt"));
+// The handoff skill travels with the server so a coding agent reads instructions for this exact build.
+cpSync(join(root, "skills", "agentrun-serve"), join(root, "dist", "skills", "agentrun-serve"), { recursive: true });
 cpSync(join(root, "src", "learn", "learning.sh"), join(root, "dist", "learn", "learning.sh"));
 // The store's Postgres migrations (store/postgres/migrate.ts reads them beside itself).
 cpSync(join(root, "src", "store", "postgres", "migrations"), join(root, "dist", "store", "postgres", "migrations"), { recursive: true });

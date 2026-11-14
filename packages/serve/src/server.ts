@@ -3,6 +3,7 @@ import { isObservationRoute, observationHttp } from './observation/http.js';
 import { SdkRuns, sdkOf } from "./sdk/runs.js";
 import { gradeRouteFor } from "./runner/harness-loops.js";
 import { routeOf as sdkModelRoute } from "./runner/model-route.js";
+import { answerSkill } from './skill-route.js';
 import { RemoteConnectors, verifyRemote } from './native/remote.js';
 import { nativeOf, nativeModelOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED } from "./native/binding.js";
 import { discoverNative } from "./native/discovery.js";
@@ -3774,6 +3775,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
+    if (raw === "/skills/agentrun-serve/SKILL.md") return void answerSkill(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(consoleSessions ? { sessions: consoleSessions } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
     if (isObservationRoute(raw)) return void observationHttp(req, res, url, new Observations(store), token).catch(fail);
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));

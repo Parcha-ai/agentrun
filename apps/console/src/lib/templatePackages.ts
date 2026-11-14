@@ -1,9 +1,9 @@
 import { dollars } from "./format";
 import type { FieldIssue } from "./client";
-import type { FieldSpec } from "./inputForm";
+import { type FieldSpec, fieldValues, schemaFields } from "./inputForm";
 import { type McpServer, SOURCE_LABEL } from "./mcp";
 import { browserZone } from "./schedules";
-import type { TemplateView } from "./v2";
+import type { TemplateApply, TemplateView } from "./v2";
 
 // The server's templates (GET /v2/templates), as the Templates page reads them. (lib/templates.ts is Mission Control's
 // first-run starters, made in the console; these are the server's.)
@@ -14,7 +14,52 @@ export const titleOf = (t: TemplateView, values: ParameterText = {}) =>
   (t.display_name || t.name).replace(/\$\{parameters\.([A-Za-z0-9_]+)\}/g, (_, key: string) => (Object.hasOwn(values, key) ? linesOf(values[key]).join(", ") : "") || "…");
 
 /** A template's Apply screen. */
-export const templateHash = (name: string) => `#/templates/${encodeURIComponent(name)}`;
+export const templateHash = (id: string) => `#/templates/${encodeURIComponent(id)}`;
+
+/** Only the selected setup request travels in the fragment. Secrets are resolved by name on the server. */
+export function templatePlaygroundHref(t: TemplateView, body?: TemplateApply): string {
+  return `#/playground?${new URLSearchParams({ operation: "apply-template", template: t.id,
+    ...(body ? { draft: JSON.stringify({ template: t.id, version: t.version, ...(t.sha ? { sha: t.sha } : {}), body }) } : {}) })}`;
+}
+
+/** Reject stale or malformed prepared requests rather than silently applying different choices. */
+export function readTemplateDraft(raw: string | undefined, t: TemplateView): { body?: TemplateApply; error?: string } {
+  if (raw === undefined) return {};
+  const invalid = { error: "This prepared template request is invalid. Open a fresh request to review its settings." };
+  try {
+    const draft = JSON.parse(raw);
+    const object = (x: unknown): x is Record<string, unknown> => x !== null && typeof x === "object" && !Array.isArray(x);
+    if (!object(draft) || draft.template !== t.id || typeof draft.version !== "string") return invalid;
+    if (draft.version !== t.version) return { error: "This template's version changed. Open a fresh request to review the current package before applying." };
+    if (t.sha && draft.sha !== t.sha) return { error: "This template's commit changed. Open a fresh request to review the current package before applying." };
+    const b = draft.body;
+    const scalar = (type: unknown, value: unknown) => type === "boolean" ? typeof value === "boolean"
+      : type === "string" ? typeof value === "string"
+      : (type === "number" || type === "integer") && typeof value === "number" && Number.isFinite(value);
+    if (!object(b) || Object.keys(b).some((k) => !["parameters", "grants", "servers", "overrides"].includes(k))
+      || !object(b.parameters)
+      || (b.grants !== undefined && (!Array.isArray(b.grants) || b.grants.some((g) => typeof g !== "string" || !t.mcp.some((m) => m.tools.some((tool) => tool.tool === g)))))
+      || (b.servers !== undefined && (!object(b.servers) || Object.entries(b.servers).some(([toolkit, name]) => !t.mcp.some((m) => m.toolkit === toolkit) || typeof name !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(name))))
+      || !object(b.overrides) || Object.keys(b.overrides).some((k) => k !== "approvals") || (b.overrides.approvals !== "ask" && b.overrides.approvals !== "never")) return invalid;
+    const fields = schemaFields(t.parameters);
+    if (!fields) return invalid;
+    const byName = new Map(fields);
+    const parameters: [string, unknown][] = [];
+    for (const [key, value] of Object.entries(b.parameters)) {
+      const field = byName.get(key);
+      // Validate the allowlist before omitting a blank: unknown blank keys are still invalid.
+      if (!field) return invalid;
+      if (value === "") continue;
+      if (field.array ? !Array.isArray(value) || !value.every((item) => scalar(field.type, item)) : !scalar(field.type, value)) return invalid;
+      const text = Array.isArray(value) ? value.map(String).join("\n") : String(value);
+      // A restored choice must survive the shared field conversion without silently changing its type or items.
+      const restored = fieldValues({ fields: [[key, field]], contentRequired: false }, { [key]: text })[key];
+      if (JSON.stringify(restored) !== JSON.stringify(value)) return invalid;
+      parameters.push([key, value]);
+    }
+    return { body: { ...b, parameters: Object.fromEntries(parameters) } as TemplateApply };
+  } catch { return invalid; }
+}
 
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
