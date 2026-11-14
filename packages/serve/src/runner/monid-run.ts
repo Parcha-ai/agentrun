@@ -5,19 +5,20 @@
 // (`monid:<provider>/<endpoint>`, catalogOf), and shows what a call is held at on its card (priceOf): its pinned price,
 // or for an endpoint priced by usage monid's estimate for the call's own input ({estimate_usd}).
 // A call is a paid step on the run's one ledger (paid-calls.ts paidStep, the ledger the loop's bookedIn sets around it),
-// named by its catalog name, held before it is sent (heldFor): at its pinned price while monid still fixes it (its
-// price read again first, an inspect monid does not charge), else at monid's estimate for its input (estimated: the
-// call sent with maxCost 0, which monid refuses unrun and uncharged, naming the estimate). It is refused unsent when its
-// hold does not fit the cap, sent with that hold as monid's maxCost (so monid refuses it unrun if it estimates it
-// higher), and settled at what monid says it charged. maxCost checks only monid's estimate: a charge above the hold (a
-// call priced by usage that used more, or one monid re-priced between the read and the run) is booked as charged,
+// named by its catalog name, held before it is sent: a fixed-price endpoint at its pinned price (its price read again
+// once the cap lets it go, an inspect monid does not charge: fixedThenRun), one priced by usage at monid's estimate for
+// its input (usageHeld, estimated: the call sent with maxCost 0, which monid refuses unrun and uncharged, naming the
+// estimate). It is refused unsent when its hold does not fit the cap, sent with that hold as monid's maxCost (so monid
+// refuses it unrun if it estimates it higher), and settled at what monid says it charged. maxCost checks only monid's
+// estimate: a charge above the hold (a call priced by usage that used more, or one monid re-priced by usage since the
+// save or between the read and the run) is booked as charged,
 // logged, and stops the run at once in words naming both (stopRun). With no run's ledger to book it on, it is never
 // sent. Its key is the claim's (claim-secrets.ts: a run that grants a monid endpoint, and no other, is handed
 // MONID_API_KEY), read at the call and sent to monid alone: never in the tool's input, its answer, or the run's computer.
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { fauxFetch } from "../decisions.js";
-import { chargeOf, estimateOf, FAUX_MONID_ENV, heldOf, MONID_KEY_ENV, type MonidAnswer, monidClient, type MonidPin, monidText, uncharged } from "../monid.js";
+import { chargeOf, estimateOf, FAUX_MONID_ENV, MONID_KEY_ENV, type MonidAnswer, monidClient, type MonidPin, monidText, uncharged } from "../monid.js";
 import { money } from "../cap.js";
 import { paidLedger, paidStep, stopRun, unbookedRefusal } from "../paid-calls.js";
 import { monidNameOf, parseToolName } from "../tool-names.js";
@@ -62,23 +63,21 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
     }, forget);
     return read;
   };
-  /** Whether monid still prices the endpoint `at` per call, read now (an inspect monid does not charge): its listing's
-   *  answer, or the inspect's error. */
-  const fixedNow = async (at: Endpoint, signal?: AbortSignal): Promise<boolean | { error: unknown }> => {
-    const now = await (await clientOf()).inspect({ provider: at.provider, endpoint: `/${at.endpoint}` }, signal);
-    return now.error !== undefined ? { error: now.error } : heldOf(now.price) !== undefined;
+  /** A call of the fixed-price endpoint `at` (`name`) with `input`, held at its pinned `usd`: its price read again first
+   *  (an inspect monid does not charge; one whose price cannot be read is not sent), then sent with that pinned price as
+   *  maxCost, so monid refuses it unrun when it now estimates it higher, whether monid has raised its price or moved it
+   *  to usage pricing since the save. */
+  const fixedThenRun = async (name: string, at: Endpoint, input: Json, usd: number, signal: AbortSignal): Promise<MonidAnswer> => {
+    const client = await clientOf();
+    const now = await client.inspect({ provider: at.provider, endpoint: `/${at.endpoint}` }, signal);
+    if (now.error !== undefined) return uncharged({ error: `${name} was not sent: monid's price for it could not be read before the call (${String(now.error)}).` });
+    return client.run({ provider: at.provider, endpoint: `/${at.endpoint}`, input, maxCost: usd }, signal);
   };
-  /** What the call `callId` of the endpoint `at` (`name`, pinned at `pinnedUsd`) with `input` is held at, and why: its
-   *  pinned price while monid still fixes it (read again, an inspect monid does not charge); else monid's estimate for
-   *  its input. Or the call's answer when it is not sent: its price or its estimate could not be read, or monid refused
-   *  its estimate's read unrun (its input, the key, the wallet). A read monid ran instead (an estimate of $0, a free run,
+  /** What the call `callId` of the endpoint `at` priced by usage with `input` is held at, and why: monid's estimate for
+   *  its input. Or the call's answer when it is not sent: its estimate could not be read, or monid refused its
+   *  estimate's read unrun (its input, the key, the wallet). A read monid ran instead (an estimate of $0, a free run,
    *  which maxCost 0 lets through) is the call itself (`ran`), held at $0. */
-  const heldFor = async (name: string, at: Endpoint, pinnedUsd: number | null, input: Json, callId: string, signal: AbortSignal): Promise<Held | { answer: MonidAnswer }> => {
-    if (pinnedUsd !== null) {
-      const fixed = await fixedNow(at, signal);
-      if (typeof fixed === "object") return { answer: uncharged({ error: `${name} was not sent: monid's price for it could not be read before the call (${String(fixed.error)}).` }) };
-      if (fixed) return { usd: pinnedUsd, basis: "the price monid listed for it when the agent was saved" };
-    }
+  const usageHeld = async (at: Endpoint, input: Json, callId: string, signal: AbortSignal): Promise<Held | { answer: MonidAnswer }> => {
     const read = await estimated(callId, at, input, signal);
     if ("usd" in read) return { usd: read.usd, basis: "monid's estimate for this call's input (priced by usage: its charge can pass it)" };
     if (chargeOf(read.answer) === undefined) return { answer: read.answer };
@@ -100,12 +99,13 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
         const ledger = paidLedger();
         if (!ledger) return { text: JSON.stringify({ error: unbookedRefusal(name) }), isError: true };
         const input = (args ?? {}) as Json;
-        const held = await heldFor(name, at, pinned.usd, input, context.callId, context.signal);
+        // A fixed price is held as pinned, the cap asked before monid is; one priced by usage at monid's estimate.
+        const fixedUsd = pinned.usd;
+        const held = fixedUsd !== null ? { usd: fixedUsd, basis: "the price monid listed for it when the agent was saved" } : await usageHeld(at, input, context.callId, context.signal);
         estimates.delete(context.callId);
         if ("answer" in held) return { text: await monidText(held.answer, work(), at.provider), ...(held.answer.error !== undefined ? { isError: true } : {}) };
-        const client = await clientOf();
         // Sent with its hold as maxCost: monid refuses it unrun when it estimates it higher.
-        const send = () => (held.ran ? Promise.resolve(held.ran) : client.run({ provider: at.provider, endpoint: `/${at.endpoint}`, input, maxCost: held.usd }, context.signal));
+        const send = async () => (fixedUsd !== null ? fixedThenRun(name, at, input, fixedUsd, context.signal) : (held.ran ?? (await clientOf()).run({ provider: at.provider, endpoint: `/${at.endpoint}`, input, maxCost: held.usd }, context.signal)));
         const paid = await paidStep<MonidAnswer>(ledger, context.callId, { name, holdUsd: held.usd, basis: held.basis, by: "monid" }, send, (outcome) => {
           if (!("result" in outcome)) return null;
           const usd = chargeOf(outcome.result);
@@ -125,19 +125,14 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
   return {
     tools,
     catalogOf: (tool) => catalog.get(tool),
-    // Its card shows what the call would be held at, read when the card is made: its pinned price while monid still
-    // fixes it (or when that cannot be read: the call then says so), else monid's estimate for its input (none when that
-    // cannot be read).
+    // Its card shows what the call is held at: its pinned price (the most monid may estimate it at and still run it), or
+    // for one priced by usage monid's estimate for its input, read when the card is made (none when that cannot be read).
     priceOf: (name, call) => {
       if (!Object.hasOwn(pin, name)) return undefined;
       const usd = pin[name]!.usd;
       const at = monidNameOf(name);
-      if (!at || !call) return usd ?? undefined;
-      return (async () => {
-        if (usd !== null && (await fixedNow(at, call.signal)) !== false) return usd;
-        const read = await estimated(call.callId, at, (call.args ?? {}) as Json, call.signal);
-        return "usd" in read ? { estimate_usd: read.usd } : undefined;
-      })();
+      if (usd !== null || !at || !call) return usd ?? undefined;
+      return estimated(call.callId, at, (call.args ?? {}) as Json, call.signal).then((read) => ("usd" in read ? { estimate_usd: read.usd } : undefined));
     },
     release: () => {
       released.abort(new Error("the claim let its monid endpoints go"));

@@ -1435,9 +1435,11 @@ own (`Tool cost: monid charged $0.0260 for monid:apollo/people/match`) and summe
 Each run is marked in the run's records before it is sent, held at its pinned price (a per-call price; the dearest
 variant of a matrix; a tiered price's default and every tier), and its approval card shows that hold; its charge
 settles the mark. It is sent with that hold as monid's `maxCost`, so an endpoint monid prices higher now than when the
-agent was saved is refused by monid unrun and uncharged, never booked past its hold. Before it is sent, its price is
-read again from monid (an inspect, which monid does not charge). A call of an endpoint priced by usage (or one monid
-has re-priced by usage since the save) is held at monid's estimate for the call's own input instead: the call is first
+agent was saved is refused by monid unrun and uncharged, never booked past its hold. Once the cap lets it go, its
+price is read again from monid (an inspect, which monid does not charge). One monid has moved to usage pricing since
+the save is still held and sent at its pinned price, so monid runs it only at an estimate within it; its charge can
+pass it (below). A call of an endpoint pinned as priced by usage is held at monid's estimate for the call's own input
+instead: the call is first
 sent with `maxCost` 0, which monid refuses unrun and uncharged, naming its estimate; that estimate is the hold, and the
 call is sent with it as `maxCost`. Its approval card reads "Priced by usage, about $X (monid's estimate), can cost
 more" (`pending.price` `{estimate_usd}`), read once, when the card is first made: an answer given after the run
