@@ -17,17 +17,14 @@ import { withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { HostTool } from "@parcha/agentrun-kernel";
-import { WEB_FETCH_TOOL } from "./web-fetch.js";
-import { WEB_SEARCH_TOOL } from "./web-search.js";
+import { replayOf } from "./tool-list.js";
 import { realOf, workspaceRelative } from "./workspace-paths.js";
 import { bounded, imagesOf, textOf } from "./workspace/executors.js";
 
 export { workspaceRelative } from "./workspace-paths.js";
 
-/** Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again.
- *  `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL, named here as a string so the modules do not import
- *  each other) is never run again. */
-export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never", bash_background: "never", bash_output: "safe", bash_input: "never", bash_signal: "never", bash_list: "safe", learned_workflow: "never" };
+// Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again, is its
+// row's `replay` (tool-list.ts). `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL) is never run again.
 
 // pi's limits on a tool's output, and how a call's output is held within them, are the executors' (workspace/executors.ts).
 export { cutUtf8, MAX_BYTES, MAX_LINES } from "./workspace/executors.js";
@@ -85,9 +82,9 @@ export interface HostToolCtx {
 /** One pi ToolRegistration `tool` (named `name` by its catalog name) as the kernel's HostTool an adapter session takes:
  *  the paid-call seam, then the tool on the run's environment and harness, its answer the text a
  *  model reads (the output or the failure, a write's or an error's path named relative to the run's folder). Undefined when
- *  `name` is not one a host runs (REPLAY). */
+ *  `name` is not one a host runs (tool-list.ts `replay`). */
 export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCtx): HostTool | undefined {
-  const replay = REPLAY[name];
+  const replay = replayOf(name);
   if (!replay) return undefined;
   return {
     name: tool.name,

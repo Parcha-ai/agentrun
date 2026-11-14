@@ -31,7 +31,8 @@ import type { Workspace } from "./workspace/workspace.js";
 import { builtinHarness } from "./harness-table.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { SHELL_TOOLS } from "./background.js";
-import { DECISION_PROVIDER_KEYS, SERVE_OWN_TOOLS, TABLE_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
+import { DECISION_PROVIDER_KEYS, KIND_KEYS, SERVE_OWN_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
+import { isTableTool, isToolRow, tableTools } from "./tool-list.js";
 import { deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
@@ -55,11 +56,14 @@ export const isCatalogTool = (name: string): boolean => name.startsWith("monid."
  *  settings page, capabilities), which reads the computer's defaults. */
 export type ShellWhere = { readonly computer?: boolean };
 
-/** The owner's defaults (11-01): a built-in kernel tool allow; a third-party catalog tool ask. On a run with no computer,
+const isBuiltin = (name: string): boolean => isToolRow(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name);
+
+/** The owner's defaults: a built-in of this server (a row of the tool list, its own tools, a computer kind's key, a
+ *  decision provider's) allows; anything else asks, so a new source never defaults to allow. On a run with no computer,
  *  the kernel's ruled rule (defaultPermissionOf): bash asks first, and the background tools, which need a computer, are
  *  refused. */
 export const defaultPermission = (name: string, where: ShellWhere = {}): Permission => {
-  if (isCatalogTool(name)) return "ask";
+  if (isCatalogTool(name) || !isBuiltin(name)) return "ask";
   return where.computer === false ? defaultPermissionOf(name, { computer: false }) : "allow";
 };
 
@@ -116,7 +120,7 @@ export function nameMapOf(harness: string, mcpServers: readonly string[] = []): 
   const names = new Map<string, string>();
   const name = (own: string, key: string): void => void (names.has(own) || names.set(own, key));
   for (const [own, key] of Object.entries(SHELL_FAMILY)) name(own, key);
-  for (const own of [...TABLE_TOOLS, ...SERVE_OWN_TOOLS, ...DECISION_PROVIDER_KEYS]) name(own, own);
+  for (const own of [...tableTools(), ...SERVE_OWN_TOOLS, ...DECISION_PROVIDER_KEYS]) name(own, own);
   const alias = facts?.toolAlias?.exec(READ_SKILL_FILE) ?? null;
   name(READ_SKILL_FILE, alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : "read");
   for (const [own, keys] of KIND_TOOLS) name(own, keys[0]!);

@@ -25,6 +25,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import * as pages from "../dist/web-fetch-direct.js";
 import * as hosts from "../dist/host-tools.js";
+import { hostToolNames } from "../dist/tool-list.js";
 import { CLIP, monidRegistration, monidText } from "../dist/monid.js";
 import { HOST_TOOL_OUTPUT } from "../dist/runner/adapters/pi.js";
 import { localWorkspace } from "../dist/workspace/index.js";
@@ -37,8 +38,8 @@ import * as search from "../dist/web-search.js";
 const PUBLIC = "http://public.example/";
 /** The background tools: the computer's, run by the kernel's registry (workspace/run-tools.ts), not by a host tool here. */
 const BACKGROUND = ["bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"];
-/** Every tool a host runs here (host-tools.ts REPLAY) but the background tools. */
-const HOSTED = Object.keys(hosts.REPLAY).filter((name) => !BACKGROUND.includes(name));
+/** Every tool a host runs here (tool-list.ts replay) but the background tools. */
+const HOSTED = hostToolNames().filter((name) => !BACKGROUND.includes(name));
 const signal = new AbortController().signal;
 
 test("every host tool's largest result is within the host's result bound, which each CLI is told to pass whole", async (t) => {

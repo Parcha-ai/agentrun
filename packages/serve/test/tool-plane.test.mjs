@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
+import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
+import { tableTools } from "../dist/tool-list.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
@@ -205,7 +206,7 @@ test("settings are checked before anything is kept: an unknown tool, a provider 
   // The background tools follow bash's setting (tool-gate.ts SHELL_FAMILY): none is a name of the table's settings.
   const { SHELL_FAMILY } = await import("../dist/tool-gate.js");
   const heldToAnother = (name) => Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name;
-  assert.deepEqual([...TABLE_TOOLS].sort(), [...Object.keys(TOOLS).filter((name) => !name.startsWith("monid.") && !heldToAnother(name))].sort(), "tool-plane's names of the table are tools.ts's, but those held to bash's setting");
+  assert.deepEqual(tableTools().sort(), [...Object.keys(TOOLS).filter((name) => !name.startsWith("monid.") && !heldToAnother(name))].sort(), "tool-plane's names of the table are tools.ts's, but those held to bash's setting");
   assert.deepEqual(settingsIssues({ web_search: "parallel" }).map((i) => i.reason), ["wrong_type"]);
   assert.deepEqual(settingsIssues([]).map((i) => [i.field, i.reason]), [["body", "wrong_type"]]);
 });
