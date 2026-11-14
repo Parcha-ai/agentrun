@@ -27,6 +27,7 @@ const { FAUX_ENV } = await import("../dist/model.js");
 const { monidSessionNames } = await import("../dist/runner/monid-run.js");
 const { chosenTools } = await import("../dist/runner/subagent.js");
 const { wireName } = await import("../dist/catalog.js");
+const { DEFER_CATALOG_OVER } = await import("@parcha/agentrun-kernel");
 const { paidBookings, toolLedger } = await import("./support.mjs");
 after(closeOpenSessions);
 
@@ -152,10 +153,14 @@ test("a pinned endpoint's ask card names it and shows its pinned price; one pric
   assert.deepEqual(usage.asks.map((ask) => [ask.tool, ask.price]), [[NEWS, MONID_USAGE_CEILING_USD]], JSON.stringify(usage.asks));
 });
 
-test("tools_search finds a pinned endpoint by what it does, with its pinned input", async (t) => {
+test("past the deferral threshold, tools_search finds a pinned endpoint by what it does, with its pinned input", async (t) => {
   callLog(t);
   const requests = [];
-  await monidRun(t, { tools: [MATCH, NEWS], pin: PIN, requests, script: [{ call: "tools_search", args: { query: "people match" } }, { say: "done" }] });
+  // More endpoints than DEFER_CATALOG_OVER: the run lists none of them, and offers tools_search to find them.
+  const fillers = Object.fromEntries(Array.from({ length: DEFER_CATALOG_OVER }, (_, i) => [`monid:apollo/filler/${i}`, { description: `apollo filler ${i}: does nothing.`, input: INPUT, usd: 0.001 }]));
+  await monidRun(t, { tools: ["monid:apollo/*"], pin: { ...PIN, ...fillers }, requests, script: [{ call: "tools_search", args: { query: "people match" } }, { say: "done" }] });
+  const listed = (requests[0]?.tools ?? []).map((tool) => tool.name);
+  assert.ok(listed.includes("tools_search") && !listed.some((name) => name.startsWith("monid__")), JSON.stringify(listed));
   const results = requests.flatMap((body) => body.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : [])).filter((part) => part.type === "tool_result");
   const found = JSON.parse([results.at(-1)?.content].flat().map((part) => (typeof part === "string" ? part : part?.text ?? "")).join(""));
   assert.equal(found[0]?.name, "monid__apollo__people__match", JSON.stringify(found));
