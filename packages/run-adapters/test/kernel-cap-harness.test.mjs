@@ -200,7 +200,7 @@ const WARM = { model: SONNET.id, cachedTokens: 90_000, inputTokens: 10_000, boun
 const BIG_ASK = { ...ASK, inputTokensMax: 100_000, outputTokensAsked: 1_024, outputTokensLeast: 1_024 };
 
 test("a request the host sends beside the harness's own (a learned workflow's node) is priced as a cache miss: the session's previous request never stands for it", async () => {
-  const warm = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, previousOf: () => WARM });
+  const warm = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, recentOf: () => [WARM] });
   const cold = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
   const own = await warm(BIG_ASK);
   const host = await warm({ ...BIG_ASK, host: "workflow-node" });
@@ -213,7 +213,7 @@ test("the previous request stands only for a next request bounded the same way: 
   const cold = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
   const uncached = await cold(BIG_ASK);
   const prices = async (counted, asked) => {
-    const warm = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, previousOf: () => ({ ...WARM, ...(counted ? { counted: true } : {}) }) });
+    const warm = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, recentOf: () => [{ ...WARM, ...(counted ? { counted: true } : {}) }] });
     return (await warm({ ...BIG_ASK, ...(asked ? { inputTokensCounted: true } : {}) })).holdUsd;
   };
   assert.ok((await prices(true, true)) < uncached.holdUsd, "both counted: priced from the cache");
@@ -225,7 +225,7 @@ test("the previous request stands only for a next request bounded the same way: 
 test("a request that is no answer of the turn (a title, a summary, a child's) is priced as a cache miss, and the turn's own from the previous request", async () => {
   const cold = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
   const uncached = await cold(BIG_ASK);
-  const warm = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, previousOf: () => WARM });
+  const warm = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, recentOf: () => [WARM] });
   assert.ok((await warm(BIG_ASK)).holdUsd < uncached.holdUsd, "the turn's own: priced from the cache");
   assert.equal((await warm({ ...BIG_ASK, unanswered: true })).holdUsd, uncached.holdUsd, "no answer of the turn: a cache miss");
 });

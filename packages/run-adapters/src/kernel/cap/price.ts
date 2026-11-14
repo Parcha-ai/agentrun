@@ -1,10 +1,10 @@
 // The kernel cap's one pricing rule, the same for every harness. A request's input bound (its measured bytes, what its
 // provider adds, what its hosted tools read) is priced at the dearer of the input and cache-write prices; under "expected"
-// the previous request's cache counts at the cache-read price when it ended under CACHE_WARM_MS ago on the same model, so
-// only a cache miss can pass the cap, by at most the request's bound; under "strict" every token uncached. Its output is
-// held at what it is sent with, its thinking budget included.
+// the cache of one of the session's recent requests (warmFrom) counts at the cache-read price, so only a cache miss can
+// pass the cap, by at most the request's bound; under "strict" every token uncached. Its output is held at what it is
+// sent with, its thinking budget included.
 import { providerInputOverhead } from "../../host/overhead.js";
-import type { CapMode, ModelCapRequest, ModelPrice, PriceRates, Previous } from "./types.js";
+import type { CapMode, ModelCapRequest, ModelPrice, PriceRates, RecentRequest } from "./types.js";
 
 /** How long after a request ended the next one in its conversation is expected to read its cache: 4 minutes, inside
  *  Anthropic's 5. */
@@ -54,34 +54,58 @@ export function pricingOf(price: ModelPrice): Pricing {
   };
 }
 
-/** The input of a request of `bound` tokens on `model` expected after `previous`, at `now`: its cache read, and its input
- *  after the cache plus what the body grew by at full price. Undefined (all of it uncached) with no previous request, one
- *  on another model, one that ended CACHE_WARM_MS or more ago, or a clock that reads before its end. */
-export function expectedInput(bound: number, previous: Previous | undefined, now: number, model: string): InputParts | undefined {
-  if (!previous || previous.model !== model) return undefined;
-  const gap = now - previous.endedAt;
-  if (!(gap >= 0 && gap < CACHE_WARM_MS)) return undefined;
-  // A conversation only grows between its own requests: a smaller body is not one (a compaction, or another conversation's),
-  // so none of the previous request's cache is known to be read by it. Priced uncached, never under what it can cost.
-  if (bound < previous.boundTokens) return undefined;
-  return { cached: previous.cachedTokens, fresh: previous.inputTokens + Math.max(0, bound - previous.boundTokens) };
+/** How many of a session's recent requests it keeps (recentAfter), the newest: enough for a conversation's last request
+ *  to outlast the smaller requests a CLI sends between two of its own. Fewer only prices a request colder, never under. */
+export const RECENT_REQUESTS_KEPT = 16;
+
+/** The recent request whose cache a request of `bound` tokens on `model` is expected to read at `now`: of `recent`, those
+ *  on its model that ended under CACHE_WARM_MS ago (by a clock that does not read before their end) with a bound no bigger
+ *  than its own (a conversation only grows between its own requests), the biggest, the newest of equal ones. So a smaller
+ *  request between two of a conversation's own (a CLI's side request while a tool runs, a child's, a summary) leaves the
+ *  conversation's next request warm from its last, and a conversation that compacted is warm again from its first request
+ *  after the compaction. None: priced uncached. */
+export function warmFrom(bound: number, recent: readonly RecentRequest[] | undefined, now: number, model: string): RecentRequest | undefined {
+  let best: RecentRequest | undefined;
+  for (const one of recent ?? []) {
+    const gap = now - one.endedAt;
+    if (one.model !== model || !(gap >= 0 && gap < CACHE_WARM_MS) || !(one.boundTokens <= bound)) continue;
+    if (!best || one.boundTokens > best.boundTokens || (one.boundTokens === best.boundTokens && one.endedAt >= best.endedAt)) best = one;
+  }
+  return best;
 }
 
-/** The session's previous request once `ended` has answered: `ended` itself when it continues the conversation (the first
- *  request, another model's, one measured another way, or one at least as big as the previous), none when it is smaller.
- *  A smaller body is a compaction or another conversation's (a child's, which the proxy cannot tell from the root's):
- *  history resets, so it never sticks on a request the conversation has left and never prices the next from another's
- *  cache. The next request is priced uncached (one miss window), then warm from its own predecessor. */
-export function previousAfter(previous: Previous | undefined, ended: Previous): Previous | undefined {
-  if (previous && previous.model === ended.model && previous.counted === ended.counted && ended.boundTokens < previous.boundTokens) return undefined;
-  return ended;
+/** The input of a request of `bound` tokens on `model` expected at `now` after `recent`: the cache of the request warmFrom
+ *  picks at the cache-read price, and that request's input after the cache plus what the body grew by since at full
+ *  price. Undefined (all of it uncached) when it picks none.
+ *
+ *  Why a warm price opens no way past the cap. It is a guess: the request picked may be another conversation's whose
+ *  bound happened to fit, or its cache may be gone. The guess lowers only what the request is held at (requestPrice's
+ *  cost, never above its worst), never its worst: the whole bound uncached at the dearer of the input and cache-write
+ *  prices whichever request was picked, the output limited to what it was admitted at. So a request's real cost is at
+ *  most its hold plus its bound (Judged.boundUsd): a guess too low adds that much at most, the cache miss "expected" has
+ *  always allowed and serve reports as the run's overshoot bound. The bound is counted wherever the run's room is read
+ *  while the request is out (the wrap-up's gate and note count it at hold + bound, sessionSpendOf; a claim lost with it
+ *  open books it cut at both); a CLI's own request admitted with its host's keep-back is limited so its worst leaves the
+ *  keep-back free (rule.ts judgeModel), so even a miss stays under the cap; and once a request answers, its real cost
+ *  is booked and the next admission reads it. "strict" reads no cache: every request held at its worst. */
+export function expectedInput(bound: number, recent: readonly RecentRequest[] | undefined, now: number, model: string): InputParts | undefined {
+  const from = warmFrom(bound, recent, now, model);
+  return from && { cached: from.cachedTokens, fresh: from.inputTokens + (bound - from.boundTokens) };
+}
+
+/** The session's recent requests once `ended` has answered: `ended`, and those that ended under CACHE_WARM_MS before it
+ *  but one on its model, measured its way and of its bound (`ended` is the newer of the two); the newest
+ *  RECENT_REQUESTS_KEPT. None is dropped for being smaller or bigger than `ended`: warmFrom picks for each request. */
+export function recentAfter(recent: readonly RecentRequest[], ended: RecentRequest): RecentRequest[] {
+  const same = (one: RecentRequest) => one.model === ended.model && (one.counted === true) === (ended.counted === true) && one.boundTokens === ended.boundTokens;
+  return [...recent.filter((one) => ended.endedAt - one.endedAt < CACHE_WARM_MS && !same(one)), ended].slice(-RECENT_REQUESTS_KEPT);
 }
 
 /** A request priced under `mode`: `cost(output)`, what it is held at (its expected input, never more than uncached), and
  *  `worst(output)`, its input uncached; each with its hosted tools' most fee. */
-export function requestPrice(pricing: Pricing, bound: number, previous: Previous | undefined, now: number, mode: CapMode, model: string, feeUsd = 0): { cost(output: number): number; worst(output: number): number } {
+export function requestPrice(pricing: Pricing, bound: number, recent: readonly RecentRequest[] | undefined, now: number, mode: CapMode, model: string, feeUsd = 0): { cost(output: number): number; worst(output: number): number } {
   const worst = (output: number) => pricing({ cached: 0, fresh: bound }, output) + feeUsd;
-  const parts = mode === "strict" ? undefined : expectedInput(bound, previous, now, model);
+  const parts = mode === "strict" ? undefined : expectedInput(bound, recent, now, model);
   if (!parts) return { cost: worst, worst };
   return { cost: (output) => Math.min(pricing(parts, output) + feeUsd, worst(output)), worst };
 }

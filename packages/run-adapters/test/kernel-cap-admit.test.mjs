@@ -49,12 +49,12 @@ test("a refusal for good says the run's spend, never sent", async () => {
 
 test("an admission carries the held figure, the bound and the stopped figure; strict holds the worst case with no bound", async () => {
   const previous = { model: SONNET.id, cachedTokens: 90_000, inputTokens: 10_000, boundTokens: 100_000, endedAt: Date.parse("2026-11-08T06:00:00Z") - 1_000 };
-  const expected = await capOn(10).cap.admit(modelRequest(SONNET, 100_000, 1_000, { previous }));
+  const expected = await capOn(10).cap.admit(modelRequest(SONNET, 100_000, 1_000, { recent: [previous] }));
   near(expected.heldUsd, usd(90_000, 0.3) + usd(10_000, 3.75) + usd(1_000, 15));
   near(expected.boundUsd, usd(100_000, 3.75) + usd(1_000, 15) - expected.heldUsd);
   // Stopped having streamed 10 tokens: its input, those and 1,024 more, at most its 1,000-token limit, within its hold.
   near(expected.stoppedUsd(10), Math.min(expected.heldUsd, usd(90_000, 0.3) + usd(10_000, 3.75) + usd(1_000, 15)));
-  const strict = await capOn(10, { mode: "strict" }).cap.admit(modelRequest(SONNET, 100_000, 1_000, { previous }));
+  const strict = await capOn(10, { mode: "strict" }).cap.admit(modelRequest(SONNET, 100_000, 1_000, { recent: [previous] }));
   near(strict.heldUsd, usd(100_000, 3.75) + usd(1_000, 15));
   assert.equal(strict.boundUsd, 0);
 });

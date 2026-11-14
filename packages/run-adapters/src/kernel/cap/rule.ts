@@ -10,8 +10,9 @@ import { noCeiling, noPrice, noToolPrice, paidRefusal, roomRefusal, unknownHeld,
 import type { CapMode, ModelCapRequest, ToolCapRequest } from "./types.js";
 
 /** What a judgement reads: the cap (read before this check), the run's spend (null: unknown) and its holds (null:
- *  unknown). */
-export type JudgeState = { capUsd: number; spentUsd: number | null; heldUsd: number | null; mode: CapMode; now: number };
+ *  unknown). `keepUsd`: what the host keeps back beside a model request for the steps it may still ask for while it
+ *  streams (serve's wrap-up reserve: one typical step and one least answer); judgeModel says how it limits the output. */
+export type JudgeState = { capUsd: number; spentUsd: number | null; heldUsd: number | null; mode: CapMode; now: number; keepUsd?: number };
 /** The state once both figures are known. */
 type Known = JudgeState & { spentUsd: number; heldUsd: number };
 
@@ -29,17 +30,35 @@ export function priced(request: ModelCapRequest, mode: CapMode, now: number) {
   const price = request.model.price;
   if (bound === undefined || price === null) return undefined;
   const asked = outputAsked(request);
-  const { cost, worst } = requestPrice(pricingOf(price), bound, request.previous, now, mode, request.model.id, request.feeUsd ?? 0);
+  const { cost, worst } = requestPrice(pricingOf(price), bound, request.recent, now, mode, request.model.id, request.feeUsd ?? 0);
   return { asked, cost, worst, least: asked === undefined ? 0 : outputLeast(request, asked) };
 }
 
-function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd: held, mode, now }: Known): Judged {
+function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd: held, mode, now, keepUsd }: Known): Judged {
   if (inputBound(request) === undefined) throw new CapRefused(unmeasured(capUsd), { forGood: true, spentUsd: spent });
   const price = request.model.price;
   if (price === null) throw new CapRefused(noPrice(capUsd), { forGood: true, spentUsd: spent });
   if (request.model.outputCeiling === null && price.output > 0) throw new CapRefused(noCeiling(capUsd), { forGood: true, spentUsd: spent });
   const p = priced(request, mode, now)!;
-  const output = mostOutput(p.cost, p.least, p.asked ?? 0, capUsd - spent - held);
+  const left = capUsd - spent - held;
+  // The output it is sent with. With a keep-back from its host, first the most whose WORST case (its hold and the cache
+  // miss its bound covers, as a request in flight counts in the run's records) leaves `keepUsd` free: a tool call the
+  // request makes while it streams then finds room for the steps after it (serve's wrap-up, which counts the request
+  // at its worst until it is booked). When even its least and the keep-back do not fit, the run is wrapping up and this
+  // request may be its answer: it gets the most what is left buys, as with no keep-back.
+  // Why the cap still holds: the first branch only lowers the output, never below the least: cost(out) <= worst(out) <=
+  // left - keepUsd <= left. The second is the rule as it was. So every hold is at most what is left, as before; the
+  // hold, its bound, what a stop counts and what is booked are priced by the same p at the output sent, unchanged.
+  // (The keep-back is kept with a float's tail to spare, so the host's sum of the same figures never reads it as passed.)
+  // When the warm guess is wrong (expected mode prices the bound's head as cached from a recent request, and the cache
+  // is gone): the hold is too low, and three things still bound the spend. The output is limited to what is sent
+  // here, so the request's real cost is at most its worst: its whole bound uncached at the dearer input price plus
+  // that output. The first branch admits only a worst that leaves the keep-back free, so a full miss still lands under
+  // the cap. Its real cost is then booked at the turn, so the next request is judged on what this one cost, never on
+  // its hold. Only the second branch (no keep-back, or a run wrapping up) admits on the hold, and there a miss passes
+  // the cap by at most its bound, the overshoot expected mode states; strict mode reads no cache and has none.
+  const kept = isFigure(keepUsd) && keepUsd > 0 ? mostOutput(p.worst, p.least, p.asked ?? 0, left - keepUsd - 2 * FIT_TOLERANCE) : undefined;
+  const output = kept ?? mostOutput(p.cost, p.least, p.asked ?? 0, left);
   if (output === undefined) {
     const { text, figures } = roomRefusal(capUsd, spent, held, p.cost(p.least), p.worst(p.least) - p.cost(p.least));
     throw new CapRefused(text, { forGood: false, spentUsd: spent, figures });

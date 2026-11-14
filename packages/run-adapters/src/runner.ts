@@ -69,7 +69,7 @@ export type BeforeRequest = (request: {
   /** A side call (ModelRequest.side): on another model than the session's (a client's), or the host's own (`host`). */
   side?: true;
   /** A request on the session's model that is no answer of the turn (ModelRequest.unanswered: a title, a summary, a
-   *  child's): still the run's own to book, but never the session's previous request, read or replaced. */
+   *  child's): still the run's own to book, but never one of the session's recent requests, read or kept. */
   unanswered?: true;
   /** It carries the host's note (ModelRequest.noted), and its input measured without it (`inputTokensMaxWithoutNote`):
    *  a host that admits it only without the note says so (Admission.withoutNote). */
