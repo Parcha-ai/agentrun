@@ -1,8 +1,10 @@
 // An agent's computer, its one setting for where its tools run (Settings → Computers): `computer: { kind, provider?,
-// image?, gpu?, persistent? }` on its revision. kind is none, sandbox, desktop, phone or browser; provider names one of
-// the computer providers (the computer package's kind registry), and is absent for none; image names one the provider
-// offers for the kind, and absent is the kind's default; a sandbox's gpu is { type, count }; persistent: true keeps the
-// agent's own computer between its runs, where the configuration declares persistence. The v2 API's `place` is this
+// image?, gpu?, persistent?, surface?, exec? }` on its revision. kind is none, sandbox, desktop, phone or browser;
+// provider names one of the computer providers (the computer package's kind registry), and is absent for none; image
+// names one the provider offers for the kind, and absent is the kind's default; a sandbox's gpu is { type, count };
+// persistent: true keeps the agent's own computer between its runs, where the configuration declares persistence. A
+// desktop's or a phone's surface ("code" or "tools") is how the agent drives it, and exec: false gives the agent no
+// shell and no program start on it (run-tools.ts); the owner's own computer calls keep everything. The v2 API's `place` is this
 // setting's view, one to one where it can say it: {mode: "runner"} is {kind: "none"}, and {mode: "sandbox", box: X} is
 // {kind: "sandbox", provider: X}. Writing either sets both. A desktop, phone or browser computer leaves the run's folder
 // on the runner, so its place reads runner.
@@ -18,12 +20,20 @@ export type ComputerKind = (typeof COMPUTER_KINDS)[number];
 /** A sandbox's GPUs: a type its provider declares (GET /v2/computers lists each provider's) and how many. */
 export type GpuSetting = { readonly type: string; readonly count: number };
 
+/** How an agent drives a desktop or a phone: "code", by scripts alone (its harness's code mode, else computer_script);
+ *  "tools", by the per-step tools alone (computer_observe, computer_act, computer_screenshot). The hand-over is in both;
+ *  absent, both (run-tools.ts surfaceKeeps). */
+export const COMPUTER_SURFACES = ["code", "tools"] as const;
+export type ComputerSurface = (typeof COMPUTER_SURFACES)[number];
+
 /** The setting as a revision keeps it. `image`: one the provider's descriptor offers for the kind (Orgo's `windows`);
- *  absent, the kind's default. A sandbox may ask for GPUs; whether its provider gives them is the claim's check. */
+ *  absent, the kind's default. A sandbox may ask for GPUs; whether its provider gives them is the claim's check. A
+ *  desktop or a phone may say its surface, and `exec: false`: the agent gets no shell and starts no program on it. */
 export type ComputerSetting =
   | { readonly kind: "none" }
   | { readonly kind: "sandbox"; readonly provider: string; readonly image?: string; readonly gpu?: GpuSetting; readonly persistent?: boolean }
-  | { readonly kind: Exclude<ComputerKind, "none" | "sandbox">; readonly provider: string; readonly image?: string; readonly persistent?: boolean };
+  | { readonly kind: "desktop" | "phone"; readonly provider: string; readonly image?: string; readonly persistent?: boolean; readonly surface?: ComputerSurface; readonly exec?: boolean }
+  | { readonly kind: "browser"; readonly provider: string; readonly image?: string; readonly persistent?: boolean };
 
 /** A GPU type's name as a setting keeps it: the vendor's own ("T4", "A100-80GB", "RTX-PRO-6000"); store/agent-body.ts
  *  keeps the same. */
@@ -46,6 +56,16 @@ const OPTIONAL: Readonly<Record<string, { readonly kinds?: readonly ComputerKind
   // configuration keeps one (persistenceIssues); false or absent is a fresh computer for each run.
   persistent: {
     check: (value, field) => (typeof value === "boolean" ? [] : [{ field, reason: "wrong_type", message: `${field} is true (this agent keeps its own computer between runs) or false (a fresh one for each run)` }]),
+  },
+  // How the agent drives its desktop or phone (run-tools.ts surfaceKeeps): by scripts alone, or by the step tools alone.
+  surface: {
+    kinds: ["desktop", "phone"],
+    check: (value, field) => ((COMPUTER_SURFACES as readonly unknown[]).includes(value) ? [] : [{ field, reason: "not_an_option", message: `${field} is "code" (the agent drives the computer by scripts alone) or "tools" (by its step tools alone); absent, both` }]),
+  },
+  // false: the agent's computer runs no program of its own (run-tools.ts runHands): no shell, no processes, no bash.
+  exec: {
+    kinds: ["desktop", "phone"],
+    check: (value, field) => (typeof value === "boolean" ? [] : [{ field, reason: "wrong_type", message: `${field} is false (the agent gets no shell and starts no program on its computer) or true (as absent)` }]),
   },
   gpu: {
     kinds: ["sandbox"],

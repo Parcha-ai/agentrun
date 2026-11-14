@@ -455,6 +455,9 @@ export type GuardStepParams = {
   label: string;
   kind: WorkflowNode["node"];
   guard: StepGuard;
+  /** What the step was asked to do (guardAskOf): without it two steps over the same input that ask for different things
+   *  read the same to Jev. */
+  task: GuardTask;
   /** What the step saw: its interpolated `state` (or a call's `args`, an executor's `input`, a child's `input`), else the
    *  workflow's state before it. */
   input: unknown;
@@ -465,6 +468,15 @@ export type GuardStepParams = {
   executionPath: string;
   item?: MapItem;
   signal?: AbortSignal;
+};
+/** What a guarded step was asked to do, as its guard is asked about it, its instructions first: an agent, decide, extract
+ *  or pick node's `instructions` (a pick's with whether none may fit); a judge or sift's questions (its `out` compiled,
+ *  each question's type and words, as its judge was asked them); the schema its value meets (an agent, decide or extract
+ *  node's `out`, a call's or a child workflow's); a code node's or an executor's code, a tool call's tool, a shell's
+ *  command, a child's workflow name. */
+export type GuardTask = {
+  instructions?: string; allow_none?: boolean; questions?: Record<string, unknown>; schema?: unknown;
+  code?: string; tool?: string; command?: string; workflow?: string;
 };
 /** A host's guard verdict: `p`, the probability the step is right. */
 export type GuardVerdict = { p: number;
@@ -2760,10 +2772,36 @@ function selfConfidenceOf(node: WorkflowNode, out: Record<string, unknown>): num
   }
   return confidenceOf((out[`${key}$answers`] as { min_confidence?: unknown } | undefined)?.min_confidence);
 }
+/** What a guarded step is asked about, for every node kind in one place: what it was asked to do (guardTaskOf), what it
+ *  saw (guardInputOf) and what it wrote (guardOutputOf). */
+function guardAskOf(node: WorkflowNode, before: Record<string, unknown>, after: Record<string, unknown>, workflow: Workflow): Pick<GuardStepParams, "task" | "input" | "output"> {
+  return { task: guardTaskOf(node, workflow), input: guardInputOf(node, before, workflow), output: guardOutputOf(node, before, after) };
+}
+/** What a step was asked to do (GuardTask). The step ran, so its schemas resolve and its questions compile; should one
+ *  not, the schema as the document holds it stands in. */
+function guardTaskOf(node: WorkflowNode, workflow: Workflow): GuardTask {
+  const schemaOf = (id: unknown): { schema?: unknown } => {
+    if (typeof id !== "string" || !Object.hasOwn(workflow.schemas, id)) return {};
+    try { return { schema: resolveSchemaForWorkflow(workflow, workflow.schemas[id]) }; } catch { return { schema: workflow.schemas[id] }; }
+  };
+  switch (node.node) {
+    case "agent": case "decide": case "extract": return { instructions: node.instructions, ...schemaOf(node.out) };
+    case "pick": return { instructions: node.instructions, allow_none: node.allowNone === true };
+    case "judge": case "sift":
+      try { return { questions: questionSetOf(workflow, node).questions }; } catch { return schemaOf(node.out); }
+    case "code": return { code: node.code };
+    case "call": {
+      const what = node.via === "tool" ? { tool: node.tool } : node.via === "executor" ? { code: node.code } : { command: node.command };
+      return { ...what, ...(node.via === "shell" ? {} : schemaOf(node.out)) };
+    }
+    case "workflow": return { workflow: node.workflow?.name, ...schemaOf(node.out) };
+    default: return {};
+  }
+}
 /** What a step saw, as its guard is asked about it: its interpolated `state`, a call's `args` (or an executor's `input`, a
- *  shell's `env`), a child's `input`; a pick's, what its judge chose among (its state, the candidates, its instructions,
- *  whether none may fit); a sift's, its state and the items its judge was asked about; else the workflow's state before
- *  it, as a generative node with no `state` sees it. */
+ *  shell's `env`), a child's `input`; a pick's, what its judge chose among (its state, the candidates); a sift's, its
+ *  state and the items its judge was asked about; else the workflow's state before it, as a generative node with no
+ *  `state` sees it. */
 function guardInputOf(node: WorkflowNode, state: Record<string, unknown>, workflow: Workflow): unknown {
   try {
     if (node.node === "call") return interpolateValue(node.via === "tool" ? node.args ?? {} : node.via === "executor" ? node.input ?? {} : node.env ?? {}, state, node.label);
@@ -2771,7 +2809,7 @@ function guardInputOf(node: WorkflowNode, state: Record<string, unknown>, workfl
     if (node.node === "pick" || node.node === "sift") {
       const items = getPath(state, node.itemsPath);
       const list = Array.isArray(items) ? items : [];
-      if (node.node === "pick") return { ...pickAskOf(node, state, list, workflow).asked, instructions: node.instructions, allow_none: node.allowNone === true };
+      if (node.node === "pick") return pickAskOf(node, state, list, workflow).asked;
       return { ...(node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : {}), items: siftItemsOf(node, state, list) };
     }
     const own = (node as { state?: unknown }).state;
@@ -2799,7 +2837,7 @@ async function checkStepGuard(node: WorkflowNode, guard: StepGuard, before: Reco
   if (!deps.guardStep) throw new Error(`${node.node} node "${label}" requires guardStep`);
   const self = readsSelf(guard) ? selfConfidenceOf(node, after) : null;
   const item = (deps as LocatedDeps)[MAP_ITEM];
-  const verdict = await deps.guardStep({ label, kind: node.node, guard, input: guardInputOf(node, before, workflow), output: guardOutputOf(node, before, after), self, executionPath: executionPath(deps), ...(item ? { item } : {}), ...(deps.signal ? { signal: deps.signal } : {}) });
+  const verdict = await deps.guardStep({ label, kind: node.node, guard, ...guardAskOf(node, before, after, workflow), self, executionPath: executionPath(deps), ...(item ? { item } : {}), ...(deps.signal ? { signal: deps.signal } : {}) });
   const p = typeof verdict?.p === "number" && Number.isFinite(verdict.p) ? Math.min(1, Math.max(0, verdict.p)) : null;
   const jev = typeof verdict?.jev === "number" && Number.isFinite(verdict.jev) ? verdict.jev : null;
   // No p is no evidence the step is right: it hands back, never passes.

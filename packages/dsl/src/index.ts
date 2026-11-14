@@ -20,7 +20,7 @@ export type {
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, RouteByJudgmentNode, RouteByValueNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CodeNode, CallRetryClass, EffectFailureCode, CallPredicate, PollClause,
   ModelTier, AgentContext, WorkflowEffort, WorkflowThinking, VerifyClause,
-  NodeGuard, StepGuard, GuardFit, GuardStepParams, GuardVerdict,
+  NodeGuard, StepGuard, GuardFit, GuardStepParams, GuardTask, GuardVerdict,
   AskPredicate, DecisionEvidenceMode, DecisionImages, MechanicalPredicate, Predicate, ValidationCode, ValidationIssue, ValidateWorkflowOptions,
 } from "./workflow.js";
 export { dryRunWorkflow, SYNTHESIS_BUDGET, SynthesisTooLarge, synthesizeInstance, type SynthesisBudget } from "./dry-run.js";

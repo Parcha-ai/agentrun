@@ -29,6 +29,7 @@ import secretsWriteOnly from "./secrets-write-only.mjs";
 import templateApply from "./template-apply.mjs";
 import templateUnattended from "./template-unattended.mjs";
 import watchLive from "./watch-live.mjs";
+import screenUnopened from "./screen-unopened.mjs";
 import serverDeny from "./server-deny.mjs";
 import computersKeys from "./computers-keys.mjs";
 import workspaceArchil from "./workspace-archil.mjs";
@@ -55,6 +56,7 @@ export const flows = [
   runToEnd,
   reportJson,
   watchLive,
+  screenUnopened,
   takeOver,
   askDone,
   signedOutElsewhere,

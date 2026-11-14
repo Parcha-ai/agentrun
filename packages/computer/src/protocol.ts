@@ -96,7 +96,8 @@ export interface HelloResult {
 	screen?: ScreenSize;
 	/**
 	 * What this computer's groups can and cannot do here, by the names in FEATURES. A feature that is off says why, in
-	 * words a person can act on. A feature not listed is not offered. A caller ignores a name it does not know.
+	 * words a person can act on. A feature not listed is not offered, but for screen.capture, which a computer of the
+	 * screen group lists when it can be off. A caller ignores a name it does not know.
 	 */
 	features?: Features;
 	/** The machine, for a person and a run's record: "Apple", "MacBook Pro"; "Google", "Pixel 9". */
@@ -130,6 +131,8 @@ export interface Features {
  * a driver on any OS lists the same names, and says in the off reason what its OS is missing.
  */
 export const FEATURES = {
+	"screen.capture": "screen.shot and screen.watch capture the whole screen; a computer of the screen group that does not list it captures it, and one that lists it off refuses both with its reason (a Mac whose owner has not granted the server it is paired with the screen)",
+	"screen.ahead": "screen.watch takes an after one past the newest frame, an ask ahead that waits for the frame after the one the ask before it answers: a caller keeps two asks in flight, and frames come at the computer's pace, not one each round trip",
 	"apps.background": "apps.launch with background: true opens an app without bringing it to the front",
 	"ui.tree": "ui.observe reads the window's elements; off, it answers the window's image with no nodes (ui.image on) or is refused",
 	"ui.image": "ui.observe returns the window's image",
@@ -525,7 +528,9 @@ export interface ScreenReadResult {
 
 /**
  * The live view's frames (screen.watch): the next frame after the caller's ack, once the screen changed. `after` is
- * the seq of the last frame the caller has whole, 0 for none; an older one gets the newest frame at once.
+ * the seq of the last frame the caller has whole, 0 for none; an older one gets the newest frame at once. On a computer
+ * that lists screen.ahead, `after` may be one past the newest frame: an ask ahead, which waits as an ask for the newest
+ * does.
  */
 export interface ScreenWatchParams {
 	after: number;

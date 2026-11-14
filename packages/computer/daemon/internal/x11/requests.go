@@ -30,11 +30,12 @@ const (
 
 // Extension is QueryExtension's answer.
 type Extension struct {
-	Present bool
-	Major   byte
+	Present    bool
+	Major      byte
+	FirstEvent byte
 }
 
-// QueryExtension asks whether the server has an extension, and its major opcode.
+// QueryExtension asks whether the server has an extension, its major opcode and its first event's code.
 func (c *Conn) QueryExtension(name string) (Extension, error) {
 	body := le.AppendUint16(nil, uint16(len(name)))
 	body = append(body, 0, 0)
@@ -43,7 +44,7 @@ func (c *Conn) QueryExtension(name string) (Extension, error) {
 	if err != nil {
 		return Extension{}, err
 	}
-	return Extension{Present: r[8] == 1, Major: r[9]}, nil
+	return Extension{Present: r[8] == 1, Major: r[9], FirstEvent: r[10]}, nil
 }
 
 // InitXTest finds the XTEST extension, which FakeInput needs, and asks for version 2.2 of it.
@@ -154,6 +155,18 @@ func (c *Conn) GetImage(x, y, width, height int) (*image.RGBA, error) {
 		return nil, fmt.Errorf("GetImage gave %d bytes for %dx%d at %d bits a pixel", len(data), width, height, f.bpp)
 	}
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	if f.bpp == 32 && !c.imageMSB && v.channels == bgrx {
+		// The common screen (Xvfb, Xorg at depth 24): each pixel is the bytes B, G, R, pad. Copied as they are, about
+		// 30 times faster than a pixel at a time through the masks below, which a full screen read every frame feels.
+		for row := 0; row < height; row++ {
+			line := data[row*stride : row*stride+width*4]
+			out := img.Pix[row*img.Stride : row*img.Stride+width*4]
+			for i := 0; i < len(line); i += 4 {
+				out[i], out[i+1], out[i+2], out[i+3] = line[i+2], line[i+1], line[i], 0xff
+			}
+		}
+		return img, nil
+	}
 	bytes := f.bpp / 8
 	for row := 0; row < height; row++ {
 		line := data[row*stride:]
@@ -176,6 +189,9 @@ func (c *Conn) GetImage(x, y, width, height int) (*image.RGBA, error) {
 	}
 	return img, nil
 }
+
+// bgrx is the channels of a visual whose red, green and blue are the third, second and first byte of a pixel.
+var bgrx = [3]channel{{mask: 0xff0000, shift: 16, bits: 8}, {mask: 0xff00, shift: 8, bits: 8}, {mask: 0xff, shift: 0, bits: 8}}
 
 // level is the channel's value in pixel, scaled to 8 bits.
 func (ch channel) level(pixel uint32) byte {
@@ -366,12 +382,7 @@ func (c *Conn) MapWindow(id uint32) error {
 	if _, err := c.buffer(opMapWindow, 0, le.AppendUint32(nil, id), noReply); err != nil {
 		return err
 	}
-	body := le.AppendUint32(nil, id)
-	body = le.AppendUint16(body, 0x40) // stack-mode
-	body = append(body, 0, 0)
-	body = le.AppendUint32(body, 0) // Above
-	_, err := c.buffer(opConfigureWindow, 0, body, noReply)
-	return err
+	return c.Raise(id)
 }
 
 // CreateGC buffers a graphics context on the window.

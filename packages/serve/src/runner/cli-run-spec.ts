@@ -25,20 +25,20 @@ import { claimSettled, installDirOf, installForClaim, installingWords } from "..
 import { HarnessUnavailable } from "../provider.js";
 import type { Approvals } from "../approvals.js";
 import { effortGuidance } from "../effort-guidance.js";
+import { outputContract } from "../answer-json.js";
 import { wireName } from "../catalog.js";
 import { environmentLine } from "../environment.js";
 import { type HarnessEntry, harnessOf } from "../harness-table.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
-import { learningEndOfRun } from "./learning-end.js";
+import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { type ModelRef, type PinnedModel, providerModels, runModels, type Tier } from "../model.js";
-import { firstMessage } from "../run-manifest.js";
+import { firstMessage, inputMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
 import { DATA_ENV } from "../server-fs.js";
 import { copyRunFiles } from "../uploads.js";
-import { isObject } from "../validate.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
@@ -46,13 +46,16 @@ import { runTools, type ToolResults, withKindTools } from "../workspace/run-tool
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
-import { computerReadyWords, imageWaitWords } from "../workspace/computer-deps.js";
+import { computerReadyWords, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, PI_WIRES, webHostTools, webToolNames } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
 import { openTierProxies, type TierProxies } from "./adapters/pi.js";
 import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
 import { mcpServersOf } from "../tool-gate.js";
+import { isWebHostTool } from "../tool-list.js";
+import { hostToolOf } from "../host-tools.js";
+import { ASK_TOOL, askPerson } from "../tools.js";
 import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
@@ -73,6 +76,7 @@ import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
+import { monidApprovalPrice } from "../monid.js";
 
 /** The shared claim-time computer types live on the base spec (adapter-run-spec.ts), re-exported for this module's API. */
 export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./adapter-run-spec.js";
@@ -96,6 +100,8 @@ type RevisionBody = {
   readonly skills?: Record<string, unknown>;
   /** What the server checks out in the run's folder before its first turn (pr-checkout.ts). */
   readonly checkout?: Checkout;
+  /** The JSON Schema its final answer's last json block meets (definition.output_schema), absent for none. */
+  readonly outputSchema?: unknown;
 };
 
 /** The run's model and the catalog that prices it, as main chooses a CLI run's (app.ts wireModels and runModels): on the
@@ -341,7 +347,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // what became of the agent's own computer said on the run's timeline.
     // A browser computer is driven by the browser tool, which runs on pi's native route alone: a CLI's run of an agent
     // whose computer is a browser is refused in words at its claim, before anything is made.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
   holds.hold({ computer });
   const loopComputer = loopComputerOf(computer.computer, computer.held);
@@ -372,7 +378,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The system prompt, as main's harness branch builds it: the environment line, the instructions with what the agent
   // learned laid in (learning.ts laidLearned, from the launch's learning start, so the runner reads no learning folder), its
   // own skills through systemOf with the harness's own check (a harness that loads skills itself keeps in the prompt only
-  // those it would refuse, and is handed the rest), then the effort guidance.
+  // those it would refuse, and is handed the rest), the output schema it answers in (answer-json.ts outputContract, as the
+  // pi spec gives it), then the effort guidance.
   const start = learningStartOf(launch);
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section, start.use === true) : (body.instructions ?? "");
@@ -464,6 +471,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped), the model that bills this CLI run priced WITH tiers, strict where the launch says. The loop builds the
   // kernel runCap from these over the run's own sessions; the spec carries no beforeRequest of its own.
+  const besideOf = spentBesideOf(launch, deps.store, claim.runId);
   const runCap: RunCapConfig = {
     capUsd: () => launch.maxCostUsd,
     // One model per CLI session: every request it sends is the run's model, whatever id its provider names it by. A
@@ -475,6 +483,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       return tierRoute && tierRoute.model === id ? capModelOfRoute(tierRoute) : undefined;
     },
     ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
+    // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
+    ...(besideOf ? { beside: besideOf } : {}),
   };
   const cap = capUsd === undefined
     ? undefined
@@ -511,9 +521,11 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The runner's one redactor (the loop's), else this spec's log cut: the claim's keys join it, and the answers of the tools
   // that run on them pass it.
   const held = run.redact ? heldRedactor(run.redact) : cut;
-  const webNames = webToolNames(granted);
+  const webNames = granted.filter(isWebHostTool);
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
   let webTools: HostTool[] = [];
+  // The environment the web host tools run on (monid's quotes are kept per environment): the card's price reads the same one.
+  let hostEnv: NodeJS.ProcessEnv | undefined;
   let life: ReturnType<typeof hostLifecycle> | undefined;
   // The keys the claim hands the run (its web tools and its learned workflow's call nodes run on them): never learned
   // (learningEndOfRun).
@@ -548,6 +560,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       Object.assign(toolEnv, learnedKeys);
     }
     handedKeys = runnerSecrets(toolEnv);
+    hostEnv = toolEnv;
     // The run's resolved tool plane (its web tools' providers), as the pi spec hands it its web tools.
     delete toolEnv[TOOL_PLANE_ENV];
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
@@ -578,19 +591,23 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}), workspace: ws.workspace, modelName: () => chosen.model.modelId, ...(replay ? { replay } : {}) });
     }
   }
+  // ask_person, when granted: pi's own tool (tools.ts askPerson), bound as a host tool the way the web tools are. Its call
+  // answers what pi's does; the loop then cuts the CLI's turn at the question (adapter-loop.ts, turn-ending host tools),
+  // so the run parks on the person or waits for them in its claim exactly as a pi run does.
+  const askTool = granted.includes(ASK_TOOL) ? hostToolOf(ASK_TOOL, askPerson as never, ctx) : undefined;
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
-    system: [environmentLine(), checkout?.note, instructions, guidance].filter((line): line is string => Boolean(line)),
+    system: [environmentLine(), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
     // redactor, as pi's do. Listed in the order the agent grants them, as main lists a CLI run's tools.
-    tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
+    tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
     context: "fresh",
     ...(thinking ? { thinking } : {}),
   };
 
-  const content = isObject(launch.input) && typeof (launch.input as { content?: unknown }).content === "string" ? (launch.input as { content: string }).content : "";
-  const input = await firstMessage(content, ws.workspace);
+  // A typed input's other fields follow its content as one json block (inputMessage).
+  const input = await firstMessage(inputMessage(launch.input), ws.workspace);
 
   // The run's end-of-run step, when it learns, the same as the pi spec's: the reflect-and-propose turn over the run's
   // store, its learning folder where the run's place keeps it — Mode 1 under the data directory, Mode 2 on this claim's
@@ -622,7 +639,11 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(launch.inputOrigin ? { inputOrigin: launch.inputOrigin } : {}),
     ...(runner.record ? { record: runner.record } : {}),
     gate,
+    // monid.run's card shows what the call is held at (monid.ts monidApprovalPrice), as an MCP tool's shows its price.
+    ...(hostEnv ? { approvalPrice: monidApprovalPrice(hostEnv) } : {}),
     runCap,
+    // The answer's schema: a miss is asked again once (adapter-loop.ts, the output contract's retry), as on pi.
+    ...(body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {}),
     ...(cap ? { cap } : {}),
     // The run's MCP for a harness with its own client (mcp-run.ts), the session the adapter mounts; absent when none.
     ...(mcp ? { mcp } : {}),

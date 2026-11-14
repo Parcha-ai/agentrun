@@ -47,6 +47,7 @@ const serveDir = resolve(serveAt > 0 ? process.argv[serveAt + 1] : join(dirname(
 const dist = (file) => pathToFileURL(join(serveDir, "dist", file)).href;
 const TE = await import(dist("template-eval.js"));
 const { applyBodyOf, filledPins } = await import(dist("templates.js"));
+const { inputMessage } = await import(dist("run-manifest.js"));
 // yaml as serve resolves it, so a frozen copy outside the repo reads job.yaml with serve's own parser.
 const { parseDocument } = await import(pathToFileURL(createRequire(join(serveDir, "package.json")).resolve("yaml")).href);
 
@@ -295,7 +296,7 @@ export async function gradeOne(ctx, grader, kase, record, servers, graded) {
   if (grader.type !== "llm") return { ...head, cost_usd: null, ...TE.gradeDeterministic(grader, record, servers) };
   if (!graded) return { ...head, pass: false, ungraded: true, reason: "not graded: the run did not finish", cost_usd: null };
   try {
-    return { ...head, ...(await gradeLlm(ctx, TE.graderInput(grader, kase.input, record))) };
+    return { ...head, ...(await gradeLlm(ctx, TE.graderInput(grader, inputMessage(TE.runInput(kase.input, kase.fields)), record))) };
   } catch (error) {
     return { ...head, pass: false, ungraded: true, reason: `not graded: ${String(error?.message ?? error).slice(0, 400)}`, cost_usd: null };
   }
@@ -304,7 +305,7 @@ export async function gradeOne(ctx, grader, kase, record, servers, graded) {
 /** One step's run graded by its case's graders, as the template eval grades one. */
 async function step(ctx, job, one, kase, agentId, harness, learns) {
   const { api, options } = ctx;
-  const started = ok("starting the run", await api("POST", `/agents/${q(agentId)}/runs`, { input: { content: kase.input }, ...(kase.maxCostUsd !== undefined ? { max_cost_usd: kase.maxCostUsd } : {}) }));
+  const started = ok("starting the run", await api("POST", `/agents/${q(agentId)}/runs`, { input: TE.runInput(kase.input, kase.fields), ...(kase.maxCostUsd !== undefined ? { max_cost_usd: kase.maxCostUsd } : {}) }));
   const runId = String(started.run_id);
   const { view, timedOut, learningUnsettled } = await settled(api, runId, learns, waitUntil(options));
   const rows = await timelineRows(api, runId);

@@ -44,6 +44,7 @@ import { proposeRun } from "../propose.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
 import type { LearningProposal, McpServerRow, Store } from "../store/store.js";
+import { getMcpServer, listMcpServers } from "../mcp-store.js";
 import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
@@ -51,6 +52,7 @@ import { fits, reviseOf, servedOf, workflowDigest } from "./workflow-first.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectDeps, type ReflectTurn } from "./reflect-hook.js";
 import { runnerSecrets } from "./redact.js";
+import { isMcpWildcard, mcpNameOf } from "../tool-names.js";
 
 /** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
  *  the agent's learning folder (where the run's place keeps it), the runner's environment (the host's secrets a
@@ -95,10 +97,14 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // reflectSkip's facts: a run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be
     // kept within it. The cap is the run's now (capNowOf: its newest raise's, else its launch's), the one its requests
     // were admitted under, never the launch's alone. A person's stop comes to the hook as its `cut`.
+    // What its earlier rounds' grades took beside it counts toward that cap as its own spend does (Learning.spentBeside, the
+    // figure its gates read): unknown, no room.
     facts: async (runId) => {
       const costUsd = costOf(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false }));
       const capUsd = launch.maxCostUsd === undefined ? undefined : capNowOf(launch.maxCostUsd, await runEntries(deps.store, runId, BACKGROUND_CONTEXT));
-      return { learns: true, costUsd, ...(capUsd !== undefined ? { capUsd, capReached: costUsd !== null && costUsd >= capUsd } : {}) };
+      if (capUsd === undefined) return { learns: true, costUsd };
+      const beside = await deps.store.learning.spentBeside(runId);
+      return { learns: true, costUsd, capUsd, capReached: costUsd !== null && (beside === null || costUsd + beside >= capUsd) };
     },
     nothingNew: async (runId) => onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
     promptFacts: async () => ({ active: start.seedNotes ?? start.given.length }),
@@ -137,6 +143,8 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     },
     // The learning run's id, one per round of the run: a replayed end queues the same one (the store adds it once).
     newRunId: () => learningRunIdOf(runId, round),
+    // The cap its grade runs under (none for an uncapped run): what the run's cap leaves now.
+    ...(launch.maxCostUsd !== undefined ? { gradeCap: (runId: string) => gradeCapOf(deps.store, runId, round, launch.maxCostUsd!) } : {}),
     ...(gradeModel ? { gradeModel } : {}),
   });
   return async (input) => {
@@ -158,6 +166,33 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     const before = prior ? { job_cost_usd: spent(kept?.job_cost_usd), look_back_usd: spent(kept?.look_back_usd), looked: prior.turn !== null } : undefined;
     return hookFor(input.runId, round, before)(input);
   };
+}
+
+/** What every cap gate of run `runId` reads as spent beside it on its behalf (adapter-loop.ts RunCapConfig.beside): its
+ *  learning runs' grades (Store.learning.spentBeside, the one figure), for a capped run that learns, the only run whose
+ *  ends queue them; none for any other, whose gates read only its own sessions. */
+export function spentBesideOf(launch: RunLaunch, store: Pick<Store, "learning">, runId: string): (() => Promise<number | null>) | undefined {
+  const start = learningStartOf(launch);
+  if (launch.maxCostUsd === undefined || !start || start.use) return undefined;
+  return () => store.learning.spentBeside(runId);
+}
+
+/** The cap the grade of round `round` of run `runId` runs under (its learning run's max_cost_usd), so the run's grades
+ *  never take it past its cap: the cap the run is held to now (capNowOf: its newest raise's, else `launchCapUsd`), less
+ *  what the run spent (its job, its follow-ups and every look-back, its timeline's cost) and what was spent beside it on its
+ *  behalf by its earlier rounds (Learning.spentBeside, the figure the run's own gates read: each earlier grade at its cost
+ *  once it ended, at its own cap while it has not). $0, no room, when any of those is unknown (a cost null, or a read that
+ *  fails): a grade whose room can't be read is skipped, never run past the cap. */
+export async function gradeCapOf(store: Store, runId: string, round: number, launchCapUsd: number): Promise<number> {
+  try {
+    const capUsd = capNowOf(launchCapUsd, await runEntries(store, runId, BACKGROUND_CONTEXT));
+    const spent = costOf(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false }));
+    const beside = await store.learning.spentBeside(runId, { beforeRound: round });
+    if (capUsd === undefined || spent === null || !Number.isFinite(spent) || beside === null) return 0;
+    return Math.max(0, capUsd - spent - beside);
+  } catch {
+    return 0;
+  }
 }
 
 /** The learning run of round `round` of run `runId`'s learning: `<runId>-learning` for its first, `<runId>-learning-<n>`
@@ -223,8 +258,8 @@ async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Rec
     // Every MCP tool its call nodes run, as the workflow's own read reads them (draftMcpTools over the parsed JSON: an
     // escaped "\/" is a slash there), its price read first (unpricedCalls asks synchronously).
     for (const name of draftMcpTools(doc)) {
-      const [server, tool] = name.slice("mcp:".length).split("/") as [string, string];
-      if (!rows.has(server)) rows.set(server, store.mcp.server(server).catch(() => undefined));
+      const { server, tool } = mcpNameOf(name)!;
+      if (!rows.has(server)) rows.set(server, getMcpServer(store, server).catch(() => undefined));
       const price = ((await rows.get(server))?.prices as Record<string, unknown> | undefined)?.[tool];
       priced.set(name, typeof price === "number" && Number.isFinite(price) ? price : undefined);
     }
@@ -237,7 +272,7 @@ async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Rec
 /** The tools each saved MCP server lists now, by the server's name (none for one not saved, or a store that can't be
  *  read): what a wildcard grant names (tools.ts mcpGrantsListed). */
 async function mcpListedOf(store: Pick<Store, "mcp">): Promise<(server: string) => readonly string[]> {
-  const rows = await store.mcp.servers().catch(() => [] as McpServerRow[]);
+  const rows = await listMcpServers(store).catch(() => [] as McpServerRow[]);
   const byName = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
   return (server) => byName.get(server) ?? [];
 }
@@ -251,15 +286,14 @@ async function describedOf(tools: readonly string[], store: Pick<Store, "mcp">):
   const listed = new Map<string, Promise<McpServerRow | undefined>>();
   const out: { name: string; does: string }[] = [];
   for (const name of tools) {
-    const mcp = /^mcp:([^/]+)\/(.+)$/.exec(name);
+    const mcp = mcpNameOf(name);
     if (!mcp) {
       const does = toolOf(name)?.summary;
       if (does) out.push({ name, does });
       continue;
     }
-    const server = mcp[1]!;
-    const tool = mcp[2]!;
-    if (!listed.has(server)) listed.set(server, store.mcp.server(server).catch(() => undefined));
+    const { server, tool } = mcp;
+    if (!listed.has(server)) listed.set(server, getMcpServer(store, server).catch(() => undefined));
     const row = await listed.get(server)!;
     const entry = ((row?.tools ?? []) as { name?: unknown; title?: unknown; description?: unknown; input_schema?: unknown; output_schema?: unknown }[]).find((one) => one?.name === tool);
     if (!entry) continue;
@@ -455,7 +489,7 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
   const agent = (body.toolSettings ?? {}) as never;
   const approvals = body.approvals === "never" ? "never" : "ask";
   // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
-  const granted = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? mcpGrantsListed(body.tools ?? [], await mcpListedOf(deps.store)) : (body.tools ?? []);
+  const granted = (body.tools ?? []).some(isMcpWildcard) ? mcpGrantsListed(body.tools ?? [], await mcpListedOf(deps.store)) : (body.tools ?? []);
   // `deniedBy`: where each deny was set (the agent's tool settings, the server's, a default), which a left-out draft's
   // words name.
   const { tools, gated, deniedBy, asked } = learnedDraftTools(granted, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(deps.store.settings) });

@@ -8,7 +8,7 @@
 // The claim is the one fence for a run: claim() moves the run's epoch up by one, and every write a runner makes for the
 // run (its row, its journal commits, a command taken) carries the epoch it holds. A write under a lower epoch than the
 // run's is refused (Fenced) and writes nothing.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
 import type { JournalPage } from "./journal/storage.js";
 
@@ -67,14 +67,13 @@ export interface AgentRow {
   readonly externalRef: string | null;
 }
 
-/** A template's package, kept on the revision made from it. */
+/** The template package an agent was applied from, kept on the revision the apply made (its first): the package's id
+ *  (a bundled one's name, an imported one's `github:<owner>/<repo>[/<path>]`), its SemVer version, and the commit SHA it
+ *  was imported at (null for a bundled one, which is the server's own build). */
 export interface TemplatePackage {
-  readonly name: string;
+  readonly id: string;
   readonly version: string;
-  readonly source: "builtin" | "git";
-  readonly ref?: string;
-  readonly sha?: string;
-  readonly parameters?: unknown;
+  readonly sha: string | null;
 }
 
 export interface NewRevision {
@@ -245,8 +244,10 @@ export type AlsoRow =
   /** The learning run that grades and merges the kept proposal: a queued run `id` of the run's agent and revision. Started
    *  once: the same id staged again (an end replayed after a crash) adds nothing. */
   /** `model`: the grade model (gradeModelOf, as the server resolves it), on the learning run's launch; none, the agent's own.
-   *  `round`: the round it grades (absent: 1), named in its launch. */
-  | { readonly table: "learning_run"; readonly row: { id: string; model?: string; round?: number } };
+   *  `round`: the round it grades (absent: 1), named in its launch. `capUsd`: what the run's cap leaves once everything it
+   *  spent is counted (learning-end.ts gradeCapOf), the learning run's own cap (its launch's max_cost_usd), so its grade
+   *  never takes the run past its cap; absent for an uncapped run, whose grade is capped by nothing. */
+  | { readonly table: "learning_run"; readonly row: { id: string; model?: string; round?: number; capUsd?: number } };
 
 /** A run's kept learning (learning_proposals): what its end-of-run turn asked and answered, and the proposal checked from it. */
 export interface LearningProposal {
@@ -272,6 +273,12 @@ export interface Learning {
    *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
+  /** What was spent beside run `runId` on its behalf, the one figure every cap gate of the run reads with its own
+   *  sessions (and its grade's cap, learning-end.ts gradeCapOf): each learning run its rounds queued (`beforeRound`: only
+   *  those of the rounds before it), one that ended at its cost, one not ended at its own cap (the most its grade may
+   *  take), and one that ended at an unknown cost at that cap too, the most it could have taken. Null: unknown (one with
+   *  neither). 0 for a run that queued none. */
+  spentBeside(runId: string, options?: { beforeRound?: number }): Promise<number | null>;
 }
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */
@@ -683,6 +690,11 @@ export interface Runs {
    *  'stopped'), not imported and not a learning run, reopens: a workflow, a failed or cancelled run, any other, or none
    *  is RunFinal, and nothing is written. */
   reopen(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite): Promise<Command>;
+  /** Wakes a parked run: its wake_at set to now on the deadlines' clock, so a runner claims it at its next poll (the
+   *  claimable rule's wake branch) and its loop reads what it waits on again. True when the run was parked; a run in any
+   *  other state (or none) is left as it is, false. Its claim, if one holds it while it parks, is let go as before: the
+   *  release sets wake_at as the loop's end says. */
+  wake(runId: string): Promise<boolean>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
@@ -1027,6 +1039,29 @@ export interface PairedComputers {
   revoke(id: string): Promise<boolean>;
 }
 
+/** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
+ *  (`github:<owner>/<repo>[/<path>]`), its source as given, the commit SHA read, its publisher (the GitHub account), and
+ *  its files as they were read, by path, base64. The server checks them again (templates.ts readPackage) as it loads them
+ *  at its start, so a package this build no longer takes is never served. */
+export interface ImportedTemplateRow {
+  readonly id: string;
+  readonly source: string;
+  readonly sha: string;
+  readonly publisher: string;
+  readonly files: Readonly<Record<string, string>>;
+  /** When it was last imported (stamped by the store). */
+  readonly importedAt: number;
+}
+
+export interface ImportedTemplates {
+  /** Every imported package, by id. */
+  list(): Promise<ImportedTemplateRow[]>;
+  /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it). */
+  put(row: Omit<ImportedTemplateRow, "importedAt">): Promise<void>;
+  /** Removes the package: false when none had that id. */
+  remove(id: string): Promise<boolean>;
+}
+
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one
  *  server-wide set, or a trigger's id for its own), field, and the value sealed (store/seal.ts) under AAD
  *  trigger_settings|<adapter>|<scope>|<field>: TEXT the store never opens. */
@@ -1207,6 +1242,8 @@ export interface Store {
   readonly computerLedger: ComputerLedger;
   /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
   readonly pairedComputers: PairedComputers;
+  /** The template packages imported from GitHub, their files kept as read. */
+  readonly importedTemplates: ImportedTemplates;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */
   readonly triggerSettings: TriggerSettings;
   /** The outbox of a channel the server sends itself, its tries and what it told each run. */
@@ -1270,10 +1307,11 @@ export interface Store {
    *  stay in the store. Undefined when the row is untaken, refused, taken with no answer, already read, or not the run's. */
   answerOf(runId: string, commandId: number): Promise<{ readonly value: unknown } | undefined>;
   /** Tells `listener` when a command of a run in this store is written ("written", after command() commits) or taken,
-   *  refused or answered ("answered": a take, a run update that takes, a journal commit that takes or ends the run).
+   *  refused or answered ("answered": a take, a run update that takes, a journal commit that takes or ends the run), and
+   *  when a run is queued ("queued": runs.create, runs.createInline or a trigger's fire committed it, claimable now).
    *  A hint to read now, for handles in this process only: a row another process writes wakes nothing here, the reader's
    *  poll finds it. Called after the commit, asynchronously; a listener's throw is swallowed. Answers the unsubscribe. */
-  watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" }) => void): () => void;
+  watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" | "queued" }) => void): () => void;
   /** Counts a failed resume on the untaken command that woke the run, under the claim, and answers its tries; the command
    *  stays untaken. Fenced on a stale claim; StoreConstraint when the command is taken or not the run's. */
   retry(claim: Claim, commandId: number): Promise<number>;

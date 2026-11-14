@@ -115,29 +115,6 @@
         "isError": true
       }
     },
-    "search_code": {
-      "description": "Search code.",
-      "input": {
-        "type": "object",
-        "properties": {
-          "query": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "query"
-        ]
-      },
-      "answers": [],
-      "default": {
-        "content": [
-          {
-            "type": "text",
-            "text": "{\"total_count\": 0, \"items\": []}"
-          }
-        ]
-      }
-    },
     "get_repository_tree": {
       "description": "List a repository's tree.",
       "input": {

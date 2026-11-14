@@ -13,7 +13,7 @@ import { harnessOfBody } from "./harness.js";
 import { storedHarness } from "./harness-table.js";
 import {
   AgentBodyInvalid, type AgenticBody, RevisionMoved, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
-  type ModelTiers, type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type ToolSettings, type WorkflowBody,
+  type ModelTiers, type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type TemplatePackage, type ToolSettings, type WorkflowBody,
 } from "./store/index.js";
 import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
 import { computerOfPlace, type PlaceView, settingOfDefinition } from "./computer-setting.js";
@@ -61,6 +61,8 @@ export type AgentEntry = {
   version: number;
   revisions: number;
   sizes: Map<string, number>;
+  /** The template package it was applied from, as its first revision keeps it; absent or null for one made otherwise. */
+  template?: TemplatePackage | null;
 };
 
 /** A store refusal as the request's answer: a duplicate name (agent exists) and a constraint map the right way. */
@@ -137,10 +139,9 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
     ...(isObject(definition.model_tiers) ? { modelTiers: definition.model_tiers as ModelTiers } : {}),
     ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
     ...(definition.approvals === "ask" || definition.approvals === "never" ? { approvals: definition.approvals } : {}),
+    ...(isObject(definition.input_schema) ? { inputSchema: definition.input_schema } : {}),
     ...(isObject(definition.output_schema) ? { outputSchema: definition.output_schema } : {}),
     ...(definition.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}),
-    // The tool-call budget (tool-budget.ts): 0 keeps none.
-    ...(typeof definition.max_tool_calls === "number" && definition.max_tool_calls > 0 ? { maxToolCalls: definition.max_tool_calls } : {}),
     ...common,
     ...learning,
     ...capped,
@@ -195,7 +196,7 @@ export async function getAgent(store: AgentsStore, id: string): Promise<AgentEnt
   const revisions = await store.agents.revisions(id); // oldest first (created_at, id)
   const at = agent.currentRevision === null ? -1 : revisions.findIndex((r) => r.id === agent.currentRevision);
   const revision = at < 0 ? null : revisions[at]!;
-  return { agent, revision, version: at < 0 ? 0 : at + 1, revisions: revisions.length, sizes: sizesOf(revision) };
+  return { agent, revision, version: at < 0 ? 0 : at + 1, revisions: revisions.length, sizes: sizesOf(revision), template: revisions[0]?.package ?? null };
 }
 
 /** Every agent here, newest first (its creation, then its id). Archived agents are left out by default. */
@@ -212,7 +213,7 @@ export async function listAgents(store: AgentsStore, options: { archived?: boole
 export async function createAgent(
   store: AgentsStore,
   { definition, skills = {}, note }: DefinitionBody,
-  options: { check?: (revision: NewRevision) => Promise<void>; fresh?: { place: RevisionPlace; tools: readonly string[] } } = {},
+  options: { check?: (revision: NewRevision) => Promise<void>; fresh?: { place: RevisionPlace; tools: readonly string[] }; template?: TemplatePackage } = {},
 ): Promise<AgentEntry> {
   const given = typeof definition.id === "string" ? definition.id : undefined;
   if (given !== undefined && !ID_PATTERN.test(given)) throw invalid([{ field: "definition.id", reason: "invalid", message: `definition.id does not match ${ID_PATTERN.source}` }]);
@@ -221,7 +222,9 @@ export async function createAgent(
   const stamped = options.fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow)
     ? { place: options.fresh.place, ...(definition.tools === undefined ? { tools: [...options.fresh.tools] } : {}) }
     : {};
-  const revision = makeRevision({ ...definition, ...stamped }, skills, note);
+  // A template's agent keeps the package it was applied from on its first revision (store `revisions.package`).
+  const made = makeRevision({ ...definition, ...stamped }, skills, note);
+  const revision = options.template ? { ...made, package: options.template } : made;
   checkVersion(definition, 1);
   await options.check?.(revision);
   const id = given ?? uuidv7();
@@ -326,10 +329,10 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals),
         // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
-        // A tool-call budget is a limit too: an edit of an agentic revision that leaves it out keeps it.
-        ...(definition.max_tool_calls === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).maxToolCalls !== undefined ? { max_tool_calls: (currentBody as AgenticBody).maxToolCalls } : {}),
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
-        // The structured answer's schema is the agent's contract with its callers: an edit that leaves it out keeps it.
+        // Its input's and its structured answer's schemas are the agent's contract with its callers: an edit that leaves
+        // one out keeps it.
+        ...(definition.input_schema === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).inputSchema !== undefined ? { input_schema: (currentBody as AgenticBody).inputSchema } : {}),
         ...(definition.output_schema === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).outputSchema !== undefined ? { output_schema: (currentBody as AgenticBody).outputSchema } : {}),
         // So is the checkout its runs start in (none clears it).
         ...(definition.checkout === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).checkout !== undefined ? { checkout: (currentBody as AgenticBody).checkout } : {}),
@@ -380,7 +383,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     ...(body.capMode !== undefined ? { cap_mode: body.capMode } : {}),
   };
   const kindBody = revision.kind === "agentic"
-    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).maxToolCalls !== undefined ? { max_tool_calls: (body as AgenticBody).maxToolCalls } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
+    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).inputSchema !== undefined ? { input_schema: (body as AgenticBody).inputSchema } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
   return {
     id: agent.id,
@@ -420,6 +423,9 @@ export function agentView(
     revision: revision?.id ?? null,
     revisions: entry.revisions,
     source: null,
+    // The template package it was applied from (its first revision keeps it): the package's id, version and the commit an
+    // imported one was read at (null for a bundled one). Null for an agent made otherwise.
+    template: entry.template ? { id: entry.template.id, version: entry.template.version, sha: entry.template.sha ?? null } : null,
     skills: Object.entries(body.skills ?? {}).map(([path, sha]) => ({ path, sha256: sha, size_bytes: entry.sizes.get(sha) ?? null })),
     sign_ins: extra.signIns ?? [],
     runs: extra.runs ?? { count: 0, live: 0 },

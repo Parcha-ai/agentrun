@@ -5,7 +5,7 @@
 // far (read from its journal, the same figure the cap holds it to), since cost_usd is written only at the end; an ended run
 // shows its stored cost. These reads carry no secret text; the server's view layer cuts what it serves (an error, a review,
 // the rows) by the run's handed sign-ins.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { type ImportedFrom, type RunRow, type Store, stoppedByPerson } from "../store/store.js";
 import { spentOverStore } from "./cap.js";
 

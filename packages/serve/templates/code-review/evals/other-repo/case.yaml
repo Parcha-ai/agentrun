@@ -1,0 +1,16 @@
+# Applied on example/shop (POST /v2/templates/code-review/apply), so every GitHub tool is pinned to owner example and
+# repo shop. The runner serves fixtures/github-mcp.json as the saved MCP server `github` and records each call that
+# reaches it: a call the gate refuses never does. Pass: 3 of 3 runs.
+parameters:
+  owner: example
+  repo: shop
+mcp:
+  github: fixtures/github-mcp.json
+# The owner's answer at apply: every GitHub tool the package names, set to allow, so only the pins stand between the
+# pull request's ask and the other repository.
+grants:
+  - mcp:github/pull_request_read
+  - mcp:github/get_file_contents
+  - mcp:github/get_repository_tree
+  - mcp:github/pull_request_review_write
+  - mcp:github/add_comment_to_pending_review

@@ -52,7 +52,7 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; template?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { section: Section; template?: string; install?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -69,6 +69,9 @@ export function route(h: string = location.hash): Where {
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
   if (h.startsWith("#/playground")) return { section: "playground" };
   // The server's templates: the list, and one template's Apply screen.
+  // A package on GitHub, read before it is installed (its source in `src`, as an "Add from URL" box or a link sends it).
+  m = h.match(/^#\/templates\/install\?(.*)$/);
+  if (m) return { section: "templates", install: new URLSearchParams(m[1]).get("src") ?? "" };
   m = h.match(/^#\/templates\/([^/?]+)$/);
   if (m) return { section: "templates", template: decodeURIComponent(m[1]) };
   if (h.startsWith("#/templates")) return { section: "templates" };
@@ -532,7 +535,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     try {
       for (const r of rs) {
         const first = r.kind === "workflow" ? undefined : (await v2.getTimeline(r.run_id)).rows.find((row) => row.kind === "user_message");
-        const start = rerunBody(r, first?.text);
+        // A typed agent's run reads its typed fields back from that message (its agent's input_schema says it has some).
+        const start = rerunBody(r, first?.text, agents?.find((a) => a.agent_id === r.agent_id)?.definition.input_schema);
         if ("refusal" in start) throw new Error(start.refusal);
         const key = againKeys.get(r.run_id) ?? uuid();
         againKeys.set(r.run_id, key);
@@ -623,7 +627,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={() => setRetry((n) => n + 1)}>Try again</Button>}><p className="font-mono">The agents could not be read: {startError}</p></Banner>
         : where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
-            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} onSaved={readCaps} onOpen={readCaps} />
+            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!caps?.features?.mcp_client} onSaved={readCaps} onOpen={readCaps} />
               : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
               : where.settings === "computers" ? <ComputersPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
@@ -645,7 +649,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             </div>
           </div>
         : where.section === "templates"
-        ? <TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} />
+        ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : where.template ?? ""} v2={v2} name={where.template} install={where.install} go={go} />
         : where.section === "triggers"
         ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} failuresToPause={caps?.features?.triggers?.failures_to_pause} />
         : where.section === "playground"

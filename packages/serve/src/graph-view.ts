@@ -6,7 +6,7 @@
 //
 // Where the frame and the receipts come from: while the run goes, its live view (pause.ts `live.json`); once the run
 // ended, the store.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { llmAnswers, type NodeLine, readLiveView } from "./pause.js";
 import { KINDS } from "./runner/journal-kinds.js";
 import type { Store } from "./store/store.js";

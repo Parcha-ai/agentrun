@@ -60,9 +60,12 @@ A computer with the `ui` group also says its screen and its features:
 - `screen`: the main screen's size in points and its scale (pixels per point). Present with the `ui` group.
 - `features`: what the computer can and cannot do inside its groups, each name `true`, or `{"off": "<why, in words>"}`.
   A feature that is off is refused with that sentence when asked for, never ignored. The names and what they mean are
-  `features` in [`protocol.json`](protocol.json): `ui.tree`, `ui.image`, `ui.background`, `ui.foreground`, `ui.page`,
-  `ui.nav` and `apps.background`. Names stay the same on every OS; an OS name appears only in a reason. A computer of
-  the `ui` group always declares `ui.tree`.
+  `features` in [`protocol.json`](protocol.json): `screen.capture`, `screen.ahead`, `ui.tree`, `ui.image`,
+  `ui.background`, `ui.foreground`, `ui.page`, `ui.nav` and `apps.background`. Names stay the same on every OS; an OS name appears only
+  in a reason. A computer of the `ui` group always declares `ui.tree`. A feature not declared is not offered, but for
+  `screen.capture`: a computer of the `screen` group that does not declare it captures its screen, and one that declares
+  it off refuses `screen.shot` and `screen.watch` with its reason (an attached Mac whose owner has not granted the
+  screen, [`kinds.md`](kinds.md)).
 - `osVersion`: the OS's version as the computer says it, with its build when the driver knows it: `"15 (API 35)"`,
   `"26.1 (25B78)"`.
 - `device`: the machine, `{"maker": "Apple", "model": "MacBook Pro"}`. The same fields on every OS; its CPU is `arch`.
@@ -267,12 +270,17 @@ The result:
   `invalid`. A window that only moved keeps its points good, because they are window points. Every point a step
   touches is held to this, each point of a drag's path as much as its first.
 - **The driver waits, never the model.** Every act settles before it answers: the window looks the same twice, a short
-  quiet apart, or `maxSettleMs` passed. An expect is polled on the computer, and an act's `state` is the window once it
+  quiet apart, or `maxSettleMs` passed. A driver whose OS tells when an app's tree changes (macOS's accessibility
+  notifications) may settle on those instead: it reads the window once the app told no change for the quiet, and
+  reads it again only for a change told after that read began. An expect is polled on the computer, and an act's `state` is the window once it
   settles after the expect, never a frame of a transition. Every verdict of an act reads that one final view: a set's
   hold, the expect's `met`, and the `state` it answers. A poll's look only says when to read the final view again.
-- **A settle reads the tree.** "Looks the same" compares the window's id, bounds and nodes (each node's role, name,
-  value, flags and bounds). The window's image counts only when the window has no nodes (`ui.tree` off, or an app that
-  exposes none). A blinking caret, a spinner's frame or a playing video changes the image every look, so a settle on
+- **A settle reads the tree.** "Looks the same" compares the window's id, bounds and the nodes on it (each node's role,
+  name, value, flags and bounds held inside the window), never which element each is. A node wholly outside the window
+  is not seen, so it counts neither for a settle nor as a step's effect: an app may rebuild its rows scrolled out of
+  view, or at the window's edge, each time its tree is read (System Settings' sidebar), which would wait out
+  `maxSettleMs` on every act. The window's image counts only when the window has no
+  nodes (`ui.tree` off, or an app that exposes none). A blinking caret, a spinner's frame or a playing video changes the image every look, so a settle on
   the image would wait out `maxSettleMs` on every act; a transition moves the nodes, so a settle on the tree still
   waits for it. `ui.settle-tree` times acts on a focused field.
 - **A set holds.** A `set` step answers `verified: true` only when its value still holds in the act's final view: read

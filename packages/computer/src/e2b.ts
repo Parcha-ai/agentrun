@@ -1,10 +1,12 @@
 // The E2B host: E2B Desktop sandboxes (kind desktop) or E2B's plain template (kind linux), every call through the
-// host's own E2B JS SDK (the `e2b` package), of which this package names only the slice it uses (E2BSandboxClass) and
-// imports nothing at load. E2B's envd is the sandbox's first process (under systemd), so computerd is a child: its
+// host's own E2B JS SDK (the `e2b` package), whose types it imports as types only (erased at build: nothing loads at
+// import). E2B's envd is the sandbox's first process (under systemd), so computerd is a child: its
 // upload goes through envd's file API and every command (install, init's start, the stdio bridge) is a background
 // command as root. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts). Every SDK fact
 // used here is cited in the README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
+import type { Sandbox, SandboxInfo, SandboxOpts } from "e2b";
 import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
+import { WINDOW_MANAGER } from "./desktop.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, ours } from "./hosted/provider.js";
 import { words } from "./hosted/process.js";
@@ -18,7 +20,11 @@ import { countTested } from "./test-connection.js";
 /** This module's failures: one with code vendor names E2B. */
 const fail = failFor("e2b");
 
-/** What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152). */
+/**
+ * What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152).
+ * The SDK's types below are `import type`: erased at build, so nothing loads the SDK from here and the published types
+ * name none of it (the package declares no dependency on e2b).
+ */
 export interface E2BConnectionOptions {
 	apiKey: string;
 	domain: string;
@@ -28,99 +34,34 @@ export interface E2BConnectionOptions {
 	signal?: AbortSignal;
 }
 
-/** Sandbox.create's options as the provider gives them (SandboxOpts, index.d.mts:10140-10245). */
-export interface E2BCreateOptions extends E2BConnectionOptions {
-	timeoutMs: number;
-	metadata: Record<string, string>;
-	envs: Record<string, string>;
-	allowInternetAccess: boolean;
-	network: { allowPublicTraffic: boolean };
-	lifecycle: { onTimeout: "kill" };
-}
+/** The SDK's Sandbox class, the host's own `e2b` package's. Held as the SDK's type inside; the published type is `object`. */
+export type E2BSandboxClass = object;
+type SdkSandboxClass = typeof Sandbox;
 
-/** What getInfo reports of a sandbox, as far as this provider reads it (index.mjs:5432-5465). */
-export interface E2BSandboxInfo {
-	sandboxId: string;
-	templateId: string;
-	name?: string;
-	metadata: Record<string, string>;
-	allowInternetAccess?: boolean;
-	startedAt: Date;
-	endAt: Date;
-	state: string;
-	network?: { allowOut?: string[]; denyOut?: string[]; allowPublicTraffic?: boolean; egressProxy?: unknown; rules?: unknown; dnsServers?: unknown };
-	lifecycle?: { onTimeout?: string; autoResume?: boolean };
+/**
+ * envd's Process.Start stream as exec reads it. A hand-typed slice: the SDK keeps Commands.rpc protected and exports
+ * none of the process proto types (ProcessEvent, StartRequest), so there is nothing to `import type`. Not exported.
+ */
+interface ProcessEvent {
+	event:
+		| { case: "start"; value: { pid: number } }
+		| { case: "data"; value: { output: { case: "stdout" | "stderr" | "pty"; value: Uint8Array } | { case: undefined; value?: undefined } } }
+		| { case: "end"; value: { exitCode: number; exited: boolean; status: string; error?: string } }
+		| { case: "keepalive"; value: object }
+		| { case: undefined; value?: undefined };
 }
-
-/** One sandbox in a page of Sandbox.list (index.mjs:5820-5838). */
-export interface E2BListedSandbox {
-	sandboxId: string;
-	metadata: Record<string, string>;
-	state: string;
-	startedAt: Date;
-	endAt: Date;
-}
-
-/** The result of a command that has ended (index.mjs:2751-2757); CommandExitError carries the same fields. */
-export interface E2BCommandResult {
-	exitCode: number;
-	stdout: string;
-	stderr: string;
-}
-
-/** A background command (CommandHandle, index.mjs:2683-2810). */
-export interface E2BCommandHandle {
-	readonly pid: number;
-	readonly stderr: string;
-	wait(): Promise<E2BCommandResult>;
-	kill(): Promise<boolean>;
-	disconnect(): Promise<void>;
-}
-
-export interface E2BRunOptions {
-	user: "root";
-	timeoutMs: number;
-	requestTimeoutMs: number;
-	signal?: AbortSignal;
-}
-
-/** The part of a connected Sandbox called here: commands and files (index.mjs:5917-5989). */
-export interface E2BSandbox {
-	readonly sandboxId: string;
-	readonly files: { write(path: string, data: ArrayBuffer, options: { user: "root"; requestTimeoutMs: number; signal?: AbortSignal }): Promise<unknown> };
-	readonly commands: {
-		run(command: string, options: E2BRunOptions & { background?: false }): Promise<E2BCommandResult>;
-		run(
-			command: string,
-			options: E2BRunOptions & { background: true; stdin?: boolean; retainOutput?: boolean; onStdout?: (data: string) => void; onStderr?: (data: string) => void },
-		): Promise<E2BCommandHandle>;
-		sendStdin(pid: number, data: Uint8Array, options: { requestTimeoutMs: number }): Promise<void>;
-		/** Ends a command's stdin, so it reads end of file (index.mjs:5071-5082). */
-		closeStdin(pid: number, options: { requestTimeoutMs: number }): Promise<void>;
-	};
-}
-
-/** The paginator Sandbox.list returns (SandboxPaginator, index.mjs:5785-5849). */
-export interface E2BPaginator {
-	readonly hasNext: boolean;
-	nextItems(options: { requestTimeoutMs: number; signal?: AbortSignal }): Promise<E2BListedSandbox[]>;
-}
-
-/** The statics of the SDK's Sandbox class this provider calls. The host's own, or anything with the same slice. */
-export interface E2BSandboxClass {
-	create(template: string, options: E2BCreateOptions): Promise<E2BSandbox>;
-	connect(sandboxId: string, options: E2BConnectionOptions & { timeoutMs: number }): Promise<E2BSandbox>;
-	getInfo(sandboxId: string, options: E2BConnectionOptions): Promise<E2BSandboxInfo>;
-	setTimeout(sandboxId: string, timeoutMs: number, options: E2BConnectionOptions): Promise<void>;
-	kill(sandboxId: string, options: E2BConnectionOptions): Promise<boolean>;
-	list(options: Omit<E2BConnectionOptions, "signal"> & { query: { metadata: Record<string, string> }; limit: number }): E2BPaginator;
+interface ProcessRpc {
+	start(
+		request: { process: { cmd: string; args: string[]; envs: Record<string, string> }; stdin: boolean },
+		options: { headers: Record<string, string>; signal: AbortSignal; timeoutMs: number },
+	): AsyncIterable<{ event?: ProcessEvent }>;
 }
 
 /** The E2B provider's options: the key and the SDK, then the shared adapter's (HostedOptions). */
 export interface E2BProviderOptions extends Omit<HostedOptions, "label" | "maxLifetimeMs"> {
 	/** The E2B API key. The caller passes it; this provider never reads it from the environment or puts it in a computer. */
 	apiKey: string;
-	/** The SDK's Sandbox class: the host's `e2b` package's, or anything with the same slice. */
+	/** The SDK's Sandbox class: the host's `e2b` package's. */
 	Sandbox: E2BSandboxClass;
 	/** E2B's domain: the API is https://api.<domain>. Default e2b.app. */
 	domain?: string;
@@ -133,7 +74,7 @@ export interface E2BProviderOptions extends Omit<HostedOptions, "label" | "maxLi
 
 /**
  * What create() takes: the provider's options, the SDK's Sandbox class optional (default the host's e2b package's).
- * Not E2BCreateOptions, which is the SDK's own Sandbox.create options.
+ * Not SandboxOpts, which is the SDK's own Sandbox.create options.
  */
 export interface E2BOptions extends Omit<E2BProviderOptions, "Sandbox"> {
 	/** The SDK's Sandbox class; imported from the host's e2b package by default. */
@@ -197,6 +138,13 @@ const PUBLIC =
 	"publicStream is no longer an option: an E2B computer never takes public traffic, which would open every port in it to anyone with its address, and its screen is streamed through agentrun, never a vendor URL";
 /** envd's port in the sandbox (e2b@2.63.0 dist/index.mjs:1213, ConnectionConfig.envdPort). */
 const ENVD_PORT = 49983;
+/** envd's user for a process: root, as the SDK's authenticationHeader writes it (index.mjs:1896-1900). */
+const ROOT = `Basic ${Buffer.from("root:").toString("base64")}`;
+/** envd sends a keepalive event this often on a process stream, as the SDK asks (index.mjs:923, 5141). */
+const KEEPALIVE_HEADER = "Keepalive-Ping-Interval";
+const KEEPALIVE_S = "50";
+/** The Connect codes envd's process calls answer (connectrpc Code), as this provider's codes. */
+const CONNECT_CODES: Record<number, ComputerErrorCode> = { 1: "aborted", 3: "invalid", 4: "timeout", 5: "not_found", 7: "denied", 8: "limit", 16: "denied" };
 
 /** The mount kinds an E2B computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
 export const MOUNT: readonly MountKind[] = E2B.mounts;
@@ -206,7 +154,7 @@ export const CAPABILITIES: readonly KindCapabilities[] = E2B.capabilities;
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
 
-/** The SDK names its errors (index.mjs:86-360). */
+/** The SDK names its errors (index.mjs:86-360); Connect's carry a code. */
 function codeOf(error: unknown): ComputerErrorCode {
 	const name = (error as { name?: unknown } | null)?.name;
 	if (name === "AbortError") return "aborted";
@@ -215,6 +163,8 @@ function codeOf(error: unknown): ComputerErrorCode {
 	if (name === "InvalidArgumentError" || name === "TemplateError") return "invalid";
 	if (name === "RateLimitError" || name === "NotEnoughSpaceError") return "limit";
 	if (name === "TimeoutError" || name === "SandboxUnreachableError") return "timeout";
+	// envd's process stream, called through the SDK's Connect client (exec), throws Connect's own errors.
+	if (name === "ConnectError") return CONNECT_CODES[(error as { code?: unknown }).code as number] ?? "vendor";
 	return "vendor";
 }
 
@@ -233,7 +183,7 @@ const clearOf = (created: number) => created + END_SLACK_MS + 1_000;
  * index.d.mts:10179) with no allow list and no public traffic in; open is internet access with none of those either.
  * Anything else is another network in words, never one it might widen to.
  */
-function networkOf(info: E2BSandboxInfo): NetworkPolicy {
+function networkOf(info: SandboxInfo): NetworkPolicy {
 	const network = info.network ?? {};
 	if (network.egressProxy !== undefined && network.egressProxy !== null) return { other: "an egress proxy is set on it" };
 	if (Array.isArray(network.allowOut) && network.allowOut.length > 0) return { other: `an allowOut list (${network.allowOut.length} entries), which this provider never makes` };
@@ -249,7 +199,7 @@ function networkOf(info: E2BSandboxInfo): NetworkPolicy {
 
 
 /** A sandbox as the adapter reads a machine: E2B's states, its network, its template, its timer, and its create's drift. */
-function machineOf(info: E2BSandboxInfo): Machine {
+function machineOf(info: SandboxInfo): Machine {
 	const metadata = { ...(info.metadata ?? {}) };
 	const end = info.endAt instanceof Date ? info.endAt.getTime() : Number.NaN;
 	const created = createdEnd({ metadata, startedAt: info.startedAt });
@@ -283,7 +233,7 @@ function machineOf(info: E2BSandboxInfo): Machine {
 }
 
 /** A listed sandbox whose read-back E2B no longer has: still listed, so it is going, not gone. */
-const listedOnly = (sb: E2BListedSandbox): Machine => ({
+const listedOnly = (sb: SandboxInfo): Machine => ({
 	id: sb.sandboxId,
 	labels: { ...(sb.metadata ?? {}) },
 	state: "going",
@@ -338,14 +288,14 @@ class E2BHost implements MachineHost {
 		mounts: [...MOUNT],
 		release: ["delete"],
 	};
-	readonly #Sandbox: E2BSandboxClass;
+	readonly #Sandbox: SdkSandboxClass;
 	readonly #connection: E2BConnectionOptions;
 	readonly #requestMs: number;
 	/** Each sandbox create or connect gave, by id, for envd's commands and files: let go of at its delete. */
-	readonly #sandboxes = new Map<string, E2BSandbox>();
+	readonly #sandboxes = new Map<string, Sandbox>();
 
 	constructor(Sandbox: E2BSandboxClass, connection: E2BConnectionOptions, requestMs: number) {
-		this.#Sandbox = Sandbox;
+		this.#Sandbox = Sandbox as SdkSandboxClass;
 		this.#connection = connection;
 		this.#requestMs = requestMs;
 	}
@@ -376,7 +326,7 @@ class E2BHost implements MachineHost {
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<Result<{ id: string }>> {
 		const timeoutMs = Math.ceil((req.lifetimeMs ?? 0) / 1000) * 1000;
-		const options: E2BCreateOptions = {
+		const options: SandboxOpts = {
 			...this.#api(ctx.timeoutMs),
 			timeoutMs,
 			metadata: { ...req.labels, [TIMEOUT_LABEL]: String(timeoutMs) },
@@ -408,7 +358,7 @@ class E2BHost implements MachineHost {
 		const until = Date.now() + ctx.timeoutMs;
 		const left = () => Math.max(1, Math.min(this.#requestMs, until - Date.now()));
 		const paginator = this.#Sandbox.list({ ...this.#connection, requestTimeoutMs: this.#requestMs, query: { metadata: labels }, limit: PAGE });
-		const found = new Map<string, E2BListedSandbox>();
+		const found = new Map<string, SandboxInfo>();
 		for (let page = 0; paginator.hasNext; page++) {
 			if (page >= MAX_PAGES) return fail("vendor", `Sandbox.list ran past ${MAX_PAGES} pages`);
 			const items = await paginator.nextItems({ requestTimeoutMs: left(), ...(ctx.signal ? { signal: ctx.signal } : {}) });
@@ -441,7 +391,7 @@ class E2BHost implements MachineHost {
 	 * little under what is left: E2B moves a running sandbox's timer only to a longer one (index.d.mts:10250-10255), so
 	 * connecting never moves the end. The adapter connects only to a sandbox it read running: connect resumes a paused one.
 	 */
-	async #sandbox(id: string, ctx: HostCall): Promise<E2BSandbox> {
+	async #sandbox(id: string, ctx: HostCall): Promise<Sandbox> {
 		const known = this.#sandboxes.get(id);
 		if (known !== undefined) return known;
 		const info = await this.#Sandbox.getInfo(id, this.#api(ctx.timeoutMs, ctx.signal));
@@ -461,46 +411,75 @@ class E2BHost implements MachineHost {
 	}
 
 	/**
-	 * A background command as root (index.mjs:5123-5146), its line the argv quoted. No command timeout, so envd never
-	 * kills it (start.go:39-44); no retained output, so a long one keeps no copy of its stdout (index.mjs:2708-2711).
-	 * Writes go one sendStdin at a time, in order; end is closeStdin; kill kills it and lets go of its stream.
+	 * A process as root through envd's Process.Start stream, as commands.run starts one (index.mjs:5123-5146): `bash -l -c`
+	 * and the argv quoted, root by the Basic header (authenticationHeader, index.mjs:1896-1900), and envd's keepalive
+	 * every 50 s. Its stdout and stderr are the bytes each data event carries, passed on as they come: commands.run would
+	 * decode them as UTF-8 text first. No deadline on the stream (timeoutMs 0, which the Connect transport reads as none,
+	 * connect-web connect-transport.js:145-150), so envd never ends it (start.go:39-44); the start alone is bounded by
+	 * ctx. Writes go one sendStdin at a time, in order; end is closeStdin; kill SIGKILLs it and lets go of its stream.
 	 */
 	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
 		const sandbox = await this.#sandbox(id, ctx);
 		const out = feed();
 		const err = feed();
 		const requestTimeoutMs = this.#requestMs;
-		const handle = await sandbox.commands.run(shellLine(argv), {
-			background: true,
-			stdin,
-			user: "root",
-			timeoutMs: 0,
-			requestTimeoutMs: ctx.timeoutMs,
-			retainOutput: false,
-			onStdout: (data) => out.push(new Uint8Array(Buffer.from(data, "utf8"))),
-			onStderr: (data) => err.push(new Uint8Array(Buffer.from(data, "utf8"))),
-		});
-		const exited = handle.wait().then(
-			(done) => done.exitCode,
-			(error: unknown) => {
-				const code = (error as Partial<E2BCommandResult> | null)?.exitCode;
-				return typeof code === "number" ? code : -1;
-			},
-		);
-		void exited.then(() => {
+		const stream = new AbortController();
+		const events = (sandbox.commands as unknown as { rpc: ProcessRpc }).rpc.start(
+			{ process: { cmd: "/bin/bash", args: ["-l", "-c", shellLine(argv)], envs: {} }, stdin },
+			{ headers: { Authorization: ROOT, [KEEPALIVE_HEADER]: KEEPALIVE_S }, signal: stream.signal, timeoutMs: 0 },
+		)[Symbol.asyncIterator]();
+		// The start, within ctx: a stream that gives no start event in time, or the caller's abort, is let go of.
+		const startAbort = () => stream.abort(ctx.signal?.reason);
+		ctx.signal?.addEventListener("abort", startAbort, { once: true });
+		const startTimer = setTimeout(() => stream.abort(), ctx.timeoutMs);
+		let pid: number;
+		try {
+			const first = await events.next();
+			const event = first.done ? undefined : first.value.event?.event;
+			if (event?.case !== "start") throw new Error(`envd's process stream began with ${event?.case ?? "nothing"}, not its start`);
+			pid = event.value.pid;
+		} catch (error) {
+			const why = stream.signal.aborted ? (ctx.signal?.aborted ? "AbortError" : "TimeoutError") : undefined;
+			stream.abort();
+			if (why === undefined) throw error;
+			throw Object.assign(new Error(why === "AbortError" ? "the exec was aborted before envd started it" : `envd did not start the process within ${ctx.timeoutMs / 1000} s`), { name: why });
+		} finally {
+			clearTimeout(startTimer);
+			ctx.signal?.removeEventListener("abort", startAbort);
+		}
+		const exited = (async () => {
+			let code = -1;
+			try {
+				for (;;) {
+					const next = await events.next();
+					if (next.done) break;
+					const event = next.value.event?.event;
+					if (event?.case === "data") {
+						const { output } = event.value;
+						if (output.case === "stdout") out.push(output.value);
+						else if (output.case === "stderr") err.push(output.value);
+					} else if (event?.case === "end") {
+						code = event.value.exitCode;
+						break;
+					}
+				}
+			} catch {
+				// A stream that broke, or one kill let go of: no exit code was read.
+			}
 			out.end();
 			err.end();
-			void handle.disconnect().catch(() => {});
-		});
+			stream.abort();
+			return code;
+		})();
 		return ok({
 			stdout: out.iterable,
 			stderr: err.iterable,
-			write: (bytes) => sandbox.commands.sendStdin(handle.pid, bytes, { requestTimeoutMs }),
-			end: () => sandbox.commands.closeStdin(handle.pid, { requestTimeoutMs }),
+			write: (bytes) => sandbox.commands.sendStdin(pid, bytes, { requestTimeoutMs }),
+			end: () => sandbox.commands.closeStdin(pid, { requestTimeoutMs }),
 			wait: () => exited,
 			kill: async () => {
-				await handle.kill().catch(() => false);
-				await handle.disconnect().catch(() => {});
+				await sandbox.commands.kill(pid, { requestTimeoutMs }).catch(() => false);
+				stream.abort();
 				out.end();
 				err.end();
 			},
@@ -572,6 +551,8 @@ export class E2BProvider extends HostedProvider {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 h (${PRO_MAX_MS} ms), E2B Pro's longest sandbox; Hobby's is 1 h`);
 		}
 		const requestMs = rest.timeouts?.requestMs ?? DEFAULT_REQUEST_MS;
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, label: "E2B", kind, maxLifetimeMs });
+		// E2B Desktop's template has xfwm4, which its own desktop runs: the apps an agent opens are framed and focused.
+		const desktop = { windowManager: WINDOW_MANAGER, ...rest.desktop };
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, desktop, label: "E2B", kind, maxLifetimeMs });
 	}
 }

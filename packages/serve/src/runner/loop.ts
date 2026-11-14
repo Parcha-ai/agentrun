@@ -13,7 +13,7 @@
 // Harness closed, so nothing moves the call on; the next claim's recovery reruns it from the start, and the gate finds
 // the answer. A lost claim or a shutdown seals the journal and ends the loop interrupted, writing nothing more, so the
 // next claim resumes where the journal stands.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { type CommitResult, type ConversationId, type EntryRecord, ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { KINDS } from "./journal-kinds.js";
@@ -37,8 +37,16 @@ export const quiet: KernelHooks = { beforeIntent: async () => {}, beforeResult: 
 export const CLOSE_MS = 2_000;
 /** How long a person's stop waits for the turn to settle, by default. */
 export const STOP_SETTLE_MS = 30_000;
-/** The most a cut run's end-of-run step (a store read), or the end's patch, may take before the end is written without it. */
+/** The most a cut run's end-of-run step (a store read) may take before the end is written without it. */
 export const CUT_STEP_MS = 2_000;
+/** The most the end's patch (the run's cost and metrics, read from its journal and the store) may take before the end is
+ *  written without them. Those reads queue behind every other run's on a busy store (eight runs ending at once took over
+ *  2 s), and an end written without them leaves the run's cost and path unknown for good: so it waits as long as a
+ *  stalled store, never a busy one, would hold it. Past it, the end says both are unknown (END_PATCH_UNKNOWN). */
+export const END_PATCH_MS = 30_000;
+/** What an end whose patch was late or failed writes: its cost and metrics unknown (null), never left as an earlier end
+ *  of the run stored them, never read as a run that cost $0 by the agent's own path. */
+export const END_PATCH_UNKNOWN = { costUsd: null, metrics: null } as const;
 
 /** Where a commit's batches hold what an expectation waits for: the batch's index and the matched record's id. */
 type Matched = { readonly index: number; readonly id: number };
@@ -185,6 +193,17 @@ export function cutLast(entries: readonly EntryRecord[]): string | undefined {
   }
   const message = (last as { model?: { stopReason?: string; usage?: { output?: number } }[] } | undefined)?.model?.[0];
   return message?.stopReason === PI_STOP.length ? cutAtLimit(message.usage?.output) : undefined;
+}
+
+/** The text of the answer the run would end on (cutLast's newest model answer: the root's last pi.assistant, its text
+ *  blocks joined as the Timeline joins them, or a CLI record's last model message), "" when it said none: what the output
+ *  contract's retry checks against the agent's output schema (adapter-loop.ts). */
+export function lastAnswerText(entries: readonly EntryRecord[]): string {
+  const last = [...entries].reverse().find((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
+  if (last?.kind === KINDS.message) return String((last.data as { text?: unknown }).text ?? "");
+  const content = (last as { model?: { content?: unknown }[] } | undefined)?.model?.[0]?.content;
+  if (typeof content === "string") return content;
+  return Array.isArray(content) ? content.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text as string).join("\n") : "";
 }
 
 /** A tool result pi wrote for a call it cut off at its restart limit, as its message, if any. */

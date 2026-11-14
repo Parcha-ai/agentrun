@@ -82,8 +82,20 @@ final class MacTests: XCTestCase {
 		for role in Roles.bySubrole.values { XCTAssertTrue(uiRoles.contains(role), role) }
 	}
 
+	func testTitleBarButtonsAreNamedFromTheirSubrole() {
+		XCTAssertEqual(Roles.name(title: nil, description: nil, subrole: "AXCloseButton"), "Close")
+		XCTAssertEqual(Roles.name(title: nil, description: nil, subrole: "AXMinimizeButton"), "Minimize")
+		XCTAssertEqual(Roles.name(title: nil, description: nil, subrole: "AXZoomButton"), "Zoom")
+		XCTAssertEqual(Roles.name(title: nil, description: nil, subrole: "AXFullScreenButton"), "Full Screen")
+		// A title or a description the app gave wins; any other subrole gives no name.
+		XCTAssertEqual(Roles.name(title: "Done", description: "finish", subrole: "AXCloseButton"), "Done")
+		XCTAssertEqual(Roles.name(title: nil, description: "close tab", subrole: "AXCloseButton"), "close tab")
+		XCTAssertNil(Roles.name(title: nil, description: nil, subrole: "AXSearchField"))
+		XCTAssertNil(Roles.name(title: nil, description: nil, subrole: nil))
+	}
+
 	func testHelloSaysEveryFeatureWithAReason() throws {
-		let hello = MacPlatform.driver().hello()
+		let hello = MacPlatform.driver(.local).hello()
 		XCTAssertEqual(hello.os, "macos")
 		XCTAssertNotNil(hello.screen, "the runner's Aqua session has a display")
 		let features = try XCTUnwrap(hello.features)
@@ -120,7 +132,7 @@ final class MacTests: XCTestCase {
 	func testObserveSaysWhatItCannotSee() async throws {
 		let platform = MacPlatform.make()
 		do {
-			let r = try await MacPlatform.driver().ui.observe(UiObserveParams())
+			let r = try await MacPlatform.driver(.local).ui.observe(UiObserveParams())
 			print("observe: \(r.app.id) window \(r.window.id), \(r.nodes.count) nodes, image \(r.image.map { "\($0.width)x\($0.height)" } ?? "none"), empty \(r.empty ?? "-")")
 			if !platform.accessibility.feature.isOn {
 				XCTAssertEqual(r.nodes, [])
@@ -136,7 +148,7 @@ final class MacTests: XCTestCase {
 	}
 
 	func testAppsListHasTheFinder() {
-		let list = MacPlatform.driver().apps()
+		let list = MacPlatform.driver(.local).apps()
 		XCTAssertTrue(list.apps.contains { $0.id == "com.apple.finder" }, "\(list.apps.map(\.id))")
 	}
 

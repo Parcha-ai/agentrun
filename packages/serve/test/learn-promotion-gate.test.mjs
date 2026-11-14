@@ -62,8 +62,9 @@ test("20 graded runs it served: its guard refit to the cheapest threshold within
   const refit = records.at(-1);
   assert.deepEqual({ decided: refit.decided, source: refit.source, digest: refit.digest, from: refit.refit.from, guards: refit.refit.guards, commit: refit.commit }, { decided: "promote", source: "refit", digest: workflowDigest({ workflow: commits[0].files[0].text }), from: digest, guards: [{ node: "answer", was: 0.5, threshold: 0.7 }], commit: "commit-1" }, "the refit's record names the learning commit its text landed as");
   assert.equal(records.filter((one) => one.digest === digest).at(-1).checked, 10 + REFIT_EVERY, "checked through its newest grade's seq: 10 by hand, then the 20 it served");
-  // The same 20 again: not checked twice.
-  assert.equal(await gate({ name: "answer", workflow: text }, digest), true);
+  // The same 20 again: not checked twice. The refit is the champion now: the revision it was fit from never serves again
+  // (the refit's text serves from its commit; this store reads none, so the agent takes the run).
+  assert.equal(await gate({ name: "answer", workflow: text }, digest), false);
   assert.equal(commits.length, 1);
 });
 
@@ -247,4 +248,52 @@ test("an interrupted launch is recovered: a later claim creates the reserved run
   for (const id of created) assert.deepEqual(launches.get(id).replay, { of: `graded-${id.at(-1)}`, workflow: "answer", digest }, "on the input the record names for it");
   assert.equal((await promotionsOf(settings, "a")).at(-1).decided, "replaying");
   assert.ok(!logs.some((line) => line.includes("could not be read")), logs.join("\n"));
+});
+
+// Review on #2644 r5 (older workflows still answer): who serves is the champion, read at each run's claim (championOf),
+// never a digest's own old record. A run queued on revision A (its seed holds A) and claimed after B was promoted is
+// served by B; once B is held (its graded runs), by the agent. A run already executing on A (an earlier claim of it
+// served or handed back with A, its WORKFLOW_FIRST entry) keeps A.
+async function twoChampionsOf({ held = false, kept } = {}) {
+  const kv = new Map();
+  const settings = {
+    get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
+    putIfAbsent: async (key, value) => (kv.has(key) ? kv.get(key) : (kv.set(key, structuredClone(value)), value)),
+    replaceIf: async (key, was, value) => (JSON.stringify(kv.get(key)) === JSON.stringify(was) ? (kv.set(key, structuredClone(value)), true) : false),
+  };
+  const a = { name: "answer", workflow: flowOf(undefined) };
+  const b = { name: "answer", workflow: a.workflow.replace("Answer.", "Answer, revision B.") };
+  const [da, db] = [workflowDigest(a), workflowDigest(b)];
+  const at = (n) => new Date(n * 1000).toISOString();
+  await recordPromotion(settings, "a", { workflow: "answer", digest: da, at: at(1), decided: "promote", source: "dry_run", reason: "promoted", commit: "commit-a" }, () => true);
+  await recordPromotion(settings, "a", { workflow: "answer", digest: db, at: at(2), decided: "promote", source: "replay", reason: "promoted", commit: "commit-b" }, () => true);
+  if (held) await recordPromotion(settings, "a", { workflow: "answer", digest: db, at: at(3), decided: "hold", source: "graded", reason: "held on its graded runs" }, () => true);
+  const texts = new Map([["commit-a", a], ["commit-b", b]]);
+  const logs = [];
+  const gate = promotionGate({ store: { settings, runs: { get: async () => undefined } }, agentId: "a", runId: "queued", revisionId: "rev", launch: { input: { question: "Q" }, title: "", place: { mode: "runner" }, learning: LEARNING }, context: ctx, log: (line) => logs.push(line),
+    champion: async (name, commit) => (texts.get(commit)?.name === name ? texts.get(commit) : undefined), ...(kept ? { kept: async () => kept } : {}) });
+  return { gate, a, b, da, db, logs };
+}
+
+test("A promoted, then B: a run queued on A and claimed now is served by B, the champion", async () => {
+  const { gate, a, b, da, logs } = await twoChampionsOf();
+  const got = await gate(a, da);
+  assert.equal(got?.workflow, b.workflow, `B serves, never A's old promote record: ${logs.join("\n")}`);
+  assert.equal(await gate.champion(a, da), b, "the champion alone, for a revision that does not take the input: B too");
+});
+
+test("A promoted, then B, then B held: a run queued on A is the agent's, never A's", async () => {
+  const { gate, a, da, logs } = await twoChampionsOf({ held: true });
+  assert.equal(await gate(a, da), undefined, `the champion is held: the agent takes it: ${logs.join("\n")}`);
+  assert.equal(await gate.champion(a, da), undefined);
+});
+
+test("a run already executing on A (an earlier claim of it served A) keeps A after B is promoted, and after B is held", async () => {
+  for (const held of [false, true]) {
+    const { gate, a, da, logs } = await twoChampionsOf({ held, kept: { workflow: "answer", digest: workflowDigest({ workflow: flowOf(undefined) }), outcome: "answered" } });
+    assert.equal(await gate(a, da), a, `it keeps the revision it started on: ${logs.join("\n")}`);
+  }
+  // Executing on B (it served B's text in place of a laid A), re-claimed once B is held: still B.
+  const { gate, a, b, da, db, logs } = await twoChampionsOf({ held: true, kept: { workflow: "answer", digest: workflowDigest({ workflow: flowOf(undefined).replace("Answer.", "Answer, revision B.") }), outcome: "handed_back" } });
+  assert.equal((await gate(a, da))?.workflow, b.workflow, `${db}: ${logs.join("\n")}`);
 });

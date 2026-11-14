@@ -195,6 +195,11 @@ test("a background shell call keeps its own name in the grading record, as the g
   const record = { answer: "", calls: callsOf(rows, "pi", ["crm"]), mcpCalls: [], files: [] };
   assert.equal(gradeDeterministic({ file: "bg.md", type: "tool_used", tools: ["bash_background"], expect: "called" }, record, []).pass, true);
   assert.equal(gradeDeterministic({ file: "sh.md", type: "tool_used", tools: ["bash"], count: 1 }, record, []).pass, true, "bash counts its own call alone");
+  // A need an owner's saved server filled under another name (my-crm for crm): its calls are graded by the package's name.
+  const owned = [{ kind: "tool_use", tool_use_id: "5", tool_name: "mcp__my-crm__get_contact", tool_input_preview: "{}" }];
+  const renamed = { answer: "", calls: callsOf(owned, "claude-agent", ["my-crm"], { "my-crm": "crm" }), mcpCalls: [], files: [] };
+  assert.deepEqual(renamed.calls.map((c) => c.tool), ["mcp:crm/get_contact"]);
+  assert.equal(gradeDeterministic({ file: "got.md", type: "tool_used", tools: ["mcp:crm/get_contact"], expect: "called" }, renamed, []).pass, true);
 });
 
 test("the eval's exit code is 1 when any case failed, however many passed beside it, and 0 only when every case passed", () => {
@@ -359,6 +364,22 @@ test("on another server, a package that differs in what runs (budget, effort, to
   assert.match(report.cases[0].error, /the server's evalpkg package is not this folder's: it differs in budget, effort, tools/);
 });
 
+test("on another server, a need the owner's server fills under another name is this folder's package still: its text is compared on that server's names", { timeout: 300_000 }, async (t) => {
+  const shipped = join(await scratch(t), "templates");
+  const dir = join(shipped, "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  writeFileSync(join(dir, "agent.md"), readFileSync(join(dir, "agent.md"), "utf8").replace("You answer for", "Read a contact with mcp:crm/get_contact. You answer for"));
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: shipped });
+  const owner = await startFake("my-crm", readCases(PKG, ["mcp-match"]).cases[0].mcp.crm);
+  t.after(() => owner.close());
+  assert.equal((await api("PUT", "/settings/mcp-servers/my-crm", { url: owner.url, auth: { type: "none" }, toolkit: "crm" })).status, 200);
+  const report = await evalTemplate({ dir, cases: ["learned"], server: { baseUrl, token } });
+  assert.equal(report.cases[0].error, undefined, report.cases[0].error);
+  assert.equal(report.cases[0].runs.length, 1, JSON.stringify(report.cases[0]));
+  const agent = (await api("GET", `/agents/${report.cases[0].runs[0].agent_id}`)).body;
+  assert.match(agent.definition.instructions, /mcp:my-crm\/get_contact/, "apply put the need on the owner's server");
+});
+
 test("a stop asked after the last run is waited for still stops the eval: no report", { timeout: 300_000 }, async () => {
   const stop = new AbortController();
   // The line for run 1 is told once it is waited for and graded: the last run, so nothing is left to wait on.
@@ -509,7 +530,7 @@ test("a fake search reads /.../ as literal text, so a pattern like /(a+)+$/ answ
   assert.equal(searched(search, "NOT path:docs load"), "2 matching lines in 2 files\nsrc/load.ts:1: load(1);\ntests/load.test.ts:1: load(2);", "the NOT is spent on the qualifier: load is still wanted");
 });
 
-test("the answer's schema keeps the agent's file limits when it lives under evals/: it ships beside each SKILL.md", async (t) => {
+test("the answer's schema keeps the agent's file limits when it lives under evals/: it is given to the agent", async (t) => {
   const dir = join(await scratch(t), "evalpkg");
   cpSync(PKG, dir, { recursive: true });
   mkdirSync(join(dir, "skills/answer"), { recursive: true });
@@ -518,10 +539,12 @@ test("the answer's schema keeps the agent's file limits when it lives under eval
   const manifest = readFileSync(join(dir, "agent.md"), "utf8").replace("output: { schema: answer.schema.json }", "output: { schema: evals/mcp-match/fixtures/answer.schema.json }");
   writeFileSync(join(dir, "agent.md"), manifest);
   writeFileSync(join(dir, "evals/mcp-match/fixtures/answer.schema.json"), schema);
-  assert.equal(readPackage(dir).skills["answer/answer.schema.json"], schema, "a small schema under evals/ ships beside the SKILL.md");
+  const small = readPackage(dir);
+  assert.deepEqual(small.outputSchema, JSON.parse(schema), "a small schema under evals/ is the agent's output schema");
+  assert.equal(small.skills["answer/answer.schema.json"], undefined, "never copied beside the SKILL.md: the runner gives the model the schema");
   const big = JSON.stringify({ ...JSON.parse(schema), description: "x".repeat(MAX_FILE_BYTES + 1024) });
   writeFileSync(join(dir, "evals/mcp-match/fixtures/answer.schema.json"), big);
-  assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /evals\/mcp-match\/fixtures\/answer\.schema\.json: is over \d+ bytes, a package file's limit: the answer's schema ships beside each SKILL\.md/.test(e.message), "past the agent's file limit, under evals/ too");
+  assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /evals\/mcp-match\/fixtures\/answer\.schema\.json: is over \d+ bytes, a package file's limit: the answer's schema is given to the agent/.test(e.message), "past the agent's file limit, under evals/ too");
   writeFileSync(join(dir, "evals/mcp-match/fixtures/answer.schema.json"), schema);
   // The agent's own files one byte short of the schema's room: each within its limit, and together within POST /v2/agents'.
   let room = MAX_PACKAGE_BYTES - Buffer.byteLength(schema) + 1 - ["agent.md", "answer.schema.json", "skills/answer/SKILL.md"].reduce((sum, path) => sum + statSync(join(dir, path)).size, 0);

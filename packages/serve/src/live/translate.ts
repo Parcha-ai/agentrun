@@ -12,7 +12,7 @@
 // Every event comes from one commit's own writes or entries (journal.commitsAfter returns each commit's own task,
 // submission and document writes, pi_commit_writes), never inferred: a call's start is the commit where its task runs, a
 // submission's placement the commit that placed it. A call that never ran ends with no start, as the door says it.
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { AgentDoc, type EntryRecord, type SubmissionRecord, UsageDoc } from "@earendil-works/pi-durable";
 import { HOST_PHASE, RUN_RESUMED } from "../timeline/index.js";
 import { inReflect, REFLECT_LABEL, type ReflectRange, reflectRanges } from "../runner/end-of-run.js";

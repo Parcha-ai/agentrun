@@ -30,7 +30,7 @@ const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
 export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
   // Where it ran, as its start resolved it.
   const ranIn = runPlaceWords(run.place);
-  const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
+  const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review, run.computer);
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
   // A capped run that has not ended, agentic or workflow, takes a raise here too, so a working one is raised before it pauses.

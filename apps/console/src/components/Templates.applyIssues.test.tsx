@@ -4,9 +4,10 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { TemplatesPage } from "./Templates";
 import { ClientError } from "@/lib/client";
 import type { TemplateView } from "@/lib/v2";
-import { paramIssueWords, paramValid } from "@/lib/templatePackages";
+import { paramIssueWords, parameterField, paramValid } from "@/lib/templatePackages";
 
 type Parameter = TemplateView["parameters"][string];
+const fieldOf = (p: Parameter) => parameterField(p);
 import { picker, pick } from "@/test/picker";
 
 // A template's Apply form names a field by the label it shows, never its raw path ("parameters.risk_appetite"), and an
@@ -20,14 +21,15 @@ beforeAll(() => {
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const KYB: TemplateView = {
+  id: "kyb", bundled: true, source: null, sha: null, publisher: null,
   name: "kyb", display_name: "KYB", version: "1.0.0", description: "Checks a business.", license: "MIT", author: null, repository: null, output: null,
-  harness: ["pi"], model: { tier: "balanced" }, effort: null, tools: null, tool_policy: null, computer: null, computer_here: null, checkout: null, mcp: [],
+  harness: ["pi"], model: { tier: "balanced" }, effort: null, tools: null, tool_policy: null, computer: null, computer_here: null, checkout: null, mcp: [], input_schema: null,
   parameters: {
     risk_appetite: { type: "string", required: true, description: "How much risk to accept", enum: ["low", "medium", "high"] },
     company: { type: "string", required: true, description: "The company's legal name" },
     depth: { type: "integer", required: false, description: "How many sources to read" },
   },
-  secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [],
+  secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [], category: null, tags: [], examples: [],
 };
 const refusal = (fields: { field: string; reason: string; message: string }[]) => Object.assign(new ClientError(422, "input_invalid", "The template's input is not valid."), { fields });
 
@@ -84,13 +86,13 @@ describe("a template's Apply form, a refused parameter", () => {
   });
 
   it("an integer's issue goes by the number Apply sends: 3.0 and 1e2 are whole, 2^53 is not a safe one", () => {
-    const depth = KYB.parameters.depth;
+    const depth = fieldOf(KYB.parameters.depth);
     expect(["3", "3.0", "1e2", " 4 "].map((text) => paramValid(depth, text))).toEqual([true, true, true, true]);
     expect(["2.5", "abc", "9007199254740992", " "].map((text) => paramValid(depth, text))).toEqual([false, false, false, false]);
   });
 
   it("a boolean held to its enum names the value it takes, and an unticked box stays refused", () => {
-    const agreed = { type: "boolean", required: true, description: "Agree to the terms", enum: [true] } as Parameter;
+    const agreed = fieldOf({ type: "boolean", required: true, description: "Agree to the terms", enum: [true] });
     expect(paramIssueWords({ field: "parameters.agreed", reason: "not_an_option", message: "parameters.agreed is not an option" }, "agreed", agreed)).toBe("agreed takes one of: true.");
     expect([paramValid(agreed, "false"), paramValid(agreed, "true")]).toEqual([false, true]);
   });

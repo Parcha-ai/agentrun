@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-browser",
-  "version": "0.1.0-beta.36",
+  "version": "0.1.0-beta.37",
   "description": "Your agent gets its own browser, and you can take over and hand it back.",
   "keywords": [
     "pi-durable",
@@ -78,8 +78,8 @@
     "zod": "~4.6.6"
   },
   "peerDependencies": {
-    "@earendil-works/chord": "1.5.0",
-    "@earendil-works/pi-durable": "1.5.0"
+    "@earendil-works/chord": "1.5.2",
+    "@earendil-works/pi-durable": "1.5.2"
   },
   "peerDependenciesMeta": {
     "@earendil-works/chord": {
@@ -90,9 +90,9 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/chord": "1.5.0",
-    "@earendil-works/pi-ai": "1.5.0",
-    "@earendil-works/pi-durable": "1.5.0"
+    "@earendil-works/chord": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-durable": "1.5.2"
   },
   "repository": {
     "type": "git",

@@ -196,8 +196,9 @@ interface StoreRun {
   /** An escalated workflow run's review, as its end kept it (EndData.review); undefined when it kept none. */
   readonly review?: EndData["review"];
   /** An ended agentic run's structured answer against its revision's output schema (definition.output_schema), read off
-   *  its final answer as the journal keeps it, whole and uncut (answer-json.ts structuredAnswer): undefined when the
-   *  agent has no schema or the run has not ended. Cut of held values only when served (redactedOutput). */
+   *  its final answer as the journal keeps it, whole and uncut (answer-json.ts structuredAnswer), or why it has none (a
+   *  run with no final answer among them: result.output_error): undefined when the agent has no schema or the run has not
+   *  ended. Cut of held values only when served (redactedOutput). */
   readonly structured: { value: unknown } | { why: string } | undefined;
   /** What the run's decisions booked (their own session, metrics.ts bookedSpend), undefined when it booked none: the run's cost
    *  adds it to its usage row's, as the timeline adds their receipts. */
@@ -253,11 +254,12 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // Its structured answer, from the final answer as the journal keeps it: never the served text, which a held value
   // (a number among them) or a long answer's cut would have changed, so a block that meets the schema reads as written.
   const rawAnswer = outputSchema !== undefined && terminal ? answerOf(await runTimeline(store, runId, context, { settled: true, caps: { text: Number.POSITIVE_INFINITY } })) : null;
-  const structured = rawAnswer ? structuredAnswer(rawAnswer, outputSchema) : undefined;
+  const structured = outputSchema !== undefined && terminal ? (rawAnswer !== null ? structuredAnswer(rawAnswer, outputSchema) : { why: "the run gave no final answer" }) : undefined;
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
   // Its final answer whole (store-reads/journal.ts wholeAnswers), as main served a run's answer: a row's cut is no answer's.
-  const timelineOptions = { settled: terminal, redact: (text: string) => redacted(text, values) };
+  // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far.
+  const timelineOptions = { settled: terminal, ended: terminal, redact: (text: string) => redacted(text, values) };
   const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions), timelineOptions, wholeAnswerFor(values)));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
@@ -334,7 +336,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // A run that waits on its person (a parked question) and has just been answered reads as going on from the answer's
   // row, never input_required again until its runner places it, as main's run read once the message was submitted.
   // Read only for a run not working now (a working run reads working anyway), so a run list adds no read for those; and
-  // only a message that may answer a person counts (a trigger's, answers: false, never does, and is refused while it waits).
+  // only a message that may answer a person counts (a trigger's, answers: false, never does: it waits, untaken, for a turn of its own after the answer).
   // A run parked at its cap counts its raises not taken yet the same way: raised, it reads as going on from the raise's
   // row, never input_required again until its runner takes it (and parks it anew if the raise falls short).
   const pending = (command: { kind: string; takenAt: number | null; refused: string | null; body: unknown }) =>
@@ -447,7 +449,10 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     const whole = (await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: true, caps: { text: Number.POSITIVE_INFINITY } })).find((r) => r.id === capRow.id)?.text;
     if (typeof whole === "string") capAnswer = wholeAnswerFor(values).serve(whole);
   }
-  const result = status === "completed" ? { output: servedOutput, final_answer: servedAnswer(finalAnswer) } : overCap ? { output: null, final_answer: servedAnswer(capAnswer) } : null;
+  // Why a completed agentic run with an output schema has no output (its answer still missed the schema after the runner's
+  // one retry), in shown words: a JSON parse error can quote the answer.
+  const outputError = row.kind === "agentic" && !unshown && structured && "why" in structured ? { output_error: shownWords(structured.why) } : {};
+  const result = status === "completed" ? { output: servedOutput, final_answer: servedAnswer(finalAnswer), ...outputError } : overCap ? { output: null, final_answer: servedAnswer(capAnswer) } : null;
   // A failed run's reason in the model's own words when the store holds them: the last model-error row's text (a provider's
   // refusal, rendered from its pi.assistant error entry), else the run row's summary (the runner's generic "gave no answer").
   // It reads as the run's Timeline error row does (run-cut.ts runErrorWordsOf, main's errorWords): a refused key in plain

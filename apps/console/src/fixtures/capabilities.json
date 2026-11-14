@@ -90,7 +90,9 @@
         "calls": false,
         "available": true,
         "harnesses": [
-          "pi"
+          "pi",
+          "claude-agent",
+          "codex"
         ]
       },
       {
