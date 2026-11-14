@@ -54,7 +54,7 @@ async function mountedRun(t, { existing = [] } = {}) {
   const { store, dir: dataDir } = await storeOn(t);
   const sealKey = randomBytes(32);
   await putSealedKey(store, sealKey, "archil.api_key", "fake-test-key-archil-account-0001");
-  await putSealedKey(store, sealKey, "DAYTONA_API_KEY", "fake-test-key-daytona-0001");
+  await putSealedKey(store, sealKey, "E2B_API_KEY", "fake-test-key-e2b-0001");
   const scratch = join(tmp, "scratch");
   mkdirSync(scratch);
 
@@ -77,8 +77,8 @@ async function mountedRun(t, { existing = [] } = {}) {
     attach: async () => ({ ok: true, value: { id: "c1", name: "c1", spec: { image: "i", user: "1000:1000", network: "none" } } }),
     release: async () => ({ ok: true, value: undefined }),
   };
-  const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider: "daytona" } }, store, {
-    mode: 2, kinds: KINDS, sealKey, providers: { daytona: () => provider },
+  const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider: "e2b" } }, store, {
+    mode: 2, kinds: KINDS, sealKey, providers: { e2b: () => provider },
     spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }),
     workspace, check: { readBackOf, epoch: 3 }, revokeMount: () => claim.revoke(),
   });

@@ -215,7 +215,7 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	const computerdModule = computerd ? fileURLToPath(new URL("./fake-computerd.mjs", import.meta.url)) : null;
 	const config = JSON.stringify({ computerd: computerdModule, dir, log, state, volumeState, imageState, volumeRoots, lateRun, sticky, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
 		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ServerVersion: "29.0.0", ...info },
-		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys"] } });
+		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys", "apps"] } });
 	writeFileSync(
 		program,
 		`#!${process.execPath}

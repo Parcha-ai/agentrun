@@ -672,10 +672,9 @@ computer is made with the GPUs asked.
   `types: ["H100"]`, `max: 1`); another type or count needs a snapshot of its own, so it is refused. A GPU sandbox is
   made from that snapshot, with its 16 vCPUs, 100 GiB of memory and 400 GiB of disk, in region `earth`. Stopping it
   deletes it: it has no pause and no snapshot, so nothing on it outlives the run. A Daytona GPU may be preempted, so a
-  run on one can be cut short. The Daytona org needs GPU credits. It takes no mount (`mounts: []`: the snapshot's user
-  is not root and has no Archil client), so it can't hold the run's folder from Archil: in Mode 2 this server refuses a
-  Daytona sandbox with a `gpu`, and `GET /v2/computers` says why in Daytona's `gpu.why`. In Mode 1 a sandbox runs on
-  Docker only, so a Daytona GPU sandbox runs on neither mode's server today.
+  run on one can be cut short. The Daytona org needs GPU credits. No Daytona sandbox takes an Archil mount, with a GPU
+  or without (Archil's client hangs on its sandboxes), so it can't hold the run's folder: Mode 2 refuses it, and in
+  Mode 1 a sandbox runs on Docker only, so a Daytona sandbox runs on neither mode's server today.
 - **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
   proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
 
@@ -739,9 +738,9 @@ passes the binding's conformance cases (below) needs no change here.
   region and that region's S3 URL (and an exec image pinned by digest, if you want one other than serve's default);
   `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
   because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
-  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal, E2B or Agent37 sandbox mounts
+  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Modal, E2B or Agent37 sandbox mounts
   the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
-  it cannot mount the disk.
+  it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes.
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
   `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
@@ -797,20 +796,17 @@ owner's.
 - **Later, narrower tokens.** Archil's tokens reach a whole disk; nothing narrower exists today. If Archil ships
   path-scoped tokens, a run's token narrows from its disk to its own folder with no other change.
 
-**A Daytona computer's snapshot.** The mount runs as root through the image's root helper and its pinned archil client,
-so a Daytona computer that mounts the run's folder must start from a snapshot of the computer package's
-`box/Dockerfile`; Daytona's default snapshot, whose user is not root, is refused before anything mounts. Build one in
-the organization of `DAYTONA_API_KEY` with Daytona's Python SDK (`pip install daytona`), which prints its name, a hash
-of the recipe:
+**A Daytona computer's snapshot.** `AGENTRUN_DAYTONA_SNAPSHOT` names the snapshot (its id or name) every Daytona
+computer is made from, as `AGENTRUN_DOCKER_IMAGE` names Docker's image; unset, it is Daytona's default snapshot. One of
+the computer package's `box/Dockerfile` is built in the organization of `DAYTONA_API_KEY` with Daytona's Python SDK
+(`pip install daytona`), which prints its name, a hash of the recipe:
 
 ```sh
 DAYTONA_API_KEY=... python3 packages/computer/box/build-daytona.py   # prints snapshot=agentrun-archil-<12 hex>
 ```
 
-and name it in the server's environment, `AGENTRUN_DAYTONA_SNAPSHOT=agentrun-archil-<12 hex>` (the id or name of any
-Daytona snapshot), as `AGENTRUN_DOCKER_IMAGE` names Docker's image. Every Daytona computer is then made from it. Unset,
-it is Daytona's default snapshot, as before. A changed recipe is a new name, so build again after an upgrade that
-changes `box/`. A Daytona [box](#sandbox) never reads it.
+A Daytona computer takes no Archil mount, so this server never holds a run's folder on one (see Mode 2 above). A
+Daytona [box](#sandbox) never reads it.
 
 A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
 it: a sandbox always, and a desktop whose provider mounts the mode's folder (Docker's in Mode 1, E2B's in Mode 2). A

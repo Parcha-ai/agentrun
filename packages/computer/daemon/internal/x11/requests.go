@@ -366,12 +366,7 @@ func (c *Conn) MapWindow(id uint32) error {
 	if _, err := c.buffer(opMapWindow, 0, le.AppendUint32(nil, id), noReply); err != nil {
 		return err
 	}
-	body := le.AppendUint32(nil, id)
-	body = le.AppendUint16(body, 0x40) // stack-mode
-	body = append(body, 0, 0)
-	body = le.AppendUint32(body, 0) // Above
-	_, err := c.buffer(opConfigureWindow, 0, body, noReply)
-	return err
+	return c.Raise(id)
 }
 
 // CreateGC buffers a graphics context on the window.
