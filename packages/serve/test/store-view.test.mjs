@@ -615,8 +615,7 @@ test("a run's view reads its whole answer once per held value set: a second view
   const { store } = await storeOn(t);
   await agent(store);
   const answer = `${"p".repeat(3000)} ${KEY} the end`;
-  // No input text: the view's input is read each time, as its output is, so the passes counted are the answer's alone.
-  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: {}, title: "Polled", place: { mode: "runner" } } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Say it." }, title: "Polled", place: { mode: "runner" } } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   await conversation(store, claim, { ask: "Say it.", answer, usd: 0.01 });
   await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Polled.", costUsd: 0.01, endedAt: T0 + 1_000 });
