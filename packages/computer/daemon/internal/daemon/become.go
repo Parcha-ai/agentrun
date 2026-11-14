@@ -77,7 +77,7 @@ func Become(uid, gid int, home, socket string, isolation Isolation) error {
 // Isolation is what init, still root, does beyond the drop, for a remote computer whose vendor runs its own agent in it
 // (Daytona's toolbox, E2B's envd), one that runs commands as root or with sudo for whoever reaches it. With OwnNetwork,
 // Become refuses while another process holds uid (isolate.RefuseStrangers), moves init into a network namespace of
-// its own whose loopback alone is up (isolate.OwnNetwork), drops, and then refuses vsock and io_uring to every thread
+// its own whose loopback alone is up (isolate.OwnNetwork), drops, and then refuses vsock, io_uring and setns to every thread
 // (isolate.DenySockets): init and every program it starts reach their own loopback and nothing else, and a failure of
 // any step refuses to start. With StartedIn, init was started in a network namespace of its own already, inside a user
 // namespace of its own (InitInUserNamespace), and StartedIn names the network namespace the init that started it was

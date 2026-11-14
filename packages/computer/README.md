@@ -182,8 +182,8 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   kernel's release, `interfaces` (the network interfaces its network namespace holds: `["lo"]` alone under
   `--own-network`), `reached` (the targets that answered), `accepted` (the targets that accepted a TCP connection and
   sent nothing back) and `results`, each target's `protocol`, `outcome` (`refused`, `accepted` or `answered`), `bytes`
-  and `detail` in words. With `--sockets` it adds the isolation case's two listings: `sockets`, the unix sockets with a
-  path it can connect to, and `listeners`, the TCP and UDP sockets that listen in its own network namespace (TCP in
+  and `detail` in words. With `--sockets` it adds the isolation case's two listings: `sockets`, the unix sockets it can
+  connect to, by path or by abstract name (`@...`, which its network namespace holds), and `listeners`, the TCP and UDP sockets that listen in its own network namespace (TCP in
   LISTEN and UDP bound with no peer, read from `/proc/net/tcp`, `tcp6`, `udp` and `udp6`), each with its `protocol`,
   `address`, `port`, `uid`, the `owner` that holds it (`pid N (command)`, where `/proc` shows that process's
   descriptors) and `computerd` (that owner runs computerd's own program); each listing names in `incomplete` what it
@@ -1473,7 +1473,7 @@ from (the loopback block):
   root inside the sandbox.
 - So init starts with `--own-network` (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)): the
   daemon and every program it starts run in a network namespace of their own, with their loopback alone, and reach
-  neither port 2280 on the loopback nor the sandbox's own address; vsock and io_uring are refused to them; and init
+  neither port 2280 on the loopback nor the sandbox's own address; vsock, io_uring and setns are refused to them; and init
   refuses to start while another process holds their uid, so a toolbox (or a session shell of its) that runs as the
   daemon's user is refused, not shared. `capabilities().vendorAgentPorts` declares 2280, and the Core case
   isolation.vendor-agent probes it from a program of the computer's user, on both loopbacks. Init takes others' access
@@ -1782,11 +1782,17 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    whose start answers after the call gave up on it (its bound passed, or the caller aborted) is killed as it lands.
 6. A desktop's X server, `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`, starts through the daemon with
    `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
-   shared with Docker). Then xfwm4, which the template has, starts the same way on it (`dbus-run-session -- xfwm4
-   --compositor=off --sm-client-disable`, `WINDOW_MANAGER`: xfwm4 reads its settings over a session bus and exits
-   without one), so the apps an agent opens are framed and focused. It and every app `apps.launch` opens get
-   `NO_AT_BRIDGE=1`: the template has at-spi2-core, so GTK's accessibility bridge would start an at-spi bus, a
-   socket of the user's at `/work/.cache/at-spi/bus_0` that nothing of ours uses. The template has no passwd entry
+   shared with Docker). Then xfwm4, which the template has, starts the same way on it (`xfwm4 --compositor=off
+   --sm-client-disable`, `WINDOW_MANAGER`), so the apps an agent opens are framed and focused. xfwm4 reads its
+   settings over a session bus and exits without one. So it runs under `dbus-run-session`, in a user namespace (the
+   same uid) and a network namespace of its own (`unshare --user --map-current-user --net`), and its bus listens on an
+   abstract name there. A program of the computer's user reaches no socket of that bus, and joins neither namespace:
+   init refuses setns to every program. xfwm4 reaches the display by
+   its path. It and every app `apps.launch` opens get `NO_AT_BRIDGE=1`: the template has at-spi2-core, so GTK's
+   accessibility bridge would start an at-spi bus, a socket of the user's at `/work/.cache/at-spi/bus_0` that nothing
+   of ours uses. An app also gets no session bus (`DBUS_SESSION_BUS_ADDRESS=disabled:`). Given none, it would start
+   one with the template's dbus-launch, and that bus starts gnome-keyring-daemon, a socket of the user's at
+   `/work/.cache/keyring-*/control`. The template has no passwd entry
    for 2510, and a session bus closes every connection of a uid it cannot look up, so a desktop's init, still root, first names the
    user `agentrun-tool` (home the computer's, shell `/bin/sh`), as the box image does (`daemon.NameUser`). A window
    manager that ends within a second of its start fails create with its last words. Hello re-checks the
@@ -2085,7 +2091,8 @@ kernel `4.19.0-gvisor`): root has no `CAP_SYS_ADMIN`, and init made its namespac
 `create({ kind: "desktop", ... })` (serve builds the descriptor's desktop configuration so) makes a desktop: the
 adapter gives init `DISPLAY` and starts `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp` through the daemon as the tool
 user (`src/desktop.ts`), as on E2B, so the X server is one process in init's table, in its own network namespace, and
-ends with the computer; xfwm4 starts the same way once the display answers. Its default image is `agentrun-box`
+ends with the computer; xfwm4 starts the same way once the display answers, its session bus out of the user's reach, as
+on E2B. Its default image is `agentrun-box`
 (`AGENT37_BOX_TEMPLATE`): `box/Dockerfile` (the archil client, the helper, the tool user, FUSE, no sudo) plus Xvfb,
 xfwm4, and the apps E2B Desktop has that are cheap to carry (Xfce's terminal and Mousepad, Firefox ESR, xdotool),
 which the `apps` group lists and opens, built as a template of the key's own workspace by `box/build-agent37.mjs`:
