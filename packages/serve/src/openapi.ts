@@ -972,7 +972,6 @@ const TEMPLATE = closed({
   },
   category: { enum: [...CATEGORIES, null], description: "What it is for, for a list or marketplace page to file it under; display only. Null: none given." },
   tags: { type: "array", maxItems: 8, items: { type: "string", pattern: "^[a-z0-9-]{1,32}$" }, description: "Its tags, display only." },
-  examples: { type: "array", items: { type: "string" }, description: "Its examples (examples/<name>/: input.json, output.json, output.md), each checked against its input and output schemas: shown on a marketplace page, never given to the agent." },
   mcp: {
     type: "array",
     items: closed({
@@ -2472,6 +2471,13 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "While a message the run took is still open (an agentic run, working or queued): when its turn last wrote anything, a request's start included; it holds still while a tool or a model request runs, and moves as the turn writes. Null once every message has had its turn, and on a workflow run.",
       "x-agentrun-serve": "turnend/1",
     },
+    input: {
+      type: ["object", "null"],
+      additionalProperties: true,
+      description: "On the run read (GET /v2/runs/{run_id}), never a list's: the input the run was started with, whole (`content` and its typed fields, or a workflow's input), each value this server holds cut as the run's words are; what starting it again sends. Null for a run whose words are withheld.",
+      "x-agentrun-serve": "runinput/1",
+    },
+    file_ids: { type: "array", items: { type: "string" }, description: "On the run read, never a list's: the uploaded files the run was started with (RunCreate `file_ids`), in order; empty for none.", "x-agentrun-serve": "runinput/1" },
     claim: {
       type: ["object", "null"],
       additionalProperties: false,

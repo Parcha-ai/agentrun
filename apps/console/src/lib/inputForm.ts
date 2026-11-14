@@ -138,22 +138,3 @@ export function fieldIssueWords(issue: FieldIssue, key: string, f: FieldSpec): s
   if (f.array && issue.reason === "not_an_option" && f.enum?.length) return `Each line of ${label} is one of: ${f.enum.map(String).join(", ")}.`;
   return paramIssueWords(issue, key, f, label);
 }
-
-/** The typed input a run's first message carries back: the server writes it as the message (left out when there is
- *  none), a blank line, then `Input:` and the other fields as JSON in a fence longer than any run of backticks inside.
- *  Null when the message ends in no such block. */
-export function typedInputFrom(message: string): Record<string, unknown> | null {
-  const fence = /\n(`{3,})$/.exec(message)?.[1];
-  if (!fence) return null;
-  const opening = `Input:\n${fence}json\n`;
-  const at = message.lastIndexOf(opening);
-  if (at < 0 || (at > 0 && !message.slice(0, at).endsWith("\n\n"))) return null;
-  let fields: unknown;
-  try { fields = JSON.parse(message.slice(at + opening.length, message.length - fence.length - 1)); } catch { return null; }
-  if (!isObject(fields)) return null;
-  return { ...(at > 0 ? { content: message.slice(0, at - 2) } : {}), ...fields };
-}
-
-/** Whether an input_schema requires a field other than the message. */
-export const requiresFields = (schema: unknown) =>
-  isObject(schema) && Array.isArray(schema.required) && schema.required.some((k) => k !== "content");

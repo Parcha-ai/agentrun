@@ -8,6 +8,7 @@ import { CAPS, isMessageRow, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
 import { structuredAnswer } from "./answer-json.js";
+import { isObject } from "./validate.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { said } from "./learning-words.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
@@ -483,6 +484,10 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     // A withheld run's title is a short fixed line (WITHHELD_TITLE), never its stored title: the title can repeat the
     // sign-in this server can't read back to cut, so it is not served. The full withheld sentence is in error and review.
     title: unshown ? WITHHELD_TITLE : shownWords(launch?.title ?? ""),
+    // The input the run was started with, as its launch keeps it, whole (never the first message the timeline caps), cut
+    // as its output is: what "Run again" sends again. Null for a withheld run, or one whose launch holds no input object.
+    input: !unshown && isObject(launch?.input) ? redactedOutput(launch?.input, values) : null,
+    file_ids: [...(launch?.files ?? [])],
     place: launch?.place ?? { mode: "runner" },
     // The runner holding the run now, when one does (a running run with a live claim): its id, the claim's count (up one each
     // claim, carried on every write the runner makes), and when the claim runs out. Null when no runner holds the run, so a
