@@ -27,7 +27,8 @@ import { type RepoBinding, repoOf } from "./run-repo.js";
 import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
-import { AnswerTaken, ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
+import { AnswerTaken, ExternalBodyConflict, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
+import { canonical } from "./store/agent-body.js";
 import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
@@ -395,6 +396,10 @@ export interface StartDeps {
   told(error: ApiError): ApiError;
   /** Refuses a revision this host cannot run, by field (server.ts runnable). */
   runnable(revision: Revision, place: Place, options: { capped: boolean }): Promise<void>;
+  /** The revision a run starts on, its MCP tools pinned: one that grants an MCP tool and was saved with no pin (before
+   *  pins were made at save, or an inline agent's version stored then) is pinned once, at its first run (server.ts
+   *  pinFirst); any other as it is. */
+  pinFirst?(revision: Revision): Promise<Revision>;
   /** The uploaded files named by file_ids, ready to copy; throws when one is not ready (server.ts uploads.readyFiles). The
    *  copy into the run's work/ is the runner's at its claim; this only checks they are ready before the run starts. */
   readyFiles(ids: readonly unknown[]): Promise<unknown>;
@@ -546,7 +551,14 @@ export interface InlineAgent {
   readonly name: string;
   readonly description: string | null;
   readonly revision: NewRevision & { readonly note?: string };
+  /** The revision its version already has here (Agents.externalRevision), when this is not the version's first run: the
+   *  run starts on it, as a run of a stored agent starts on its revision. */
+  readonly stored?: RevisionRow;
 }
+
+/** 409 external_body_conflict: a version that already ran here, given with a different definition. */
+const bodyConflict = ({ source, kind, id, version }: InlineAgent["external"]): ApiError =>
+  new ApiError("external_body_conflict", `${source} ${kind} ${id} version ${version} already ran here with a different definition. A version's definition never changes here: publish a new version and run that.`, { details: { external: { source, kind, id, version } } });
 
 /** Starts a run of an agent given inline, as POST /agents/{id}/runs starts a run of a stored one: the same checks over the
  *  revision the definition makes (prepareLaunch), then ONE transaction (store.runs.createInline) that writes the agent on
@@ -555,8 +567,10 @@ export interface InlineAgent {
  *  earlier ones. A different definition under a version already run is 409 external_body_conflict, nothing written; under
  *  `origin`, a key that already started a run gets that run, as startRun's. */
 export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin, sealed }: Pick<StartOptions, "origin" | "sealed"> = {}): Promise<RunRow> {
-  const { external, revision } = inline;
+  const { external, revision, stored: storedRevision } = inline;
   const ref = externalKey(external);
+  // A version's body never changes here: a different one is refused before anything else is read or written.
+  if (storedRevision && canonical(storedRevision.body) !== canonical(revision.body)) throw bodyConflict(external);
   const mapped = await store.agents.byExternal(ref);
   const stored = mapped ? await getAgent(store, mapped.id) : null;
   // A version's first run brings the agent's name and description up to it, in the start's own transaction (createInline),
@@ -571,7 +585,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
       };
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands
   // one across.
-  const { launch } = await prepareLaunch(deps, entry, body, { revision: revision as unknown as Revision });
+  const { launch } = await prepareLaunch(deps, entry, body, { revision: (storedRevision ?? revision) as unknown as Revision });
   const runId = (deps.newRunId ?? uuidv7)();
   try {
     return await withHeldFiles(deps, runId, launch, () => store.runs.createInline({
@@ -581,10 +595,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
       launch: { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId) } : {}) },
     }));
   } catch (error) {
-    if (error instanceof ExternalBodyConflict) {
-      const { source, kind, id, version } = external;
-      throw new ApiError("external_body_conflict", `${source} ${kind} ${id} version ${version} already ran here with a different definition. A version's definition never changes here: publish a new version and run that.`, { details: { external: { source, kind, id, version } } });
-    }
+    if (error instanceof ExternalBodyConflict) throw bodyConflict(external);
     if (origin && error instanceof StoreConstraint) {
       const existing = await store.runOfOrigin(origin.key);
       const row = existing && (await store.runs.get(existing.runId));
@@ -628,7 +639,9 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   if (body.cap_mode !== undefined && cap === undefined) throw invalid([{ field: "cap_mode", reason: "not_allowed", message: "cap_mode says how a run's cap prices its requests, and this run has no cap: give it a max_cost_usd, or set the agent's." }]);
   const capMode = cap === undefined ? undefined : typeof body.cap_mode === "string" ? body.cap_mode : rbody.capMode;
   const place = resolvePlace(rbody.place as Place | undefined, deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
-  await deps.runnable(revision, place, { capped: cap !== undefined });
+  // Checked as pinned: an earlier revision with no pin is pinned now, once (StartDeps.pinFirst); one that could not be, as
+  // its server could not be listed, is refused with the rest (runnable).
+  await deps.runnable(deps.pinFirst ? await deps.pinFirst(revision) : revision, place, { capped: cap !== undefined });
   // A held computer (computer-held.ts): only one that speaks the protocol, its kind as the claim reads it (the
   // revision's computer, else its place's).
   const hold = holdOf(body, (settingOfDefinition(rbody as { computer?: unknown; place?: unknown })?.computer ?? computerOfPlace(place)).kind);

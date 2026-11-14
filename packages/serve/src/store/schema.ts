@@ -10,7 +10,7 @@
 // live-reach.ts); version 10 pairs a person's own computer (paired_computers, pairing_codes); version 11 keeps a command's answer
 // (commands.answer). An agent's MCP tools are pinned on its revision when it is saved (revisions.mcp_pin, REVISIONS_MCP_PIN),
 // in place of each run's pin at its first claim (the mcp_pins table): a server open adds the column to a store an earlier
-// build of this version made and drops the table, so a revision saved before has no pin until the agent is saved again.
+// build of this version made and drops the table, so a revision saved before has no pin until its first run pins it.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).

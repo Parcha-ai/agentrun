@@ -576,6 +576,8 @@ export interface Agents {
   byExternal(ref: string): Promise<AgentRow | undefined>;
   /** Whether the agent already has the revision that maps `version` of its owning system (one row looked up, no bodies read). */
   hasExternalVersion(agentId: string, version: string): Promise<boolean>;
+  /** The revision that maps `version` of its owning system, or undefined before that version's first run. */
+  externalRevision(agentId: string, version: string): Promise<RevisionRow | undefined>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
@@ -591,6 +593,10 @@ export interface Agents {
   setCurrent(agentId: string, revisionId: string): Promise<void>;
   revision(id: string): Promise<RevisionRow | undefined>;
   revisions(agentId: string): Promise<RevisionRow[]>;
+  /** Pins a revision saved with no MCP pin (before pins were made at save) at its first run: `pin` is written only while
+   *  the revision still has none, and the pin it has then is the answer, so two first runs at once agree on one. Null when
+   *  there is no such revision. */
+  pinOnce(revisionId: string, pin: unknown): Promise<unknown>;
 }
 
 export interface Templates {

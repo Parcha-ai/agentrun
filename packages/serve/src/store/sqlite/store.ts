@@ -294,7 +294,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // acted on) and each later one is refused in the same write, before the index, so the store opens. None is deleted.
     // An earlier build of this version pinned each run's MCP tools at its first claim (mcp_pins) and kept no pin on a
     // revision: the server adds revisions.mcp_pin (schema.ts REVISIONS_MCP_PIN) and drops mcp_pins. A revision saved
-    // before has no pin, so its run is refused (409) until the agent is saved again; no run's pin moves to a revision.
+    // before has no pin until its first run here pins it (Agents.pinOnce); no run's pin moves to a revision.
     if (role === "server") {
       const pinned = await connection.get<{ name: string }>("SELECT name FROM pragma_table_info('revisions') WHERE name = 'mcp_pin'");
       await connection.write([
@@ -510,6 +510,10 @@ class SqliteStore implements Store {
         return row && agentOf(row);
       },
       hasExternalVersion: async (agentId, version) => (await db.get<{ id: string }>("SELECT id FROM revisions WHERE agent_id = ? AND external_version = ?", agentId, version)) !== undefined,
+      externalRevision: async (agentId, version) => {
+        const row = await db.get<RevisionRecord>(`SELECT ${REVISION_COLUMNS} FROM revisions WHERE agent_id = ? AND external_version = ?`, agentId, version);
+        return row && revisionOf(row);
+      },
       list: async ({ archived = false } = {}) =>
         (await db.all<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE archived_at IS ${archived ? "NOT NULL" : "NULL"} ORDER BY created_at, id`)).map(agentOf),
       archive: async (id, archived, why) =>
@@ -540,6 +544,15 @@ class SqliteStore implements Store {
         return row && revisionOf(row);
       },
       revisions: async (agentId) => (await db.all<RevisionRecord>(`SELECT ${REVISION_COLUMNS} FROM revisions WHERE agent_id = ? ORDER BY created_at, id`, agentId)).map(revisionOf),
+      // Written only while the revision has none (the one place a revision changes after its save), then read back in the
+      // same transaction: the pin that stood, this one or another first run's.
+      pinOnce: async (revisionId, pin) => {
+        const row = await db.transaction(async (tx) => {
+          await tx.run("UPDATE revisions SET mcp_pin = ? WHERE id = ? AND mcp_pin IS NULL", pinText(pin), revisionId);
+          return tx.get<{ mcp_pin: string | null }>("SELECT mcp_pin FROM revisions WHERE id = ?", revisionId);
+        });
+        return row?.mcp_pin == null ? null : JSON.parse(row.mcp_pin);
+      },
     };
 
     this.templates = {

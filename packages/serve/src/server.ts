@@ -1263,6 +1263,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // (called at request time, after they are assigned) rather than reading them before their declaration.
     told: (error) => told(error),
     runnable,
+    pinFirst: (revision) => pinFirst(revision),
     readyFiles: (ids) => uploads.readyFiles(ids as string[]),
     files: { hold: (runId, ids) => uploads.hold(runId, ids), release: (runId) => uploads.release(runId) },
     fallbackPlace: (kind, tools) => fallbackPlace(kind, tools),
@@ -1882,6 +1883,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     };
   }
 
+  /** The revision a run starts on, its MCP tools pinned. One saved with no pin that grants a tool of a server saved here (a
+   *  revision saved before pins were made at save, or an inline agent's version stored then) is pinned at this, its first
+   *  run, as a save pins it (mcpListingOf, those servers listed once): written only while it still has none
+   *  (Agents.pinOnce), and the pin that stood read back, so two first runs at once run on one pin. A server that cannot be
+   *  listed, or no longer lists a granted tool, leaves it unpinned, and runnable refuses it (409) as before. */
+  async function pinFirst(revision: Revision): Promise<Revision> {
+    if (revision.kind !== "agentic" || ((revision as { mcpPin?: unknown }).mcpPin ?? null) !== null) return revision;
+    const tools = ((revision.body as { tools?: readonly string[] }).tools ?? []).filter((tool) => { const named = mcpGrantOf(tool); return named !== undefined && mcpMeta.has(named.server); });
+    if (!tools.length) return revision;
+    let pin: McpPin | undefined;
+    try {
+      pin = (await mcpListingOf({ kind: "agentic", body: { ...revision.body, tools } } as unknown as NewRevision)).pin();
+    } catch (error) {
+      if (error instanceof ApiError) return revision;
+      throw error;
+    }
+    if (!pin) return revision;
+    return { ...revision, mcpPin: await store.agents.pinOnce(revision.id, pin) } as Revision;
+  }
+
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks, and
    *  what the save stamps on it (its MCP pin, mcpListingOf). A revision that names no place is checked where it would run
    *  (fallbackPlace). */
@@ -2191,19 +2212,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (issues.length) throw invalid(issues);
     const checked = checkDefinitionBody(given);
     const made = makeRevision(checked.definition, checked.skills ?? {}, checked.note);
-    // Refused where POST /agents refuses the definition (one this host can never run); what this host still lacks for it
-    // is the run's own refusal (prepareLaunch's runnable), as for a run of a stored agent. Its MCP tools are pinned as a
-    // save pins them (a server down keeps the agent's current pin when this version grants nothing new from it); a version
-    // already stored keeps the pin its first run made.
+    // A version's first run is its save: refused where POST /agents refuses the definition (one this host can never run),
+    // its MCP tools pinned as a save pins them (a server down keeps the agent's current pin when this version grants nothing
+    // new from it). A version already stored is a run of its revision, as a run of a stored agent is: no save, nothing
+    // listed here, its pin as stored (one stored with no pin is pinned at this run, StartDeps.pinFirst). What this host
+    // still lacks for either is the run's own refusal (prepareLaunch's runnable).
     const ref = external as { source: string; kind: string; id: string; version: string | number };
     const mapped = await store.agents.byExternal(externalKey(ref));
-    const current = mapped?.currentRevision ? await store.agents.revision(mapped.currentRevision) : undefined;
-    const revision = { ...made, ...(await saveable(made, current?.mcpPin)).stamp };
+    const stored = mapped ? await store.agents.externalRevision(mapped.id, String(ref.version)) : undefined;
+    const current = !stored && mapped?.currentRevision ? await store.agents.revision(mapped.currentRevision) : undefined;
+    const revision = stored ? made : { ...made, ...(await saveable(made, current?.mcpPin)).stamp };
     const inline = {
       external: { source: ref.source, kind: ref.kind, id: ref.id, version: String(ref.version) },
       name: checked.definition.name as string,
       description: typeof checked.definition.description === "string" ? checked.definition.description : null,
       revision,
+      ...(stored ? { stored } : {}),
     };
     return idempotent(req, "/runs", body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.

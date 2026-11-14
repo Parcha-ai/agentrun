@@ -1,6 +1,6 @@
 ---
 packages: @parcha/agentrun-serve, @parcha/agentrun-client, @parcha/agentrun
-kind: breaking
+kind: feature
 ---
 An agent's MCP tools are pinned when the agent is saved, not when a run starts.
 - Saving an agent (POST /agents, PUT /agents/{agent_id}/definition, an inline agent's first run of a version, a template's apply) lists each MCP server it grants a tool of, once, and keeps the granted tools on the new revision as the server listed them: name, title, description, input schema, annotations, and the prices set for them. Every run of that revision calls those tools, whatever the server lists by then. A call the server no longer takes as pinned is the server's to refuse, as before.
@@ -8,5 +8,5 @@ An agent's MCP tools are pinned when the agent is saved, not when a run starts.
 - Saving the agent again re-pins: an unchanged definition saved after a server changed a granted tool is a new revision with the new tools; saved again with nothing changed, no revision.
 - GET /agents/{agent_id} and GET /agents/{agent_id}/revisions show the pin as `mcp_pin`: per server, the pinned tools and their prices (never the server's URL); null when the revision grants no MCP tool.
 - A run no longer lists an MCP server at its first claim. A run of a revision that grants an MCP tool its pin does not hold is refused before it starts (409 agent_not_runnable), and at its claim, saying to save the agent again.
-- **Breaking for an agent saved before this release that grants an MCP tool.** Its revision holds no pin, so a run of it is refused (409 agent_not_runnable, `The MCP tool <tool> was not pinned when this revision was saved: save the agent again to pin it.`) until the agent is saved again. Saving its unchanged definition (PUT /agents/{agent_id}/definition) makes a new revision with the pin. An inline agent (POST /runs) keeps a version's revision as first stored, so a run of a version stored before this release is refused at its claim: run a new version. An agent that grants no MCP tool runs as before.
+- A revision saved before this release that grants an MCP tool has no pin yet. Its first run pins it, once, as a save would (two first runs at once agree on one pin), and every later run uses that pin. This holds for an inline agent's (POST /runs) version stored before this release too. Nothing needs saving again. If the server can't be listed at that first run, the run is refused (409 agent_not_runnable) and the next run tries again.
 - The store upgrades itself in place. On SQLite the server's start adds the revision's pin column and drops the per-run pin table (the schema stays version 11, so the previous release's data directory still opens). Postgres migrates itself (migration 0010).

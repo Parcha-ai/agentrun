@@ -132,7 +132,7 @@ test("a store an earlier build of this version made (no revisions.mcp_pin, a per
     } finally {
       check.close();
     }
-    assert.equal((await store.mcp.pin("run-old")) ?? null, null, "a revision saved before has no pin: its run is refused until the agent is saved again");
+    assert.equal((await store.mcp.pin("run-old")) ?? null, null, "a revision saved before has no pin: its first run pins it (Agents.pinOnce)");
     const pin = { fake: { url: "http://127.0.0.1:1/mcp", tools: [{ name: "add", inputSchema: { type: "object" } }] } };
     await store.agents.create({ id: "agent-new", name: "agent-new" }, { id: "rev-new", kind: "agentic", body: { instructions: "Answer." }, mcpPin: pin });
     await store.runs.create({ id: "run-new", agentId: "agent-new", revisionId: "rev-new" });
