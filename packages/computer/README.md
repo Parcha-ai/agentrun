@@ -2783,7 +2783,10 @@ capabilities.
 container of the desktop fixture's image, starts Xvfb through the daemon on the display init was given and waits for
 hello to declare the screen, and checks that `deadline.extend` moves up to `--max-deadline` and no further. The
 programs the daemon starts get no `DISPLAY` of init's (it passes on only PATH, HOME, USER and LOGNAME): a caller that
-starts a GUI program gives it `DISPLAY` in the request's `env`, on E2B as on Docker.
+starts a GUI program gives it `DISPLAY` in the request's `env`, on E2B as on Docker. The surface is that caller for an
+agent: on a desktop whose hello names a display, `shell.run` and `processes.start` add it under the call's own `env`.
+`processes.start` is `process.start` with `orphans: "keep"`, so an app (or the app a launcher forks) stays open after
+the call, where `exec.run`'s guard ends everything its command started.
 
 ## Acknowledgements
 

@@ -272,6 +272,27 @@ test("a script's shell and files are held to the run's gate: a denied bash, a de
   await run.end();
 });
 
+test("a script's processes.start is held as bash_background (bash's setting; a read-only bash policy refuses it), and opens on the desktop's display", async () => {
+  const root = scratch();
+  const computer = fakeScreen(root);
+  const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: { ...helloOf("desktop", DESKTOP_GROUPS), display: ":0" }, check: { readBackOf } }, { mode: 1, context: ctx });
+  const seen = [];
+  let verdict = "allow";
+  run.computer.guard.install(async (tool, args) => { seen.push([tool, args]); return verdict; });
+  const tools = run.hostTools(run.kindTools);
+  const code = "try { return await computer.processes.start('mousepad', { cwd: '/tmp' }); } catch (error) { return String(error.message); }";
+  assert.deepEqual((await call(tools, "computer_script", { code })).structured, { pid: 42 });
+  assert.deepEqual(seen, [["bash_background", { command: "mousepad", cwd: "/tmp" }]]);
+  const [, sent] = computer.calls.filter(([method]) => method === "process.start").at(-1);
+  assert.deepEqual(sent, { argv: ["sh", "-c", "mousepad"], cwd: "/tmp", env: { DISPLAY: ":0" }, orphans: "keep" });
+  const [, ran] = await (async () => { await call(tools, "computer_script", { code: "await computer.shell.run('xdotool getactivewindow'); return 1;" }); return computer.calls.filter(([method]) => method === "exec.run").at(-1); })();
+  assert.equal(ran.env.DISPLAY, ":0", "a desktop's shell.run opens on its display too");
+  verdict = "ask";
+  assert.match((await call(tools, "computer_script", { code })).structured, /bash_background setting asks a person first/);
+  assert.equal(computer.calls.filter(([method]) => method === "process.start").length, 1, "a refused start sent nothing");
+  await run.end();
+});
+
 test("under a bash policy a script's shell carries the policy's git lock-down as the bash tool's does, and no option of the script overrides it", async () => {
   const root = scratch();
   const computer = fakeScreen(root);

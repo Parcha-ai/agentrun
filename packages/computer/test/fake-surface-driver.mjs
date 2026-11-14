@@ -6,10 +6,10 @@ import { Buffer } from "node:buffer";
 export const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+Rq+X4QAAAAASUVORK5CYII=";
 
 /**
- * hello: the groups to declare (default a Mac with ui). split: how many bytes of the PNG screen.shot sends before
- * screen.read must fetch the rest.
+ * hello: the groups to declare (default a Mac with ui), and a Linux desktop's display. split: how many bytes of the PNG
+ * screen.shot sends before screen.read must fetch the rest.
  */
-export function fakeComputer({ groups = ["exec", "files", "screen", "input.pointer", "input.keys", "apps", "ui"], features = { "ui.image": true, "apps.background": true }, os = "macos", kind = "desktop", split } = {}) {
+export function fakeComputer({ groups = ["exec", "files", "screen", "input.pointer", "input.keys", "apps", "ui"], features = { "ui.image": true, "apps.background": true }, os = "macos", kind = "desktop", display, split } = {}) {
 	const calls = [];
 	let seq = 1;
 	let saved = false;
@@ -68,6 +68,7 @@ export function fakeComputer({ groups = ["exec", "files", "screen", "input.point
 		"apps.list": () => ({ apps: [{ id: "com.apple.Notes", name: "Notes", version: "4" }], foreground: "com.apple.Notes" }),
 		"apps.launch": () => ({}),
 		"exec.run": (params) => ({ exitCode: 0, stdout: Buffer.from(params.argv.join(" ")).toString("base64"), stderr: "", timedOut: false, truncated: false }),
+		"process.start": () => ({ id: "p1", pid: 4242 }),
 		"files.write": (params) => {
 			const bytes = Buffer.from(params.data, "base64");
 			const before = params.offset ? files.get(params.path).subarray(0, params.offset) : Buffer.alloc(0);
@@ -94,6 +95,6 @@ export function fakeComputer({ groups = ["exec", "files", "screen", "input.point
 		},
 		close() {},
 	};
-	const hello = { protocol: "0.2", version: "fake", os, kind, arch: "arm64", groups, screen: { width: 1440, height: 900, scale: 2 }, features };
+	const hello = { protocol: "0.2", version: "fake", os, kind, arch: "arm64", groups, ...(display ? { display } : {}), screen: { width: 1440, height: 900, scale: 2 }, features };
 	return { client, hello, calls, files };
 }
