@@ -359,6 +359,22 @@ test("on another server, a package that differs in what runs (budget, effort, to
   assert.match(report.cases[0].error, /the server's evalpkg package is not this folder's: it differs in budget, effort, tools/);
 });
 
+test("on another server, a need the owner's server fills under another name is this folder's package still: its text is compared on that server's names", { timeout: 300_000 }, async (t) => {
+  const shipped = join(await scratch(t), "templates");
+  const dir = join(shipped, "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  writeFileSync(join(dir, "agent.md"), readFileSync(join(dir, "agent.md"), "utf8").replace("You answer for", "Read a contact with mcp:crm/get_contact. You answer for"));
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: shipped });
+  const owner = await startFake("my-crm", readCases(PKG, ["mcp-match"]).cases[0].mcp.crm);
+  t.after(() => owner.close());
+  assert.equal((await api("PUT", "/settings/mcp-servers/my-crm", { url: owner.url, auth: { type: "none" }, toolkit: "crm" })).status, 200);
+  const report = await evalTemplate({ dir, cases: ["learned"], server: { baseUrl, token } });
+  assert.equal(report.cases[0].error, undefined, report.cases[0].error);
+  assert.equal(report.cases[0].runs.length, 1, JSON.stringify(report.cases[0]));
+  const agent = (await api("GET", `/agents/${report.cases[0].runs[0].agent_id}`)).body;
+  assert.match(agent.definition.instructions, /mcp:my-crm\/get_contact/, "apply put the need on the owner's server");
+});
+
 test("a stop asked after the last run is waited for still stops the eval: no report", { timeout: 300_000 }, async () => {
   const stop = new AbortController();
   // The line for run 1 is told once it is waited for and graded: the last run, so nothing is left to wait on.
