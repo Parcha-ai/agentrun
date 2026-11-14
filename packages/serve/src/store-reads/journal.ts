@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
-import { CALL_REFUSED, CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
+import { CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, timelineOf, TOOL_COST } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -181,6 +181,11 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
 
 /** Whether `entries` are a CLI harness's record (its loop's calls and messages). */
 export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
+
+/** The call a run's turn ended on waiting for a person (timeline endedOnTurnEndingTool), over its root's entries as the
+ *  run keeps them: a CLI harness's record read as pi's (piShaped), as its Timeline and its view read it, so the runner's
+ *  loop parks a CLI run on exactly the question the view calls waiting, as it does a pi run. */
+export const turnEndedOnAsk = (entries: readonly EntryLike[]): string | undefined => endedOnTurnEndingTool(isCliRecord(entries) ? piShaped(entries) : entries);
 
 /** A path as a run's rows name it, for a harness working in `cwd`: one under `cwd` by its name there (`hello.md`), any
  *  other as given. */

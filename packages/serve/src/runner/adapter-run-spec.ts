@@ -462,8 +462,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // - ask_person is pi's own tool (tools.ts): a run granted it carries its native extension, so pi runs it as its own tool
   //   task under the session's gate and keeps its control.terminate — the turn ends on the person's question and the loop
   //   parks the run (endedOnTurnEndingTool), or, with the browser's session open, waits for the answer in its claim
-  //   (adapter-loop waitInClaim, the browser's personWait below). It stays out of the session's host tools and tool-list.ts replay, so a CLI harness still
-  //   refuses it (runnable.ts). pi only.
+  //   (adapter-loop waitInClaim, the browser's personWait below). It stays out of this session's host tools: a CLI
+  //   harness gets the same tool as a host tool (cli-run-spec.ts), whose turn the loop cuts at the question.
   // - the browser's durable extension, when the run gets one (bindNonHandTools, below, before the session opens).
   // - pi's code mode, with a desktop or a phone (pi-computer.ts): the `codemode` tool beside the run's own, its scripts
   //   with `computer` bound on the run's held port.

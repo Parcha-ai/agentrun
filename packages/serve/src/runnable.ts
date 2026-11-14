@@ -179,9 +179,9 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner" && !runnerShell.has(tool)) out.push(shellOnRunner(tool, `definition.tools[${index}]`, !!place && !revision.unnamed));
       // Its writes into work/ go by path from this machine, and a box's command could swap a link in on their way.
       else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
-      // Another harness gets the host tools only (host-tools.ts: the file tools, web_fetch, web_search and
-      // monid's): any other tool this host binds, ask_person among them, is pi's here and refuses the run, never runs
-      // without it.
+      // Another harness gets the host tools only (host-tools.ts: the file tools, ask_person, web_fetch, web_search and
+      // monid's): any other tool this host binds (the browser, subagent, pdf_pages, llm) is pi's here and refuses the
+      // run, never runs without it.
       else if (onAdapter(env, harness) && !isHostTool(tool)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
       else {
         unset(`definition.tools[${index}]`, tool);

@@ -54,6 +54,8 @@ import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
 import { mcpServersOf } from "../tool-gate.js";
 import { isWebHostTool } from "../tool-list.js";
+import { hostToolOf } from "../host-tools.js";
+import { ASK_TOOL, askPerson } from "../tools.js";
 import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
@@ -568,13 +570,17 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}), workspace: ws.workspace, modelName: () => chosen.model.modelId });
     }
   }
+  // ask_person, when granted: pi's own tool (tools.ts askPerson), bound as a host tool the way the web tools are. Its call
+  // answers what pi's does; the loop then cuts the CLI's turn at the question (adapter-loop.ts, turn-ending host tools),
+  // so the run parks on the person or waits for them in its claim exactly as a pi run does.
+  const askTool = granted.includes(ASK_TOOL) ? hostToolOf(ASK_TOOL, askPerson as never, ctx) : undefined;
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
     system: [environmentLine(), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
     // redactor, as pi's do. Listed in the order the agent grants them, as main lists a CLI run's tools.
-    tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
+    tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
     context: "fresh",
     ...(thinking ? { thinking } : {}),
   };
