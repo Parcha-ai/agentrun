@@ -4,8 +4,8 @@
 // bridge, the read-back and the probe, labels, list and attach, the deadline and extend, delete-then-wait-gone, the
 // sweep of a lost create, the Archil mount, and the words of every refusal. These doc comments are the contract a new
 // vendor reads (PROVIDERS.md, "The MachineHost half").
-import type { MountKind } from "./mount.js";
-import type { ComputerCapabilities, ComputerSpec, GpuCapability, GpuSpec, NetworkForm, NetworkPolicy, Refusal } from "./provider.js";
+import type { HostedTimeouts } from "./hosted/provider.js";
+import type { ComputerCapabilities, ComputerSpec, GpuCapability, GpuSpec, NetworkPolicy, Refusal } from "./provider.js";
 import type { ComputerErrorCode, Result } from "./result.js";
 
 /**
@@ -169,10 +169,11 @@ export interface HostFacts {
 	 * request is held to them only then. A vendor that reads none back (Modal) answers the request's computer as made.
 	 */
 	gpuReadBack?: boolean;
-	/** The network forms its computers take: of its descriptor's. */
-	network: NetworkForm[];
-	/** The mount kinds it takes: of its descriptor's. */
-	mounts?: MountKind[];
+	/**
+	 * The vendor's default timeouts, under the caller's. The adapter writes the merged set back here, so the host's own
+	 * client reads the bounds that apply, at call time (hosted/options.ts timeoutOf).
+	 */
+	timeouts?: Partial<HostedTimeouts>;
 	/** How release may end one; "stop" needs host.stop. */
 	release: Array<"stop" | "delete">;
 	stopDeletes?: boolean;

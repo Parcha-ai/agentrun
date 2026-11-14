@@ -15,6 +15,7 @@ import { DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { bounded } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, NAME_LABEL } from "./hosted/provider.js";
+import { hostName, httpsUrl, loadPackage, requireText, sliceProblem } from "./hosted/options.js";
 import { shellLine } from "./hosted/scripts.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
@@ -108,7 +109,7 @@ export type Agent37Type = "vm" | "default";
 export type Agent37Region = "us" | "eu" | "ap-south";
 
 /** The Agent37 provider's options: the key, the SSH key and ssh2, then the shared adapter's (HostedOptions). */
-export interface Agent37ProviderOptions extends Omit<HostedOptions, "label" | "maxLifetimeMs"> {
+export interface Agent37ProviderOptions extends Omit<HostedOptions, "label" | "descriptor" | "maxLifetimeMs"> {
 	/** The workspace's API key (sk_live_...). The caller passes it; this provider never reads it from the environment. */
 	apiKey: string;
 	/**
@@ -157,7 +158,6 @@ const AGENT37_TTYD_PORT = 7681;
 const INSTANCE_ID = /^[a-z0-9]{10}$/;
 /** A template name (cli.js:18), with an optional @<version> pin (docs: templates, pin a template version). */
 const TEMPLATE = /^[a-z][a-z0-9-]{1,62}(@[A-Za-z0-9._-]{1,64})?$/;
-const DOMAIN = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const DAY_MS = 24 * 60 * 60_000;
 /** The instance shapes Agent37 makes, cpu and memory in GB (docs: instance-sizing): 4 vCPU is every type's ceiling. */
 const SHAPES: ReadonlyArray<{ cpu: number; memory: number }> = [
@@ -171,7 +171,6 @@ const MAX_CPUS = 4;
 const METADATA_MAX_BYTES = 4096;
 /** A VM boots inside the create's POST, which answers once it runs (docs: instances/create, Defaults). */
 const DEFAULT_CREATE_MS = 300_000;
-const DEFAULT_REQUEST_MS = 30_000;
 /** How much a tunnel may hold unsent before a write waits for it (the WebSocket's bufferedAmount). */
 const TUNNEL_HIGH_WATER = 1024 * 1024;
 const TUNNEL_POLL_MS = 10;
@@ -451,8 +450,7 @@ class Agent37Host implements MachineHost {
 			arch: "amd64",
 			vendorAgentPorts: [AGENT37_SSH_PORT, AGENT37_TTYD_PORT],
 			networkReadBack: true,
-			network: [...AGENT37.network],
-			mounts: [...MOUNT],
+			timeouts: { createMs: DEFAULT_CREATE_MS },
 			release: ["delete"],
 			specFields: ["cpus", "memoryMb"],
 			runtime: () => runtime,
@@ -792,11 +790,6 @@ function pemOf(text: string): string | undefined {
 	return `-----BEGIN ${label}-----\n${body.match(/.{1,70}/g)?.join("\n")}\n-----END ${label}-----\n`;
 }
 
-/** The ssh2 module's slice, or why it is not one. */
-function ssh2Problem(ssh2: unknown): string | undefined {
-	return typeof (ssh2 as { Client?: unknown } | null)?.Client === "function" ? undefined : "options.ssh2 must be the ssh2 package (its Client class): the host installs it, as it does e2b";
-}
-
 /**
  * An Agent37Provider from its options alone; it reads no environment. The key is options.apiKey and the SSH key
  * options.sshKey, nowhere else (serve passes its AGENT37_API_KEY and AGENT37_SSH_KEY, the conformance module what it
@@ -804,10 +797,8 @@ function ssh2Problem(ssh2: unknown): string | undefined {
  */
 export async function create(options: Agent37Options): Promise<Agent37Provider> {
 	const { apiKey, sshKey, ssh2: given, ...rest } = options ?? ({} as Agent37Options);
-	if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Agent37 API key, is required: the provider reads no environment, so the caller passes it");
-	if (typeof sshKey !== "string" || sshKey === "") throw new Error("options.sshKey, the private half of an SSH key registered on the Agent37 workspace, is required: its contents, never a path");
 	// ssh2 is CommonJS: its Client is a named export of the module, and of its default.
-	const loaded = given ?? ((await import(SSH2_PACKAGE)) as Partial<Ssh2Module> & { default?: Ssh2Module });
+	const loaded = given ?? (await loadPackage<Partial<Ssh2Module> & { default?: Ssh2Module }>(SSH2_PACKAGE));
 	const ssh2 = typeof loaded.Client === "function" ? (loaded as Ssh2Module) : (loaded as { default?: Ssh2Module }).default;
 	return new Agent37Provider({ ...rest, apiKey, sshKey, ssh2: ssh2 as Ssh2Module });
 }
@@ -831,30 +822,22 @@ export class Agent37Provider extends HostedProvider {
 			proxyDomain = DEFAULT_PROXY_DOMAIN,
 			type = "vm",
 			region = "us",
-			maxLifetimeMs = DAY_MS,
-			timeouts = {},
 			...rest
 		} = options ?? ({} as Agent37ProviderOptions);
-		if (typeof apiKey !== "string" || apiKey === "") throw new Error("an Agent37 API key is required");
+		requireText(apiKey, "options.apiKey, the Agent37 API key is required: the provider reads no environment, so the caller passes it");
 		const privateKey = typeof sshKey === "string" ? pemOf(sshKey) : undefined;
 		if (privateKey === undefined) throw new Error("options.sshKey must be the contents of an SSH private key (-----BEGIN ... PRIVATE KEY-----), never a path");
-		const problem = ssh2Problem(ssh2);
+		const problem = sliceProblem(ssh2, ["Client"], "options.ssh2 must be the ssh2 package, which the host installs");
 		if (problem) throw new Error(problem);
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
 		if (typeof WebSocket !== "function") throw new Error("options.WebSocket must be a WebSocket class that takes headers, as Node's global one does");
-		let api: URL;
-		try {
-			api = new URL(apiUrl);
-		} catch {
-			throw new Error(`apiUrl must be an https URL such as ${DEFAULT_API_URL}, not ${JSON.stringify(apiUrl)}`);
-		}
-		if (api.protocol !== "https:" || api.search !== "" || api.hash !== "") throw new Error(`apiUrl must be an https URL such as ${DEFAULT_API_URL}, not ${JSON.stringify(apiUrl)}`);
-		if (typeof proxyDomain !== "string" || !DOMAIN.test(proxyDomain)) throw new Error(`proxyDomain must be a host name such as ${DEFAULT_PROXY_DOMAIN}, not ${JSON.stringify(proxyDomain)}`);
+		const api = httpsUrl(apiUrl, `apiUrl must be an https URL such as ${DEFAULT_API_URL}, not ${JSON.stringify(apiUrl)}`);
+		hostName(proxyDomain, "proxyDomain", DEFAULT_PROXY_DOMAIN);
 		if (type !== "vm" && type !== "default") throw new Error(`type is vm or default, not ${JSON.stringify(type)}`);
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);
 		if (region !== "us" && type !== "vm") throw new Error(`Agent37 runs type default in us alone: ${region} takes type vm`);
 		const host = new Agent37Host({ apiKey, sshKey: privateKey, ssh2, fetch: fetcher, WebSocket, apiUrl: api.href.replace(/\/+$/, ""), proxyDomain, type, region });
-		super(host, { ...rest, label: "Agent37", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
+		super(host, { ...rest, label: "Agent37", descriptor: AGENT37 });
 	}
 }
 

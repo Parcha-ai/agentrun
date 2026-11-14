@@ -9,6 +9,7 @@ import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAP
 import { COMPUTER_LABEL, DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, ours } from "./hosted/provider.js";
+import { httpsUrl, requireText, timeoutOf } from "./hosted/options.js";
 import { shellLine } from "./hosted/scripts.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
@@ -34,7 +35,7 @@ export type WebSocketFactory = (url: string, init: { headers: Record<string, str
 export type DaytonaTimeouts = HostedTimeouts & { retryMs: number };
 
 /** The Daytona provider's options: the key and Daytona's own settings, then the shared adapter's (HostedOptions). */
-export interface DaytonaProviderOptions extends Omit<HostedOptions, "label" | "kind" | "desktop" | "maxLifetimeMs" | "timeouts"> {
+export interface DaytonaProviderOptions extends Omit<HostedOptions, "label" | "descriptor" | "kind" | "desktop" | "maxLifetimeMs" | "timeouts"> {
 	/** The Daytona API key. The caller passes it; this provider never reads the environment and never puts it in a computer. */
 	apiKey: string;
 	/** Default https://app.daytona.io/api. */
@@ -140,8 +141,6 @@ export const CAPABILITIES: readonly KindCapabilities[] = DAYTONA.capabilities;
  * module the settings it reads. Throws in words when an option is missing or wrong, never echoing the key.
  */
 export function create(options: DaytonaProviderOptions): DaytonaProvider {
-	const { apiKey } = options ?? ({} as DaytonaProviderOptions);
-	if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Daytona API key, is required: the provider reads no environment, so the caller passes it");
 	return new DaytonaProvider(options);
 }
 
@@ -151,9 +150,7 @@ export const conformance = () => import("./conformance/daytona.js");
 const DEFAULT_API_URL = "https://app.daytona.io/api";
 /** autoDeleteInterval when autoDeleteMinutes is unset: negative is disabled. */
 const NO_AUTO_DELETE = -1;
-const DEFAULT_REQUEST_MS = 30_000;
 const DEFAULT_RETRY_MS = 500;
-const DEFAULT_POLL_MS = 1_000;
 const RETRY_ATTEMPTS = 3;
 const DELETE_ATTEMPTS = 4;
 const LISTED_ROUNDS = 2;
@@ -285,11 +282,11 @@ class Rest {
 	readonly #base: string;
 	readonly #key: string;
 	readonly #fetch: typeof fetch;
-	readonly #requestMs: number;
+	readonly #requestMs: () => number;
 	readonly #retryMs: number;
 	readonly #pause: (ms: number, signal?: AbortSignal) => Promise<void>;
 
-	constructor(base: string, key: string, fetcher: typeof fetch, requestMs: number, retryMs: number, pause: (ms: number, signal?: AbortSignal) => Promise<void> = sleep) {
+	constructor(base: string, key: string, fetcher: typeof fetch, requestMs: () => number, retryMs: number, pause: (ms: number, signal?: AbortSignal) => Promise<void> = sleep) {
 		this.#base = base.replace(/\/+$/, "");
 		this.#key = key;
 		this.#fetch = fetcher;
@@ -312,7 +309,7 @@ class Rest {
 		const what = `${method} ${new URL(url).pathname}`;
 		const internalOnly = init.retryInternal === true && init.retry !== true;
 		const attempts = init.retry === true || internalOnly ? RETRY_ATTEMPTS : 1;
-		const timeoutMs = init.timeoutMs ?? this.#requestMs;
+		const timeoutMs = init.timeoutMs ?? this.#requestMs();
 		for (let attempt = 1; ; attempt++) {
 			if (signal?.aborted) return fail("aborted", `${what} was aborted`);
 			const timeout = AbortSignal.timeout(timeoutMs);
@@ -452,13 +449,12 @@ class DaytonaHost implements MachineHost {
 	readonly #gpu: DaytonaGpuSnapshot;
 	readonly #autoStop: number;
 	readonly #autoDelete: number;
-	readonly #pollMs: number;
 	/** Each sandbox's toolbox URL, by id, once read: let go of at its delete. */
 	readonly #toolboxes = new Map<string, string>();
 	/** Whether each sandbox this host made was asked for a GPU, by id: what its read-back is held to. */
 	readonly #made = new Map<string, boolean>();
 
-	constructor(options: { rest: Rest; webSocket: WebSocketFactory; arch: "amd64" | "arm64"; sandboxClass: "container" | "linux-vm"; target?: string; gpu: DaytonaGpuSnapshot; autoStop: number; autoDelete: number; pollMs: number }) {
+	constructor(options: { rest: Rest; webSocket: WebSocketFactory; arch: "amd64" | "arm64"; sandboxClass: "container" | "linux-vm"; target?: string; gpu: DaytonaGpuSnapshot; autoStop: number; autoDelete: number }) {
 		this.#rest = options.rest;
 		this.#webSocket = options.webSocket;
 		this.#class = options.sandboxClass;
@@ -466,7 +462,6 @@ class DaytonaHost implements MachineHost {
 		this.#gpu = options.gpu;
 		this.#autoStop = options.autoStop;
 		this.#autoDelete = options.autoDelete;
-		this.#pollMs = options.pollMs;
 		// daemon child: Daytona's toolbox daemon is the sandbox's first process, and init a command started through it.
 		// maxLifetimeMs is the 30 days check() has always given; Daytona's TTL is in whole minutes and documents no cap of
 		// its own. The toolbox listens on 2280 on every interface and runs commands for whoever reaches it, so init starts
@@ -483,8 +478,6 @@ class DaytonaHost implements MachineHost {
 			networkReadBack: true,
 			// get reads sb.gpu and sb.gpuType back: a sandbox with none reads none.
 			gpuReadBack: true,
-			network: [...DAYTONA.network],
-			mounts: [...MOUNT],
 			release: ["stop", "delete"],
 			// autoDeleteInterval 0: Daytona deletes a sandbox as soon as it stops, so a stop keeps no computer.
 			stopDeletes: options.autoDelete === 0,
@@ -836,7 +829,7 @@ class DaytonaHost implements MachineHost {
 					await kill();
 					return found.exitCode;
 				}
-				await sleep(this.#pollMs);
+				await sleep(timeoutOf(this.facts, "pollMs"));
 			}
 		};
 		return ok({
@@ -914,7 +907,7 @@ class DaytonaHost implements MachineHost {
 		const waited = await waitUntil(read, (state) => !("last" in state), {
 			boundMs: ctx.timeoutMs,
 			...(ctx.signal ? { signal: ctx.signal } : {}),
-			minMs: Math.min(this.#pollMs, STOP_POLL_MAX_MS),
+			minMs: Math.min(timeoutOf(this.facts, "pollMs"), STOP_POLL_MAX_MS),
 			maxMs: STOP_POLL_MAX_MS,
 			what: `${id} to be ${want} after its stop`,
 			describe: (state) => ("last" in state ? `Daytona read it ${state.last}` : "done"),
@@ -964,9 +957,8 @@ export class DaytonaProvider extends HostedProvider {
 			daemonPath,
 			...rest
 		} = options ?? ({} as DaytonaProviderOptions);
-		if (typeof apiKey !== "string" || apiKey === "") throw new Error("a Daytona API key is required");
-		const base = new URL(apiUrl);
-		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);
+		requireText(apiKey, "options.apiKey, the Daytona API key is required: the provider reads no environment, so the caller passes it");
+		httpsUrl(apiUrl, "the Daytona API URL must be https, so the key never crosses in the clear", { bare: false });
 		if (arch !== "amd64" && arch !== "arm64") throw new Error(`options.arch is amd64 or arm64, not ${String(arch)}`);
 		if (sandboxClass !== "container" && sandboxClass !== "linux-vm") throw new Error(`options.sandboxClass is container or linux-vm, not ${String(sandboxClass)}`);
 		const minutes = (name: string, value: unknown) => {
@@ -976,9 +968,8 @@ export class DaytonaProvider extends HostedProvider {
 		if (autoDeleteMinutes !== undefined) minutes("autoDeleteMinutes", autoDeleteMinutes);
 		const { retryMs = DEFAULT_RETRY_MS, ...hostedTimeouts } = timeouts;
 		if (!isWhole(retryMs) || retryMs <= 0) throw new Error(`timeouts.retryMs must be a whole number of ms above 0, not ${retryMs}`);
-		const requestMs = hostedTimeouts.requestMs ?? DEFAULT_REQUEST_MS;
-		const host = new DaytonaHost({
-			rest: new Rest(apiUrl, apiKey, fetcher ?? fetch, requestMs, retryMs, pause),
+		const host: DaytonaHost = new DaytonaHost({
+			rest: new Rest(apiUrl, apiKey, fetcher ?? fetch, () => timeoutOf(host.facts, "requestMs"), retryMs, pause),
 			webSocket: webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as WebSocketLike),
 			arch,
 			sandboxClass,
@@ -986,8 +977,7 @@ export class DaytonaProvider extends HostedProvider {
 			gpu: daytonaGpuSnapshot(gpuSnapshot),
 			autoStop: autoStopMinutes,
 			autoDelete: autoDeleteMinutes ?? NO_AUTO_DELETE,
-			pollMs: hostedTimeouts.pollMs ?? DEFAULT_POLL_MS,
 		});
-		super(host, { ...rest, label: "Daytona", kind: "linux", timeouts: hostedTimeouts, daemonPath: daemonPath || fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url)) });
+		super(host, { ...rest, label: "Daytona", descriptor: DAYTONA, kind: "linux", timeouts: hostedTimeouts, daemonPath: daemonPath || fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url)) });
 	}
 }

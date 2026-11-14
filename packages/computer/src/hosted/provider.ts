@@ -10,6 +10,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ProviderDescriptor } from "../descriptor.js";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "../drift.js";
@@ -64,6 +65,7 @@ import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOpti
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
 import { bounded, CALL_SLACK_MS, failOf, hostCall, type Opened, openBridge, pause, race, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
+import { TIMEOUT_DEFAULTS } from "./options.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf } from "./scripts.js";
 
 /** The longest each kind of call may take, and the pauses between polls. */
@@ -100,6 +102,8 @@ export interface HostedTimeouts {
 export interface HostedOptions {
 	/** The vendor's name in words ("E2B"), for refusals and Settings' test. */
 	label: string;
+	/** The vendor's descriptor (src/descriptors): the network forms and the mount kinds its computers take. */
+	descriptor: Pick<ProviderDescriptor, "network" | "mounts">;
 	/** desktop: an X server started through the daemon; linux (default): no screen. */
 	kind?: "desktop" | "linux";
 	/** The display and its X server, for kind desktop. Default Xvfb on :0, 1280x800. */
@@ -141,20 +145,6 @@ const USER = /^(\d+):(\d+)$/;
 /** A spec's user, where the host takes one: a uid, or uid:gid, in numbers (a uid alone is its own gid). */
 const SPEC_USER = /^(\d+)(?::(\d+))?$/;
 const MAX_ID = 4_294_967_294;
-const DEFAULTS: HostedTimeouts = {
-	requestMs: 30_000,
-	createMs: 120_000,
-	uploadMs: 120_000,
-	execMs: 60_000,
-	helloMs: 30_000,
-	probeMs: 30_000,
-	listMs: 60_000,
-	goneMs: 120_000,
-	pollMs: 1_000,
-	listedMs: 15_000,
-	listedStableMs: 1_000,
-	mountMs: 120_000,
-};
 /** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
 const ARCHIL_USER = `${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}`;
 const RELEASE_POLL_MAX_MS = 5_000;
@@ -264,6 +254,7 @@ export class HostedProvider implements ComputerProvider {
 	readonly #uid: string;
 	readonly #gid: string;
 	readonly #timeouts: HostedTimeouts;
+	readonly #descriptor: HostedOptions["descriptor"];
 	readonly #probeTargets: string[];
 	readonly #onNote: ProviderNote | undefined;
 	readonly #archilEgress: ArchilEgress | undefined;
@@ -276,6 +267,7 @@ export class HostedProvider implements ComputerProvider {
 	constructor(host: MachineHost, options: HostedOptions) {
 		const {
 			label,
+			descriptor,
 			kind = "linux",
 			desktop = {},
 			maxLifetimeMs = host.facts.maxLifetimeMs,
@@ -300,7 +292,7 @@ export class HostedProvider implements ComputerProvider {
 		if (user === null || Number(user[1]) > MAX_ID || Number(user[2]) > MAX_ID) throw new Error(`the daemon user ${daemonUser} must be uid:gid in numbers, such as 1000:1000`);
 		// The numbers, not the text: "00" is root as much as "0" is.
 		if (Number(user[1]) === 0 || Number(user[2]) === 0) throw new Error(`the daemon user ${daemonUser} is root or in root's group; ${a(label)} computer's daemon runs as neither`);
-		const merged = { ...DEFAULTS, ...timeouts };
+		const merged = { ...TIMEOUT_DEFAULTS, ...host.facts.timeouts, ...timeouts };
 		// AbortSignal.timeout and Node's timers take whole ms up to 2^31 - 1 (a fraction throws, a longer one fires at
 		// once), and a call's race adds CALL_SLACK_MS to its bound: refused here, before any machine exists. The listing's
 		// stability window alone may be 0: two consecutive polls, with no time between them asked for.
@@ -317,6 +309,9 @@ export class HostedProvider implements ComputerProvider {
 		this.#maxLifetimeMs = maxLifetimeMs;
 		[this.#uid, this.#gid] = [String(Number(user[1])), String(Number(user[2]))];
 		this.#timeouts = merged;
+		// The host reads the bounds that apply from its facts, at call time.
+		host.facts.timeouts = merged;
+		this.#descriptor = descriptor;
 		this.#probeTargets = [...probeTargets];
 		// Extend only where the deadline can follow it: the vendor's timer moved, or the janitor's label.
 		const { lifetime } = host.facts;
@@ -329,7 +324,7 @@ export class HostedProvider implements ComputerProvider {
 		return {
 			kind: this.#kind,
 			lifetime: facts.lifetime,
-			network: [...facts.network],
+			network: [...this.#descriptor.network],
 			networkReadBack: facts.networkReadBack,
 			isolation: facts.isolation,
 			os: "linux",
@@ -338,7 +333,7 @@ export class HostedProvider implements ComputerProvider {
 			maxLifetimeMs: this.#maxLifetimeMs,
 			release: [...facts.release],
 			...(facts.stopDeletes === undefined ? {} : { stopDeletes: facts.stopDeletes }),
-			...(facts.mounts === undefined ? {} : { mount: [...facts.mounts] }),
+			...(this.#descriptor.mounts === undefined ? {} : { mount: [...this.#descriptor.mounts] }),
 			vendorAgentPorts: [...facts.vendorAgentPorts],
 			...(facts.gpu === undefined ? {} : { gpu: structuredClone(facts.gpu) }),
 			...(facts.user === undefined ? {} : { user: [...facts.user] }),

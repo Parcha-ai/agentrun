@@ -10,6 +10,7 @@ import { MODAL, MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./descriptors/modal.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, NAME_LABEL } from "./hosted/provider.js";
+import { loadPackage, sliceProblem } from "./hosted/options.js";
 import { words } from "./hosted/process.js";
 import type { KindCapabilities } from "./kinds.js";
 import { RUN_LABEL } from "./labels.js";
@@ -85,7 +86,7 @@ export interface ModalSdk {
 }
 
 /** The Modal provider's options: the client and the app, then the shared adapter's (HostedOptions). */
-export interface ModalProviderOptions extends Omit<HostedOptions, "label" | "kind" | "desktop" | "maxLifetimeMs"> {
+export interface ModalProviderOptions extends Omit<HostedOptions, "label" | "descriptor" | "kind" | "desktop" | "maxLifetimeMs"> {
 	/** The host's Modal client, or anything with the same slice. */
 	sdk: ModalSdk;
 	/** The Modal App the sandboxes live in; made when missing. */
@@ -163,7 +164,7 @@ export async function modalClient({ tokenId, tokenSecret, serverUrl = MODAL_DEFA
 	if (typeof serverUrl !== "string" || !URL.canParse(serverUrl)) throw new Error("options.serverUrl is the Modal server's URL, such as https://api.modal.com:443");
 	const ambient = `the Modal provider refuses to start while MODAL_SERVER_URL is set: the SDK would send the key there. Unset it, and pass the server as options.serverUrl if it is not ${MODAL_DEFAULT_SERVER_URL}`;
 	if (process.env.MODAL_SERVER_URL) throw new Error(ambient);
-	const Client = ModalClient ?? ((await import(MODAL_PACKAGE)) as { ModalClient: ModalClientConstructor }).ModalClient;
+	const Client = ModalClient ?? (await loadPackage<{ ModalClient: ModalClientConstructor }>(MODAL_PACKAGE)).ModalClient;
 	// getProfile reads MODAL_SERVER_URL from process.env when the client is constructed (client.ts:123), and the
 	// control-plane client is made then (client.ts:175); afterwards process.env is as it was. One construction at a time.
 	const turn = constructing.then(() => {
@@ -321,8 +322,7 @@ class ModalHost implements MachineHost {
 			// No listener of Modal's own inside a sandbox is documented, so none is declared.
 			vendorAgentPorts: [],
 			networkReadBack: false,
-			network: [...MODAL.network],
-			mounts: [...MOUNT],
+			timeouts: { ...MODAL_TIMEOUTS },
 			release: ["delete"],
 			gpu: modalGpuCapability(),
 			// Never root: each connection is Modal's exec of the stdio bridge, as Modal's root, outside the daemon.
@@ -536,19 +536,10 @@ class ModalHost implements MachineHost {
  */
 export class ModalProvider extends HostedProvider {
 	constructor(options: ModalProviderOptions) {
-		const { sdk, app, maxLifetimeMs = MAX_LIFETIME_MS, timeouts = {}, ...rest } = options ?? ({} as ModalProviderOptions);
-		const lacks = [
-			["apps.fromName", sdk?.apps?.fromName],
-			["images.fromRegistry", sdk?.images?.fromRegistry],
-			["sandboxes.create", sdk?.sandboxes?.create],
-			["sandboxes.fromId", sdk?.sandboxes?.fromId],
-			["sandboxes.list", sdk?.sandboxes?.list],
-		].filter(([, fn]) => typeof fn !== "function");
-		if (lacks.length > 0) throw new Error(`options.sdk must be a Modal client; it lacks ${lacks.map(([name]) => name).join(", ")}`);
+		const { sdk, app, ...rest } = options ?? ({} as ModalProviderOptions);
+		const lacks = sliceProblem(sdk, ["apps.fromName", "images.fromRegistry", "sandboxes.create", "sandboxes.fromId", "sandboxes.list"], "options.sdk must be a Modal client");
+		if (lacks) throw new Error(lacks);
 		if (typeof app !== "string" || app.trim() === "") throw new Error("options.app, the Modal app's name, is required");
-		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_LIFETIME_MS) {
-			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 hours (${MAX_LIFETIME_MS} ms), Modal's longest timeout`);
-		}
-		super(new ModalHost(sdk, app), { ...rest, label: "Modal", kind: "linux", maxLifetimeMs, timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
+		super(new ModalHost(sdk, app), { ...rest, label: "Modal", descriptor: MODAL, kind: "linux" });
 	}
 }
