@@ -18,9 +18,9 @@ It speaks the protocol three ways:
 | Method | On macOS |
 | --- | --- |
 | `hello` | The screen in points and its scale, the Mac's model and macOS build, and each feature on or off with the reason (a missing grant, a missing private symbol). |
-| `exec.run`, `files.*`, `tar.*` | As the logged-in user, as the Linux daemon does. |
-| `screen.shot`, `screen.watch` | ScreenCaptureKit; needs Screen Recording. |
-| `input.actions` | The Mac's own keyboard and mouse (groups `input.pointer` and `input.keys`, which with `screen` make it a desktop): move, down, up, click, drag, scroll in clicks or pixels, key, hold, type and wait, in screenshot pixels, posted as a person's hands would post them, to the app in front. It needs Post Event, as the foreground route does. With an owner's list of apps, the app in front must be on it. Someone moving the pointer during a batch stops it (`aborted`), and what it held is released. No touch actions. |
+| `exec.run`, `files.*`, `tar.*` | As the logged-in user, as the Linux daemon does. The paired server gets them only by your grant (`"server"` in `policy.json`, below). |
+| `screen.shot`, `screen.watch` | ScreenCaptureKit; needs Screen Recording (feature `screen.capture`). The paired server gets them only by your grant. |
+| `input.actions` | The Mac's own keyboard and mouse (groups `input.pointer` and `input.keys`, which with `screen` make it a desktop): move, down, up, click, drag, scroll in clicks or pixels, key, hold, type and wait, in screenshot pixels, posted as a person's hands would post them, to the app in front. It needs Post Event, as the foreground route does. With an owner's list of apps, the app in front must be on it. A person using the keyboard or the mouse during a batch stops it before its next action (`aborted`, by the take-over rule a `ui.act` keeps), and what it held is released; the batch's own events never count. No touch actions. |
 | `apps.list`, `apps.launch`, `apps.terminate` | NSWorkspace. The list is every app in the Applications folders and every app running. `background: true` opens the app without bringing it forward, and sends it back if it comes forward on its own. |
 | `ui.observe` | The window's accessibility tree, batched, at most a second per call to the app, capped at 5,000 nodes; compact or full; a diff since a state; the window's own image (it shows even when covered). Without Accessibility (`ui.tree` off) it answers the window's image with no nodes and says why, and steps at the image's points still run. |
 | `ui.act` | Each step on the first route that can do it: **semantic** (AXPress, a value set and read back, a menu item for `super+s`; a document's text area takes typed keys first, since an inserted text never marks the document edited), then **background** (input posted to the app's window through SkyLight, without moving the pointer or raising the window), then **foreground** (the real keyboard and mouse) only when the call says `foreground: true`. Each step's result names its route and whether its effect was verified. A person using the keyboard or the mouse stops an act before its foreground step, and before every step after one (`aborted`, nothing sent). |
@@ -42,7 +42,7 @@ macOS 14 or later.
 
    `COMPUTERD_SIGN_IDENTITY="Developer ID Application: <name> (<team>)" scripts/bundle.sh` signs it for distribution.
    An ad-hoc build is granted anew after each rebuild; a Developer ID build keeps its grants across updates. A Mac that
-   builds its own Computerd (the bench's Mac mini) signs with a local identity instead: see [MINI.md](MINI.md).
+   builds its own Computerd can sign with a local self-signed identity instead.
 
 2. **Open it.** Double-click Computerd in Applications. It writes its LaunchAgent to
    `~/Library/LaunchAgents/ai.parcha.computerd.plist` and loads it with `launchctl`, which starts it now and at every
@@ -87,8 +87,17 @@ the token could not be kept, Computerd says so: remove the Mac in the console's 
 - **Offline:** Computerd dials again after any drop, waiting 1 s, then doubling to a minute. It stops only when the server
   says its token is revoked or unknown, or it paired as another kind of machine (pair again), or it speaks another
   protocol version (update Computerd).
-- **Which apps:** to let connections touch only some apps, write their bundle ids to
-  `~/Library/Application Support/Computerd/policy.json`, as `{"apps": ["com.apple.TextEdit"]}`.
+- **Which apps, and what the server gets:** `~/Library/Application Support/Computerd/policy.json` is yours to write.
+  `"apps"` lets connections touch only the apps whose bundle ids it lists. `"server"` is what the server this Mac is
+  paired with may use besides apps: `"exec"` (run programs), `"files"` (read and write files, tar archives too) and
+  `"screen"` (capture the whole screen, whichever apps are on it). Without `"server"` it gets none of them: its `hello`
+  offers no `exec` or `files` group and says `screen.capture` is off, and each such call is refused, saying who can
+  switch it on and where. For example `{"apps": ["com.apple.TextEdit"], "server": ["screen"]}`. `"exec"` or `"files"`
+  gives the server the run of your account, not a part of it: with either it can change what your login starts, or this
+  file itself, and so take the rest. Grant them only to a server you would give a shell. `"screen"` alone gives no more
+  than the screen. A file that does not
+  parse (a value it does not know included) allows no app and grants the server nothing until it is fixed. Computerd
+  reads the file at each connection, so a change applies from the next one.
 
 ## Use it over SSH
 
@@ -96,7 +105,11 @@ the token could not be kept, Computerd says so: remove the Mac in the console's 
 ssh mac /Applications/Computerd.app/Contents/Helpers/computerd stdio
 ```
 
-The command needs no grant of its own: the app does the work, in the desktop session, under its own grants.
+The command needs no grant of its own: the app does the work, in the desktop session, under its own grants. A stdio
+connection offers exec, files and the screen without `"server"` in `policy.json`, since only this user's own Computerd
+binaries open the app's socket (mode 0600, each client's code signature checked) and whoever runs them, over SSH or in a
+terminal, already has a shell here. The app tells the two apart by where the connection came from: the socket, or the
+socket it dialed to the paired server. `"apps"` holds on both.
 
 ## Logs
 
@@ -119,7 +132,7 @@ swift build --build-tests && swift test     # on a Mac; the core (ComputerdKit) 
   `build/UIFixture.app`; test-only.
 
 CI (`.github/workflows/computer-macos.yml`) builds and tests on `macos-26`, bundles the app, seeds the runner's grants,
-starts the app under launchd in the runner's desktop, and runs `scripts/smoke.py` through `computerd`, with the results
-in the job summary.
+starts the app under launchd in the runner's desktop, and checks the socket's peer check, and runs the protocol's health, ui and input conformance cases
+(`scripts/ui-conformance.mjs`) through `computerd`, with the results in the job summary.
 
 See NOTICE for the projects whose findings Computerd uses.

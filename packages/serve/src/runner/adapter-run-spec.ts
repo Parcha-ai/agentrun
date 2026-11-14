@@ -26,6 +26,7 @@ import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
+import { isWebHostTool } from "../tool-list.js";
 import { deniedText, mcpServersOf, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom } from "../tool-gate.js";
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
@@ -78,6 +79,7 @@ import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
+import { monidApprovalPrice } from "../monid.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -458,7 +460,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // - ask_person is pi's own tool (tools.ts): a run granted it carries its native extension, so pi runs it as its own tool
   //   task under the session's gate and keeps its control.terminate — the turn ends on the person's question and the loop
   //   parks the run (endedOnTurnEndingTool), or, with the browser's session open, waits for the answer in its claim
-  //   (adapter-loop waitInClaim, the browser's personWait below). It stays out of the session's host tools and REPLAY, so a CLI harness still
+  //   (adapter-loop waitInClaim, the browser's personWait below). It stays out of the session's host tools and tool-list.ts replay, so a CLI harness still
   //   refuses it (runnable.ts). pi only.
   // - the browser's durable extension, when the run gets one (bindNonHandTools, below, before the session opens).
   // - pi's code mode, with a desktop or a phone (pi-computer.ts): the `codemode` tool beside the run's own, its scripts
@@ -712,6 +714,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The gate's answer with its words (adapterRunGate, RunGate.decide): a deny names where it was set and that nothing was
     // sent or charged, and a pinned MCP tool's call outside its pin is refused before it is asked or sent.
     gate,
+    // monid.run's card shows what the call is held at (monid.ts monidApprovalPrice), as an MCP tool's shows its price.
+    approvalPrice: monidApprovalPrice(toolEnv),
     runCap,
     ...(cap ? { cap } : {}),
     // The run's MCP for a harness with its own client (mcp-run.ts), the session the adapter mounts; absent when none.
@@ -961,16 +965,13 @@ export function buildToolHost(opts: {
   };
 }
 
-/** The tools of `granted` that bind as web host tools on every harness: web_fetch, web_search and the monid tools. */
-export const webToolNames = (granted: readonly string[]): string[] => granted.filter((name) => name === WEB_FETCH_TOOL || name === WEB_SEARCH_TOOL || name.startsWith("monid."));
-
-/** The run's web host tools (webToolNames: web_fetch, web_search, monid) as HostTool[], each bound through `host` by its
+/** The run's web host tools (tool-list.ts `host` rows: web_fetch, web_search, monid) as HostTool[], each bound through `host` by its
  *  catalog name and wrapped as the hands are (host-tools.ts hostToolOf, with `ctx`), the one binding the pi spec and the
  *  CLI spec share. Each runs under the adapter loop's one gate (spec.gate) on the claim's keys (host.env), and books its
  *  paid requests on the run's one ledger itself (bookedIn): they carry no settle of their own. */
 export async function webHostTools(host: ToolHost, granted: readonly string[], ctx: HostToolCtx): Promise<HostTool[]> {
   const tools: HostTool[] = [];
-  for (const name of webToolNames(granted)) {
+  for (const name of granted.filter(isWebHostTool)) {
     const entry = toolOf(name);
     if (!entry) continue;
     const binding = await entry.bind(host);

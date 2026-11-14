@@ -2,10 +2,10 @@
 // COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET are in the environment: a key the lead has OKed by name, never
 // set by a test or a script. MODAL_TOKEN_ID and MODAL_TOKEN_SECRET never count: a host may hold a production token under
 // those names. It also needs COMPUTER_MODAL_APP, the modal package installed where Node finds it, `npm run build` and
-// `npm run build:daemon` (the daemon is uploaded into each sandbox; COMPUTER_MODAL_DAEMON_IMAGE, if set, names an image
-// to copy it from instead), and Go on PATH (the drift case builds a daemon of another version). Every computer lives
-// at most 30 minutes. The runner deletes every computer it made; the after hook terminates any sandbox still made by
-// this run, pass or fail; wrap the run in dist/conformance/modal-sweep.js --before and --after for the rest.
+// `npm run build:daemon` (the daemon is uploaded into each sandbox), and Go on PATH (the drift case builds a daemon of
+// another version). Every computer lives at most 30 minutes. The runner deletes every computer it made and sweeps the
+// run's label at its end; the after hook deletes any computer still made by this run, pass or fail; wrap the run in
+// dist/conformance/sweep.js --provider modal --before and --after for the rest.
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { conformanceCases, formatReport, runConformance } from "../../dist/index.js";

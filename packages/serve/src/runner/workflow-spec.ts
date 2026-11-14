@@ -573,7 +573,7 @@ export function callHoldOf(tool: string, input: Record<string, unknown>, env: No
   if (tool === "web_search" || tool === "web_fetch") {
     if (planeOf(env)[tool] !== "parallel") return NO_HOLD(tool);
     const fee = tool === "web_search" ? parallelSearchFee(searchArgs(input).n) : parallelExtractFee(1);
-    // Who charges for it (main's charge row's charged_by), as paidOn names it: the hold is the record its request books under.
+    // Who charges for it (main's charge row's charged_by), as paidRequest names it: the hold is the record its request books under.
     return { usd: fee.usd, name: fee.name, basis: fee.basis, chargedBy: fee.by };
   }
   if (tool === "llm") {
@@ -1074,7 +1074,7 @@ function bookedNodeTools(binding: ToolBinding, paid: () => RunTools | undefined,
       ...tool,
       execute: (args: never, api: { callId: string }, context: never) => {
         const ledger = paid();
-        return bookedIn(ledger ? { call: api.callId, record: async () => {}, paid: ledger, pause: async (refusal) => park({ message: refusal.refuse, forGood: false, ...(refusal.figures ? { figures: refusal.figures } : {}) }) } : undefined, () => (tool.execute as (a: never, b: never, c: never) => Promise<unknown>)(args, api as never, context));
+        return bookedIn(ledger ? { call: api.callId, paid: ledger, pause: async (refusal) => park({ message: refusal.refuse, forGood: false, ...(refusal.figures ? { figures: refusal.figures } : {}) }) } : undefined, () => (tool.execute as (a: never, b: never, c: never) => Promise<unknown>)(args, api as never, context));
       },
     })) as unknown as NodeToolBinding["tools"],
   };

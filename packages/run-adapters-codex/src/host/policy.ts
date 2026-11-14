@@ -28,7 +28,7 @@
 // inside `input_tokens`; they are booked apart (as pi-ai books them), and reasoning tokens inside `output_tokens`. The
 // searches a response ran are read from the same event, its `tool_usage.web_search.num_requests`.
 import type { IncomingHttpHeaders } from "node:http";
-import { providerInputOverhead, ProxyRefusal, responsesImagesIn, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { NATIVE_SEARCH_USD, providerInputOverhead, ProxyRefusal, responsesImagesIn, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },
@@ -64,8 +64,8 @@ const isLiveSearch = (tool: Record<string, unknown>) => Object.keys(tool).length
  * not listed: their searches, like any model's not listed here (a gateway's own id, say), are an unknown cost, never $0.
  */
 const WEB_SEARCH_USD: readonly (readonly [RegExp, number])[] = [
-  [/^(?:gpt-6|gpt-5|o3|o4-mini)(?:[-.][a-z0-9.-]+)?$/, 0.01],
-  [/^gpt-4(?:o|\.1)(?:-\d{4}-\d{2}-\d{2})?$/, 0.01],
+  [/^(?:gpt-6|gpt-5|o3|o4-mini)(?:[-.][a-z0-9.-]+)?$/, NATIVE_SEARCH_USD],
+  [/^gpt-4(?:o|\.1)(?:-\d{4}-\d{2}-\d{2})?$/, NATIVE_SEARCH_USD],
 ];
 
 /** The price of one web search call on `model`, or undefined when it is not known. */

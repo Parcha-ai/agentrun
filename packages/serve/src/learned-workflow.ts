@@ -42,6 +42,7 @@ import type { Plane } from "./tool-plane.js";
 import { ARGS_PREVIEW_BYTES, deniedText, type SettingFrom } from "./tool-gate.js";
 import type { DenyFrom } from "./refusal-words.js";
 import { allows, CALL_TOOLS, learnedDraftTools, toolOf, workflowTools } from "./tools.js";
+import { isMcpName } from "./tool-names.js";
 import type { Complete } from "./llm.js";
 import type { SearchOn } from "./web-search.js";
 import type { Workspace } from "./workspace/workspace.js";
@@ -74,9 +75,6 @@ export const learnedAskFits = (asks: readonly string[]): boolean => Buffer.byteL
 export const learnedApprovedTools = (card: Readonly<Record<string, unknown>> | undefined): ReadonlySet<string> =>
   new Set(Array.isArray(card?.mcp_calls) ? card.mcp_calls.filter((name): name is string => typeof name === "string") : []);
 
-/** An MCP tool's catalog name, `mcp:<server>/<tool>`: a call node that names one runs it through the run's own MCP. */
-const MCP_TOOL = /^mcp:[^/]+\/.+$/;
-
 /** The MCP tools a learned workflow's call nodes name (`via: "tool"`, `tool: "mcp:<server>/<tool>"`), each once; none for
  *  one that does not read. The run's gate asks about them before the workflow's call runs (adapter-run-spec.ts). */
 export async function learnedMcpTools(workflow: string): Promise<string[]> {
@@ -88,7 +86,7 @@ export async function learnedMcpTools(workflow: string): Promise<string[]> {
   }
   const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
   try {
-    return workflowTools(workflowNodes(doc, inspectWorkflow(doc as never))).calls.filter((tool) => MCP_TOOL.test(tool));
+    return workflowTools(workflowNodes(doc, inspectWorkflow(doc as never))).calls.filter((tool) => isMcpName(tool));
   } catch {
     return [];
   }
@@ -285,7 +283,7 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
   return defineTool({
     name: LEARNED_WORKFLOW_TOOL,
     description: learnedWorkflowDescription(run.workflows),
-    // Never run again after a crash (pi-durable's "unsafe"; a HostTool's "never": host-tools.ts REPLAY).
+    // Never run again after a crash (pi-durable's "unsafe"; a HostTool's "never": tool-list.ts `replay`).
     replay: "unsafe",
     parameters: {
       type: "object",
@@ -301,7 +299,7 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       const { name, input } = (args ?? {}) as { name?: unknown; input?: unknown };
       const flow = run.workflows.find((workflow) => workflow.name === name);
       if (!flow) return forModel(`No learned workflow of this agent is named ${JSON.stringify(name)}. Its workflows: ${names.join(", ")}.`, { isError: true });
-      const ledger = ledgerOf(api, context);
+      const ledger = ledgerOf(api.callId);
       // Which of its nodes ran, kept beside the call in the run's journal (LEARNED_NODES), for its timeline row; a trace
       // that can't be kept never fails the call. A call stopped part way keeps the nodes that ended before it stopped,
       // written outside the stopped call's context, and still ends as a stop.
@@ -382,7 +380,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     // Its call id under the workflow's call: the node, its execution path, its item in a map. Its paid requests are booked
     // under it, as a call of its own.
     const callId = `${ledger?.call ?? LEARNED_WORKFLOW_TOOL}/${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`;
-    if (tool && MCP_TOOL.test(tool)) {
+    if (tool && isMcpName(tool)) {
       // An MCP tool of the run, through the run's own MCP as the loop wrapped it (its flush, its booking on the run's one
       // ledger, a CLI's record, the stop's abort), after the gate's rule read again now, as the harness's own call is.
       const send = (run.mcpTools ?? []).includes(tool) && run.decide ? hostCalls()?.mcp(tool) : undefined;
@@ -412,7 +410,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     if (permission === "deny") throw new Error(deniedText(tool!, undefined, run.denyFrom(tool!)));
     if (permission === "ask") throw new Error(`This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
     // Its paid requests booked under the tool's call, as a call of its own: the node, its execution path, its item in a map.
-    const booked = ledger ? { ledger: { call: callId, record: ledger.record } } : {};
+    const booked = ledger ? { ledger: { ...ledger, call: callId } } : {};
     return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...(run.search ? { search: run.search } : {}), ...booked });
   };
   // Each node as it ends, by the DSL's own event: what the call's timeline row shows of it.

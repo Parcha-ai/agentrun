@@ -10,20 +10,6 @@ public struct RouteUnavailable: Error, Sendable {
 	}
 }
 
-/// A person took the computer back during an act that takes, or took, the foreground route: the step it stops answers
-/// aborted and runs nothing, as input.actions stops at its next action.
-struct TakenOver: Error {
-	let message: String
-}
-
-/// What the take-over check of one act compares against: when the act began, and where the pointer was then or where
-/// the foreground route last left it. Armed once a step took the foreground route: from then on every step checks.
-struct TakeOverWatch {
-	var since: Double = 0
-	var pointer: Point?
-	var armed = false
-}
-
 /// The timings the engine settles and polls by.
 public struct Timing: Sendable {
 	/// Two looks this far apart that are the same count as settled.
@@ -58,8 +44,10 @@ public actor UIEngine {
 	var looks = 0
 	var lookMs = 0.0
 	var frameMs = 0.0
-	/// The act running now, for the take-over check.
-	var takeOver = TakeOverWatch()
+	/// The act running now, for the take-over check (TakeOverWatch, input.actions' rule too). Armed once a step took the
+	/// foreground route: from then on every step checks.
+	var takeOver: TakeOverWatch?
+	var takeOverArmed = false
 
 	public init(platform: Platform, policy: Policy, timing: Timing = Timing()) {
 		self.platform = platform
@@ -316,7 +304,8 @@ public actor UIEngine {
 
 		let started = clock.now()
 		(looks, lookMs, frameMs) = (0, 0, 0)
-		takeOver = TakeOverWatch(since: started, pointer: platform.capture.cursor())
+		takeOver = TakeOverWatch(call: "act", unit: "step", platform: platform)
+		takeOverArmed = false
 		var spent: [String] = []
 		// A wait for a window may begin with none: its app's window not there yet is what it waits for, never not_found.
 		let first: View?
@@ -343,7 +332,7 @@ public actor UIEngine {
 			}
 			let (at, looked) = (clock.now(), looks)
 			do {
-				if takeOver.armed { try checkTakeOver() }
+				if takeOverArmed { try takeOver?.check(platform) }
 				let (route, verified, after) = try await run(step, view: current, state: params.state, held: held, foreground: foreground)
 				results.append(.ran(route: route, verified: verified))
 				view = after
@@ -521,8 +510,7 @@ public actor UIEngine {
 	func run(_ step: Step, view: View, state: String?, held: View?, foreground: Bool) async throws -> (Route, Bool, View?) {
 		let target = view.target
 		if case .nav(let nav) = step {
-			if case .off(let reason) = platform.navFeature { throw RPCError.unsupported("nav \(nav.rawValue): ui.nav is off here: \(reason)") }
-			throw RPCError.unsupported("nav \(nav.rawValue): no route takes it here")
+			throw RPCError.unsupported("nav \(nav.rawValue): ui.nav is off here: \(FeatureName.navOff)")
 		}
 		let (node, element) = try self.element(step.ref, in: view)
 		// A step on a disabled control is refused, so its text never goes to whatever has the focus.
@@ -737,7 +725,7 @@ public actor UIEngine {
 			}
 			// The foreground route takes the person's own pointer and keys: a person at them since the act began keeps
 			// them, and nothing is sent.
-			if attempt.route == .foreground { try checkTakeOver() }
+			if attempt.route == .foreground { try takeOver?.check(platform) }
 			let check: Check
 			do {
 				check = try await attempt.run()
@@ -748,8 +736,8 @@ public actor UIEngine {
 			let after = try await settleAfterStep(view.target)
 			if attempt.route == .foreground {
 				// Read once the step settled: the pointer the route moved is where it reads by then.
-				takeOver.armed = true
-				takeOver.pointer = platform.capture.cursor()
+				takeOverArmed = true
+				takeOver?.pointer = platform.capture.cursor()
 			}
 			switch check {
 			case .readback(let holds):
@@ -760,19 +748,6 @@ public actor UIEngine {
 		}
 		let words = "no route could \(step.verb) here. " + reasons.joined(separator: "; ")
 		throw denied ? RPCError.denied(words) : RPCError.unsupported(words)
-	}
-
-	/// A person who used the keyboard or the mouse since the act began, or whose pointer is no longer where it was
-	/// (where the foreground route left it, once it took it), has the computer: the act stops before its next step, as
-	/// input.actions stops before its next action.
-	func checkTakeOver() throws {
-		if let used = platform.person.lastInput(), used > takeOver.since {
-			throw TakenOver(message: "someone used the keyboard or the mouse while this act ran (\(Int(clock.now() - used)) ms ago): the person has the computer, so the act stopped before this step and sent it nothing; observe and try again")
-		}
-		let limit = InputRun.takeOverPixels
-		if let left = takeOver.pointer, let now = platform.capture.cursor(), abs(now.x - left.x) > limit || abs(now.y - left.y) > limit {
-			throw TakenOver(message: "someone moved the pointer to (\(Int(now.x)), \(Int(now.y))) while this act ran (it was at (\(Int(left.x)), \(Int(left.y)))): the person has the computer, so the act stopped before this step and sent it nothing; observe and try again")
-		}
 	}
 
 	// MARK: elements and points
@@ -932,7 +907,7 @@ extension ResolvedTarget {
 }
 
 extension Rect {
-	func intersects(_ other: Rect) -> Bool {
+	public func intersects(_ other: Rect) -> Bool {
 		x < other.x + other.w && other.x < x + w && y < other.y + other.h && other.y < y + h
 	}
 }

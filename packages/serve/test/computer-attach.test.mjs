@@ -113,6 +113,20 @@ test("a hello that serves no kind is said in words naming what its driver lacks,
   assert.match(refused, new RegExp(cloud.label), "the cloud computers to pick instead");
 });
 
+test("a paired Mac never runs a run's shell or holds its folder, granted exec and files or not; a sandbox naming it is refused before the run starts, in words", async () => {
+  const keys = { keysOf: async () => ({}) };
+  const row = { id: "cmp-abc", name: "vesper-mac", hello: HELLO, driver: "0.2.0", labels: {}, createdAt: 1, seenAt: null, revokedAt: null };
+  const granted = { ...row, hello: { ...HELLO, groups: ["exec", "files", ...HELLO.groups] } };
+  for (const mode of [1, 2]) {
+    for (const one of [row, granted]) {
+      const desktop = await resolveComputer({ kind: "desktop", provider: "cmp-abc" }, mode, withPaired({ SETTING_KINDS, PROVIDERS, servingRefusals }, [one]), keys);
+      assert.deepEqual({ refused: desktop.refused, mounts: desktop.mounts, ports: desktop.ports }, { refused: undefined, mounts: false, ports: ["screen", "input"] }, `Mode ${mode}, groups ${one.hello.groups}`);
+    }
+    const { refused } = await resolveComputer({ kind: "sandbox", provider: "cmp-abc" }, mode, withPaired({ SETTING_KINDS, PROVIDERS, servingRefusals }, [row]), keys);
+    assert.match(refused, /^vesper-mac is a computer of your own, and a paired computer can't be a sandbox computer yet: give this agent vesper-mac as a desktop computer, or pick one of /);
+  }
+});
+
 test("a paired computer is listed as its hello says, the live one's while attached, with the run that holds it and the deadline its hold ends by", () => {
   const row = { id: "cmp-abc", name: "desk", hello: { ...HELLO, os: "windows", osVersion: "11" }, driver: "0.2.0", labels: {}, pairingId: "pairing-x", createdAt: 0, seenAt: 1000, revokedAt: null };
   const features = { "ui.tree": { off: "no grant" }, "ui.image": true };

@@ -12,9 +12,9 @@ import { type InputIssue, invalid } from "./errors.js";
 import type { GitHubConnectionView } from "./github-connection.js";
 import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
-import { MCP_SERVER_NAME } from "./mcp-probe.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
-import { mcpToolName, type PinScalar, type PinValue } from "./tool-gate.js";
+import type { PinScalar, PinValue } from "./tool-gate.js";
+import { isMcpName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName } from "./tool-names.js";
 import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { BOUND_TOOLS, toolOf } from "./tools.js";
@@ -47,8 +47,6 @@ const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PARAMETER = /^[a-z][a-z0-9_]{0,63}$/;
 /** The keys a package may need: those Settings saves (a tool's or a model provider's), each one a run is handed. */
 export const PACKAGE_SECRETS: readonly string[] = [...new Set([...TOOL_KEY_ROWS.flatMap((row) => row.fields as readonly string[]), ...MODEL_KEYS.map((row) => row.field)])];
-/** An MCP tool's name: one tool, never the server's wildcard `*`. */
-const MCP_TOOL = /^[A-Za-z0-9_.-]{1,128}$/;
 /** A package's bounds: each file, all its files together (POST /agents' own body limit), and how many it holds. */
 export const MAX_FILE_BYTES = 256 << 10;
 export const MAX_PACKAGE_BYTES = 1 << 20;
@@ -306,16 +304,16 @@ export function readPackage(dir: string): Package {
   if (f.model !== undefined && !(isObject(f.model) && !unknownFields(f.model, ["tier", "prefer", ...MODEL_TIER_NAMES]).length && typeof f.model.tier === "string" && Object.hasOwn(MODEL_TIERS, f.model.tier) && ref(f.model.prefer) && MODEL_TIER_NAMES.every((tier) => ref((f.model as Record<string, unknown>)[tier])))) bad(MANIFEST, `model is {tier: ${Object.keys(MODEL_TIERS).join(" | ")}, prefer?: "provider/model-id", ${MODEL_TIER_NAMES.map((tier) => `${tier}?: "provider/model-id"`).join(", ")}}`);
   if (f.effort !== undefined && !(THINKING_LEVELS as readonly unknown[]).includes(f.effort)) bad(MANIFEST, `effort is one of ${THINKING_LEVELS.join(", ")}`);
   const tools = f.tools === undefined ? undefined : list(f.tools, "tools");
-  if (tools?.some((tool) => tool.startsWith("mcp:"))) bad(MANIFEST, "tools grants no MCP tool: mcp lists them, by server");
-  for (const tool of tools?.filter((tool) => !tool.startsWith("mcp:") && !BOUND_TOOLS.includes(tool)) ?? []) bad(MANIFEST, `tools: ${tool} is not a tool this server binds (${BOUND_TOOLS.join(", ")})`);
+  if (tools?.some(isMcpName)) bad(MANIFEST, "tools grants no MCP tool: mcp lists them, by server");
+  for (const tool of tools?.filter((tool) => !isMcpName(tool) && !BOUND_TOOLS.includes(tool)) ?? []) bad(MANIFEST, `tools: ${tool} is not a tool this server binds (${BOUND_TOOLS.join(", ")})`);
   const mcp: McpNeed[] = [];
   for (const [i, need] of (f.mcp === undefined ? [] : Array.isArray(f.mcp) ? f.mcp : (bad(MANIFEST, "mcp is a list of {server, tools, required?}"), [])).entries()) {
     const names = isObject(need) && Array.isArray(need.tools) ? need.tools : [];
     const allow = isObject(need) && need.allow !== undefined ? need.allow : [];
     const pin = isObject(need) && need.pin !== undefined ? need.pin : {};
-    const ok = isObject(need) && !unknownFields(need, ["server", "tools", "required", "allow", "pin"]).length && typeof need.server === "string" && MCP_SERVER_NAME.test(need.server) && names.length > 0 && names.every((tool) => typeof tool === "string" && MCP_TOOL.test(tool)) && new Set(names).size === names.length && (need.required === undefined || typeof need.required === "boolean")
+    const ok = isObject(need) && !unknownFields(need, ["server", "tools", "required", "allow", "pin"]).length && typeof need.server === "string" && MCP_SERVER_NAME.test(need.server) && names.length > 0 && names.every((tool) => typeof tool === "string" && MCP_TOOL_NAME.test(tool)) && new Set(names).size === names.length && (need.required === undefined || typeof need.required === "boolean")
       && Array.isArray(allow) && allow.every((tool) => names.includes(tool)) && new Set(allow).size === allow.length;
-    if (!ok) bad(MANIFEST, `mcp[${i}] is {server: an MCP server's name (${MCP_SERVER_NAME.source}), tools: its tool names (${MCP_TOOL.source}), none twice, required?: true or false, allow?: the tools of its tools it asks the owner to allow, pin?: {<tool>: {<argument>: <value>}}}`);
+    if (!ok) bad(MANIFEST, `mcp[${i}] is {server: an MCP server's name (${MCP_SERVER_NAME.source}), tools: its tool names (${MCP_TOOL_NAME.source}), none twice, required?: true or false, allow?: the tools of its tools it asks the owner to allow, pin?: {<tool>: {<argument>: <value>}}}`);
     else if (mcp.some((m) => m.server === need.server)) bad(MANIFEST, `mcp[${i}]: the server ${need.server as string} is listed twice`);
     else {
       const pinned = pinOf(pin, need.server as string, names as string[], `mcp[${i}].pin`, (message) => bad(MANIFEST, message));
@@ -522,7 +520,9 @@ export function readPackage(dir: string): Package {
   // refusal, never a server's start.
   const samples = Object.fromEntries(Object.entries(parameters).map(([key, spec]) => [key, spec.default ?? SAMPLES[spec.type]]));
   const declared = Object.fromEntries(MODEL_TIER_NAMES.flatMap((tier) => (p.model?.[tier] ? [[tier, p.model[tier]!]] : [])));
-  const made = compiled(p, samples, { ...(harness ? { harness: harness[0]! } : {}), ...(p.model?.prefer ? { model: p.model.prefer } : {}), ...(Object.keys(declared).length ? { modelTiers: declared } : {}), mcp, defaultTools: [], grants: [] });
+  // Every MCP tool ticked: the widest agent an apply can make, so each tool the package lists is checked as a grant.
+  const every = mcp.flatMap(({ server, tools: listed }) => listed.map((tool) => mcpToolName(server, tool)));
+  const made = compiled(p, samples, { ...(harness ? { harness: harness[0]! } : {}), ...(p.model?.prefer ? { model: p.model.prefer } : {}), ...(Object.keys(declared).length ? { modelTiers: declared } : {}), mcp, defaultTools: [], grants: every });
   for (const issue of definitionBodyIssues(made.agent)) bad(issue.field.startsWith("skills.") ? `skills/${issue.field.slice("skills.".length)}` : MANIFEST, `${issue.field.startsWith("skills.") ? "" : `the agent it makes: ${issue.field}: `}${issue.message}`);
   for (const issue of madeTriggerIssues(made.triggers, 0)) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
@@ -686,16 +686,20 @@ export async function packageTiers(env: NodeJS.ProcessEnv, model: Package["model
 }
 
 /** The bodies an apply makes: POST /v2/agents' (its definition and skill files) and each trigger's, with no agent_id,
- *  every `${parameters.x}` filled. `mcp`: the package's MCP servers this server has saved, whose tools are granted beside
- *  the package's tools (or, when it names none, `defaultTools`, those this server gives a new agent), each at the
- *  owner's own setting; `grants`, the owner's answer at apply, alone are set to allow. A tool the package pins gets its
- *  pin, filled, in the agent's tool settings, whatever its permission; one whose pin fills empty (its parameter not
- *  given) is set to deny instead, granted or not, and named in `unpinned` (by gate name, with the parameters not given):
- *  a send with no destination set never runs. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; modelTiers?: Record<string, string>; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; approvals?: Approvals; computer?: ComputerPick }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
+ *  every `${parameters.x}` filled. `grants`, the owner's answer at apply (the tools ticked): of the package's tools on
+ *  `mcp`, the MCP servers this server has saved, those alone are granted, beside the package's tools (or, when it names
+ *  none, `defaultTools`, those this server gives a new agent), each set to allow but those `held` (a deny the owner set on
+ *  this server holds them: granted, never allowed). A tool left unticked is not the agent's at all, so no harness offers
+ *  it and approvals never, which lifts an ask of a tool the agent has, has nothing to lift: the owner grants it later in
+ *  the agent's tools. A tool the package pins gets its pin, filled, in the agent's tool settings, whatever its permission
+ *  and ticked or not (it holds once the tool is granted later); one whose pin fills empty (its parameter not given) is set
+ *  to deny instead, and named in `unpinned` (by gate name, with the parameters not given): a send with no destination set
+ *  never runs. */
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; modelTiers?: Record<string, string>; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; held?: readonly string[]; approvals?: Approvals; computer?: ComputerPick }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
-  const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
-  const allowed = chosen.grants.filter((tool) => granted.includes(tool));
+  // The ticks, in the package's order: never a tool of a server not saved here, nor one the owner did not tick.
+  const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool))).filter((tool) => chosen.grants.includes(tool));
+  const allowed = granted.filter((tool) => !chosen.held?.includes(tool));
   // The computer its list picked (pickComputer): its tools less the shell tools that computer does not run; a package
   // that names none is given that computer's shell tools, as a new agent in a box is given the box's.
   const pick = chosen.computer;
