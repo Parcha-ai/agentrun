@@ -173,6 +173,22 @@ describe("applying a template", () => {
     expect(t.sent[0].body.servers).toEqual({ hubspot: "crm" });
   });
 
+  it("a server choice the apply refuses (deleted while the page was open) reads the saved servers again, so the next Apply sends what is saved now", async () => {
+    const fake: Fake = { templates: [LEAD_MCP], servers: [{ name: "crm", source: "url", toolkit: "hubspot" }] };
+    fake.apply = async () => {
+      if (fake.servers![0]!.name === "crm-2") return { template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: [], warnings: [] };
+      fake.servers = [{ name: "crm-2", source: "url", toolkit: "hubspot" }];
+      throw Object.assign(new ClientError(422, "input_invalid", "The template's input is not valid."), { fields: [{ field: "servers.hubspot", reason: "not_an_option", message: "crm is not a saved MCP server that is url hubspot: crm-2 is." }] });
+    };
+    const t = await open("inbound-lead", fake);
+    expect(t.host.querySelector('[data-mcp="hubspot"]')!.textContent).toContain("Uses crm");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.servers).toEqual({ hubspot: "crm" });
+    expect(t.host.querySelector('[data-mcp="hubspot"]')!.textContent).toContain("Uses crm-2");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[1].body.servers).toEqual({ hubspot: "crm-2" });
+  });
+
   it("saved servers that can't be read: said with Try again, and Apply waits for them; read, the need maps", async () => {
     const down = { now: true };
     const t = await open("inbound-lead", { templates: [LEAD_MCP], servers: [{ name: "crm", source: "url", toolkit: "hubspot" }], serversDown: down });
