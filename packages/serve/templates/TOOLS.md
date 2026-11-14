@@ -80,10 +80,14 @@ under the run's cap before it is sent, and its charge is its own line in the run
 unlisted, and the model finds them with `tools_search` and calls them with `tools_call` (Claude Code's own tool search
 does this there, so it gets neither). `codemode` runs a short JavaScript script that calls several tools in one step
 (`await tools.<name>(args)`), on every harness but Codex, which uses its own code mode. You don't declare any of them.
-A call made through them is the tool's own call: asked about, pinned and priced exactly as a direct call is. An MCP
+Settings → Tools lists all three, each allow or deny, allow by default; a deny means it isn't offered. With
+`tools_search` or `tools_call` set to deny, nothing is left unlisted: every run lists every tool, Claude Code's too. A
+call made through them is the tool's own call: asked about, pinned and priced exactly as a direct call is. A script
+calls a tool by its own name, as `ALL_TOOLS` and `tools_search` give it, never with the prefix the model's tool list
+may show (`hands_`, `mcp__hands__`); if your instructions show a script, leave the prefix off there too. An MCP
 tool's result reaches a script as the server's text (Composio's is JSON in a string), so parse it before reading its
-fields. With more than 20 such tools, tell the model to search for what it needs rather than listing every tool in the
-instructions.
+fields. With more than 20 such tools and both helpers allowed, tell the model to search for what it needs rather than
+listing every tool in the instructions.
 
 ## Pin
 
