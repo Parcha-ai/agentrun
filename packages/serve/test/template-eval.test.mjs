@@ -13,11 +13,13 @@ import Ajv2020 from "ajv/dist/2020.js";
 import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, markdownReport, metricsOf, outputVerdict, readCases, searched, startFake, verdictOf } from "../dist/template-eval.js";
 import { lastJsonBlock, structuredAnswer } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
-import { scratch, serve } from "./support.mjs";
+import { scratch, serve, withEnv } from "./support.mjs";
+import { KEY as FAUX_MONID_KEY } from "./fixtures/faux-monid.mjs";
 
 const FIXTURES = new URL("./fixtures/templates-eval/", import.meta.url).pathname;
 const PKG = join(FIXTURES, "evalpkg");
 const FAUX = new URL("./fixtures/faux-template-eval.mjs", import.meta.url).pathname;
+const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
 // The faux's state, in this file's process (each test file runs in a process of its own), which the runs' processes
@@ -201,6 +203,55 @@ test("a background shell call keeps its own name in the grading record, as the g
   const renamed = { answer: "", calls: callsOf(owned, "claude-agent", { "my-crm": "crm" }), mcpCalls: [], files: [] };
   assert.deepEqual(renamed.calls.map((c) => c.tool), ["mcp:crm/get_contact"]);
   assert.equal(gradeDeterministic({ file: "got.md", type: "tool_used", tools: ["mcp:crm/get_contact"], expect: "called" }, renamed, []).pass, true);
+});
+
+/** A copy of the fixture package whose agent is also granted `grants` (monid endpoints), with one case `monid` whose
+ *  agent calls monid's /person/enrich by its wire name and whose graders are `graders` ({file: front matter}). */
+async function monidPackage(t, grants, graders) {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const manifest = readFileSync(join(dir, "agent.md"), "utf8");
+  writeFileSync(join(dir, "agent.md"), manifest.replace("tools: [read, write, ask_person]", `tools: [read, write, ask_person, ${grants.join(", ")}]`));
+  const at = join(dir, "evals", "monid");
+  mkdirSync(join(at, "graders"), { recursive: true });
+  writeFileSync(join(at, "case.yaml"), "parameters:\n  team: blue\n");
+  writeFileSync(join(at, "prompt.md"), '---\ndescription: Enriches Ada through monid.\n---\nCall monid__faux__person__enrich with {"body": {"name": "Ada"}}\nAnswer:\nmonid said: {{last-result}}\n\n```json\n{"verdict": "good", "score": 50, "summary": "monid"}\n```\n');
+  for (const [file, front] of Object.entries(graders)) writeFileSync(join(at, "graders", file), `---\n${front}\n---\n`);
+  return dir;
+}
+const caseProblems = (dir) => {
+  try {
+    readCases(dir, ["monid"]);
+  } catch (thrown) {
+    if (thrown instanceof CaseError) return thrown.problems;
+    throw thrown;
+  }
+  return [];
+};
+
+test("a tool_used grader names a monid endpoint the package grants by name, and its calls (the harness's wire name) count under that name", { timeout: 300_000 }, async (t) => {
+  withEnv(t, { MONID_API_KEY: FAUX_MONID_KEY });
+  const dir = await monidPackage(t, ["monid:faux/person/enrich"], { "enriched.md": "type: tool_used\ntool: monid:faux/person/enrich\ncount: 1" });
+  assert.deepEqual(caseProblems(dir), [], "the grader reads");
+  const report = await evalTemplate({ dir, cases: ["monid"], serve: { faux: FAUX, fauxMonid: FAUX_MONID } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  assert.match(run.answer, /monid said: .*"full_name":"Ada"/, "the endpoint ran");
+  assert.deepEqual(run.calls.map((call) => [call.tool, call.name]), [["monid:faux/person/enrich", "monid:faux/person/enrich"]], JSON.stringify(run.calls));
+  assert.equal(graderOf(run, "enriched.md").reason, "1 call of monid:faux/person/enrich; the grader expects exactly 1");
+  assert.equal(report.pass, true, JSON.stringify(run.graders));
+});
+
+test("a tool_used grader naming a monid endpoint the package does not grant by name is refused, a provider's wildcard grant too", async (t) => {
+  const dir = await monidPackage(t, ["monid:faux/person/enrich", "monid:apollo/*"], {
+    "other.md": "type: tool_used\ntool: monid:faux/tweets",
+    "wild.md": "type: tool_used\ntool: monid:apollo/people/match",
+    "star.md": "type: tool_used\ntool: monid:apollo/*",
+  });
+  const said = caseProblems(dir).join("\n");
+  assert.match(said, /graders\/other\.md: monid:faux\/tweets is not a monid endpoint the package grants by name \(it grants monid:faux\/person\/enrich\)/);
+  assert.match(said, /graders\/wild\.md: monid:apollo\/people\/match is not a monid endpoint the package grants by name .*monid:apollo\/\* grants .* by monid's listing when the agent is saved, which is not read here: grant monid:apollo\/people\/match by name/);
+  assert.match(said, /graders\/star\.md: monid:apollo\/\* is not a monid endpoint the package grants by name/);
 });
 
 test("the eval's exit code is 1 when any case failed, however many passed beside it, and 0 only when every case passed", () => {
