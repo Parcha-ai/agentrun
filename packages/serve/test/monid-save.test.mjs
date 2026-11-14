@@ -7,10 +7,13 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { KEY } from "./fixtures/faux-monid.mjs";
-import { agent, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
-const { MONID_USAGE_CEILING_USD } = await import("../dist/monid.js");
+/** faux /person/search: priced per result, and a call charges $1.42 (fixtures/faux-monid.mjs). */
+const SEARCH = "monid:faux/person/search";
+/** The words an endpoint priced by usage is refused or left out in: what it is, how monid prices it, and why. */
+const UNBOUNDED = (tool, how) => new RegExp(`${tool.replaceAll("/", "\\/")} cannot be granted: monid prices it ${how}, so what one call costs is known only after it has run, and monid does not bound it \\(a run's maxCost checks only monid's estimate, which a call priced by usage can pass\\)\\. A run's cap could not be kept: grant endpoints monid prices per call\\.`);
 
 /** The pin the agent `id`'s current revision holds, as its runs read it. */
 const pinOf = async (store, id) => {
@@ -26,13 +29,56 @@ test("monid:apollo/* resolves at the save to the endpoints monid lists for apoll
   assert.deepEqual(saved.body.tools ?? saved.body.definition?.tools, ["monid:apollo/*", "monid:faux/person/enrich"], "the grants as given");
   assert.doesNotMatch(JSON.stringify(saved.body), /monidPin|monid_pin/, "the pin is never shown");
   const pin = await pinOf(store, "apollo");
-  assert.deepEqual(Object.keys(pin), ["monid:apollo/news_articles/search", "monid:apollo/people/match", "monid:faux/person/enrich"]);
-  assert.deepEqual(Object.fromEntries(Object.entries(pin).map(([name, one]) => [name, [one.usd, one.usage ?? false]])), {
-    "monid:apollo/news_articles/search": [MONID_USAGE_CEILING_USD, true],
-    "monid:apollo/people/match": [0.026, false],
-    "monid:faux/person/enrich": [0.003, false],
-  });
+  assert.deepEqual(Object.fromEntries(Object.entries(pin).map(([name, one]) => [name, one.usd])), { "monid:apollo/people/match": 0.026, "monid:faux/person/enrich": 0.003 });
   assert.deepEqual(pin["monid:apollo/people/match"].input, { type: "object", additionalProperties: false, properties: { body: { type: "object", required: ["name"], properties: { name: { type: "string" } } } }, required: ["body"] }, "its input, monid's $schema left out");
+});
+
+test("(a) a call priced by usage that monid would charge past the run's cap is refused before it runs: nothing sent to monid, nothing booked", { timeout: 90_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.ndjson");
+  withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const { api } = await serve(t, { fauxMonid: FAUX_MONID });
+  const runs = async () => (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((call) => call.path === "/v1/run");
+  // One call, allowed, under a $1.20 cap; monid charges it $1.42.
+  const inline = { external: { source: "grep", kind: "expert", id: "usage", version: 1 }, definition: { name: "Usage", instructions: "Answer.", skills: [], tools: [SEARCH], tool_settings: { [SEARCH]: { permission: "allow" } } }, input: { content: "Run monid's /person/search, called again after a raise." }, max_cost_usd: 1.2 };
+  const started = await api("POST", "/runs", inline);
+  if (started.status === 202) {
+    // What the run booked, for the failure's words.
+    const { run_id } = started.body;
+    await follow(api, run_id, ["input_required", "completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+    const ran = (await api("GET", `/runs/${run_id}`)).body;
+    assert.fail(`started, sent ${(await runs()).length} call(s) to monid, and booked $${ran.cost?.usd} against its $${ran.cost?.cap_usd} cap`);
+  }
+  assert.equal(started.status, 422, JSON.stringify(started.body));
+  assert.match(JSON.stringify(started.body), UNBOUNDED(SEARCH, "per result \\(PER_RESULT\\)"));
+  assert.deepEqual(await runs(), [], "nothing sent to monid");
+  assert.deepEqual((await api("GET", "/runs")).body.runs, [], "no run, nothing booked");
+});
+
+test("(b) an endpoint priced by usage is refused at the save as a named grant, and left out of a provider's wildcard with the reason; a wildcard left with none is refused", async (t) => {
+  withEnv(t, { MONID_API_KEY: KEY });
+  const { api, store } = await serve(t, { fauxMonid: FAUX_MONID });
+  // Named: refused at its grant, in words naming it and why; nothing saved.
+  const named = await api("POST", "/agents", agent("usage-named", { tools: ["monid:faux/person/enrich", "monid:apollo/news_articles/search"] }));
+  assert.equal(named.status, 422, JSON.stringify(named.body));
+  const [issue, ...more] = named.body.error?.fields ?? [];
+  assert.deepEqual(more, [], JSON.stringify(named.body));
+  assert.equal(issue?.field, "definition.tools[1]", JSON.stringify(issue));
+  assert.match(issue.message, UNBOUNDED("monid:apollo/news_articles/search", "per result \\(PER_RESULT\\)"));
+  assert.equal((await api("GET", "/agents/usage-named")).status, 404, "nothing saved");
+  // A wildcard: saved without it, the save's warnings naming it and why, at the wildcard's grant.
+  const wild = await api("POST", "/agents", agent("usage-wild", { tools: ["monid:apollo/*"] }));
+  assert.equal(wild.status, 201, JSON.stringify(wild.body));
+  assert.deepEqual(Object.keys(await pinOf(store, "usage-wild")), ["monid:apollo/people/match"], "the endpoint priced by usage is not pinned");
+  const left = (wild.body.warnings ?? []).filter((warning) => /monid:apollo\/news_articles\/search/.test(warning.message));
+  assert.equal(left.length, 1, JSON.stringify(wild.body.warnings));
+  assert.equal(left[0].field, "definition.tools[0]");
+  assert.match(left[0].message, /^monid:apollo\/news_articles\/search is left out of monid:apollo\/\*: /);
+  assert.match(left[0].message, UNBOUNDED("monid:apollo/news_articles/search", "per result \\(PER_RESULT\\)"));
+  // A wildcard of a provider whose every endpoint is priced by usage pins nothing: refused, naming each.
+  const none = await api("POST", "/agents", agent("usage-none", { tools: ["monid:metered/*"] }));
+  assert.equal(none.status, 422, JSON.stringify(none.body));
+  assert.match(JSON.stringify(none.body), /every endpoint monid lists of metered is priced by usage/);
+  assert.match(JSON.stringify(none.body), UNBOUNDED("monid:metered/rows", "per 1 credit \\(PER_UNIT\\)"));
 });
 
 test("a grant monid does not list is refused at the save in words, nothing saved", async (t) => {

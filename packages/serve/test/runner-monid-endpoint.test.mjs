@@ -101,6 +101,21 @@ test("a pinned endpoint's call that does not fit the cap is refused unsent, in t
   assert.deepEqual(sent(), [], "never sent");
 });
 
+test("a call is sent with its hold as monid's maxCost: an endpoint monid now prices above its pinned price is refused by monid unrun, and nothing is booked past the hold", async (t) => {
+  const sent = callLog(t);
+  // Pinned at $0.003 when the agent was saved; monid charges $0.026 now.
+  const stale = { ...PIN[MATCH], usd: 0.003 };
+  const { spec } = await specFor(t, { body: { tools: [MATCH], monidPin: { [MATCH]: stale } }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const [match] = spec.mcp.tools;
+  const paid = await toolLedger(0.01);
+  const answer = await bookedIn({ call: "c1", paid }, () => match.call(ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
+  assert.deepEqual(sent().map((call) => call.maxCost), [0.003], "sent once, its hold as maxCost");
+  assert.equal(answer.isError, true, answer.text);
+  assert.match(answer.text, /estimated cost ~\$0\.026 is above maxCost \$0\.003/, answer.text);
+  assert.ok(paid.spentUsd() <= 0.003, `booked $${paid.spentUsd()} on a call held at $0.003`);
+  assert.equal(paid.heldUsd(), 0, "its hold released");
+});
+
 test("an endpoint priced by usage is held at the declared ceiling and settled at what monid charged", async (t) => {
   callLog(t);
   const { spec } = await specFor(t, { body: { tools: [NEWS], monidPin: { [NEWS]: PIN[NEWS] } }, keys: { MONID_API_KEY: KEY }, env: env() });

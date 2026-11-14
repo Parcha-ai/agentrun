@@ -5,7 +5,8 @@
 // and keeps each call in `calls` for a test that calls it in its own process. It lists LISTING (GET /v1/endpoints, paged)
 // and inspects only what it lists (404 otherwise). Its endpoints, by path: /person/enrich answers at once; /tweets answers 202 and completes on its second read; /slow never
 // ends until stopped; /wallet is 402; /budget is BLOCKED; /broken FAILS; /late is a sync 408; /missing is the provider's
-// 404; /huge answers more than the model reads. With AGENTRUN_TEST_FAUX_MONID_DOWN set, every call is filed and then
+// 404; /huge answers more than the model reads; /person/search is priced per result and charges $1.42; /person/lookup
+// is $1 a call. A run sent with a maxCost below its estimate is refused as monid refuses it (400 MAX_COST_EXCEEDED). With AGENTRUN_TEST_FAUX_MONID_DOWN set, every call is filed and then
 // fails as a fetch to a host that can't be reached does; with AGENTRUN_TEST_FAUX_MONID_STATUS, it answers that status;
 // with AGENTRUN_TEST_FAUX_MONID_STALL, it is held, its signal ignored as a provider answering late, until release(), and
 // stalled() gives the held call's signal once one is held.
@@ -33,8 +34,13 @@ export const LISTING = [
   ...["/person/enrich", "/tweets", "/slow", "/wallet", "/budget", "/broken", "/late", "/missing", "/huge"].map((endpoint) => ({ provider: "faux", endpoint, price: PRICE })),
   { provider: "apollo", endpoint: "/people/match", price: { type: "PER_CALL", amount: { value: 0.026, currency: "USD" } } },
   { provider: "apollo", endpoint: "/news_articles/search", price: { type: "PER_RESULT", amount: { value: 0.001, currency: "USD" } } },
-  // Priced by usage, so a call is held at the usage ceiling ($1) under a cap; it charges $0.004.
+  // Priced by usage (per result): monid estimates one result ($0.001), and a call charges $1.42, as a real one asked for
+  // 100 rows does. Nothing about the call bounds what it is charged.
   { provider: "faux", endpoint: "/person/search", price: { type: "PER_RESULT", amount: { value: 0.001, currency: "USD" } } },
+  // Priced per result and per credit: a provider whose every endpoint is priced by usage.
+  { provider: "metered", endpoint: "/rows", price: { type: "PER_UNIT", amount: { value: 0.002, currency: "USD" }, per: 1, unit: "credit" } },
+  // A dear endpoint at a fixed price ($1 a call), charged its price: a call a small cap refuses.
+  { provider: "faux", endpoint: "/person/lookup", price: { type: "PER_CALL", amount: { value: 1, currency: "USD" } } },
   // Its body's schema holds patternProperties, which Codex refuses (TAGGED_INPUT).
   { provider: "tagger", endpoint: "/tag", price: PRICE },
 ];
@@ -52,7 +58,7 @@ export default async function fakeMonid(url, init = {}) {
   const authorized = bearer === `Bearer ${KEY}` || (Boolean(accepts) && bearer.startsWith("Bearer ") && createHash("sha256").update(given).digest("hex") === accepts);
   const key = createHash("sha256").update(bearer.replace(/^Bearer /, "")).digest("hex").slice(0, 16);
   calls.push({ method, path, body, authorized });
-  if (process.env.AGENTRUN_TEST_FAUX_MONID_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_MONID_CALLS, `${JSON.stringify({ pid: process.pid, method, path, authorized, key })}\n`);
+  if (process.env.AGENTRUN_TEST_FAUX_MONID_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_MONID_CALLS, `${JSON.stringify({ pid: process.pid, method, path, authorized, key, ...(body?.endpoint ? { endpoint: body.endpoint } : {}), ...(body?.maxCost !== undefined ? { maxCost: body.maxCost } : {}) })}\n`);
   if (process.env.AGENTRUN_TEST_FAUX_MONID_STALL) await new Promise((go) => { held.push({ go, signal: init.signal }); for (const reached of waiting.splice(0)) reached(init.signal); });
   // A vendor that echoes the key it was sent in an error (the secrets harness's planted stored key): on the one path
   // AGENTRUN_TEST_FAUX_MONID_ECHO names, a 400 whose message holds the key whole.
@@ -85,6 +91,11 @@ export default async function fakeMonid(url, init = {}) {
     return json(200, { runId: run[1], provider: "faux", endpoint: held.endpoint, status: held.status, price: PRICE });
   }
   if (path !== "/v1/run") return json(404, { code: 404, message: "Not found" });
+  // monid's maxCost: a run whose estimate is above it is refused as sent (400 MAX_COST_EXCEEDED), never run nor charged.
+  // The estimate is the listed amount: a fixed price exactly; one result of an endpoint priced per result, which the
+  // call's charge may pass.
+  const estimate = LISTING.find((one) => one.provider === body.provider && one.endpoint === body.endpoint)?.price.amount?.value ?? 0;
+  if (typeof body.maxCost === "number" && estimate > body.maxCost) return json(400, { code: 400, errorCode: "MAX_COST_EXCEEDED", message: `Run not started: estimated cost ~$${estimate} is above maxCost $${body.maxCost}. Raise maxCost to at least ${estimate} or choose a cheaper endpoint.` });
   const runId = `run${String(++next).padStart(4, "0")}`;
   switch (body.endpoint) {
     case "/person/enrich": return json(200, { ...done(runId, body.endpoint, { full_name: body.input?.body?.name ?? null }), billing: { reportedCost: { value: 3000, unit: "MICRO_DOLLAR", currency: "USD" } } });
@@ -95,7 +106,8 @@ export default async function fakeMonid(url, init = {}) {
     case "/missing": return json(404, { runId, status: "COMPLETED", output: null, providerResponse: { httpStatus: 404, error: { status: 404, message: "No match found for the given query" } }, billing: { reportedCost: { value: 0, unit: "MICRO_DOLLAR", currency: "USD" } } });
     case "/huge": return json(200, done(runId, body.endpoint, "y".repeat(100_000)));
     case "/people/match": return json(200, { ...done(runId, body.endpoint, { person: body.input?.body?.name ?? null }), provider: "apollo", billing: { reportedCost: { value: 26000, unit: "MICRO_DOLLAR", currency: "USD" } } });
-    case "/person/search": return json(200, { ...done(runId, body.endpoint, [{ full_name: body.input?.body?.name ?? null }]), billing: { reportedCost: { value: 4000, unit: "MICRO_DOLLAR", currency: "USD" } } });
+    case "/person/search": return json(200, { ...done(runId, body.endpoint, [{ full_name: body.input?.body?.name ?? null }]), billing: { reportedCost: { value: 1_420_000, unit: "MICRO_DOLLAR", currency: "USD" } } });
+    case "/person/lookup": return json(200, { ...done(runId, body.endpoint, { full_name: body.input?.body?.name ?? null }), billing: { reportedCost: { value: 1_000_000, unit: "MICRO_DOLLAR", currency: "USD" } } });
     case "/news_articles/search": return json(200, { ...done(runId, body.endpoint, [{ title: "news" }]), provider: "apollo", billing: { reportedCost: { value: 4000, unit: "MICRO_DOLLAR", currency: "USD" } } });
   }
   return json(404, { code: 404, message: `No endpoint ${body.endpoint}` });
