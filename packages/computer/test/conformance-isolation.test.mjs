@@ -95,6 +95,21 @@ test("a desktop's own display socket (the daemon's DISPLAY :N, /tmp/.X11-unix/XN
 	assert.match(reasons(linux)[ID], /X11-unix\/X99/);
 });
 
+test("an abstract name (@...) a program connects to is a socket like any other: the display's own (@/tmp/.X11-unix/XN, its X server's) passes, any other fails, named", async () => {
+	// E2B's xfwm4 had a session bus on an abstract name (dbus 1.12's unix:tmpdir), which a program of the user called,
+	// and a check of path sockets alone never saw. The X server listens on the display's path and its abstract name both.
+	const own = ["/run/agentrun/computerd.sock"];
+	const desktop = { kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"], vendorAgentPorts: [2280], display: ":99" };
+	const passing = await run({ ...desktop, pathSockets: [...own, "/tmp/.X11-unix/X99", "@/tmp/.X11-unix/X99"] });
+	assert.deepEqual(statuses(passing), { [ID]: "pass" }, reasons(passing)[ID]);
+	const bus = await run({ ...desktop, pathSockets: [...own, "/tmp/.X11-unix/X99", "@/tmp/.X11-unix/X99", "@/tmp/dbus-3dtpvhCTRZ"] });
+	assert.equal(statuses(bus)[ID], "fail");
+	assert.match(reasons(bus)[ID], /@\/tmp\/dbus-3dtpvhCTRZ \(stream\)/);
+	const linux = await run({ vendorAgentPorts: [2280], pathSockets: [...own, "@/tmp/.X11-unix/X0"] });
+	assert.equal(statuses(linux)[ID], "fail", "a computer with no desktop has no display's name of its own");
+	assert.match(reasons(linux)[ID], /@\/tmp\/\.X11-unix\/X0/);
+});
+
 test("it fails where a program sees another interface than its own loopback, and names them", async () => {
 	const report = await run({ vendorAgentPorts: [2280], probeInterfaces: ["lo", "eth0"] });
 	assert.equal(statuses(report)[ID], "fail");
@@ -115,7 +130,7 @@ test("it fails where a program connects to a path unix socket that is not the co
 	// failure in words, never a fence that silently did not run.
 	const unlisted = await run({ vendorAgentPorts: [2280], pathSockets: "no list" });
 	assert.equal(statuses(unlisted)[ID], "fail");
-	assert.match(reasons(unlisted)[ID], /no list of the path unix sockets/);
+	assert.match(reasons(unlisted)[ID], /no list of the unix sockets/);
 	// Review (#1994, PRRT_kwDOUmdVMs61HER9): a datagram or seqpacket socket is reachable too, and is named with its type.
 	const dgram = await run({ vendorAgentPorts: [2280], pathSockets: [...own, { path: "/run/systemd/journal/socket", type: "dgram" }] });
 	assert.equal(statuses(dgram)[ID], "fail");

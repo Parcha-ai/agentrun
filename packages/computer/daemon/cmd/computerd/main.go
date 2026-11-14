@@ -11,8 +11,8 @@
 //	                    capability in any set and no_new_privs set, or refuses to start.
 //	                    With --own-network (and --user), for a remote computer whose vendor runs its own agent in it,
 //	                    init, still root, refuses to start while another process holds uid, moves itself into a network
-//	                    namespace of its own whose loopback alone is up, and once dropped refuses vsock and io_uring to
-//	                    every thread: its programs reach their own loopback and nothing else (internal/isolate)
+//	                    namespace of its own whose loopback alone is up, and once dropped refuses vsock, io_uring and
+//	                    setns to every thread: its programs reach their own loopback and nothing else (internal/isolate)
 //	                    Where root may not make the network namespace itself (EPERM: no CAP_SYS_ADMIN, as on gVisor),
 //	                    init makes it inside a user namespace instead: it starts itself again as `computerd userns-init`
 //	                    in a user namespace that maps every id to itself and a network namespace, both its own; that init
@@ -24,9 +24,9 @@
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
 //	computerd probe [--sockets] [--connect <host:port>[/udp]]...
 //	                    print one JSON line: this process's uid and gid, the kernel's release, the network interfaces
-//	                    it sees (interfaces, live; quiet; raised), with --sockets the unix sockets with a path it can
-//	                    connect to (sockets, by real path: a walk of /run, /tmp and the like, and /proc/net/unix's
-//	                    paths) and the TCP and UDP sockets that listen in its own network namespace (listeners: TCP in
+//	                    it sees (interfaces, live; quiet; raised), with --sockets the unix sockets it can connect to
+//	                    (sockets, by real path or abstract name: a walk of /run, /tmp and the like, and /proc/net/unix's
+//	                    paths and abstract names) and the TCP and UDP sockets that listen in its own network namespace (listeners: TCP in
 //	                    LISTEN and UDP bound with no peer, from /proc/net/tcp, tcp6, udp and udp6, each with the process
 //	                    that holds it where /proc shows its descriptors, and whether that process runs computerd), the
 //	                    addresses that
@@ -144,8 +144,7 @@ func main() {
 		}
 		result := probe.Run(targets, probe.ConnectBounds)
 		if sockets {
-			netUnix, _ := os.ReadFile("/proc/net/unix")
-			search := probe.ConnectableSockets(probe.SocketRoots, string(netUnix), probe.DefaultSocketBounds, 2*time.Second)
+			search := probe.ConnectableSockets(probe.SocketRoots, "/proc/net/unix", probe.DefaultSocketBounds, 2*time.Second)
 			result.Sockets = &search
 			listeners := probe.Listeners("/proc")
 			result.Listeners = &listeners
