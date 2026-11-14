@@ -23,11 +23,12 @@ import { type AnswerData, KINDS, MESSAGE_SENT_AGAIN } from "../journal-kinds.js"
 import type { EndOfRunAnswer, EndOfRunTurn, LoopDeps, LoopFactory } from "../loop-contract.js";
 import { timelineReducer, type TimelineEvent } from "../../timeline/index.js";
 import { emptyState, translate } from "../../live/translate.js";
+import { servedTimelineRows } from "../../run-timeline-served.js";
 
 /** The one row a person's stop gives on the live timeline (live/translate.ts STOPPED_BY_YOU), the same on every harness. */
 const STOPPED_BY_YOU = "Stopped by you";
 import { startRunner, type Runner } from "../runner.js";
-import type { ConformanceCase, ConformanceSetup, ConformanceSubject, KernelHooks, ScriptStep, SuiteTool, ToolName } from "./subject.js";
+import type { ConformanceCase, ConformanceSetup, ConformanceSubject, KernelHooks, MetaToolName, ScriptStep, SuiteTool, ToolName } from "./subject.js";
 
 /** node:test's test(), as the suite registers its cases with it. */
 export type TestFunction = (name: string, options: { skip?: string | boolean; timeout?: number }, fn: (t: { after(fn: () => unknown): void }) => Promise<void>) => unknown;
@@ -346,6 +347,8 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     }
     return reducer.rows();
   };
+  /** The run's Timeline rows as GET /runs/{id}/timeline serves them (run-timeline-served.ts), its approval rows among them. */
+  const servedRows = (): Promise<TimelineEvent[]> => servedTimelineRows({ serverSecrets: () => [], keyEnv: () => ({}) }, server, RUN, BACKGROUND_CONTEXT);
   const commandRow = async (id: number) => (await server.commands(RUN, id - 1)).find((row) => row.id === id)!;
   /** The call the run asked a person about: its ask entry's callId, which an approve or deny names as its approval. */
   const askedCall = async (): Promise<string> => {
@@ -355,7 +358,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, storeUrl: url, storeEnv, clockFile, runOut, runOutUnknown, claimsSettled, server, start, run, read, ended, began, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
+  return { dir, storeUrl: url, storeEnv, clockFile, runOut, runOutUnknown, claimsSettled, server, start, run, read, ended, began, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows, servedRows };
 }
 
 interface Case {
@@ -1095,11 +1098,13 @@ const CASES: readonly Case[] = [
       assert.equal(ran.asked, 0, "the asked tool waits for its answer");
       const callId = await w.askedCall();
       assert.match(callId, /\/call$/, `the ask is the nested call's own, under the calling one's id: ${callId}`);
+      await nestedRowsShown(w, "tools_call", [{ tool: "asked", waits: true }]);
       await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
       const row = await w.ended("ended");
       assert.ok(row.epoch > parked.epoch, "resumed under a new claim");
       assert.equal(ran.asked, 1, "approved, it ran once");
       assert.match(await modelSaid(w), /asked done/, "its outcome is tools_call's answer");
+      await nestedRowsShown(w, "tools_call", [{ tool: "asked", result: /asked done/ }]);
     },
   },
   {
@@ -1126,12 +1131,14 @@ const CASES: readonly Case[] = [
       await w.start("runner-a", { script: [{ call: "codemode", args: { script } }, { sayLastResult: true }], tools, hooks: quiet });
       await w.ended("parked");
       assert.deepEqual([ran.read, ran.asked, ran.effect], [1, 0, 0], "the script's read ran, and its asked call waits");
+      await nestedRowsShown(w, "codemode", [{ tool: "read", result: /^read$/ }, { tool: "asked", waits: true }]);
       await sendCommand(w.server, RUN, { kind: "approve", body: { approval: await w.askedCall() } });
       await w.ended("ended");
       assert.deepEqual([ran.read, ran.asked, ran.effect], [1, 1, 0], "the read was answered from its record, the asked call ran once, and the effect after it never ran");
       const said = await modelSaid(w);
       assert.match(said, /asked done/, `the asked call's outcome is the script's answer: ${said}`);
       assert.match(said, /The rest of the script did not run/, `the answer says the rest did not run: ${said}`);
+      await nestedRowsShown(w, "codemode", [{ tool: "read", result: /^read$/ }, { tool: "asked", result: /asked done/ }]);
     },
   },
   {
@@ -1145,6 +1152,24 @@ const CASES: readonly Case[] = [
     },
   },
 ];
+
+/** The one Timeline rule for a call that nests calls (tools_call, codemode), the same on every harness: the call's own row,
+ *  then each call it made as its own rows (its id `<the call's id>/<key>`), a finished one's result row with its output,
+ *  and one that waits for a person with its approval row, as a call the model made itself shows them. `nested`: each call
+ *  it made, by tool, with what its result says (`result`) or that it waits (`waits`). */
+async function nestedRowsShown(w: { servedRows(): Promise<TimelineEvent[]> }, parent: MetaToolName, nested: readonly { tool: ToolName; result?: RegExp; waits?: true }[]): Promise<void> {
+  const rows = await w.servedRows();
+  const seen = JSON.stringify(rows.map((row) => [row.kind, row.tool_use_id, row.summary]));
+  const id = rows.find((row) => row.kind === "tool_use" && row.tool_name === parent)?.tool_use_id;
+  assert.ok(id, `${parent} has its own row: ${seen}`);
+  for (const one of nested) {
+    const own = (kind: string) => rows.find((row) => row.kind === kind && row.tool_name === one.tool && row.tool_use_id?.startsWith(`${id}/`));
+    const use = own("tool_use");
+    assert.ok(use, `the ${one.tool} call ${parent} made has its own row, under ${parent}'s id: ${seen}`);
+    if (one.result) assert.match(own("tool_result")?.tool_result_preview ?? "", one.result, `the ${one.tool} call ${parent} made has its result row: ${seen}`);
+    if (one.waits) assert.ok(rows.some((row) => row.kind === "tool_approval_requested" && row.tool_use_id === use.tool_use_id && /^Waiting for your approval: /.test(row.summary ?? "")), `the ${one.tool} call ${parent} made waits with its approval row: ${seen}`);
+  }
+}
 
 /** What the model said, all of it, in order: a case that says its last result reads it here. */
 async function modelSaid(w: { read(): Promise<{ messages: MessageRecord[] }> }): Promise<string> {
