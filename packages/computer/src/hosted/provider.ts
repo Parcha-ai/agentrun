@@ -317,9 +317,8 @@ export class HostedProvider implements ComputerProvider {
 		[this.#uid, this.#gid] = [String(Number(user[1])), String(Number(user[2]))];
 		this.#timeouts = merged;
 		this.#probeTargets = [...probeTargets];
-		// Extend only where the deadline can follow it: the vendor's timer moved, or the janitor's label.
-		const { lifetime } = host.facts;
-		if ((lifetime === "vendor" && host.setTimer) || (lifetime === "janitor" && host.setLabels)) this.extend = (ref, ttlMs, context) => this.#extendSerial(ref, ttlMs, context?.signal);
+		// Extend only where the end can follow it: the host moves its timer or its deadline label.
+		if (host.extend) this.extend = (ref, ttlMs, context) => this.#extendSerial(ref, ttlMs, context?.signal);
 	}
 
 	/** The computer's facts, from the host's and the adapter's options alone. */
@@ -777,14 +776,9 @@ export class HostedProvider implements ComputerProvider {
 	 * recorded that does not refuse it (notes).
 	 */
 	async #prepare(spec: ComputerSpec, ref: ComputerRef, { labels, daemon, sha256, commands, user, runtime }: Made, signal?: AbortSignal): Promise<Result<string[]>> {
-		const { uploadMs, execMs, requestMs } = this.#timeouts;
+		const { uploadMs, execMs } = this.#timeouts;
 		const running = await this.#running(ref, signal);
 		if (!running.ok) return running;
-		if (this.host.prepare) {
-			const prepare = this.host.prepare.bind(this.host);
-			const prepared = await this.#call(`${this.#label}'s settings of ${ref.name}`, (ctx) => prepare(ref.id, ctx), requestMs, signal);
-			if (!prepared.ok) return prepared;
-		}
 		const drift = this.#machineDrift(spec, running.value, labels);
 		if (drift.length > 0) return this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
 		const staging = commands.install[4] as string;
@@ -1131,15 +1125,11 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Settings' test: the host's own, or one list by the adapter's label, its computers counted as the listing reads them
-	 * (no get of each), which makes nothing; a refused key is unauthorized, a vendor not reached unreachable, the message
-	 * never carrying a key.
+	 * Settings' test: one list by the adapter's label, its computers counted as the listing reads them (no get of each),
+	 * which makes nothing; a refused key is unauthorized, a vendor not reached unreachable, the message never carrying a key.
 	 */
 	async testConnection({ signal }: CallContext = {}): Promise<Result<{ detail: string }>> {
-		const { requestMs, listMs } = this.#timeouts;
-		const tested = this.host.testConnection?.bind(this.host);
-		if (tested) return countTestedAs(this.#label, await this.#call(`${this.#label}'s test`, (ctx) => tested(ctx), requestMs, signal));
-		const listed = await listedBy(this.host, "the listing", { [COMPUTER_LABEL]: "1" }, listMs, signal);
+		const listed = await listedBy(this.host, "the listing", { [COMPUTER_LABEL]: "1" }, this.#timeouts.listMs, signal);
 		return countTested(this.#label, listed.ok ? ok({ count: listed.value.filter((machine) => ours(machine.labels) && alive(machine.state)).length }) : listed);
 	}
 
@@ -1249,9 +1239,9 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Moves the deadline to now + ttlMs, refusing one earlier than it is (before any vendor call), never past create's time plus the cap (init's maximum):
-	 * the vendor's timer (setTimer, then read back) or the janitor's label (setLabels) first, then init's own deadline, to
-	 * the end the vendor reads back. The deadline returned is the one init took.
+	 * Moves the deadline to now + ttlMs, refusing one earlier than it is (before any vendor call), never past create's time
+	 * plus the cap (init's maximum): the host's extend first (its timer or its deadline label), then the end it reads back
+	 * (get, deadlineOf), then init's own deadline, to that end. The deadline returned is the one init took.
 	 */
 	async #extend(ref: ComputerRef, ttlMs: number, signal?: AbortSignal): Promise<Result<{ deadline: Date }>> {
 		const found = await this.#own(ref, signal);
@@ -1270,24 +1260,15 @@ export class HostedProvider implements ComputerProvider {
 			return this.#fail("refused", `${new Date(target).toISOString()} is earlier than ${current.toISOString()}, the deadline ${ref.name} has now: an extend moves the deadline later, never earlier`);
 		}
 		if (current !== undefined && target === current.getTime()) return ok({ deadline: current });
-		const { requestMs } = this.#timeouts;
-		let end: Date;
-		const setTimer = this.host.setTimer?.bind(this.host);
-		if (this.host.facts.lifetime === "vendor" && setTimer) {
-			const moved = await this.#call(`${this.#label}'s timer of ${ref.name}`, (ctx) => setTimer(ref.id, { end: new Date(target), most }, ctx), requestMs, signal);
-			if (!moved.ok) return moved.error.code === "limit" ? moved : this.#fail(moved.error.code, `${this.#label}'s timer did not move, so nothing did: ${moved.error.message}`);
-			const after = await this.#get(ref.id, signal);
-			if (!after.ok || after.value?.endsAt === undefined) {
-				const why = after.ok ? `${ref.name} read back with no end` : after.error.message;
-				return this.#fail(after.ok ? "gone" : after.error.code, `${this.#label}'s timer was asked to move, and reading it back failed: ${why}; init's deadline did not move`);
-			}
-			end = after.value.endsAt;
-		} else {
-			const setLabels = this.host.setLabels?.bind(this.host);
-			if (!setLabels) return this.#fail("unsupported", `${a(this.#label)} computer's deadline cannot move`);
-			end = new Date(target);
-			const moved = await this.#call(`the deadline label of ${ref.name}`, (ctx) => setLabels(ref.id, { [DEADLINE_LABEL]: end.toISOString() }, ctx), requestMs, signal);
-			if (!moved.ok) return this.#fail(moved.error.code, `the deadline label did not move, so nothing did: ${moved.error.message}`);
+		const extend = this.host.extend?.bind(this.host);
+		if (!extend) return this.#fail("unsupported", `${a(this.#label)} computer's deadline cannot move`);
+		const moved = await this.#call(`${this.#label}'s end of ${ref.name}`, (ctx) => extend(ref.id, new Date(target), ctx), this.#timeouts.requestMs, signal);
+		if (!moved.ok) return moved.error.code === "limit" ? moved : this.#fail(moved.error.code, `${this.#label}'s end did not move, so nothing did: ${moved.error.message}`);
+		const after = await this.#get(ref.id, signal);
+		const end = after.ok && after.value !== undefined ? deadlineOf(after.value) : undefined;
+		if (end === undefined) {
+			const why = after.ok ? `${ref.name} read back with no end` : after.error.message;
+			return this.#fail(after.ok ? "gone" : after.error.code, `${this.#label}'s end was asked to move, and reading it back failed: ${why}; init's deadline did not move`);
 		}
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return this.#fail(opened.error.code, `${ref.name}'s end moved to ${end.toISOString()}, and init's deadline did not: ${opened.error.message}`);
@@ -1463,11 +1444,6 @@ function runtimeDrift(runtime: "vm" | "gvisor", kernel: string): string[] {
 	if (runtime === "vm" && gvisor) return [`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(kernel)})`];
 	if (runtime === "gvisor" && !gvisor) return [`runtime: declared gVisor (a GPU computer), read back another kernel (${JSON.stringify(kernel)})`];
 	return [];
-}
-
-/** A host's own test, its words kept: unauthorized and unreachable as the shared rule reads them. */
-function countTestedAs(label: string, tested: Result<{ detail: string }>): Result<{ detail: string }> {
-	return tested.ok ? tested : countTested(label, tested);
 }
 
 function labelProblem(key: string, value: unknown, rule?: RegExp): string | undefined {

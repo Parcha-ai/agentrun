@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import { Duplex } from "node:stream";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
+import { DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
@@ -471,11 +472,11 @@ class Agent37Host implements MachineHost {
 		return ok(undefined);
 	}
 
-	/** The janitor's deadline label: GET, then PATCH of the whole metadata, which replaces the stored object (docs: instances/edit). */
-	async setLabels(id: string, labels: Record<string, string>, ctx: HostCall): Promise<Result<void>> {
+	/** The janitor's deadline label moved: GET, then PATCH of the whole metadata, which replaces the stored object (docs: instances/edit). */
+	async extend(id: string, endsAt: Date, ctx: HostCall): Promise<Result<void>> {
 		const path = this.#path(id);
 		const instance = await this.#rest<Agent37Instance>("GET", path, undefined, ctx);
-		await this.#rest("PATCH", path, { metadata: { ...(instance.metadata ?? {}), ...labels } }, ctx);
+		await this.#rest("PATCH", path, { metadata: { ...(instance.metadata ?? {}), [DEADLINE_LABEL]: endsAt.toISOString() } }, ctx);
 		return ok(undefined);
 	}
 }

@@ -1281,8 +1281,8 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
   `--own-network`, makes its programs' network namespace inside a user namespace (the daemon's fallback, any vendor).
   Declared: `gpu.fence: "userns-netns"`; read back: hello's `fence`, and create notes it. Proven in Docker
   (`test/docker/pid1-commands.docker.test.mjs` and `loopback-block.docker.test.mjs`), not yet live on Modal.
-- **Settings' test** reads the app with `createIfMissing: false`, which makes nothing; an app not made yet is a
-  connection all the same.
+- **The app.** `list` (and so Settings' test, one listing) reads the app with `createIfMissing: false`, which makes
+  nothing: an app not made yet lists no sandboxes and is a connection all the same. Only `create` makes the app.
 
 ### What every Modal fact rests on
 
@@ -2000,7 +2000,7 @@ names the API key by its sha256 prefix alone.
 | `get` | `GET /v1/instances/{id}`; 404 is none |
 | `list` | `GET /v1/instances`, the whole workspace in one answer (`{ data }`, no paging keys, seen live), matched on the labels here. An answer that says it has more is refused, never read as all |
 | `delete` | `DELETE /v1/instances/{id}`, never signalled; a repeat's 404 is done |
-| `setLabels` | `GET`, then `PATCH` of the whole `metadata`, which a PATCH replaces |
+| `extend` | `GET`, then `PATCH` of the whole `metadata` with the new deadline label, since a PATCH replaces it |
 | `exec` | SSH as root over a binary WebSocket to `wss://{id}-22022.agent37.app/`, one channel per process on the instance's shared connection (below) |
 | `errorCode` | the envelope's `error.code` (or a flat `error` string), then the HTTP status; ssh2's `client-authentication` is `denied` |
 | `check` | a template name with an optional `@version`; one of Agent37's four shapes; at most 4 CPUs; metadata within 4096 bytes with the provider's own labels |

@@ -1,6 +1,6 @@
 // Agent37Provider's host on a fake Agent37 (fake-agent37.mjs): the REST API as a fetch, and an instance's SSH as
 // ssh2's own Server on loopback, reached through a fake WebSocket. What Agent37's host decides is tested here: the
-// create's body, get, list and delete, the status and network read-back, setLabels' GET then whole PATCH, the error
+// create's body, get, list and delete, the status and network read-back, extend's GET then whole PATCH, the error
 // codes, check()'s shapes and cap, and an exec's stdin, stdout, stderr, exit code and kill. The adapter's lifecycle is
 // tested once, against its fake host (hosted-provider.test.mjs); Agent37's own is proven live.
 import assert from "node:assert/strict";
@@ -247,11 +247,11 @@ test("network read-back: deny-all is none, allow-all open, an allow list or any 
 	for (const field of ["template", "type", "region", "auto_sleep"]) assert.ok(drift.some((one) => one.startsWith(`${field}:`)), field);
 });
 
-test("setLabels reads the instance, then PATCHes the whole metadata, since a PATCH replaces it", async () => {
+test("extend reads the instance, then PATCHes the whole metadata with the deadline label moved, since a PATCH replaces it", async () => {
 	const { rest, host } = restOnly();
 	const { value } = await host.create(request({ keep: "me" }), CTX);
 	rest.calls.length = 0;
-	assert.ok((await host.setLabels(value.id, { "agentrun.computer.deadline": "2026-11-13T08:00:00.000Z" }, CTX)).ok);
+	assert.ok((await host.extend(value.id, new Date("2026-11-13T08:00:00.000Z"), CTX)).ok);
 	assert.deepEqual(rest.calls.map((one) => [one.method, one.path]), [
 		["GET", `/v1/instances/${value.id}`],
 		["PATCH", `/v1/instances/${value.id}`],

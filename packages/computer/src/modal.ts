@@ -11,7 +11,6 @@ import { MODAL, MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./descriptors/modal.js";
 import { DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
-import { codeOfError, words } from "./hosted/process.js";
 import { isWhole } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
@@ -218,9 +217,16 @@ class ModalHost implements MachineHost {
 		return codeOf(error);
 	}
 
-	/** The app, looked up (and made when missing) once per provider; a failed lookup is tried again next time. */
-	async #theApp(): Promise<App> {
-		this.#app ??= await this.#sdk.apps.fromName(this.#appName, { createIfMissing: true });
+	/**
+	 * The app, looked up once per provider, and made when missing by create alone: a listing before any computer makes
+	 * nothing and finds none (undefined). A failed or missing lookup is tried again next time.
+	 */
+	async #theApp(make: boolean): Promise<App | undefined> {
+		try {
+			this.#app ??= await this.#sdk.apps.fromName(this.#appName, { createIfMissing: make });
+		} catch (error) {
+			if (make || codeOf(error) !== "not_found") throw error;
+		}
 		return this.#app;
 	}
 
@@ -279,7 +285,7 @@ class ModalHost implements MachineHost {
 			tags: req.labels,
 		};
 		const image = base.dockerfileCommands([`ENV HOME=${WORK}`, `WORKDIR ${WORK}`]);
-		const sandbox = await this.#sdk.sandboxes.create(await this.#theApp(), image, params);
+		const sandbox = await this.#sdk.sandboxes.create((await this.#theApp(true)) as App, image, params);
 		this.#sandboxes.set(sandbox.sandboxId, sandbox);
 		return ok({ id: sandbox.sandboxId });
 	}
@@ -308,11 +314,13 @@ class ModalHost implements MachineHost {
 	/**
 	 * Every running sandbox in the app whose tags carry these labels: Modal's list asks for running sandboxes only
 	 * (includeFinished: false, sandbox.ts:1135-1140), yet one terminated a moment ago is still listed, so each is polled,
-	 * and one finished or no longer known is left out. One bound, ctx.timeoutMs, for the listing and every read.
+	 * and one finished or no longer known is left out. One bound, ctx.timeoutMs, for the listing and every read. An app
+	 * not made yet holds none.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
 		const until = Date.now() + ctx.timeoutMs;
-		const app = await this.#theApp();
+		const app = await this.#theApp(false);
+		if (app === undefined) return ok([]);
 		const iterator = this.#sdk.sandboxes.list({ appId: app.appId, tags: labels })[Symbol.asyncIterator]();
 		const machines: Machine[] = [];
 		try {
@@ -368,21 +376,6 @@ class ModalHost implements MachineHost {
 			wait: () => program.wait(),
 			kill: async () => void (await close()),
 		});
-	}
-
-	/**
-	 * Settings' test: the app read without making it (createIfMissing false), which makes nothing, where a listing would
-	 * make the app. An app not made yet is a connection all the same: the token was taken, and the first computer makes it.
-	 */
-	async testConnection(ctx: HostCall): Promise<Result<{ detail: string }>> {
-		void ctx;
-		try {
-			await this.#sdk.apps.fromName(this.#appName, { createIfMissing: false });
-			return ok({ detail: `Modal answered: the app ${this.#appName} is there` });
-		} catch (error) {
-			if (codeOf(error) === "not_found") return ok({ detail: `Modal answered: no app ${this.#appName} yet; the first computer makes it` });
-			return fail(codeOfError(this, error), `apps.fromName ${this.#appName} failed: ${words(error)}`);
-		}
 	}
 }
 

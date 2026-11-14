@@ -7,7 +7,7 @@
 import type { Sandbox, SandboxInfo, SandboxOpts } from "e2b";
 import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
+import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
 import { dateOf, driftOf, isWhole, show } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
@@ -440,13 +440,15 @@ class E2BHost implements MachineHost {
 
 	/**
 	 * Moves E2B's timer (setTimeout, index.mjs:5529-5541) in the whole seconds E2B takes: up to clear create's end, so
-	 * the end reads as moved (deadlineOf), and down at the most the computer may live, so E2B's timer never passes it by
-	 * this machine's clock. A timer that would end before the deadline held now, or within create's rounding, is refused
-	 * as limit, and nothing moves.
+	 * the end reads as moved (deadlineOf), and down at the most the computer may live (its max-deadline label), so E2B's
+	 * timer never passes it by this machine's clock. A timer that would end before the deadline held now, or within
+	 * create's rounding, is refused as limit, and nothing moves.
 	 */
-	async setTimer(id: string, { end, most }: { end: Date; most: Date }, ctx: HostCall): Promise<Result<void>> {
+	async extend(id: string, end: Date, ctx: HostCall): Promise<Result<void>> {
 		const info = await this.#Sandbox.getInfo(id, this.#api(ctx.timeoutMs, ctx.signal));
 		const machine = machineOf(info);
+		const most = new Date(machine.labels[MAX_LABEL] ?? Number.NaN);
+		if (Number.isNaN(most.getTime())) return fail("refused", `${id}'s label ${MAX_LABEL} reads ${show(machine.labels[MAX_LABEL])}, so the most it may live is unknown; nothing moved`);
 		const now = Date.now();
 		const target = end.getTime();
 		const created = createdEnd(info);

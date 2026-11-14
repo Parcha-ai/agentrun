@@ -62,8 +62,6 @@ export interface MachineHost {
 	 * AbortError as "aborted" and a TimeoutError as "timeout" itself, and anything else a host does not map is "vendor".
 	 */
 	errorCode?(error: unknown): ComputerErrorCode;
-	/** Vendor settings a machine takes once it runs and before the daemon goes in (egress rules, an idle timer). */
-	prepare?(id: string, ctx: HostCall): Promise<Result<void>>;
 	/**
 	 * Asks the vendor to stop a machine, keeping it; declared with facts.release "stop". It answers once the vendor took
 	 * the ask: the adapter waits until get and the listing read it stopped (gone, where a stop deletes it), and asks again
@@ -71,20 +69,18 @@ export interface MachineHost {
 	 */
 	stop?(id: string, ctx: HostCall): Promise<Result<void>>;
 	/**
-	 * Moves the vendor's own timer (facts.lifetime "vendor") so the machine ends at want.end, never past want.most, the
-	 * most it may live. A refusal (limit, in words) when no timer the vendor takes lands there without moving the end
-	 * earlier than it is or past want.most: nothing moves then. The adapter reads the end back with get.
+	 * Moves the machine's end to endsAt, never past its agentrun.computer.max-deadline label, the most it may live: the
+	 * vendor's own timer (facts.lifetime "vendor"), or the janitor's deadline label (facts.lifetime "janitor"). A refusal
+	 * (limit, in words) when no end the vendor takes lands there without moving it earlier than it is or past the most:
+	 * nothing moves then. The adapter reads the end back with get (deadlineOf), and init's deadline follows it. Optional:
+	 * a host without it has no extend.
 	 */
-	setTimer?(id: string, want: { end: Date; most: Date }, ctx: HostCall): Promise<Result<void>>;
-	/** Replaces some labels of a machine (the janitor's deadline label, at extend); facts.lifetime "janitor". */
-	setLabels?(id: string, labels: Record<string, string>, ctx: HostCall): Promise<Result<void>>;
+	extend?(id: string, endsAt: Date, ctx: HostCall): Promise<Result<void>>;
 	/**
 	 * The vendor's own rules of a spec, over the adapter's shared ones: an image name it takes, a GPU's image. No call. The
 	 * spec is an object, as the caller gave it: its fields are not checked yet (an image may be a number).
 	 */
 	check?(spec: Partial<ComputerSpec>): Refusal[];
-	/** Settings' test, where a list would make something (an app); default: one list by the adapter's label, counted. */
-	testConnection?(ctx: HostCall): Promise<Result<{ detail: string }>>;
 }
 
 /** Every call's bound: the adapter's timeout for this kind of call, and the caller's signal when it has one. */

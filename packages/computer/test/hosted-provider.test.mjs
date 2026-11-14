@@ -81,7 +81,8 @@ test("capabilities come from the host's facts and the adapter's options alone", 
 	assert.equal(provider.id, "fakehost");
 	assert.equal(provider.version, VERSION);
 	assert.equal(typeof provider.extend, "function", "extend with a vendor timer");
-	assert.equal(setup({}, { facts: { lifetime: "janitor" } }).provider.extend, undefined, "no extend where the deadline cannot follow it");
+	assert.equal(typeof setup({}, { facts: { lifetime: "janitor" } }).provider.extend, "function", "extend with the janitor's label: the host's extend either way");
+	assert.equal(setup({}, { timer: "none" }).provider.extend, undefined, "no extend where the host has none");
 	assert.throws(() => setup({ maxLifetimeMs: 25 * HOUR }), /at most 86400000 ms, the longest Fakehost keeps a computer/);
 	assert.throws(() => setup({ daemonUser: "0:0" }), /root or in root's group/);
 });
@@ -531,7 +532,7 @@ test("a lifetime past the cap is refused before any host call; extend moves the 
 	assert.ok(longer.deadline.getTime() > before);
 	assert.equal(m.init.deadline, longer.deadline.toISOString(), "init took the end the vendor read back");
 	assert.equal(m.endsAt.toISOString(), longer.deadline.toISOString());
-	const timers = () => fake.calls.filter(([name]) => name === "setTimer").length;
+	const timers = () => fake.calls.filter(([name]) => name === "extend").length;
 	const timersBefore = timers();
 	const shorter = await provider.extend(ref, 60_000);
 	assert.equal(shorter.error?.code, "refused", "an extend to an earlier deadline is refused");
@@ -562,6 +563,25 @@ test("two extends of one computer run one after the other; a timer the vendor re
 	assert.equal(refused.error?.code, "limit");
 	assert.equal(m.init.deadline, at);
 	void fake;
+});
+
+test("a janitor host's extend moves its deadline label, and init takes the deadline the host reads back, not the one asked", async () => {
+	const { provider, fake } = setup({}, { facts: { lifetime: "janitor" } });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	const asked = Date.now() + 20 * 60_000;
+	const moved = made(await provider.extend(ref, 20 * 60_000));
+	// The fake writes the label rounded up to a whole second, as a vendor may: the read-back is what counts.
+	assert.equal(moved.deadline.getTime() % 1000, 0, "the deadline returned is the label read back, a whole second");
+	assert.ok(moved.deadline.getTime() >= asked);
+	assert.equal(m.labels[DEADLINE], moved.deadline.toISOString(), "the host moved its deadline label");
+	assert.equal(m.init.deadline, moved.deadline.toISOString(), "init took the deadline read back");
+	assert.equal(made(await provider.list({}))[0].deadline.toISOString(), moved.deadline.toISOString(), "list reads the label");
+	assert.deepEqual(
+		fake.calls.filter(([name]) => name === "extend" || name === "get").slice(-2).map(([name]) => name),
+		["extend", "get"],
+		"the end is read back by get after the host's extend",
+	);
 });
 
 // --- release ---

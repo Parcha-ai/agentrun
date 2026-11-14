@@ -67,30 +67,35 @@ test("Daytona: on an account with several computers, one listing page counts the
 	assert.deepEqual(requests.map((r) => `${r.method} ${r.path}`), ["GET /api/sandbox"], "one read: no sandbox read back");
 });
 
-test("Modal: the provider's app read without creating it; ok whether it exists or not yet; an unauthenticated token is unauthorized", async () => {
-	// The SDK's slice as a recorder: apps.fromName answers, and anything else fails the test.
+test("Modal: the provider's listing, which reads the app without creating it; ok whether it exists or not yet; an unauthenticated token is unauthorized", async () => {
+	// The SDK's slice as a recorder: apps.fromName and an empty sandboxes.list answer, and anything else fails the test.
 	const calls = [];
 	const never = (name) => () => assert.fail(`${name} was called`);
-	const sdk = {
-		apps: { fromName: async (...args) => (calls.push(["apps.fromName", ...args]), { appId: "ap-computers" }) },
+	const modal = (fromName) => ({
+		apps: { fromName: async (...args) => (calls.push(["apps.fromName", ...args]), fromName()) },
 		images: { fromRegistry: never("images.fromRegistry") },
-		sandboxes: { create: never("sandboxes.create"), fromId: never("sandboxes.fromId"), list: never("sandboxes.list") },
-	};
-	const provider = new ModalProvider({ sdk, app: "computers" });
-	const tested = await provider.testConnection();
+		sandboxes: {
+			create: never("sandboxes.create"),
+			fromId: never("sandboxes.fromId"),
+			list: (...args) => (calls.push(["sandboxes.list", ...args]), (async function* () {})()),
+		},
+	});
+	const tested = await new ModalProvider({ sdk: modal(() => ({ appId: "ap-computers" })), app: "computers" }).testConnection();
 	assert.equal(tested.ok, true, JSON.stringify(tested));
-	assert.match(tested.value.detail, /Modal answered: the app computers is there/);
-	assert.deepEqual(calls, [["apps.fromName", "computers", { createIfMissing: false }]], "a read, never a create");
-	sdk.apps.fromName = async () => {
+	assert.match(tested.value.detail, /Modal answered: 0 computers of this provider/);
+	assert.deepEqual(calls.map(([name, , options]) => [name, options?.createIfMissing]), [["apps.fromName", false], ["sandboxes.list", undefined]], "a read, never a create");
+	calls.length = 0;
+	const missing = () => {
 		throw Object.assign(new Error("App 'computers' not found"), { name: "NotFoundError" });
 	};
-	const absent = await provider.testConnection();
+	const absent = await new ModalProvider({ sdk: modal(missing), app: "computers" }).testConnection();
 	assert.equal(absent.ok, true, JSON.stringify(absent));
-	assert.match(absent.value.detail, /Modal answered: no app computers yet; the first computer makes it/);
-	sdk.apps.fromName = async () => {
+	assert.match(absent.value.detail, /Modal answered: 0 computers of this provider/);
+	assert.deepEqual(calls.map(([name, , options]) => [name, options?.createIfMissing]), [["apps.fromName", false]], "no app, so nothing listed and nothing made");
+	const unauthenticated = () => {
 		throw Object.assign(new Error("Token missing or invalid"), { code: 16 });
 	};
-	const refused = await provider.testConnection();
+	const refused = await new ModalProvider({ sdk: modal(unauthenticated), app: "computers" }).testConnection();
 	assert.equal(refused.ok, false);
 	assert.equal(refused.error.code, "unauthorized");
 });

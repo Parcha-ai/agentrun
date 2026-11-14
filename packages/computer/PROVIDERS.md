@@ -194,12 +194,12 @@ function codeOf(error: unknown): ComputerErrorCode {
 ```
 
 **Optional hooks.** `upload(id, path, bytes, ctx)` puts a file in the machine. E2B has one because it has a file API;
-without it, AgentRun streams its daemon through `exec`'s stdin. Six more hooks each cover one vendor need. `prepare`
-applies settings once a machine runs. `stop` goes with `release: ["stop"]`; it only asks, and AgentRun waits until the
-machine reads stopped. `setTimer` moves your timer when an agent extends its deadline, and `setLabels` does the same for
-`lifetime: "janitor"`. `check` adds your own rules for a spec, such as image names; the spec it gets is an object whose
-fields aren't checked yet. `testConnection` replaces the default, one listing by AgentRun's label with its computers
-counted, if listing would create something. Leave out what you don't need.
+without it, AgentRun streams its daemon through `exec`'s stdin. Three more hooks each cover one vendor need. `stop`
+goes with `release: ["stop"]`; it only asks, and AgentRun waits until the machine reads stopped. `extend` moves a
+machine's end when an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's deadline label with
+`"janitor"`. AgentRun reads the end back through `get`. `check` adds your own rules for a spec, such as image names; the
+spec it gets is an object whose fields aren't checked yet. Leave out what you don't need. Settings' test of your keys is
+one `list` by AgentRun's label, so a `list` must never create anything.
 
 ### Wire it up
 
@@ -385,8 +385,8 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
   to run, holds your read-back to the request, uploads the daemon and checks its sha256, starts it, and probes from
   inside that the network is none. If any step fails after the machine exists, it deletes the machine and waits until
   it reads gone.
-- **The rest** covers `attach`, `list`, `connect`, `network` (fixed at create), `extend` (where `setTimer` or
-  `setLabels` exists), `release` (delete, then wait until `get` and `list` read it gone; a stop waits until both read it
+- **The rest** covers `attach`, `list`, `connect`, `network` (fixed at create), `extend` (where your host has
+  `extend`), `release` (delete, then wait until `get` and `list` read it gone; a stop waits until both read it
   stopped, or gone where a stop deletes it, and asks again while it reads running), `watch` and `testConnection`.
   Every refusal uses the codes above, and `vendor` carries your API's own words.
 

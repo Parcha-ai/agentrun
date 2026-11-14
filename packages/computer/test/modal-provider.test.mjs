@@ -42,8 +42,9 @@ class InvalidError extends Error {
  * throws gRPC's UNAUTHENTICATED, as Modal does for a token it refuses. It shows what the provider gives the SDK, never
  * how Modal behaves.
  */
-function recorder({ refuse = false } = {}) {
+function recorder({ refuse = false, appMissing = false } = {}) {
 	const calls = [];
+	let made = !appMissing;
 	const denied = () => Object.assign(new Error("Token missing or invalid"), { code: 16 });
 	const record =
 		(name, answer) =>
@@ -54,7 +55,13 @@ function recorder({ refuse = false } = {}) {
 		};
 	const image = (from) => ({ from, dockerfileCommands: record("image.dockerfileCommands", (lines) => ({ from, lines })) });
 	const sdk = {
-		apps: { fromName: record("apps.fromName", async (name) => ({ appId: `ap-${name}` })) },
+		apps: {
+			fromName: record("apps.fromName", async (name, { createIfMissing } = {}) => {
+				if (!made && !createIfMissing) throw Object.assign(new Error(`App '${name}' not found`), { name: "NotFoundError" });
+				made = true;
+				return { appId: `ap-${name}` };
+			}),
+		},
 		images: { fromRegistry: record("images.fromRegistry", (tag) => image(tag)), fromId: record("images.fromId", async (id) => image(id)) },
 		sandboxes: {
 			create: record("sandboxes.create", async () => {
@@ -215,6 +222,17 @@ test("the janitor does not sweep Modal computers: Modal ends them at their lifet
 
 // --- what sandboxes.create is handed ---
 
+test("a listing before any computer makes no app: it looks the app up with createIfMissing false and finds none; create alone makes it", async () => {
+	const { provider, rec } = setup({}, { appMissing: true });
+	assert.deepEqual(await provider.list({}), { ok: true, value: [] }, "an app not made yet holds no computer");
+	assert.match((await provider.testConnection()).value?.detail ?? "", /^Modal answered: 0 computers of this provider$/, "Settings' test is the one shared listing");
+	assert.deepEqual(rec.names(), ["apps.fromName", "apps.fromName"], "two lookups, no sandboxes.list");
+	assert.ok(rec.calls.every(([, , options]) => options?.createIfMissing === false), "neither made the app");
+	assert.equal((await create(provider)).error?.code, "invalid", "a create Modal refused made nothing");
+	const lookups = rec.calls.filter(([name]) => name === "apps.fromName").map(([, , options]) => options.createIfMissing);
+	assert.deepEqual(lookups, [false, false, false, true], "the create's listing by name finds no app either; the create makes it");
+});
+
 test("create asks Modal for one VM sandbox in the app: the entrypoint as its command, init --own-network as 2510:2510, the lifetime as its timeout in whole seconds, Modal's small request under the spec's limits, no network, the labels as tags", async () => {
 	const { provider, rec } = setup();
 	const result = await create(provider, { ...SPEC, lifetimeMs: 600_500, labels: { team: "a" } });
@@ -222,7 +240,8 @@ test("create asks Modal for one VM sandbox in the app: the entrypoint as its com
 	assert.deepEqual(rec.names().slice(0, 2), ["apps.fromName", "sandboxes.list"], "the listing by the request's name comes first");
 	const [, listed] = rec.calls.find(([name]) => name === "sandboxes.list");
 	assert.deepEqual(Object.keys(listed.tags).sort(), [COMPUTER, NAME]);
-	assert.deepEqual(rec.calls.find(([name]) => name === "apps.fromName").slice(1), [APP, { createIfMissing: true }]);
+	assert.deepEqual(rec.calls.find(([name]) => name === "apps.fromName").slice(1), [APP, { createIfMissing: false }], "the listing looks the app up without making it, and keeps the one it found");
+	assert.equal(rec.names().filter((name) => name === "apps.fromName").length, 1);
 	assert.deepEqual(rec.calls.find(([name]) => name === "images.fromRegistry").slice(1), ["debian:bookworm-slim"]);
 	assert.deepEqual(rec.calls.find(([name]) => name === "image.dockerfileCommands")[1], ["ENV HOME=/work", "WORKDIR /work"]);
 	const params = rec.params();
