@@ -1006,21 +1006,17 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(sound.flags, [.offscreen])
 	}
 
-	/// Two looks are a quiet apart from the start of one to the start of the next: each node is read that far apart. A
-	/// look that itself takes longer than the quiet (System Settings on CI: 250 to 700 ms) needs no sleep after it.
-	func testALookThatTakesLongerThanTheQuietIsFollowedByNoSleep() async throws {
+	/// The quiet between two looks is time the app is left alone, however long a look took: an app answers a look on
+	/// the thread it draws on, so looks back to back (System Settings on CI: 370 ms each) leave it no time to draw what
+	/// the step set off. On CI they called About's window quiet before About was drawn: unverified, then 1.9 s of expect.
+	func testTheQuietBetweenTwoLooksIsTimeTheAppIsLeftAlone() async throws {
 		os.walkMs = 400
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())
 		let (start, walks) = (os.now, os.snapshots)
 		_ = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
 		XCTAssertEqual(os.snapshots - walks, 3)
-		XCTAssertEqual(os.now - start, 1200, "three walks, and no sleep between them")
-		// A quick look still waits out the quiet.
-		os.walkMs = 10
-		let quick = os.now
-		_ = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
-		XCTAssertEqual(os.now - quick, 10 + 150 + 10, "the first look, then two 150 ms apart")
+		XCTAssertEqual(os.now - start, 400 + 400 + 150 + 400, "the first look, then the settle's two with the quiet between")
 	}
 
 	/// A node's actions and whether its value can be set cost a Mac two reads more, as much as the rest of the node
