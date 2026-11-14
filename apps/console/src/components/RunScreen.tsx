@@ -21,8 +21,11 @@ export type ScreenView = Exclude<RunComputer, { state: "off" }> | { state: "sign
  *  and a screen it showed reads as closed (none), whatever the last read said. A page opened on an ended run reads
  *  once, to know whether it had one. Any other failed read keeps the last answer, so a screen being watched isn't torn
  *  down by one bad poll. Nothing about the answer is logged. `held` puts a take-over's or hand-back's answer (who drives)
- *  in place until the next read. */
-export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
+ *  in place until the next read. While a change is on its way the next read comes `soon` instead: the screen being
+ *  opened (none, opening), a take-over waiting for the agent's step (pending), and for HURRY_MS after the page's own
+ *  take-over or hand-back, whose answer is read right after its row is written, before the run applies it. So the first
+ *  frame and who drives show when they happen, not up to a whole `every` later. */
+export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000, soon = Math.min(every, SOON_MS)): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
   const [now, setNow] = useState<ScreenView | null>(null);
   // A caller the route refuses (401, 403) is read no more, whatever the run does.
   const [refused, setRefused] = useState(false);
@@ -35,18 +38,25 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
   // Whether the last answer was a computer the run hadn't opened: one may have opened since, so the end reads once more
   // before it says the run didn't open one.
   const unopened = useRef(false);
+  // Until when the reads come soon after the page's own take-over or hand-back, and the running reads' way to bring the
+  // next one forward (none while no read is waiting).
+  const hurryUntil = useRef(0);
+  const hurry = useRef<(() => void) | null>(null);
   const has = !!read;
   useEffect(() => {
     if (!has || refused) return;
     if (!going && answered.current && !unopened.current) { setNow((prev) => (prev ? closed(prev) : prev)); return; }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const later = (ms: number) => { clearTimeout(timer); timer = setTimeout(() => { hurry.current = null; void once(); }, ms); hurry.current = () => later(soon); };
     const once = async () => {
+      let onItsWay = false;
       try {
         const next = await reader.current!();
         if (!alive) return;
         answered.current = true;
         unopened.current = next.state === "none" && next.session === "unopened";
+        onItsWay = (next.state === "none" && next.session === "opening") || (next.state === "live" && next.hold === "pending");
         if (next.state === "off") setNow(null);
         // An ended run's screen is closed, whatever it last said.
         else if (!going) setNow(closed(next));
@@ -57,14 +67,23 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
         if (e instanceof ClientError && e.status === 401) { setRefused(true); setNow((prev) => (prev ? { state: "signed_out" } : null)); return; }
         if (e instanceof ClientError && e.status === 403) { setRefused(true); setNow(null); return; }
       }
-      if (alive && going) timer = setTimeout(() => void once(), every);
+      if (alive && going) later(onItsWay || Date.now() < hurryUntil.current ? soon : every);
     };
     void once();
-    return () => { alive = false; clearTimeout(timer); };
-  }, [has, going, every, refused]);
-  const held = useCallback((hold: ComputerHold) => setNow((prev) => (prev && prev.state === "live" && prev.hold !== hold ? { ...prev, hold } : prev)), []);
+    return () => { alive = false; clearTimeout(timer); hurry.current = null; };
+  }, [has, going, every, soon, refused]);
+  const held = useCallback((hold: ComputerHold) => {
+    setNow((prev) => (prev && prev.state === "live" && prev.hold !== hold ? { ...prev, hold } : prev));
+    hurryUntil.current = Date.now() + HURRY_MS;
+    hurry.current?.();
+  }, []);
   return { view: now, held };
 }
+
+/** The read's pace while a change is on its way, in ms; and how long it keeps that pace after the page's own take-over
+ *  or hand-back. */
+const SOON_MS = 400;
+const HURRY_MS = 4000;
 
 const same = (prev: ScreenView | null, next: Exclude<RunComputer, { state: "off" }>): boolean =>
   !!prev && prev.state !== "signed_out" && prev.state === next.state && prev.kind === next.kind && prev.hold === next.hold && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer))
