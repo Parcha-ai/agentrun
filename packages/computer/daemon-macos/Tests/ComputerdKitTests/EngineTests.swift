@@ -965,16 +965,18 @@ final class EngineTests: XCTestCase {
 	}
 
 	/// System Settings rebuilds its sidebar rows scrolled out of the window every time its tree is read: new elements,
-	/// at other heights, and Finder's status bar below the window counts the free disk space down. Nothing wholly
-	/// outside the window is what a person sees, so it holds no settle (on CI each settle there ran out its 3 s over 4
-	/// looks) and is no step's effect.
+	/// at other heights, so the list's content, taller than the window, is a new height each read too. Finder's status
+	/// bar below the window counts the free disk space down. Nothing outside the window is what a person sees, so it
+	/// holds no settle (on CI each settle there ran out its 3 s over 4 looks) and is no step's effect.
 	func testWhatChangesOutsideTheWindowNeitherHoldsASettleNorVerifiesAStep() async throws {
+		os.add(50, "group", frame: Rect(108, 98, 178, 1000), parent: 2)
 		os.onSnapshot = { os in
 			let old = os.order.last { os.elements[$0]?.name == "Sound" } ?? 99
 			os.remove(old)
 			os.add(old + 1, "row", name: "Sound", frame: Rect(108, 700 + Double(old % 2) * 19, 198, 19), parent: 2)
 			os.remove(old + 1000)
 			os.add(old + 1001, "text", name: "Focus", frame: Rect(-50, 700, 0, 0), parent: 2)
+			os.elements[50]!.frame = Rect(108, 98, 178, 1000 + Double(old % 2) * 19)
 		}
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())
@@ -991,6 +993,13 @@ final class EngineTests: XCTestCase {
 		let shown = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
 		XCTAssertEqual(ran(shown, 0)?.1, true)
 		XCTAssertTrue(shown.changed)
+		// The bounds a node shows are held inside the window: the part of the list a person sees, and a line on the edge
+		// for a row wholly below it.
+		let full = try await engine.observe(UiObserveParams(full: true))
+		XCTAssertEqual(full.nodes.first { $0.role == "group" && $0.bounds.x == 8 }?.bounds, Rect(8, 48, 178, 552))
+		let sound = full.nodes.first { $0.name == "Sound" }!
+		XCTAssertEqual(sound.bounds, Rect(8, 600, 198, 0))
+		XCTAssertEqual(sound.flags, [.offscreen])
 	}
 
 	/// A node's actions and whether its value can be set cost a Mac two reads more, as much as the rest of the node

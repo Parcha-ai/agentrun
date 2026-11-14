@@ -22,9 +22,17 @@ struct View: Sendable {
 		return nodes.last { $0.frame?.contains(screen) == true }
 	}
 
-	/// A node's bounds in the window's points.
+	/// A node's bounds in the window's points, each edge that reaches past the window's held to it (wire.md, ui.observe):
+	/// a row half scrolled out of a list is the part a person sees, and one wholly out is a line on the edge it left by.
+	/// So a list's content, taller than its window, keeps its bounds while the app guesses its height anew on each read
+	/// (System Settings' sidebar).
 	func bounds(_ node: RawNode) -> Rect {
-		node.frame.map { $0.offset(-target.window.bounds.x, -target.window.bounds.y) } ?? Rect(0, 0, 0, 0)
+		guard let frame = node.frame else { return Rect(0, 0, 0, 0) }
+		let (w, h) = (target.window.bounds.w, target.window.bounds.h)
+		let r = frame.offset(-target.window.bounds.x, -target.window.bounds.y)
+		func held(_ v: Double, _ most: Double) -> Double { min(most, max(0, v)) }
+		let (left, top) = (held(r.x, w), held(r.y, h))
+		return Rect(left, top, held(r.x + r.w, w) - left, held(r.y + r.h, h) - top)
 	}
 
 	/// What a person sees of a node: its role, words, place and flags. A secure field's value is never in it.

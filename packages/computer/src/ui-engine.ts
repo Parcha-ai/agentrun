@@ -346,13 +346,19 @@ const looksOf = (element: UiElement) => JSON.stringify([element.role, element.na
  * What a person would see of a view, for the settle and an act's changed: the window, and its elements when it has
  * any. The frame (a hash of its pixels) counts only with no elements (ui.tree off, or a window with none): a blinking
  * caret or a spinner redraws the frame under the same tree, which held each settle to maxSettleMs (Notes on a Mac: 13.5 s
- * against 1.9 s on the tree) and counted as a step's effect. A state keeps its frame, for a point with no element. An
- * element wholly outside the window is not seen: System Settings rebuilds its sidebar rows scrolled out of view each
- * time its tree is read, and Finder's status bar below the window counts the free disk space, which held every settle
- * there to maxSettleMs too.
+ * against 1.9 s on the tree) and counted as a step's effect. A state keeps its frame, for a point with no element. Only
+ * what is on the window counts, with its bounds held inside it as ui.observe shows them: System Settings rebuilds its
+ * sidebar rows scrolled out of view each time its tree is read (so the list's content is a new height each time), and
+ * Finder's status bar below the window counts the free disk space, which held every settle there to maxSettleMs too.
  */
 const fingerprint = (view: UiView) =>
-	JSON.stringify([view.window.id, view.window.bounds, view.elements.length > 0 ? view.elements.filter((element) => onWindow(view, element.bounds)).map((element) => [element.key, looksOf(element)]) : view.frame]);
+	JSON.stringify([
+		view.window.id,
+		view.window.bounds,
+		view.elements.length > 0
+			? view.elements.filter((element) => onWindow(view, element.bounds)).map((element) => [element.key, looksOf({ ...element, bounds: insideWindow(element.bounds, view.window.bounds[2], view.window.bounds[3]) })])
+			: view.frame,
+	]);
 /** The bounds (window points) reach into the window. */
 const onWindow = (view: UiView, [x, y, w, h]: Rect) => x < view.window.bounds[2] && 0 < x + w && y < view.window.bounds[3] && 0 < y + h;
 /** Whether an element says text, in its name, value or desc. */

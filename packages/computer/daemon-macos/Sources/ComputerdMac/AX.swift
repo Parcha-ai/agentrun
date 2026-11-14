@@ -241,6 +241,10 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 			}
 			let v = AX.copy(element, Self.walked)
 			let axRole = AX.string(v[0])
+			// A scroll bar is left out with its parts: their size is the app's guess at its content's height, which a
+			// lazy list makes anew on every read (System Settings' sidebar), so no two looks were the same. A scroll
+			// step takes the scroll area.
+			if axRole == kAXScrollBarRole as String { continue }
 			let subrole = AX.string(v[1])
 			let parentRole = parent.map { nodes[$0].role }
 			let role = Roles.map(role: axRole, subrole: subrole, parentRole: parentRole)
