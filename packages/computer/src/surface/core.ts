@@ -241,16 +241,28 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 		};
 	}
 
-	/** The screen as a state, for a computer with no ui group: its image, no elements. */
+	/** On a computer with no ui group, input goes to what is in front: an app a look or an act names is opened, or brought
+	 *  in front, first (apps.launch), so the per-step tools open an app as a script's computer.apps.open does. */
+	async function inFront(app: string | undefined, signal?: AbortSignal): Promise<void> {
+		if (app && has("apps")) await call("apps.launch", { id: app }, signal);
+	}
+
+	/** The screen as a state, for a computer with no ui group: its image, no elements. With nothing in front, the head
+	 *  lists the apps to name. */
 	async function screenState(signal?: AbortSignal): Promise<State> {
 		const image = await shot(undefined, signal);
-		const app = has("apps") ? ((await call("apps.list", {}, signal)).foreground ?? "") : "";
-		const head = `screen ${image.width}×${image.height} px${app ? ` · ${app} in front` : ""} · this computer has no ui group: no elements; act at points of this image`;
+		const listed = has("apps") ? await call("apps.list", {}, signal) : undefined;
+		const app = listed?.foreground ?? "";
+		const front = app ? ` · ${app} in front` : listed ? ` · no app in front; name one as app to open it: ${listed.apps.map((one) => one.id).join(", ")}` : "";
+		const head = `screen ${image.width}×${image.height} px${front} · this computer has no ui group: no elements; act at points of this image`;
 		return { id: "screen", app: { id: app, name: "" }, window: { id: "screen", bounds: [0, 0, image.width, image.height] }, elements: [], truncated: false, outline: head, image };
 	}
 
 	async function observe(args: ObserveArgs, signal?: AbortSignal): Promise<State> {
-		if (!has("ui")) return screenState(signal);
+		if (!has("ui")) {
+			await inFront(args.app, signal);
+			return screenState(signal);
+		}
 		const imageInUi = args.image === true && card.features["ui.image"] === true;
 		const result = await call("ui.observe", { ...(args.app ? { target: { app: args.app } } : {}), ...(imageInUi ? { image: true } : {}), ...(args.full ? { full: true } : {}) }, signal);
 		const state = stateOf(result);
@@ -316,7 +328,9 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 		if (!Array.isArray(steps)) throw new SurfaceError("invalid", "steps is a list of steps");
 		if (!has("ui")) {
 			if (args.expect) throw new SurfaceError("unsupported", "this computer has no ui group, so it can't check an expect: take a screenshot to see the effect");
-			return runInput(inputActionsOf(steps), Boolean(args.observe), signal);
+			const actions = inputActionsOf(steps);
+			await inFront(args.app, signal);
+			return runInput(actions, Boolean(args.observe), signal);
 		}
 		const app = args.app;
 		const state = args.state ?? (hasPoint(steps) ? lastState.get(app ?? lastApp ?? "") : undefined);
