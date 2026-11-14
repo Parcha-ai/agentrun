@@ -105,15 +105,17 @@ A tool you can't pin to a scope (a free-text search across everything the creden
 | a list | one of these (1 to 16) | `event: [null, COMMENT]` |
 | `null` | the argument must be left out | `cc: null`, `bcc: null` |
 | `${parameters.x}` | filled from the owner's answer at apply; a placeholder alone keeps the parameter's type, and a list parameter pins a one-of | `owner: "${parameters.owner}"` |
-| `{keys: [...]}` | the argument, when given, is an object with only these keys, any values | `properties: {keys: ["${parameters.score_field}"]}` |
+| `{keys: [...]}` | the argument, when given, is an object with only these keys (1 to 16), any values; left out or `null` holds too; a list parameter alone as a key adds each of its items | `properties: {keys: ["${parameters.score_field}"]}` |
 
-A pinned tool takes only the arguments its listing declares, so a destination's other spellings (Slack's `channel_id`,
-Gmail's `to`) are refused; you don't pin them. A pin whose parameter the owner leaves empty (absent, `""` or an empty
-list) sets that tool to deny, ticked or not, and the apply's `pins.<tool>` warning names the parameter: a send with no
-destination never runs; a keys pin whose parameter is empty does the same. A keys pin bounds one argument: pin `null`
-any other declared argument that can set the same fields (HubSpot's `custom_properties` beside `properties`). Fence
-every other argument that reaches the same place the same way: Gmail's `user_id` also picks the sender, so pin it to
-`[null, "me"]` beside `from_email: null`.
+A pinned tool takes only the arguments its listing declares, plus its pinned ones, so a destination's other spellings
+(Slack's `channel_id`, Gmail's `to`) are refused; you don't pin them. A tool whose listing declares no `properties` is
+not held to them, so on such a server pin each alias `null` yourself. A pin whose parameter the owner leaves empty
+(absent, `""` or an empty list) sets that tool to deny, ticked or not, and the apply's `pins.<tool>` warning names the
+parameter: a send with no destination never runs; a keys pin whose parameter is empty does the same. When the server's
+own settings (Settings → Tools) also pin the same argument to keys, only the keys in both are allowed, and with none in
+both every call is refused. A keys pin bounds one argument: pin `null` any other declared argument that can set the
+same fields (HubSpot's `custom_properties` beside `properties`). Fence every other argument that reaches the same place
+the same way: Gmail's `user_id` also picks the sender, so pin it to `[null, "me"]` beside `from_email: null`.
 
 ## Ask
 
