@@ -13,7 +13,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, type ConversationId, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
+import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionPort, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
@@ -42,11 +42,8 @@ export interface PreIntentCall {
   /** An earlier attempt of the call may have been sent (a CLI's kernel bridge, asking about a replay-safe call a crash
    *  cut: GateCall's `replayed`), so a refusal never says nothing was. */
   readonly replayed?: true;
-  /** The call's conversation (a subagent's child, say), whose tool-call budget the gate counts it against
-   *  (tool-budget.ts withinBudget); none, the run's root. */
-  readonly conversationId?: ConversationId;
   /** A call a running tool made (pi's nested call), part of a call already let through: the cap's wrap-up never refuses
-   *  one (tool-budget.ts), so a tool in flight is never cut short. The tool-call budget counts it as any call. */
+   *  one (wrap-up.ts), so a tool in flight is never cut short. */
   readonly nested?: true;
 }
 
@@ -342,9 +339,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         beforeTool: async (call, api, hookContext: Context) => {
           touched.add(call.id);
           if (!io.gate) return undefined;
-          // The gate counts the call against its conversation's budget. A nested call (one a tool made) is marked so: the
-          // cap's wrap-up lets it through, as its parent's part.
-          const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown>, conversationId: api.conversationId, ...(call.parent === undefined ? {} : { nested: true as const }) }, hookContext);
+          // A nested call (one a tool made) is marked so: the cap's wrap-up lets it through, as its parent's part.
+          const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown>, ...(call.parent === undefined ? {} : { nested: true as const }) }, hookContext);
           if (answer === "allow") {
             passed.add(call.id);
             return undefined;

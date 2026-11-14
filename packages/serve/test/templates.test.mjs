@@ -71,14 +71,14 @@ const OWN_TRIGGERS = /triggers:\n  - name: pull-requests[\s\S]*?(?=\n---\n)/;
 
 test("the code-review package reads whole: its review skill with the rules beside it, its findings schema and its eval case", () => {
   const [review] = readPackages();
-  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.4.0", { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "medium", { per_run_usd: 0.5, tool_calls: 90 }, false]);
+  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.4.0", { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "medium", { per_run_usd: 0.5 }, false]);
   assert.deepEqual([review.tools, review.toolPolicy, review.computer, review.checkout], [["read", "bash", "subagent"], { bash: "read-only" }, ["shell", "none"], "pull_request"], "a shell where there is one, else none; bash read-only on the checkout the platform makes; read for the skill's own files; subagent for its eight reviewers");
   assert.deepEqual(Object.keys(review.skills).sort(), ["review/CODEREVIEW.md", "review/DEEP.md", "review/REVIEWER.md", "review/SKILL.md", "review/findings.schema.json"]);
   assert.equal(review.skills["review/findings.schema.json"], file("skills/review/findings.schema.json"), "the answer's schema lives in the skill's folder, where the reviewers' guides read it");
   assert.equal(review.skills["review/CODEREVIEW.md"], file("rules/CODEREVIEW.md"), "the default rules, and the starter a repo copies, ship beside the SKILL.md that reads them");
   assert.match(review.skills["review/SKILL.md"], /## 2\. Checkout\n\nAgentRun checked the pull request out in `repo\/` before you began/, "the platform makes the checkout, never the agent");
-  assert.match(review.skills["review/SKILL.md"], /five quick reviewers: `<guide>` is `REVIEWER\.md`, with `max_tool_calls: 30` and `effort: medium`/);
-  assert.match(review.skills["review/SKILL.md"], /three deep reviewers: `<guide>` is `DEEP\.md`, with `max_tool_calls: 90` and `effort: high`/);
+  assert.match(review.skills["review/SKILL.md"], /five quick reviewers: `<guide>` is `REVIEWER\.md`, with `effort: medium`/);
+  assert.match(review.skills["review/SKILL.md"], /three deep reviewers: `<guide>` is `DEEP\.md`, with `effort: high`/);
   assert.match(review.skills["review/SKILL.md"], /You never\s+edit, build, install, run the repository's code or tests, commit or push/);
   for (const guide of ["REVIEWER.md", "DEEP.md"]) assert.match(review.skills[`review/${guide}`], /you post nothing: answer with the JSON below/, `${guide}: a reviewer answers, the agent posts`);
   for (const path of Object.keys(review.skills).filter((x) => x.endsWith(".md"))) assert.ok(Buffer.byteLength(review.skills[path]) <= 8192, `${path}: at most 8 KB, read whole on every review`);
@@ -100,7 +100,7 @@ test("a tool-call budget is no field: a definition's max_tool_calls and a manife
   const issues = definitionIssues({ name: "a", instructions: "x", max_tool_calls: 30 });
   assert.deepEqual(issues.map((i) => [i.field, i.reason]), [["definition.max_tool_calls", "not_allowed"]]);
   const problems = await problemsOf(t, ({ edit }) => edit(/^budget: .*\n/m, "budget: { per_run_usd: 0.50, tool_calls: 30 }\n"));
-  assert.ok(problems.some((p) => /budget/.test(p) && /tool_calls|unknown|no field/.test(p)), JSON.stringify(problems));
+  assert.ok(problems.some((p) => /budget is \{per_run_usd: a number above 0\}/.test(p)), JSON.stringify(problems));
 });
 
 test("the validator refuses a malformed package, naming each problem", async (t) => {
@@ -238,7 +238,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   meets("/agents/{agent_id}", "get", "200", agent);
   const { definition } = agent;
   assert.deepEqual([definition.name, definition.version, definition.harness, definition.thinking, definition.max_cost_usd, definition.learning, definition.skills], ["Code review: Parcha-ai/agentrun", 1, "pi", "medium", 0.5, false, ["review"]], "definition.version is the revision number, never the package's");
-  assert.deepEqual([definition.max_tool_calls, definition.checkout], [90, "pull_request"], "each conversation's tool budget, and the checkout the platform makes before the first turn");
+  assert.equal(definition.checkout, "pull_request", "the checkout the platform makes before the first turn");
   // No shell here (no box): [shell, none] takes none, so the agent is made without bash, and the apply says so.
   assert.deepEqual([definition.computer, definition.tools, definition.tool_settings], [{ kind: "none" }, ["read", "subagent"], undefined], "no shell and no GitHub MCP server here: read for the skill's files, subagent for the reviewers");
   assert.equal(applied.body.warnings.filter((w) => w.field === "computer").length, 1, JSON.stringify(applied.body.warnings));

@@ -27,7 +27,7 @@ const DIRECT_MINIMUM = 0.09;
 /** A step's least, as the cap prices it here: its input bound at the cache-write price and a 1,024-token answer. */
 const leastOf = (bound) => (bound * 3.75 + 1_024 * 15) / 1e6;
 
-const { WRAP_UP_TEXT } = await import("../dist/tool-budget.js");
+const { WRAP_UP_TEXT } = await import("../dist/wrap-up.js");
 /** Whether a tool call of the run was refused in the cap's wrap-up words: they are in a request the run sent after it. */
 const toldToWrapUp = (sent) => sent.some((body) => JSON.stringify(body.messages ?? []).includes(WRAP_UP_TEXT));
 const SONNET = Object.freeze({ id: "claude-sonnet-5-5", api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 });
