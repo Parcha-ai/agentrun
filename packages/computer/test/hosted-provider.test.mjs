@@ -1058,6 +1058,10 @@ test("facts.timeouts is the vendor's default under the caller's, and the adapter
 	assert.equal(merged.createMs, 5_000, "the caller's wins");
 	assert.equal(merged.pollMs, 7, "the vendor's over the adapter's");
 	assert.equal(merged.requestMs, 30_000, "and the adapter's where neither says");
+	// A second provider over the same host merges under the vendor's defaults, not under the first provider's set.
+	hostedProvider(fake.host, { label: "Fakehost", descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH });
+	assert.equal(fake.host.facts.timeouts.createMs, 99_000);
+	assert.equal(fake.host.facts.timeouts.pollMs, 7);
 });
 
 test("capabilities() reads the network forms and mount kinds from the descriptor, not from the host's facts", () => {

@@ -14,7 +14,7 @@ import type { ProviderDescriptor } from "../descriptor.js";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "../drift.js";
-import type { HostCall, Machine, MachineHost, MachineRequest } from "../host.js";
+import type { HostCall, HostFacts, Machine, MachineHost, MachineRequest } from "../host.js";
 import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "../isolation.js";
 import { releaseOlder } from "../janitor.js";
 import { RUN_LABEL } from "../labels.js";
@@ -133,6 +133,8 @@ export interface HostedOptions {
 	archilEgress?: string;
 }
 
+/** What each host's facts.timeouts held before the adapter first wrote its merged set there. */
+const VENDOR_TIMEOUTS = new WeakMap<HostFacts, Partial<HostedTimeouts>>();
 const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 export const NAME_LABEL = `${COMPUTER_LABEL}.name`;
 /** The image create was asked for: a vendor may report another name for it (a template's id). */
@@ -292,7 +294,10 @@ export class HostedProvider implements ComputerProvider {
 		if (user === null || Number(user[1]) > MAX_ID || Number(user[2]) > MAX_ID) throw new Error(`the daemon user ${daemonUser} must be uid:gid in numbers, such as 1000:1000`);
 		// The numbers, not the text: "00" is root as much as "0" is.
 		if (Number(user[1]) === 0 || Number(user[2]) === 0) throw new Error(`the daemon user ${daemonUser} is root or in root's group; ${a(label)} computer's daemon runs as neither`);
-		const merged = { ...TIMEOUT_DEFAULTS, ...host.facts.timeouts, ...timeouts };
+		// The vendor's own defaults are what facts.timeouts held before any provider wrapped this host, so a second provider
+		// over the same host merges under them, not under the first one's merged set.
+		const vendorTimeouts = VENDOR_TIMEOUTS.get(host.facts) ?? { ...host.facts.timeouts };
+		const merged = { ...TIMEOUT_DEFAULTS, ...vendorTimeouts, ...timeouts };
 		// AbortSignal.timeout and Node's timers take whole ms up to 2^31 - 1 (a fraction throws, a longer one fires at
 		// once), and a call's race adds CALL_SLACK_MS to its bound: refused here, before any machine exists. The listing's
 		// stability window alone may be 0: two consecutive polls, with no time between them asked for.
@@ -310,6 +315,7 @@ export class HostedProvider implements ComputerProvider {
 		[this.#uid, this.#gid] = [String(Number(user[1])), String(Number(user[2]))];
 		this.#timeouts = merged;
 		// The host reads the bounds that apply from its facts, at call time.
+		VENDOR_TIMEOUTS.set(host.facts, vendorTimeouts);
 		host.facts.timeouts = merged;
 		this.#descriptor = descriptor;
 		this.#probeTargets = [...probeTargets];
