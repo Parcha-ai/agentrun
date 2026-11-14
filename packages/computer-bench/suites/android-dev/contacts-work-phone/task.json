@@ -44,6 +44,7 @@
   ],
   "instruction": "Using the Contacts app, what is the work phone number of \"{{c.target}} {{nonce}}\"? Give the number in your final answer. Don't change anything.",
   "budget": { "steps": 15, "usd": 1, "wall_s": 180 },
+  "sufficient": false,
   "checks": [
     {
       "id": "number",

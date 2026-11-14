@@ -38,8 +38,8 @@
   "teardown": [
     {
       "method": "exec.run",
-      "why": "Stop the Clock app, which cancels its alarms, so the timer can't ring on a phone that outlives the run.",
-      "params": { "argv": ["am", "force-stop", "com.android.deskclock"], "timeoutMs": 20000 }
+      "why": "Stop the Clock app, whichever of the needed packages the phone has (a force-stop of one that isn't installed does nothing), which cancels its alarms, so the timer can't ring on a phone that outlives the run.",
+      "params": { "argv": ["sh", "-c", "for p in com.google.android.deskclock com.android.deskclock; do am force-stop $p 2> /dev/null; done; true"], "timeoutMs": 20000 }
     }
   ],
   "oracle": [

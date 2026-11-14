@@ -36,6 +36,7 @@
   ],
   "instruction": "Using the Contacts app, how many of the contacts are favorites, and who are they? Give the count and their first names in your final answer. Don't change anything.",
   "budget": { "steps": 15, "usd": 1, "wall_s": 180 },
+  "sufficient": false,
   "checks": [
     {
       "id": "count",

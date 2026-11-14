@@ -90,7 +90,9 @@ Eighteen more tasks, nine dev and nine heldout, written to be harder than round 
 one sets `exec: "deny"`, so the agent has only `ui`, `input`, `screen` and `apps`, and its oracle is built from the same
 methods: each oracle is a UI path a person could take, proven on a cloud phone. Each task starts from the opposite of its
 goal, its params give the three seeds three different targets, and everything it makes carries `{{nonce}}`. Three are
-answer tasks; their `unchanged` exec check fails the run if the agent edits what it was asked to read. Four are long (15+
+answer tasks; their `unchanged` exec check fails the run if the agent edits what it was asked to read. An answer check
+can't reject every wrong answer (extra names, several numbers with none said to be the one), so the three are
+`sufficient: false` and the grader reads their rubric. Four are long (15+
 steps). `needs.apps` follows the rule above: each entry is required, a nested list is alternatives (Google, AOSP or
 Samsung build), and Settings is `com.android.settings` alone. The Settings oracles go through Settings' search
 (`com.android.settings.intelligence` on AOSP); an agent can take the menus instead.
