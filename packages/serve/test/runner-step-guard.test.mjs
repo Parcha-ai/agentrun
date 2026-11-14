@@ -6,7 +6,7 @@
 //   - a guard that reads Jev asks it once, on the Jev key the claim opened for the workflow (claim-secrets.ts
 //     learnedDecisionKeys), as a decision of the run (its one cap, ledger.decisions): what it charged is the run's cost
 //     beside the node's model request.
-//   - every check is a row of the run record: metrics.guards. The same on a CLI harness.
+//   - every check is a row of the run record: metrics.guards, each naming its call's workflow. The same on a CLI harness.
 // pi's model and the node's go through the session proxy to a loopback gateway; Jev is the tests' fake (faux-jev.mjs,
 // every yes 0.92) under the faux switch, on its canary key. No sleeps, no port races.
 import assert from "node:assert/strict";
@@ -149,7 +149,7 @@ test("a step its own confidence puts under its guard's threshold hands the job b
   assert.match(said, /Its guards: guard on "answer" \(self\): p 0\.30 against threshold 0\.7 \(its own confidence 0\.30\); handed back\./);
   assert.equal(timeline.findLast((one) => ["assistant", "final_answer"].includes(one.kind))?.text, AGENT_SAYS);
   assert.equal(row.metrics?.path, "handed_back", JSON.stringify(row.metrics));
-  assert.deepEqual(row.metrics?.guards, [{ node: "answer", signal: "self", self: 0.3, p: 0.3, threshold: 0.7, escalated: true }]);
+  assert.deepEqual(row.metrics?.guards, [{ node: "answer", signal: "self", self: 0.3, p: 0.3, threshold: 0.7, escalated: true, workflow: "answer" }]);
 });
 
 test("a step sure enough of itself serves: the workflow's answer is the run's, path workflow, its guard's row kept", async (t) => {
@@ -157,7 +157,7 @@ test("a step sure enough of itself serves: the workflow's answer is the run's, p
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.ok(gateway.requests.every(isNode), "no agent request");
   assert.equal(row.metrics?.path, "workflow", JSON.stringify(row.metrics));
-  assert.deepEqual(row.metrics?.guards, [{ node: "answer", signal: "self", self: 0.9, p: 0.9, threshold: 0.7, escalated: false }]);
+  assert.deepEqual(row.metrics?.guards, [{ node: "answer", signal: "self", self: 0.9, p: 0.9, threshold: 0.7, escalated: false, workflow: "answer" }]);
   assert.deepEqual(decisionUsd(turns), [], "a self guard asks Jev nothing");
   assert.ok(Math.abs((row.costUsd ?? 0) - modelUsd(turns)) < 1e-9, `a self guard costs nothing: ${row.costUsd} vs ${modelUsd(turns)}`);
 });
@@ -167,7 +167,7 @@ test("both: Jev asked once on the claim's key, the lower of the two decides, and
   const served = await piRun(t, { guard: { signal: "both", threshold: 0.7 }, confidence: 0.8, env: jev.env });
   assert.equal(served.row.state, "ended", JSON.stringify(served.row));
   assert.equal(served.row.metrics?.path, "workflow", JSON.stringify(served.row.metrics));
-  assert.deepEqual(served.row.metrics?.guards, [{ node: "answer", signal: "both", self: 0.8, jev: 0.92, p: 0.8, threshold: 0.7, escalated: false }]);
+  assert.deepEqual(served.row.metrics?.guards, [{ node: "answer", signal: "both", self: 0.8, jev: 0.92, p: 0.8, threshold: 0.7, escalated: false, workflow: "answer" }]);
   const calls = jev.calls();
   assert.equal(calls.length, 1, JSON.stringify(calls));
   assert.equal(calls[0].authorized, true, "on the canary key the claim opened");
@@ -185,7 +185,7 @@ test("both, with the step sure but Jev less so than the threshold: the job is ha
   const { row } = await piRun(t, { guard: { signal: "both", threshold: 0.95 }, confidence: 0.99, env: jev.env });
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(row.metrics?.path, "handed_back", JSON.stringify(row.metrics));
-  assert.deepEqual(row.metrics?.guards, [{ node: "answer", signal: "both", self: 0.99, jev: 0.92, p: 0.92, threshold: 0.95, escalated: true }]);
+  assert.deepEqual(row.metrics?.guards, [{ node: "answer", signal: "both", self: 0.99, jev: 0.92, p: 0.92, threshold: 0.95, escalated: true, workflow: "answer" }]);
 });
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -224,7 +224,7 @@ test("CLI: a guard under its threshold hands back to the harness with the guard'
   }, "the run's end");
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(row.metrics?.path, "handed_back", JSON.stringify(row.metrics));
-  assert.deepEqual(row.metrics?.guards, [{ node: "answer", signal: "self", self: 0.2, p: 0.2, threshold: 0.5, escalated: true }]);
+  assert.deepEqual(row.metrics?.guards, [{ node: "answer", signal: "self", self: 0.2, p: 0.2, threshold: 0.5, escalated: true, workflow: "answer" }]);
   const timeline = await runTimeline(server, RUN, ctx, { settled: true });
   const handed = timeline.find((one) => /handed it back to you/.test(one.text ?? ""));
   assert.ok(handed, JSON.stringify(timeline.map(({ kind, text }) => [kind, text?.slice(0, 80)])));
