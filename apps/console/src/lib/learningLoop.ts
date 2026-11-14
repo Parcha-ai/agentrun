@@ -207,7 +207,10 @@ export function storyOf(input: {
   }
   if (s?.after && s.before) {
     const words = `${dollars(s.before.mean_usd)} a run by the agent, ${dollars(s.after.mean_usd)} all-in since`;
-    stages.push({ key: "cheaper", title: "Cheaper", value: s.times_cheaper !== null ? `${timesWord(s.times_cheaper)} cheaper` : `${s.after.runs} ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: s.times_cheaper !== null ? words : `${words}; how many times cheaper shows after ${CHEAPER_AFTER} runs`, state: s.times_cheaper !== null ? "done" : "now" });
+    const ratio = s.times_cheaper;
+    if (ratio !== null && ratio > 1) stages.push({ key: "cheaper", title: "Cheaper", value: `${timesWord(ratio)} cheaper`, detail: words, state: "done" });
+    else if (ratio !== null) stages.push({ key: "cheaper", title: "Cheaper", value: ratio < 1 ? `Not cheaper yet: ${timesWord(1 / ratio)} the cost` : "Same cost", detail: words, state: "now" });
+    else stages.push({ key: "cheaper", title: "Cheaper", value: `${s.after.runs} ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: `${words}; how many times cheaper shows after ${CHEAPER_AFTER} runs`, state: "now" });
   } else if (!notesOnly) {
     stages.push({ key: "cheaper", title: "Cheaper", value: "Not yet", detail: "once a workflow takes over, each run's all-in cost against before", state: "later" });
   }
