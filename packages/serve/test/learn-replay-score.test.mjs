@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { answerCorrect, championOf, clears, escalates, GRADES_KEPT, putGrade, PROMOTIONS_KEPT, servingOf, gradesOf, promotionOf, recordOnly, recordPromotion, promotionsOf, replayScore, sameAnswer, thresholdsOf, trimPromotions } from "../dist/learn/promote.js";
 import { FIT_MIN_ROWS, fitLogistic, refitGuards } from "../dist/learn/refit.js";
+import * as dsl from "@parcha/agentrun-dsl";
+import { draftProblems } from "../dist/learn/skills.js";
 
 const guard = (node, p, threshold = 0) => ({ node, signal: "self", self: p ?? undefined, p, threshold, escalated: false });
 const row = (of, { answer, recorded = answer, correct = true, outcome = "answered", guards = [], expected } = {}) => ({ of, recorded: { answer: recorded, correct, ...(expected ? { expected } : {}) }, outcome, answer: outcome === "answered" ? answer : null, guards });
@@ -304,4 +306,33 @@ test("a guard in a child workflow is read by its prefixed name: served at its ow
   const refit = refitGuards(text, rows, "2026-11-13T00:00:00.000Z");
   assert.deepEqual(refit.guards.map(({ node, was, threshold }) => [node, was, threshold]), [["sub/pick", 0.8, 0.5]]);
   assert.equal(JSON.parse(refit.text).root.steps[0].workflow.root.steps[0].guard.threshold, 0.5);
+});
+
+// Review on #2644 (r7, repeated labels): a guard row names its step by label, so two steps with one label would share a
+// threshold in the replay's score and the refit (a `check` at 0.2 passing p 0.5 read at the other `check`'s 0.9: a
+// hand-back credited the agent's answer, a wrong revision promoted). A label names one step, as the durable runner
+// already holds a saved workflow to (DUPLICATE_LABEL): a learned draft with a label on two nodes is refused at learn time
+// and before a call, so no run, replay or refit ever reads two steps as one.
+test("a learned draft with one label on two steps is refused; the same label in two child workflows is two steps", () => {
+  const schemas = {
+    In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+    Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } },
+  };
+  const step = (label, threshold, as) => ({ node: "agent", label, instructions: "Answer the question.", out: "Answer", as, tools: [], guard: { signal: "self", threshold } });
+  const flowOf = (root) => ({ v: 2, name: "answer", schemas, input: { schemaId: "In" }, output: { schemaId: "Answer", path: "second" }, root });
+  const twice = flowOf({ node: "chain", steps: [step("check", 0.2, "first"), step("check", 0.9, "second")] });
+  const problems = draftProblems(dsl, JSON.stringify(twice), []);
+  assert.equal(problems.length, 1, JSON.stringify(problems));
+  assert.match(problems[0].detail, /"check" names two steps/);
+  // Distinct labels: nothing to refuse.
+  assert.deepEqual(draftProblems(dsl, JSON.stringify(flowOf({ node: "chain", steps: [step("check", 0.2, "first"), step("verify", 0.9, "second")] })), []), []);
+  // A child workflow's step reads `parent/child`: `check` in two children is `a/check` and `b/check`, two steps.
+  const child = (label, threshold) => ({ node: "workflow", label, input: { question: "{input.question}" }, out: "Answer", as: label === "a" ? "first" : "second",
+    workflow: { v: 2, name: label, schemas, input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" }, root: step("check", threshold, "answer") } });
+  const nested = flowOf({ node: "chain", steps: [child("a", 0.2), child("b", 0.9)] });
+  assert.deepEqual(draftProblems(dsl, JSON.stringify(nested), []).filter((one) => /names two steps/.test(one.detail)), []);
+  assert.deepEqual([...thresholdsOf(JSON.stringify(nested))], [["a/check", 0.2], ["b/check", 0.9]]);
+  // The same child invoked twice under one label is one label on two nodes, its steps too.
+  const again = flowOf({ node: "chain", steps: [child("a", 0.2), { ...child("a", 0.9), as: "second" }] });
+  assert.match(draftProblems(dsl, JSON.stringify(again), []).map((one) => one.detail).join("\n"), /"a" names two steps/);
 });

@@ -311,7 +311,8 @@ export function answerCorrect(answer: string | null, recorded: ReplayRow["record
 }
 
 /** The thresholds a workflow's guards serve at, by step label (the guard rows' `node`): every step of the workflow
- *  with a `guard` and a `label` (walkGuards). */
+ *  with a `guard` and a `label` (walkGuards). A label names one step: a learned draft that repeats one never runs
+ *  (skills.ts draftProblems, repeatedLabels), so no two steps' rows share a threshold here or in a refit. */
 export function thresholdsOf(workflowText: string): Map<string, number> {
   const out = new Map<string, number>();
   try {

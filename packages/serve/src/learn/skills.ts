@@ -2,7 +2,7 @@
 // `workflows/<name>/workflow.json` with its `README.md`. Their places in the learning folder and the shape each file must
 // have. check.ts checks them; nothing here reads a file, runs a draft or calls a model.
 import { mcpNameOf } from "../tool-names.js";
-import { workflowNodes } from "./workflow-nodes.js";
+import { repeatedLabels, workflowNodes } from "./workflow-nodes.js";
 import type { assertWorkflowCapabilities, desugarWorkflow, dryRunWorkflow, inspectWorkflow, resolveSchemaForWorkflow, validateWorkflow, Workflow } from "@parcha/agentrun-dsl";
 
 /** Where a skill and a workflow draft live in the folder. */
@@ -882,7 +882,8 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   let out: DraftProblem[];
   try {
-    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc, decisions), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...gatedDecisions(dsl, doc, decisions), ...[...synthesisProblems(doc, dsl), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
+    // A label names one step (workflow-nodes.ts repeatedLabels): its guard's threshold, replay score and refit included.
+    out = [...repeatedLabels(doc).map((label) => ({ rule: "workflow" as const, detail: `the label "${label}" names two steps: give each step its own label` })), ...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc, decisions), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...gatedDecisions(dsl, doc, decisions), ...[...synthesisProblems(doc, dsl), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
     // A learned workflow answers the value at its output's path: one that names none would answer its whole state, which
     // fails its output schema when the call ends, after every node spent.
     const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;

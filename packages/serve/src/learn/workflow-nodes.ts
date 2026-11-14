@@ -30,3 +30,19 @@ export function workflowNodes(doc: unknown): WorkflowNodeAt[] {
   }
   return out;
 }
+
+/** The labels of `doc` that name more than one node, each once, in document order, as the DSL names a step when it runs
+ *  (`parent/child` in a child workflow). A label names one step: its events, its escalation and its guard rows (whose
+ *  `node` keys the serving thresholds, a replay's score and a refit) read by it, and the durable runner refuses a workflow
+ *  that repeats one (DUPLICATE_LABEL). */
+export function repeatedLabels(doc: unknown): string[] {
+  const seen = new Set<string>();
+  const twice = new Set<string>();
+  for (const { node, prefix } of workflowNodes(doc)) {
+    if (typeof node.label !== "string") continue;
+    const name = `${prefix}${node.label}`;
+    if (seen.has(name)) twice.add(name);
+    seen.add(name);
+  }
+  return [...twice];
+}
