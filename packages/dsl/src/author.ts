@@ -8,8 +8,9 @@ import { SYSTEM_ONE_LIMITS } from "./system-one.js";
 import {
   WORKFLOW_NODE_KINDS, NODE_FIELDS, WORKFLOW_PREDICATES, PREDICATE_FIELDS, MECHANICAL_PREDICATES, FIELD_TYPES,
   EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES,
-  GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, type WorkflowNodeKind,
+  GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, GUARD_SIGNALS, GUARDED_NODE_KINDS, SELF_CONFIDENCE_KINDS, type WorkflowNodeKind,
 } from "./vocabulary.js";
+import { GUARD_QUESTION_MAX } from "./workflow.js";
 
 /** What a host adds to the author contract. It names the host's own vocabulary and rules and never
  *  restates or changes the language: the package renders it once, after the language section. */
@@ -130,6 +131,15 @@ Typed questions answered by the host's judge in one request each: no tools, no s
   - ${code("retry")} {attempts: an integer >= 1, backoff_s?: a number >= 0, on?: [${[...CALL_RETRY_CLASSES, ...EFFECT_FAILURE_CODES].join(", ")}]}. ${code("where")} accepts only "sandbox".
   - ${code("poll")} {until, fail_when?, interval_s: >= 0.1 (a busy-loop guard), deadline_s: at least the call's deadline_s (no maximum)} repeats the call until ${code("until")} holds on its own result; ${code("fail_when")} fails it at once. Both are mechanical predicates whose paths are relative to the result and lie in its declared shape.
   - Validation and dry runs never perform effects: they synthesize the declared result, and a shell result's stdout is "{}".
+
+### Step guards
+
+A ${code("guard")} on a step (${GUARDED_NODE_KINDS.join(", ")}) checks the step once it ran: below its threshold, the run hands the job back (it escalates, kind ${code("guard")}, at the step, with the state it reached), so an uncertain step never answers alone.
+- ${code("guard")} is {"signal": ${alternatives(GUARD_SIGNALS)}, "threshold": a number between 0 and 1 (exclusive), "question"?: text, "fit"?: {"w", "b", "n", "fitted_at"}}.
+- ${code("self")} reads the step's own confidence: ${SELF_CONFIDENCE_KINDS.join(", ")} nodes only. An agent or decide node with it submits a ${code("confidence")} field (0 to 1) beside its record, which lands at ${code("<key>$confidence")}, never in its value; its ${code("out")} is an object schema. A judge, pick or sift reads its weakest answer's confidence.
+- ${code("jev")} asks Jev one yes/no question over what the step saw and what it wrote: ${code("question")} (at most ${GUARD_QUESTION_MAX} characters), or by default whether the output is right for the input. Every guarded kind may use it; it is the only signal for ${GUARDED_NODE_KINDS.filter((kind) => !(SELF_CONFIDENCE_KINDS as readonly string[]).includes(kind)).join(", ")} nodes.
+- ${code("both")} combines the two: through ${code("fit")} when it has one, else the lower of the two.
+- ${code("fit")} is the host's, written when it fits the threshold on graded runs: {"w": one weight per signal ([self, jev] for both), "b", "n": the runs it was fitted on, "fitted_at": an ISO time}. Never write or change one yourself. A raw confidence is not a calibrated probability: without a fit, set a threshold the host has measured, or leave the guard to the host.
 
 ## Predicates
 
