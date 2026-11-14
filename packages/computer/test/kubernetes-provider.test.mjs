@@ -334,6 +334,7 @@ test("auth: a JSON kubeconfig's context (token, client certificate, namespace); 
 	assert.throws(() => resolveEndpoint({ kubeconfig: kubeconfig({ token: "t" }, { "insecure-skip-tls-verify": true }) }), /never does/);
 	assert.throws(() => resolveEndpoint({ auth: "token", apiUrl: "https://k" }), /options.token, a bearer token, or options.tokenFile/);
 	assert.throws(() => resolveEndpoint({ auth: "gke-adc" }), /needs options.apiUrl/);
+	assert.throws(() => resolveEndpoint({ auth: "gke-adc", apiUrl: "https://k", env: {} }), /needs a Google credentials file: set GOOGLE_APPLICATION_CREDENTIALS/);
 	assert.throws(() => resolveEndpoint({ auth: "in-cluster", env: {} }), /KUBERNETES_SERVICE_HOST is unset/);
 	const inCluster = resolveEndpoint({ auth: "in-cluster", env: { KUBERNETES_SERVICE_HOST: "10.0.0.1", KUBERNETES_SERVICE_PORT: "443" }, readFile: (path) => (path.endsWith("namespace") ? "agents\n" : "-----BEGIN CERTIFICATE-----\nSA\n-----END CERTIFICATE-----") });
 	assert.equal(inCluster.endpoint.server, "https://10.0.0.1:443");

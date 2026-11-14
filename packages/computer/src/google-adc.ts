@@ -2,8 +2,8 @@
 // no dependencies), for a Kubernetes API that takes one: GKE. GKE names a Google caller by its email only when the
 // token carries the userinfo.email scope, so every token is asked for with it beside cloud-platform.
 //
-// The credentials are a file (the server's GOOGLE_APPLICATION_CREDENTIALS, or a path given) of one of three types, or,
-// with no file, the metadata server of the Google machine the server runs on:
+// The credentials are a file (the server's GOOGLE_APPLICATION_CREDENTIALS, or a path given) of one of three types. The
+// metadata server of a Google machine is not asked: a server with no file is refused in words.
 // - service_account: a JWT signed with its key, exchanged at its token_uri.
 // - authorized_user: its refresh token, exchanged at Google's OAuth token endpoint (a person's gcloud login).
 // - external_account: workload identity federation. A subject token read from credential_source (a file, or a URL with
@@ -20,7 +20,6 @@ import { fail, ok, type Result } from "./result.js";
 export const GKE_SCOPES = ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email"] as const;
 
 const OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
-const METADATA_TOKEN_URL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
 const TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange";
 const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
 /** A token is minted again this long before it ends. */
@@ -28,7 +27,7 @@ const EARLY_MS = 60_000;
 const REQUEST_MS = 15_000;
 
 export interface GoogleAdcOptions {
-	/** The credentials file; absent: none, and the metadata server is asked. */
+	/** The credentials file; absent, every token is refused in words. */
 	credentialsFile?: string;
 	/** For tests: every request goes through it. Default the global fetch. */
 	fetch?: typeof fetch;
@@ -183,24 +182,8 @@ async function externalAccount(credentials: Credentials, fetcher: typeof fetch, 
 	return impersonated.ok ? tokenOf(impersonated.value, now, "the service account's impersonation") : impersonated;
 }
 
-/** The metadata server's token for the machine's own service account, with the scopes. */
-async function metadata(fetcher: typeof fetch, now: number): Promise<Result<BearerToken>> {
-	let response: Response;
-	try {
-		response = await fetcher(`${METADATA_TOKEN_URL}?scopes=${encodeURIComponent(GKE_SCOPES.join(","))}`, { headers: { "Metadata-Flavor": "Google" }, redirect: "error", signal: AbortSignal.timeout(REQUEST_MS) });
-	} catch (cause) {
-		return failure(`no credentials file was given and the metadata server could not be reached (${(cause as Error).message}): set GOOGLE_APPLICATION_CREDENTIALS to a credentials file`);
-	}
-	if (!response.ok) return response.status >= 500 ? unavailable(`the metadata server answered ${response.status}`) : failure(`the metadata server answered ${response.status}`);
-	try {
-		return tokenOf((await response.json()) as Record<string, unknown>, now, "the metadata server");
-	} catch {
-		return failure("the metadata server answered what is not JSON");
-	}
-}
-
 /**
- * A TokenSource of Google access tokens with GKE's scopes, from the credentials file or the metadata server. A token is
+ * A TokenSource of Google access tokens with GKE's scopes, from the credentials file. A token is
  * kept until a minute before it ends; a fresh one is minted when asked (after a 401). Never prints a token or a key.
  */
 export function googleAdc(options: GoogleAdcOptions = {}): TokenSource {
@@ -211,7 +194,7 @@ export function googleAdc(options: GoogleAdcOptions = {}): TokenSource {
 	let minting: Promise<Result<BearerToken>> | undefined;
 	const mint = async (): Promise<Result<BearerToken>> => {
 		const now = clock();
-		if (options.credentialsFile === undefined || options.credentialsFile === "") return metadata(fetcher, now);
+		if (options.credentialsFile === undefined || options.credentialsFile === "") return failure("no credentials file is given: set GOOGLE_APPLICATION_CREDENTIALS (or KUBERNETES_GOOGLE_CREDENTIALS) to a service_account, authorized_user or external_account file; the metadata server is not asked");
 		let credentials: Credentials;
 		try {
 			credentials = JSON.parse(await read(options.credentialsFile)) as Credentials;

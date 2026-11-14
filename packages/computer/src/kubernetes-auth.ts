@@ -6,7 +6,8 @@
 //   kubelet rotates it), and the API at KUBERNETES_SERVICE_HOST and _PORT.
 // - token: an API URL and a bearer token, given, or read from a file before each call (a token a sidecar rotates).
 // - gke-adc: an API URL (GKE's endpoint, or its DNS endpoint) and a Google access token from Application Default
-//   Credentials (./google-adc.ts): a server outside the cluster that holds a Google identity, a federated one included.
+//   Credentials (./google-adc.ts), a credentials file: a server outside the cluster that holds a Google identity, a
+//   federated one included.
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { type GoogleAdcOptions, googleAdc } from "./google-adc.js";
@@ -37,7 +38,7 @@ export interface KubernetesConnectOptions {
 	kubeconfigFile?: string;
 	/** The kubeconfig's context; default its current-context. */
 	context?: string;
-	/** The Google credentials file (auth gke-adc); default env.GOOGLE_APPLICATION_CREDENTIALS, else the metadata server. */
+	/** The Google credentials file (auth gke-adc); default env.GOOGLE_APPLICATION_CREDENTIALS. One of the two is required. */
 	googleCredentials?: string;
 	/** For a library caller: the bearer token of every call, in place of auth's own. */
 	tokenSource?: TokenSource;
@@ -185,6 +186,7 @@ export function resolveEndpoint(options: KubernetesConnectOptions): ResolvedEndp
 	}
 	// gke-adc
 	const credentialsFile = options.googleCredentials || env.GOOGLE_APPLICATION_CREDENTIALS || undefined;
+	if (options.tokenSource === undefined && credentialsFile === undefined) throw new Error("auth gke-adc needs a Google credentials file: set GOOGLE_APPLICATION_CREDENTIALS, or options.googleCredentials (KUBERNETES_GOOGLE_CREDENTIALS); the metadata server is not asked");
 	const token = options.tokenSource ?? googleAdc({ ...(credentialsFile ? { credentialsFile } : {}), ...(options.googleFetch ? { fetch: options.googleFetch } : {}) });
-	return { endpoint: { server: apiUrl, tls: given ? { ca: given } : {}, token }, via: credentialsFile ? "Google ADC from a credentials file" : "Google ADC from the metadata server" };
+	return { endpoint: { server: apiUrl, tls: given ? { ca: given } : {}, token }, via: options.tokenSource ? "the caller's token source" : "Google ADC from a credentials file" };
 }
