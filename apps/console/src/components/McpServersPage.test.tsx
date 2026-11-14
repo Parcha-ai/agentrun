@@ -748,6 +748,18 @@ describe("Settings → MCP servers, the Composio preset", () => {
     await act(async () => { finish(await json(200, { server: saved({ name: "gh" }) })); });
   });
 
+  it("a template's setup link never fills a name a saved server has: older slack servers stay, and the new one takes the first free name", async () => {
+    const older = [saved({ name: "slack" }), saved({ name: "slack-2" }), saved({ name: "hubspot" })];
+    const s = server([older], answer);
+    const p = await open(s.v2, { add: { name: "slack", preset: "composio", toolkit: "slack", tools: ["SLACK_SEND_MESSAGE"] } });
+    expect(p.input("composio-name").value).toBe("slack-3");
+    expect(p.input("composio-toolkit").value).toBe("slack");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const u = await open(server([older]).v2, { add: { name: "hubspot" } });
+    expect(u.input("mcp-name").value).toBe("hubspot-2");
+    expect(u.input("mcp-toolkit").value).toBe("hubspot");
+  });
+
   it("opens filled for a template's Composio need: its name and toolkit, and its actions ticked once they load", async () => {
     const s = server([[]], answer);
     const p = await open(s.v2, { add: { name: "gh", preset: "composio", toolkit: "github", tools: ["GITHUB_LIST_ISSUES"] } });
