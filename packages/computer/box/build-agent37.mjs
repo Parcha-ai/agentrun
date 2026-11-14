@@ -20,12 +20,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
+import { RECIPE } from "./recipe.mjs";
 
 /** The template's name in every workspace: AGENT37_BOX_TEMPLATE. */
 export const NAME = "agentrun-box";
 export const API_URL = "https://api.agent37.com";
-/** Every file the image is made of besides DESKTOP: the Dockerfile and what it copies, as build-e2b.mjs hashes them. */
-export const RECIPE = ["Dockerfile", "agentrun-archil"];
+/** Every file the image is made of besides DESKTOP: the Dockerfile and what it copies (recipe.mjs). */
+export { RECIPE };
 /**
  * What a desktop adds to box/Dockerfile: Xvfb, xfwm4 (with dbus-run-session, which xfconf's packages bring) and
  * xsetroot (x11-xserver-utils, the desktop's background), which the provider starts through computerd as the tool user on :0 (src/desktop.ts), and the apps E2B Desktop has that are cheap to carry: Xfce's terminal and text editor, Firefox
