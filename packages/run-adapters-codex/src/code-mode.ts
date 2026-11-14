@@ -22,6 +22,9 @@ import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, type NestedF
 export const NESTED_STREAM = "codex.nested";
 /** The stream that records the interrupted turns whose recovery note was injected: `{ since }`, once per interrupted turn. */
 export const RECOVERY_NOTE_STREAM = "codex.recovery-note";
+/** A yielded exec's nested call run on a resume (recoverItems), written before it runs: a later recovery of the same turn tells
+ *  the model's `wait` its outcome from the session's record, never running it again. */
+export const RESUMED_STREAM = "codex.nested-resumed";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -308,11 +311,23 @@ export function codeMode(deps: CodeModeDeps) {
       const cut = new Set(execs);
       const carrier = dangling.findIndex((c) => !isExec(c) && waitedCell(c) !== undefined);
       const yieldedTies: Tie[] = [];
+      const ranBefore = resume ? new Set((await journal.read<{ callId: string }>(RESUMED_STREAM)).map((r) => r.data.callId)) : new Set<string>();
       for (const tie of resume ? ties : []) {
         const cutOff = tie.exec === null ? tie.since === since && execs.length > 0 : cut.has(tie.exec);
         const yielded = !cutOff && carrier >= 0 && tie.since === since;
-        if ((!cutOff && !yielded) || tie.tool === undefined || ctx.state().effects.has(toolKey(tie.callId)) || rolled.has(tie.callId)) continue;
+        const done = ctx.state().effects.get(toolKey(tie.callId));
+        // Run on an earlier recovery of this turn that stopped before the wait was answered: told from its record.
+        if (yielded && ranBefore.has(tie.callId) && (done?.status === "completed" || done?.status === "failed") && !rolled.has(tie.callId)) {
+          resumed.set(tie.callId, { text: done.status === "failed" ? (done.error?.message ?? "") : outputTextOf(done.output), isError: done.status === "failed", ran: true });
+          yieldedTies.push(tie);
+          continue;
+        }
+        if ((!cutOff && !yielded) || tie.tool === undefined || done || rolled.has(tie.callId)) continue;
         if (!deps.bridge.call || !deps.bridge.get(tie.tool)) continue;
+        if (yielded) {
+          journal.append(RESUMED_STREAM, { callId: tie.callId });
+          await journal.flush();
+        }
         const result = await deps.bridge.call(tie.tool, tie.args ?? {}, tie.callId);
         resumed.set(tie.callId, { text: result.text, isError: result.isError, ran: ctx.state().effects.has(toolKey(tie.callId)) });
         if (yielded) yieldedTies.push(tie);
