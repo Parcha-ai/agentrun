@@ -79,9 +79,10 @@ describe("the conformance suite on a Docker desktop", { skip: LIVE ? false : "se
 		assert.ok(report.daemons.length > 0 && report.daemons.every((daemon) => daemon.version === report.providerVersion), JSON.stringify(report.daemons));
 	});
 
-	it("runs every screen and input case, and skips only what X11 has no group for, in words", () => {
+	it("runs every screen and input case and the stock app's launch, and skips only what X11 has no group for, in words", () => {
 		for (const r of report.results.filter((one) => EXTENSION.includes(one.group))) {
-			if (r.group === "screen" || r.group === "input") {
+			if (r.group === "screen" || r.group === "input" || r.id === "apps.launch-terminate") {
+				// apps.launch-terminate launches the fixture's xterm (DESKTOP_APPS) through computerd's apps group.
 				if (r.id === "screen.stream") assert.equal(r.status, "skip", `${r.id}: Docker has no stream()`);
 				else assert.equal(r.status, "pass", `${r.id}: ${r.reason}`);
 			} else {

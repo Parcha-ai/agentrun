@@ -125,6 +125,7 @@ func (g *group) read(c *x11.Conn) (*snapshot, error) {
 			}
 		}
 	}
+	byPid := g.livePids()
 	for _, id := range tops {
 		if attrs, err := c.GetWindowAttributes(id); err != nil || attrs.MapState != x11.IsViewable {
 			if c.Err() != nil {
@@ -138,7 +139,7 @@ func (g *group) read(c *x11.Conn) (*snapshot, error) {
 				w.pid = int(p.Cardinals()[0])
 			}
 		}
-		w.app = g.ownerByPid(w.pid)
+		w.app = ownerByPid(byPid, w.pid)
 		if w.app == "" {
 			w.app = ownerByClass(s.entries, w.class)
 		}
@@ -184,20 +185,27 @@ func classOf(c *x11.Conn, id uint32) [2]string {
 	return out
 }
 
-// ownerByPid is the app whose launch made the process pid (it, or a process it started), or "".
-func (g *group) ownerByPid(pid int) string {
-	if pid <= 1 {
-		return ""
-	}
+// livePids are the pids of the launches that still run, each with its app. An ended launch's pid is not among them: the
+// system may have handed it to another process since.
+func (g *group) livePids() map[int]string {
 	g.mu.Lock()
+	apps := make([]string, 0, len(g.launched))
+	for app := range g.launched {
+		apps = append(apps, app)
+	}
+	g.mu.Unlock()
 	byPid := map[int]string{}
-	for app, launches := range g.launched {
-		for _, l := range launches {
+	for _, app := range apps {
+		for _, l := range g.launches(app) {
 			byPid[l.pid] = app
 		}
 	}
-	g.mu.Unlock()
-	if len(byPid) == 0 {
+	return byPid
+}
+
+// ownerByPid is the app whose running launch made the process pid (it, or a process it started), or "".
+func ownerByPid(byPid map[int]string, pid int) string {
+	if pid <= 1 || len(byPid) == 0 {
 		return ""
 	}
 	for step := 0; step < 32 && pid > 1; step++ {

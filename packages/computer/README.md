@@ -608,7 +608,7 @@ by its rectangle), so a longer one ends the connection before anything is alloca
   window is the app's by the launch that made it (`_NET_WM_PID` and the process's parents), else by its `WM_CLASS`
   (the entry's `StartupWMClass`, its id's last part or its program). `background` is `unsupported`: a Linux desktop
   opens an app in front. `apps.terminate` sends TERM, then KILL, to the app's launches and its windows' processes, and
-  answers once none of its windows shows.
+  answers once none of its windows shows and none of its launches runs, a launch that never showed a window included.
 - `screen.shot` is a PNG of the root window or a region inside it (one outside is `invalid`), with `scale` 1 and
   `cursor` from `QueryPointer`. A connection holds one shot, until it is read to its end or the next shot; a
   `screen.read` of another id is `not_found`.
@@ -704,12 +704,12 @@ was deleted.
 - `capabilities()` declares kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, `maxLifetimeMs`
   of 30 days, and `mount: ["bind"]` (below); there is no `extend()` or `stream()`, and init gets no `--max-deadline`.
 - `new DockerProvider({ daemonPath, desktop: {} })` makes desktops: kind `desktop`, with `screen`, `input.pointer`,
-  `input.keys` and `apps` too, on an image with an X server (`test/fixtures/desktop/Dockerfile` is Alpine and Xvfb, 48 MB).
+  `input.keys` and `apps` too, on an image with an X server (`test/fixtures/desktop/Dockerfile` is Alpine, Xvfb and xterm, the stock app `apps.launch-terminate` opens, about 50 MB).
   `create` gives the daemon `DISPLAY` (`display`, default `:0`), then starts the X server through it with
   `process.start` (`server`, default `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`), as the computer's user and as any
   program: computerd stays PID 1 and starts nothing itself, and the server is one process in its table that ends with
   the computer. A `windowManager` (an argv, default none) starts the same way once the display answers, with `DISPLAY`;
-  one that cannot start fails create. `create` waits (`timeoutMs`, default 30 s) until hello declares the display, then runs the drift check;
+  one that cannot start, or ends within 1 s of starting, fails create with its last words. `create` waits (`timeoutMs`, default 30 s) until hello declares the display, then runs the drift check;
   a server that ends first, with its last words on stderr, or a display that is not up in time deletes the computer in
   words.
 - `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (`checkLifetime`: at most

@@ -859,6 +859,16 @@ test("a desktop's window manager starts once the display answers, with DISPLAY; 
 	assert.equal(failed.error?.code, "not_found");
 	assert.match(failed.error.message, /the window manager \(no-such-program\) did not start on :0: no-such-program: executable file not found/);
 	await nothingLeft(missing.fake, "a window manager that cannot start");
+
+	const ends = setup({ kind: "desktop", desktop: { windowManager: ["ends-at-once"] } }, { lingers: { reads: 1, lists: 1 } });
+	const ended = await create(ends.provider);
+	assert.equal(ended.error?.code, "vendor");
+	assert.match(ended.error.message, /the window manager \(ends-at-once\) ended with exit code 1 within 1 s of starting on :0: Xfconf could not be initialized/);
+	await nothingLeft(ends.fake, "a window manager that ends at once");
+	assert.ok(
+		managed.fake.requests.some(({ machine, method, params }) => machine === m.id && method === "process.wait" && params.timeoutMs === 1000),
+		"create watches the window manager for a second",
+	);
 	assert.throws(() => setup({ kind: "desktop", desktop: { windowManager: [""] } }), /windowManager must be a program and its arguments/);
 });
 

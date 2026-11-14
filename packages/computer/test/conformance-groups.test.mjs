@@ -382,7 +382,7 @@ test("apps.launch-terminate on a Linux desktop drives a stock editor or terminal
 	assert.match(reasons(kept)["apps.launch-terminate"], /org\.xfce\.mousepad no longer in front after apps\.terminate/);
 	const none = await run(fakeDevices({ groups, stockApps: ["firefox-esr"] }).provider, ["apps.launch-terminate"]);
 	assert.deepEqual(statuses(none), { "apps.launch-terminate": "skip" });
-	assert.match(reasons(none)["apps.launch-terminate"], /this desktop lists none of the stock apps the case knows \(org\.xfce\.mousepad, mousepad, xfce4-terminal, org\.xfce\.terminal\)/);
+	assert.match(reasons(none)["apps.launch-terminate"], /this desktop lists none of the stock apps the case knows \(org\.xfce\.mousepad, mousepad, xfce4-terminal, org\.xfce\.terminal, xterm\)/);
 });
 
 /** The lifetimes provider.deadline asked for, in order: the run's shared computer is not the case's. */

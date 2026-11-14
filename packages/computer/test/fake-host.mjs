@@ -227,6 +227,8 @@ export function fakeHost({
 				m.xvfb = entry;
 				if (display === "dies") Object.assign(entry, { running: false, exitCode: 1, stderr: "(EE) Fatal server error:\n(EE) Cannot establish any listening sockets\n" });
 			}
+			// A window manager that starts and ends at once, as xfwm4 does with no session bus.
+			if (params.argv[0] === "ends-at-once") Object.assign(entry, { running: false, exitCode: 1, stderr: "Xfconf could not be initialized\n" });
 			m.processes.push(entry);
 			return result({ id: entry.id, pid: entry.pid });
 		}

@@ -223,6 +223,8 @@ func (g *group) terminate(ctx context.Context, raw json.RawMessage) (any, error)
 	if err != nil {
 		return nil, err
 	}
+	// Ended once none of its windows shows and none of its launches still runs: a launch with no window yet (one that
+	// timed out), or an app that closed its window and runs on, gets KILL too after the grace.
 	for _, sig := range []string{"TERM", "KILL"} {
 		g.signal(e.ID, s, sig)
 		deadline := time.Now().Add(endWait)
@@ -230,7 +232,7 @@ func (g *group) terminate(ctx context.Context, raw json.RawMessage) (any, error)
 			if s, err = g.look(); err != nil {
 				return nil, err
 			}
-			if len(s.of(e.ID)) == 0 {
+			if len(s.of(e.ID)) == 0 && len(g.launches(e.ID)) == 0 {
 				return struct{}{}, nil
 			}
 			if time.Now().After(deadline) {
@@ -238,21 +240,18 @@ func (g *group) terminate(ctx context.Context, raw json.RawMessage) (any, error)
 			}
 			select {
 			case <-ctx.Done():
-				return nil, rpc.Errorf(rpc.KindAborted, "apps.terminate of %s was cancelled while it waited for the app's windows to go", e.ID)
+				return nil, rpc.Errorf(rpc.KindAborted, "apps.terminate of %s was cancelled while it waited for the app to end", e.ID)
 			case <-time.After(poll):
 			}
 		}
 	}
-	return nil, rpc.Errorf(rpc.KindTimeout, "%s still shows a window %s after it was sent TERM and then KILL", e.ID, seconds(2*endWait))
+	return nil, rpc.Errorf(rpc.KindTimeout, "%s still runs (%d windows, %d launches) %s after it was sent TERM and then KILL", e.ID, len(s.of(e.ID)), len(g.launches(e.ID)), seconds(2*endWait))
 }
 
-// signal sends sig to every launch of the app (through the process table's guard) and to each process one of its
-// windows names. A process this daemon may not signal is left: it is not the tool user's.
+// signal sends sig to every launch of the app that still runs (through the process table's guard) and to each process
+// one of its windows names. A process this daemon may not signal is left: it is not the tool user's.
 func (g *group) signal(app string, s *snapshot, sig string) {
-	g.mu.Lock()
-	launches := slices.Clone(g.launched[app])
-	g.mu.Unlock()
-	for _, l := range launches {
+	for _, l := range g.launches(app) {
 		_, _ = g.table.Signal(process.SignalParams{ID: l.id, Signal: sig})
 	}
 	n := syscall.SIGTERM
@@ -288,6 +287,32 @@ func (g *group) active(ctx context.Context, w window, s *snapshot) (any, error) 
 		}
 	}
 	return struct{}{}, nil
+}
+
+// launches are the app's launches that still run; the ones that ended are dropped, so a pid the system hands out again
+// is never taken for the app's (windows.go, ownerByPid).
+func (g *group) launches(app string) []launch {
+	g.mu.Lock()
+	recorded := slices.Clone(g.launched[app])
+	g.mu.Unlock()
+	live := make([]launch, 0, len(recorded))
+	ended := map[string]bool{}
+	for _, l := range recorded {
+		if g.running(l.id) {
+			live = append(live, l)
+		} else {
+			ended[l.id] = true
+		}
+	}
+	if len(ended) > 0 {
+		g.mu.Lock()
+		g.launched[app] = slices.DeleteFunc(g.launched[app], func(l launch) bool { return ended[l.id] })
+		if len(g.launched[app]) == 0 {
+			delete(g.launched, app)
+		}
+		g.mu.Unlock()
+	}
+	return live
 }
 
 // running is whether the launch with that process id still runs its program.

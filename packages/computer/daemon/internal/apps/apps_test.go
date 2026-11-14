@@ -87,7 +87,24 @@ type world struct {
 	t       *testing.T
 	display string
 	conn    *x11.Conn
+	table   *process.Table
 	call    func(method string, params any) (any, error)
+}
+
+// running are the processes of the table that still run, by their program.
+func (w *world) running(program string) int {
+	w.t.Helper()
+	listed, err := w.table.List(process.ListParams{})
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	n := 0
+	for _, p := range listed.Processes {
+		if p.Running && len(p.Argv) > 0 && p.Argv[0] == program {
+			n++
+		}
+	}
+	return n
 }
 
 func setup(t *testing.T, window time.Duration) *world {
@@ -109,7 +126,7 @@ func setup(t *testing.T, window time.Duration) *world {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	w := &world{t: t, display: display, conn: conn}
+	w := &world{t: t, display: display, conn: conn, table: table}
 	w.call = func(method string, params any) (any, error) {
 		raw, err := json.Marshal(params)
 		if err != nil {
@@ -297,6 +314,24 @@ func TestAppsLaunchRefusesInWords(t *testing.T) {
 	}
 	if _, err := w.call("apps.terminate", map[string]any{"id": "ai.agentrun.no.such.app"}); kindOf(err) != rpc.KindNotFound {
 		t.Errorf("apps.terminate of an app the desktop lacks: %v, want not_found", err)
+	}
+}
+
+// A launch that showed no window runs on (the timeout says terminate ends it), and terminate ends it before it answers,
+// though there is no window of it to go.
+func TestAppsTerminateEndsALaunchWithNoWindow(t *testing.T) {
+	w := setup(t, 300*time.Millisecond)
+	if _, err := w.call("apps.launch", map[string]any{"id": "quiet"}); kindOf(err) != rpc.KindTimeout {
+		t.Fatalf("apps.launch quiet: %v, want timeout", err)
+	}
+	if n := w.running("sleep"); n != 1 {
+		t.Fatalf("after a launch that showed no window, %d of its processes run, not 1", n)
+	}
+	if _, err := w.call("apps.terminate", map[string]any{"id": "quiet"}); err != nil {
+		t.Fatalf("apps.terminate quiet: %v", err)
+	}
+	if n := w.running("sleep"); n != 0 {
+		t.Fatalf("after apps.terminate answered, %d of the app's processes still run", n)
 	}
 }
 
