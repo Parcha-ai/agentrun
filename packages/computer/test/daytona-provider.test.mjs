@@ -290,12 +290,13 @@ test("the read-back: Daytona's states as the adapter's, its end, its GPUs and it
 		["pausing", "stopped"],
 		["stopped", "stopped"],
 		["archived", "stopped"],
-		["destroying", "gone"],
+		["destroying", "stopped"],
 		["error", "gone"],
 	]) {
 		assert.equal((await read({ state })).state, want, state);
 	}
-	assert.equal((await read({ state: "started", desiredState: "destroyed" })).state, "gone");
+	// The wait after a delete reads get alone: a sandbox Daytona is still destroying is not gone until it reads destroyed.
+	assert.equal((await read({ state: "started", desiredState: "destroyed" })).state, "stopped", "asked to destroy, still started: not gone yet");
 	assert.equal((await read({ state: "error", errorReason: "no capacity" })).why, "no capacity");
 	assert.equal((await read({ state: "build_failed" })).why, "Daytona reads the sandbox build_failed, with no reason given", "a failed sandbox with no reason still carries a why");
 	assert.equal((await read({ state: "destroying" })).why, undefined);
