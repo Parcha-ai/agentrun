@@ -1,8 +1,8 @@
 // A replay's read (runner/promotion.ts replayView) settles it as a claim would; review on #2823 r2:
 //   - two reads settling one replay at once write once: an older replay's late result never lands over a newer replay
 //     of the same revision (the settle and the supersede match the replay's id);
-//   - a replay reserved and then interrupted before its first run existed is finished from the read (its runs created
-//     after the launch grace), and past its deadline decided as failed with why: never "running" forever;
+//   - a replay reserved and then interrupted before its first run existed: a GET never starts its runs (r3, TL ruling); it
+//     reads running until its deadline, then is decided as failed with why (and to POST it again): never "running" forever;
 //   - a revision promoted, then held, then replayed and promoted again serves again: the champion is the revision whose
 //     latest promotion (a promote after anything else) is newest, never only its first, and its graded check counts only
 //     the grades after it;
@@ -141,22 +141,27 @@ test("two reads settling one replay at once write it once: a newer replay of the
   assert.equal(view.status, "running", JSON.stringify(view));
 });
 
-test("a replay interrupted before its first run existed: its read creates its runs after the launch grace, and past its deadline it is failed with why, never running", async (t) => {
+test("a replay interrupted before its first run existed: a GET never starts its runs; it reads running until its deadline, then failed with why and to POST it again", async (t) => {
   const w = await world(t);
   // Reserved, then the server stopped: none of its runs was created. The store is opened again.
   await w.reserve("replay-a", w.gradedRuns.map((_, i) => `lost-${i}`));
   await w.reopen();
-  w.clock.at = T0 + 30_000;
-  assert.equal((await w.read("replay-a")).status, "running", "within the launch grace its launch may still be under way");
-  w.clock.at = T0 + REPLAY_LAUNCH_GRACE_MS + 1_000;
-  const resumed = await w.read("replay-a");
-  assert.equal(resumed.status, "running", JSON.stringify(resumed));
-  for (const [i, of] of w.gradedRuns.entries()) {
-    const row = await w.store().runs.get(`lost-${i}`);
-    assert.ok(row, `the read created reserved run lost-${i}`);
-    assert.equal(row.revisionId, "rev-1");
+  const count = async () => (await w.store().runs.list({ agentId: "agent-1" })).length;
+  const before = await count();
+  for (const at of [T0 + 30_000, T0 + REPLAY_LAUNCH_GRACE_MS + 1_000, T0 + REPLAY_DEADLINE_MS - 1_000]) {
+    w.clock.at = at;
+    const view = await w.read("replay-a");
+    assert.equal(view.status, "running", `before its deadline it reads running (${at - T0} ms): ${JSON.stringify(view)}`);
+    assert.equal(await count(), before, `a GET created no run (${at - T0} ms)`);
   }
-  assert.ok(w.logs.some((line) => /launch was interrupted/.test(line)), w.logs.join("\n"));
+  for (const i of w.gradedRuns.keys()) assert.ok(!(await w.store().runs.get(`lost-${i}`)), `reserved run lost-${i} never created by a read`);
+  assert.ok(!w.logs.some((line) => /launch was interrupted/.test(line)), w.logs.join("\n"));
+  w.clock.at = T0 + REPLAY_DEADLINE_MS + 1_000;
+  const late = await w.read("replay-a");
+  assert.deepEqual([late.status, late.decided], ["failed", "hold"], JSON.stringify(late));
+  assert.match(late.reason, /none of its 5 replay runs started by the replay's deadline/);
+  assert.match(late.reason, /start it again with POST .*\/replays/);
+  assert.equal(await count(), before, "past its deadline a GET decides it and still creates no run");
 
   // Another revision's replay that was never launched and is found only past its deadline: failed, and says why.
   const v = await world(t);
