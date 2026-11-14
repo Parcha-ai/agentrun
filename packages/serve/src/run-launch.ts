@@ -66,6 +66,10 @@ export interface RunLaunch {
   /** `false`: the run never starts on a learned workflow, even one that fits its input (RunCreate `workflow_first`,
    *  runner/workflow-first.ts); its agent takes it from its first turn. Absent: a fitting one serves first. */
   readonly workflowFirst?: false;
+  /** A replay run (runner/promotion.ts): learned workflow `workflow` at `digest`, run alone on graded run `of`'s input to
+   *  decide whether that revision serves first (learn/promote.ts). Its guards read record-only (learn/promote.ts recordOnly), a hand-back ends it
+   *  with no agent turn, and it asks nothing at its end. Absent: a run of its own. */
+  readonly replay?: Replay;
   /** The trigger and firing that started the run, or none for a person's run. */
   readonly trigger?: RunTrigger;
   /** Who the first message is from, when not the person: kept only through the fail-safe below. */
@@ -82,6 +86,13 @@ export interface RunLaunch {
   readonly hold?: { readonly minutes: number };
 }
 
+/** What a replay run replays: the graded run, and the learned workflow at the digest it decides. */
+export interface Replay {
+  readonly of: string;
+  readonly workflow: string;
+  readonly digest: string;
+}
+
 /** The disk a launch record names, and whose it is. */
 export interface LaunchDisk {
   readonly diskId: string;
@@ -91,6 +102,10 @@ export interface LaunchDisk {
 /** The disk a launch body names, as read back, or undefined. */
 const readDisk = (value: unknown): LaunchDisk | undefined =>
   isObject(value) && typeof value.disk_id === "string" && (value.kind === "launch" || value.kind === "agent") ? { diskId: value.disk_id, kind: value.kind } : undefined;
+
+/** The replay a launch body names, as read back, or undefined. */
+const readReplay = (value: unknown): Replay | undefined =>
+  isObject(value) && typeof value.of === "string" && typeof value.workflow === "string" && typeof value.digest === "string" ? { of: value.of, workflow: value.workflow, digest: value.digest } : undefined;
 
 /** The trigger a launch body names, as read back: `{ id, firing_key }`, or null (triggerOf of the old serve.json). */
 function readTrigger(value: unknown): RunTrigger | null {
@@ -145,6 +160,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.files?.length ? { files: launch.files } : {}),
     ...(launch.learning ? { learning: { given: launch.learning.given.map((note) => ({ file: note.file, name: note.name })), seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.seedNotes !== undefined ? { seedNotes: launch.learning.seedNotes } : {}), ...(launch.learning.notesLeftOut?.length ? { notesLeftOut: [...launch.learning.notesLeftOut] } : {}), ...(launch.learning.skills?.length ? { skills: [...launch.learning.skills] } : {}), ...(launch.learning.notesOnly ? { notesOnly: true } : {}), ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.gradeModel ? { gradeModel: launch.learning.gradeModel } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}) } } : {}),
     ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
+    ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest } } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
@@ -196,6 +212,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(Array.isArray(stored.files) && stored.files.every((id) => typeof id === "string") ? { files: stored.files as string[] } : {}),
     ...(stored.learning !== undefined ? { learning: readLearning(stored.learning) ?? { given: [], seed: null, section: "" } } : {}),
     ...(stored.workflow_first === false ? { workflowFirst: false as const } : {}),
+    ...(readReplay(stored.replay) ? { replay: readReplay(stored.replay)! } : {}),
     ...(trigger ? { trigger } : {}),
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),
