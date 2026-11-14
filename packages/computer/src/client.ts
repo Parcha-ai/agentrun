@@ -31,6 +31,19 @@ export interface CallOptions {
 
 type ReplyError = { code?: unknown; message?: unknown; data?: { kind?: unknown } };
 
+/**
+ * How long past a call's own timeoutMs (exec.run's, process.wait's) the daemon has to answer it. The daemon answers by
+ * that bound itself, so a call still unanswered after this has a transport that hangs: it ends here as timeout, never
+ * at whatever ends the transport much later.
+ */
+export const ANSWER_SLACK_MS = 5_000;
+
+/** The bound of a call whose params carry their own timeoutMs, or undefined for a call with none. */
+function boundOf(params: unknown): { ms: number; own: number } | undefined {
+	const own = (params as { timeoutMs?: unknown } | null)?.timeoutMs;
+	return typeof own === "number" && Number.isFinite(own) && own >= 0 ? { ms: own + ANSWER_SLACK_MS, own } : undefined;
+}
+
 const KINDS: ReadonlySet<string> = new Set<DaemonErrorKind>([
 	"not_found",
 	"invalid",
@@ -58,8 +71,9 @@ function fromReply(error: ReplyError): ComputerError {
 
 /**
  * Calls a daemon's methods. Each call gets its own id; replies may come in any order. An aborted call sends
- * $/cancelRequest and returns `aborted` at once; the daemon still ends what the call started. When the stream ends,
- * every pending and later call fails with `gone`. A line that is not a reply to a pending call is dropped.
+ * $/cancelRequest and returns `aborted` at once; the daemon still ends what the call started. A call whose params carry
+ * a timeoutMs and that has no answer ANSWER_SLACK_MS past it sends the same cancel and returns `timeout`. When the
+ * stream ends, every pending and later call fails with `gone`. A line that is not a reply to a pending call is dropped.
  */
 export class DaemonClient implements ComputerClient {
 	readonly #writable: Writable;
@@ -91,17 +105,29 @@ export class DaemonClient implements ComputerClient {
 		const id = this.#nextId++;
 		const line = `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`;
 		if (Buffer.byteLength(line) - 1 > MAX_LINE_BYTES) return fail("limit", `the ${method} request is over the 1 MiB line limit`);
+		const bound = boundOf(params);
 		return new Promise((resolve) => {
-			const onAbort = () => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const giveUp = (result: Result<never>) => {
 				if (!this.#pending.delete(id)) return;
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", onAbort);
 				this.#write({ jsonrpc: "2.0", method: CANCEL_METHOD, params: { id } });
-				resolve(fail("aborted", `${method} was aborted`));
+				resolve(result);
 			};
+			const onAbort = () => giveUp(fail("aborted", `${method} was aborted`));
 			this.#pending.set(id, (result) => {
+				clearTimeout(timer);
 				signal?.removeEventListener("abort", onAbort);
 				resolve(result as Result<DaemonMethods[M]["result"]>);
 			});
 			signal?.addEventListener("abort", onAbort, { once: true });
+			if (bound !== undefined) {
+				const s = (ms: number) => `${ms / 1000} s`;
+				timer = setTimeout(() => giveUp(fail("timeout", `${method} had no answer within ${s(bound.ms)} (its own timeout of ${s(bound.own)}, and ${s(ANSWER_SLACK_MS)} for the answer to come)`)), bound.ms);
+				// The stream holds the process while a call waits on it; the bound alone never does.
+				timer.unref?.();
+			}
 			this.#writable.write(line);
 		});
 	}

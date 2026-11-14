@@ -59,6 +59,7 @@ import {
 	type ReleaseHow,
 	runLifetimeMs,
 } from "../provider.js";
+import type { DaemonMethod, DaemonMethods } from "../protocol.js";
 import { type ComputerError, failFor, ok, type Result } from "../result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "../screen-watch.js";
 import { countTested } from "../test-connection.js";
@@ -914,9 +915,11 @@ export class HostedProvider implements ComputerProvider {
 		return { version: VERSION, ...(uid === undefined || gid === undefined ? {} : { uid, gid }), arch: this.host.facts.arch, kind, groups };
 	}
 
-	/** One stdio bridge into the machine, after hello, unchecked. */
-	#open(ref: ComputerRef, signal?: AbortSignal, helloMs = this.#timeouts.helloMs): Promise<Opened> {
-		return openBridge(this.host, ref.id, { argv: hostedCommands().stdio, name: ref.name, version: VERSION, requestMs: this.#timeouts.requestMs, helloMs, ...(signal ? { signal } : {}) });
+	/** One stdio bridge into the machine, after hello, unchecked; its client says so once the machine is deleted. */
+	async #open(ref: ComputerRef, signal?: AbortSignal, helloMs = this.#timeouts.helloMs): Promise<Opened> {
+		const { requestMs } = this.#timeouts;
+		const opened = await openBridge(this.host, ref.id, { argv: hostedCommands().stdio, name: ref.name, version: VERSION, requestMs, helloMs, ...(signal ? { signal } : {}) });
+		return opened.ok ? ok(deletedSaid(this.host, ref, this.#label, requestMs, opened.value)) : opened;
 	}
 
 	/** #open, tried again while the bridge finds no daemon listening, until hello or helloMs in all. */
@@ -1348,6 +1351,48 @@ export async function listedBy(host: MachineHost, what: string, labels: Record<s
 async function readMachine(host: MachineHost, id: string, ms: number, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
 	const read = await hostCall(host, `the read of ${id}`, (ctx) => host.get(id, ctx), ms, signal);
 	return !read.ok && read.error.code === "not_found" ? ok(undefined) : read;
+}
+
+/**
+ * A connection's client that says its computer was deleted (the vendor's own API can delete it mid-run). Once the
+ * client answers gone (its stream ended or failed) the machine is read once, and that one read answers every call in
+ * flight at that moment and every later call; a call with no answer by its own timeout reads it again. A machine the
+ * vendor no longer has, or reads going, makes each of them not_found in these words; one still there, or a read that
+ * failed, leaves the client's own answer. A connection its caller closed is never read back.
+ */
+function deletedSaid(host: MachineHost, ref: ComputerRef, label: string, requestMs: number, connection: ComputerConnection): ComputerConnection {
+	const { client } = connection;
+	let closed = false;
+	let deleted: ComputerError | undefined;
+	let ended: Promise<ComputerError | undefined> | undefined;
+	const read = async (): Promise<ComputerError | undefined> => {
+		const got = await readMachine(host, ref.id, requestMs);
+		if (got.ok && (got.value === undefined || got.value.state === "going")) {
+			const how = got.value === undefined ? `${label} no longer has it` : `${label} reads it going`;
+			deleted ??= { code: "not_found", message: `the computer ${ref.name} (${ref.id}) was deleted: ${how}` };
+		}
+		return deleted;
+	};
+	return {
+		...connection,
+		client: {
+			async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }): Promise<Result<DaemonMethods[M]["result"]>> {
+				if (deleted) return { ok: false, error: deleted };
+				const answered = await client.call(method, params, options);
+				if (answered.ok || closed || (answered.error.code !== "gone" && answered.error.code !== "timeout")) return answered;
+				const found = await (answered.error.code === "gone" ? (ended ??= read()) : read());
+				return found ? { ok: false, error: found } : answered;
+			},
+			close() {
+				closed = true;
+				client.close();
+			},
+		},
+		close() {
+			closed = true;
+			return connection.close();
+		},
+	};
 }
 
 /**
