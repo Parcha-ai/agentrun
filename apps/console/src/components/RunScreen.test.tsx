@@ -489,6 +489,35 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
     expect(frame().style.height, "past the smallest usable phone, the page scrolls").toBe("360px");
   });
 
+  it("a card that comes or goes above a live phone moves it, and its frame fits again", async () => {
+    // A card above the screen (the agent's ask) changes the page's content, not the pane's height: the frame refits when
+    // the content does. jsdom has no ResizeObserver: this one calls back for whatever is observed when told to.
+    const observed: { target: Element; fit: () => void }[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(private readonly fit: () => void) {}
+      observe(target: Element) { observed.push({ target, fit: this.fit }); }
+      disconnect() { observed.splice(0, observed.length); }
+    });
+    let frameTop = 350;
+    const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top, toJSON() {} }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.tagName === "IFRAME") return rect(frameTop, 0);
+      if (this.hasAttribute("data-scroll-pane")) return rect(200, 700);
+      return rect(0, 0);
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) { return this.hasAttribute("data-scroll-pane") ? 700 : 0; });
+    const phone = { ...working, computer: { kind: "phone", provider: "phone-harness", state: "ready" } } as Run;
+    const p = await screen(async () => ({ state: "live", kind: "phone", viewer: VIEWER, hold: "agent" }), phone, { tab: "screen" });
+    const frame = () => p.panel()!.querySelector("iframe") as HTMLIFrameElement;
+    expect(frame().style.height).toBe(`${700 - 150 - 32}px`);
+    // A 100 px card comes above it: the pane's content grows, the pane stays as it was.
+    frameTop = 450;
+    const content = frame().closest("[data-scroll-pane]")!.firstElementChild!;
+    await act(async () => { for (const { target, fit } of observed) if (target === content) fit(); });
+    expect(frame().style.height).toBe(`${700 - 250 - 32}px`);
+    vi.unstubAllGlobals();
+  });
+
   it("held by the person, it offers Hand back, which hands it back with no outcome", async () => {
     const outcomes: unknown[] = [];
     const p = await screen(async () => DESKTOP_LIVE("person"), desktop, { tab: "screen", onHandBack: async (o?: string) => { outcomes.push(o); return { hold: "agent" }; } });

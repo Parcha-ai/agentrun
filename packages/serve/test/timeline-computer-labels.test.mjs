@@ -38,14 +38,24 @@ test("each kind of step in words; past three steps, the rest are counted", () =>
 
 test("a typed or set text shows whole or not at all, and never for a secure field", () => {
   const long = "x".repeat(41);
-  assert.equal(labelOf("computer_act", { steps: [{ type: long }] }, view("1. type: semantic, verified")), "Typed 41 characters");
-  assert.equal(labelOf("computer_act", { steps: [{ type: "dark" }] }, view("1. type: semantic, verified")), "Typed “dark”");
-  const steps = [{ type: "1234", into: "@e6" }, { set: "@e7", value: "hunter2" }, { type: "5678" }, { type: "never ran" }];
-  const answer = ['1. type into @e6 textbox "PIN" [secure]: semantic, verified', '2. set @e7 textbox "Password" [secure]: semantic, verified', "3. type [secure]: semantic, verified", "4. type: refused (stale): the window is gone"].join("\n");
-  assert.equal(labelOf("computer_act", { steps: steps.slice(0, 3) }, view(answer)), "Typed into “PIN”, set “Password”, typed text");
-  const said = labelOf("computer_act", { steps: [{ press: "@e9" }, steps[3]] }, view("1. press: refused (stale): gone\n1 later steps did not run"));
-  assert.equal(said, "Pressed an element, typed text", "a step with no line of its own (it never ran) shows no text");
+  const notes = '1. type into @e2 textbox "Notes": semantic, verified';
+  assert.equal(labelOf("computer_act", { steps: [{ type: long }] }, view(notes)), "Typed 41 characters into “Notes”");
+  assert.equal(labelOf("computer_act", { steps: [{ type: "dark" }] }, view(notes)), "Typed “dark” into “Notes”", "a type with no element of its own goes to the field its line names, the focused one");
+  assert.equal(labelOf("computer_act", { steps: [{ type: "dark" }] }, view("1. type: semantic, verified")), "Typed text", "where the text went is unknown, so it may be a secure field: no text shows");
+  const steps = [{ type: "1234", into: "@e6" }, { set: "@e7", value: "hunter2" }, { type: "5678" }];
+  const answer = ['1. type into @e6 textbox "PIN" [secure]: semantic, verified', '2. set @e7 textbox "Password" [secure]: semantic, verified', '3. type into @e6 textbox "PIN" [secure]: semantic, verified'].join("\n");
+  assert.equal(labelOf("computer_act", { steps }, view(answer)), "Typed into “PIN”, set “Password”, typed into “PIN”");
   for (const text of ["1234", "hunter2", "5678"]) assert.ok(!labelOf("computer_act", { steps }, view(answer)).includes(text));
+});
+
+test("a finished act says the steps that ran: a refused one as tried, the ones after it not at all", () => {
+  const steps = [{ press: "@e9" }, { nav: "home" }, { type: "never ran" }];
+  assert.equal(labelOf("computer_act", { steps }, view('1. press @e9 button "Save": refused (stale): gone\n2 later steps did not run')), "Could not press “Save”");
+  const later = view(['1. nav: semantic, verified', '2. press @e9 button "Save": refused (stale): gone', "1 later steps did not run"].join("\n"));
+  assert.equal(labelOf("computer_act", { steps: [{ nav: "back" }, ...steps] }, later), "Went back, could not press “Save”");
+  const five = Array.from({ length: 5 }, (_, i) => `${i + 1}. nav: semantic, verified`).join("\n");
+  assert.equal(labelOf("computer_act", { steps: [...Array(5).fill({ nav: "back" }), { nav: "home" }] }, view(`${five}\n1 steps did not run`)), "Went back, went back, went back, +2 more", "the count is of the steps that ran");
+  assert.equal(labelOf("computer_act", { steps }, view("the computer went away", true)), "Could not press an element", "an answer with no step lines: nothing is known to have run");
 });
 
 test("a refused step makes the act's outcome failed, saying which step and why", () => {

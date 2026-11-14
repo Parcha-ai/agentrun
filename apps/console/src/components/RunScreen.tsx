@@ -159,8 +159,9 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
     const pane = el.closest<HTMLElement>("[data-scroll-pane]");
     const fit = () => setPhoneH(phoneHeight(roomBelow(el, pane), window.innerHeight));
     fit();
+    // The pane's size, and its content's: a card that comes or goes above the frame moves it, the pane staying as it was.
     const watch = typeof ResizeObserver === "function" && pane ? new ResizeObserver(fit) : undefined;
-    if (pane) watch?.observe(pane);
+    if (pane) for (const box of [pane, ...pane.children]) watch?.observe(box);
     window.addEventListener("resize", fit);
     return () => { watch?.disconnect(); window.removeEventListener("resize", fit); };
   }, [kind, full, showing, said, metered, session.current.n]);

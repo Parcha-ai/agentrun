@@ -194,12 +194,13 @@ registerLabel("request_sign_in", () => "Asked you to sign in", undefined, { name
 
 // A desktop's or a phone's tools (the computer surface's), as what the agent did there. An act's steps come from its
 // arguments, and each element's name from its answer: the answer's step line names the element it acted on as the
-// outline does (`2. press @e31 generic "Display": semantic, verified`, the surface's stepWords). Before the answer is in,
-// an element is "an element".
+// outline does (`2. press @e31 generic "Display": semantic, verified`, the surface's actWords). Before the answer is in,
+// an element is "an element". Once it is in, only the steps that ran are said.
 
-/** An act's answer, line by line: each step's element (its name, whether it is secure) and the first refused step. */
+/** An act's answer, line by line: whether each step names its element, the element's name, whether it is secure, and
+ *  the first refused step. */
 const STEP_LINE = /^(\d+)\. [a-z_.]+(?: into)?(?: (@\S+) [a-z]+(?: ("(?:[^"\\]|\\.)*"))?)?( \[secure\])?: (.*)$/;
-type ActLine = { name?: string; secure: boolean; refused?: string };
+type ActLine = { element: boolean; name?: string; secure: boolean; refused?: string };
 /** A name in JSON's quotes, as the outline writes it. */
 const unquote = (quoted: string | undefined): string | undefined => {
   if (quoted === undefined) return undefined;
@@ -216,7 +217,7 @@ function actLines(text: string | undefined): Map<number, ActLine> {
     if (!match) continue;
     const name = unquote(match[3]);
     const refused = /^refused \([^)]*\): (.*)$/.exec(match[5]!)?.[1];
-    lines.set(Number(match[1]), { ...(name ? { name } : {}), secure: match[4] !== undefined, ...(refused !== undefined ? { refused } : {}) });
+    lines.set(Number(match[1]), { element: match[2] !== undefined, ...(name ? { name } : {}), secure: match[4] !== undefined, ...(refused !== undefined ? { refused } : {}) });
   }
   return lines;
 }
@@ -226,38 +227,48 @@ function actLines(text: string | undefined): Map<number, ActLine> {
 const TEXT_SHOWN = 40;
 const typed = (text: string) => (text.length <= TEXT_SHOWN && !/[\r\n]/.test(text) ? `“${text}”` : `${text.length} characters`);
 const keyWords = (chord: string) => chord.split(/\+(?=.)/).filter((key) => key !== "").map((key) => key[0]!.toUpperCase() + key.slice(1)).join("+");
-const NAV: Readonly<Record<string, string>> = { back: "Went back", home: "Went home", app_switch: "Opened the recent apps" };
+
+/** A step in words: as done (`did`), and as tried for one the computer refused (`tried`). */
+type Said = { did: string; tried: string };
+const said = (did: string, act: string, rest = ""): Said => ({ did: `${did}${rest}`, tried: `Could not ${act}${rest}` });
+const NAV: Readonly<Record<string, [string, string]>> = { back: ["Went", "go"], home: ["Went", "go"], app_switch: ["Opened", "open"] };
+const NAV_WHERE: Readonly<Record<string, string>> = { back: " back", home: " home", app_switch: " the recent apps" };
 
 /** One step in words, its element named by `line` (the answer's) when it has one. A typed or set text shows only once
- *  the answer's line says where it went and that it was no secure field: never while the call runs, or for a step that
- *  did not run. */
-function stepSaid(step: Obj, line: ActLine | undefined): string {
+ *  the answer's line names the field it went to and says it was no secure field: never while the call runs, for a step
+ *  that did not run, or for a type whose field is unknown. */
+function stepSaid(step: Obj, line: ActLine | undefined): Said {
   const element = line?.name ? `“${line.name}”` : "an element";
-  const secure = line === undefined || line.secure;
+  const secure = line === undefined || !line.element || line.secure;
   const point = (at: unknown) => (Array.isArray(at) && at.length === 2 ? `at ${at.map((n) => Math.round(Number(n))).join(", ")}` : element);
-  if ("press" in step) return `Pressed ${element}`;
+  if ("press" in step) return said("Pressed", "press", ` ${element}`);
   if ("set" in step) {
     const value = str(step.value);
-    return secure || value === undefined ? `Set ${element}` : value.length <= TEXT_SHOWN ? `Set ${element} to ${typed(value)}` : `Set ${element} (${value.length} characters)`;
+    return said("Set", "set", secure || value === undefined ? ` ${element}` : value.length <= TEXT_SHOWN ? ` ${element} to ${typed(value)}` : ` ${element} (${value.length} characters)`);
   }
-  if ("perform" in step) return `Did ${str(step.action) ?? "an action"} on ${element}`;
+  if ("perform" in step) return said("Did", "do", ` ${str(step.action) ?? "an action"} on ${element}`);
   if ("click" in step) {
-    const how = step.button === "right" ? "Right-clicked" : step.count === 2 ? "Double-clicked" : step.count === 3 ? "Triple-clicked" : "Clicked";
-    return `${how} ${point(step.click)}`;
+    const [did, act] = step.button === "right" ? ["Right-clicked", "right-click"] : step.count === 2 ? ["Double-clicked", "double-click"] : step.count === 3 ? ["Triple-clicked", "triple-click"] : ["Clicked", "click"];
+    return said(did, act, ` ${point(step.click)}`);
   }
   if ("type" in step) {
-    const into = step.into === undefined ? "" : ` into ${element}`;
-    return secure ? (into ? `Typed${into}` : "Typed text") : `Typed ${typed(str(step.type) ?? "")}${into}`;
+    // The field it went to: the one it named, else the focused one, as its line names it; before the answer, the one it named.
+    const into = (line ? line.element : step.into !== undefined) ? ` into ${element}` : "";
+    return said("Typed", "type", secure ? (into || " text") : ` ${typed(str(step.type) ?? "")}${into}`);
   }
-  if ("key" in step) return `Pressed ${keyWords(str(step.key) ?? "a key")}`;
-  if ("nav" in step) return NAV[str(step.nav) ?? ""] ?? "Navigated";
+  if ("key" in step) return said("Pressed", "press", ` ${keyWords(str(step.key) ?? "a key")}`);
+  if ("nav" in step) {
+    const nav = str(step.nav) ?? "";
+    const [did, act] = NAV[nav] ?? ["Navigated", "navigate"];
+    return said(did, act, NAV_WHERE[nav] ?? "");
+  }
   if ("scroll" in step) {
     const [dx, dy] = [Number(step.dx ?? 0), Number(step.dy ?? 0)];
     const way = dy > 0 ? "down" : dy < 0 ? "up" : dx > 0 ? "right" : dx < 0 ? "left" : "";
-    return ["Scrolled", ...(line?.name ? [element] : []), ...(way ? [way] : [])].join(" ");
+    return said("Scrolled", "scroll", [...(line?.name ? [element] : []), ...(way ? [way] : [])].map((part) => ` ${part}`).join(""));
   }
-  if ("drag" in step) return "Dragged across the screen";
-  return "Acted";
+  if ("drag" in step) return said("Dragged", "drag", " across the screen");
+  return said("Acted", "act");
 }
 
 /** At most this many steps are said; the rest are counted. */
@@ -273,10 +284,18 @@ registerLabel(
       const text = str(expect?.text);
       return text !== undefined ? `Waited for ${expect?.gone === true ? "no more " : ""}${typed(text)}` : "Acted on the computer";
     }
-    const lines = actLines(result?.text);
-    const said = steps.slice(0, STEPS_SAID).map((step, index) => stepSaid(step, lines.get(index + 1)));
-    const more = steps.length - said.length;
-    return [said[0]!, ...said.slice(1).map(lower), ...(more > 0 ? [`+${more} more`] : [])].join(", ");
+    // While the call runs, the steps asked for; once its answer is in, the steps that ran (each has its line), a refused
+    // one as tried. An answer with no step line (the call failed) ran none that is known: its first step was tried.
+    const lines = result === undefined ? undefined : actLines(result.text);
+    const ran = lines === undefined ? steps : steps.filter((_, index) => lines.has(index + 1));
+    if (ran.length === 0) return stepSaid(steps[0]!, undefined).tried;
+    const words = ran.slice(0, STEPS_SAID).map((step, index) => {
+      const line = lines?.get(index + 1);
+      const told = stepSaid(step, line);
+      return line?.refused !== undefined ? told.tried : told.did;
+    });
+    const more = ran.length - words.length;
+    return [words[0]!, ...words.slice(1).map(lower), ...(more > 0 ? [`+${more} more`] : [])].join(", ");
   },
   { many: (n) => `Acted on the computer ${n} times` },
   { name: "Act on the computer" },

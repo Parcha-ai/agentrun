@@ -121,17 +121,28 @@ const MAX_NAMED = 4000;
 /** An element as a step's line names it: its ref, its role, its name, and `[secure]` for a secure field. */
 type Named = { role: string; name?: string; secure: boolean };
 
-/** A step as its line in an act's answer names it: its name, then the element it acted on as the outline names it
- *  (`press @e3 button "Save"`, `type into @e4 textbox "PIN" [secure]`), where that element was seen in an observation.
- *  A type with no element goes where the focus is: `type [secure]` when the last observation's focus was a secure field
- *  (`focusSecure`), so no reader of the line shows what was typed. */
-export function stepWords(step: UiStep, named: (ref: string) => Named | undefined, focusSecure = false): string {
-	const ref = stepRef(step);
-	const node = ref === undefined ? undefined : named(ref);
-	if ("type" in step && ref === undefined && focusSecure) return `${stepName(step)} [secure]`;
-	if (ref === undefined || node === undefined) return stepName(step);
-	const target = [ref, node.role, ...(node.name ? [quoted(node.name)] : []), ...(node.secure ? ["[secure]"] : [])].join(" ");
-	return `${stepName(step)}${"type" in step ? " into" : ""} ${target}`;
+/** A field a press or a click puts the focus in. */
+const isField = (node: Named) => node.secure || node.role === "textbox" || node.role === "searchbox";
+
+/** One act's steps as their lines in its answer name them: each step's name, then the element it acted on as the outline
+ *  names it (`press @e3 button "Save"`, `type into @e4 textbox "PIN" [secure]`), where that element was seen in an
+ *  observation. A type with no element goes where the focus is, so its line names the field the focus is in: `focus`
+ *  at the act's start, then followed through its steps (a type into a field, or a press or click on one, puts it
+ *  there; any other step may put it anywhere). Where the focus is is unknown, the line names no field, so no reader of
+ *  it can tell a secure field from another, and none shows what was typed. Also where the focus is after every step. */
+export function actWords(steps: readonly UiStep[], named: (ref: string) => Named | undefined, focus: string | undefined): { names: string[]; focus: string | undefined } {
+	let at = focus;
+	const names = steps.map((step) => {
+		const given = stepRef(step);
+		const ref = given ?? ("type" in step ? at : undefined);
+		const node = ref === undefined ? undefined : named(ref);
+		const field = node !== undefined && (("type" in step && given !== undefined) || (("press" in step || "click" in step) && isField(node)));
+		if (!("type" in step && given === undefined)) at = field ? ref : undefined;
+		if (ref === undefined || node === undefined) return stepName(step);
+		const target = [ref, node.role, ...(node.name ? [quoted(node.name)] : []), ...(node.secure ? ["[secure]"] : [])].join(" ");
+		return `${stepName(step)}${"type" in step ? " into" : ""} ${target}`;
+	});
+	return { names, focus: at };
 }
 
 /** An act's answer as lines: one per step (named by `names`, stepWords), then the expect, then whether it changed and
@@ -169,15 +180,17 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 	let lastApp: string | undefined;
 	/** The app each observed state belongs to: an act that names a state and no app was run on that state's app. */
 	const appOfState = new Map<string, string>();
-	/** Every element observed, by ref, as an act's step line names it (stepWords): a ref stays good across states. */
+	/** Every element observed, by ref, as an act's step line names it (actWords): a ref stays good across states. */
 	const named = new Map<string, Named>();
-	/** Whether the last observation's focused element was a secure field: where a type with no element goes. */
-	let focusSecure = false;
+	/** The field the focus is in, where a type with no element goes: the last observation's focused element, then where
+	 *  the acts since put it (actWords). Unknown (undefined) when no observation had one, or an act since may have put it
+	 *  anywhere. */
+	let focus: string | undefined;
 
 	/** Remembers an observation's elements. One with no name of its own (an Android row, a container whose text is in
 	 *  its children) takes its first named element's within a few levels, as a person reading the row would say it. */
 	function remember(nodes: readonly UiObserveResult["nodes"][number][]): void {
-		focusSecure = nodes.some((node) => node.flags?.includes("focused") === true && node.flags.includes("secure"));
+		focus = nodes.find((node) => node.flags?.includes("focused") === true)?.ref;
 		const parentOf = new Map<string, string | undefined>();
 		for (const node of nodes) {
 			parentOf.set(node.ref, node.parent);
@@ -296,6 +309,8 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 	}
 
 	async function runInput(actions: InputAction[], observeAfter: boolean, signal?: AbortSignal): Promise<ActResult> {
+		// Input may put the focus anywhere.
+		focus = undefined;
 		const result = await call("input.actions", { actions }, signal);
 		const steps: StepResult[] = [];
 		for (let index = 0; index < Math.min(result.done, actions.length); index += 1) steps.push({ route: "input", verified: false });
@@ -313,6 +328,9 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 	const hasPoint = (steps: readonly UiStep[]) => steps.some((step) => ("click" in step && Array.isArray(step.click)) || ("scroll" in step && Array.isArray(step.scroll)) || "drag" in step);
 
 	async function act(args: ActArgs, signal?: AbortSignal): Promise<ActResult> {
+		// An act may put the focus anywhere: the act tool's answer says where its steps put it (actWords), an observation
+		// after it where it is.
+		focus = undefined;
 		const steps = args.steps ?? [];
 		if (!Array.isArray(steps)) throw new SurfaceError("invalid", "steps is a list of steps");
 		if (!has("ui")) {
@@ -408,9 +426,12 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 			case "act": {
 				// Each step named as its element was before the act: what it pressed, not what the press made of it.
 				const given: unknown = args.steps;
-				const names = Array.isArray(given) ? (given as UiStep[]).map((step) => stepWords(step, (ref) => named.get(ref), focusSecure)) : [];
+				const said = actWords(Array.isArray(given) ? (given as UiStep[]) : [], (ref) => named.get(ref), focus);
 				const result = await act(args as unknown as ActArgs, signal);
-				return { value: result, text: actText(names, result), images: result.after?.image ? [result.after.image] : [] };
+				// Where the steps put the focus, when every one ran; an observation after the act has said where it is.
+				const ran = result.steps.length === said.names.length && result.steps.every((outcome) => !("error" in outcome));
+				if (!result.after) focus = ran ? said.focus : undefined;
+				return { value: result, text: actText(said.names, result), images: result.after?.image ? [result.after.image] : [] };
 			}
 			case "input.act": {
 				const actions = args.actions;
