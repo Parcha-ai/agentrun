@@ -30,10 +30,10 @@ mcp:
     # channel_id is the name the action also takes a channel by: held absent, so the pinned channel is the only one.
     pin: { SLACK_SEND_MESSAGE: { channel: "${parameters.slack_channel}", channel_id: null } }
 parameters:
-  icp: { type: string, required: true, description: "your ideal customer in your own words: industry, company size, region, buying signals, and what disqualifies a lead (e.g. 'B2B fintech, 50-2000 people, US or EU, has a compliance team; never gambling operators')" }
+  icp: { type: string, description: "your ideal customer in your own words: industry, company size, region, buying signals, and what disqualifies a lead (e.g. 'B2B fintech, 50-2000 people, US or EU, has a compliance team; never gambling operators')" }
   post_to: { type: string, required: false, default: none, enum: [crm, slack, none], description: "where each brief goes: crm (a note on the lead's HubSpot contact, the fit score in its text), slack (a message in one channel) or none (the run's answer only)" }
-  slack_channel: { type: string, pattern: "^[CG][A-Z0-9]{8,12}$", description: "a Slack channel ID like C0123ABCD (the channel's details in Slack show it), never its name: where the brief is posted when post_to is slack" }
-  competitors: { type: string, description: "your competitors' names or domains, comma-separated; a lead from one is flagged, never scored as a customer" }
+  slack_channel: { type: string, required: false, pattern: "^[CG][A-Z0-9]{8,12}$", description: "a Slack channel ID like C0123ABCD (the channel's details in Slack show it), never its name: where the brief is posted when post_to is slack" }
+  competitors: { type: string, required: false, description: "your competitors' names or domains, comma-separated; a lead from one is flagged, never scored as a customer" }
 budget: { per_run_usd: 5.00 }
 learning: true
 # Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.

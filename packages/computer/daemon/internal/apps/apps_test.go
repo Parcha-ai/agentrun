@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -333,6 +334,33 @@ func TestAppsTerminateEndsALaunchWithNoWindow(t *testing.T) {
 	if n := w.running("sleep"); n != 0 {
 		t.Fatalf("after apps.terminate answered, %d of the app's processes still run", n)
 	}
+}
+
+// An app starts with NO_AT_BRIDGE=1, so its toolkit (GTK) starts no accessibility bus: that bus is a socket of the user's
+// under its home (~/.cache/at-spi/bus_0), which the session bus the app's GDBus autolaunches would start for it.
+func TestAppsLaunchWithNoAccessibilityBus(t *testing.T) {
+	w := setup(t, 300*time.Millisecond)
+	if _, err := w.call("apps.launch", map[string]any{"id": "quiet"}); kindOf(err) != rpc.KindTimeout {
+		t.Fatalf("apps.launch quiet: %v, want timeout", err)
+	}
+	listed, err := w.table.List(process.ListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range listed.Processes {
+		if !p.Running || len(p.Argv) == 0 || p.Argv[0] != "sleep" {
+			continue
+		}
+		environ, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", p.Pid))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(strings.Split(string(environ), "\x00"), "NO_AT_BRIDGE=1") {
+			t.Fatalf("the launched app's environment has no NO_AT_BRIDGE=1: %q", environ)
+		}
+		return
+	}
+	t.Fatal("the launched app is not running")
 }
 
 func TestAppsWithNoDisplayAreUnsupported(t *testing.T) {

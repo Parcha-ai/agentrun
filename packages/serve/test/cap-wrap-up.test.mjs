@@ -1,4 +1,4 @@
-// The cap's wrap-up (tool-budget.ts wrappingUp): once a capped run's spend plus what its requests still out hold leaves
+// The cap's wrap-up (wrap-up.ts wrappingUp): once a capped run's spend plus what its requests still out hold leaves
 // too little to keep back one typical step and one final answer at its least (reserveFor), the run's tool gate refuses
 // every call the model makes, in one fixed text, in every
 // conversation of the run (a delegate's spawn of a child conversation, as a `subagent` spawn, included). Children in
@@ -19,7 +19,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { suiteTools, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
-const { reserveFor, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } = await import("../dist/tool-budget.js");
+const { reserveFor, WRAP_UP_TEXT, wrappingUp } = await import("../dist/wrap-up.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
@@ -29,7 +29,7 @@ after(closeOpenSessions);
 const OUTPUT = 4_096;
 const priced = (holdUsd) => Object.freeze({ id: MODEL, api: "anthropic-messages", price: { input: 0, output: (holdUsd / OUTPUT) * 1e6 }, outputCeiling: OUTPUT });
 /** The cap's least answer for a request held at `hold` (output only: ANSWER_TOKENS_LEAST of its OUTPUT), and the reserve
- *  a run with typical answers at `typical` keeps back (tool-budget.ts reserveFor), as the cases derive their lines. */
+ *  a run with typical answers at `typical` keeps back (wrap-up.ts reserveFor), as the cases derive their lines. */
 const LEAST_TOKENS = 1_024;
 const reserveAt = (hold, typical) => reserveFor({ leastUsd: (hold * LEAST_TOKENS) / OUTPUT, step0Usd: hold, worstUsd: hold }, () => typical);
 /** An origin billed as a provider bills: each answer at `billed`, never more than the output its request was limited to
@@ -175,7 +175,6 @@ test("the rule: a capped run wraps up once its spend and holds leave too little 
   assert.equal(wrappingUp(undefined, 1e6, reserve), false, "no cap");
   assert.equal(wrappingUp(1, null, reserve), false, "a spend no one knows: the cap refuses the next request for that");
   assert.equal(wrappingUp(1, 0.99, undefined), false, "no reserve yet: the cap stays the last line");
-  assert.notEqual(WRAP_UP_TEXT, TOOL_BUDGET_TEXT);
 });
 
 test("children whose reservations push the run near its cap wrap up: every conversation that started answers, the root answers, no request is refused for the cap, and nothing is billed past it", async (t) => {

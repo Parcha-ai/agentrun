@@ -9,6 +9,11 @@ One gate, the same for every package and every author. It ends in a batch line t
 approves; nothing here approves. Main stays green because every merge goes through the merge queue,
 pinned to the head that was gated.
 
+The [ship lifecycle](../ship/SKILL.md) orchestrates this complete gate. Its explicit coordinator
+approval mode may submit a maintainer's authorized review using that maintainer's existing verified
+identity, independently of the PR author; it does not waive any gate here. This skill by itself
+never submits an approval or grants permission to use an identity.
+
 `AGENTS.md`, `CONTRIBUTING.md` and `changes/README.md` on `origin/main` are the authority. Where this
 file disagrees with them, they win: fix this file in the same session.
 
@@ -20,7 +25,7 @@ slot for paid runs, a model gateway) live outside the repository: in the file `S
 
 | Fact | Value |
 |---|---|
-| Protection | ruleset `main`: pull request, 1 approval, stale approvals dismissed on push, threads resolved, linear history; merge queue, ALLGREEN, up to 5 entries, squash |
+| Protection | ruleset `main`: pull request, 1 approval, stale approvals dismissed on push, threads resolved, linear history; merge queue, HEADGREEN, up to 5 entries, squash |
 | Required checks | `verify` and `lean`; `gh api repos/{owner}/{repo}/rulesets` is the authority. Every other job (stranger, floors, `pi-1-2`, `real-chrome`, `lean`) is a merge condition by this skill, not by the ruleset: a red one is fixed or named with its cause in the batch line |
 | Toolchain | Node 24.22.3 or later (`.nvmrc`); npm 11. Regenerate `package-lock.json` only with npm 11 (`--package-lock-only`), never by hand |
 | Changelog | a fragment in `changes/` per pull request with a user-visible change; no pull request edits an `Unreleased` section (`changes/README.md`) |
@@ -47,13 +52,21 @@ npm 11), never by hand. Push with `--force-with-lease=<branch>:<old-head>`.
 ## Step 3: local checks on the head
 
 ```bash
+umask 022                       # this check shell: fixture directories must not be group-writable
 npm ci --ignore-scripts && npm run build
+npm run build:daemon -w @parcha/agentrun-computer  # before check when Docker-backed serve/client demos apply
 npm run check
 node scripts/changes.mjs --check --base origin/main
 npm run export:source && node scripts/check-generated.mjs
 npm run verify:source
 npm run verify:packages          # when a package's files, manifest or the lock change
 ```
+
+Docker-backed serve/client demos need the computer daemon in a fresh checkout. Build it after
+the initial package build and before `npm run check`; the check's rebuild does not remove it.
+Package-consumer verification still needs the daemon built as `CONTRIBUTING.md` requires.
+Run these checks in a shell with umask 022: Docker custody checks correctly reject fixture
+directories made group-writable by umask 002. Do not relax the daemon's permission checks.
 
 Then `node scripts/stranger.mjs <name>` for every package whose README, `bin`, exports or demo the
 pull request touches (specs in `scripts/stranger/`).

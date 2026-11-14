@@ -222,7 +222,6 @@ test("serve: a held run is set up, driven, checked before release, and released,
 		const definition = [...serve.agents.values()].find((one) => one.harness === "fake-right");
 		assert.deepEqual(definition.computer, { kind: "desktop", provider: "fake-vendor", surface: "tools" });
 		assert.deepEqual(definition.tools, ["computer"], "the arm's definition fields are passed as they are");
-		assert.equal(definition.max_tool_calls, undefined, "the step budget is the agent's own only on pi");
 		assert.equal(serve.agents.size, 2, "one agent per arm and kind, made once");
 		const order = serve.requests.filter((line) => /run_1\/(computer\/call|start|computer\/release)$/.test(line)).map((line) => line.split("/run_1/")[1]);
 		const start = order.indexOf("start");
@@ -379,24 +378,6 @@ test("serve: a shell tool call refused before it ran is no program; one that ran
 			["bash", "tool_refused"],
 			["bash", "tool_failed"],
 		]);
-	} finally {
-		await serve.close();
-	}
-});
-
-test("serve: a pi arm's agent holds the task's step budget as its max_tool_calls, one agent per budget", async () => {
-	const serve = await fakeServe();
-	try {
-		const backend = serveBackend({ baseUrl: serve.baseUrl, token: TOKEN, pollMs: 5 });
-		const [task] = fakeTasks("fake.settings.dark-theme");
-		const resolved = { task, params: {}, nonce: "abc123", seed: 1, instruction: "Turn the dark theme on.", budget: { steps: 7, usd: 0.1, wall_s: 60 }, checks: [] };
-		const opened = await backend.open({ task: resolved, arm: { id: "pi-a", harness: "pi", surface: "code", model: "m" }, labels: { "agentrun.bench": "b1" }, signal: AbortSignal.timeout(10_000) });
-		assert.equal(opened.ok, true);
-		const [definition] = serve.agents.values();
-		assert.deepEqual([definition.id, definition.max_tool_calls], ["b1-pi-a-desktop-code-s7", 7]);
-		await opened.value.release();
-		assert.equal(serve.runs.get("run_1").status, "cancelled", "released before its start, the run never ran its agent");
-		await opened.value.release();
 	} finally {
 		await serve.close();
 	}
@@ -583,7 +564,7 @@ test("this repository's serve saves an arm's agent: its effort is the definition
 	// is set and the run holds a computer, it is let go at once.
 	const opened = await serveBackend({ baseUrl: server.baseUrl, token: server.token }).open({ task: resolveTask(task, 1), arm: thinking, labels: { "agentrun.bench": "cb-effort" }, signal: AbortSignal.timeout(30_000) });
 	if (opened.ok) await opened.value.release();
-	const saved = await fetch(`${server.baseUrl}/agents/cb-effort-thinking-desktop-tools-s${task.spec.budget.steps}`, { headers: { authorization: `Bearer ${server.token}` } });
+	const saved = await fetch(`${server.baseUrl}/agents/cb-effort-thinking-desktop-tools`, { headers: { authorization: `Bearer ${server.token}` } });
 	assert.equal(saved.status, 200, await saved.clone().text());
 	const agent = await saved.json();
 	assert.equal((agent.definition ?? agent).thinking, "high");

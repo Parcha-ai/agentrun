@@ -57,6 +57,21 @@ export function keptChord(chord: unknown): string | undefined {
   return lower.every((key) => NAMED_KEYS.has(key)) ? chord : undefined;
 }
 
+/** The step kinds a ui.act step may name (the protocol's UiStep keys). */
+const STEP_KINDS = ["press", "set", "perform", "click", "type", "key", "nav", "scroll", "drag"] as const;
+
+/** A ui.act step as its record keeps it, from the step asked: its kind, the element `on` names by the step's ref (its
+ *  own, or the one a type goes into), a key step's chord as kept, a nav step's place. A typed or set value is never read. */
+export function stepOf(step: unknown, on: (ref: string) => ComputerStepRow["on"]): ComputerStepRow {
+  const given: Readonly<Record<string, unknown>> = step && typeof step === "object" && !Array.isArray(step) ? (step as Record<string, unknown>) : {};
+  const kind = STEP_KINDS.find((name) => name in given) ?? "step";
+  const ref = kind === "type" ? given.into : given[kind];
+  const target = typeof ref === "string" ? on(ref) : undefined;
+  const keys = kind === "key" ? keptChord(given.key) : undefined;
+  const nav = kind === "nav" && typeof given.nav === "string" ? given.nav : undefined;
+  return { do: kind, ...(target ? { on: target } : {}), ...(keys ? { keys } : {}), ...(nav ? { nav } : {}) };
+}
+
 /** A role as words, where its name says too little alone: a text box, a check box. */
 const ROLE_WORDS: Readonly<Record<string, string>> = {
   textbox: "text box", searchbox: "search box", checkbox: "check box", combobox: "pop-up", switch: "switch", slider: "slider",
@@ -159,7 +174,7 @@ const METHOD_WORDS: Readonly<Record<string, readonly [string, string]>> = {
   "screen.shot": ["Took a screenshot", "take a screenshot"], "screen.watch": ["Watched the screen", "watch the screen"],
   "input.actions": ["Used the pointer and keys", "use the pointer and keys"], "apps.list": ["Listed the apps", "list the apps"],
   "files.read": ["Read a file", "read a file"], "files.write": ["Wrote a file", "write a file"], "files.list": ["Listed a folder", "list a folder"],
-  "files.stat": ["Looked up a file", "look up a file"], "exec.run": ["Ran a command", "run a command"], "processes.start": ["Started a process", "start a process"],
+  "files.stat": ["Looked up a file", "look up a file"], "exec.run": ["Ran a command", "run a command"], "process.start": ["Started a process", "start a process"],
   ping: ["Checked the computer", "check the computer"],
 };
 

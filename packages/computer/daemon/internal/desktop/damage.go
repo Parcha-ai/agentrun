@@ -1,10 +1,12 @@
 package desktop
 
 import (
+	"context"
+	"errors"
 	"image"
 	"sync"
-	"time"
 
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/x11"
 )
 
@@ -19,31 +21,40 @@ type damages struct {
 	ended bool
 }
 
-// retryDamage is how long a display whose DAMAGE could not be had is polled before it is asked again.
-const retryDamage = 10 * time.Second
-
-// damageFor subscribes w to the display's damage, starting it on the first watch or after it ended, and says whether
-// w has it. A display with no DAMAGE extension (or none that answers) is polled: false, and it is asked again only
-// after retryDamage. The start talks to the X server outside dmu, so Close never waits for it; a watch that asks
-// while another starts it is polled until it has started.
-func (d *Display) damageFor(w *watching) bool {
+// damageFor subscribes w to the display's damage, starting it on the first watch or after it ended. An X server with
+// no DAMAGE extension is refused, unsupported, in words: the watch has no other way to learn what changed. The start
+// talks to the X server outside dmu, so Close never waits for it; a watch that asks while another starts it waits for
+// that start, or its own cancel.
+func (d *Display) damageFor(ctx context.Context, w *watching) error {
 	d.dmu.Lock()
 	defer d.dmu.Unlock()
-	if m := d.damage; m != nil && w.damage == m && !m.isEnded() {
-		return true
-	}
-	if d.damage == nil || d.damage.isEnded() {
-		if d.damageStarting || time.Now().Before(d.noDamageUntil) {
-			return false
+	for {
+		if m := d.damage; m != nil && !m.isEnded() {
+			if w.damage == m || m.subscribe(w) {
+				return nil
+			}
+			// It ended since: started again below.
 		}
-		d.damageStarting = true
+		if starting := d.damageStarting; starting != nil {
+			d.dmu.Unlock()
+			select {
+			case <-starting:
+				d.dmu.Lock()
+				continue
+			case <-ctx.Done():
+				d.dmu.Lock()
+				return rpc.Errorf(rpc.KindAborted, "screen.watch was cancelled while it waited for the display's damage to start")
+			}
+		}
+		starting := make(chan struct{})
+		d.damageStarting = starting
 		d.dmu.Unlock()
 		m, err := d.startDamage()
 		d.dmu.Lock()
-		d.damageStarting = false
+		d.damageStarting = nil
+		close(starting)
 		if err != nil {
-			d.noDamageUntil = time.Now().Add(retryDamage)
-			return false
+			return err
 		}
 		d.mu.Lock()
 		closed := d.closed
@@ -51,11 +62,14 @@ func (d *Display) damageFor(w *watching) bool {
 		if closed {
 			// Close ran while the damage started: it is not kept.
 			m.close()
-			return false
+			return d.closedError()
 		}
 		d.damage = m
 	}
-	m := d.damage
+}
+
+// subscribe adds w to the watches told of each change, unless the damage ended, and says whether it did.
+func (m *damages) subscribe(w *watching) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.ended {
@@ -71,6 +85,8 @@ func (d *Display) damageFor(w *watching) bool {
 // everything is a rectangle past any screen: a read of it is the whole screen.
 var everything = image.Rect(0, 0, 1<<16, 1<<16)
 
+// startDamage is a connection of its own to the display, with one DAMAGE object on the root. Each failure is
+// unsupported, in words; a server without DAMAGE says so.
 func (d *Display) startDamage() (*damages, error) {
 	d.mu.Lock()
 	closed := d.closed
@@ -78,18 +94,24 @@ func (d *Display) startDamage() (*damages, error) {
 	if closed {
 		return nil, d.closedError()
 	}
+	if d.name == "" {
+		return nil, rpc.Errorf(rpc.KindUnsupported, "this computer has no display: DISPLAY was not set when computerd started")
+	}
 	c, err := x11.Dial(d.name)
 	if err != nil {
-		return nil, err
+		return nil, rpc.Errorf(rpc.KindUnsupported, "this computer has no display it can use: %v", err)
 	}
 	if err := c.InitDamage(); err != nil {
 		_ = c.Close()
-		return nil, err
+		if errors.Is(err, x11.ErrNoDamage) {
+			return nil, rpc.Errorf(rpc.KindUnsupported, "%v: screen.watch learns from it where the screen changed, and has no other way to see a change on the display %s", err, d.name)
+		}
+		return nil, rpc.Errorf(rpc.KindUnsupported, "screen.watch could not start the display's DAMAGE: %v", err)
 	}
 	c.EnableEvents()
 	if _, err := c.CreateDamage(c.Screen().Root, x11.DamageReportRawRectangles); err != nil {
 		_ = c.Close()
-		return nil, err
+		return nil, rpc.Errorf(rpc.KindUnsupported, "screen.watch could not start the display's DAMAGE: %v", err)
 	}
 	m := &damages{conn: c, subs: map[*watching]struct{}{}}
 	go m.run()

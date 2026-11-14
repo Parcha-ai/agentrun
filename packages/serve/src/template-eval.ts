@@ -5,7 +5,8 @@
 // saved under its name with no credential and recording every call; the package applied with the case's parameters and
 // grants, a fresh agent per run, its learning seeded from the case's notes; one run per `runs` with the prompt's body as
 // its input and the case's cap, waited for; then its answer, its tool calls (its timeline, and the fakes' own logs with
-// the full arguments) and its files, graded. Every grader is deterministic but `llm`, which is itself a run on the same
+// the full arguments) and its files, graded, and held to the package's output schema when it declares one (outputVerdict,
+// the server's own verdict). Every grader is deterministic but `llm`, which is itself a run on the same
 // server: a grader agent with no tools that sees the rubric, the run's input, its answer and its calls, never another
 // grader or an expected answer, and answers {pass, reason}. readCases checks a package's cases without running one.
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -14,7 +15,7 @@ import { chmodSync, cpSync, lstatSync, mkdtempSync, readdirSync, readFileSync, r
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument } from "yaml";
-import { answerJson, lastJsonBlock, schemaCheck } from "./answer-json.js";
+import { answerJson, lastJsonBlock } from "./answer-json.js";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
 import { inputMessage } from "./run-manifest.js";
@@ -51,7 +52,6 @@ const GRADER_FIELDS: Record<string, string[]> = {
   regex: ["type", "pattern", "flags", "expect", "target"],
   tool_used: ["type", "tool", "tools", "expect", "count", "args"],
   file_exists: ["type", "path"],
-  schema: ["type", "schema"],
 };
 /** A target: a field of the answer's JSON, dotted for a nested one. */
 const TARGET = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
@@ -64,13 +64,11 @@ const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate:
 /** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
 export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
 
-type Validate = (value: unknown) => string[];
 export type Grader =
   | { file: string; type: "llm"; rubric: string; target?: string }
   | { file: string; type: "regex"; pattern: string; flags: string; expect: "match" | "no_match"; target?: string }
   | { file: string; type: "tool_used"; tools: string[]; expect: "called" | "not_called"; count?: number; args?: Json }
-  | { file: string; type: "file_exists"; path: string }
-  | { file: string; type: "schema"; schema: string; validate: Validate };
+  | { file: string; type: "file_exists"; path: string };
 /** One answer of a fake tool: taken when every argument `when` lists equals the call's; `when` a list, when any one of
  *  its entries does (one answer for each spelling of a call: a file by `sha` or by `ref`, say). */
 type Answer = { when: Json | Json[]; result: Json };
@@ -164,7 +162,7 @@ function fixtureOf(text: string, name: string, at: string, bad: (message: string
 }
 
 /** A grader file checked, by its type's fields. */
-function graderOf(dir: string, p: Package, file: string, text: string, mcp: Record<string, unknown>, bad: (message: string) => void): Grader | undefined {
+function graderOf(p: Package, file: string, text: string, mcp: Record<string, unknown>, bad: (message: string) => void): Grader | undefined {
   const front = frontOf(text);
   if (typeof front === "string") return bad(`${file}: ${front}`), undefined;
   const { data, body } = front;
@@ -213,19 +211,6 @@ function graderOf(dir: string, p: Package, file: string, text: string, mcp: Reco
     case "file_exists":
       if (typeof data.path !== "string" || !data.path.trim() || data.path.startsWith("/") || data.path.split("/").includes("..")) return bad(`${file}: a file_exists grader names a path in the run's work folder`), undefined;
       return { file, type, path: data.path.replace(/^\.\//, "") };
-    case "schema": {
-      const path = inside(dir, data.schema, "file");
-      if (!path) return bad(`${file}: a schema grader names its schema, a JSON Schema file in the package`), undefined;
-      let schema: unknown;
-      try {
-        schema = JSON.parse(readFileSync(join(dir, path), "utf8"));
-      } catch {
-        return bad(`${file}: ${path} is not JSON`), undefined;
-      }
-      const compiled = schemaCheck(schema);
-      if ("why" in compiled) return bad(`${file}: ${path} ${compiled.why}`), undefined;
-      return { file, type, schema: path, validate: compiled.check };
-    }
   }
   return undefined;
 }
@@ -314,7 +299,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     const graders: Grader[] = [];
     for (const entry of readdirSync(join(root, "graders"), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
       if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
-      const grader = graderOf(dir, pkg, `${at}/graders/${entry.name}`, readFileSync(join(root, "graders", entry.name), "utf8"), mcp, bad);
+      const grader = graderOf(pkg, `${at}/graders/${entry.name}`, readFileSync(join(root, "graders", entry.name), "utf8"), mcp, bad);
       if (grader) graders.push({ ...grader, file: entry.name });
     }
     if (problems.length > before) continue;
@@ -438,12 +423,6 @@ export function searched(search: FakeSearch, query: string): string {
 /** A deterministic grader's verdict on one run: every type but llm. */
 export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run: RunRecord, faked: readonly string[]): Verdict {
   switch (grader.type) {
-    case "schema": {
-      const json = answerJson(run.answer);
-      if ("why" in json) return { pass: false, reason: json.why };
-      const problems = grader.validate(json.value);
-      return problems.length ? { pass: false, reason: `the answer's json does not meet ${grader.schema}: ${problems.slice(0, 5).join("; ")}${problems.length > 5 ? `; and ${problems.length - 5} more` : ""}` } : { pass: true, reason: `the answer's json meets ${grader.schema}` };
-    }
     case "regex": {
       const subject = grader.target ? targetOf(run.answer, grader.target) : { text: run.answer };
       if ("why" in subject) return { pass: false, reason: subject.why };
@@ -470,6 +449,15 @@ export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run
       return { pass, reason: `${said}; the grader expects ${grader.expect === "called" ? "at least one" : "none"}` };
     }
   }
+}
+
+/** The output check of a completed run of a package that declares `output`, beside its case's graders: the server's own
+ *  verdict (`result.output_error`, why the answer still missed the schema after the runner's one retry), so no case
+ *  carries a grader for it. Undefined for a package with no output schema. */
+export function outputVerdict(pkg: Package, result: unknown): GraderResult | undefined {
+  if (!pkg.output) return undefined;
+  const why = isObject(result) && typeof result.output_error === "string" ? result.output_error : undefined;
+  return { grader: "output", type: "output", cost_usd: null, pass: why === undefined, reason: why === undefined ? `the answer's json meets ${pkg.output.schema}` : `the answer misses ${pkg.output.schema}: ${why}` };
 }
 
 /** The input a grader run gets for an llm grader: the rubric, the run's input, its answer (its target field marked when
@@ -957,7 +945,8 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     : asked ? `the run waited on a person (${ended.waiting}); graded as it stood`
     : !graded ? `the run ended ${ended.status}${pending ? ` (${pending})` : ""}${isObject(view.error) && typeof view.error.message === "string" ? `: ${view.error.message}` : ""}`
     : undefined;
-  const graders: GraderResult[] = [];
+  const output = ended.status === "completed" ? outputVerdict(ctx.pkg, view.result) : undefined;
+  const graders: GraderResult[] = output ? [output] : [];
   for (const grader of one.graders) {
     stopped();
     if (grader.type !== "llm") {

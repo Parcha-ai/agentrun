@@ -126,7 +126,7 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
           <div role="group" aria-label="The run's input" className="mt-3 grid gap-3 max-sm:mt-0 max-sm:basis-full md:grid-cols-2">
             {form.fields.map(([key, f]) => (
               <div key={key} data-field={`input.${key}`}>
-                <FieldInput field={f} label={fieldLabel(key, f)} help={paramHelp(f)} value={values[key] ?? ""} typedInput onChange={(v) => setField(key, f, v)} />
+                <FieldInput field={f} label={fieldLabel(key, f)} help={paramHelp(f)} value={values[key] ?? ""} onChange={(v) => setField(key, f, v)} />
                 <FieldIssues issues={(problem?.fields ?? []).filter((i) => atField(i) === key)} words={(i) => fieldIssueWords(i, key, f)} />
               </div>
             ))}

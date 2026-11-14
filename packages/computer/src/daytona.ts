@@ -4,20 +4,21 @@
 // stdin sent as the command's input. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts).
 // Every Daytona fact used here is cited in the README's Daytona section.
 import { randomBytes } from "node:crypto";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, DAYTONA_NO_ARCHIL, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./descriptors/daytona.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, ours } from "./hosted/provider.js";
+import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
+import { boundOf, pause as sleep } from "./hosted/process.js";
 import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
+import { dateOf, driftOf, isWhole, show, sizeOf } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
 import { type ComputerSpec, checkGpu, type NetworkPolicy, type Refusal } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, errorOf, failFor, ok, type Result, vendorFail } from "./result.js";
-import { countTested } from "./test-connection.js";
-import { waitUntil } from "./wait.js";
 
 /** This module's failures: one with code vendor names Daytona. */
 const fail = failFor("daytona");
@@ -135,9 +136,6 @@ const DEFAULT_RETRY_MS = 500;
 const DEFAULT_POLL_MS = 1_000;
 const RETRY_ATTEMPTS = 3;
 const DELETE_ATTEMPTS = 4;
-const LISTED_ROUNDS = 2;
-/** The longest pause between two reads while a stop waits: the pauses double from pollMs up to it. */
-const STOP_POLL_MAX_MS = 5_000;
 /** How long a command's log stream may trail its exit code before the host stops reading it. */
 const LOG_GRACE_MS = 5_000;
 const MAX_PAGES = 1000;
@@ -154,7 +152,6 @@ export const DAYTONA_SOCKETS: readonly string[] = ["/tmp/dbus-*"];
 const QUOTA = /quota|capacity|limit exceeded|too many/i;
 const STARTING = new Set(["creating", "restoring", "starting", "pending_build", "building_snapshot", "pulling_snapshot", "resizing", "snapshotting", "forking", "resuming", "unknown"]);
 const GONE = new Set(["destroyed", "destroying"]);
-const STOPPED = new Set(["stopped", "archived", "paused"]);
 /** On the way from started to stopped or paused. */
 const LEAVING = new Set(["stopping", "pausing"]);
 const FAILED = new Set(["error", "build_failed"]);
@@ -163,20 +160,7 @@ const ERR = Buffer.from([2, 2, 2]);
 /** A line the client wrote, echoed back: a request or a notification is never a daemon's reply. */
 const ECHO = /^\{"jsonrpc":"2\.0",("id":\d+,)?"method":/;
 
-const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const decoder = new TextDecoder();
-const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
-const sleep = (ms: number, signal?: AbortSignal) =>
-	new Promise<void>((done) => {
-		const timer = setTimeout(finish, ms);
-		function finish() {
-			clearTimeout(timer);
-			signal?.removeEventListener("abort", finish);
-			done();
-		}
-		if (signal?.aborted) finish();
-		else signal?.addEventListener("abort", finish, { once: true });
-	});
 
 /** The entries of a comma-separated list Daytona keeps, trimmed; none when it is unset; undefined for a shape it never sends. */
 function entriesOf(list: unknown): string[] | undefined {
@@ -205,21 +189,14 @@ function networkOf(sb: Sandbox): NetworkPolicy {
 	return "open";
 }
 
-/** A sandbox's state as the adapter reads a machine's. A stopping one is on its way to stopped: its daemon is going. */
+/** A sandbox's state as the adapter reads a machine's: stopping and pausing are on the way to stopped. */
 function stateOf(sb: Sandbox): Machine["state"] {
 	const state = sb.state ?? "";
 	if (GONE.has(state) || sb.desiredState === "destroyed") return "going";
 	if (state === "started") return "running";
 	if (STARTING.has(state)) return "starting";
 	if (FAILED.has(state)) return "failed";
-	return "stopped";
-}
-
-/** A state as Daytona reported it, for words: the state, and the desired state when it differs. */
-function stateWords(sb: Sandbox | undefined): string {
-	if (sb === undefined) return "gone (404)";
-	const state = sb.state ?? "in no state";
-	return sb.desiredState !== undefined && sb.desiredState !== sb.state ? `${state} (desired ${sb.desiredState})` : state;
+	return LEAVING.has(state) ? "stopping" : "stopped";
 }
 
 /** Daytona's own words for a refusal about quota or capacity; every other status is the shared table's. */
@@ -283,8 +260,7 @@ interface SandboxExpected {
  * not read itself (it reads labels, the network and the state). Pure: no call.
  */
 function sandboxDrift(sb: Sandbox, expected: SandboxExpected): string[] {
-	const found: string[] = [];
-	const mismatch = (field: string, declared: unknown, actual: unknown) => found.push(`${field}: declared ${show(declared)}, read back ${show(actual)}`);
+	const { found, mismatch } = driftOf();
 	const labels = sb.labels ?? {};
 	// A GPU computer is made from the provider's GPU snapshot, whatever image named it. Daytona's default snapshot is
 	// whichever it names: a computer made from it is not held to a name.
@@ -312,42 +288,10 @@ function sandboxDrift(sb: Sandbox, expected: SandboxExpected): string[] {
 	return found;
 }
 
-/** A stream fed as the log stream delivers, read as an async iterable until it ends or fails. */
-function feed(): { push(bytes: Uint8Array): void; end(error?: Error): void; iterable: AsyncIterable<Uint8Array> } {
-	const queue: Uint8Array[] = [];
-	let ended = false;
-	let failure: Error | undefined;
-	let wake: (() => void) | undefined;
-	const nudge = () => {
-		const waiting = wake;
-		wake = undefined;
-		waiting?.();
-	};
-	return {
-		push(bytes) {
-			if (ended) return;
-			queue.push(bytes);
-			nudge();
-		},
-		end(error) {
-			if (ended) return;
-			ended = true;
-			failure = error;
-			nudge();
-		},
-		iterable: {
-			async *[Symbol.asyncIterator]() {
-				for (;;) {
-					const next = queue.shift();
-					if (next !== undefined) yield next;
-					else if (failure !== undefined) throw failure;
-					else if (ended) return;
-					else await new Promise<void>((done) => (wake = done));
-				}
-			},
-		},
-	};
-}
+/** The log stream's output for one channel: a failure ends the stream with it, and one nobody reads is not an uncaught error. */
+const channel = () => new PassThrough().on("error", () => {});
+const push = (stream: PassThrough, bytes: Uint8Array) => void (stream.writableEnded || stream.destroyed || stream.write(bytes));
+const finish = (stream: PassThrough, error?: Error) => void (error ? stream.destroy(error) : stream.end());
 
 /** Daytona's sandboxes as a MachineHost (../host.ts). */
 class DaytonaHost implements MachineHost {
@@ -403,19 +347,11 @@ class DaytonaHost implements MachineHost {
 		};
 	}
 
-	errorCode(error: unknown): ComputerErrorCode {
-		const name = (error as { name?: unknown } | null)?.name;
-		if (name === "AbortError") return "aborted";
-		if (name === "TimeoutError") return "timeout";
-		return "vendor";
-	}
-
 	/**
 	 * A snapshot name has no control characters; a GPU computer is made from the provider's GPU snapshot, which a spec
 	 * names, or Daytona's default, never another. No call.
 	 */
-	check(spec: ComputerSpec): Refusal[] {
-		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
+	check(given: Partial<ComputerSpec>): Refusal[] {
 		const { image } = given;
 		const refusals: Refusal[] = [];
 		if (typeof image === "string" && image !== "" && image.trim() === "") refusals.push({ field: "image", message: `an image is the id or name of a Daytona snapshot, or "${DAYTONA_DEFAULT_SNAPSHOT}" for Daytona's default snapshot` });
@@ -440,18 +376,19 @@ class DaytonaHost implements MachineHost {
 		// A sandbox this host made is held to what it asked; another (attach) to the GPU it reports.
 		const gpu = this.#made.get(sb.id) ?? (isWhole(sb.gpu) && sb.gpu > 0);
 		const drift = sandboxDrift(sb, { sandboxClass: this.#class, autoStopInterval: this.#autoStop, autoDeleteInterval: this.#autoDeleteFor(gpu), gpu: gpu ? this.#gpu : undefined });
-		const ends = typeof sb.autoDestroyAt === "string" ? Date.parse(sb.autoDestroyAt) : Number.NaN;
-		const made = typeof sb.createdAt === "string" ? Date.parse(sb.createdAt) : Number.NaN;
+		const endsAt = dateOf(sb.autoDestroyAt);
+		const made = dateOf(sb.createdAt);
+		const size = sizeOf(sb.cpu, sb.memory);
 		return {
 			id: sb.id,
 			labels: { ...(sb.labels ?? {}) },
 			state: stateOf(sb),
 			network: networkOf(sb),
 			...(typeof sb.snapshot === "string" ? { image: { resolved: sb.snapshot } } : {}),
-			...(Number.isNaN(made) ? {} : { createdAt: new Date(made) }),
-			...(Number.isNaN(ends) ? {} : { endsAt: new Date(ends) }),
+			...(made ? { createdAt: made } : {}),
+			...(endsAt ? { endsAt } : {}),
 			...(drift.length > 0 ? { drift } : {}),
-			...(isWhole(sb.cpu) || isWhole(sb.memory) ? { size: { ...(isWhole(sb.cpu) ? { cpus: sb.cpu } : {}), ...(isWhole(sb.memory) ? { memoryMb: sb.memory * 1024 } : {}) } } : {}),
+			...(size ? { size } : {}),
 			...(isWhole(sb.gpu) && sb.gpu > 0 ? { gpu: { type: String(sb.gpuType), count: sb.gpu } } : {}),
 			...(typeof sb.errorReason === "string" && sb.errorReason !== "" ? { why: sb.errorReason } : {}),
 		};
@@ -523,25 +460,22 @@ class DaytonaHost implements MachineHost {
 	}
 
 	/**
-	 * Every sandbox the listing shows with these labels (destroyed ones are gone), each read back where the listing leaves
-	 * its network out. Daytona's listing is asked for the adapter's label alone, as it always was, and filtered here.
+	 * Every sandbox the listing shows with the adapter's label (destroyed ones are gone): Daytona's listing is asked for
+	 * that label alone, as it always was, and the adapter keeps those with the rest. One whose listing leaves the network
+	 * out has none, and the adapter reads it back.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
+		void labels;
 		const listed = await this.#listOwn(ctx.signal);
 		if (!listed.ok) return listed;
-		const machines: Machine[] = [];
-		for (const item of listed.value) {
-			if (item.state === "destroyed" || !Object.entries(labels).every(([key, value]) => item.labels?.[key] === value)) continue;
-			let sb: Sandbox = item;
-			if (item.networkBlockAll === undefined) {
-				const read = await this.#rest.get(item.id, ctx.signal);
-				if (!read.ok) return read;
-				if (read.value === undefined || read.value.state === "destroyed") continue;
-				sb = read.value;
-			}
-			machines.push(this.#machineOf(sb));
-		}
-		return ok(machines);
+		return ok(
+			listed.value
+				.filter((sb) => sb.state !== "destroyed")
+				.map((sb) => {
+					const { network, ...machine } = this.#machineOf(sb);
+					return sb.networkBlockAll === undefined ? machine : { ...machine, network };
+				}),
+		);
 	}
 
 	/**
@@ -644,8 +578,8 @@ class DaytonaHost implements MachineHost {
 			await removeSession();
 			return vendorFail("daytona", `opening the log stream: ${(error as Error).message}`);
 		}
-		const out = feed();
-		const err = feed();
+		const out = channel();
+		const err = channel();
 		let rest: Buffer = Buffer.alloc(0);
 		const lines = (bytes: Buffer, last: boolean) => {
 			rest = rest.length === 0 ? bytes : Buffer.concat([rest, bytes]);
@@ -654,16 +588,16 @@ class DaytonaHost implements MachineHost {
 				const end = at >= 0 ? at + 1 : rest.length;
 				const line = rest.subarray(0, end);
 				rest = rest.subarray(end);
-				if (line.subarray(0, 3).equals(ERR)) err.push(new Uint8Array(line.subarray(3)));
+				if (line.subarray(0, 3).equals(ERR)) push(err, line.subarray(3));
 				else {
 					const text = line.subarray(0, 3).equals(OUT) ? line.subarray(3) : line;
-					if (!ECHO.test(text.subarray(0, 64).toString("utf8"))) out.push(new Uint8Array(text));
+					if (!ECHO.test(text.subarray(0, 64).toString("utf8"))) push(out, text);
 				}
 			}
 			if (rest.length > MAX_LINE_BYTES + 8) {
 				const over = new Error("the process sent a line over the 1 MiB limit");
-				out.end(over);
-				err.end(over);
+				finish(out, over);
+				finish(err, over);
 				socket.close(1000);
 			}
 		};
@@ -681,32 +615,28 @@ class DaytonaHost implements MachineHost {
 		socket.addEventListener("error", (event) => {
 			opened(vendorFail("daytona", `the log stream failed: ${event.message ?? "no reason given"}`));
 			const failed = new Error(`the log stream failed${event.message ? `: ${event.message}` : ""}`);
-			out.end(failed);
-			err.end(failed);
+			finish(out, failed);
+			finish(err, failed);
 			closed();
 		});
 		socket.addEventListener("close", ({ code }) => {
 			opened(vendorFail("daytona", `the log stream closed before it opened (code ${code ?? "none"})`));
 			lines(Buffer.alloc(0), true);
-			out.end();
-			err.end();
+			finish(out);
+			finish(err);
 			closed();
 		});
 		// The stream opens within the call's bound, or the command is let go of: its output would be lost.
-		const bound = AbortSignal.timeout(ctx.timeoutMs);
-		const either = ctx.signal ? AbortSignal.any([ctx.signal, bound]) : bound;
-		let onAbort: () => void = () => {};
-		const aborted = new Promise<Result<void>>((done) => {
-			onAbort = () => done(ctx.signal?.aborted ? fail("aborted", "opening the log stream was aborted") : fail("timeout", `the log stream did not open within ${ctx.timeoutMs / 1000} s`));
-			if (either.aborted) onAbort();
-			else either.addEventListener("abort", onAbort, { once: true });
-		});
-		const started = await Promise.race([open, aborted]);
-		either.removeEventListener("abort", onAbort);
+		const bound = boundOf(ctx.timeoutMs, ctx.signal, "opening the log stream");
+		const started = await Promise.race([open, bound.promise]).then(
+			(opened) => opened,
+			(error: Error) => fail(error.name === "AbortError" ? "aborted" : "timeout", error.message),
+		);
+		bound.clear();
 		const kill = async () => {
 			socket.close(1000);
-			out.end();
-			err.end();
+			finish(out);
+			finish(err);
 			await removeSession();
 		};
 		if (!started.ok) {
@@ -747,8 +677,8 @@ class DaytonaHost implements MachineHost {
 			}
 		};
 		return ok({
-			stdout: out.iterable,
-			stderr: err.iterable,
+			stdout: out,
+			stderr: err,
 			write: (bytes) => {
 				queued += utf8.decode(bytes, { stream: true });
 				const at = queued.lastIndexOf("\n");
@@ -768,83 +698,10 @@ class DaytonaHost implements MachineHost {
 		});
 	}
 
-	/**
-	 * Stops a sandbox (POST stop, unless Daytona reads it stopped already), then waits, through waitUntil, until Daytona
-	 * reads it as wanted, twice running, by its own read and by the listing alike: stopped, listed stopped; or gone, not
-	 * listed, when its stop deletes it (autoDeleteInterval 0, or a GPU sandbox). A stop not under way is asked for again.
-	 * Bounded by ctx.timeoutMs and ctx.signal; a failed read or listing, or a sandbox gone to error, ends the wait.
-	 */
+	/** POST stop. One Daytona refuses (invalid: not in a state it stops from) or no longer has is no failure: the adapter reads where it went. */
 	async stop(id: string, ctx: HostCall): Promise<Result<void>> {
-		const found = await this.#rest.get(id, ctx.signal);
-		if (!found.ok) return found;
-		const sb = found.value;
-		if (sb === undefined || sb.state === "destroyed") return ok(undefined);
-		const ask = async (signal?: AbortSignal) => {
-			const stopped = await this.#rest.call("POST", this.#rest.sandbox(id, "/stop"), {}, signal);
-			return stopped.ok || stopped.error.code === "invalid" || stopped.error.code === "not_found" ? ok(undefined) : stopped;
-		};
-		if (!STOPPED.has(sb.state ?? "")) {
-			const asked = await ask(ctx.signal);
-			if (!asked.ok) return asked;
-		}
-		const want = this.#autoDeleteFor(this.#made.get(id) ?? (isWhole(sb.gpu) && sb.gpu > 0)) === 0 ? "gone" : "stopped";
-		type Read = { failed: Result<never> } | { settled: true } | { last: string };
-		let agreed = 0;
-		let last = "unread";
-		const read = async (signal: AbortSignal): Promise<Read> => {
-			const got = await this.#rest.get(id, signal);
-			if (!got.ok) return got.error.code === "aborted" ? { last } : { failed: fail(got.error.code, `the stop of ${id}: reading it back failed (${got.error.message}); it last read ${last}`) };
-			const now = got.value;
-			last = stateWords(now);
-			if (now !== undefined && FAILED.has(now.state ?? "") && now.desiredState !== "destroyed") {
-				return { failed: vendorFail("daytona", `the stop of ${id}: it went to ${now.state}${now.errorReason ? `: ${now.errorReason}` : ""}`) };
-			}
-			const gone = now === undefined || now.state === "destroyed";
-			const reached = gone ? "gone" : want === "stopped" && STOPPED.has(now.state ?? "") ? "stopped" : undefined;
-			if (reached === undefined) {
-				agreed = 0;
-				if (now !== undefined && stateOf(now) !== "going" && !LEAVING.has(now.state ?? "")) {
-					const again = await ask(signal);
-					if (!again.ok && again.error.code !== "aborted") return { failed: again };
-				}
-				return { last };
-			}
-			const listed = await this.#listOwn(signal);
-			if (!listed.ok) return listed.error.code === "aborted" ? { last } : { failed: fail(listed.error.code, `the stop of ${id}: the listing failed (${listed.error.message}); it last read ${last}`) };
-			const item = listed.value.find((one) => one.id === id);
-			const shown = item === undefined || !ours(item.labels) || stateOf(item) === "going" ? undefined : STOPPED.has(item.state ?? "") ? "stopped" : (item.state ?? "in no state");
-			if (reached === "gone" ? shown === undefined : shown === "stopped") return ++agreed >= LISTED_ROUNDS ? { settled: true } : { last };
-			agreed = 0;
-			last = `${last}, listed ${shown ?? "not at all"}`;
-			return { last };
-		};
-		const waited = await waitUntil(read, (state) => !("last" in state), {
-			boundMs: ctx.timeoutMs,
-			...(ctx.signal ? { signal: ctx.signal } : {}),
-			minMs: Math.min(this.#pollMs, STOP_POLL_MAX_MS),
-			maxMs: STOP_POLL_MAX_MS,
-			what: `${id} to be ${want} after its stop`,
-			describe: (state) => ("last" in state ? `Daytona read it ${state.last}` : "done"),
-		});
-		if (!waited.ok) return waited;
-		return "failed" in waited.value ? waited.value.failed : ok(undefined);
-	}
-
-	/**
-	 * Settings' test: one page of the account's sandboxes by the adapter's own label, which makes nothing. The count is
-	 * read from the listing, with no read of each sandbox: a busy account answers as fast, and one sandbox's read never
-	 * fails a working key. A further page is "or more".
-	 */
-	async testConnection(ctx: HostCall): Promise<Result<{ detail: string }>> {
-		const query = new URLSearchParams({ labels: JSON.stringify({ [COMPUTER_LABEL]: "1" }), limit: "100" });
-		const answer = await this.#rest.json("GET", `${this.#rest.sandbox()}?${query}`, { retry: true }, ctx.signal);
-		if (!answer.ok) return countTested("Daytona", answer);
-		const value = answer.value as { items?: unknown; nextCursor?: unknown } | Sandbox[] | null;
-		const items = Array.isArray(value) ? value : Array.isArray(value?.items) ? (value.items as Sandbox[]) : undefined;
-		if (items === undefined) return countTested("Daytona", vendorFail("daytona", "GET /sandbox: the listing is not a page of sandboxes"));
-		const next = Array.isArray(value) ? undefined : value?.nextCursor;
-		const count = items.filter((item) => typeof item?.id === "string" && ours(item.labels) && stateOf(item) !== "going").length;
-		return countTested("Daytona", ok({ count, more: typeof next === "string" && next !== "" }));
+		const stopped = await this.#rest.call("POST", this.#rest.sandbox(id, "/stop"), {}, ctx.signal);
+		return stopped.ok || stopped.error.code === "invalid" || stopped.error.code === "not_found" ? ok(undefined) : stopped;
 	}
 }
 

@@ -1,7 +1,8 @@
 // Package apps is a Linux desktop's apps group (src/protocol.ts, the same methods and answers as a Mac's): apps.list
 // reads the desktop files of the apps there are, apps.launch opens one on the display and answers once its window
 // shows, apps.terminate ends it. An app is launched as process.start launches a program with orphans "keep": it is in
-// computerd's process table, with DISPLAY, and what it starts runs on after its launcher ends, to the computer's end.
+// computerd's process table, with DISPLAY and NO_AT_BRIDGE=1, and what it starts runs on after its launcher ends, to the
+// computer's end.
 //
 // Windows are read on the display's own connection (package desktop): the top-level windows that are the apps' own (a
 // window manager's frames looked into), each one's app by the process that launched it (_NET_WM_PID) and else by its
@@ -168,7 +169,10 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 		}
 		return g.active(ctx, shown[len(shown)-1], before)
 	}
-	started, err := g.table.Start(ctx, process.StartParams{Argv: argv, Env: map[string]string{"DISPLAY": g.display.Name()}, Orphans: "keep"})
+	// NO_AT_BRIDGE: a GTK app asks for no accessibility bus, which the session bus its GDBus autolaunches would start: on
+	// E2B Desktop an at-spi-bus-launcher and a socket of the user's under its home (~/.cache/at-spi/bus_0).
+	env := map[string]string{"DISPLAY": g.display.Name(), "NO_AT_BRIDGE": "1"}
+	started, err := g.table.Start(ctx, process.StartParams{Argv: argv, Env: env, Orphans: "keep"})
 	if err != nil {
 		return nil, err
 	}
