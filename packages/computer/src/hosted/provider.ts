@@ -733,7 +733,9 @@ export class HostedProvider implements ComputerProvider {
 			if (machine === undefined) return this.#fail("gone", `${ref.name} was gone before it ran`);
 			if (machine.state === "failed") return this.#fail("vendor", `${this.#label} could not start ${ref.name}${machine.why ? `: ${machine.why}` : ""}`);
 			if (machine.state !== "starting") return ok(machine);
-			if (Date.now() + this.#startPollMs() >= until) return this.#fail("timeout", `${ref.name} did not start within ${seconds(this.#timeouts.createMs)}`);
+			// Still starting at createMs is what a vendor's outage looks like (a bad image or config is failed, with the
+			// vendor's words, above): transient, so a caller may fail over.
+			if (Date.now() + this.#startPollMs() >= until) return this.#failFrom({ code: "timeout", transient: true }, `${ref.name} did not start within ${seconds(this.#timeouts.createMs)}`);
 			await pause(this.#startPollMs(), signal);
 			if (signal?.aborted) return this.#fail("aborted", "create was aborted while the machine started");
 		}

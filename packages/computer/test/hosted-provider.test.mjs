@@ -449,7 +449,7 @@ test("a create whose answer is lost or broken is swept by its name: the machine 
 	await nothingLeft(lost.fake, "a lost create");
 });
 
-test("an outage met after the machine was made (a 503 on the first readiness read, on the daemon's upload) keeps its transient mark through the delete, so a caller may fail over", async () => {
+test("an outage met after the machine was made (a 503 on the first readiness read, on the daemon's upload, a start that never ends) keeps its transient mark through the delete, so a caller may fail over", async () => {
 	for (const call of ["get", "upload"]) {
 		const { provider, fake } = setup();
 		const real = fake.host[call].bind(fake.host);
@@ -465,6 +465,13 @@ test("an outage met after the machine was made (a 503 on the first readiness rea
 		assert.equal(outage.error.transient, true, `a 503 on ${call} stays transient`);
 		await nothingLeft(fake, `a 503 on ${call}`);
 	}
+	// A machine still starting when createMs ends is an outage too: transient, and deleted. One the vendor reads as failed is not.
+	const stuck = setup({ timeouts: { ...TIMEOUTS, createMs: 200 } }, { starting: 1_000_000 });
+	const slow = await create(stuck.provider);
+	assert.equal(slow.error?.code, "timeout");
+	assert.match(slow.error.message, /did not start within/);
+	assert.equal(slow.error.transient, true, "a start that never ends stays transient");
+	await nothingLeft(stuck.fake, "a machine that never started");
 	// A refusal after the machine was made carries no mark.
 	const refused = await create(setup({}, { install: 5 }).provider);
 	assert.equal(refused.error.transient, undefined);

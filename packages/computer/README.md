@@ -1758,9 +1758,10 @@ cluster's own CA and a client certificate work with no dependency. A library cal
 Every failure names the method, the path and the status, in the API server's own words. 401 and 403 are `denied` (and
 a refused create says which RBAC verbs it needs), a ResourceQuota's 403 is `limit`, 404 `not_found`, 409 `exists`, 400
 and 422 `invalid`. A 429, a 5xx, a call that did not answer in time, and an API that could not be reached carry
-`transient: true` (`ComputerError.transient`): serve's computer failover follows those and nothing else. A pod waiting on
-`ImagePullBackOff`, `ErrImagePull`, `InvalidImageName` or a container config error reads `failed`, in its words, so
-create gives up at once rather than at its bound.
+`transient: true` (`ComputerError.transient`), and so does a machine still starting when create's bound ends: serve's
+computer failover follows those and nothing else. A pod waiting on `ImagePullBackOff`, `ErrImagePull`,
+`InvalidImageName` or a container config error reads `failed`, in its words, so create gives up at once rather than at
+its bound, and does not fail over.
 
 ### Settings
 
