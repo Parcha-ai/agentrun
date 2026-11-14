@@ -139,7 +139,7 @@ target; duplicates are skipped. The worker does not continuously upload historic
 When requested, verify the imported agent and enable its existing **Self-improving** control. Notes and skills are
 additive, pinned to a learning revision for each run. Reflection resumes the exact task session with tools disabled;
 the existing checker, grader and merge rules decide what becomes active. Risky proposals await owner review in
-the agent's Learning tab; a connector cannot approve them. Reflection and grading add model usage. Off means later runs
+Learning Dojo; a connector cannot approve them. Reflection and grading add model usage. Off means later runs
 receive and create no AgentRun learning. Do not start a paid run unless authorized, and do not promise enforcement
 of native dollar caps, interactive approvals, learned workflows or unsupported desktop tools.
 

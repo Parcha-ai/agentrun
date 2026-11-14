@@ -111,7 +111,7 @@ the result of their first task or history import. State what is connected and wh
 agent, point out that its worker must remain online and how to revoke the connection.
 
 For a live agent, offer **Self-improving** as a separate choice. When requested, turn it On, run a useful task, and
-inspect proposed notes or skills after checking and grading in **the agent's Learning tab**. A fresh next run should use the
+inspect proposed notes or skills after checking and grading in **Learning Dojo**. A fresh next run should use the
 accepted learning revision. Risky proposals await owner review; rejected proposals are not bypassed. Reflection
 and grading add model usage. Turning learning Off stops supplying and creating AgentRun learning on later runs.
 History-only imports do not enter this loop.
