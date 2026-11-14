@@ -37,6 +37,9 @@ export const quiet: KernelHooks = { beforeIntent: async () => {}, beforeResult: 
 export const CLOSE_MS = 2_000;
 /** How long a person's stop waits for the turn to settle, by default. */
 export const STOP_SETTLE_MS = 30_000;
+/** How long a park waits, by default, for the calls already running beside the parked one to end before it seals: as long
+ *  as a stop gives a turn to settle, the loop's one bound for calls already under way. Past it, what still runs is cut. */
+export const PARK_SIBLINGS_MS = 30_000;
 /** The most a cut run's end-of-run step (a store read) may take before the end is written without it. */
 export const CUT_STEP_MS = 2_000;
 /** The most the end's patch (the run's cost and metrics, read from its journal and the store) may take before the end is
