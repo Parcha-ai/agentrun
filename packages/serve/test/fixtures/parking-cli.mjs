@@ -55,10 +55,10 @@ function parkingCli(said) {
   };
 }
 
-/** A CLI run whose one call is the MCP tool, its spec's gate `gate`: once it parks, `meanwhile(server)` (an answer to
- *  its ask), then its row once it rests at `state`. `ran`: each input the MCP server was sent; `said`: what the model
- *  was handed. */
-export async function parkedMcpRun(t, { gate, hooks = quiet, state = "ended", meanwhile }) {
+/** A CLI run whose one call is the MCP tool, its spec's gate `gate`: once it parks, `meanwhile(server, file)` (an answer
+ *  to its ask; `file`: the store's place, for `raw`), then its row once it rests at `state`. `cli(said)`: the stand-in, by
+ *  default the one above. `ran`: each input the MCP server was sent; `said`: what the model was handed. */
+export async function parkedMcpRun(t, { gate, hooks = quiet, state = "ended", meanwhile, cli = parkingCli }) {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   const ran = [];
@@ -66,7 +66,7 @@ export async function parkedMcpRun(t, { gate, hooks = quiet, state = "ended", me
   const write = { name: WIRE, description: "Writes a note.", inputSchema: { type: "object" }, replay: "never", call: async (args) => (ran.push(args), { text: "the call ran" }) };
   const mcp = { tools: [write], catalogOf: (name) => (name === WIRE ? CATALOG : undefined), priceOf: (name) => (name === CATALOG ? "not metered" : undefined), fresh: async () => {}, release: () => {} };
   const createLoop = createAdapterLoop(() => ({
-    adapter: parkingCli(said),
+    adapter: cli(said),
     session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },
     input: "Write the note.",
     runCap: { capUsd: () => undefined, modelOf: () => undefined },
@@ -83,7 +83,7 @@ export async function parkedMcpRun(t, { gate, hooks = quiet, state = "ended", me
   }, `the run ${want} and released`, 10_000);
   if (meanwhile) {
     await rested("parked");
-    await meanwhile(opened.server);
+    await meanwhile(opened.server, opened.file);
   }
   const row = await rested(state);
   return { ran, said, row, server: opened.server };
