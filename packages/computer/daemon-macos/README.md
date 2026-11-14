@@ -42,7 +42,7 @@ macOS 14 or later.
 
    `COMPUTERD_SIGN_IDENTITY="Developer ID Application: <name> (<team>)" scripts/bundle.sh` signs it for distribution.
    An ad-hoc build is granted anew after each rebuild; a Developer ID build keeps its grants across updates. A Mac that
-   builds its own Computerd (the bench's Mac mini) signs with a local identity instead: see [MINI.md](MINI.md).
+   builds its own Computerd can sign with a local self-signed identity instead.
 
 2. **Open it.** Double-click Computerd in Applications. It writes its LaunchAgent to
    `~/Library/LaunchAgents/ai.parcha.computerd.plist` and loads it with `launchctl`, which starts it now and at every
