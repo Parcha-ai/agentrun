@@ -217,12 +217,14 @@ test("the status mapping: every Agent37 status is one of the adapter's states, a
 		sleeping: "stopped",
 		failed: "gone",
 		deleting: "gone",
-		deleted: "gone",
 	};
 	for (const [status, state] of Object.entries(states)) {
 		rest.instances.get(value.id).status = status;
 		assert.equal((await host.get(value.id, CTX)).state, state, status);
 	}
+	// A deleted instance is one Agent37 no longer has: none, as a 404 is, so the wait after a delete ends on it.
+	rest.instances.get(value.id).status = "deleted";
+	assert.equal(await host.get(value.id, CTX), undefined, "deleted");
 	rest.instances.get(value.id).status = "melting";
 	const odd = (await host.get(value.id, CTX));
 	assert.equal(odd.state, "gone");
