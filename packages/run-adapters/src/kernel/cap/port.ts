@@ -30,6 +30,9 @@ export interface BeforeRequestOptions {
   /** What the run's priced tools under way hold, beside the session's requests in flight (null: unknown). A figure that is
    *  not finite and 0 or more is unknown too: the request is refused, never judged as $0 held. */
   heldUsd?(): number | null;
+  /** What the host keeps back beside model request `request` (priced as `asked`) for the steps it may still ask for while
+   *  it streams (the rule's JudgeState.keepUsd): serve's wrap-up reserve for the session's own requests. Undefined: none. */
+  keepBackUsd?(request: Parameters<BeforeRequest>[0], asked: ModelCapRequest): number | undefined;
   mode?: CapMode;
   now?: () => number;
 }
@@ -108,7 +111,9 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
     }
     const judge = (input: number | undefined) => {
       try {
-        const judged = capRule.judge({ ...asked, inputTokens: input }, { capUsd, spentUsd, heldUsd, mode, now: now() });
+        const sized: ModelCapRequest = { ...asked, inputTokens: input };
+        const keepUsd = options.keepBackUsd?.(request, sized);
+        const judged = capRule.judge(sized, { capUsd, spentUsd, heldUsd, mode, now: now(), ...(keepUsd === undefined ? {} : { keepUsd }) });
         return { holdUsd: judged.heldUsd, boundUsd: judged.boundUsd, ...(judged.outputTokensMax === undefined ? {} : { outputTokensMax: judged.outputTokensMax }), stoppedUsd: judged.stoppedUsd };
       } catch (error) {
         // Its words, and what the run's end is decided from (parkOf): for good, or for room with its figures.

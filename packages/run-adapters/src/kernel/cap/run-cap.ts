@@ -34,6 +34,8 @@ export interface RunCapOptions {
   /** The run's priced tools' charges and holds beside its requests (beforeRequestOf's), when it has any. */
   spentUsd?(): number | null;
   heldUsd?(): number | null;
+  /** What the host keeps back beside a model request while it streams (BeforeRequestOptions.keepBackUsd). */
+  keepBackUsd?(request: Parameters<BeforeRequest>[0], asked: ModelCapRequest): number | undefined;
   /** Told each request the rule judged, with the run's totals it was asked with, and its answer (an observer: a live
    *  view of the cap, a test's record). */
   judged?(request: Parameters<BeforeRequest>[0], answer: Awaited<ReturnType<BeforeRequest>>): void;
@@ -118,6 +120,7 @@ export function runCap(options: RunCapOptions): RunCap {
     ...pricing,
     ...(options.spentUsd ? { spentUsd: options.spentUsd } : {}),
     ...(options.heldUsd ? { heldUsd: options.heldUsd } : {}),
+    ...(options.keepBackUsd ? { keepBackUsd: options.keepBackUsd } : {}),
   });
   const before = runBooking(options.sessions, options.judged ? async (request) => {
     const answer = await rule(request);
