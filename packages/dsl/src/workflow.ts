@@ -2955,6 +2955,134 @@ function withSiblingUncertainty(primary: unknown, uncertainties: Set<EffectOutco
     : primary;
 }
 
+/** Who may have written a state key last, over every path a run can take to a point: a judge, or anything else (the
+ *  input, a draft, a call, a code node). A key no step wrote holds the input's value: `other`. */
+type StateWriters = Map<string, ReadonlySet<"judge" | "other">>;
+const JUDGE_WROTE: ReadonlySet<"judge" | "other"> = new Set(["judge"]);
+const OTHER_WROTE: ReadonlySet<"judge" | "other"> = new Set(["other"]);
+const writersOf = (state: StateWriters, key: string) => state.get(key) ?? OTHER_WROTE;
+/** The writers after any one of `states`: each key's writers on every one of them. */
+function joinWriters(states: readonly StateWriters[]): StateWriters {
+  const out: StateWriters = new Map();
+  for (const key of new Set(states.flatMap((state) => [...state.keys()]))) {
+    const each = states.map((state) => writersOf(state, key));
+    out.set(key, each.every((writers) => writers === each[0]) ? each[0] : new Set(each.flatMap((writers) => [...writers])));
+  }
+  return out;
+}
+const sameWriters = (a: StateWriters, b: StateWriters): boolean =>
+  a.size === b.size && [...a].every(([key, writers]) => { const other = b.get(key); return other !== undefined && other.size === writers.size && [...writers].every((w) => other.has(w)); });
+/** Past this nesting, or this many passes over a loop's body, softEscalates reads every escalate as hard. */
+const SOFT_WALK_DEPTH = 256;
+const SOFT_WALK_PASSES = 16;
+class SoftWalkTooDeep extends Error {}
+
+/** Where a node's writes are read from: the writers before it runs (`state`), the walk for the nodes it runs, the label
+ *  prefix its steps run under (a child workflow's `parent/`), and what an escalate reads. */
+type WritesAt = {
+  state: StateWriters;
+  walk: (inner: unknown, from: StateWriters, prefix?: string) => StateWriters;
+  wrote: (key: unknown, writers: ReadonlySet<"judge" | "other">, from?: StateWriters) => StateWriters;
+  prefix: string;
+  escalate: (label: string, soft: boolean) => void;
+};
+type Doc = Record<string, unknown>;
+const docOf = (value: unknown): Doc | undefined => (value && typeof value === "object" && !Array.isArray(value) ? (value as Doc) : undefined);
+/** A node that writes its value under its `as`, else its label (mergeStageDelta, runCallNode, runPickNode, runSiftNode). */
+const writesItsKey = (node: Doc, at: WritesAt) => at.wrote(typeof node.as === "string" && node.as !== "" ? node.as : node.label, OTHER_WROTE);
+
+/** What each node kind writes to the state when runNodeBody (below) runs it: the writers of every key after the node runs
+ *  from `at.state`. One entry per kind, so a new kind says here what it writes. A chain runs its steps in order; a route
+ *  one branch, any of them, after its `as` (its choice); a parallel its branches each from the same state, a key one wrote
+ *  taking that branch's writer; a loop its body once or more, each pass from the last's; a map its body per item on its
+ *  own copy (with `item`, `item_index`), only its `as` (and `failedAs`) left after; a child workflow on its own state, only
+ *  its `as` left after. A judge writes its `as`; a code node with no `as` may write any key. */
+const NODE_WRITES: { readonly [K in WorkflowNodeKind]: (node: Doc, at: WritesAt) => StateWriters } = {
+  chain: (node, at) => (Array.isArray(node.steps) ? node.steps : []).reduce<StateWriters>((state, step) => at.walk(step, state), at.state),
+  route: (node, at) => {
+    const routed = at.wrote(node.as, OTHER_WROTE);
+    const bodies = docOf(node.branches) ? Object.values(node.branches as Doc).map((branch) => docOf(branch)?.body) : [];
+    return bodies.length ? joinWriters(bodies.map((body) => at.walk(body, routed))) : routed;
+  },
+  parallel: (node, at) => {
+    const outs = (Array.isArray(node.branches) ? node.branches : []).map((branch) => at.walk(branch, at.state));
+    const merged: StateWriters = new Map(at.state);
+    for (const key of new Set(outs.flatMap((out) => [...out.keys()]))) {
+      const writers = outs.filter((out) => out.get(key) !== at.state.get(key));
+      if (writers.length) merged.set(key, joinWriters(writers).get(key)!);
+    }
+    return merged;
+  },
+  loop: (node, at) => {
+    let entry = at.state;
+    for (let pass = 0; pass < SOFT_WALK_PASSES; pass++) {
+      const out = at.walk(node.body, entry);
+      const next = joinWriters([at.state, out]);
+      if (sameWriters(next, entry)) return out;
+      entry = next;
+    }
+    throw new SoftWalkTooDeep();
+  },
+  map: (node, at) => {
+    at.walk(node.body, at.wrote("item_index", OTHER_WROTE, at.wrote("item", OTHER_WROTE)));
+    return at.wrote(node.failedAs, OTHER_WROTE, at.wrote(node.as, OTHER_WROTE));
+  },
+  workflow: (node, at) => {
+    at.walk(docOf(node.workflow)?.root, new Map(), typeof node.label === "string" ? `${at.prefix}${node.label}/` : at.prefix);
+    return at.wrote(node.as, OTHER_WROTE);
+  },
+  judge: (node, at) => at.wrote(node.as, JUDGE_WROTE),
+  escalate: (node, at) => {
+    if (typeof node.label !== "string") return at.state;
+    let when = docOf(node.when);
+    while (when?.predicate === "not") when = docOf(when.of);
+    const writers = typeof when?.path === "string" ? writersOf(at.state, when.path.split(".")[0]!) : OTHER_WROTE;
+    at.escalate(node.label, writers.size === 1 && writers.has("judge"));
+    return at.state;
+  },
+  code: (node, at) => {
+    if (typeof node.as === "string" && node.as !== "") return at.wrote(node.as, OTHER_WROTE);
+    return new Map([...at.state].map(([key, writers]) => [key, writers.has("other") ? writers : new Set([...writers, "other" as const])]));
+  },
+  report: (_node, at) => at.wrote("report_markdown", OTHER_WROTE),
+  artifact: (_node, at) => at.wrote("artifact", OTHER_WROTE),
+  agent: writesItsKey, decide: writesItsKey, extract: writesItsKey, pick: writesItsKey, sift: writesItsKey, call: writesItsKey,
+};
+
+/** The writers after `value` (a node of a workflow document) runs from `state` (NODE_WRITES). Each escalate's verdict
+ *  lands in `verdicts`, false on any pass where it is not soft. */
+function walkWriters(value: unknown, state: StateWriters, prefix: string, verdicts: Map<string, boolean>, depth: number): StateWriters {
+  const node = docOf(value);
+  if (!node) return state;
+  if (depth > SOFT_WALK_DEPTH) throw new SoftWalkTooDeep();
+  const writes = Object.hasOwn(NODE_WRITES, node.node as string) ? NODE_WRITES[node.node as WorkflowNodeKind] : writesItsKey;
+  return writes(node, {
+    state, prefix,
+    walk: (inner, from, at = prefix) => walkWriters(inner, from, at, verdicts, depth + 1),
+    wrote: (key, writers, from = state) => (typeof key === "string" && key !== "" ? new Map(from).set(key, writers) : from),
+    escalate: (label, soft) => { const name = `${prefix}${label}`; verdicts.set(name, (verdicts.get(name) ?? true) && soft); },
+  });
+}
+
+/** The escalate nodes of a workflow document that read a judge's output, by label as a run names its step (a child's
+ *  `parent/child`, as WorkflowDeps.softEscalate is asked): each whose `when` (under any number of `not`s) reads a field a
+ *  judge node wrote, the judge being the step that last wrote that path's head on every path a run can take to the
+ *  escalate (a judge an extract overwrites, one in only some of a route's branches, one a code node with no `as` may have
+ *  overwritten, are not). A judge's field is one model's opinion of a draft the workflow already wrote, so a host that
+ *  measures the check may record it instead of obeying it (WorkflowDeps.softEscalate) and read the draft past it. A
+ *  document too deep to walk, or whose loop's writes do not settle, has none. The document is read as it is: no
+ *  validation, and a malformed node writes nothing it cannot name. */
+export function softEscalates(doc: unknown): Set<string> {
+  const verdicts = new Map<string, boolean>();
+  try {
+    walkWriters(docOf(doc)?.root, new Map(), "", verdicts, 0);
+  } catch (error) {
+    if (error instanceof SoftWalkTooDeep) return new Set();
+    throw error;
+  }
+  return new Set([...verdicts].flatMap(([name, soft]) => (soft ? [name] : [])));
+}
+
 async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, workflow: Workflow, deps: WorkflowDeps): Promise<Record<string, unknown>> {
   switch (node.node) {
     case "chain": {
