@@ -16,7 +16,7 @@ const IMAGE_LABEL = "agentrun.computer.image";
 const MAX_LABEL = "agentrun.computer.max-deadline";
 const SPEC = { image: "default", lifetimeMs: 600_000, network: "none" };
 const LINUX_GROUPS = ["exec", "files", "processes"];
-const DESKTOP_GROUPS = [...LINUX_GROUPS, "screen", "input.pointer", "input.keys"];
+const DESKTOP_GROUPS = [...LINUX_GROUPS, "screen", "input.pointer", "input.keys", "apps"];
 const TIMEOUTS = { requestMs: 2_000, createMs: 3_000 };
 const HOUR = 3_600_000;
 

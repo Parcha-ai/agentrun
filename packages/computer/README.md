@@ -2559,7 +2559,7 @@ alone (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)): 
 | `networkReadBack` | `true` | `machines.get` reports `egressAllow` |
 | `isolation` | `microvm` | a KVM microVM with its own kernel |
 | `daemon` | `child` | boxd's agent runs the commands; init is a detached command it starts |
-| `groups` | `exec`, `files`, `processes`, and on a desktop `screen`, `input.pointer`, `input.keys` | checked against hello on every connect |
+| `groups` | `exec`, `files`, `processes`, and on a desktop `screen`, `input.pointer`, `input.keys`, `apps` | checked against hello on every connect |
 | `maxLifetimeMs` | 24 h, up to 30 days | `options.maxLifetimeMs`; boxd sets no cap of its own |
 | `release` | `delete` | `machines.delete` |
 | `mount` | none | the run's folder on an Archil disk needs box/Dockerfile's tools in the machine; not built for boxd yet |
