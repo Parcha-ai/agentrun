@@ -3,6 +3,8 @@
 // Exits 0 when Core passes, 1 when it fails, 2 on a usage error, and 3 when --only left Core cases out and every case
 // that ran passed: a partial run is never a Core pass, so no script reads its exit code as one. With --kind it exits on
 // the kind's verdict alone: 0 when the provider passes the kind, 1 when it does not.
+// `--exec-stream --machine <id> [--quick]` runs the exec pre-check (./exec-stream.ts) alone, on a machine the vendor made
+// by hand, through the module's createHost(): 0 when exec passes every check, 1 when one fails.
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,7 +12,9 @@ import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
 import { type ConformanceModule, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
 import { type ComputerSettingKind, type KindCapabilities, SETTING_KIND_NAMES } from "../kinds.js";
+import type { MachineHost } from "../host.js";
 import { browserCases, casesFor, conformanceCases } from "./cases/index.js";
+import { checkExecStream, DEFAULT_LONG_MS, formatExecStream, QUICK_LONG_MS } from "./exec-stream.js";
 import { kindRunProblem } from "./kind.js";
 import type { CdpDialer } from "./cdp.js";
 import { formatReport } from "./report.js";
@@ -60,8 +64,12 @@ const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --prov
   --gpu       the GPU the gpu case's one computer asks for, a type the provider declares and a count (default 1), such
               as T4 or H100:2; it bills by the second, so without it the gpu case skips
   --json      print the report as JSON
+  --exec-stream --machine <id> [--quick]
+              the exec pre-check, alone: the module's createHost() and host.exec, nothing else, on a machine you made
+              by hand. Bytes 0-255 both ways, 8 MiB by sha256, output and stdin while the process runs, stderr apart,
+              the exit code, kill, and a silent process of ${DEFAULT_LONG_MS / 1000} s (--quick: ${QUICK_LONG_MS / 1000} s) that is not cut off
 exit: 0 Core passes, 1 it fails, 2 usage error, 3 partial (--only) and every case that ran passed; with --kind,
-      0 the provider passes the kind, 1 it does not`;
+      0 the provider passes the kind, 1 it does not; with --exec-stream, 0 every check passes, 1 one fails`;
 const PROVIDER_METHODS = ["capabilities", "check", "create", "attach", "list", "network", "connect", "release"] as const;
 
 class Usage extends Error {}
@@ -73,6 +81,8 @@ interface Args {
 	kind?: ComputerSettingKind;
 	fixture?: string;
 	gpu?: { type: string; count: number };
+	/** --exec-stream's machine: the pre-check runs alone on it. */
+	execStream?: { machine: string; quick: boolean };
 	json: boolean;
 	help: boolean;
 }
@@ -86,6 +96,9 @@ function gpuOf(text: string): { type: string; count: number } {
 
 function parse(argv: string[], cases: Case[]): Args {
 	const args: Partial<Args> & { json: boolean; help: boolean } = { json: false, help: false };
+	let execStream = false;
+	let quick = false;
+	let machine: string | undefined;
 	for (let i = 0; i < argv.length; i++) {
 		const [flag = "", inline] = (argv[i] ?? "").split(/=(.*)/s, 2);
 		const value = () => {
@@ -104,12 +117,22 @@ function parse(argv: string[], cases: Case[]): Args {
 			args.kind = kind as ComputerSettingKind;
 		} else if (flag === "--fixture") args.fixture = value();
 		else if (flag === "--gpu") args.gpu = gpuOf(value());
+		else if (flag === "--exec-stream") execStream = true;
+		else if (flag === "--machine") machine = value();
+		else if (flag === "--quick") quick = true;
 		else if (flag === "--json") args.json = true;
 		else if (flag === "--help" || flag === "-h") args.help = true;
 		else throw new Usage(`unknown option ${flag}`);
 	}
 	if (args.help) return { provider: "", json: false, help: true };
 	if (args.provider === undefined) throw new Usage("--provider is required");
+	if (execStream) {
+		if (machine === undefined) throw new Usage("--exec-stream needs --machine <id>, a machine you made by hand");
+		const others = (["image", "only", "kind", "fixture", "gpu"] as const).filter((name) => args[name] !== undefined);
+		if (others.length > 0) throw new Usage(`--exec-stream runs alone: drop ${others.map((name) => `--${name}`).join(", ")}`);
+		return { provider: args.provider, execStream: { machine, quick }, json: args.json, help: false };
+	}
+	if (machine !== undefined || quick) throw new Usage(`${machine !== undefined ? "--machine" : "--quick"} goes with --exec-stream`);
 	if (args.kind !== undefined && args.only !== undefined) throw new Usage("--kind and --only go apart: a kind runs its own cases");
 	const groups = [...new Set(cases.map((c) => c.group))];
 	for (const name of args.only ?? []) {
@@ -263,6 +286,38 @@ async function load(label: string, module: Partial<ConformanceModule>, options: 
 	return target;
 }
 
+/**
+ * The exec pre-check: the host the module's createHost() builds (a conformance module's, else the provider file's own),
+ * given the CLI's provider options, and its exec alone on the named machine. Nothing else of the host is called.
+ */
+async function execStreamMain(name: string, { machine, quick }: { machine: string; quick: boolean }, json: boolean, cwd: string, io: CliIo): Promise<number> {
+	const { stdout = process.stdout, stderr = process.stderr, signal, progress = false } = io;
+	let host: MachineHost;
+	try {
+		const found = await moduleFor(name, cwd);
+		const createHost = (found.module as { createHost?: unknown }).createHost ?? found.file.createHost;
+		if (typeof createHost !== "function") {
+			throw new Usage(`${found.label} does not export createHost(options): the exec pre-check builds your MachineHost with it, from your conformance module or your provider file`);
+		}
+		host = (await createHost(io.providerOptions ?? {})) as MachineHost;
+		if (typeof host?.exec !== "function") throw new Error(`${found.label}: createHost() did not return a MachineHost with exec`);
+	} catch (error) {
+		await write(stderr, `${(error as Error).message}\n`);
+		if (error instanceof Usage) {
+			await write(stderr, `${USAGE}\n`);
+			return 2;
+		}
+		return 1;
+	}
+	const report = await checkExecStream(host, machine, {
+		longMs: quick ? QUICK_LONG_MS : DEFAULT_LONG_MS,
+		...(signal ? { signal } : {}),
+		...(progress ? { onCheck: (check) => stderr.write(`${check.status === "pass" ? "✓" : "✗"} ${check.id}\n`) } : {}),
+	});
+	await write(stdout, json ? `${JSON.stringify(report, null, 2)}\n` : formatExecStream(report));
+	return report.pass ? 0 : 1;
+}
+
 export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 	const { stdout = process.stdout, stderr = process.stderr, signal, progress = false } = io;
 	let args: Args;
@@ -278,6 +333,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		return 0;
 	}
 	const cwd = io.cwd ?? process.env.INIT_CWD ?? process.cwd();
+	if (args.execStream) return execStreamMain(args.provider, args.execStream, args.json, cwd, io);
 	// What the provider says that is no failure (onNote, as each remote provider takes it) goes in the report.
 	const providerNotes: Array<{ computer: string; note: string }> = [];
 	const options = { ...(io.providerOptions ?? {}), onNote: (note: { computer: string; note: string }) => providerNotes.push({ computer: note.computer, note: note.note }) };
