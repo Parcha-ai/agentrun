@@ -17,7 +17,8 @@ const cardLine = (grant: string): string => {
 /** The Tools step's monid row: the agent's monid grants, a card each (untick one to take it away; it stays listed, to tick
  *  again), and a field that grants another by its name, `monid:<provider>/<endpoint>` or `monid:<provider>/*`. The
  *  field checks the name's shape only; the save reads monid's listing and is the judge of the rest. `listed`: the grants
- *  to show unticked too (the saved revision's, so one unticked here stays to tick again). `notes`: what the last save's
+ *  to show unticked too, which the editor keeps (every grant its form has shown), so a card outlives a save and a step
+ *  change. `notes`: what the last save's
  *  answer said of a grant (a wildcard's endpoints left out), in the server's words; `refused`: why the last save was
  *  refused at a grant, in the server's words. */
 export function MonidGrants({ tools, listed = [], notes = [], refused = [], onChange }: {
@@ -27,9 +28,7 @@ export function MonidGrants({ tools, listed = [], notes = [], refused = [], onCh
 }) {
   const [text, setText] = useState("");
   const [problem, setProblem] = useState<string | undefined>(undefined);
-  // Each grant added here, kept on the row once unticked, as a saved one is.
-  const [added, setAdded] = useState<string[]>([]);
-  const grants = [...new Set([...listed, ...added, ...tools].filter(isMonidName))];
+  const grants = [...new Set([...listed, ...tools].filter(isMonidName))];
   const toggle = (grant: string) => onChange(tools.includes(grant) ? tools.filter((t) => t !== grant) : [...tools, grant]);
   const grant = () => {
     const name = monidGrantText(text);
@@ -38,7 +37,6 @@ export function MonidGrants({ tools, listed = [], notes = [], refused = [], onCh
     setProblem(why);
     if (why) return;
     setText("");
-    setAdded((a) => (a.includes(name) ? a : [...a, name]));
     if (!tools.includes(name)) onChange([...tools, name]);
   };
   return (

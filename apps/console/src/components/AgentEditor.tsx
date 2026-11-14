@@ -161,6 +161,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     setF(follow); setBase(follow);
   }, [toolsKey, placeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState("");
+  // Every monid grant this form has shown: the agent's, and each one granted here since. The monid row lists them, ticked or
+  // not, so one unticked stays to tick again through a save (the saved revision no longer names it) and a step change (the
+  // row is drawn anew). A reload opens the form anew, with the agent's.
+  const [monidSeen, setMonidSeen] = useState<string[]>(() => (d?.tools ?? []).filter(isMonidName));
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<SaveProblem | null>(initialProblem);
@@ -415,7 +419,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   })}
                   {caps.mcp && !workflow && <li className="sm:col-span-2"><McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
                   {/* monid's endpoints, granted by name (a workflow's nodes bind none): each grant the agent has, and a field for another. */}
-                  {!workflow && <li className="sm:col-span-2"><MonidGrants tools={f.tools ?? []} listed={(d?.tools ?? []).filter(isMonidName)} notes={monidWarnings.map(({ grant, warning }) => ({ grant, message: warning.message }))} refused={monidRefused} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
+                  {!workflow && <li className="sm:col-span-2"><MonidGrants tools={f.tools ?? []} listed={monidSeen} notes={monidWarnings.map(({ grant, warning }) => ({ grant, message: warning.message }))} refused={monidRefused} onChange={(tools) => { setMonidSeen((seen) => [...new Set([...seen, ...tools.filter(isMonidName)])]); setToolsTouched(true); set({ tools }); }} /></li>}
                 </ul>
                 {/* Quiet, here only: an agent can be given no web tool on purpose (one that works on files). */}
                 {!workflow && !reachesWeb(f.tools ?? []) && (
