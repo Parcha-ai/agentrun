@@ -119,7 +119,10 @@ async function startWindowManager(
 			: bound.aborted
 				? fail("timeout", `the window manager (${manager}) did not start on ${desktop.display} within ${WM_BOUND_MS / 1000} s`)
 				: fail(code, message);
-	const started = await client.call("process.start", { argv: [...desktop.windowManager], env: { DISPLAY: desktop.display } }, { signal });
+	// NO_AT_BRIDGE: GTK (xfwm4's toolkit) asks its session bus for no accessibility bus. On E2B Desktop, which has
+	// at-spi2-core, that bus is an at-spi-bus-launcher and a socket of the user's under its home (~/.cache/at-spi/bus_0).
+	const env = { DISPLAY: desktop.display, NO_AT_BRIDGE: "1" };
+	const started = await client.call("process.start", { argv: [...desktop.windowManager], env }, { signal });
 	if (!started.ok) return stopped(started.error.code, `the window manager (${manager}) did not start on ${desktop.display}: ${started.error.message}`);
 	const { id } = started.value;
 	const waited = await client.call("process.wait", { id, timeoutMs: WM_SETTLE_MS }, { signal });
