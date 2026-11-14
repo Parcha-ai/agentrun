@@ -31,7 +31,7 @@ async function freshStore(revisionBody = { instructions: "Answer.", tools: [] })
   return store;
 }
 
-const deps = (over = {}) => ({ env: {}, runWorkspace: async () => null, runView: async () => undefined, withheld: async () => false, context: BACKGROUND_CONTEXT, ...over });
+const deps = (over = {}) => ({ env: {}, runWorkspace: async () => null, runFacts: async () => undefined, withheld: async () => false, context: BACKGROUND_CONTEXT, ...over });
 
 // ---- listRunFiles ---------------------------------------------------------------------------------------------------
 
@@ -127,7 +127,7 @@ test("runBrowserState is off when a kept browser plane is unavailable here now",
 test("runGraphView is 404 for an agentic run (only a workflow run has a graph)", async () => {
   const store = await freshStore();
   await assert.rejects(
-    () => runGraphView(store, "run-1", deps({ runView: async () => ({ kind: "agentic", status: "working", agent_id: "a1", revision: "r1", created_at: "2026-01-01T00:00:00.000Z", ended_at: null }) })),
+    () => runGraphView(store, "run-1", deps({ runFacts: async () => ({ kind: "agentic", status: "working", agentId: "a1", revision: "r1", createdAt: "2026-01-01T00:00:00.000Z", endedAt: null, unshown: false }) })),
     (e) => e.code === "not_found" && /only a workflow run has a graph/.test(e.message),
   );
 });
@@ -135,7 +135,7 @@ test("runGraphView is 404 for an agentic run (only a workflow run has a graph)",
 test("runGraphView refuses a run whose output is withheld (403)", async () => {
   const store = await freshStore();
   await assert.rejects(
-    () => runGraphView(store, "run-1", deps({ runView: async () => ({ kind: "workflow", status: "completed", agent_id: "a1", revision: "r1", created_at: "2026-01-01T00:00:00.000Z", ended_at: "2026-01-01T00:01:00.000Z" }), withheld: async () => true })),
+    () => runGraphView(store, "run-1", deps({ runFacts: async () => ({ kind: "workflow", status: "completed", agentId: "a1", revision: "r1", createdAt: "2026-01-01T00:00:00.000Z", endedAt: "2026-01-01T00:01:00.000Z", unshown: true }) })),
     (e) => e.code === "forbidden" && /nothing the run said is shown/.test(e.message),
   );
 });
@@ -143,7 +143,7 @@ test("runGraphView refuses a run whose output is withheld (403)", async () => {
 test("runGraphView is 404 for an unknown run", async () => {
   const store = await freshStore();
   await assert.rejects(
-    () => runGraphView(store, "run-x", deps({ runView: async () => undefined })),
+    () => runGraphView(store, "run-x", deps({ runFacts: async () => undefined })),
     (e) => e.code === "not_found",
   );
 });
@@ -167,6 +167,30 @@ test("a full read from after=0 resets with every row", async () => {
   assert.deepEqual(page.cost, { usd: 0.5 }, "the page carries the run's whole Cost object, not a bare number");
 });
 
+test("a page's status is never ahead of its rows: a commit that lands as the status is read is in the rows the page carries", async () => {
+  // The run's store as a parked call writes it: the call's row, then the park that makes the run wait. Here the park lands
+  // while the page reads the run's view, as a commit can between two reads.
+  const store = { rows: [row("e1", "You: add 2 and 3")], view: working };
+  const tl = runTimelines({
+    context: BACKGROUND_CONTEXT, pollMs: 5,
+    // The rows as the store holds them when the read starts (a read is a snapshot), answered a moment later.
+    timelineRows: async () => {
+      const held = store.rows;
+      await new Promise((resolve) => setImmediate(resolve));
+      return held;
+    },
+    runView: async () => {
+      store.rows = [...store.rows, row("e2", "add {a: 2, b: 3}")];
+      store.view = { ...working, status: "input_required", state: "waiting" };
+      return store.view;
+    },
+  });
+  const page = await tl.page({}, "run-1", 0, 0, 100);
+  assert.equal(page.status, "input_required");
+  assert.equal(page.has_more, false);
+  assert.deepEqual(page.rows.map((r) => r.id), ["e1", "e2"], "the waiting call's row comes with the waiting status");
+});
+
 test("a read from the cursor with no change is unchanged, no rows, no drops", async () => {
   const tl = timeline({ rows: [row("e1", "a"), row("e2", "b")], view: working });
   const first = await tl.page({}, "run-1", 0, 0, 100);
@@ -186,6 +210,23 @@ test("a new row after the cursor comes as a change, not a reset", async () => {
   assert.equal(next.reset, false);
   assert.equal(next.unchanged, false);
   assert.deepEqual(next.rows.map((r) => r.id), ["e2"]);
+});
+
+test("a page never reads working without the message row the view read it from: the view is read first, then the rows (#2307)", async () => {
+  // The run's message is committed between the page's two reads, whichever goes first: the first read sees the journal
+  // before it, the second after. A page whose status says working holds the message row the status was read from.
+  const message = { id: "e1", kind: "user_message", agent_label: null, summary: "Go.", text: "Go." };
+  const queued = { status: "queued", state: "working", cost: { usd: 0 }, poll_after_ms: 1000 };
+  let reads = 0;
+  let committed = false;
+  const read = () => {
+    const seen = committed;
+    if (++reads === 1) committed = true;
+    return seen;
+  };
+  const tl = runTimelines({ context: BACKGROUND_CONTEXT, pollMs: 5, timelineRows: async () => (read() ? [message] : []), runView: async () => (read() ? working : queued) });
+  const page = await tl.page({}, "run-1", 0, 0, 100);
+  assert.ok(page.status !== "working" || page.rows.some((one) => one.kind === "user_message"), `a working page holds the message row: ${page.status} ${JSON.stringify(page.rows.map((one) => one.kind))}`);
 });
 
 test("more changed rows than the limit sets has_more and returns the limit", async () => {

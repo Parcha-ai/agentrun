@@ -1,12 +1,18 @@
 import { Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
+import { FieldInput, FieldIssues } from "@/components/FieldInput";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { Picker } from "@/components/ui/picker";
 import { ToolBlockers } from "@/components/ToolBlockers";
 import { Button } from "@/components/ui/button";
+import { Input, Textarea } from "@/components/ui/field";
+import { capWords } from "@/components/NeedsYou";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
+import { agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues } from "@/lib/inputForm";
 import { exampleHint, exampleInput, keeper, startBody, submitStart } from "@/lib/runStart";
+import { type ParameterText, paramHelp } from "@/lib/templatePackages";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
@@ -18,18 +24,42 @@ type Sent = { status: number; runId?: string; problem?: Problem };
  *  retry of a refused or lost start is the same request; a started run opens on its page, and a refusal is said here.
  *  `blocked`: why no run can start here (a harness the server can't run): Run is off, and sends nothing. A start refused
  *  for a box this server lacks says so, and that the fix is where the agent runs, in its settings. Files picked here are
- *  sent at once and named by the run (`file_ids`); Run waits until each is sent. */
+ *  sent at once and named by the run (`file_ids`); Run waits until each is sent. "Run with your coding agent" hands the
+ *  same run, pinned to the agent's revision, to the person's Claude Code or Codex as a prompt to copy; it sends nothing.
+ *  An agentic agent's Spend cap box caps this run alone (`max_cost_usd`); empty sends none, so the agent's default cap
+ *  applies (its definition's `max_cost_usd`, shown as the placeholder). A workflow run takes no cap (the server refuses
+ *  one), so it has no box. A cap the server refuses (a 422 naming max_cost_usd) is said at the box, in the server's words.
+ *  An agentic agent with an input_schema takes its typed fields under the message (lib/inputForm.ts), and a refusal's
+ *  issue at one is said at that field. */
 export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendUpload }: { agent: Agent; efforts: string[]; v2: Client; go: (hash: string) => void; blocked?: string; limits?: UploadLimits; upload?: Upload }) {
   const workflow = agent.kind === "workflow";
-  const example = useMemo(() => (workflow ? exampleInput(agent.definition.workflow) : null), [workflow, agent.definition.workflow]);
+  // An agentic agent's input_schema: its fields under the message box (the message optional when the schema requires
+  // another field), or, for one the fields can't show, the whole input as JSON in the box, as a workflow's is.
+  const shape = useMemo(() => (workflow ? null : agentInputOf(agent.definition.input_schema)), [workflow, agent.definition.input_schema]);
+  const form = shape?.kind === "fields" ? shape.form : null;
+  const json = workflow || shape?.kind === "json";
+  const example = useMemo(() => (workflow ? exampleInput(agent.definition.workflow) : shape?.kind === "json" ? shape.example : null), [workflow, agent.definition.workflow, shape]);
   const [text, setText] = useState(example?.text ?? "");
+  const [values, setValues] = useState<ParameterText>(() => (form ? fieldStartText(form) : {}));
   const [effort, setEffort] = useState("");
+  const [cap, setCap] = useState("");
   const [problem, setProblem] = useState<Problem | null>(null);
   const keys = useMemo(() => keeper(), []);
   const [sending, setSending] = useState(false);
   // The files hold still while a start that names them is under way.
   const attachments = useAttachments({ upload, remove: v2.deleteUpload, limits, frozen: sending });
-  const built = startBody(agent.kind, { text, effort, fileIds: attachments.fileIds });
+  const built = startBody(agent.kind, { text, effort, maxCostUsd: cap, fileIds: attachments.fileIds,
+    ...(form ? { typed: { fields: fieldValues(form, values), contentRequired: form.contentRequired } } : {}), ...(shape?.kind === "json" ? { json: true } : {}) });
+  // A refusal's issue at one of the fields (input.<key>, or an item's input.<key>.<i>) is said there, not in the list.
+  const fieldKeys = new Set(form?.fields.map(([k]) => k) ?? []);
+  const atField = (f: FieldIssue) => { const k = fieldOfIssue(f.field); return k !== null && fieldKeys.has(k) ? k : null; };
+  // A field's value as typed or picked: an issue at it goes as soon as the value is one the server takes.
+  const setField = (key: string, f: FieldSpec, value: string) => {
+    setValues((was) => ({ ...was, [key]: value }));
+    if (fieldValid(f, value)) setProblem((p) => (p?.fields ? { ...p, fields: p.fields.filter((i) => atField(i) !== key) } : p));
+  };
+  // The agent's own default cap, which an empty box leaves in force.
+  const agentCap = typeof agent.definition.max_cost_usd === "number" ? agent.definition.max_cost_usd : null;
   const send = async (id: string, body: Parameters<Client["startRun"]>[1], key: string): Promise<Sent> => {
     try {
       const r = await v2.startRun(id, body, key);
@@ -55,35 +85,69 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
     if (r.runId) { attachments.clear(); go(`#/runs/${encodeURIComponent(r.runId)}`); }
     else setProblem(r.problem ?? { message: `The server answered ${r.status}.` });
   };
-  // A 422 names its fields; each one whose message says more than the refusal's is listed under it.
-  const more = (problem?.fields ?? []).filter((f) => f.message !== problem?.message);
+  // What is wrong with the cap: the box's own check, else the server's refusal of it. Said at the box, not again below.
+  const capIssue = !workflow ? (!built.ok && built.field === "max_cost_usd" ? built.message : problem?.fields?.find((f) => f.field === "max_cost_usd")?.message ?? null) : null;
+  // A 422 names its fields; each one whose message says more than the refusal's is listed under it (the cap's at its box).
+  const more = (problem?.fields ?? []).filter((f) => f.message !== problem?.message && !(capIssue && f.field === "max_cost_usd") && atField(f) === null);
+  const messageLabel = form ? (form.contentRequired ? "The run's message" : "The run's message (optional)") : "The run's first message";
   return (
     <section className="border-b px-5 py-4 max-sm:py-3 md:px-8" aria-label="Start a run">
       {/* On a phone the message box is one line (a workflow's JSON keeps its height), and the file button sits in the
           row with Effort and Run: the textarea and the controls come out of their box, so the three wrap as one row. */}
       <div data-phone-row className="max-sm:flex max-sm:flex-wrap max-sm:items-center max-sm:gap-x-2 max-sm:gap-y-2">
         <div className="flex flex-col gap-3 max-sm:contents lg:flex-row lg:items-start">
-          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={workflow ? 6 : 2} spellCheck={!workflow}
-            aria-label={workflow ? "The run's input, as JSON" : "The run's first message"}
-            placeholder={workflow ? "The workflow's input, as JSON" : "The run's first message"}
+          <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={json ? 6 : 2} spellCheck={!json}
+            aria-label={json ? "The run's input, as JSON" : messageLabel}
+            placeholder={workflow ? "The workflow's input, as JSON" : json ? "The agent's input, as JSON" : messageLabel}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void start(); } }}
-            className={cn("min-w-0 flex-1 resize-y border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong max-sm:order-first max-sm:basis-full", workflow ? "leading-[1.6]" : "max-sm:h-10")} />
-          <div className="flex shrink-0 items-center gap-3 max-sm:order-last max-sm:gap-2">
+            className={cn("min-w-0 flex-1 resize-y max-sm:order-first max-sm:basis-full", json ? "leading-[1.6]" : "max-sm:h-10")} />
+          <div data-controls className="flex items-center gap-3 max-sm:order-last max-sm:min-w-0 max-sm:max-w-full max-sm:flex-wrap max-sm:gap-2 sm:shrink-0">
             {efforts.length > 0 && (
               <div className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
-                <span className="flex flex-col leading-tight"><label htmlFor="runbar-effort" className="caps text-[11px] text-muted-foreground">Effort</label><span className="text-[11px] text-muted-foreground max-sm:hidden">How hard the model thinks</span></span>
+                <span className="flex flex-col leading-tight"><label htmlFor="runbar-effort" className="caps text-label text-muted-foreground">Effort</label><span className="text-label text-muted-foreground max-sm:hidden">How hard the model thinks</span></span>
                 <Picker id="runbar-effort" label="Effort" value={effort} onChange={setEffort} className="w-32" options={["", ...efforts].map((e) => ({ value: e, label: e || "default" }))} />
+              </div>
+            )}
+            {!workflow && (
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2" title={agentCap !== null ? `This run's spend cap in US dollars. Empty uses the agent's default, ${capWords(agentCap)}.` : "This run's spend cap in US dollars. Empty runs it with no cap."}>
+                  <span className="flex flex-col leading-tight"><label htmlFor="runbar-cap" className="caps text-label text-muted-foreground">Spend cap</label><span className="text-label text-muted-foreground max-sm:hidden">This run, US dollars</span></span>
+                  <Input id="runbar-cap" value={cap} onChange={(e) => { setCap(e.target.value); if (problem?.fields?.some((f) => f.field === "max_cost_usd")) setProblem(null); }} inputMode="decimal" aria-label="Spend cap"
+                    aria-invalid={capIssue ? true : undefined} placeholder={agentCap !== null ? capWords(agentCap) : "none"} className="w-24" />
+                </div>
+                {capIssue && <p className="mt-1 max-w-[16rem] font-mono text-label text-destructive-text" role="alert" data-issue="max_cost_usd">{capIssue}</p>}
               </div>
             )}
             <Button variant="solid" onClick={() => void start()} disabled={!built.ok || sending || !!blocked || attachments.busy} title={blocked ?? (attachments.busy ? "Waiting for the files to be sent" : undefined)}><Play aria-hidden /> {sending ? "Starting" : "Run"}</Button>
           </div>
         </div>
-        <div className="mt-3 max-sm:mt-0"><FilePicker attachments={attachments} limits={limits} disabled={!!blocked} compact /></div>
+        {/* The agent's typed input fields, drawn as a template's parameters are; a refusal's issue at one is said under it. */}
+        {form && (
+          <div role="group" aria-label="The run's input" className="mt-3 grid gap-3 max-sm:mt-0 max-sm:basis-full md:grid-cols-2">
+            {form.fields.map(([key, f]) => (
+              <div key={key} data-field={`input.${key}`}>
+                <FieldInput field={f} label={fieldLabel(key, f)} help={paramHelp(f)} value={values[key] ?? ""} typedInput onChange={(v) => setField(key, f, v)} />
+                <FieldIssues issues={(problem?.fields ?? []).filter((i) => atField(i) === key)} words={(i) => fieldIssueWords(i, key, f)} />
+              </div>
+            ))}
+          </div>
+        )}
+        {/* Beside the files, the same run handed to the person's coding agent: its input and effort as typed when pressed. A
+            coding agent works on a computer, and a phone's run row keeps Attach, Effort and Run on one line: under 640 px
+            it is not shown. Files attached here are uploads for this page's run, deleted when it is left, so the handoff
+            is off while any are attached rather than hand over a run without them. */}
+        <div className="mt-3 flex flex-wrap items-center gap-2 max-sm:mt-0">
+          <div className="min-w-0 flex-1"><FilePicker attachments={attachments} limits={limits} disabled={!!blocked} compact /></div>
+          <CodingAgentHandoff label="Run with your coding agent" className="max-sm:hidden"
+            unavailable={attachments.items.length ? "Remove the attached files first: they are for a run started here, and are deleted when you leave this page. Your coding agent uploads its own."
+              : !built.ok && built.field === "max_cost_usd" && cap.trim() ? "Fix the spend cap first: the handoff carries it, and a cap that is not a positive number of dollars cannot be handed over." : undefined}
+            context={() => ({ kind: "run", agentId: agent.agent_id, revision: agent.revision, ...(built.ok ? { input: built.body.input } : {}), ...(effort ? { effort } : {}), ...(built.ok && built.body.max_cost_usd !== undefined ? { maxCostUsd: built.body.max_cost_usd } : {}) })} />
+        </div>
       </div>
-      {example && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{exampleHint(example, "run")}</p>}
-      {!built.ok && text.trim() && <p className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{built.message}</p>}
+      {example && <p className="mt-2 font-mono text-label text-muted-foreground">{exampleHint(example, "run", workflow ? "workflow" : "agent")}</p>}
+      {!built.ok && built.field !== "max_cost_usd" && text.trim() && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{built.message}</p>}
       {problem && (
-        <div className="mt-3 border border-destructive/50 bg-destructive/10 px-3 py-2 font-mono text-[12px] text-destructive-text" role="alert">
+        <div className="mt-3 border border-destructive/50 bg-destructive/10 px-3 py-2 font-mono text-small text-destructive-text" role="alert">
           <p>The run did not start: {problem.message}</p>
           {problem.box && <p className="mt-1">This server can't run the {problem.box} box this agent runs in: change where it runs in its settings.</p>}
           <ToolBlockers agentId={agent.agent_id} details={problem.details} />

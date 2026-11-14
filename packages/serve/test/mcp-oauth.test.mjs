@@ -17,8 +17,9 @@ import { mcpClaim } from "../dist/runner/mcp-claim.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
-import { agent, clientOwnerSession, follow, scratch, serve, storeBytes, withEnv } from "./support.mjs";
+import { agent, clientOwnerSession, follow, retried, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { storeOn as newStore } from "./store-helpers.mjs";
+import { withToolSearch } from "./fixtures/claude-tool-search.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
@@ -87,21 +88,21 @@ function runnerStoreOf(t, data) {
   return store;
 }
 
-/** A run's launch on the runner (it replaces the file registry's headersForRun): a fresh run of an agent granted
+/** A run's launch on the runner: a fresh run of an agent granted
  *  mcp:<server>/add, started through the API on a server whose runner is off, claimed on the server's own store and run
  *  through the runner's MCP claim step (runner/mcp-claim.ts mcpClaim) under seal key `key`. Answers the step and its
  *  entry for `server`: `{ url, headers }`, or `{ url, unopened }` with why it does not open. `store`: the handle the
  *  launch claims on (the server's own store by default); `when` waits on what its MCP calls leave (watchOf). */
 async function launchOn(t, { api, data }, key, { server = "docs", now, bounds, signal, store: on } = {}) {
   const agentId = `launch-${randomBytes(4).toString("hex")}`;
-  assert.equal((await api("POST", "/agents", agent(agentId, { tools: [`mcp:${server}/add`] }))).status, 201);
-  const made = await api("POST", `/agents/${agentId}/runs`, { input: { content: "go" } });
+  assert.equal((await retried(api)("POST", "/agents",agent(agentId, { tools: [`mcp:${server}/add`] }))).status, 201);
+  const made = await retried(api)("POST", `/agents/${agentId}/runs`,{ input: { content: "go" } });
   assert.equal(made.status, 202, JSON.stringify(made.body));
   const store = on ?? (await runnerStoreOf(t, data));
   const claim = await store.claim(made.body.run_id, "launch-test", { leaseMs: 60_000 });
   assert.ok(claim, "the run is claimed");
   const { store: watched, when } = watchOf(store);
-  const step = await mcpClaim({ store: watched, claim, grants: [`mcp:${server}/add`], sealKey: key ? Buffer.from(key, "base64") : undefined, signal: signal ?? new AbortController().signal, ...(now ? { now } : {}), ...(bounds ? { bounds } : {}) });
+  const step = await mcpClaim({ loopback: true, store: watched, claim, grants: [`mcp:${server}/add`], sealKey: key ? Buffer.from(key, "base64") : undefined, signal: signal ?? new AbortController().signal, ...(now ? { now } : {}), ...(bounds ? { bounds } : {}) });
   t.after(() => step.release());
   return { step, entry: step.credentials[server], store, when };
 }
@@ -311,12 +312,13 @@ test("CIMD only on a public https address: the client id is this server's metada
   const key = sealKey();
   const { as, mcp } = await fakes(t, { cimd: true });
   const store = await registry(t, key);
-  store.attach("https://agents.example.com", "https://agents.example.com");
+  // Offered from a public https address, as a local install behind its own https name: the MCP fake is on loopback.
+  store.attach("https://agents.example.com", "https://agents.example.com", true);
   const pub = new URL((await store.oauthStart("docs", { url: mcp.url })).authorization_url);
   assert.equal(pub.searchParams.get("client_id"), "https://agents.example.com/v2/settings/mcp-servers/oauth/client.json");
   assert.equal(pub.searchParams.get("redirect_uri"), `https://agents.example.com${CALLBACK}`);
   assert.ok(!as.log.some((entry) => entry.path === "/register"), "no registration with a metadata document");
-  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321"); // key-gate: denylist this server's own loopback address in a test, never an endpoint
+  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321", true); // key-gate: denylist this server's own loopback address in a test, never an endpoint
   const local = new URL((await store.oauthStart("docs", { url: mcp.url })).authorization_url);
   assert.notEqual(local.searchParams.get("client_id"), "https://agents.example.com/v2/settings/mcp-servers/oauth/client.json");
   assert.ok(as.log.some((entry) => entry.path === "/register"), "on loopback http it registers instead");
@@ -336,8 +338,8 @@ test("CIMD only on a public https address: the client id is this server's metada
 test("a run's launch refreshes a token near its expiry, once for launches at the same time; a refused refresh reads expired", { timeout: 60_000 }, async (t) => {
   const key = sealKey();
   withEnv(t, { AGENTRUN_SEAL_KEY: key });
-  // Ported from the file registry's headersForRun to the runner's claim step over the server's own store (the switch):
-  // the same behaviour, read where a run's launch reads it now. No runner of the server's: the test's launches are it.
+  // The runner's claim step over the server's own store, where a run's launch reads its credential. No runner of the
+  // server's: the test's launches are it.
   const server = await serve(t, { runner: false });
   const { api, data } = server;
   const { as, mcp } = await fakes(t, { expiresIn: 60 });
@@ -410,11 +412,11 @@ test("a run (server constructor): its launch refreshes an expired token and the 
   const { as, mcp } = await fakes(t, { expiresIn: 0 });
   const started = await api("POST", `/settings/mcp-servers/${name}/oauth/start`, { url: mcp.url });
   assert.equal((await approve(started)).status, 302);
-  assert.equal((await api("POST", "/agents", agent("adder", { tools: [`mcp:${name}/add`] }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("adder", { tools: [`mcp:${name}/add`] }))).status, 201);
   // Its calls allowed, so they run with no one asked (the gate's own cases are in mcp-gate-wired.test.mjs and below).
   assert.equal((await api("PUT", "/settings/tools", { [`mcp:${name}/*`]: { permission: "allow" } })).status, 200);
   const run = async () => {
-    const made = await api("POST", "/agents/adder/runs", { input: { content: `Call mcp__${name}__add with {"a":2,"b":3}` } });
+    const made = await retried(api)("POST", "/agents/adder/runs", { input: { content: `Call mcp__${name}__add with {"a":2,"b":3}` } });
     assert.equal(made.status, 202, JSON.stringify(made.body));
     await follow(api, made.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
     return (await api("GET", `/runs/${made.body.run_id}`)).body.result?.final_answer;
@@ -532,7 +534,7 @@ async function registry(t, key, network) {
 /** The registry reaching the network `net`, under seal key `key`, attached at a loopback address of its own. */
 async function storeOn(t, key, net) {
   const store = await registry(t, key, net.network);
-  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321"); // key-gate: denylist this server's own loopback address in a test, never an endpoint
+  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321", true); // key-gate: denylist this server's own loopback address in a test, never an endpoint
   return store;
 }
 
@@ -648,7 +650,8 @@ test("the default network dials the address it is given, whatever the name: a na
 async function harnessServe(t, harness) {
   if (harness === "pi") return { server: await serve(t, { faux: FAUX_MCP }), extra: {}, content: 'Call mcp__docs__add with {"a":2,"b":3}' };
   if (harness === "claude-agent") {
-    const anthropic = await fakeAnthropic({ reply: (request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__docs__add") ? { tool: { name: "mcp__docs__add", input: { a: 2, b: 3 } } } : { text: "Noted." }) });
+    // The MCP tool is deferred behind the CLI's ToolSearch: the model finds it first (withToolSearch).
+    const anthropic = await fakeAnthropic({ reply: withToolSearch((request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__hands__mcp__docs__add") ? { tool: { name: "mcp__hands__mcp__docs__add", input: { a: 2, b: 3 } } } : { text: "Noted." })) });
     t.after(() => anthropic.close());
     withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL"]);
     return { server: await serve(t, { faux: undefined }), extra: { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }, content: "Add 2 and 3 with the add tool." };
@@ -672,7 +675,7 @@ async function harnessServe(t, harness) {
     AGENT_MODEL: "gpt-test",
     AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
   }, ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
-  return { server: await serve(t, { faux: undefined }), extra: { harness: "codex" }, content: 'mcp docs add {"a":2,"b":3}' };
+  return { server: await serve(t, { faux: undefined }), extra: { harness: "codex" }, content: 'call mcp_docs__add {"a":2,"b":3}' };
 }
 
 /** A run on `harness` whose sign-in's refresh is refused at its launch: started, followed to its end, and read back: its
@@ -684,10 +687,10 @@ async function refusedAtLaunch(t, harness) {
   const { as, mcp } = await fakes(t, { expiresIn: 0 });
   const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
   assert.equal((await approve(started)).status, 302);
-  assert.equal((await api("POST", "/agents", agent(`expired-${harness}`, { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } }, ...extra }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent(`expired-${harness}`, { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } }, ...extra }))).status, 201);
   as.revoke();
   const before = mcp.log.length;
-  const made = await api("POST", `/agents/expired-${harness}/runs`, { input: { content } });
+  const made = await retried(api)("POST", `/agents/expired-${harness}/runs`,{ input: { content } });
   assert.equal(made.status, 202, JSON.stringify(made.body));
   const { last } = await follow(api, made.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
   const view = (await api("GET", `/runs/${made.body.run_id}`)).body;
@@ -719,11 +722,9 @@ for (const harness of ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent
   });
 }
 
-// The same runs' view: a CLI run's final answer is its record's last model message. Skipped (E2v3: CLI run view over the
-// store) while the switch's run view renders only pi's entries (store-reads/journal.ts runTimeline: timelineOf, not the
-// loop's CLI record); they flip by name when it lands.
+// The same runs' view: a CLI run's final answer is its record's last model message.
 for (const harness of [...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : []), "codex"]) {
-  test(`${harness}: a sign-in whose refresh is refused at launch: the run view's final answer says to sign in again`, { timeout: 240_000, skip: "E2v3: CLI run view over the store" }, async (t) => {
+  test(`${harness}: a sign-in whose refresh is refused at launch: the run view's final answer says to sign in again`, { timeout: 240_000 }, async (t) => {
     const { last, view } = await refusedAtLaunch(t, harness);
     assert.equal(last.status, "completed", JSON.stringify(view.error ?? view.result));
     assert.ok((view.result?.final_answer ?? "").includes(SIGN_IN_AGAIN_WORDS), JSON.stringify(view.result));
@@ -808,11 +809,11 @@ for (const down of ["503", "timeout"]) {
     const { as, mcp } = await fakes(t, { expiresIn: 0 });
     const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
     assert.equal((await approve(started)).status, 302);
-    assert.equal((await api("POST", "/agents", agent("adder", { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
+    assert.equal((await retried(api)("POST", "/agents",agent("adder", { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
     if (down === "503") as.fail(503);
     else as.hang();
     const run = async () => {
-      const made = await api("POST", "/agents/adder/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+      const made = await retried(api)("POST", "/agents/adder/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
       assert.equal(made.status, 202, JSON.stringify(made.body));
       await follow(api, made.body.run_id, ["completed", "failed"], { deadlineMs: 150_000 });
       return (await api("GET", `/runs/${made.body.run_id}`)).body.result?.final_answer ?? "";
@@ -835,7 +836,7 @@ for (const down of ["503", "timeout"]) {
   });
 }
 
-// moved: covered by test/store-mcp-claim.test.mjs#M11: with no seal key, a server's calls are refused in noSealKey's words, and no refresh is sent
+// moved: a runner never starts without its seal key (seal-key.test.mjs "no seal key and nowhere to keep one: refused in words, never a start without one"), so no claim runs keyless
 
 
 test("a sign-in whose endpoint's name lookup outlives the request's time says that endpoint could not be reached, and why", { timeout: 120_000 }, async (t) => {
@@ -844,11 +845,21 @@ test("a sign-in whose endpoint's name lookup outlives the request's time says th
   // has other work: this test keeps the process up meanwhile).
   const up = setInterval(() => {}, 1_000);
   t.after(() => clearInterval(up));
-  const net = { network: { lookup: () => new Promise(() => {}), fetch: async () => new Response("", { status: 404 }) } };
+  // The MCP server's own address check is answered (a public address); every lookup after it, its sign-in's endpoints',
+  // never is.
+  let lookups = 0;
+  const net = { network: { lookup: () => (lookups++ === 0 ? Promise.resolve(["192.0.2.10"]) : new Promise(() => {})), fetch: async () => new Response("", { status: 404 }) } };
   const store = await storeOn(t, key, net);
   await assert.rejects(store.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => {
     assert.equal(error.code, "upstream_failed");
     assert.match(error.message, /its authorization server's endpoint https:\/\/mcp\.example\.test\/\S+ could not be reached \(DNS lookup timed out\)\.$/);
+    return true;
+  });
+  // The server's own name never answers: its address check says so, and nothing is sent.
+  const hung = await storeOn(t, key, { network: { lookup: () => new Promise(() => {}), fetch: async () => assert.fail("nothing is sent") } });
+  await assert.rejects(hung.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => {
+    assert.equal(error.code, "upstream_failed");
+    assert.match(error.message, /^Could not reach the MCP server at https:\/\/mcp\.example\.test \(DNS lookup timed out after \d+ s\)\.$/);
     return true;
   });
 });
@@ -875,7 +886,7 @@ test("a loopback MCP server's authorization server may use only the MCP server's
       const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
       t.after(() => mcp.close());
       const store = await registry(t, key, net.network);
-      store.attach(own.origin, own.origin);
+      store.attach(own.origin, own.origin, true);
       await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), `${what} at ${at.origin}`);
     }
     assert.deepEqual(at.hits, [], `${at.origin} heard nothing`);
@@ -885,7 +896,7 @@ test("a loopback MCP server's authorization server may use only the MCP server's
   // The MCP server's own loopback host, on another port (its authorization server's), still signs in: the repo's fake.
   const { mcp } = await fakes(t);
   const store = await registry(t, key, net.network);
-  store.attach(own.origin, own.origin);
+  store.attach(own.origin, own.origin, true);
   assert.match((await store.oauthStart("docs", { url: mcp.url })).authorization_url, /^http:\/\/127\.0\.0\.1:\d+\/authorize\?/);
 });
 
@@ -899,14 +910,14 @@ test("with a public address for browsers, this server's own listening port is st
     const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
     t.after(() => mcp.close());
     const store = await registry(t, key, net.network);
-    store.attach("https://agents.example.test", listening.origin);
+    store.attach("https://agents.example.test", listening.origin, true);
     await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), what);
   }
   assert.deepEqual(listening.hits, [], "the listening port heard nothing");
   assert.deepEqual(sent, [], "nothing was sent off loopback");
   const { mcp } = await fakes(t);
   const store = await registry(t, key, net.network);
-  store.attach("https://agents.example.test", listening.origin);
+  store.attach("https://agents.example.test", listening.origin, true);
   const started = new URL((await store.oauthStart("docs", { url: mcp.url })).authorization_url);
   assert.equal(started.searchParams.get("redirect_uri"), `https://agents.example.test${CALLBACK}`, "the browser still comes back at the public address");
 });
@@ -923,7 +934,7 @@ test("with a LOOPBACK public address (a local https proxy in front of the listen
     const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
     t.after(() => mcp.close());
     const store = await registry(t, key, net.network);
-    store.attach(proxy.origin, listener.origin);
+    store.attach(proxy.origin, listener.origin, true);
     await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), what);
   }
   assert.deepEqual(proxy.hits, [], "the public (proxy) port heard nothing");

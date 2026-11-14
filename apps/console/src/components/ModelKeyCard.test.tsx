@@ -55,7 +55,7 @@ describe("ModelKeyCard", () => {
   it("offers the model keys only, saves the one picked through its own route, and keeps no typed value", async () => {
     const { v2, calls } = server();
     let saved = 0;
-    const card = await open({ needs: "key", atRest: "sealed", onSaved: () => { saved++; } }, v2);
+    const card = await open({ needs: "key", onSaved: () => { saved++; } }, v2);
     expect(card.host.textContent).toContain("Add a model key to run agents");
     expect(card.host.textContent).toContain("We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone.");
     const offered = [...card.host.querySelectorAll('[role="group"][aria-label="Provider"] button')].map((b) => b.textContent);
@@ -75,20 +75,20 @@ describe("ModelKeyCard", () => {
   // server's own model wins), so the card offers that provider's key alone, and names the model.
   it("when the server's default model names a provider with no key, offers that provider's key alone, and names the model", async () => {
     const { v2 } = server();
-    const card = await open({ needs: "key", model: "anthropic/claude-sonnet-5-5", atRest: "sealed" }, v2);
+    const card = await open({ needs: "key", model: "anthropic/claude-sonnet-5-5" }, v2);
     const offered = [...card.host.querySelectorAll('[role="group"][aria-label="Provider"] button')].map((b) => b.textContent);
     expect(offered).toEqual(["Anthropic"]);
     expect(card.host.textContent).toContain("anthropic/claude-sonnet-5-5");
     // Only that provider's key runs the default, so the card recommends no other.
     expect(card.host.textContent).not.toContain("We recommend an OpenRouter key");
-    const any = await (async () => { act(() => root!.unmount()); root = undefined; return open({ needs: "key", model: null, atRest: "sealed" }, v2); })();
+    const any = await (async () => { act(() => root!.unmount()); root = undefined; return open({ needs: "key", model: null }, v2); })();
     expect([...any.host.querySelectorAll('[role="group"][aria-label="Provider"] button')].map((b) => b.textContent)).toEqual(["Anthropic", "OpenAI", "OpenRouter"]);
   });
 
   it("shows a refused save and calls nothing saved", async () => {
     const { v2 } = server(() => json(500, { error: { code: "internal", message: "the disk is full", retryable: true } }));
     let saved = 0;
-    const card = await open({ needs: "key", atRest: "sealed", onSaved: () => { saved++; } }, v2);
+    const card = await open({ needs: "key", onSaved: () => { saved++; } }, v2);
     await card.click(/^OpenAI$/);
     await card.type("OPENAI_API_KEY", FAKE);
     await card.click(/^Save$/);
@@ -98,18 +98,9 @@ describe("ModelKeyCard", () => {
     expect(card.host.innerHTML).not.toContain(FAKE);
   });
 
-  it("on a server that can't store keys, names where to set them and offers no form", async () => {
-    const { v2 } = server();
-    const card = await open({ needs: "key", atRest: "unavailable" }, v2);
-    expect(card.host.textContent).toContain("This server can't store keys");
-    expect(card.host.textContent).toContain("ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY");
-    expect(card.host.textContent).not.toContain("PARALLEL_API_KEY");
-    expect(card.button(/^Anthropic$/)).toBeUndefined();
-  });
-
   it("when the server's own default model is the problem, says so and offers no key", async () => {
     const { v2, calls } = server();
-    const card = await open({ needs: "model", atRest: "sealed" }, v2);
+    const card = await open({ needs: "model" }, v2);
     expect(card.host.textContent).toContain("AGENT_MODEL names a model it doesn't know");
     expect(card.button(/^Anthropic$/)).toBeUndefined();
     expect(calls).toEqual([]);

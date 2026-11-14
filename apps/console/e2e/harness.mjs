@@ -94,8 +94,9 @@ export async function startServer({ env = {}, faux = "faux-model.mjs", fauxBrows
   try {
     const [, baseUrl] = await line(/^agentrun-serve on (http:\/\/127\.0\.0\.1:\d+\/v2)\b/);
     const server = { baseUrl, origin: baseUrl.replace(/\/v2$/, ""), line, log: () => lines.map(redact).join("\n"), stop };
-    // At a public URL, setup takes the code in the link the server prints; kept in memory, never shown.
-    if (env.AGENTRUN_PUBLIC_URL) server.setupCode = async () => (await line(/\/setup#code=([^&\s]+)/))[1];
+    // At a public URL (AGENTRUN_PUBLIC_URL, or on Render its RENDER_EXTERNAL_URL), setup takes the code in the link the
+    // server prints; kept in memory, never shown.
+    if (env.AGENTRUN_PUBLIC_URL || env.RENDER_EXTERNAL_URL) server.setupCode = async () => (await line(/\/setup#code=([^&\s]+)/))[1];
     return server;
   } catch (error) {
     await stop();
@@ -172,19 +173,39 @@ export async function launchBrowser() {
   return chromium.launch({ executablePath, headless: true });
 }
 
-/** A browser context for one flow: only the server's own origin (and data:/blob:) is reached. Any other request is
- *  aborted and recorded in `blocked`, except hosts a flow stubs itself (`allow`: a host name it routes, e.g. github.com). */
+/** The one address the console asks outside its origin: a provider's icon on Settings → Keys, from Google's favicon
+ *  service (ProviderIcon.tsx). Answered here with a 1 by 1 PNG, so no flow reaches the network and the page shows an
+ *  icon; recorded in `icons` so a flow can say what was asked. Any other path on that host is blocked like the rest. */
+const ICON = { origin: "https://www.google.com", path: "/s2/favicons" };
+const PIXEL = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==", "base64");
+
+/** A browser context for one flow: only the server's own origin (and data:/blob:) is reached, and a provider's icon is
+ *  answered here (ICON). Any other request is aborted and recorded in `blocked`, except hosts a flow stubs itself
+ *  (`allow`: a host name it routes, e.g. github.com). */
 export async function newContext(browser, origin, { allow = [] } = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  const blocked = [];
+  const blocked = [], icons = [];
   const own = new URL(origin).host;
   await context.route("**/*", (route) => {
     const url = new URL(route.request().url());
+    if (url.origin === ICON.origin && url.pathname === ICON.path && route.request().method() === "GET") {
+      icons.push({ site: url.searchParams.get("domain"), referer: route.request().headers().referer ?? null });
+      return route.fulfill({ status: 200, contentType: "image/png", body: PIXEL });
+    }
     if (url.protocol === "data:" || url.protocol === "blob:" || url.host === own || allow.includes(url.hostname)) return route.fallback();
     blocked.push(`${route.request().method()} ${url.origin}${url.pathname}`);
     return route.abort();
   });
-  return { context, blocked };
+  return { context, blocked, icons };
+}
+
+/** The server's own answer to a GET a flow routes (to change it before the page gets it): `route.fetch`, sent once more
+ *  on a connection reset only. Playwright sends it over a kept-alive socket with no idle timer of its own, and the server
+ *  closes a socket idle 5 s (+1 s): a request sent just as that timer is due, while the server is busy, finds its
+ *  socket closed with the request unread (ECONNRESET, "socket hang up"). Chrome sends such a request again by itself;
+ *  route.fetch does not unless asked. Only for an idempotent GET. */
+export function serverAnswer(route) {
+  return route.fetch({ maxRetries: 1 });
 }
 
 /** A page that records what went wrong in it: uncaught errors and console errors. */
@@ -222,4 +243,21 @@ export async function signedIn(page) {
 /** Throws with `what` unless `ok`. */
 export function check(ok, what) {
   if (!ok) throw new Error(what);
+}
+
+/** The "Example data" badge on a shot a person sees outside a test (a PR, a doc, a README): drawn into the page by the
+ *  shooting step, in a strip of its own at the top of `box` (a locator) so it never covers the card's words at 390 px, and
+ *  on the picture itself, never only in a caption. Not product code: the console never draws it. Idempotent. */
+export async function markExample(box) {
+  await box.evaluate((el) => {
+    if (el.querySelector("[data-example-badge]")) return;
+    const row = document.createElement("div");
+    row.setAttribute("data-example-badge", "");
+    row.style.cssText = "display:flex;justify-content:flex-end;padding:6px 8px 0";
+    const badge = document.createElement("span");
+    badge.textContent = "Example data";
+    badge.style.cssText = "font:600 12px/16px ui-monospace,monospace;letter-spacing:.04em;text-transform:uppercase;padding:2px 8px;border:1px solid currentColor;background:#fff7d6;color:#7a4b00";
+    row.append(badge);
+    el.prepend(row);
+  });
 }

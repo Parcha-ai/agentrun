@@ -1,16 +1,17 @@
 // A fake provider of desktops and phones whose computers are records in memory, each answered in process by a
 // ComputerClient, as a provider with daemon none answers: files in a map, a screen that paints the desktop fixture's
-// window, input.actions that log to the running fixture's log as the fixture would, apps, a UI tree, extend and stream.
-// `broken` names one behavior that is wrong, so each case of the extension is seen to fail. No Docker, no daemon, no X
-// server, no phone.
+// window, input.actions that log to the running fixture's log as the fixture would, apps, the ui group (the real
+// UiEngine over the phone's scene), extend and stream. `broken` names one behavior that is wrong, so each case of the
+// extension is seen to fail. No Docker, no daemon, no X server, no phone.
 import { deflateSync } from "node:zlib";
-import { checkActions, checkLifetime, daemonWatch, FIXTURE_APP_ID, FIXTURE_BUTTON, FIXTURE_COLORS, FIXTURE_WINDOW, fixtureAppLog } from "../dist/index.js";
+import { checkActions, checkGpu, checkLifetime, daemonWatch, FIXTURE_APP_ID, FIXTURE_BUTTON, FIXTURE_COLORS, FIXTURE_WINDOW, fixtureAppLog, UiEngine } from "../dist/index.js";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 
 const ok = (value) => ({ ok: true, value });
 const fail = (code, message) => ({ ok: false, error: { code, message } });
 
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
-const ANDROID_GROUPS = ["files", "screen", "input.touch", "apps", "apps.install", "apps.ui_tree"];
+const ANDROID_GROUPS = ["files", "screen", "input.touch", "apps", "apps.install", "ui"];
 const BACKGROUND = [40, 40, 40];
 /** A phone's stock Settings app, and the color its screen is while it is in front. */
 const SETTINGS_APP = "com.android.settings";
@@ -71,12 +72,15 @@ const shift = ([x, y], dx, dy = 0) => [x + dx, y + dy];
 /**
  * The provider, and `made` (each computer's name and spec). Options: `kind` (desktop or android), `mode` (its daemon),
  * `groups`, `network`, `hello` (merged over the hello), `extend` and `stream` (whether those methods are there),
- * `maxLifetimeMs`, `chunk` (bytes a screen.shot or screen.read gives), and `broken`, one of: no-cap, screen-size,
+ * `maxLifetimeMs`, `chunk` (bytes a screen.shot or screen.read gives), `stockApps` (the ids of a desktop's apps), and
+ * `broken`, one of: no-cap, screen-size,
  * screen-region, screen-colors, screen-no-idat, screen-corrupt-idat, screen-region-corrupt, click-offset, type-case,
- * no-precheck, no-stop, no-release, tap-offset, swipe-stuck, pinch-together, terminate-stays, tree-types, extend-noop,
- * extend-past-cap, extend-per-call, extend-shortens, stream-http, fixture-never-ready, screen-huge-size, screen-endless,
- * launch-hidden (apps.list says Settings is in front, and neither the screen nor the tree shows it), watch-stale,
- * watch-size, watch-no-cursor, watch-corrupt-png and watch-corrupt-jpeg (screen.watch's).
+ * no-precheck, no-stop, no-release, tap-offset, swipe-stuck, pinch-together, terminate-stays, ui-role (ui.observe gives
+ * the fixture's button its platform class as its role), extend-noop, extend-past-cap, extend-per-call,
+ * extend-shortens, stream-http, fixture-never-ready, screen-huge-size, screen-endless,
+ * launch-hidden (apps.list says Settings is in front, and neither the screen nor ui.observe shows it), watch-stale,
+ * watch-size, watch-no-cursor, watch-corrupt-png and watch-corrupt-jpeg (screen.watch's), and capture-off-answers (a
+ * hello whose screen.capture is off, and screen.shot and screen.watch answered anyway).
  * `createMs` is how long each create takes on the clock, in turn (the last for every create after): a host slow to
  * start a computer. The lifetime counts from create's start, and a computer whose deadline passed before create
  * finished fails it as Docker's does, timeout.
@@ -123,6 +127,7 @@ export function fakeDevices({
 	maxLifetimeMs = 2 * 60 * 60_000,
 	createMs = [0],
 	chunk = 4096,
+	stockApps = [],
 	broken,
 } = {}) {
 	const os = kind === "desktop" ? "linux" : kind;
@@ -207,8 +212,58 @@ export function fakeDevices({
 			return undefined;
 		};
 
+		/**
+		 * The phone's window as the ui group's source sees it, in points (this phone's scale is 1, so points are pixels):
+		 * Settings' list with its rows, or the fixture's button. A step is a tap or typing through run(), the phone's own
+		 * input, so only a call that allows the foreground route takes one.
+		 */
+		const uiSource = {
+			features: () => ({
+				"ui.tree": true,
+				"ui.foreground": true,
+				"ui.background": { off: "the fake phone takes input only as its own" },
+				"ui.image": { off: "the fake phone sends no window image" },
+				"ui.nav": { off: "the fake phone has no nav step" },
+			}),
+			async look() {
+				const app = c.foreground ?? "launcher";
+				const window = [0, 0, width, height];
+				const elements = [{ key: "root", role: "generic", bounds: window }];
+				const click = ["ACTION_CLICK"];
+				if (settingsShown()) {
+					elements.push({ key: "list", role: "scrollarea", bounds: [0, 100, width, 200], parent: "root", actions: ["ACTION_SCROLL_FORWARD", "ACTION_SCROLL_BACKWARD"] });
+					for (const [text, y] of [["Network & internet", 110], ["Display", 160]]) {
+						elements.push({ key: `row:${text}`, role: "button", name: text, bounds: [0, y, width, 40], parent: "list", actions: click });
+						elements.push({ key: `title:${text}`, role: "text", name: text, bounds: [10, y + 10, 200, 20], parent: `row:${text}` });
+					}
+				} else if (c.foreground === FIXTURE_APP_ID) {
+					// Broken ui-role: the role is the platform's class, not one of the protocol's roles.
+					const role = broken === "ui-role" ? "android.widget.Button" : "button";
+					elements.push({ key: "button", role, name: FIXTURE_BUTTON.text, id: FIXTURE_BUTTON.id, bounds: [20, 40, 200, 60], parent: "root", actions: click });
+				}
+				return ok({ app: { id: app, name: app }, window: { id: app, bounds: window }, elements });
+			},
+			async image() {
+				return fail("unsupported", "the fake phone sends no window image");
+			},
+			async run(step, { element, foreground }) {
+				if (!foreground) return fail("denied", "the fake phone takes input only as its own: pass foreground: true");
+				const at = (target) => (Array.isArray(target) ? target : [element.bounds[0] + Math.floor(element.bounds[2] / 2), element.bounds[1] + Math.floor(element.bounds[3] / 2)]);
+				let why;
+				if ("press" in step) why = run({ type: "tap", at: at(step.press) });
+				else if ("click" in step) why = run({ type: "tap", at: at(step.click) });
+				else if ("type" in step) why = (step.into === undefined ? undefined : run({ type: "tap", at: at(step.into) })) ?? run({ type: "type", text: step.type });
+				else return fail("unsupported", "the fake phone takes press, click and type steps only");
+				return why === undefined ? ok({ route: "foreground", verified: false }) : fail("invalid", why);
+			},
+		};
+		const ui = new UiEngine(uiSource, { quietMs: 0 });
+		// A hello that says screen.capture off refuses screen.shot and screen.watch with its reason (broken:
+		// capture-off-answers answers them anyway).
+		const captureOff = typeof hello?.features?.["screen.capture"] === "object" && broken !== "capture-off-answers" ? hello.features["screen.capture"].off : undefined;
+
 		const methods = {
-			hello: () => ok({ version: "1.0.0", os, kind, arch: "amd64", groups, ...hello }),
+			hello: () => ok({ protocol: PROTOCOL_VERSION, version: "1.0.0", os, kind, arch: "amd64", groups, ...(kind === "android" ? { screen: { width, height, scale: 1 }, features: ui.features() } : {}), ...hello }),
 			ping: () => ok({}),
 			"exec.run": ({ argv }) => ok({ exitCode: 0, stdout: Buffer.from(argv[0] === "env" ? "PATH=/usr/bin:/bin\nHOME=/fake\n" : `${argv.slice(1).join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false }),
 			"files.mkdir": () => ok({}),
@@ -242,6 +297,7 @@ export function fakeDevices({
 			},
 			"process.wait": ({ id }) => (c.processes.has(id) ? ok({ running: c.processes.get(id), exitCode: null, signal: c.processes.get(id) ? null : "KILL" }) : fail("not_found", `no process ${id}`)),
 			"screen.shot": ({ region } = {}) => {
+				if (captureOff !== undefined) return fail("denied", captureOff);
 				const [x, y, w, h] = region && broken !== "screen-region" ? region : [0, 0, width, height];
 				const bad = broken === "screen-no-idat" || broken === "screen-corrupt-idat" || (broken === "screen-region-corrupt" && region !== undefined);
 				const bytes = bad ? undecodable(w, h, broken) : png(w, h, (px, py) => screenColor(x + px, y + py));
@@ -262,6 +318,7 @@ export function fakeDevices({
 			// watch-no-cursor gives no cursor; watch-corrupt-png's pixels do not inflate; watch-corrupt-jpeg is a JPEG of
 			// the right size with no scan).
 			"screen.watch": ({ after } = {}) => {
+				if (captureOff !== undefined) return fail("denied", captureOff);
 				c.watch ??= { seq: 0, key: "", bytes: undefined };
 				const w = c.watch;
 				if (!Number.isSafeInteger(after) || after < 0 || after > w.seq) return fail("invalid", `after ${JSON.stringify(after)} is not a seq up to ${w.seq}`);
@@ -327,14 +384,8 @@ export function fakeDevices({
 				if (c.foreground === id && broken !== "terminate-stays") c.foreground = null;
 				return ok({});
 			},
-			"apps.ui_tree": () => {
-				const button = { role: "android.widget.Button", id: FIXTURE_BUTTON.id, text: FIXTURE_BUTTON.text, bounds: [20, 40, 200, 60], enabled: broken === "tree-types" ? "true" : true, clickable: true, children: [] };
-				const row = (text, y) => ({ role: "android.widget.LinearLayout", bounds: [0, y, width, 40], enabled: true, clickable: true, children: [{ role: "android.widget.TextView", text, bounds: [10, y + 10, 200, 20], enabled: true, children: [] }] });
-				const list = { role: "androidx.recyclerview.widget.RecyclerView", bounds: [0, 100, width, 200], enabled: true, scrollable: true, children: [row("Network & internet", 110), row("Display", 160)] };
-				if (settingsShown()) return ok({ root: { role: "android.widget.FrameLayout", bounds: [0, 0, width, height], enabled: true, children: [list] }, nodes: 6, truncated: false });
-				const children = c.foreground === FIXTURE_APP_ID ? [button] : [];
-				return ok({ root: { role: "android.widget.FrameLayout", bounds: [0, 0, width, height], enabled: true, children }, nodes: 1 + children.length, truncated: false });
-			},
+			"ui.observe": (params, signal) => ui.observe(params, signal),
+			"ui.act": (params, signal) => ui.act(params, signal),
 		};
 
 		return {
@@ -344,7 +395,7 @@ export function fakeDevices({
 				if (!computers.has(c.ref.name) || clock.now() > c.deadline.getTime()) return fail("gone", `${c.ref.name} has ended`);
 				const answer = methods[method];
 				if (answer === undefined || (method !== "hello" && method !== "ping" && !declares(method))) return fail("unsupported", `${method} is not a method of this computer`);
-				return answer(params ?? {});
+				return answer(params ?? {}, signal);
 			},
 			close() {
 				closed = true;
@@ -352,11 +403,10 @@ export function fakeDevices({
 		};
 	}
 
-	const GROUP_OF = { exec: "exec", files: "files", process: "processes", screen: "screen", apps: "apps" };
+	const GROUP_OF = { exec: "exec", files: "files", process: "processes", screen: "screen", apps: "apps", ui: "ui" };
 	function declares(method) {
 		if (method === "input.actions") return groups.some((g) => g.startsWith("input."));
 		if (method === "apps.install") return groups.includes("apps.install");
-		if (method === "apps.ui_tree") return groups.includes("apps.ui_tree");
 		return groups.includes(GROUP_OF[method.split(".")[0]]);
 	}
 
@@ -368,6 +418,7 @@ export function fakeDevices({
 			const refusals = broken === "no-cap" ? (Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0 ? [] : [{ field: "lifetimeMs", message: "lifetimeMs is required" }]) : checkLifetime(spec.lifetimeMs, capabilities());
 			const asked = typeof spec.network === "string" ? spec.network : "allow";
 			if (!network.includes(asked)) refusals.push({ field: "network", message: `network ${asked} is not offered` });
+			refusals.push(...checkGpu(spec.gpu, capabilities()));
 			return refusals;
 		},
 		async create(spec) {
@@ -383,8 +434,9 @@ export function fakeDevices({
 				deadline: new Date(created + spec.lifetimeMs),
 				files: new Map(),
 				processes: new Map(),
-				// A phone comes with its stock Settings app, which apps.launch-terminate drives.
-				apps: new Map(kind === "android" ? [["com.android.settings", { id: "com.android.settings", name: "Settings" }]] : []),
+				// A phone comes with its stock Settings app, a desktop with the stock apps it is given: apps.launch-terminate
+				// drives one.
+				apps: new Map(kind === "android" ? [["com.android.settings", { id: "com.android.settings", name: "Settings" }]] : stockApps.map((app) => [app, { id: app, name: app }])),
 				foreground: null,
 				cursor: [0, 0],
 				held: new Set(),

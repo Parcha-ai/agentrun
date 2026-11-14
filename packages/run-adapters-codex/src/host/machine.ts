@@ -19,14 +19,12 @@ import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { FileTail } from "@parcha/agentrun-kernel/process";
-import type { AcquireMachine, CallHooks, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
+import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
-import type { SessionMcp } from "@parcha/agentrun-kernel";
 import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { codexPolicy, withWebSearches } from "./policy.js";
 import type { TomlValue } from "../config.js";
 import { UNWATCHED } from "../scripts.js";
-import { CODEX_MCP_CLIENT, mcpServersConfig, recorded } from "../mcp.js";
 import { type CodexCommand, MODEL_CATALOG_FILE, patchlessCatalog } from "../catalog.js";
 
 /** The variables a child takes from this process, when they are set. */
@@ -71,6 +69,9 @@ export interface LocalMachineOptions {
   /** Codex's own web search, live: Codex's config says `web_search = "live"` (`configure`), and the proxy admits the tool
    *  Codex then sends and adds each search to the price. Default off. */
   webSearch?: "live";
+  /** With `webSearch`: whether the host lets the session search now, asked before each request that offers it
+   *  (CodexPolicyOptions.searchAllowed). */
+  searchAllowed?: () => Promise<boolean>;
   /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits; its route comes
    *  from the harness. */
   proxy: {
@@ -81,9 +82,6 @@ export interface LocalMachineOptions {
     log?: ModelProxyOptions["log"];
     fetch?: typeof fetch;
   };
-  /** The session's remote MCP servers (mcp.ts): each served at the proxy's `/mcp/<server>`, written in Codex's config,
-   *  and each call recorded in the drive's session before it is sent. */
-  mcp?: SessionMcp;
   /** For tests: the process environment the allowlist reads. Default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>;
   /** Files one of the session's private directories holds at the start of every drive: written when the machine is
@@ -254,16 +252,14 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     let open = 0;
     const rolloutListeners: ((line: string) => void)[] = [];
     const cutListeners: ((stop: { outputTokens?: number }) => void)[] = [];
-    let calls: CallHooks | undefined;
     const search = options.webSearch === "live";
     const price = options.proxy.price && search ? withWebSearches(options.proxy.price) : options.proxy.price;
     const proxy = await startModelProxy({
       policy: codexPolicy({
         model: route.models.model,
         tools: options.proxy.tools,
-        ...(options.mcp ? { mcpTools: options.mcp.servers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool.name}`)) } : {}),
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
-        ...(search ? { webSearch: "live" as const } : {}),
+        ...(search ? { webSearch: "live" as const, ...(options.searchAllowed ? { searchAllowed: options.searchAllowed } : {}) } : {}),
         announce: {
           // The cost is liveness, not safety: after an overlap a never call is declined until the next single answer, which the model's
           // next wait or exec gives.
@@ -283,8 +279,6 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",
       ...(price ? { price } : {}),
-      // The kernel's proxy mounts the session's MCP door for Codex's own client; each call is recorded first (recorded).
-      ...(options.mcp ? { mcp: { session: recorded(options.mcp, ctx, () => calls), client: CODEX_MCP_CLIENT } } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
       // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
@@ -310,13 +304,9 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       onRolloutLine: (listener) => void rolloutListeners.push(listener),
       onCut: (listener) => void cutListeners.push(listener),
       openTurn: () => proxy.openTurn(),
-      onCalls: (given) => void (calls = given),
-      ...(search || options.mcp || catalog ? {
+      ...(search || catalog ? {
         configure: (config: Record<string, TomlValue>) => {
           if (search) config.web_search = "live";
-          // Codex's bearer for the proxy's /mcp/<server> is the key it sends to the proxy's model route.
-          const keyEnv = ((config.model_providers as Record<string, Record<string, TomlValue>> | undefined)?.gateway?.env_key ?? "") as string;
-          if (options.mcp) config.mcp_servers = mcpServersConfig(options.mcp, proxy.url, keyEnv);
           // Only with the built-ins off: with them on, apply_patch runs through the shell.
           const features = config.features as Record<string, TomlValue> | undefined;
           if (catalog && features?.shell_tool !== true && features?.unified_exec !== true) config.model_catalog_json = join(dirs["codex-home"], MODEL_CATALOG_FILE);

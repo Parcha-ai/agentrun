@@ -5,7 +5,7 @@ import { Timeline } from "@/components/Timeline";
 import type { TimelineRow } from "@/lib/v2";
 
 // A message the server wrote into a run (an approval's resume, a raised cap's follow-up) comes as a `phase` row with
-// `origin: "server"` and the summary "AgentRun: <its first line>" (pi-durable-agent's timeline). It reads as AgentRun's,
+// `origin: "server"` and the summary "AgentRun: <its first line>" (serve's timeline). It reads as AgentRun's,
 // muted, never as the person's; a plain phase row keeps "Phase".
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -31,7 +31,7 @@ beforeEach(() => {
 const steps = () => [...host.querySelectorAll("li")];
 const step = (has: string) => steps().find((li) => (li.textContent ?? "").includes(has))!;
 // A step's title: the line under its label.
-const titleOf = (li: Element) => [...li.querySelectorAll("span")].find((s) => s.classList.contains("text-[15px]"))!;
+const titleOf = (li: Element) => [...li.querySelectorAll("span")].find((s) => s.classList.contains("text-prose"))!;
 
 describe("Timeline, a message the server wrote", () => {
   it("reads as AgentRun's, with its first line as the title, never as yours", () => {

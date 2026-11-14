@@ -6,9 +6,9 @@
 // waited out, so the gate never cuts an action in half, and new agent calls are parked); `person` (the owner drives,
 // and the agent's calls are parked). A take ends in one of five ways: `given` (handed back), `answered` (the agent's ask
 // was answered while the owner held it), `idle` (no input from the owner for HOLD_IDLE_MS), `away` (the viewer closed or
-// lost its socket: back at once) or `released` (the computer's session ended). At the hand-back a parked look (a
-// screenshot, the app list) runs on the screen as the person left it; a parked act (input, a tap, a swipe, typing,
-// opening an app) is not done: the model is told the person had the computer, and to look again first. exec, files and
+// lost its socket: back at once) or `released` (the computer's session ended). At the hand-back a parked look (an
+// observe, a screenshot, the app list) runs on the screen as the person left it; a parked act (an act's steps, raw
+// input, opening an app) is not done: the model is told the person had the computer, and to look again first. exec, files and
 // processes are not the person's: they pass through.
 //
 // The agent's ask (`ask`): one at a time; it waits until the owner answers (done or cancelled), until it expires
@@ -58,8 +58,13 @@ export type ComputerHold = {
   /** The current take's name, while one is pending or held. */
   current(): string | undefined;
   /** The person takes it: pending while an agent call is in flight, then theirs. False (nothing changes) when a take is
-   *  pending or held already, or the hold is closed. `by`: the command row that asked. */
+   *  pending or held already, or the run is ending, or the hold is closed. `by`: the command row that asked. */
   take(options?: { readonly by?: number }): boolean;
+  /** The run is ending (its agent is done): nothing new is taken from now, and a take in force goes on until it ends, so
+   *  the run's end can wait for it and no later take is cut by the release (#2134). */
+  finish(): void;
+  /** Whether the run is ending (finish). */
+  finishing(): boolean;
   /** The take ends (`given` by default): false when there was none. A hand-back while the agent's ask is open answers it
    *  done, and the take ends `answered`. */
   give(why?: HoldEnd, options?: { readonly by?: number }): boolean;
@@ -104,6 +109,7 @@ export function computerHold(options: { readonly idleMs?: number; readonly askMa
   let inFlight = 0;
   let epoch = 0;
   let closed = false;
+  let ending = false;
   let open: { ask: HoldAsk; timer: unknown; settle(outcome: AskOutcome): void; fail(error: unknown): void } | undefined;
   const waiters = new Set<() => void>();
   const listeners = new Set<(event: HoldEvent) => void>();
@@ -152,7 +158,7 @@ export function computerHold(options: { readonly idleMs?: number; readonly askMa
     state: () => state,
     current: () => take,
     take({ by } = {}) {
-      if (closed || state !== "agent") return false;
+      if (closed || ending || state !== "agent") return false;
       take = by !== undefined ? `c${by}` : `v${now()}-${randomBytes(3).toString("hex")}`;
       epoch++;
       if (inFlight > 0) {
@@ -161,6 +167,10 @@ export function computerHold(options: { readonly idleMs?: number; readonly askMa
       } else toPerson(by);
       return true;
     },
+    finish() {
+      ending = true;
+    },
+    finishing: () => ending,
     give,
     away: () => void give("away"),
     touched() {
@@ -240,83 +250,51 @@ export function computerHold(options: { readonly idleMs?: number; readonly askMa
 }
 
 /** What the model is told of an act it asked for while the person had the computer: not done, look again. */
-export const personHadWords = (computer: "desktop" | "phone", act: string): string =>
-  `The person had this ${computer}: they took it over from the run's view and have handed it back, so this ${act} was not done. The screen may have changed: take a screenshot before you act again.`;
+export const personHadWords = (act: string): string =>
+  `The person had this computer: they took it over from the run's view and have handed it back, so this ${act} was not done. The screen may have changed: observe again before you act.`;
 
-/** The code a parked act throws, as the kernel's ports throw a refusal: the registry's executors answer it in its words. */
+/** The kind a parked act throws, as the computer's port throws a refusal: the registry's executors answer it in its words. */
 export const TAKEN_OVER = "taken_over";
 
-const refusal = (computer: "desktop" | "phone", act: string): Error =>
-  Object.assign(new Error(personHadWords(computer, act)), { code: TAKEN_OVER });
+/** The surface's ops that look: parked while the person has the computer, then run on the screen as they left it. */
+const LOOKS: ReadonlySet<string> = new Set(["observe", "screenshot", "apps.list"]);
+/** The ops that act, each by what the model is told was not done: parked, then refused. */
+const ACTS: ReadonlyMap<string, string> = new Map([["act", "act"], ["input.act", "input"], ["apps.open", "app opening"]]);
 
-/** The port method `method` of `port`, a look: parked while the person has the computer, then run (as the agent's call
- *  in flight, which a take waits out). */
-function look<P extends object, K extends keyof P>(port: P, method: K, hold: ComputerHold): P[K] {
-  const original = port[method] as unknown as (...args: unknown[]) => unknown;
-  return (async (...args: unknown[]) => {
-    const leave = await hold.enter();
-    try {
-      return await original.apply(port, args);
-    } finally {
-      leave();
-    }
-  }) as unknown as P[K];
+/** The computer's one port, as heldHands needs it (run-adapters kernel/registry Hands.computer). */
+type Port = { readonly groups: readonly string[]; call(op: string, args: unknown, signal?: AbortSignal): Promise<unknown> };
+type WithPort = Partial<Hands> & { readonly computer?: Port };
+
+/** `port` held: a look waits while the person has the computer, then runs as the agent's call in flight (which a take
+ *  waits out); an act made with the agent driving runs (in flight), one made while the person has it waits for the
+ *  hand-back and is not done; the shell's and the files' ops are not the person's and pass through. */
+function heldPort<P extends Port>(port: P, hold: ComputerHold): P {
+  return {
+    ...port,
+    async call(op: string, args: unknown, signal?: AbortSignal) {
+      const what = ACTS.get(op);
+      if (what === undefined && !LOOKS.has(op)) return port.call(op, args, signal);
+      const parked = hold.state() !== "agent";
+      const leave = await hold.enter(signal);
+      if (parked && what !== undefined) {
+        leave();
+        throw Object.assign(new Error(personHadWords(what)), { kind: TAKEN_OVER });
+      }
+      try {
+        return await port.call(op, args, signal);
+      } finally {
+        leave();
+      }
+    },
+  };
 }
 
-/** The port method `method` of `port`, an act: made with the agent driving, it runs (in flight, so a take waits it out);
- *  made while the person has the computer, it waits for the hand-back and is not done. */
-function act<P extends object, K extends keyof P>(port: P, method: K, hold: ComputerHold, computer: "desktop" | "phone", what: string): P[K] {
-  const original = port[method] as unknown as (...args: unknown[]) => unknown;
-  return (async (...args: unknown[]) => {
-    const parked = hold.state() !== "agent";
-    const leave = await hold.enter();
-    if (parked) {
-      leave();
-      throw refusal(computer, what);
-    }
-    try {
-      return await original.apply(port, args);
-    } finally {
-      leave();
-    }
-  }) as unknown as P[K];
-}
-
-/** The kernel's narrow ports a desktop and a phone have, as heldHands needs them (run-adapters kernel/registry Hands). */
-type ScreenPort = { shot(...args: never[]): Promise<unknown> };
-type InputPort = { actions(...args: never[]): Promise<unknown> };
-type PhonePort = {
-  shot(...args: never[]): Promise<unknown>;
-  tree?(...args: never[]): Promise<unknown>;
-  tap(...args: never[]): Promise<unknown>;
-  swipe(...args: never[]): Promise<unknown>;
-  type(...args: never[]): Promise<unknown>;
-  key?(...args: never[]): Promise<unknown>;
-  apps: { list(...args: never[]): Promise<unknown>; open(...args: never[]): Promise<unknown> };
-};
-type WithPorts = Partial<Hands> & { readonly screen?: ScreenPort; readonly input?: InputPort; readonly phone?: PhonePort };
-
-/** `hands` with its screen, input and phone ports parked while the person has the computer, and the agent's ask
- *  (`handoff`) through the hold; everything else as it is. */
-export function heldHands<H extends WithPorts>(hands: H, hold: ComputerHold): H & { readonly handoff: Handoff } {
-  const computer = hands.phone ? "phone" : "desktop";
+/** `hands` with its computer port held while the person has the computer, and the agent's ask (`handoff`) through the
+ *  hold; everything else as it is. */
+export function heldHands<H extends WithPort>(hands: H, hold: ComputerHold): H & { readonly handoff: Handoff } {
   return {
     ...hands,
-    ...(hands.screen ? { screen: { ...hands.screen, shot: look(hands.screen, "shot", hold) } } : {}),
-    ...(hands.input ? { input: { ...hands.input, actions: act(hands.input, "actions", hold, computer, "input") } } : {}),
-    ...(hands.phone ? {
-      phone: {
-        ...hands.phone,
-        shot: look(hands.phone, "shot", hold),
-        // A phone that does not offer its tree or its keys keeps none: the tool says so in words.
-        ...(hands.phone.tree ? { tree: look(hands.phone as Required<PhonePort>, "tree", hold) } : {}),
-        tap: act(hands.phone, "tap", hold, "phone", "tap"),
-        swipe: act(hands.phone, "swipe", hold, "phone", "swipe"),
-        type: act(hands.phone, "type", hold, "phone", "typing"),
-        ...(hands.phone.key ? { key: act(hands.phone as Required<PhonePort>, "key", hold, "phone", "key press") } : {}),
-        apps: { ...hands.phone.apps, list: look(hands.phone.apps, "list", hold), open: act(hands.phone.apps, "open", hold, "phone", "app opening") },
-      },
-    } : {}),
+    ...(hands.computer ? { computer: heldPort(hands.computer, hold) } : {}),
     handoff: { ask: (request, signal) => hold.ask(request, signal) },
   };
 }

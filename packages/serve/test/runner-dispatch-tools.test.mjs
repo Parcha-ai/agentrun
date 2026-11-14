@@ -38,13 +38,13 @@ const HANDS = hostToolDefs({ maxExecS: 60, shell: "computer" }).map((def) => def
 const NO_SHELL_HANDS = hostToolDefs({ maxExecS: 60, shell: "none" }).map((def) => def.name);
 /** A granted host tool that is not a hand, one the runner binds (adapter-run-spec.ts bindNonHandTools): web_fetch. */
 const HOST_TOOL = WEB_FETCH_TOOL;
-/** The agent is granted every hand and the host tool: the first request offers exactly these, by name. */
+/** The agent is granted every hand and the host tool: the first request offers exactly these, by name, and none of the host's three (a run of this size is not offered them). */
 const GRANTED = [...HANDS, HOST_TOOL];
-const OFFERED = [...GRANTED].sort();
+const OFFERED = [...GRANTED, "codemode"].sort();
 
 /** On each wire, a source whose route speaks it to the gateway, and where its requests land. */
 const SOURCES = {
-  "anthropic-messages": { model: "anthropic/claude-sonnet-4-5", env: (url) => ({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: url }), path: "/v1/messages", launched: { provider: "anthropic", modelId: "claude-sonnet-4-5" } },
+  "anthropic-messages": { model: "anthropic/claude-sonnet-5-5", env: (url) => ({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: url }), path: "/v1/messages", launched: { provider: "anthropic", modelId: "claude-sonnet-5-5" } },
   "openai-responses": { model: undefined, env: (url) => ({ AGENT_MODEL_BASE_URL: `${url}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "team-model", AGENT_MODEL_PRICE: "1,1" }), path: "/v1/responses" },
 };
 
@@ -150,7 +150,7 @@ test("a pi run with no computer (a runner place, Mode 1) is offered no bash fami
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.deepEqual(toolsOf(gateway.requests[0]), [...NO_SHELL_HANDS, HOST_TOOL].sort(), "the first request offers the file tools and web_fetch: no bash family");
+  assert.deepEqual(toolsOf(gateway.requests[0]), [...NO_SHELL_HANDS, HOST_TOOL, "codemode"].sort(), "the first request offers the file tools and web_fetch: no bash family");
   const [bash, read] = resultsOf(gateway.requests.at(-1));
   assert.ok(bash && read, `both calls answered: ${JSON.stringify(resultsOf(gateway.requests.at(-1)))}`);
   assert.match(bash[0], /bash is not available/i, "the bash call answers that the tool is not available");

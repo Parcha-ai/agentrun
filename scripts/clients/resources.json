@@ -1,9 +1,11 @@
 {
-  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth"],
+  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer", "rotateTriggerSecret"],
   "publicFields": {
     "saveMcpServer": ["url", "auth.type"],
     "previewMcpServer": ["url", "auth.type", "name"],
-    "startMcpOAuth": ["url", "scopes.[]", "client_id"]
+    "startMcpOAuth": ["url", "scopes.[]", "client_id"],
+    "listComposioTools": ["toolkit"],
+    "saveComposioServer": ["toolkit", "tools.[]", "user_id"]
   },
   "bodyFill": {
     "callMcp": { "id": 1 }
@@ -22,9 +24,13 @@
     "handBackRunBrowser": "Handing a run's browser back answers its agent's ask; only the owner's password session does it, in the console. The server refuses every token on it.",
     "getRunComputer": "A run's live computer view is a full-control credential for its session; only the owner's password session reads it, in the console. The server refuses every token on it.",
     "receiveHook": "A sender fires it with a request signed by the trigger's secret and no token; the CLI sends the server's token, so it has no command.",
+    "receiveHook_github": "GitHub fires it with a request signed by the App's webhook secret and no token: the owner's CLI and clients never call it.",
     "putMcpPrivateHosts": "Allowing private-network hosts for MCP servers' sign-ins takes the owner's password session in the console; the server refuses every token on it.",
     "restoreLearningFile": "Restoring a retired learning file takes the owner's password session in the console, as an approval does; the server refuses every token on it.",
-    "mcpOAuthCallback": "The owner's browser reaches it, sent back by the authorization server with the cookie the start set there; it takes no token, and the CLI has no such cookie, so it has no command."
+    "promoteLearnedWorkflow": "Making a learned workflow an agent of its own takes the owner's password session in the console, as an approval does; the server refuses every token on it.",
+    "mcpOAuthCallback": "The owner's browser reaches it, sent back by the authorization server with the cookie the start set there; it takes no token, and the CLI has no such cookie, so it has no command.",
+    "pairComputer": "A computer's driver (Computerd) calls it with the pairing code the owner made, and no token: the owner's CLI and clients make the code (createPairing) and never pair.",
+    "attachComputer": "A paired computer's driver dials it, a WebSocket upgrade with the computer's own token: no request of the owner's CLI or clients is one."
   },
   "commands": {
     "getCapabilities": ["server", "capabilities"],
@@ -49,9 +55,11 @@
     "stopRun": ["runs", "stop"],
     "cancelRun": ["runs", "cancel"],
     "raiseRunCap": ["runs", "raise-cap"],
-    "killRun": ["runs", "kill"],
     "pauseRun": ["runs", "pause"],
     "resumeRun": ["runs", "resume"],
+    "startRun": ["runs", "start-held"],
+    "callRunComputer": ["runs", "computer-call"],
+    "releaseRunComputer": ["runs", "computer-release"],
     "archiveRun": ["runs", "archive"],
     "unarchiveRun": ["runs", "unarchive"],
     "getRunGraph": ["runs", "graph"],
@@ -68,11 +76,17 @@
     "readHomeFile": ["home", "read"],
     "writeHomeFile": ["home", "write"],
     "deleteHomeFile": ["home", "delete"],
-    "exportHome": ["home", "export"],
-    "importHome": ["home", "import"],
     "getAgentLearning": ["learning", "get"],
+    "getLearningCost": ["learning", "cost"],
+    "createLearningBatch": ["learning", "batch-start"],
+    "listLearningBatches": ["learning", "batches"],
+    "getLearningBatch": ["learning", "batch"],
+    "cancelLearningBatch": ["learning", "batch-cancel"],
+    "listLearningEvals": ["learning", "evals"],
+    "recordLearningEval": ["learning", "record-eval"],
     "listLearningNotes": ["learning", "notes"],
     "listLearningLog": ["learning", "log"],
+    "listLearnedWorkflowRevisions": ["learning", "workflow-revisions"],
     "readLearningFile": ["learning", "read"],
     "writeLearningFile": ["learning", "write"],
     "retireLearningFile": ["learning", "retire"],
@@ -86,6 +100,8 @@
     "rotateTriggerSecret": ["triggers", "rotate-secret"],
     "listTemplates": ["template", "list"],
     "applyTemplate": ["template", "apply"],
+    "importTemplate": ["template", "import"],
+    "deleteTemplate": ["template", "delete"],
     "listToolKeys": ["tool-keys", "list"],
     "saveToolKey": ["tool-keys", "save"],
     "deleteToolKey": ["tool-keys", "delete"],

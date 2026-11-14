@@ -27,9 +27,9 @@ const KEY = `not-a-secret-${"z"}`;
  *  requests land. `calls`: the gateway answers a tool call on that path (not on Chat Completions). */
 const SOURCES = {
   gateway: { model: undefined, env: (url) => ({ AGENT_MODEL_BASE_URL: `${url}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "team-model", AGENT_MODEL_PRICE: "1,1" }), wire: "openai-responses", path: "/v1/responses", calls: true },
-  anthropic: { model: "anthropic/claude-sonnet-4-5", env: (url) => ({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: url }), wire: "anthropic-messages", path: "/v1/messages", calls: true },
-  openai: { model: "openai/gpt-5", env: () => ({ OPENAI_API_KEY: KEY }), wire: "openai-responses", path: "/v1/responses", calls: true },
-  openrouter: { model: "openrouter/openai/gpt-5", env: () => ({ OPENROUTER_API_KEY: KEY }), wire: "anthropic-messages", path: "/v1/chat/completions", calls: false, translated: true },
+  anthropic: { model: "anthropic/claude-sonnet-5-5", env: (url) => ({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: url }), wire: "anthropic-messages", path: "/v1/messages", calls: true },
+  openai: { model: "openai/gpt-6.1-sol", env: () => ({ OPENAI_API_KEY: KEY }), wire: "openai-responses", path: "/v1/responses", calls: true },
+  openrouter: { model: "openrouter/openai/gpt-6.1-sol", env: () => ({ OPENROUTER_API_KEY: KEY }), wire: "anthropic-messages", path: "/v1/chat/completions", calls: false, translated: true },
 };
 
 /** A fetch that sends each request to the gateway at `url`, on its own path: a provider's origin (OpenAI's, OpenRouter's)
@@ -37,6 +37,8 @@ const SOURCES = {
 const toGateway = (url) => (target, init) => fetch(`${url}${new URL(String(target)).pathname}`, init);
 /** The tool names a request body offers, on its path's API. */
 const toolsOf = (request) => (request.body?.tools ?? []).map((tool) => tool.name ?? tool.function?.name).sort();
+/** The session's tool, sorted: the session's tool and the host's codemode (no catalog tools: no search or call). */
+const OFFERED = ["codemode", "note"];
 /** What the run booked: each runner.turn record of its sessions, read under a reader's claim. */
 async function bookedUsd(store) {
   const row = await store.runs.get("run-1");
@@ -77,7 +79,7 @@ test("acceptance: an openai-responses pi run through serve's gateway, end to end
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.deepEqual(calls, ["note"], "the model's call ran the host's tool");
   assert.deepEqual(gateway.requests.map((request) => [request.path, request.headers.authorization]), [["/v1/responses", `Bearer ${KEY}`], ["/v1/responses", `Bearer ${KEY}`]], "both requests on the gateway's Responses route, under its key");
-  assert.deepEqual(toolsOf(gateway.requests[0]), ["note"], "the session's tool is offered");
+  assert.deepEqual(toolsOf(gateway.requests[0]), OFFERED, "the session's tool is offered");
   assert.ok(gateway.requests[1].body.input.some((item) => item.type === "function_call_output"), "the tool's answer went back as its call's output");
   // The run's one ledger: 12 tokens at $1 a million each request (AGENT_MODEL_PRICE), the second asked with the first's.
   assert.equal(asked.length, 2);
@@ -101,7 +103,7 @@ test("every source main's pi takes opens on the runner on its wire, offers the s
       const { row, store } = await capRun(t, { specOf: () => specOn(route, toGateway(gateway.url)), runCap: { capUsd: () => undefined, modelOf: () => undefined } });
       assert.equal(row.state, "ended", JSON.stringify(row));
       assert.ok(gateway.requests.length >= 1 && gateway.requests.every((request) => request.path.endsWith(source.path)), JSON.stringify(gateway.requests.map((request) => request.path)));
-      assert.deepEqual(toolsOf(gateway.requests[0]), ["note"], "the session's tool is offered");
+      assert.deepEqual(toolsOf(gateway.requests[0]), OFFERED, "the session's tool is offered");
       assert.ok((await bookedUsd(store)) > 0, "booked on the run's ledger");
     });
   }

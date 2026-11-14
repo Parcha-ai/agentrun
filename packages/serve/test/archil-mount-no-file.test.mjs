@@ -10,15 +10,15 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { putSealedKey } from "../dist/server-keys.js";
 import { archilClaim, archilWorkspace, computerForClaim } from "../dist/workspace/index.js";
-import { archilControlFake } from "./archil-control-fake.mjs";
+import { agentDiskStore, archilControlFake } from "./archil-control-fake.mjs";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { readBackOf } from "./fixtures/archil-readback.mjs";
 import { storeOn } from "./store-helpers.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
-import { ARCHIL_KINDS } from "./workspace-kinds-fixture.mjs";
+import { KINDS } from "./workspace-kinds-fixture.mjs";
 
 const SENTINEL = `sentinel-archil-mount-token-${randomBytes(12).toString("hex")}`;
-const SETTINGS = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+const SETTINGS = { diskId: "dsk-00000000000fa4e0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 
 /** Every file under `dir` whose bytes hold `needle`, by path. */
 function filesHolding(dir, needle) {
@@ -54,7 +54,7 @@ async function mountedRun(t, { existing = [] } = {}) {
   const { store, dir: dataDir } = await storeOn(t);
   const sealKey = randomBytes(32);
   await putSealedKey(store, sealKey, "archil.api_key", "fake-test-key-archil-account-0001");
-  await putSealedKey(store, sealKey, "DAYTONA_API_KEY", "fake-test-key-daytona-0001");
+  await putSealedKey(store, sealKey, "E2B_API_KEY", "fake-test-key-e2b-0001");
   const scratch = join(tmp, "scratch");
   mkdirSync(scratch);
 
@@ -62,6 +62,8 @@ async function mountedRun(t, { existing = [] } = {}) {
   const controller = new AbortController();
   const claim = await archilClaim({
     settings: SETTINGS, keys: store.sealedKeys, sealKey, signal: controller.signal, makeDisk: () => disk,
+    // The run's agent's disk, as its launch record names it (run-disk.ts): no Archil call resolves it.
+    run: { agentId: "a", launch: { diskId: SETTINGS.diskId, kind: "agent" }, store: agentDiskStore("a", SETTINGS.diskId) },
     mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: control.baseUrl },
   });
   const workspace = archilWorkspace(disk, "agents/a/runs/run-1/work", { region: SETTINGS.region, mountToken: () => claim.token() });
@@ -75,8 +77,8 @@ async function mountedRun(t, { existing = [] } = {}) {
     attach: async () => ({ ok: true, value: { id: "c1", name: "c1", spec: { image: "i", user: "1000:1000", network: "none" } } }),
     release: async () => ({ ok: true, value: undefined }),
   };
-  const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider: "daytona" } }, store, {
-    mode: 2, kinds: ARCHIL_KINDS, sealKey, providers: { daytona: () => provider },
+  const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider: "e2b" } }, store, {
+    mode: 2, kinds: KINDS, sealKey, providers: { e2b: () => provider },
     spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }),
     workspace, check: { readBackOf, epoch: 3 }, revokeMount: () => claim.revoke(),
   });

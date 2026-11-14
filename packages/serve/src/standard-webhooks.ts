@@ -8,7 +8,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 export const HOOK_TOLERANCE_S = 300;
 /** The fewest bytes a verification key may have (the spec's secrets are 24 to 64; this server makes 32): a shorter one,
  *  an empty one above all, signs nothing. It is the floor for keys a request is verified with alone: a sealed setting
- *  that is such a key declares `minBytes: MIN_KEY_BYTES` (sealed-settings.ts); a token that is no HMAC key (a bot's)
+ *  that is such a key declares `minBytes: MIN_KEY_BYTES` (sealed-settings-store.ts); a token that is no HMAC key (a bot's)
  *  sets its own floor, or none. */
 export const MIN_KEY_BYTES = 24;
 /** A webhook-id: printable ASCII with no space, as the spec's `msg_...` ids are; it goes into a firing's key and history. */
@@ -27,8 +27,9 @@ const keyOf = (secret: string): Buffer => Buffer.from(secret.startsWith(SECRET_P
 /** How many bytes `value` holds as a key: a `whsec_` secret's decoded key, any other value's UTF-8. */
 export const keyBytes = (value: string): number => (value.startsWith(SECRET_PREFIX) ? keyOf(value).length : Buffer.byteLength(value, "utf8"));
 
-const hmacOf = (secret: string, id: string, timestamp: string, body: string | Buffer): Buffer =>
-  createHmac("sha256", keyOf(secret)).update(`${id}.${timestamp}.`).update(body).digest();
+const hmacWith = (key: Buffer, id: string, timestamp: string, body: string | Buffer): Buffer =>
+  createHmac("sha256", key).update(`${id}.${timestamp}.`).update(body).digest();
+const hmacOf = (secret: string, id: string, timestamp: string, body: string | Buffer): Buffer => hmacWith(keyOf(secret), id, timestamp, body);
 
 /** Each spelling of `value` a cut needs beyond the ones redaction derives of any text (learn/secrets.ts redactSecrets:
  *  as written, its hex, its base64): for a `whsec_` secret, itself, its key as written after the prefix, that key as
@@ -60,17 +61,21 @@ export function headersRefusal(headers: Record<string, string | string[] | undef
 
 /** Why a request is not signed by `secret`, or undefined when it is: `webhook-signature` lists signatures, space
  *  separated, and any one that matches passes; the timestamp is within HOOK_TOLERANCE_S; the key has MIN_KEY_BYTES. */
-export function verify(secret: string, headers: Record<string, string | string[] | undefined>, body: Buffer, nowMs: number): string | undefined {
+export const verify = (secret: string, headers: Record<string, string | string[] | undefined>, body: Buffer, nowMs: number): string | undefined => verifyWithKey(keyOf(secret), headers, body, nowMs);
+
+/** `verify` under key bytes the caller derived from its secret: Standard Webhooks' are the secret's decoded `whsec_`
+ *  key; a sender that signs the same message under the secret string's UTF-8 bytes (Composio's) passes those. */
+export function verifyWithKey(key: Buffer, headers: Record<string, string | string[] | undefined>, body: Buffer, nowMs: number): string | undefined {
   const early = headersRefusal(headers, nowMs);
   if (early) return early;
   const [id, timestamp, signatures] = ["webhook-id", "webhook-timestamp", "webhook-signature"].map((name) => headers[name] as string);
-  const expected = hmacOf(secret, id!, timestamp!, body);
+  const expected = hmacWith(key, id!, timestamp!, body);
   // Compared all the same, so a short key costs what a good one does; it fails after.
   const matched = signatures!.split(" ").some((part) => {
     const [version, signature] = part.split(",");
     const given = Buffer.from(signature ?? "", "base64");
     return version === "v1" && given.length === expected.length && timingSafeEqual(given, expected);
   });
-  if (keyOf(secret).length < MIN_KEY_BYTES) return "short_key";
+  if (key.length < MIN_KEY_BYTES) return "short_key";
   return matched ? undefined : "bad_signature";
 }

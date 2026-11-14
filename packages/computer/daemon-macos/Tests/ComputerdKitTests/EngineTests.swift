@@ -1,0 +1,1202 @@
+import Foundation
+import XCTest
+@testable import ComputerdKit
+
+/// The ui group's rules over a fake OS: refs across states, compact and full views, diffs, the route ladder and its
+/// refusals, points bound to their state, settle, and expect.
+final class EngineTests: XCTestCase {
+	var os: FakeOS!
+
+	/// A Notes window at (100, 50), 800 by 600 points.
+	override func setUp() {
+		os = FakeOS()
+		os.add(1, "window", name: "Notes", frame: Rect(100, 50, 800, 600))
+		os.add(2, "group", frame: Rect(100, 50, 800, 600), parent: 1)
+		os.add(3, "button", name: "Save", frame: Rect(120, 70, 80, 30), parent: 2, actions: ["AXPress", "AXShowMenu"])
+		os.add(4, "textbox", name: "Title", value: "", frame: Rect(120, 120, 300, 30), parent: 2, settable: true, textInput: true)
+		os.add(5, "text", name: "Hello", frame: Rect(120, 200, 100, 20), parent: 2)
+		os.add(6, "group", frame: Rect(500, 300, 10, 10), parent: 1)
+		os.add(7, "textbox", name: "Password", value: "hunter2", frame: Rect(120, 400, 200, 30), parent: 2, settable: true, textInput: true, flags: [.secure])
+		os.add(8, "menuitem", name: "super+s", actions: ["AXPress"])
+	}
+
+	func node(_ r: UiObserveResult, _ name: String) -> UiNode? { r.nodes.first { $0.name == name } }
+
+	func ref(_ r: UiObserveResult, _ name: String) -> String { node(r, name)!.ref }
+
+	func stepError(_ result: UiActResult, _ i: Int) -> StepError? {
+		if case .error(let e) = result.steps[i] { return e }
+		return nil
+	}
+
+	func ran(_ result: UiActResult, _ i: Int) -> (Route, Bool)? {
+		if case .ran(let route, let verified) = result.steps[i] { return (route, verified) }
+		return nil
+	}
+
+	func throwsKind(_ kind: ErrorKind, _ body: () async throws -> some Any, file: StaticString = #filePath, line: UInt = #line) async -> String? {
+		do {
+			_ = try await body()
+			XCTFail("it did not throw", file: file, line: line)
+		} catch let e as RPCError {
+			XCTAssertEqual(e.kind, kind, e.message, file: file, line: line)
+			return e.message
+		} catch {
+			XCTFail("\(error)", file: file, line: line)
+		}
+		return nil
+	}
+
+	// MARK: observe
+
+	func testCompactKeepsNamedAndActionableWithTheirParents() async throws {
+		let r = try await os.engine().observe(UiObserveParams())
+		XCTAssertEqual(r.state, "s1")
+		XCTAssertEqual(r.app.id, "com.apple.Notes")
+		XCTAssertEqual(r.window.bounds, Rect(100, 50, 800, 600))
+		XCTAssertEqual(r.nodes.map(\.role), ["window", "group", "button", "textbox", "text", "textbox", "menuitem"])
+		let save = node(r, "Save")!
+		XCTAssertEqual(save.bounds, Rect(20, 20, 80, 30), "bounds are in window points")
+		XCTAssertEqual(save.parent, r.nodes[1].ref)
+		XCTAssertEqual(save.actions, ["AXPress", "AXShowMenu"])
+		XCTAssertNil(node(r, "Password")!.value, "a secure field's value is never sent")
+		XCTAssertEqual(node(r, "Password")!.flags, [.secure])
+		XCTAssertEqual(node(r, "super+s")!.flags, [.offscreen], "no frame is offscreen")
+		XCTAssertTrue(r.nodes.allSatisfy { isRef($0.ref) })
+		XCTAssertFalse(r.truncated)
+	}
+
+	func testFullKeepsEverything() async throws {
+		let r = try await os.engine().observe(UiObserveParams(full: true))
+		XCTAssertEqual(r.nodes.count, 8)
+	}
+
+	func testRefsSurviveAcrossStatesAndDiffSays() async throws {
+		let engine = os.engine()
+		let first = try await engine.observe(UiObserveParams())
+		let save = ref(first, "Save")
+		let title = ref(first, "Title")
+		os.add(9, "button", name: "Share", frame: Rect(300, 70, 80, 30), parent: 2, actions: ["AXPress"])
+		os.with { $0.elements[5]!.name = "Hello there" }
+		os.remove(4)
+		let second = try await engine.observe(UiObserveParams(since: first.state))
+		XCTAssertEqual(second.state, "s2")
+		XCTAssertEqual(ref(second, "Save"), save)
+		XCTAssertEqual(second.diff?.added, [ref(second, "Share")])
+		XCTAssertEqual(second.diff?.changed, [ref(first, "Hello")])
+		XCTAssertEqual(second.diff?.removed, [title])
+	}
+
+	func testImage() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams(image: .image(maxEdge: nil)))
+		XCTAssertEqual(r.image?.format, "png")
+		XCTAssertEqual(r.image?.width, 1568)
+		XCTAssertEqual(r.image?.height, 1176)
+		_ = await throwsKind(.limit) { try await engine.observe(UiObserveParams(image: .image(maxEdge: 100))) }
+		os.screenRecording = false
+		let words = await throwsKind(.unsupported) { try await engine.observe(UiObserveParams(image: .image(maxEdge: nil))) }
+		XCTAssertTrue(words?.contains("Screen Recording") == true)
+		_ = try await engine.observe(UiObserveParams())
+	}
+
+	func testWithoutTheTreeTheImageComesAndPointsStillWork() async throws {
+		os.trusted = false
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		XCTAssertEqual(r.nodes, [])
+		XCTAssertTrue(r.empty?.contains("ui.tree is off here: Accessibility") == true, r.empty ?? "no empty")
+		XCTAssertEqual(r.image?.width, 1568, "the image comes unasked")
+		XCTAssertEqual(r.window.id, "7")
+		XCTAssertTrue(os.entries.contains("capture.resolve"))
+
+		let act = try await engine.act(UiActParams(state: r.state, steps: [.click(.point(Point(10, 20)), button: nil, count: nil), .type("hi", into: nil)]))
+		XCTAssertEqual(act.steps, [.ran(route: .background, verified: false), .ran(route: .background, verified: false)])
+		XCTAssertEqual(os.entries.filter { $0.hasPrefix("bg.") }, ["bg.click 110,70 left 1", "bg.type hi"])
+
+		let expect = await throwsKind(.unsupported) { try await engine.act(UiActParams(steps: [], expect: Expect(text: "hi"))) }
+		XCTAssertTrue(expect?.contains("ui.tree is off") == true)
+
+		os.screenRecording = false
+		let both = await throwsKind(.denied) { try await engine.observe(UiObserveParams()) }
+		XCTAssertTrue(both?.contains("Accessibility") == true && both?.contains("Screen Recording") == true, both ?? "")
+	}
+
+	func testWithoutTheTreeAPointIsStaleOnceTheImageChanged() async throws {
+		os.trusted = false
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let click = Step.click(.point(Point(10, 20)), button: nil, count: nil)
+		os.with { $0.frameHash = 1 }
+		let changed = try await engine.act(UiActParams(state: r.state, steps: [click]))
+		XCTAssertEqual(stepError(changed, 0)?.kind, .stale)
+		XCTAssertTrue(stepError(changed, 0)?.message.contains("shows something else than at state s1") == true, stepError(changed, 0)?.message ?? "")
+		XCTAssertEqual(os.entries.filter { $0.hasPrefix("bg.") }, [], "nothing was posted")
+	}
+
+	func testDescIsShownAndExpected() async throws {
+		os.add(30, "listitem", name: "Wi-Fi", desc: "Connected, secured", frame: Rect(110, 300, 200, 40))
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		XCTAssertEqual(r.nodes.first { $0.name == "Wi-Fi" }?.desc, "Connected, secured")
+		let act = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Connected")))
+		XCTAssertEqual(act.expect, .met)
+	}
+
+	func testPolicyLimitsApps() async {
+		let engine = os.engine(policy: Policy(apps: ["com.apple.Safari"]))
+		_ = await throwsKind(.denied) { try await engine.observe(UiObserveParams()) }
+		_ = await throwsKind(.denied) { try await engine.observe(UiObserveParams(target: Target(app: "com.apple.Notes"))) }
+	}
+
+	func testUnknownAppIsNotFound() async {
+		_ = await throwsKind(.notFound) { try await self.os.engine().observe(UiObserveParams(target: Target(app: "com.example.none"))) }
+	}
+
+	// MARK: act: the route ladder
+
+	func testPressRunsSemanticAndVerifiesByChange() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.with { $0.elements[5]!.name = "Saved" } }
+		}
+		let result = try await engine.act(UiActParams(state: r.state, steps: [.press(ref(r, "Save"))], expect: Expect(text: "Saved")))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertTrue(result.changed)
+		XCTAssertEqual(result.state, "s2")
+		XCTAssertEqual(os.entries, ["ax.AXPress 3"])
+	}
+
+	/// A step by the semantic or background route moves no real pointer: the live view's marks show where it acted.
+	func testEachStepMarksItsPlaceForTheLiveView() async throws {
+		let platform = os.platform()
+		let engine = UIEngine(platform: platform, policy: Policy())
+		let r = try await engine.observe(UiObserveParams())
+		XCTAssertNil(platform.marks.scene(now: os.with { $0.now }), "no step, no mark")
+		_ = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		var scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(160, 85), "a press marks its element's middle, in screen points")
+		XCTAssertNotNil(scene.ring, "a press rings")
+		_ = try await engine.act(UiActParams(steps: [.type("Milk", into: ref(r, "Title"))]))
+		scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(270, 135), "typing into an element marks it")
+		XCTAssertEqual(scene.box, Rect(120, 120, 300, 30), "and boxes it")
+		XCTAssertNil(scene.ring)
+		_ = try await engine.act(UiActParams(steps: [.key("super+s")]))
+		scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(270, 135), "a key to the focus leaves the pointer where it was")
+		_ = try await engine.act(UiActParams(state: r.state, steps: [.click(.point(Point(10, 20)), button: nil, count: nil)]))
+		scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(110, 70), "a click at a window point marks it on screen")
+		XCTAssertNil(platform.marks.scene(now: os.with { $0.now } + Marks.pointerMs + Marks.fadeMs), "the pointer fades")
+	}
+
+	func testAClickScrolledIntoViewMarksWhereItLanded() async throws {
+		let platform = os.platform()
+		let engine = UIEngine(platform: platform, policy: Policy())
+		let r = try await engine.observe(UiObserveParams())
+		// Hello sits below the window's visible area until it is scrolled to.
+		os.with { $0.elements[5]!.frame = Rect(120, 700, 100, 20) }
+		os.react = { entry, os in
+			if entry == "ax.scrolltovisible 5" { os.with { $0.elements[5]!.frame = Rect(120, 300, 100, 20) } }
+		}
+		_ = try await engine.act(UiActParams(steps: [.click(.ref(ref(r, "Hello")), button: nil, count: nil)]))
+		XCTAssertTrue(os.entries.contains("ax.scrolltovisible 5"), "\(os.entries)")
+		let scene = try XCTUnwrap(platform.marks.scene(now: os.with { $0.now }))
+		XCTAssertEqual(scene.pointer, Point(170, 310), "the mark is where the click landed, after the scroll")
+		XCTAssertNotNil(scene.ring)
+	}
+
+	func testAStepMovesOnlyItsOwnMark() {
+		let marks = Marks()
+		let mine = marks.mark(.press, at: Point(10, 10), now: 0)
+		marks.mark(.press, at: Point(50, 50), now: 1)
+		marks.move(mine, to: Point(20, 20), box: nil)
+		XCTAssertEqual(marks.lastPoint, Point(50, 50), "another connection's newer mark stays where it was")
+		let newest = marks.mark(.type, at: Point(60, 60), box: Rect(40, 50, 40, 20), now: 2)
+		marks.move(newest, to: Point(70, 70), box: Rect(50, 60, 40, 20))
+		XCTAssertEqual(marks.lastPoint, Point(70, 70))
+		XCTAssertEqual(marks.scene(now: 2)?.box, Rect(50, 60, 40, 20))
+	}
+
+	func testPressWithoutAnActionClicksInTheBackground() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Hello"))]))
+		XCTAssertEqual(ran(result, 0)?.0, .background)
+		XCTAssertEqual(ran(result, 0)?.1, false, "nothing changed")
+		XCTAssertFalse(result.changed)
+		XCTAssertEqual(os.entries, ["bg.click 170,210 left 1"])
+	}
+
+	func testForegroundOnlyWhenTheCallAllowsIt() async throws {
+		let engine = os.engine(background: .off("SkyLight's SLEventPostToPid is missing"))
+		let r = try await engine.observe(UiObserveParams())
+		let refused = try await engine.act(UiActParams(steps: [.press(ref(r, "Hello")), .press(ref(r, "Save"))]))
+		XCTAssertEqual(refused.steps.count, 1, "a refused step is the last")
+		XCTAssertEqual(stepError(refused, 0)?.kind, .denied, "the call can allow the one route left")
+		let words = stepError(refused, 0)?.message ?? ""
+		XCTAssertTrue(words.contains("semantic: \(ref(r, "Hello")) has no AXPress"), words)
+		XCTAssertTrue(words.contains("background: ui.background is off here: SkyLight"), words)
+		XCTAssertTrue(words.contains("foreground: it moves the user's pointer and focus, and this call does not allow it: pass foreground: true"), words)
+		XCTAssertEqual(os.entries, [])
+		let allowed = try await engine.act(UiActParams(steps: [.press(ref(r, "Hello"))], foreground: true))
+		XCTAssertEqual(ran(allowed, 0)?.0, .foreground)
+		XCTAssertEqual(os.entries, ["fg.click 170,210 left 1"])
+	}
+
+	func testForegroundOffForTheGrant() async throws {
+		let engine = os.engine(background: .off("no SkyLight"), foreground: .off("Post Event is not granted"))
+		let r = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Hello"))], foreground: true))
+		XCTAssertEqual(stepError(result, 0)?.kind, .unsupported, "no route reaches it here")
+		XCTAssertTrue(stepError(result, 0)?.message.contains("ui.foreground is off here: Post Event") == true)
+	}
+
+	func testSetReadsBack() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.set(ref(r, "Title"), value: "Groceries"), .set(ref(r, "Password"), value: "x"), .set(ref(r, "Hello"), value: "x"), .press(ref(r, "Save"))]))
+		XCTAssertEqual(result.steps.count, 3)
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertEqual(ran(result, 1)?.1, false, "a secure field is never read back")
+		XCTAssertEqual(stepError(result, 2)?.kind, .unsupported)
+		XCTAssertTrue(stepError(result, 2)?.message.contains("cannot be set") == true)
+		XCTAssertEqual(os.with { $0.elements[4]!.value }, "Groceries")
+	}
+
+	func testASetOnAnItemThatOpensSaysToRenameItByKeys() async throws {
+		os.add(10, "listitem", name: "report.txt", frame: Rect(120, 450, 200, 20), parent: 2, actions: ["AXOpen", "AXShowMenu"])
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams(full: true))
+		let result = try await engine.act(UiActParams(steps: [.set(ref(r, "report.txt"), value: "final.txt")]))
+		XCTAssertEqual(stepError(result, 0)?.kind, .unsupported)
+		XCTAssertEqual(stepError(result, 0)?.message, "no route could set here. semantic: report.txt is a list item that opens: select it and press Return to edit its name, then type")
+	}
+
+	func testPerformNamesThePlatformsAction() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.perform(ref(r, "Save"), action: "AXShowMenu"), .perform(ref(r, "Save"), action: "AXIncrement")]))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertTrue(stepError(result, 1)?.message.contains("it has AXPress, AXShowMenu") == true)
+	}
+
+	func testClickARefRightOpensItsMenuAndDoubleClicksByPointer() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let save = ref(r, "Save")
+		_ = try await engine.act(UiActParams(steps: [.click(.ref(save), button: .right, count: 1), .click(.ref(save), button: nil, count: 2)]))
+		XCTAssertEqual(os.entries, ["ax.AXShowMenu 3", "bg.click 160,85 left 2"])
+	}
+
+	func testTypeInsertsOrFocusesAndPosts() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.type("milk", into: ref(r, "Title")), .type("pw", into: ref(r, "Password"))]))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertEqual(ran(result, 1)?.0, .background)
+		XCTAssertEqual(os.entries, ["ax.insert 4 milk", "ax.focus 7", "bg.type pw"])
+	}
+
+	/// A step on a disabled control, or a type into a ref that is no text field, is refused with nothing sent.
+	func testStepsOnADisabledControlOrANonFieldAreRefused() async throws {
+		os.add(11, "button", name: "Off", frame: Rect(120, 520, 50, 20), parent: 2, actions: ["AXPress"], flags: [.disabled])
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let pressed = try await engine.act(UiActParams(steps: [.press(ref(r, "Off"))]))
+		XCTAssertEqual(stepError(pressed, 0)?.kind, .refused)
+		let typed = try await engine.act(UiActParams(steps: [.type("x", into: ref(r, "Save"))]))
+		XCTAssertEqual(stepError(typed, 0)?.kind, .refused)
+		XCTAssertTrue(os.entries.isEmpty, "nothing was sent: \(os.entries)")
+	}
+
+	/// A field that did not take the focus is not typed into: the text would go to whatever has it.
+	func testATypeIntoAFieldThatDidNotTakeTheFocusIsRefusedWithNothingTyped() async throws {
+		os.with { $0.ignoresFocus = true }
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.type("pw", into: ref(r, "Password"))]))
+		guard case .error(let error)? = result.steps.first else { return XCTFail("the step ran: \(result.steps)") }
+		XCTAssertEqual(error.kind, .refused)
+		XCTAssertFalse(os.entries.contains { $0.hasSuffix("type pw") }, "nothing was typed")
+	}
+
+	/// A document's text area (TextEdit's) takes an edit as one only by typed keys: they go first, and an insert only
+	/// when the keys' route sent nothing. Keys that were sent and showed nothing are never typed again by the insert.
+	func testADocumentsTextTakesTypedKeysFirst() async throws {
+		os.add(10, "textbox", name: "Body", value: "Pears: 41", frame: Rect(120, 450, 600, 100), parent: 2, settable: true, textInput: true)
+		os.with { $0.elements[10]?.keysFirst = true }
+		os.react = { entry, os in
+			if entry == "bg.type 42" { os.with { $0.elements[10]?.value = "Pears: 42" } }
+		}
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.type("42", into: ref(r, "Body"))]))
+		XCTAssertEqual(ran(result, 0)?.0, .background)
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertEqual(os.entries.filter { !$0.hasPrefix("ax.focus") }, ["bg.type 42"])
+
+		os.react = nil
+		let r2 = try await engine.observe(UiObserveParams())
+		let unseen = try await engine.act(UiActParams(steps: [.type(" more", into: ref(r2, "Body"))]))
+		XCTAssertEqual(ran(unseen, 0)?.0, .background, "the keys were sent, so the step is theirs")
+		XCTAssertEqual(ran(unseen, 0)?.1, false)
+		XCTAssertEqual(os.entries.filter { $0.contains("more") }, ["bg.type  more"], "nothing typed the text a second time")
+
+		// The keys' route sends nothing (the app is hidden): the insert does the step.
+		let engine2 = os.engine(background: .off("hidden"))
+		let r3 = try await engine2.observe(UiObserveParams())
+		let inserted = try await engine2.act(UiActParams(steps: [.type(" again", into: ref(r3, "Body"))]))
+		XCTAssertEqual(ran(inserted, 0)?.0, .semantic)
+		XCTAssertEqual(ran(inserted, 0)?.1, true)
+		XCTAssertEqual(os.entries.filter { $0.contains("again") }, ["ax.insert 10  again"])
+	}
+
+	func testKeyChoosesTheMenuItemThenPosts() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.key("super+s"), .key("enter")]))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(ran(result, 1)?.0, .background)
+		XCTAssertEqual(os.entries, ["ax.AXPress 8", "bg.key enter"])
+	}
+
+	func testNavIsOffOnTheMac() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.nav(.back)]))
+		XCTAssertEqual(stepError(result, 0)?.kind, .unsupported)
+		XCTAssertTrue(stepError(result, 0)?.message.contains("ui.nav is off here") == true)
+	}
+
+	func testScrollAndDragPostScreenPoints() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		_ = try await engine.act(UiActParams(state: r.state, steps: [.scroll(.ref(ref(r, "Hello")), dx: nil, dy: 40), .drag([Point(400, 300), Point(450, 320)], ms: nil)]))
+		XCTAssertEqual(os.entries, ["bg.scroll 170,210 0 40", "bg.drag 500,350 550,370 300"])
+	}
+
+	// MARK: act: refs and points
+
+	func testAGoneRefIsStale() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		os.remove(3)
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))], expect: Expect(text: "Hello")))
+		XCTAssertEqual(stepError(result, 0)?.kind, .stale)
+		XCTAssertNil(result.expect, "no expect after a refused step")
+	}
+
+	func testARefPastTheWalksCapStillWorks() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		os.maxNodes = 2
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+	}
+
+	func testAnUnknownRefFailsTheCall() async {
+		let engine = os.engine()
+		let words = await throwsKind(.invalid) { try await engine.act(UiActParams(steps: [.press("@e99")])) }
+		XCTAssertTrue(words?.contains("observe first") == true)
+	}
+
+	func testAPointNeedsItsState() async throws {
+		let engine = os.engine()
+		_ = await throwsKind(.invalid) { try await engine.act(UiActParams(steps: [.click(.point(Point(70, 35)), button: nil, count: nil)])) }
+		let result = try await engine.act(UiActParams(state: "s9", steps: [.click(.point(Point(70, 35)), button: nil, count: nil)]))
+		XCTAssertEqual(stepError(result, 0)?.kind, .stale)
+	}
+
+	func testAPointLandsInTheWindowWhereverItIs() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let click = Step.click(.point(Point(70, 35)), button: nil, count: nil)
+		_ = try await engine.act(UiActParams(state: r.state, steps: [click]))
+		XCTAssertEqual(os.entries, ["bg.click 170,85 left 1"])
+		// The window moved, and the whole tree with it: the point is the window's, so it follows.
+		os.with { os in
+			os.window.bounds = Rect(200, 100, 800, 600)
+			for id in os.order { os.elements[id]!.frame = os.elements[id]!.frame?.offset(100, 50) }
+		}
+		_ = try await engine.act(UiActParams(state: r.state, steps: [click]))
+		XCTAssertEqual(os.entries.last, "bg.click 270,135 left 1")
+	}
+
+	func testAPointIsStaleWhenTheWindowResizedOrWhatIsUnderItChanged() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let click = Step.click(.point(Point(70, 35)), button: nil, count: nil)
+		os.with { $0.elements[3]!.name = "Saved" }
+		let changed = try await engine.act(UiActParams(state: r.state, steps: [click]))
+		XCTAssertEqual(stepError(changed, 0)?.kind, .stale)
+		XCTAssertTrue(stepError(changed, 0)?.message.contains("changed since state s1") == true)
+		os.with { $0.window.bounds = Rect(100, 50, 700, 600) }
+		let resized = try await engine.act(UiActParams(state: r.state, steps: [click]))
+		XCTAssertTrue(stepError(resized, 0)?.message.contains("changed size") == true)
+		XCTAssertEqual(os.entries, [])
+	}
+
+	func testAPointOutsideTheWindowIsInvalid() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(state: r.state, steps: [.click(.point(Point(900, 10)), button: nil, count: nil)]))
+		XCTAssertEqual(stepError(result, 0)?.kind, .invalid)
+	}
+
+	// MARK: act: checks, settle and expect
+
+	func testActRefusesBadShapes() async {
+		let engine = os.engine()
+		_ = await throwsKind(.invalid) { try await engine.act(UiActParams(steps: [])) }
+		_ = await throwsKind(.limit) { try await engine.act(UiActParams(steps: Array(repeating: .key("a"), count: 101))) }
+		_ = await throwsKind(.limit) { try await engine.act(UiActParams(steps: [], expect: Expect(text: "x", timeoutMs: 60_001))) }
+		_ = await throwsKind(.invalid) { try await engine.act(UiActParams(steps: [], expect: Expect(gone: true))) }
+		_ = await throwsKind(.invalid) { try await engine.act(UiActParams(steps: [.key("cmd+s")])) }
+		_ = await throwsKind(.limit) { try await engine.act(UiActParams(state: "s1", steps: [.drag([Point(1, 1), Point(2, 2)], ms: 300_001)])) }
+	}
+
+	func testExpectWaitsForALateChange() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.after(1200) { $0.add(9, "text", name: "Done", frame: Rect(120, 500, 50, 20), parent: 2) } }
+		}
+		let start = os.now
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))], expect: Expect(text: "Done", timeoutMs: 3000)))
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertGreaterThanOrEqual(os.now - start, 1200)
+		XCTAssertLessThan(os.now - start, 1600)
+	}
+
+	func testTheStateAfterAMetExpectIsTheSettledWindow() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			guard entry == "ax.AXPress 3" else { return }
+			// "Done" shows mid-transition; the window is still changing 100 ms later.
+			os.after(1200) { $0.add(9, "text", name: "Done", frame: Rect(120, 500, 50, 20), parent: 2) }
+			os.after(1300) { $0.add(10, "text", name: "Later", frame: Rect(200, 500, 50, 20), parent: 2) }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))], expect: Expect(text: "Done", timeoutMs: 3000)))
+		XCTAssertEqual(result.expect, .met)
+		let since = try await engine.observe(UiObserveParams(since: result.state))
+		XCTAssertEqual(since.diff, UiDiff(added: [], removed: [], changed: []), "the act's state already shows Later")
+	}
+
+	func testAClickOnARefWithNoPressSelectsIt() async throws {
+		os.add(9, "image", name: "draft.txt", frame: Rect(200, 300, 64, 64), parent: 2)
+		os.with { $0.elements[9]?.selectable = true }
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.click(.ref(ref(r, "draft.txt")), button: nil, count: nil)]))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(ran(result, 0)?.1, true, "the selection read back")
+		XCTAssertTrue(os.entries.contains("ax.select 9"))
+		XCTAssertFalse(os.entries.contains { $0.hasPrefix("bg.click") }, "no point while the element is reachable")
+	}
+
+	func testObservingAnAppFollowsAWindowItSwappedMidLook() async throws {
+		os.swapAfterResolve = UiWindow(id: "8", title: "Notes", bounds: Rect(100, 50, 800, 600))
+		let r = try await os.engine().observe(UiObserveParams(target: Target(app: "com.apple.Notes")))
+		XCTAssertEqual(r.window.id, "8")
+		os.swapAfterResolve = UiWindow(id: "9", title: "Notes", bounds: Rect(100, 50, 800, 600))
+		_ = await throwsKind(.notFound) { try await self.os.engine().observe(UiObserveParams(target: Target(app: "com.apple.Notes", window: "8"))) }
+	}
+
+	func testAStepThatClosesItsWindowFollowsTheAppsNextWindow() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		os.add(9, "menuitem", name: "super+w", actions: ["AXPress"])
+		os.react = { entry, os in
+			guard entry == "ax.AXPress 9" else { return }
+			// Window 7 closes; window 8, the app's other one, is now its main window.
+			os.with { os in
+				os.window = UiWindow(id: "8", title: "Other", bounds: Rect(200, 80, 600, 400))
+				os.elements[5]?.name = "Other note"
+			}
+		}
+		let result = try await engine.act(UiActParams(steps: [.key("super+w"), .key("super+s")], expect: Expect(text: "Other note", timeoutMs: 1000)))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(ran(result, 0)?.1, true, "the window it closed is gone: a change")
+		XCTAssertNotNil(ran(result, 1), "the next step runs on the next window")
+		XCTAssertEqual(result.expect, .met)
+		let after = try await engine.observe(UiObserveParams(since: result.state))
+		XCTAssertEqual(after.window.id, "8", "the act's state is the next window's")
+	}
+
+	/// super+w on the app's last window: the step ran and changed the window, and the act answers window "closed" with
+	/// no state. A step after it has nothing to act on; a text expect is unmet at once, and a gone one is met.
+	func testAStepThatClosesTheLastWindowAnswersClosed() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		os.add(9, "menuitem", name: "super+w", actions: ["AXPress"])
+		os.react = { entry, os in
+			if entry == "ax.AXPress 9" { os.with { $0.hasWindow = false } }
+		}
+		let closed = try await engine.act(UiActParams(steps: [.key("super+w")]))
+		XCTAssertEqual(closed.window, "closed")
+		XCTAssertNil(closed.state)
+		XCTAssertTrue(closed.changed)
+		XCTAssertEqual(ran(closed, 0)?.0, .semantic)
+		XCTAssertEqual(ran(closed, 0)?.1, true, "a window that closed is a change")
+
+		os.hasWindow = true
+		let r = try await engine.observe(UiObserveParams())
+		let next = try await engine.act(UiActParams(steps: [.key("super+w"), .press(ref(r, "Save"))]))
+		XCTAssertEqual(next.window, "closed")
+		XCTAssertEqual(stepError(next, 1)?.kind, .stale)
+		XCTAssertTrue(stepError(next, 1)?.message.contains("Notes has no window left: the step before closed its last one") == true, stepError(next, 1)?.message ?? "")
+
+		os.hasWindow = true
+		let start = os.now
+		let unmet = try await engine.act(UiActParams(steps: [.key("super+w")], expect: Expect(text: "Hello", timeoutMs: 5000)))
+		XCTAssertEqual(unmet.expect, .unmet)
+		XCTAssertLessThan(os.now - start, 5000, "a closed window shows nothing again: no wait for the timeout")
+		os.hasWindow = true
+		let gone = try await engine.act(UiActParams(steps: [.key("super+w")], expect: Expect(text: "Hello", gone: true, timeoutMs: 5000)))
+		XCTAssertEqual(gone.expect, .met)
+		XCTAssertEqual(gone.window, "closed")
+	}
+
+	/// One rule for "the step closed the app's last window", whatever the step: a press on the window's Close button (by
+	/// Accessibility, or by the pointer when it has no AXPress), a click, and a key chord each answer window "closed", the
+	/// step ran and changed the window, and no error.
+	func testEveryStepKindThatClosesTheLastWindowAnswersClosed() async throws {
+		os.add(9, "button", name: "Close", frame: Rect(700, 70, 80, 30), parent: 2, actions: ["AXPress"])
+		os.add(10, "button", name: "Close by pointer", frame: Rect(700, 120, 80, 30), parent: 2)
+		os.add(11, "menuitem", name: "super+w", actions: ["AXPress"])
+		let closes: Set<String> = ["ax.AXPress 9", "bg.click 740,135 left 1", "ax.AXPress 11"]
+		os.react = { entry, os in
+			if closes.contains(entry) { os.with { $0.hasWindow = false } }
+		}
+		let cases: [(String, (UiObserveResult) -> Step, Route)] = [
+			("press by Accessibility", { .press(self.ref($0, "Close")) }, .semantic),
+			("press by the pointer", { .press(self.ref($0, "Close by pointer")) }, .background),
+			("click", { .click(.ref(self.ref($0, "Close")), button: nil, count: nil) }, .semantic),
+			("key", { _ in .key("super+w") }, .semantic),
+		]
+		for (what, step, route) in cases {
+			os.hasWindow = true
+			let engine = os.engine()
+			let r = try await engine.observe(UiObserveParams())
+			let closed = try await engine.act(UiActParams(steps: [step(r)]))
+			XCTAssertEqual(closed.window, "closed", what)
+			XCTAssertNil(closed.state, what)
+			XCTAssertTrue(closed.changed, what)
+			XCTAssertNil(stepError(closed, 0), "\(what): \(stepError(closed, 0)?.message ?? "")")
+			XCTAssertEqual(ran(closed, 0)?.0, route, what)
+			XCTAssertEqual(ran(closed, 0)?.1, true, "\(what): a window that closed is a change")
+		}
+	}
+
+	func testAStepThatQuitsTheAppIsNotFoundInWords() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		os.add(9, "menuitem", name: "super+q", actions: ["AXPress"])
+		os.react = { entry, os in
+			if entry == "ax.AXPress 9" { os.with { os in (os.hasWindow, os.running) = (false, false) } }
+		}
+		let message = await throwsKind(.notFound) { try await engine.act(UiActParams(steps: [.key("super+q")])) }
+		XCTAssertTrue(message?.contains("com.apple.Notes is no longer running") == true, message ?? "")
+	}
+
+	// MARK: window expects
+
+	func testAWindowExpectMayBeginBeforeItsAppHasAWindow() async throws {
+		let engine = os.engine()
+		os.hasWindow = false
+		os.after(300) { os in
+			os.hasWindow = true
+			os.window = UiWindow(id: "8", title: "Untitled", bounds: Rect(100, 50, 800, 600))
+		}
+		_ = await throwsKind(.notFound) { try await engine.observe(UiObserveParams(target: Target(app: "com.apple.Notes"))) }
+		let wait = UiActParams(target: Target(app: "com.apple.Notes"), steps: [], expect: Expect(window: ExpectWindow(title: "Untitled"), timeoutMs: 2000))
+		let result = try await engine.act(wait)
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertTrue(result.changed)
+		let after = try await engine.observe(UiObserveParams(since: result.state))
+		XCTAssertEqual(after.window.id, "8", "the act answers the window it waited for")
+
+		// Only a wait begins windowless: with a step there is nothing to act on.
+		os.hasWindow = false
+		_ = await throwsKind(.notFound) {
+			try await engine.act(UiActParams(target: Target(app: "com.apple.Notes"), steps: [.key("super+s")], expect: Expect(window: ExpectWindow(title: "Untitled"), timeoutMs: 100)))
+		}
+		// A wait whose window never comes is unmet, and with no window to answer, closed.
+		let never = try await engine.act(UiActParams(target: Target(app: "com.apple.Notes"), steps: [], expect: Expect(window: ExpectWindow(title: "Untitled"), timeoutMs: 300)))
+		XCTAssertEqual(never.expect, .unmet)
+		XCTAssertEqual(never.window, "closed")
+	}
+
+	/// A step that opens a dialog in place of the window: the window expect reads the app's main window, title and role,
+	/// and the act answers that window.
+	func testAWindowExpectReadsTheAppsMainWindowAndAnswersIt() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			guard entry == "ax.AXPress 3" else { return }
+			os.after(200) { $0.window = UiWindow(id: "9", title: "Save As", role: "dialog", bounds: Rect(300, 200, 400, 200)) }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))], expect: Expect(window: ExpectWindow(title: "Save", role: "dialog"), timeoutMs: 2000)))
+		XCTAssertEqual(result.expect, .met)
+		let after = try await engine.observe(UiObserveParams(since: result.state))
+		XCTAssertEqual(after.window.id, "9")
+		XCTAssertEqual(after.window.role, "dialog")
+
+		let window = try await engine.act(UiActParams(steps: [], expect: Expect(window: ExpectWindow(role: "window"), timeoutMs: 0)))
+		XCTAssertEqual(window.expect, .unmet, "a dialog is not a window")
+		let gone = try await engine.act(UiActParams(steps: [], expect: Expect(window: ExpectWindow(title: "Notes"), gone: true, timeoutMs: 0)))
+		XCTAssertEqual(gone.expect, .met)
+		os.window = UiWindow(id: "7", title: "Notes", bounds: Rect(100, 50, 800, 600))
+		let plain = try await engine.act(UiActParams(steps: [], expect: Expect(window: ExpectWindow(role: "window"), timeoutMs: 0)))
+		XCTAssertEqual(plain.expect, .met, "a window with no role is a window")
+	}
+
+	func testAWindowExpectIsCheckedWholeAndNeedsNoTree() async throws {
+		let engine = os.engine()
+		let both = await throwsKind(.invalid) { try await engine.act(UiActParams(steps: [], expect: Expect(text: "x", window: ExpectWindow(title: "Notes")))) }
+		XCTAssertTrue(both?.contains("expect.window stands alone") == true, both ?? "")
+		let empty = await throwsKind(.invalid) { try await engine.act(UiActParams(steps: [], expect: Expect(window: ExpectWindow()))) }
+		XCTAssertTrue(empty?.contains("names neither title nor role") == true, empty ?? "")
+		let role = await throwsKind(.invalid) { try await engine.act(UiActParams(steps: [], expect: Expect(window: ExpectWindow(role: "sheet")))) }
+		XCTAssertTrue(role?.contains("\"sheet\", not one of the protocol's roles") == true, role ?? "")
+		let none = await throwsKind(.invalid) { try await engine.act(UiActParams(steps: [], expect: Expect(gone: true))) }
+		XCTAssertTrue(none?.contains("names neither text, ref nor window") == true, none ?? "")
+
+		os.trusted = false
+		let tree = os.engine()
+		let met = try await tree.act(UiActParams(steps: [], expect: Expect(window: ExpectWindow(title: "Notes"), timeoutMs: 0)))
+		XCTAssertEqual(met.expect, .met, "a window's title is in the window list")
+		_ = await throwsKind(.unsupported) { try await tree.act(UiActParams(steps: [], expect: Expect(text: "Hello", timeoutMs: 0))) }
+	}
+
+	// MARK: the final view
+
+	/// Each set is judged on the act's final view, read after its expect: a value the app throws away while the expect
+	/// waits was not kept, however long it held at the step.
+	func testASetIsJudgedOnTheFinalViewAfterTheExpect() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			guard entry.hasPrefix("ax.set 4") else { return }
+			os.after(1000) { $0.elements[4]?.value = "" }
+			os.after(1500) { $0.elements[5]?.name = "Done" }
+		}
+		let result = try await engine.act(UiActParams(steps: [.set(ref(r, "Title"), value: "draft")], expect: Expect(text: "Done", timeoutMs: 3000)))
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertEqual(ran(result, 0)?.1, false, "the value was gone by the final view")
+	}
+
+	/// A poll that catches the expect mid-transition does not decide the act: the final view, read once the window
+	/// settles, does.
+	func testAnExpectSeenOnlyMidTransitionIsUnmet() async throws {
+		let engine = os.engine()
+		// The window settles by 150 ms; a poll's look at 650 catches the flash, and the final view after it does not.
+		os.after(600) { $0.elements[5]?.name = "Saved" }
+		os.after(680) { $0.elements[5]?.name = "Hello" }
+		let result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Saved", timeoutMs: 1000)))
+		XCTAssertEqual(result.expect, .unmet)
+	}
+
+	func testExpectUnmetAfterItsTimeout() async throws {
+		let engine = os.engine()
+		let start = os.now
+		let result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Nope", timeoutMs: 500)))
+		XCTAssertEqual(result.expect, .unmet)
+		XCTAssertGreaterThanOrEqual(os.now - start, 500)
+		XCTAssertTrue(result.steps.isEmpty)
+	}
+
+	func testExpectRefTextAndGone() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let hello = ref(r, "Hello")
+		var result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Hell", ref: hello, timeoutMs: 0)))
+		XCTAssertEqual(result.expect, .met)
+		result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Save", ref: hello, timeoutMs: 0)))
+		XCTAssertEqual(result.expect, .unmet, "both: that element holds the text")
+		os.after(200) { $0.remove(5) }
+		result = try await engine.act(UiActParams(steps: [], expect: Expect(ref: hello, gone: true, timeoutMs: 1000)))
+		XCTAssertEqual(result.expect, .met)
+		result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "hunter2", timeoutMs: 0)))
+		XCTAssertEqual(result.expect, .unmet, "a secure field's value never matches")
+		result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "save", timeoutMs: 0)))
+		XCTAssertEqual(result.expect, .unmet, "text matches with its case")
+	}
+
+	func testSettleWaitsForQuietButNotForever() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		// A window whose tree changes for 600 ms after the press, then holds still.
+		os.react = { entry, os in
+			guard entry == "ax.AXPress 3" else { return }
+			for t in stride(from: 100.0, through: 600, by: 100) { os.after(t) { $0.elements[2]?.value = "\(t)" } }
+		}
+		var start = os.now
+		_ = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		XCTAssertGreaterThanOrEqual(os.now - start, 600)
+		XCTAssertLessThan(os.now - start, 1000)
+		// One that never holds still: the act answers after maxSettleMs.
+		os.react = { entry, os in
+			guard entry == "ax.AXPress 3" else { return }
+			for t in stride(from: 50.0, through: 10_000, by: 50) { os.after(t) { $0.elements[2]?.value = "\(t)" } }
+		}
+		start = os.now
+		_ = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		XCTAssertLessThanOrEqual(os.now - start, Double(Limits.maxSettleMs) + 200)
+	}
+
+	func testASetTheAppThrowsAwayIsNotVerified() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		// Finder's name field outside rename mode: it shows the new name, settles, then goes back to the old one.
+		os.react = { entry, os in
+			guard entry.hasPrefix("ax.set 4") else { return }
+			os.after(400) { $0.elements[4]?.value = "" }
+		}
+		let thrown = try await engine.act(UiActParams(steps: [.set(ref(r, "Title"), value: "final.txt")]))
+		XCTAssertEqual(ran(thrown, 0)?.0, .semantic)
+		XCTAssertEqual(ran(thrown, 0)?.1, false, "the value did not last")
+		os.react = nil
+		let kept = try await engine.act(UiActParams(steps: [.set(ref(r, "Title"), value: "kept")]))
+		XCTAssertEqual(ran(kept, 0)?.1, true)
+	}
+
+	/// A menu item that does nothing when pressed; its key, posted, goes back a page.
+	func backMenuItemThatDoesNothing() {
+		os.add(9, "menuitem", name: "super+[", actions: ["AXPress"])
+		os.react = { entry, os in
+			guard entry == "bg.key super+[" || entry == "fg.key super+[" else { return }
+			os.with { $0.elements[5]?.name = "Quarterly report" }
+		}
+	}
+
+	/// A route that sent the step owns it: a press that showed nothing is not sent again by the keys, in the background
+	/// or in front, however long the expect waits. Only a route that sent nothing lets the next one try.
+	func testASentStepThatShowsNothingIsNeverSentAgain() async throws {
+		backMenuItemThatDoesNothing()
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		let alone = try await engine.act(UiActParams(steps: [.key("super+[")]))
+		XCTAssertEqual(ran(alone, 0)?.0, .semantic)
+		XCTAssertEqual(ran(alone, 0)?.1, false)
+
+		let start = os.now
+		let waited = try await engine.act(UiActParams(steps: [.key("super+[")], expect: Expect(text: "Quarterly report", timeoutMs: 1000), foreground: true))
+		XCTAssertEqual(ran(waited, 0)?.0, .semantic)
+		XCTAssertEqual(ran(waited, 0)?.1, false)
+		XCTAssertEqual(waited.expect, .unmet)
+		XCTAssertGreaterThanOrEqual(os.now - start, 1000, "the expect waited out its timeout for the press's effect")
+		XCTAssertEqual(os.entries.filter { $0.contains("key") || $0.hasPrefix("ax.AXPress") }, ["ax.AXPress 9", "ax.AXPress 9"], "one press per act, and no keys")
+
+		// The menu item is gone, so the semantic route sends nothing: the keys go.
+		os.remove(9)
+		let keys = try await engine.act(UiActParams(steps: [.key("super+[")], expect: Expect(text: "Quarterly report", timeoutMs: 1000)))
+		XCTAssertEqual(ran(keys, 0)?.0, .background)
+		XCTAssertEqual(ran(keys, 0)?.1, true)
+		XCTAssertEqual(keys.expect, .met)
+	}
+
+	func testKeysGoTheForegroundWayFirstWhenAllowedAndTheAppIsInFront() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			if entry.hasSuffix(".key enter") { os.with { $0.elements[5]?.name = "Renaming" } }
+		}
+		os.with { $0.frontPID = 42 }
+		let front = try await engine.act(UiActParams(steps: [.key("enter")], foreground: true))
+		XCTAssertEqual(ran(front, 0)?.0, .foreground)
+		let r = try await engine.observe(UiObserveParams())
+		let click = try await engine.act(UiActParams(state: r.state, steps: [.click(.point(Point(30, 30)), button: nil, count: nil)], foreground: true))
+		XCTAssertEqual(ran(click, 0)?.0, .background, "a pointer step keeps the background way first")
+		os.with { $0.elements[5]?.name = "Hello" }
+		let alone = try await engine.act(UiActParams(steps: [.key("enter")]))
+		XCTAssertEqual(ran(alone, 0)?.0, .background, "in front, but foreground not allowed")
+		os.with { $0.frontPID = 7 }
+		os.with { $0.elements[5]?.name = "Hello" }
+		let behind = try await engine.act(UiActParams(steps: [.key("enter")], foreground: true))
+		XCTAssertEqual(ran(behind, 0)?.0, .background, "another app in front: the background way first")
+	}
+
+	// MARK: a person takes over
+
+	func testAPersonPressingAKeyStopsTheActAfterAForegroundStep() async throws {
+		let engine = os.engine(background: .off("SkyLight is missing"))
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			// The route moved the pointer to its click; then a person pressed a key.
+			if entry.hasPrefix("fg.click") { os.with { $0.cursor = Point(340, 420); $0.now += 5; $0.personPressed = $0.now } }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Hello")), .press(ref(r, "Save"))], foreground: true))
+		XCTAssertEqual(result.steps.count, 2)
+		XCTAssertEqual(ran(result, 0)?.0, .foreground)
+		XCTAssertEqual(stepError(result, 1)?.kind, .aborted, "every step after a foreground one checks, whatever its route")
+		XCTAssertTrue(stepError(result, 1)?.message.contains("used the keyboard or the mouse") == true, stepError(result, 1)?.message ?? "")
+		XCTAssertEqual(os.entries, ["fg.click 170,210 left 1"], "Save was not pressed")
+	}
+
+	func testAPersonMovingThePointerStopsTheForegroundStepBeforeItSends() async throws {
+		let engine = os.engine(background: .off("SkyLight is missing"))
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.with { $0.cursor = Point(400, 400) } }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save")), .press(ref(r, "Hello"))], foreground: true))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(stepError(result, 1)?.kind, .aborted)
+		XCTAssertTrue(stepError(result, 1)?.message.contains("moved the pointer to (400, 400)") == true, stepError(result, 1)?.message ?? "")
+		XCTAssertEqual(os.entries, ["ax.AXPress 3"], "the foreground click was never sent")
+	}
+
+	func testAPressBeforeTheFirstForegroundStepStopsIt() async throws {
+		let engine = os.engine(background: .off("SkyLight is missing"))
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.with { $0.now += 5; $0.personPressed = $0.now } }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save")), .press(ref(r, "Hello"))], foreground: true))
+		XCTAssertEqual(stepError(result, 1)?.kind, .aborted)
+		XCTAssertEqual(os.entries, ["ax.AXPress 3"])
+
+		os.react = nil
+		let again = try await engine.act(UiActParams(steps: [.press(ref(r, "Hello"))], foreground: true))
+		XCTAssertEqual(ran(again, 0)?.0, .foreground, "a press before the act began is not a take-over")
+	}
+
+	func testTheForegroundRoutesOwnPointerIsNoTakeOver() async throws {
+		let engine = os.engine(background: .off("SkyLight is missing"))
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			if entry.hasPrefix("fg.click") { os.with { $0.cursor = Point(340, 420) } }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Hello")), .press(ref(r, "Hello"))], foreground: true))
+		XCTAssertEqual(ran(result, 0)?.0, .foreground)
+		XCTAssertEqual(ran(result, 1)?.0, .foreground)
+		XCTAssertEqual(os.entries, ["fg.click 170,210 left 1", "fg.click 170,210 left 1"])
+	}
+
+	func testAnActThatNeverTakesTheForegroundIgnoresAPerson() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.with { $0.cursor = Point(400, 400); $0.now += 5; $0.personPressed = $0.now } }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save")), .press(ref(r, "Hello"))], foreground: true))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(ran(result, 1)?.0, .background)
+		XCTAssertEqual(os.entries, ["ax.AXPress 3", "bg.click 170,210 left 1"])
+	}
+
+	// MARK: the app's keyboard focus
+
+	func testTypingAtTheFocusInsertsOnlyIntoATextInTheKeyWindow() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		os.with { $0.focusedID = 6 }
+		let list = try await engine.act(UiActParams(steps: [.type("hi", into: nil)]))
+		XCTAssertEqual(ran(list, 0)?.0, .background, "a group with the focus takes keys, not an insert")
+		XCTAssertEqual(os.entries, ["bg.type hi"])
+
+		os.with { $0.focusedID = 4; $0.keyWindow = "9"; $0.log = [] }
+		let elsewhere = try await engine.act(UiActParams(steps: [.type("hi", into: nil)]))
+		XCTAssertEqual(ran(elsewhere, 0)?.0, .background, "the focus is in another of the app's windows")
+		XCTAssertEqual(os.entries, ["bg.type hi"])
+
+		os.with { $0.keyWindow = "7"; $0.log = [] }
+		let here = try await engine.act(UiActParams(steps: [.type("hi", into: nil)]))
+		XCTAssertEqual(ran(here, 0)?.0, .semantic)
+		XCTAssertEqual(os.entries, ["ax.insert 4 hi"])
+	}
+
+	func testAMenuKeyIsPressedOnlyWhenTheTargetIsTheKeyWindow() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		os.with { $0.keyWindow = "9" }
+		let elsewhere = try await engine.act(UiActParams(steps: [.key("super+s")]))
+		XCTAssertEqual(ran(elsewhere, 0)?.0, .background, "the menu would save window 9")
+		XCTAssertEqual(os.entries, ["bg.key super+s"])
+
+		os.with { $0.keyWindow = "7"; $0.log = [] }
+		let here = try await engine.act(UiActParams(steps: [.key("super+s")]))
+		XCTAssertEqual(ran(here, 0)?.0, .semantic)
+		XCTAssertEqual(os.entries, ["ax.AXPress 8"])
+	}
+
+	/// The ui fixture's Save writes 300 ms after its press, past the quiet settle: the expect waits for it, and no other
+	/// route presses Save again. One press, one save.
+	func testADelayedSaveIsPressedOnceAndSavesOnce() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			guard entry.hasSuffix("AXPress 3") || entry.contains(".click 160,85") else { return }
+			os.after(300) { os in
+				let before = os.elements[5]?.value ?? ""
+				os.elements[5]?.value = before + "Saved."
+			}
+		}
+		let result = try await engine.act(UiActParams(state: r.state, steps: [.press(ref(r, "Save"))], expect: Expect(text: "Saved.", timeoutMs: 10_000), foreground: true))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(result.expect, .met)
+		try await FakeClock(os: os).sleep(ms: 2000)
+		XCTAssertEqual(os.entries.filter { $0.contains("AXPress") || $0.contains("click") }, ["ax.AXPress 3"], "one press")
+		XCTAssertEqual(os.with { $0.elements[5]?.value }, "Saved.", "one save")
+	}
+
+	func testARedrawAloneNeitherHoldsASettleNorVerifiesAStep() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		// A blinking caret: the window's image changes every 50 ms, and its tree never does.
+		os.react = { entry, os in
+			guard entry == "ax.AXPress 3" else { return }
+			for t in stride(from: 50.0, through: 10_000, by: 50) { os.after(t) { $0.frameHash += 1 } }
+		}
+		let start = os.now
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		XCTAssertLessThan(os.now - start, 500, "the tree held still, so the settle did")
+		XCTAssertEqual(ran(result, 0)?.1, false, "a redraw is not the step's effect")
+		XCTAssertFalse(result.changed)
+	}
+
+	/// System Settings rebuilds its sidebar rows scrolled out of the window every time its tree is read: new elements,
+	/// at other heights, so the list's content, taller than the window, is a new height each read too. Finder's status
+	/// bar below the window counts the free disk space down. Nothing outside the window is what a person sees, and
+	/// neither is which element a row is, so neither holds a settle (on CI each settle there ran out its 3 s over 4
+	/// looks) or is a step's effect.
+	func testWhatChangesOutsideTheWindowNeitherHoldsASettleNorVerifiesAStep() async throws {
+		os.add(50, "group", frame: Rect(108, 98, 178, 1000), parent: 2)
+		os.onSnapshot = { os in
+			let old = os.order.last { os.elements[$0]?.name == "Sound" } ?? 99
+			os.remove(old)
+			os.add(old + 1, "row", name: "Sound", frame: Rect(108, 700 + Double(old % 2) * 19, 198, 19), parent: 2)
+			os.remove(old + 1000)
+			os.add(old + 1001, "text", name: "Focus", frame: Rect(-50, 700, 0, 0), parent: 2)
+			os.elements[50]!.frame = Rect(108, 98, 178, 1000 + Double(old % 2) * 19)
+			// The row at the window's bottom edge: a new element each read, the same words in the same place.
+			os.remove(old + 2000)
+			os.add(old + 2001, "text", name: "Notifications", frame: Rect(123, 630, 105, 14), parent: 2)
+		}
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let (start, walks) = (os.now, os.snapshots)
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(os.snapshots - walks, 3, "the act's first look, then two a quiet apart")
+		XCTAssertLessThan(os.now - start, 500)
+		XCTAssertEqual(ran(result, 0)?.1, false, "a row rebuilt outside the window is not the step's effect")
+		XCTAssertFalse(result.changed)
+		// What changes on the window still does both.
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.after(100) { $0.elements[5]!.name = "Saved" } }
+		}
+		let shown = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(ran(shown, 0)?.1, true)
+		XCTAssertTrue(shown.changed)
+		// The bounds a node shows are held inside the window: the part of the list a person sees, and a line on the edge
+		// for a row wholly below it.
+		let full = try await engine.observe(UiObserveParams(full: true))
+		XCTAssertEqual(full.nodes.first { $0.role == "group" && $0.bounds.x == 8 }?.bounds, Rect(8, 48, 178, 552))
+		let sound = full.nodes.first { $0.name == "Sound" }!
+		XCTAssertEqual(sound.bounds, Rect(8, 600, 198, 0))
+		XCTAssertEqual(sound.flags, [.offscreen])
+	}
+
+	/// The quiet between two looks is time the app is left alone, however long a look took: an app answers a look on
+	/// the thread it draws on, so looks back to back (System Settings on CI: 370 ms each) leave it no time to draw what
+	/// the step set off. On CI they called About's window quiet before About was drawn: unverified, then 1.9 s of expect.
+	func testTheQuietBetweenTwoLooksIsTimeTheAppIsLeftAlone() async throws {
+		os.walkMs = 400
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let (start, walks) = (os.now, os.snapshots)
+		_ = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(os.snapshots - walks, 3)
+		XCTAssertEqual(os.now - start, 400 + 400 + 150 + 400, "the first look, then the settle's two with the quiet between")
+	}
+
+	/// A node's actions and whether its value can be set cost a Mac two reads more, as much as the rest of the node
+	/// (System Settings on CI: 168 nodes, 300 ms a walk, half of it on those two). An observe shows them for every node;
+	/// an act's looks need them only for the elements its steps act on, read when the step runs.
+	func testAnActReadsActionsAndSettableOnlyForTheElementsItsStepsActOn() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		XCTAssertEqual(os.detailReads, os.order.count, "an observe reads every node's")
+		XCTAssertEqual(node(r, "Save")?.actions, ["AXPress", "AXShowMenu"])
+		os.detailReads = 0
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.with { $0.elements[5]!.name = "Saved" } }
+		}
+		let steps: [Step] = [.press(ref(r, "Save")), .set(ref(r, "Title"), value: "Hi")]
+		let result = try await engine.act(UiActParams(steps: steps, expect: Expect(text: "Saved")))
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertEqual(ran(result, 1)?.1, true)
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertEqual(os.detailReads, 2, "one read for each step's element")
+	}
+
+	/// An act with no steps changes nothing between its first look and its settle, so the first look is the settle's
+	/// first: a wait that already holds costs two looks a quiet apart, not three (System Settings on CI: 400 ms a look).
+	func testAnActWithNoStepsSettlesFromItsFirstLook() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		let (start, walks) = (os.now, os.snapshots)
+		let result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Save")))
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertEqual(result.changed, false)
+		XCTAssertEqual(os.snapshots - walks, 2)
+		XCTAssertEqual(os.now - start, 150)
+		// A window that moves on between the two still settles, and the act says it changed.
+		os.onSnapshot = { os in
+			if os.snapshots == walks + 4 { os.elements[5]!.name = "Saved" }
+		}
+		let moved = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Saved")))
+		XCTAssertEqual(moved.expect, .met)
+		XCTAssertEqual(moved.changed, true)
+		XCTAssertEqual(os.snapshots - walks, 5, "the first look, one that saw the change, one that saw it hold")
+	}
+
+	/// An app that tells its tree's changes (an AXObserver on a Mac) settles on one read: the settle waits until the app
+	/// told nothing for quietMs, reads once, and reads again only when the app told a change after that read began. An
+	/// act's first look is the observe's read before it, while the app told nothing since. System Settings on CI: 260
+	/// to 860 ms a read, and a step took three to five of them.
+	func testAnAppThatTellsItsChangesSettlesOnOneRead() async throws {
+		os.tells = true
+		os.walkMs = 400
+		let engine = os.engine()
+		let notes = Target(app: "com.apple.Notes")
+		var r = try await engine.observe(UiObserveParams(target: notes))
+		// Nothing changes: the act's first look is the observe's, and the settle reads once, a quiet after the press.
+		var (start, walks) = (os.now, os.snapshots)
+		var result = try await engine.act(UiActParams(target: notes, steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(os.snapshots - walks, 1, "one read, a quiet after the press")
+		XCTAssertEqual(os.now - start, 150 + 400)
+		XCTAssertEqual(ran(result, 0)?.1, false)
+		// The press redraws the window 300 ms on, while the settle's read runs: told after that read began, so the
+		// window is read again once the app went quiet, and that read shows it.
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.after(300) { $0.elements[5]!.name = "Saved" } }
+		}
+		r = try await engine.observe(UiObserveParams(target: notes))
+		(start, walks) = (os.now, os.snapshots)
+		result = try await engine.act(UiActParams(target: notes, steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertTrue(result.changed)
+		XCTAssertEqual(os.snapshots - walks, 2)
+		XCTAssertEqual(os.now - start, 150 + 400 + 400)
+		// An app still telling changes holds the read off until it went quiet.
+		os.react = { entry, os in
+			guard entry == "ax.AXPress 3" else { return }
+			for t in stride(from: 100.0, through: 500, by: 100) { os.after(t) { $0.elements[2]?.value = "\(t)" } }
+		}
+		r = try await engine.observe(UiObserveParams(target: notes))
+		(start, walks) = (os.now, os.snapshots)
+		result = try await engine.act(UiActParams(target: notes, steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertEqual(os.snapshots - walks, 1)
+		XCTAssertEqual(os.now - start, 500 + 150 + 400)
+	}
+
+	/// An app may tell changes a person never sees: System Settings remakes its sidebar's rows out of view each time its
+	/// tree is read. A read that came out the same as the one before settles, as the look-twice settle does.
+	func testAnAppThatTellsChangesNoOneSeesStillSettles() async throws {
+		os.tells = true
+		os.walkMs = 100
+		os.onSnapshot = { os in
+			let old = os.order.last { os.elements[$0]?.name == "Sound" } ?? 99
+			os.remove(old)
+			os.add(old + 1, "row", name: "Sound", frame: Rect(108, 700 + Double(old % 2) * 19, 198, 19), parent: 2)
+		}
+		let engine = os.engine()
+		let notes = Target(app: "com.apple.Notes")
+		let r = try await engine.observe(UiObserveParams(target: notes))
+		let (start, walks) = (os.now, os.snapshots)
+		let result = try await engine.act(UiActParams(target: notes, steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(os.snapshots - walks, 3, "the first look (the observe's read told a change), then two reads the same")
+		XCTAssertEqual(os.now - start, 100 + 150 + 100 + 150 + 100)
+		XCTAssertFalse(result.changed)
+	}
+
+	/// An act with no steps, at an app that tells its changes: its first look is the settle's read, and stays the final
+	/// view while the app told nothing for quietMs after it began. A change told in that time is read.
+	func testAnActWithNoStepsAtAnAppThatTellsItsChangesReadsOnce() async throws {
+		os.tells = true
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		var (start, walks) = (os.now, os.snapshots)
+		var result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Save")))
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertEqual(result.changed, false)
+		XCTAssertEqual(os.snapshots - walks, 1)
+		XCTAssertEqual(os.now - start, 150)
+		os.after(100) { $0.elements[5]!.name = "Saved" }
+		(start, walks) = (os.now, os.snapshots)
+		result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Saved")))
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertEqual(result.changed, true)
+		XCTAssertEqual(os.snapshots - walks, 2)
+		XCTAssertEqual(os.now - start, 250)
+	}
+
+	func testCallsRunOneAtATime() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let save = ref(r, "Save")
+		async let a = engine.act(UiActParams(steps: [.press(save), .key("enter")]))
+		async let b = engine.act(UiActParams(steps: [.key("tab"), .key("space")]))
+		_ = try await (a, b)
+		let log = os.entries
+		XCTAssertEqual(log.count, 4)
+		let first = log.firstIndex(of: "ax.AXPress 3")!
+		XCTAssertTrue(log[first + 1] == "bg.key enter", "\(log)")
+	}
+
+	// MARK: the driver
+
+	func testFeaturesSayWhy() {
+		let driver = Driver(platform: os.platform(background: .off("SkyLight is missing")), policy: Policy(), caller: .local, machine: MachineInfo(os: "macos", osVersion: "26.1 (25B78)", device: Device(maker: "Apple", model: "MacBook Pro")))
+		var f = driver.features()
+		XCTAssertEqual(f["ui.tree"], .on)
+		XCTAssertEqual(f["ui.image"], .on)
+		XCTAssertEqual(f["ui.background"], .off("SkyLight is missing"))
+		XCTAssertEqual(f["apps.background"], .on)
+		XCTAssertEqual(Set(f.keys), Set(FeatureName.all))
+		os.trusted = false
+		f = driver.features()
+		XCTAssertEqual(f["ui.tree"], .off("Accessibility is not granted to Computerd"))
+		XCTAssertEqual(f["ui.image"], .on, "the image does not need the tree")
+		XCTAssertEqual(f["ui.foreground"], .on)
+		let hello = driver.hello()
+		XCTAssertEqual(hello.device, Device(maker: "Apple", model: "MacBook Pro"))
+		XCTAssertEqual(hello.protocol, "0.2")
+		XCTAssertEqual(hello.groups, [.exec, .files, .screen, .inputPointer, .inputKeys, .apps, .ui])
+		XCTAssertEqual(hello.screen, ScreenInfo(width: 1440, height: 900, scale: 2))
+	}
+
+	func testDriverAppsHonorThePolicy() async throws {
+		let driver = Driver(platform: os.platform(), policy: Policy(apps: ["com.apple.Notes"]), caller: .local, machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
+		let r = driver.router()
+		let list = try await r.handler("apps.list")!(nil)
+		XCTAssertEqual(list, .object(["apps": .array([.object(["id": .string("com.apple.Notes"), "name": .string("Notes")])]), "foreground": .null]))
+		_ = try await r.handler("apps.launch")!(.object(["id": .string("com.apple.Notes"), "background": .bool(true)]))
+		XCTAssertEqual(os.entries, ["launch com.apple.Notes - true"])
+		_ = await throwsKind(.denied) { try await r.handler("apps.launch")!(.object(["id": .string("com.apple.Safari")])) }
+		_ = await throwsKind(.invalid) { try await r.handler("apps.terminate")!(.object(["id": .string("com.apple.Notes"), "background": .bool(true)])) }
+	}
+
+	func testScreenShotIsChunked() async throws {
+		let driver = Driver(platform: os.platform(), policy: Policy(), caller: .local, machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
+		let r = driver.router()
+		let shot = try await r.handler("screen.shot")!(nil)
+		XCTAssertEqual(shot["eof"], .bool(false))
+		XCTAssertEqual(shot["width"], .int(2880))
+		let id = shot["id"]!
+		let rest = try await r.handler("screen.read")!(.object(["id": id, "offset": .int(Int64(Limits.maxChunkBytes))]))
+		XCTAssertEqual(rest["eof"], .bool(true))
+		_ = await throwsKind(.notFound) { try await r.handler("screen.read")!(.object(["id": id, "offset": .int(0)])) }
+	}
+}

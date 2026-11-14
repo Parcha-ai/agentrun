@@ -68,7 +68,7 @@ test("the merge carries the run's seed: a skill a person changed on main after t
     return { seed: made.main, before: await readSnapshot(ws) };
   });
   const proposal = { seed, notes: [UNITS], files: [{ file: SKILL_PATH, text: SKILL.replace("Steps.", "Better steps.") }] };
-  const { end, entries } = await learn(store, data, proposal, answer([{ file: UNITS.file, decision: "keep" }, { file: SKILL_PATH, decision: "keep" }]));
+  const { end, entries } = await learn(store, data, proposal, answer([{ file: UNITS.file, decision: "keep", general: true }, { file: SKILL_PATH, decision: "keep", general: true }]));
   assert.deepEqual(end, { state: "ended" });
   const dropped = entries.filter((entry) => entry.kind === KINDS.learningDropped).map((entry) => [entry.data.reason, entry.data.problems]);
   assert.deepEqual(dropped, [["checker", [{ rule: "supersedes", path: SKILL_PATH, detail: `${SKILL_PATH} changed on main after the run started` }]]], shown(entries));
@@ -79,7 +79,7 @@ test("a note the grader says came from the user's own words lands on main with o
   const { store, data } = await setUp(t);
   const TABLES = { file: "prefers-tables.md", text: note("Prefers tables", "Answer with a table when comparing") };
   const proposal = { notes: [UNITS, TABLES], asked: ["answer with a table when you compare"] };
-  const { end, entries } = await learn(store, data, proposal, answer([{ file: UNITS.file, decision: "keep", origin: "run" }, { file: TABLES.file, decision: "keep", origin: "you" }]));
+  const { end, entries } = await learn(store, data, proposal, answer([{ file: UNITS.file, decision: "keep", general: true, origin: "run" }, { file: TABLES.file, decision: "keep", general: true, origin: "you" }]));
   assert.deepEqual(end, { state: "ended" });
   assert.equal(entries.filter((entry) => entry.kind === KINDS.learningMerged).length, 1, shown(entries));
   const { tables, units, snapshot } = await inFolder(data, async (ws) => ({ tables: text(await ws.read(TABLES.file)), units: text(await ws.read(UNITS.file)), snapshot: await readSnapshot(ws) }));
@@ -92,7 +92,7 @@ test("a draft the grader holds waits on main by its README (status: pending); it
   const { store, data } = await setUp(t);
   const draft = workflow();
   const proposal = { notes: [UNITS], files: [{ file: DRAFT_PATH, text: draft }, { file: README_PATH, text: readme }] };
-  const { end, entries } = await learn(store, data, proposal, answer([{ file: UNITS.file, decision: "keep" }, { file: DRAFT_PATH, decision: "pending" }]));
+  const { end, entries } = await learn(store, data, proposal, answer([{ file: UNITS.file, decision: "keep", general: true }, { file: DRAFT_PATH, decision: "pending", general: true }]));
   assert.deepEqual(end, { state: "ended" });
   assert.equal(entries.filter((entry) => entry.kind === KINDS.learningMerged).length, 1, shown(entries));
   const { held, json, snapshot } = await inFolder(data, async (ws) => ({ held: text(await ws.read(README_PATH)), json: text(await ws.read(DRAFT_PATH)), snapshot: await readSnapshot(ws) }));

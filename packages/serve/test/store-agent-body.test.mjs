@@ -1,8 +1,7 @@
-// The agent body validator (store/agent-body.ts, the P4 fold of pi-durable-agent's bodyOf): everything the old validator
+// The agent body validator (store/agent-body.ts): everything the old validator
 // accepted it accepts — harness, tool settings, place, content-addressed skills, a default cap, the learning switch.
-// The agent-level argument pin is NOT handled here: it is wired through tool-plane's pinIssues + canonicalToolSettings (the
-// one copy) when AGENT_LAYER_PINS flips, so until then a pin is refused like any unknown tool setting. Ported from
-// pi-durable-agent/test/agent-store.test.mjs's revision checks, tested on bodyOf directly.
+// The agent-level argument pin is NOT handled here: agents-store.ts checks and keeps it through tool-plane's pinIssues +
+// canonicalToolSettings (the one copy). Tested on bodyOf directly.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -48,6 +47,43 @@ test("a revision keeps the place it names, {mode, box?}; one that names none kee
   assert.deepEqual(bodyOf({ ...A, place: { box: "docker", mode: "sandbox" } }).body.place, { mode: "sandbox", box: "docker" });
   for (const place of ["runner", null, {}, { mode: "Runner" }, { mode: "sandbox", box: "" }, { mode: "sandbox", box: 3 }, { mode: "runner", home: "x" }]) {
     assert.throws(() => bodyOf({ ...A, place }), refused(/place/), JSON.stringify(place));
+  }
+});
+
+test("a revision keeps the computer it names, {kind, provider?, image?, gpu?}; one with no image keeps none, so its body (and id) is as before", () => {
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "desktop", provider: "orgo" } }).body.computer, { kind: "desktop", provider: "orgo" });
+  assert.deepEqual(bodyOf({ ...A, computer: { image: "windows", provider: "orgo", kind: "desktop" } }).body.computer, { kind: "desktop", provider: "orgo", image: "windows" });
+  for (const computer of [{ kind: "desktop", provider: "orgo", image: "" }, { kind: "desktop", provider: "orgo", image: " windows" }, { kind: "desktop", provider: "orgo", image: 3 }, { kind: "desktop", provider: "orgo", os: "windows" }]) {
+    assert.throws(() => bodyOf({ ...A, computer }), refused(/computer/), JSON.stringify(computer));
+  }
+});
+
+test("a revision's computer keeps a sandbox's gpu, {type, count}: a GPU type name and a whole count from 1; anything else is refused", () => {
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", gpu: { count: 2, type: "H100" } } }).body.computer, { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } });
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona" } }).body.computer, { kind: "sandbox", provider: "daytona" }, "no gpu named, none kept");
+  for (const gpu of ["H100", null, { type: "H100" }, { type: "", count: 1 }, { type: "H 100", count: 1 }, { type: "H100", count: 0 }, { type: "H100", count: 1.5 }, { type: "H100", count: 1, region: "earth" }]) {
+    assert.throws(() => bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", gpu } }), refused(/gpu is not \{type, count\}/), JSON.stringify(gpu));
+  }
+  assert.deepEqual(bodyOf({ ...A, computer: { gpu: { type: "H100", count: 1 }, image: "cuda", provider: "daytona", kind: "sandbox" } }).body.computer, { kind: "sandbox", provider: "daytona", image: "cuda", gpu: { type: "H100", count: 1 } }, "an image and GPUs both kept, in the body's order");
+  assert.throws(() => bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", region: "earth" } }), refused(/not \{kind, provider\?, image\?, gpu\?, persistent\?, surface\?, exec\?\}/));
+});
+
+test("a revision's computer keeps persistent, a boolean; anything else is refused, and none named keeps none", () => {
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "desktop", provider: "orgo", persistent: true } }).body.computer, { kind: "desktop", provider: "orgo", persistent: true });
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "desktop", provider: "orgo" } }).body.computer, { kind: "desktop", provider: "orgo" });
+  for (const persistent of ["yes", 1, null]) {
+    assert.throws(() => bodyOf({ ...A, computer: { kind: "desktop", provider: "orgo", persistent } }), refused(/persistent a boolean/), JSON.stringify(persistent));
+  }
+});
+
+test("a revision's computer keeps surface (code or tools) and exec (a boolean); anything else is refused, and none named keeps none", () => {
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "phone", provider: "phone-harness", surface: "code", exec: false } }).body.computer, { kind: "phone", provider: "phone-harness", surface: "code", exec: false });
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "desktop", provider: "e2b", surface: "tools" } }).body.computer, { kind: "desktop", provider: "e2b", surface: "tools" });
+  for (const surface of ["both", "", 1, null]) {
+    assert.throws(() => bodyOf({ ...A, computer: { kind: "desktop", provider: "e2b", surface } }), refused(/surface code or tools/), JSON.stringify(surface));
+  }
+  for (const exec of ["no", 0, null]) {
+    assert.throws(() => bodyOf({ ...A, computer: { kind: "desktop", provider: "e2b", exec } }), refused(/exec a boolean/), JSON.stringify(exec));
   }
 });
 

@@ -14,19 +14,23 @@ import { startedWith } from "./adapters.js";
 import { REPEAT_MS, stopOnSignals } from "./stop-signals.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
-import type { ImageState } from "./box-image.js";
-import { banner, boxImageLine } from "./print.js";
+import { banner } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
-import { runnerBeside } from "./runner/beside.js";
+import { besideRunnerOptions, besideStopping, runnerBeside } from "./runner/beside.js";
+import { apiOnlyFrom } from "./api-only.js";
+import { surviveClosedPipes } from "./closed-pipes.js";
 
+// A stdout or stderr its reader closed loses the lines written after, never the process (closed-pipes.ts): for every
+// command, the server and the runner alike.
+surviveClosedPipes();
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
-       agentrun-serve runner --data DIR [--loops N] [--name NAME]
+       agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
@@ -39,15 +43,20 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --faux-browser MODULE
                     with --faux only: the browser tool's provider and driver from MODULE's default export (a fake
                     browser, no vendor, no key), for the console's real-browser tests
+  --faux-github     with --faux only: a fake GitHub App, connected at the start and answered in this process, so
+                    GitHub triggers run with nothing sent to GitHub; its webhook secret is in DIR/faux-github.json.
+                    On a scratch data directory: refused where another GitHub App is connected
   --allow-host NAME another Host name to accept (repeatable)
-  --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory
-                    holds); each run also reserves its harness's memory, and over either a new run is 429
+  --max-runs N      the most runs the runner beside the server holds at once, the rest waiting queued (default
+                    AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds); the capabilities'
+                    max_concurrent_runs says the same
   --documents DIR   a read-only directory of documents a workflow's pdf_pages calls read by file name (default
                     AGENTRUN_SERVE_DOCUMENTS)
   --allow-code-nodes run workflows' code nodes, in the run's process with no sandbox (default off, or
                     AGENTRUN_SERVE_CODE_NODES=1); off, a workflow with one saves with a warning and its runs are refused
-  --drain-timeout D how long a busy run may finish its turn when the server stops (default 30s; the image's is 6s, inside
-                    Docker's 10 s grace); a run cut off resumes at the next start
+  --drain-timeout D how long the runner beside the server lets each busy run finish its turn when the server stops
+                    (default 30s; the image's is 6s, inside Docker's 10 s grace); a run still busy then is stopped and
+                    resumes at the next start
   --learning on|off whether runs learn (default on, or AGENTRUN_SERVE_LEARNING): on, a run of an agent whose definition
                     says learning: true starts from what that agent learned and adds to it; off, no run does
   --learning-budget BYTES how much of what an agent learned its run's instructions hold (default
@@ -56,7 +65,12 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --grade-model MODEL the model that grades what a run proposes to learn (default AGENTRUN_SERVE_GRADE_MODEL, else the
                     strong tier, AGENT_MODEL_STRONG, else each run's own model), named as the strong tier takes one
   --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
-                    more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs
+                    more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs;
+                    each holds at most --loops N runs (default AGENTRUN_MAX_RUNS, else as many pi runs as its host's
+                    memory holds; the rest wait queued) and on SIGTERM lets each busy run finish its turn for up to
+                    --drain-timeout D (default AGENTRUN_DRAIN_TIMEOUT, else 6s), then hands the rest back to resume.
+                    A paired computer (Settings → Computers → Pair a computer) dials the server's process, so only the
+                    runner beside it can use one: separate runners refuse a run whose agent names one
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
@@ -66,6 +80,11 @@ printed only by the start that made it. AGENTRUN_PUBLIC_URL, when set, is the ad
 published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is. stdout gets one line per request, per run start and
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
+AGENTRUN_API_ONLY=1 serves the run routes alone, for a server behind its caller's backend: a run's launch, read, list,
+timeline, messages, stop, cancel, kill and cap raise, its files and uploads, an agent's Archil disk, capabilities, health
+and usage. Every other address (the page, sign-in, setup, settings, MCP, triggers and their hooks, the rest of agents)
+is a 404, and there are no accounts.
+
 The page is for one person, who signs in with a password (AGENTRUN_ACCOUNTS=0 turns this off; the token works for
 scripts and the CLI either way). With no AGENTRUN_PUBLIC_URL, listening on loopback, the first visit to the page sets the
 password; with it, or on any other address, the setup link this server prints carries a code. Sign-in tries are limited
@@ -73,6 +92,8 @@ per address (an IPv6 one by its /64) and wrong passwords per server; past the li
 Behind a proxy, set AGENTRUN_TRUSTED_PROXIES to its addresses or ranges (comma-separated; or loopback, linklocal,
 uniquelocal) so each visitor counts by the address its X-Forwarded-For names; unset, that header is never read. Forgot the password: \`agentrun-serve reset-password --data DIR\` where the
 data directory is (inside the container) clears it and signs every browser out, and the next visit sets a new one.
+An MCP server on loopback (a 127.0.0.1 or localhost address) is refused unless AGENTRUN_MCP_ALLOW_LOOPBACK=1 is set at the
+start: set it only on a machine you alone use, since loopback is this machine's other services too.
 
 \`agentrun-serve import\` reads the Claude Code, Codex and pi sessions in your own home (~/.claude/projects,
 ~/.codex/sessions, ~/.pi/agent/sessions) into the data directory, once: each project directory an agent, with its
@@ -229,6 +250,7 @@ try {
       open: { type: "boolean", default: false },
       faux: { type: "string" },
       "faux-browser": { type: "string" },
+      "faux-github": { type: "boolean", default: false },
       "allow-host": { type: "string", multiple: true, default: [] },
       "max-runs": { type: "string" },
       "drain-timeout": { type: "string" },
@@ -270,6 +292,10 @@ if (values["faux-browser"] && !values.faux) {
   console.error(`--faux-browser goes with --faux\n\n${USAGE}`);
   process.exit(2);
 }
+if (values["faux-github"] && !values.faux) {
+  console.error(`--faux-github goes with --faux\n\n${USAGE}`);
+  process.exit(2);
+}
 const budget = values["learning-budget"];
 if (budget !== undefined && !/^\d+$/.test(budget)) {
   console.error(`--learning-budget takes a whole number of bytes\n\n${USAGE}`);
@@ -277,21 +303,28 @@ if (budget !== undefined && !/^\d+$/.test(budget)) {
 }
 const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
-// A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
-process.stdout.on("error", () => undefined);
-const accounts = process.env.AGENTRUN_ACCOUNTS !== "0";
-// The Docker box image's first build said in words, as it starts and as it ends (print.ts boxImageLine); a line told
-// before the banner is printed waits for it.
-let imageSaid = false;
-let bannered = false;
-const early: string[] = [];
-const onBoxImage = (state: ImageState) => {
-  const line = boxImageLine(state, imageSaid);
-  if (line === undefined) return;
-  imageSaid = true;
-  if (bannered) console.log(line);
-  else early.push(line);
+// The stop is listened for before anything starts: a SIGTERM or SIGINT during the start (a platform's redeploy, the
+// moment the banner shows) is kept, never the default end by signal that cuts what the start began. Once the start has
+// what a stop closes, the stop below takes over (stopOnSignals), and a stop asked meanwhile runs it, through the same
+// drain. A second signal a while after the first, still during the start, is a person who wants out now: exit 130.
+let stopping: (() => void) | undefined;
+let askedAt: number | undefined;
+const signalled = () => {
+  if (stopping) return stopping();
+  if (askedAt === undefined) askedAt = Date.now();
+  else if (Date.now() - askedAt >= REPEAT_MS) process.exit(130);
 };
+process.on("SIGINT", signalled);
+process.on("SIGTERM", signalled);
+// AGENTRUN_API_ONLY=1: the run routes alone (api-only.ts), and no owner; a value that is neither on nor off stops here.
+let apiOnly: boolean;
+try {
+  apiOnly = apiOnlyFrom(process.env);
+} catch (error) {
+  console.error(`${(error as Error).message}\n\n${USAGE}`);
+  process.exit(2);
+}
+const accounts = !apiOnly && process.env.AGENTRUN_ACCOUNTS !== "0";
 // How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
 Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
@@ -299,15 +332,22 @@ let serveOptions: ServeOptions;
 const trustedProxies = (process.env.AGENTRUN_TRUSTED_PROXIES ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
 try {
   serve = await startServe(serveOptions = {
-    onBoxImage,
-    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), allowHosts: values["allow-host"],
+    // The owner lock on a Postgres store lost for good: this server can serve nothing more, so it exits non-zero and its
+    // platform starts it again, rather than answer 503 for as long as it runs.
+    onStoreLost: (error) => {
+      console.error(`agentrun-serve: ${error.message}`);
+      process.exit(1);
+    },
+    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
-    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}),
+    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}),
     // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
     ...(trustedProxies.length ? { trustedProxies } : {}),
+    // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
+    ...(process.env.AGENTRUN_MCP_ALLOW_LOOPBACK === "1" ? { mcpLoopback: true } : {}),
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);
@@ -315,16 +355,24 @@ try {
 }
 // The start launches one runner beside the server on the same data dir (design: "server and runner"): it claims and runs
 // every run, sharing only the store. With --no-runner the server runs alone, so the operator starts one or more separate
-// `agentrun runner --data DIR` processes on the same data directory instead.
+// `agentrun runner --data DIR` processes on the same data directory instead. The runner holds what the server's flags say
+// (besideRunnerOptions): at most --max-runs runs at once, the rest waiting queued, and on the stop each busy run finishes
+// its turn for up to --drain-timeout.
 let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
-if (!values["no-runner"]) {
+const { loops, drainMs } = besideRunnerOptions(serveOptions, process.env);
+// A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
+if (!values["no-runner"] && askedAt === undefined) {
   try {
     // The beside-runner sees the server's test switches (server.ts fauxEnvOf: --faux and its modules), which the CLI hands
     // the server as options, never through this process's environment: without them a --faux start's runner looks its faux
     // model up in pi-ai's own catalog and every run fails on its first request. A test switch this process inherited from
     // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
     const { besideRunEnv } = await import("./runner/main.js");
-    runnerProc = await runnerBeside(data, { env: besideRunEnv(process.env, fauxEnvOf(serveOptions)) });
+    // With the computer janitor: what a crashed runner of this server left is ended (never under --faux). With the
+    // server's AttachHub: a paired computer's socket is in this process, so only this runner takes one (--no-runner's
+    // separate runners refuse it in words). Its runs reach an MCP server on loopback only when this server is a local
+    // install (Serve.localInstall).
+    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, hub: serve.attachHub, mcpLoopback: serve.localInstall });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();
@@ -333,29 +381,37 @@ if (!values["no-runner"]) {
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : serve.tokenMade ? "made" : "file";
-for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
+for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, ...(apiOnly ? { apiOnly } : {}), ...(serve.launchCode ? { launchCode: serve.launchCode } : {}), boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
 // Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
 // setup link with its code as the code was made (owner.ts).
 if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
-bannered = true;
-for (const line of early.splice(0)) console.log(line);
 // The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
 // and the browser's history.
-if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+// API-only: there is no console, so nothing to open.
+if (values.open && !apiOnly && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
 const record = join(resolve(data), SERVER_FILE);
 // The record goes only while it is this server's: a server that takes the lock next writes its own, which this stop must
 // not remove. One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once
 // (stop-signals.ts). The stop is in place before the record is written: a SIGTERM sent the moment the record appears is
 // a clean stop that removes it, never the default end by signal that leaves it behind.
 const stop = stopOnSignals({
-  close: () => (removeOwnRecord(record), Promise.all([runnerProc?.close() ?? Promise.resolve(), serve.close()]).then(() => undefined)),
-  stopping: () => serve.stopping(),
+  close: () => {
+    removeOwnRecord(record);
+    // A drain that has runs to wait on says so, as a run's own process did on the server's stop.
+    const busy = runnerProc?.runner.held().length ?? 0;
+    if (busy > 0 && drainMs > 0) console.error(`agentrun-serve: stopping: waiting up to ${Math.ceil(drainMs / 1000)} s for ${busy} ${busy === 1 ? "run" : "runs"} to finish ${busy === 1 ? "its turn" : "their turns"}`);
+    return Promise.all([runnerProc?.close() ?? Promise.resolve(), serve.close()]).then(() => undefined);
+  },
+  // The stop's deadline waits out the runner's whole close: its drain, then the stop of the loops left, so a run's end
+  // and release are never cut short (besideStopping).
+  stopping: () => (runnerProc ? besideStopping(serve.stopping(), runnerProc.runner.held().length, drainMs) : serve.stopping()),
   done: (code) => (removeOwnRecord(record), process.exit(code)),
   say: (line) => console.error(line),
 });
-process.on("SIGINT", stop);
-process.on("SIGTERM", stop);
+stopping = stop;
 // Written whole under a name of its own, then renamed into place: a reader in another process (the npx command, a test
 // waiting for this server) that finds the record reads all of it, never a file made but not yet filled.
 writeDurableSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`);
 chmodSync(record, 0o600);
+// A stop asked during the start runs now, as one asked from here on would.
+if (askedAt !== undefined) stop(askedAt);

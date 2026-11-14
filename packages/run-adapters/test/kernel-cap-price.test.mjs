@@ -6,7 +6,7 @@
 // model with no output ceiling, cannot be kept within a cap: under one they are refused for good.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CACHE_WARM_MS, CapRefused } from "../dist/kernel/cap/index.js";
+import { CACHE_WARM_MS, CapRefused, previousAfter } from "../dist/kernel/cap/index.js";
 import { providerInputOverhead } from "../dist/host/index.js";
 import { capOn, FREE, GPT, modelRequest, SONNET, T0, UNPRICED, usd } from "./kernel-cap-support.mjs";
 
@@ -99,6 +99,26 @@ test("another model than the previous answer's counts no cache: worst case, no b
   assert.equal(admitted.boundUsd, 0);
 });
 
+test("a request smaller than the previous one (a compaction, another conversation's) reads none of its cache: worst case, no bound", async () => {
+  const { cap } = capOn(10);
+  const admitted = await cap.admit(modelRequest(SONNET, 40_000, 1_000, { previous: warm() }));
+  near(admitted.heldUsd, admitted.worstUsd, "never under what it can cost");
+  assert.equal(admitted.boundUsd, 0);
+});
+
+test("history resets at a smaller request: it never sticks on the request the conversation left, and never prices from another's", () => {
+  const earlier = { ...warm(), counted: true };
+  const next = (overrides) => ({ ...earlier, boundTokens: 100_000, endedAt: T0, ...overrides });
+  assert.equal(previousAfter(undefined, next()).boundTokens, 100_000, "the first request is the previous");
+  assert.equal(previousAfter(earlier, next({ boundTokens: 120_000 })).boundTokens, 120_000, "a growing body continues it");
+  assert.equal(previousAfter(earlier, next({ boundTokens: 100_000 })).boundTokens, 100_000, "an equal body too");
+  assert.equal(previousAfter(earlier, next({ boundTokens: 30_000 })), undefined, "a compaction's smaller body resets history");
+  // Then the request after it starts a new history, warm for the one after that.
+  assert.equal(previousAfter(undefined, next({ boundTokens: 35_000 })).boundTokens, 35_000);
+  assert.equal(previousAfter(earlier, next({ model: GPT.id, boundTokens: 30_000 })).model, GPT.id, "another model's request replaces it");
+  assert.equal(previousAfter(earlier, next({ counted: false, boundTokens: 30_000 })).counted, false, "a bound measured another way is no comparison");
+});
+
 test("a request is held at the output it is sent with, its thinking budget included", async () => {
   const { cap } = capOn(10, { mode: "strict" });
   const admitted = await cap.admit(modelRequest(SONNET, 10_000, 4_096, { thinkingBudget: 8_000 }));
@@ -108,17 +128,19 @@ test("a request is held at the output it is sent with, its thinking budget inclu
 
 test("the input adds the provider's server-side tokens from the proxy's table: tools and an image held the same on every harness", async () => {
   const { cap } = capOn(10, { mode: "strict" });
-  const shape = { tools: true, toolChoice: "auto", images: 1 };
+  const shape = { tools: true, toolChoice: "auto", images: [{ bytes: 0 }] };
   const admitted = await cap.admit(modelRequest(SONNET, 10_000, 1_000, { shape }));
-  near(admitted.worstUsd, usd(10_000 + providerInputOverhead("anthropic-messages", shape), 3.75) + usd(1_000, 15));
+  // Its image at its model's provider's figure (a Claude model: Anthropic's per-image maximum, its size unread).
+  near(admitted.worstUsd, usd(10_000 + providerInputOverhead("anthropic-messages", { ...shape, model: SONNET.id }), 3.75) + usd(1_000, 15));
+  assert.equal(providerInputOverhead("anthropic-messages", { ...shape, model: SONNET.id }), 675 + 4784);
 });
 
 test("a gateway or provider with no documented figure is priced and sent, never refused for its API", async () => {
   const { cap } = capOn(10);
   const gateway = { ...GPT, id: "gateway-model", api: "openai-completions" };
   const elsewhere = { ...GPT, id: "elsewhere", api: "some-new-api" };
-  await cap.admit(modelRequest(gateway, 10_000, 1_000, { shape: { tools: true, images: 0 } }));
-  await cap.admit(modelRequest(elsewhere, 10_000, 1_000, { shape: { tools: true, images: 0 } }));
+  await cap.admit(modelRequest(gateway, 10_000, 1_000, { shape: { tools: true, images: [] } }));
+  await cap.admit(modelRequest(elsewhere, 10_000, 1_000, { shape: { tools: true, images: [] } }));
 });
 
 test("a tool's own request adds its hosted allowance and most fee: web search at 5 searches of 25,000 tokens and 5 searches' fee", async () => {
@@ -134,12 +156,12 @@ test("a priced output with no ceiling is refused whatever is asked; a free outpu
   await capOn(undefined).cap.admit(modelRequest(unbounded, 1_000, 100));
 });
 
-// A price with tiers, as the catalog gives gpt-6-sol's: past 272,000 input tokens in all (fresh and cached), the whole
+// A price with tiers, as the catalog gives gpt-6.1-sol's: past 272,000 input tokens in all (fresh and cached), the whole
 // request at the tier's rates, as pi-ai's calculateCost prices it (the parity with that function is serve's
 // kernel-cap-tiers-parity test, on the catalog's own entry).
 const SOL = Object.freeze({
-  id: "gpt-6-sol", api: "openai-responses", outputCeiling: 128_000,
-  price: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.4, cacheWrite: 5 }] },
+  id: "gpt-6.1-sol", api: "openai-responses", outputCeiling: 128_000,
+  price: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }] },
 });
 
 test("a price with tiers: a request whose input passes a tier's threshold is priced at that tier, whole, its cached tokens counting toward it", async () => {
@@ -147,7 +169,7 @@ test("a price with tiers: a request whose input passes a tier's threshold is pri
   const price = pricingOf(SOL.price);
   near(price({ cached: 0, fresh: 272_000 }, 1_024), usd(272_000, 2.5) + usd(1_024, 10), "at the threshold, the base rates");
   near(price({ cached: 0, fresh: 300_000 }, 1_024), usd(300_000, 5) + usd(1_024, 15), "past it, the tier's rates for all of it");
-  near(price({ cached: 200_000, fresh: 100_000 }, 1_024), usd(200_000, 0.4) + usd(100_000, 5) + usd(1_024, 15), "the cache read counts toward the threshold");
+  near(price({ cached: 200_000, fresh: 100_000 }, 1_024), usd(200_000, 0.2) + usd(100_000, 5) + usd(1_024, 15), "the cache read counts toward the threshold");
 });
 
 test("the hold of a request past a tier's threshold is the tiered price, never the base one", async () => {

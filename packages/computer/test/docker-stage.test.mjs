@@ -11,7 +11,7 @@ import { after } from "node:test";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { DockerProvider } from "../dist/index.js";
+import { DockerProvider } from "../dist/docker.js";
 
 const run = promisify(execFile);
 const STAGE = fileURLToPath(new URL("../dist/docker/stage.js", import.meta.url));
@@ -88,7 +88,7 @@ test("a daemon that is a named pipe with no writer is refused in words at once, 
 	assert.match(staged.error.message, new RegExp(`the daemon at ${fifo} is not a regular file`));
 	// Through the provider: create refuses it before any docker call.
 	const provider = new DockerProvider({ daemonPath: fifo, daemonCache: cache, docker: join(root, "no-docker"), volume });
-	const made = await provider.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
+	const made = await provider.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "docker-stage-1" });
 	assert.equal(made.ok, false);
 	assert.match(made.error.message, /is not a regular file/);
 	assert.throws(() => statSync(cache), { code: "ENOENT" }, "nothing is staged: the source is refused before the cache is made");

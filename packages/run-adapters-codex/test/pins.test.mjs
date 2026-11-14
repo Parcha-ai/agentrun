@@ -9,7 +9,7 @@ import { after, test } from 'node:test';
 import { codexTarget, findCodex } from '../dist/binary.js';
 import { localMachine } from '../dist/host/machine.js';
 import { CODEX_ROUTES, gatewayHandler } from '../dist/host/process.js';
-import { codexPins, verifyCodex, verifyCodexBinary } from '../dist/verify.js';
+import { codexPins, verifyCodex, verifyCodexBinary, verifyCodexBinaryAsync } from '../dist/verify.js';
 import { CODEX_BINARY_SHA256, CODEX_NPM_INTEGRITY, CODEX_VERSION, CodexNotInstalled, CodexPinMismatch } from '../dist/versions.js';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-codex-pins-'));
@@ -90,6 +90,26 @@ test('a binary is checked once per identity in a process: the same file answers 
   assert.ok(mismatch('version', '0.165.0', '0.164.0')(verifyCodexBinary({ path }, { ...pins, version: '0.165.0' })), 'other pins: checked against them');
   assert.ok(mismatch('version', '0.165.0', '0.164.0')(verifyCodexBinary({ path }, { ...pins, version: '0.165.0' })), 'a refusal is never kept');
   assert.equal(checks(), 4);
+});
+
+test("the host's check hands its event loop back while the binary answers --version, and the adapter's own check then answers from it", async () => {
+  // The binary answers only once this process has run a callback it queued after starting the check: a check that held
+  // the event loop (a synchronous --version) never lets that callback run once the binary has started, and the binary gives up after 5 s with another
+  // version. A server ran that check in its event loop, so every request and open store transaction waited on it.
+  const go = join(ROOT, 'go');
+  const asked = join(ROOT, 'asked-free');
+  const path = join(ROOT, 'waits');
+  writeFileSync(path, `#!/bin/sh\necho x >> "${asked}"\ni=0\nwhile [ ! -e "${go}" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done\nif [ -e "${go}" ]; then echo "codex-cli 0.164.0"; else echo "codex-cli 0.0.0"; fi\n`);
+  chmodSync(path, 0o755);
+  const pins = { version: '0.164.0', sha256: createHash('sha256').update(readFileSync(path)).digest('hex') };
+  const checked = verifyCodexBinaryAsync({ path }, pins);
+  // Released only once the binary has started (its first line writes `asked`): a check that ran --version synchronously
+  // would hold this interval back until the binary gave up, so only an awaited --version passes.
+  const release = setInterval(() => { if (existsSync(asked)) { clearInterval(release); writeFileSync(go, ''); } }, 10);
+  assert.deepEqual(await checked, { path });
+  assert.deepEqual(verifyCodexBinary({ path }, pins), { path }, "the adapter's check: answered from the host's");
+  assert.equal(readFileSync(asked, 'utf8').split('\n').filter(Boolean).length, 1, 'the binary was asked its version once');
+  assert.ok(mismatch('version', '0.165.0', '0.164.0')(await verifyCodexBinaryAsync({ path }, { ...pins, version: '0.165.0' })), 'a refusal, the same as the synchronous check gives');
 });
 
 test('a binary that reports another version is refused, typed; the pinned one passes', () => {

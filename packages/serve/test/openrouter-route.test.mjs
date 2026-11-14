@@ -50,14 +50,14 @@ test("or-1: with only OPENROUTER_API_KEY, claude-agent's provider is OpenRouter'
 });
 
 test("or-2: with only OPENROUTER_API_KEY, codex's provider is OpenRouter's Responses API with its key, the model's whole id on the wire, and no OpenAI key needed", async () => {
-  const openrouter = { origin: "https://openrouter.ai/api", key: KEY, model: "openai/gpt-6-sol" };
+  const openrouter = { origin: "https://openrouter.ai/api", key: KEY, model: "openai/gpt-6.1-sol" };
   const codexView = (p) => ({ origin: p.origin, key: p.credential(), model: p.modelId });
-  assert.deepEqual(codexView(providerFor("openai-responses", ONLY, { provider: "openai", modelId: "gpt-6-sol" }, "codex")), openrouter);
-  assert.deepEqual(codexView(providerFor("openai-responses", ONLY, { provider: "openrouter", modelId: "openai/gpt-6-sol" }, "codex")), openrouter);
+  assert.deepEqual(codexView(providerFor("openai-responses", ONLY, { provider: "openai", modelId: "gpt-6.1-sol" }, "codex")), openrouter);
+  assert.deepEqual(codexView(providerFor("openai-responses", ONLY, { provider: "openrouter", modelId: "openai/gpt-6.1-sol" }, "codex")), openrouter);
   // As a save and a run resolve it: OpenRouter's default for codex, OpenAI's model, priced by the catalog.
-  assert.deepEqual((await modelOn("openai-responses", ONLY, undefined, "codex")), { model: { provider: "openai", modelId: "gpt-6-sol" } });
+  assert.deepEqual((await modelOn("openai-responses", ONLY, undefined, "codex")), { model: { provider: "openai", modelId: "gpt-6.1-sol" } });
   assert.deepEqual((await modelOn("openai-responses", ONLY, "openai/gpt-6.1-sol", "codex")), { model: { provider: "openai", modelId: "gpt-6.1-sol" } });
-  assert.deepEqual((await modelOn("openai-responses", ONLY, "openrouter/openai/gpt-6-sol", "codex")), { model: { provider: "openrouter", modelId: "openai/gpt-6-sol" } });
+  assert.deepEqual((await modelOn("openai-responses", ONLY, "openrouter/openai/gpt-6.1-sol", "codex")), { model: { provider: "openrouter", modelId: "openai/gpt-6.1-sol" } });
   assert.equal(((await modelOn("openai-responses", ONLY, "openai/no-such-model", "codex"))).needs, "model", "a model no catalog knows is still refused");
 });
 
@@ -71,13 +71,13 @@ test("or-3: the harness's own settings win over OpenRouter, as on a host without
   const openai = { provider: "openai", modelId: "gpt-6.1-sol" };
   const codexView = (p) => ({ origin: p.origin, key: p.credential(), model: p.modelId });
   assert.deepEqual(codexView(providerFor("openai-responses", { ...ONLY, OPENAI_API_KEY: OWN }, openai, "codex")), { origin: "https://api.openai.com", key: OWN, model: "gpt-6.1-sol" });
-  assert.deepEqual(codexView(providerFor("openai-responses", { ...ONLY, AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000/v1" }, { provider: "agent-model", modelId: "openai/gpt-6-sol" }, "codex")), { origin: "http://127.0.0.1:4000", key: "none", model: "openai/gpt-6-sol" }, "a gateway with no key of its own: none, never OpenRouter's");
+  assert.deepEqual(codexView(providerFor("openai-responses", { ...ONLY, AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000/v1" }, { provider: "agent-model", modelId: "openai/gpt-6.1-sol" }, "codex")), { origin: "http://127.0.0.1:4000", key: "none", model: "openai/gpt-6.1-sol" }, "a gateway with no key of its own: none, never OpenRouter's");
   assert.deepEqual((await modelOn("openai-responses", { ...ONLY, OPENAI_API_KEY: OWN }, undefined, "codex")), { model: { provider: "openai", modelId: "gpt-6.1-sol" } }, "with OpenAI's key, OpenAI's default");
   // A model the definition names on OpenRouter (pi's name) goes there whatever key is beside it, and needs its key.
   assert.equal(providerFor("anthropic-messages", { ...ONLY, ANTHROPIC_API_KEY: OWN }, { provider: "openrouter", modelId: "anthropic/claude-sonnet-5.5" }, "claude-agent").origin, "https://openrouter.ai/api");
   assert.throws(() => providerFor("anthropic-messages", { ANTHROPIC_API_KEY: OWN }, { provider: "openrouter", modelId: "anthropic/claude-sonnet-5.5" }, "claude-agent"), refused(/OPENROUTER_API_KEY/));
   // Another vendor's model through OpenRouter is not the harness's.
-  assert.throws(() => providerFor("anthropic-messages", ONLY, { provider: "openrouter", modelId: "openai/gpt-6-sol" }, "claude-agent"), refused(/claude-agent runs Anthropic models/));
+  assert.throws(() => providerFor("anthropic-messages", ONLY, { provider: "openrouter", modelId: "openai/gpt-6.1-sol" }, "claude-agent"), refused(/claude-agent runs Anthropic models/));
   assert.throws(() => providerFor("openai-responses", ONLY, { provider: "openrouter", modelId: "anthropic/claude-sonnet-5.5" }, "codex"), refused(/codex runs OpenAI models/));
   // No source at all: each names every key that would do.
   assert.throws(() => providerFor("anthropic-messages", {}, anthropic, "claude-agent"), refused(/ANTHROPIC_API_KEY.*OPENROUTER_API_KEY/));
@@ -115,9 +115,9 @@ test("or-8: no model here names OpenRouter's key first, and claude-agent's names
   assert.equal(ADD_A_KEY, "add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts.");
   assert.equal((await modelOn("anthropic-messages", {}, undefined, "claude-agent")).why, "No model yet for claude-agent: add an OpenRouter or Anthropic key in Settings → Model keys, or set OPENROUTER_API_KEY or ANTHROPIC_API_KEY where AgentRun starts.");
   // OpenRouter alone: a default for every harness.
-  assert.deepEqual(["pi", "claude-agent", "codex"].map((h) => hostModel(ONLY, "default", h)), ["openrouter/openai/gpt-6-sol", "anthropic/claude-sonnet-5.5", "openai/gpt-6-sol"]);
+  assert.deepEqual(["pi", "claude-agent", "codex"].map((h) => hostModel(ONLY, "default", h)), ["openrouter/openai/gpt-6.1-sol", "anthropic/claude-sonnet-5.5", "openai/gpt-6.1-sol"]);
   // Beside Anthropic's key: Anthropic's for pi and claude-agent, OpenRouter's for codex.
-  assert.deepEqual(["pi", "claude-agent", "codex"].map((h) => hostModel({ ...ONLY, ANTHROPIC_API_KEY: OWN }, "default", h)), ["anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5-5", "openai/gpt-6-sol"]);
+  assert.deepEqual(["pi", "claude-agent", "codex"].map((h) => hostModel({ ...ONLY, ANTHROPIC_API_KEY: OWN }, "default", h)), ["anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5-5", "openai/gpt-6.1-sol"]);
 });
 
 test("or-4: claude-agent on OpenRouter alone: each request through its proxy to https://openrouter.ai/api/v1/messages, the key as a bearer token and no x-api-key, Anthropic's own id on the wire", { timeout: 60_000 }, async (t) => {
@@ -166,7 +166,7 @@ test("or-5: codex on OpenRouter alone: each request through its proxy to https:/
   const result = await runWorkflow(doc, {}, { runNode: createHarnessRunner(adapter, { store: memorySessionStore(), tools: [] }) });
   assert.equal(result.status, "complete", JSON.stringify(result.error ?? null));
   assert.ok(seen.length >= 1, "a model request reached OpenRouter");
-  for (const request of seen) assert.deepEqual(request, { url: "https://openrouter.ai/api/v1/responses", authorization: `Bearer ${KEY}`, model: "openai/gpt-6-sol" });
+  for (const request of seen) assert.deepEqual(request, { url: "https://openrouter.ai/api/v1/responses", authorization: `Bearer ${KEY}`, model: "openai/gpt-6.1-sol" });
 });
 
 test("or-6: a server with only OPENROUTER_API_KEY runs every harness, each with its default model on OpenRouter, and a definition naming Anthropic's or OpenAI's model saves with no warning", { timeout: 60_000 }, async (t) => {
@@ -177,14 +177,14 @@ test("or-6: a server with only OPENROUTER_API_KEY runs every harness, each with 
   const { api } = await serve(t, { faux: undefined });
   const harnesses = (await api("GET", "/capabilities")).body.harnesses;
   // How many fit at once is this host's memory (admission.test.mjs); the memory a run takes is the harness's own.
-  const row = (id) => { const { max_concurrent_runs, ...offer } = harnesses.find((h) => h.id === id); return offer; };
-  assert.deepEqual(row("pi"), { id: "pi", available: true, steer: true, default_model: "openrouter/openai/gpt-6-sol", run_memory_mib: 128 });
+  const row = (id) => { const { max_concurrent_runs, models: _models, ...offer } = harnesses.find((h) => h.id === id); return offer; };
+  assert.deepEqual(row("pi"), { id: "pi", available: true, steer: true, default_model: "openrouter/openai/gpt-6.1-sol", run_memory_mib: 128 });
   assert.deepEqual(row("claude-agent"), { id: "claude-agent", available: true, steer: false, default_model: "anthropic/claude-sonnet-5.5", run_memory_mib: 288 });
-  assert.deepEqual(row("codex"), { id: "codex", available: true, steer: false, default_model: "openai/gpt-6-sol", run_memory_mib: 192 });
+  assert.deepEqual(row("codex"), { id: "codex", available: true, steer: false, default_model: "openai/gpt-6.1-sol", run_memory_mib: 192 });
   for (const [id, definition] of [
     ["claude", { harness: "claude-agent", model: "anthropic/claude-sonnet-5.5" }],
     ["claude-default", { harness: "claude-agent" }],
-    ["coder", { harness: "codex", model: "openai/gpt-6-sol" }],
+    ["coder", { harness: "codex", model: "openai/gpt-6.1-sol" }],
     ["pi-default", {}],
     ["coder-default", { harness: "codex" }],
   ]) {
@@ -206,7 +206,7 @@ test("or-9: on OpenRouter's key alone, the host's AGENT_MODEL named on OpenRoute
   assert.deepEqual((await modelOn("openai-responses", codexHost, undefined, "codex")), { model: { provider: "openrouter", modelId: "openai/gpt-6.1-sol" } });
   // Another vendor's model on OpenRouter is not the harness's: it takes its own default, as before.
   assert.equal(hostModel(codexHost, "default", "claude-agent"), "anthropic/claude-sonnet-5.5");
-  assert.equal(hostModel(claudeHost, "default", "codex"), "openai/gpt-6-sol");
+  assert.equal(hostModel(claudeHost, "default", "codex"), "openai/gpt-6.1-sol");
 });
 
 test("or-10: a server on OpenRouter's key alone names the host's OpenRouter model as each harness's default, and a revision naming one there saves clean and runs it", { timeout: 60_000 }, async (t) => {
@@ -216,7 +216,7 @@ test("or-10: a server on OpenRouter's key alone names the host's OpenRouter mode
   const { api } = await serve(t, { faux: undefined });
   const harnesses = (await api("GET", "/capabilities")).body.harnesses;
   assert.equal(harnesses.find((h) => h.id === "claude-agent").default_model, "openrouter/anthropic/claude-haiku-5.5");
-  assert.equal(harnesses.find((h) => h.id === "codex").default_model, "openai/gpt-6-sol", "an Anthropic model is not codex's: its own default");
+  assert.equal(harnesses.find((h) => h.id === "codex").default_model, "openai/gpt-6.1-sol", "an Anthropic model is not codex's: its own default");
   for (const [id, definition] of [["claude-or", { harness: "claude-agent", model: "openrouter/anthropic/claude-opus-5" }], ["codex-or", { harness: "codex", model: "openrouter/openai/gpt-6.1-sol" }]]) {
     const saved = await api("POST", "/agents", agent(id, definition));
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
@@ -249,20 +249,20 @@ test("or-11: claude-agent on the host's OpenRouter model sends Anthropic's nativ
 
 test("opencode on OpenRouter's key alone has codex's default there, and modelOn and providerFor give it OpenAI's model on OpenRouter's Responses API with the model's whole id", async () => {
   const { hostModel, MODEL_KEYS } = await import("../dist/model.js");
-  assert.equal(hostModel(ONLY, "default", "opencode"), "openai/gpt-6-sol", "codex's default on OpenRouter");
+  assert.equal(hostModel(ONLY, "default", "opencode"), "openai/gpt-6.1-sol", "codex's default on OpenRouter");
   assert.deepEqual(MODEL_KEYS.find((row) => row.id === "openrouter").harnesses, ["pi", "claude-agent", "codex", "opencode"]);
   assert.equal(hostModel({ ...ONLY, OPENAI_API_KEY: OWN }, "default", "opencode"), "openai/gpt-6.1-sol", "OpenAI's own key wins");
-  assert.deepEqual((await modelOn("openai-responses", ONLY, undefined, "opencode")), { model: { provider: "openai", modelId: "gpt-6-sol" } });
-  assert.deepEqual((await modelOn("openai-responses", ONLY, "openrouter/openai/gpt-6-sol", "opencode")), { model: { provider: "openrouter", modelId: "openai/gpt-6-sol" } });
-  const p = providerFor("openai-responses", ONLY, { provider: "openai", modelId: "gpt-6-sol" }, "opencode");
-  assert.deepEqual({ origin: p.origin, key: p.credential(), model: p.modelId }, { origin: "https://openrouter.ai/api", key: KEY, model: "openai/gpt-6-sol" });
-  assert.throws(() => providerFor("openai-responses", {}, { provider: "openai", modelId: "gpt-6-sol" }, "opencode"), refused(/^opencode needs OPENAI_API_KEY, OPENROUTER_API_KEY/));
+  assert.deepEqual((await modelOn("openai-responses", ONLY, undefined, "opencode")), { model: { provider: "openai", modelId: "gpt-6.1-sol" } });
+  assert.deepEqual((await modelOn("openai-responses", ONLY, "openrouter/openai/gpt-6.1-sol", "opencode")), { model: { provider: "openrouter", modelId: "openai/gpt-6.1-sol" } });
+  const p = providerFor("openai-responses", ONLY, { provider: "openai", modelId: "gpt-6.1-sol" }, "opencode");
+  assert.deepEqual({ origin: p.origin, key: p.credential(), model: p.modelId }, { origin: "https://openrouter.ai/api", key: KEY, model: "openai/gpt-6.1-sol" });
+  assert.throws(() => providerFor("openai-responses", {}, { provider: "openai", modelId: "gpt-6.1-sol" }, "opencode"), refused(/^opencode needs OPENAI_API_KEY, OPENROUTER_API_KEY/));
 });
 
 test("a key refused on an opencode run that reaches OpenAI's model through OpenRouter is named as OpenRouter's, as codex's is", async () => {
   const { runKeyOf } = await import("../dist/key-refusal.js");
-  assert.deepEqual(runKeyOf(ONLY, "opencode", "openai/gpt-6-sol"), runKeyOf(ONLY, "codex", "openai/gpt-6-sol"), "codex's key on the same route");
-  assert.deepEqual(runKeyOf(ONLY, "opencode", "openai/gpt-6-sol"), { who: "OpenRouter", field: "OPENROUTER_API_KEY", saved: true });
+  assert.deepEqual(runKeyOf(ONLY, "opencode", "openai/gpt-6.1-sol"), runKeyOf(ONLY, "codex", "openai/gpt-6.1-sol"), "codex's key on the same route");
+  assert.deepEqual(runKeyOf(ONLY, "opencode", "openai/gpt-6.1-sol"), { who: "OpenRouter", field: "OPENROUTER_API_KEY", saved: true });
   assert.deepEqual(runKeyOf(ONLY, "opencode"), { who: "OpenRouter", field: "OPENROUTER_API_KEY", saved: true }, "on its default there");
   assert.deepEqual(runKeyOf({ OPENAI_API_KEY: OWN }, "opencode"), { who: "OpenAI", field: "OPENAI_API_KEY", saved: true });
 });

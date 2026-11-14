@@ -3,7 +3,7 @@
 // the console, signed in, and the server refuses the token on them (secret-writes.ts). A secret is never in argv, so
 // never in shell history or `ps`, and never in any output or error. Each command is `{ command, pathParams, summary,
 // route?, help, options, run }`; cli.mjs runs it with `{ values, args, env, io, cli }`, where `cli` is its own
-// `{ fail, targetOf, clientOf, request, send, secretAt, BAD_HEADER }`: the token's custody and the requests are its.
+// `{ fail, baseOf, targetOf, clientOf, request, BAD_HEADER }`: the token's custody and the requests are its.
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
@@ -74,6 +74,10 @@ function secretsOf(body, publicFields = []) {
   return found;
 }
 
+/** A refusal's exit code: 4 for the token refused (401, 403), 5 for an operation the server does not offer here (501),
+ *  1 for any other. */
+export const refusalExit = (status) => (status === 401 || status === 403 ? 4 : status === 501 ? 5 : 1);
+
 /** A client for a request that carries a secret: a refusal prints the status, the error's code when it is one, and a
  *  message of this CLI's own, never the server's answer, which could quote the secret. What it does print has every
  *  copy of `secrets` cut: `scrub`, which cli.mjs's send applies to a JSON answer's value before it prints it, and to a
@@ -92,8 +96,9 @@ function secretClient(clientOf, target, io, secrets) {
         code = undefined;
       }
       const named = typeof code === "string" && /^[a-z_]+$/.test(code) ? ` ${code}` : "";
-      client.io.stderr.write(`The server refused it: ${response.status}${named}. Its answer is not shown, since it could quote the secret sent.\n`);
-      return response.status === 401 || response.status === 403 ? 4 : 1;
+      const what = response.status === 501 ? "The server does not offer it here" : "The server refused it";
+      client.io.stderr.write(`${what}: ${response.status}${named}. Its answer is not shown, since it could quote the secret sent.\n`);
+      return refusalExit(response.status);
     },
   };
 }

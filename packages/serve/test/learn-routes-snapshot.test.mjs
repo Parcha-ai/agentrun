@@ -7,29 +7,25 @@ import { rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { folderTestHooks, forgetBodies, SCRIPT_FILE } from "../dist/learn/folder.js";
-import { learningTestHooks } from "../dist/learning.js";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, LEARN, learnedOnMain, learner, made, proposedOf, repoOf, SWITCH_TODO, settled, spiedWorkspace, started } from "./learn-support.mjs";
+import { ended, LEARN, learnedOnMain, learner, made, repoOf, spiedWorkspace, started } from "./learn-support.mjs";
 import { serve } from "./support.mjs";
 
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 const SOURCES = note("Quote sources", "Name the page each figure came from");
 const ASK = note("Ask first", "Ask which currency when the question names none");
 
-test("no learning route read execs, runs git or writes: the view, its pages, a file, a run's learning and its diff, and the agents' pending counts read the snapshot and its bodies alone; a person's write is one exec of the script", { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
+test("no learning route read execs, runs git or writes: the view, its pages, a file, a run's learning and its diff, and the agents' pending counts read the snapshot and its bodies alone; a person's write is one exec of the script", { timeout: 180_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("reader", { plan: [["check-units.md", UNITS], ["quote-sources.md", SOURCES]], once: true }));
   const run = await ended(api, await started(api, "reader"));
-  proposedOf(run.view);
   assert.equal((await learnedOnMain({ api, data }, "reader", run.view.run_id)).result?.ok, true);
   const runId = run.view.run_id;
   const files = "/agents/reader/learning/files";
 
   const calls = [];
-  const gitCalls = [];
   folderTestHooks.workspace = spiedWorkspace(calls);
-  learningTestHooks.git = (args) => gitCalls.push(args);
-  t.after(() => void (folderTestHooks.workspace = undefined, learningTestHooks.git = undefined));
+  t.after(() => void (folderTestHooks.workspace = undefined));
   forgetBodies();
 
   const view = (await api("GET", "/agents/reader/learning")).body;
@@ -48,7 +44,6 @@ test("no learning route read execs, runs git or writes: the view, its pages, a f
   assert.equal((await api("GET", `/runs/${runId}`)).status, 200);
   assert.deepEqual(calls.filter(([method]) => method !== "read"), [], "every route read is a file read: no exec, no write");
   assert.deepEqual([...new Set(calls.map(([, path]) => path))].sort(), [".agentrun/diffs/" + `${runId}.json`, ".agentrun/snapshot.json", "MEMORY.md", "check-units.md", "quote-sources.md"].sort());
-  assert.deepEqual(gitCalls, [], "no route read runs git");
   assert.ok(calls.opened > 0 && calls.opened === calls.ended, `every folder opened is ended: ${calls.opened} opened, ${calls.ended} ended`);
 
   // A person's edit, create and retire: each one exec, the script's commit, and no git on this side.
@@ -63,7 +58,6 @@ test("no learning route read execs, runs git or writes: the view, its pages, a f
   const sources = await api("GET", `${files}/quote-sources.md`);
   assert.equal((await api("POST", `${files}/quote-sources.md/retire`, undefined, { "if-match": sources.headers.get("etag") })).status, 200);
   assert.deepEqual(calls.filter(([method]) => method === "exec").map(([, argv]) => argv.split(" ")[2]), ["commit"], "a retire is one exec");
-  assert.deepEqual(gitCalls, [], "no write runs git on this side");
 
   // A body that is not the snapshot's blob (a write in flight elsewhere), as it is read twice: 503, and no exec.
   forgetBodies();

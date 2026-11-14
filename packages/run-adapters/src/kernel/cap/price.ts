@@ -61,7 +61,20 @@ export function expectedInput(bound: number, previous: Previous | undefined, now
   if (!previous || previous.model !== model) return undefined;
   const gap = now - previous.endedAt;
   if (!(gap >= 0 && gap < CACHE_WARM_MS)) return undefined;
+  // A conversation only grows between its own requests: a smaller body is not one (a compaction, or another conversation's),
+  // so none of the previous request's cache is known to be read by it. Priced uncached, never under what it can cost.
+  if (bound < previous.boundTokens) return undefined;
   return { cached: previous.cachedTokens, fresh: previous.inputTokens + Math.max(0, bound - previous.boundTokens) };
+}
+
+/** The session's previous request once `ended` has answered: `ended` itself when it continues the conversation (the first
+ *  request, another model's, one measured another way, or one at least as big as the previous), none when it is smaller.
+ *  A smaller body is a compaction or another conversation's (a child's, which the proxy cannot tell from the root's):
+ *  history resets, so it never sticks on a request the conversation has left and never prices the next from another's
+ *  cache. The next request is priced uncached (one miss window), then warm from its own predecessor. */
+export function previousAfter(previous: Previous | undefined, ended: Previous): Previous | undefined {
+  if (previous && previous.model === ended.model && previous.counted === ended.counted && ended.boundTokens < previous.boundTokens) return undefined;
+  return ended;
 }
 
 /** A request priced under `mode`: `cost(output)`, what it is held at (its expected input, never more than uncached), and
@@ -78,8 +91,11 @@ export function requestPrice(pricing: Pricing, bound: number, previous: Previous
 export function inputBound(request: ModelCapRequest): number | undefined {
   const measured = request.inputTokens;
   if (typeof measured !== "number" || !Number.isFinite(measured) || measured < 0) return undefined;
-  const added = request.shape ? providerInputOverhead(request.model.api, request.shape) : 0;
-  return measured + added + (request.extraInputTokens ?? 0);
+  // Below 0 only by images' data counted at their billed size instead; a shape that says more such bytes than were
+  // measured is no bound.
+  const added = request.shape ? providerInputOverhead(request.model.api, { model: request.model.id, ...request.shape }) : 0;
+  const bound = measured + added + (request.extraInputTokens ?? 0);
+  return bound < 0 ? undefined : bound;
 }
 
 /** The output a request is sent with at most: what it asks (its model's ceiling when it says none), and its thinking budget

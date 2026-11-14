@@ -1,10 +1,10 @@
 // GET /v2/stats, this server's own route: the agent store's counts and cost sums (AgentStoreReader.stats, SQL
 // aggregates over store.sqlite), with what only the runs this server holds can say. Nothing under runs/ is opened: a
 // running run this server does not hold has no status here, and is counted as unknown, never as active or not waiting.
-// The learning counts are a held run's learning, from memory, and every other run's end from the learning ledger
-// (usage.ts), one file at the data directory's top (learning-run.ts counts).
-import type { AnalyticsFilter, AnalyticsGroup, PendingEnd, RunRow, StoreAnalytics, StoreStats } from "@parcha/pi-durable-agent";
-import { nameOf } from "@parcha/pi-durable-agent/timeline";
+// The learning counts are each run's learning as the store keeps it (learning-run.ts counts).
+import type { StoreStats } from "./store-reads/stats.js";
+import type { AnalyticsFilter, AnalyticsGroup, PendingEnd, StoreAnalytics } from "./store-reads/analytics.js";
+import { nameOf } from "./timeline/index.js";
 import { ApiError } from "./errors.js";
 import { type Status } from "./run-view.js";
 import { ID } from "./validate.js";

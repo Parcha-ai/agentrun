@@ -138,8 +138,10 @@ registerPlant({
 
 // ---- the computer keys' and the Archil account key's plants (computers.ts, archil-routes.ts): saved by the owner ----
 
-/** The Archil settings the Archil plant saves beside its key: a disk, its region and S3 URL, none of them a secret. */
-export const PLANTED_ARCHIL_SETTINGS = { diskId: "dsk-00000000000plant", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+/** The Archil settings the Archil plant saves beside its key: its region and S3 URL, neither a secret. */
+export const PLANTED_ARCHIL_SETTINGS = { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+/** The disk a planted run's claim keeps its folder on: an Archil disk id (dsk-<16 hex>), as an agent's stored disk is. */
+export const PLANTED_ARCHIL_DISK = "dsk-0000000000a1a470";
 
 registerPlant({
   // The harness's server runs --faux: its computer providers are --faux's, and faux-sandbox's one key is FAUX_SANDBOX_KEY.
@@ -240,7 +242,8 @@ registerPlant({
   write: async ({ owner, token }) => {
     const saved = await owner("PUT", "/v2/settings/webhook", { url: "https://hooks.example.com/planted" });
     if (saved.status !== 201) throw new Error(`the outbound webhook was not set: ${saved.status} ${saved.text}`);
-    // A later save is no secret write: the token changes the URL, and its answer is read like any other.
+    // The token changes the URL: a new secret is made and never shown to it, and the planted one is kept retired, still
+    // cut; its answer is read like any other.
     const moved = await token("PUT", "/v2/settings/webhook", { url: "https://hooks.example.com/planted-2" });
     if (moved.status !== 200) throw new Error(`the token could not change the webhook's URL: ${moved.status} ${moved.text}`);
     return [saved.json.signing_secret];

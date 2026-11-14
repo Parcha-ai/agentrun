@@ -1,7 +1,7 @@
 // The workflow loop on the runner (design: "Runners carry many loops"; the lead's ruling, workflow agents keep running
 // after the cutover). A run of a workflow revision, which the runner claims like any run: this loop is its driver, so the
-// claim, the fence, a cancel and the end commit are its. The DSL's durable runner (pi-durable-agent/workflow
-// startWorkflowRevision over agentrun-pi's workflow task) runs the revision's workflow UNCHANGED — the same nodes,
+// claim, the fence, a cancel and the end commit are its. The DSL's durable runner (workflow-run.ts
+// startWorkflowRevision over the workflow task, workflow/task.ts) runs the revision's workflow UNCHANGED — the same nodes,
 // decisions, call tools and cap it ran with in the per-run process — on the run's journal in the one store (A,
 // deps.journal(claim)) in place of a per-run store file. The interpreter's host (model nodes on the run's models, call
 // nodes on the tool table, decisions, the cap) is built by the caller (WorkflowRunSpec.build), exactly as the per-run
@@ -18,22 +18,23 @@
 // `agentrun.raise` entry and the next claim resumes the workflow from its journal with the raised cap. A lost claim or a
 // shutdown writes nothing more and the next claim resumes.
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { createRegistry, type EntryRecord, type Extension, Harness, ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai";
 import type { Workflow } from "@parcha/agentrun-dsl";
-import { createWorkflowExtension, type WorkflowTaskHost } from "@parcha/agentrun-pi/durable";
-import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "@parcha/pi-durable-agent/workflow";
-import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
-import { type Claim, type Command, type CommandOutcome, endedBy, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
+import { createWorkflowExtension, type WorkflowTaskHost } from "../workflow/task.js";
+import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "../workflow-run.js";
+import { type BudgetData, type EndData, type EndReview, KINDS, type RaiseData } from "./journal-kinds.js";
+import { type Claim, type Command, type CommandOutcome, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
 import type { RunOutcome, RunPatch } from "../store/store.js";
+import { END_PATCH_MS, END_PATCH_UNKNOWN } from "./loop.js";
 
-/** The most the end's patch (cost and metrics) may take before the end is written without it (the pi loop's CUT_STEP_MS). */
-const CUT_STEP_MS = 2_000;
 
 /** A cap refusal, as the kernel cap hands one to parkOf/checkRaise (the loop never imports the cap; its rule is handed in
  *  via the spec, so flat or tiered pricing is the cap's, not this loop's). */
-export type CapRefusal = { readonly message: string; readonly forGood: boolean; readonly figures?: unknown };
+/** `node`: the label of the workflow node whose step the cap held (a model node's request, a call node's call, a
+ *  decision), which the run's pending budget names; absent when the step's node is not known. */
+export type CapRefusal = { readonly message: string; readonly forGood: boolean; readonly figures?: unknown; readonly node?: string };
 /** A raise's state as the cap's checkRaise reads it (the kernel cap's RaiseState). */
 export type RaiseState = { capUsd?: number; final?: boolean; pause?: string; lastRaise?: { to: number; pause?: string } };
 /** What the cap's checkRaise says (the kernel cap's RaiseCheck). */
@@ -86,13 +87,19 @@ export interface WorkflowRunSpec {
    *  once, however the run ended (ended, stopped, failed, parked or interrupted), so a parked or resumed run starts fresh
    *  proxies on its next claim. Never throws out. Absent: nothing to let go. */
   readonly release?: () => Promise<void>;
+  /** Resolves once every model request the spec admitted has been booked, or a bound has passed (then a request left
+   *  unbooked reads at its hold and bound). A request its node let go of (a stop) is booked only once the provider's side
+   *  ends, which can be after the node ended: once the workflow's task is over, the loop waits for this before it closes
+   *  the Harness the bookings are written through. Not on a park or a lost claim: the next claim books a request left
+   *  open there as cut. Absent: nothing to wait for. */
+  readonly settle?: () => Promise<void>;
 }
 
 /** What the interpreter's host may ask of the loop while it runs. */
 export interface WorkflowHostHooks {
   /** A step the cap holds for a raise lets go here, with the cap's refusal: the loop parks the run (parkOf's pending
    *  budget, in the cap's words) and a later claim resumes the workflow from its journal (the held step was never admitted,
-   *  so nothing is half done), with the raised cap. The caller must let the node's signal, which the loop aborts, end the
+   *  or ended held with nothing sent, so nothing is half done), with the raised cap. The caller must let the node's signal, which the loop aborts, end the
    *  step's wait. */
   park(refusal: CapRefusal): void;
   /** Whether a person's pause is in force (POST /runs/{id}/pause: a `pause` command taken with no `resume` after it). The
@@ -115,6 +122,9 @@ export const isWorkflowRevision = (revision: { readonly kind: string }): boolean
  *  the claim opens from the store (redact.ts holdClaimed). */
 export interface WorkflowSpecRun {
   readonly redact?: (text: string) => string;
+  /** A fresh journal of the claim, for what the spec reads from the run's records at its end (its decisions' booked
+   *  cost): a fresh one, since the Harness closes its own before the end is written. */
+  readonly journal?: () => Journal;
 }
 
 /** Loops for workflow runs: `spec(claim)` gives each claim's run what it runs (its workflow, input, models and host). */
@@ -265,23 +275,24 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     return { state: "parked" };
   }
 
-  /** The end's cost and metrics from the spec, bounded like the pi loop: late or failing, none. */
+  /** The end's cost and metrics from the spec, bounded as the adapter loop's (END_PATCH_MS): late or failing, the end
+   *  says both are unknown (END_PATCH_UNKNOWN). */
   const endPatchOf = async (spec: WorkflowRunSpec, data: EndData): Promise<Pick<EndData, "costUsd" | "metrics">> => {
     if (!spec.endPatch) return {};
     let timer: NodeJS.Timeout | undefined;
-    const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), CUT_STEP_MS)));
+    const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), END_PATCH_MS)));
     try {
       const patch = await Promise.race([spec.endPatch(data), late]);
       if (patch === "late") {
-        console.warn(`[runner] ${runId}: its end's patch gave no answer within ${CUT_STEP_MS / 1000} s; the end is written without it`);
-        return {};
+        console.warn(`[runner] ${runId}: its end's patch gave no answer within ${END_PATCH_MS / 1000} s; the end is written with its cost and metrics unknown`);
+        return END_PATCH_UNKNOWN;
       }
       return patch ?? {};
     } catch (error) {
       // Cut of every secret the runner holds (LoopDeps.redact): an error's text may echo one.
       const text = (error as Error)?.message ?? String(error);
-      console.warn(`[runner] ${runId}: its end's patch failed: ${deps.redact ? deps.redact(text) : text}`);
-      return {};
+      console.warn(`[runner] ${runId}: its end's patch failed: ${deps.redact ? deps.redact(text) : text}; the end is written with its cost and metrics unknown`);
+      return END_PATCH_UNKNOWN;
     } finally {
       clearTimeout(timer);
     }
@@ -296,7 +307,7 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     const parkController = new AbortController();
     let heldRefusal: CapRefusal | undefined;
     const context = withAbortSignal(AbortSignal.any([deps.signal, parkController.signal]), BACKGROUND_CONTEXT);
-    spec = await specOf(claim, deps.redact ? { redact: deps.redact } : {});
+    spec = await specOf(claim, { ...(deps.redact ? { redact: deps.redact } : {}), journal: () => deps.journal(claim) });
     claimNow = claim;
     specReady();
     const revision = { id: spec.revisionId, kind: "workflow" as const, body: { workflow: spec.workflow, tools: [...spec.tools] } };
@@ -345,20 +356,28 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
       return { state: "interrupted" };
     }
 
-    // The task is terminal. Close the Harness, then read the run's view from its journal and write the end, both on a
-    // fresh journal of the same claim (the Harness closed its own).
+    // The task is terminal. Its model requests booked (a stopped one books once its provider's side ends, after the node
+    // let go of it), close the Harness, then read the run's view from its journal and write the end, both on a fresh
+    // journal of the same claim (the Harness closed its own).
+    await spec.settle?.().catch(() => undefined);
     await closeHarness();
     const endJournal = deps.journal(claim);
     // A person stopped or cancelled: the run ends stopped whatever the workflow's own outcome (its last node may have
-    // completed as the stop landed, since the engine cancels by aborting the task), in the words that say which (endedBy),
-    // with the stop row taken in the end commit.
-    if (stopReason?.kind === "command") return await writeEnd(endJournal, context, { state: "stopped", summary: endedBy(stopReason.cancel) });
+    // completed as the stop landed, since the engine cancels by aborting the task), in the words and the outcome that say
+    // which (stopEnd), with the stop row taken in the end commit. A workflow run is never reopened, either way.
+    if (stopReason?.kind === "command") return await writeEnd(endJournal, context, stopEnd(stopReason.cancel));
     const carry = await workflowCarry({ runId: claim.runId, storage: endJournal, revision }, outcome, { context });
     // A completed run's output, read as main's server read it once the workflow completed (runs.ts workflowEnd:
     // readWorkflowRun's `output`, null when it has none), kept on its end for result.output.
     if (carry.state === "completed") {
       const { output } = await readWorkflowRun({ runId: claim.runId, storage: endJournal, revision }, { context });
       return await writeEnd(endJournal, context, { ...carry, output: output ?? null });
+    }
+    // An escalated run's review, as main's server kept it (runs.ts): the escalation's kind, the escalate node's label (else
+    // the node it escalated at), and its summary (else the run's), kept on its end for the run's `review`.
+    if (carry.state === "escalated") {
+      const { escalation, escalatedAt } = await readWorkflowRun({ runId: claim.runId, storage: endJournal, revision }, { context });
+      return await writeEnd(endJournal, context, { ...carry, review: { kind: escalation?.kind ?? null, node: escalation?.label ?? escalatedAt?.label ?? null, reason: escalation?.summary ?? carry.summary } });
     }
     return await writeEnd(endJournal, context, carry);
     } finally {
@@ -375,16 +394,26 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     const parked = spec?.cap?.park(refusal);
     if (!parked) return { state: "interrupted" };
     if (parked.outcome === "failed") return await writeEnd(journal, BACKGROUND_CONTEXT, { state: "failed", summary: parked.error });
-    const budget: BudgetData = { pending: parked.pending, words: parked.words };
+    // A workflow's pause names the node whose step waits at the cap (null when it is not known), as its pending budget shows.
+    const budget: BudgetData = { pending: parked.pending, words: parked.words, node: refusal.node ?? null };
     await append(journal, BACKGROUND_CONTEXT, KINDS.budget, budget, { run: { state: "parked", summary: parked.words } });
     return { state: "parked" };
   }
 
-  async function writeEnd(journal: Journal, context: Context, carry: { state: "completed" | "failed" | "stopped" | "escalated"; summary: string; output?: unknown }): Promise<LoopEnd> {
+  type Carry = { state: "completed" | "failed" | "stopped" | "escalated"; summary: string; output?: unknown; review?: EndReview; outcome?: "stopped" | "cancelled" };
+  const endOf = (carry: Carry) => {
     const state: EndData["state"] = carry.state === "failed" ? "failed" : carry.state === "stopped" ? "stopped" : "ended";
-    const outcome: RunOutcome | undefined = carry.state === "escalated" ? "escalated" : undefined;
-    const base: EndData = { state, summary: carry.summary, ...(outcome ? { outcome } : {}), ...(carry.output !== undefined ? { output: carry.output } : {}) };
-    const patch = await endPatchOf(spec!, base);
+    const outcome: RunOutcome | undefined = carry.state === "escalated" ? "escalated" : carry.state === "stopped" ? carry.outcome : undefined;
+    const base: EndData = { state, summary: carry.summary, ...(outcome ? { outcome } : {}), ...(carry.output !== undefined ? { output: carry.output } : {}), ...(carry.review ? { review: carry.review } : {}) };
+    return { state, outcome, base };
+  };
+
+  async function writeEnd(journal: Journal, context: Context, ended: Carry): Promise<LoopEnd> {
+    const patch = await endPatchOf(spec!, endOf(ended).base);
+    // A person's stop that came while the end waited on its patch (up to END_PATCH_MS on a busy store) is this end's, as a
+    // stop before it is: the run ends stopped whatever the workflow's own outcome, never completed with the stop taken.
+    const carry: Carry = stopReason?.kind === "command" && ended.state !== "stopped" ? stopEnd(stopReason.cancel) : ended;
+    const { state, outcome, base } = endOf(carry);
     const data: EndData = { ...base, ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}) };
     const runPatch: RunPatch = {
       state, summary: carry.summary,

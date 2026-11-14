@@ -8,8 +8,8 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { DaemonClient, epochOf } from "../dist/index.js";
-import { MAX_OUTPUT_BYTES } from "../dist/protocol.js";
+import { checkGpu, DaemonClient, EPOCH_LABEL, epochOf, ownerLabels, RUN_LABEL } from "../dist/index.js";
+import { MAX_OUTPUT_BYTES, PROTOCOL_VERSION } from "../dist/protocol.js";
 
 const fail = (code, message) => ({ ok: false, error: { code, message } });
 const ok = (value) => ({ ok: true, value });
@@ -55,7 +55,7 @@ function catOf(argv, cwd, computer) {
 const UNPRIVILEGED = { CapInh: NO_CAPABILITIES, CapPrm: NO_CAPABILITIES, CapEff: NO_CAPABILITIES, CapBnd: NO_CAPABILITIES, CapAmb: NO_CAPABILITIES, NoNewPrivs: "1" };
 
 /** What exec.run of argv prints in a computer whose user is uid, as `user` (a name in users, or a uid) when given. */
-function output(argv, { uid, status, users, user, probe, pathSockets = [], socketSearchIncomplete = [] }) {
+function output(argv, { uid, status, users, user, probe, pathSockets = [], socketSearchIncomplete = [], listeners = [], listenerSearchIncomplete = [] }) {
 	const who = user === undefined ? uid : String(users[user] ?? user);
 	if (argv[0] === "id" && argv[1] === "-u") return `${who}\n`;
 	if (argv[0] === "/opt/agentrun/computerd" && argv[1] === "probe") {
@@ -70,7 +70,10 @@ function output(argv, { uid, status, users, user, probe, pathSockets = [], socke
 		// the roots the search could not cover whole.
 		const listed = pathSockets === "no list" ? [] : pathSockets.map((socket) => (typeof socket === "string" ? { path: socket, type: "stream" } : socket));
 		const sockets = !asked || pathSockets === "no list" ? {} : { sockets: { sockets: listed, incomplete: socketSearchIncomplete } };
-		return `${JSON.stringify({ uid: Number(who), gid: Number(who), kernel: "6.8.0", interfaces: probe.interfaces, quiet: probe.quiet ?? [], raised: probe.raised ?? [], ...sockets, reached: answered, accepted: [], results })}\n`;
+		// And the TCP and UDP listeners of the programs' own network, as computerd reports them (none listed when listeners
+		// is "no list"), and the tables it could not read.
+		const listening = !asked || listeners === "no list" ? {} : { listeners: { listeners, incomplete: listenerSearchIncomplete } };
+		return `${JSON.stringify({ uid: Number(who), gid: Number(who), kernel: "6.8.0", interfaces: probe.interfaces, quiet: probe.quiet ?? [], raised: probe.raised ?? [], ...sockets, ...listening, reached: answered, accepted: [], results })}\n`;
 	}
 	if (argv[0] === "cat" && argv[1] === "/proc/self/status") {
 		const lines = Object.entries(status).filter(([, value]) => value !== undefined);
@@ -111,12 +114,13 @@ function files(computer, method, params) {
 		return { size: Buffer.from(params.data, "base64").length };
 	}
 	if (method === "files.read") {
-		const data = host === undefined ? undefined : (() => { try { return readFileSync(host); } catch { return undefined; } })();
+		const data = host === undefined ? computer.contents.get(params.path) : (() => { try { return readFileSync(host); } catch { return undefined; } })();
 		if (data === undefined) return { error: { code: -32000, message: `no such file: ${params.path}`, data: { kind: "not_found" } } };
 		return { data: data.toString("base64"), eof: true, size: data.length };
 	}
 	if (method === "files.mkdir") tree.set(params.path, "dir");
 	if (method === "files.write") tree.set(params.path, "file");
+	if (method === "files.write") computer.contents.set(params.path, Buffer.from(params.data, "base64"));
 	if (method === "files.write") return { size: Buffer.from(params.data, "base64").length };
 	if (method !== "files.list") return {};
 	const depth = params.depth ?? 1;
@@ -154,7 +158,14 @@ function fakeDaemon(hello, computer) {
 				const cat = catOf(request.params.argv, request.params.cwd, computer);
 				// A computer has no sudo for its user (the Archil image ships none).
 				const sudo = request.params.argv.join(" ").includes("sudo -n") ? { exitCode: 127, stdout: "", stderr: "sh: sudo: not found\n" } : undefined;
-				const ran = cat ?? sudo ?? appendOf(request.params.argv, computer) ?? { exitCode: 0, stdout: output(request.params.argv, { ...computer, user: request.params.user }), stderr: "" };
+				// nvidia-smi -L: one line per GPU the computer was made with and its user sees, else not found.
+				const smi =
+					request.params.argv[0] === "sh" && request.params.argv[2] === "nvidia-smi -L"
+						? computer.gpus
+							? { exitCode: 0, stdout: Array.from({ length: computer.gpus.count }, (_, i) => `GPU ${i}: NVIDIA ${computer.gpus.type} (UUID: GPU-${i}-fake)\n`).join(""), stderr: "" }
+							: { exitCode: 127, stdout: "", stderr: "sh: nvidia-smi: not found\n" }
+						: undefined;
+				const ran = cat ?? sudo ?? smi ?? appendOf(request.params.argv, computer) ?? { exitCode: 0, stdout: output(request.params.argv, { ...computer, user: request.params.user }), stderr: "" };
 				reply({ result: { exitCode: ran.exitCode, stdout: b64(ran.stdout), stderr: b64(ran.stderr), timedOut: false, truncated: false } });
 			} else if (request.method === "files.read" && request.params.path === "/proc/self/environ") {
 				// Root's once init has dropped to its programs' uid (non-dumpable), as on a real computer: unreadable.
@@ -206,6 +217,18 @@ function fakeDaemon(hello, computer) {
  * - `failRelease`: labels; a release of a computer that carries all of them fails ("refused", in words) and leaves it.
  * - `vendorAgentPorts`: capabilities().vendorAgentPorts, left out unless given. `probeInterfaces`: the interfaces
  *   `computerd probe` reports (default the loopback alone); `agentAnswers`: the probe targets that answer (default none).
+ *   `listeners`: the TCP and UDP listeners `computerd probe --sockets` reports in the programs' own network, as computerd
+ *   writes them (default none; "no list": a daemon that lists none); `listenerSearchIncomplete`: the tables it could not
+ *   read.
+ * - `persistence`: capabilities().persistence ({ keepsState: true, resume }), left out unless given. With it, check()
+ *   takes spec.owner with no lifetime, create labels the computer with its owner, release "detach" stops an agent's
+ *   computer with its files kept (and, with resume, its processes), and attach with a claim brings it back under the
+ *   claim's run and epoch, refusing a claim of the same run below the epoch it carries. Without it, an owner and a detach
+ *   are refused in words. `brokenPersistence`: "detach-deletes" (a detach deletes the computer), "forgets" (an attach
+ *   brings it back with no files), "no-fence" (a claim below the epoch is taken).
+ * - `gpu`: capabilities().gpu, left out unless given (a computer asked with one has it, read back by attach and listed by
+ *   nvidia-smi -L inside); `gpuUnseen`: its programs see no GPU (nvidia-smi not found); `gpuReadBack`: what attach
+ *   reports instead; `checkIgnoresGpu`: check() takes any spec.gpu, declared or not.
  */
 export function fakeComputers({
 	id = "fake",
@@ -254,7 +277,15 @@ export function fakeComputers({
 	toolCannotWrite = false,
 	pathSockets = [],
 	socketSearchIncomplete = [],
+	listeners = [],
+	listenerSearchIncomplete = [],
 	display,
+	persistence,
+	brokenPersistence,
+	gpu,
+	gpuUnseen = false,
+	gpuReadBack,
+	checkIgnoresGpu = false,
 } = {}) {
 	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. An Archil mount
 	 *  is exclusive, under the epoch of the computer's agentrun.epoch label; with no such label it is a mount in words. */
@@ -279,7 +310,22 @@ export function fakeComputers({
 	const provider = {
 		id,
 		version,
-		capabilities: () => ({ kind, lifetime, network, isolation: "container", os: "linux", daemon: mode, groups, maxLifetimeMs, release, ...(user ? { user } : {}), ...(mount ? { mount } : {}), ...(vendorAgentPorts ? { vendorAgentPorts } : {}) }),
+		capabilities: () => ({
+			kind,
+			lifetime,
+			network,
+			isolation: "container",
+			os: "linux",
+			daemon: mode,
+			groups,
+			maxLifetimeMs,
+			release,
+			...(user ? { user } : {}),
+			...(mount ? { mount } : {}),
+			...(vendorAgentPorts ? { vendorAgentPorts } : {}),
+			...(persistence ? { persistence } : {}),
+			...(gpu ? { gpu } : {}),
+		}),
 		check(spec) {
 			const refusals = [];
 			if (spec.mount !== undefined && !(mount ?? []).includes(spec.mount.kind) && brokenMount !== "check-ignores") {
@@ -287,10 +333,15 @@ export function fakeComputers({
 			} else if (spec.mount !== undefined && brokenMount === "host-refuses") {
 				refusals.push({ field: "mount", message: "this host cannot bind the run folder" });
 			}
-			if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
+			if (spec.owner !== undefined && !persistence) refusals.push({ field: "owner", message: "this fake keeps no computer for an agent" });
+			else if (spec.owner !== undefined && spec.lifetimeMs !== undefined) refusals.push({ field: "lifetimeMs", message: "an agent's computer has no run deadline" });
+			else if (spec.owner !== undefined) {
+				// An agent's computer: no lifetime to check.
+			} else if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
 			else if (spec.lifetimeMs > maxLifetimeMs) refusals.push({ field: "lifetimeMs", message: `lifetimeMs is at most ${maxLifetimeMs} ms` });
 			const kind = typeof spec.network === "string" ? spec.network : "allow";
 			if (!network.includes(kind)) refusals.push({ field: "network", message: `network ${kind} is not offered` });
+			if (!checkIgnoresGpu) refusals.push(...checkGpu(spec.gpu, { gpu }));
 			return refusals;
 		},
 		async create(spec) {
@@ -305,10 +356,16 @@ export function fakeComputers({
 			const record = {
 				ref: { id: `id-${next}`, name },
 				image: spec.image,
-				labels: { ...spec.labels, ...(brokenMount === "token-in-label" && spec.mount?.token ? { "mount.token": spec.mount.token } : {}) },
+				labels: {
+					...spec.labels,
+					...(brokenMount === "token-in-label" && spec.mount?.token ? { "mount.token": spec.mount.token } : {}),
+					...(spec.owner !== undefined ? ownerLabels(spec.owner) : {}),
+				},
 				network: spec.network,
 				mount: spec.mount,
-				deadline: new Date(Date.now() + spec.lifetimeMs),
+				owner: spec.owner,
+				gpu: spec.gpu,
+				deadline: spec.owner !== undefined ? undefined : new Date(Date.now() + spec.lifetimeMs),
 				state: "running",
 				daemon: {
 					uid: spec.user ?? String(uid),
@@ -322,12 +379,16 @@ export function fakeComputers({
 					processes: [],
 					listPage,
 					tree: new Map(),
+					contents: new Map(),
 					filesPage,
 					bound: folderOf(spec.mount),
 					toolCannotWrite,
 					pathSockets,
 					socketSearchIncomplete,
+					listeners,
+					listenerSearchIncomplete,
 					display,
+					...(spec.gpu && !gpuUnseen ? { gpus: spec.gpu } : {}),
 					probe: { interfaces: probeInterfaces, quiet: probeQuiet, raised: probeRaised, answers: agentAnswers },
 				},
 			};
@@ -335,21 +396,40 @@ export function fakeComputers({
 			made.push({ name, labels: record.labels });
 			return ok(notes ? { ...record.ref, notes } : record.ref);
 		},
-		async attach(ref) {
+		async attach(ref, context = {}) {
 			const found = [...computers.values()].filter((c) =>
 				"id" in ref ? c.ref.id === ref.id : Object.entries(ref.labels).every(([k, v]) => c.labels[k] === v),
 			);
 			if (found.length === 0) return fail("not_found", "no such computer");
 			if (found.length > 1) return fail("invalid", `${found.length} computers match`);
 			const [c] = found;
+			const claim = context.claim;
+			if (claim !== undefined) {
+				if (!persistence || c.owner === undefined) return fail("refused", `${c.ref.name} is a run's computer: no claim takes it`);
+				const carried = epochOf(c.labels);
+				if (c.labels[RUN_LABEL] === claim.run && carried.ok && claim.epoch < carried.value && brokenPersistence !== "no-fence") {
+					return fail("refused", `fenced: ${c.ref.name} carries run ${claim.run} at epoch ${carried.value}, above the claim's ${claim.epoch}`);
+				}
+				c.labels = { ...c.labels, [RUN_LABEL]: claim.run, [EPOCH_LABEL]: String(claim.epoch) };
+				if (c.state === "stopped") {
+					// Back from a detach: with resume as it was; else booted again from its kept disk, no process running.
+					if (!persistence.resume) c.daemon.processes = [];
+					if (brokenPersistence === "forgets") c.daemon.contents = new Map();
+				}
+				c.state = "running";
+				c.detachedAt = undefined;
+			}
 			const [u, g = u] = c.daemon.uid.split(":");
-			const read = { image: c.image, user: `${u}:${g}`, network: c.network, deadline: c.deadline, ...readBack(c.mount, c.labels) };
+			const gpus = gpuReadBack === undefined ? c.gpu : gpuReadBack;
+			const read = { image: c.image, user: `${u}:${g}`, network: c.network, deadline: c.deadline, ...readBack(c.mount, c.labels), ...(gpus ? { gpu: gpus } : {}) };
 			return ok(attachSpec === null ? { ...c.ref } : { ...c.ref, spec: { ...read, ...attachSpec } });
 		},
 		async list(labels) {
 			calls.push(["list", labels]);
 			const found = [...computers.values()].filter((c) => listIgnoresLabels || Object.entries(labels).every(([k, v]) => c.labels[k] === v));
-			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: c.state, network: c.network, ...readBack(c.mount, c.labels) })));
+			return ok(
+				found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: c.state, network: c.network, ...readBack(c.mount, c.labels), ...(c.detachedAt ? { detachedAt: c.detachedAt } : {}) })),
+			);
 		},
 		async network(ref, policy) {
 			const record = computers.get(ref.name);
@@ -364,7 +444,7 @@ export function fakeComputers({
 		async connect(ref) {
 			if (connectThrows) throw new Error(connectThrows);
 			if (!computers.has(ref.name)) return fail("not_found", `no computer ${ref.name}`);
-			const value = { version, os: "linux", kind, arch: "amd64", groups, ...hello };
+			const value = { protocol: PROTOCOL_VERSION, version, os: "linux", kind, arch: "amd64", groups, ...hello };
 			connections++;
 			let closed = false;
 			const client = new DaemonClient(fakeDaemon(value, computers.get(ref.name).daemon));
@@ -384,6 +464,13 @@ export function fakeComputers({
 				return fail("refused", `the fake cannot ${how} ${ref.name}`);
 			}
 			if (how === "stop" && !release.includes("stop") && !stopAnyway) return fail("unsupported", "this fake has no stop that keeps a computer; release it with delete");
+			if (how === "detach") {
+				if (!persistence) return fail("unsupported", "this fake keeps no computer for an agent: release it with delete");
+				if (record && record.owner === undefined) return fail("refused", `${ref.name} is a run's computer: it does not detach`);
+				if (record && brokenPersistence === "detach-deletes") computers.delete(ref.name);
+				else if (record) Object.assign(record, { state: "stopped", detachedAt: new Date() });
+				return ok(undefined);
+			}
 			if (record && how === "stop" && stopDeletes) computers.delete(ref.name);
 			if (record && how === "stop") record.state = "stopped";
 			if (record && how === "delete" && !keepOnRelease) computers.delete(ref.name);

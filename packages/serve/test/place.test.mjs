@@ -7,28 +7,27 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { PROVIDERS } from "@parcha/agentrun-computer";
-import { Agents } from "../dist/agents.js";
-import { BOX_IDS } from "../dist/boxes.js";
-import { agent, flowAgent, follow, scratch, serve } from "./support.mjs";
+import { commitAgent, createAgent, getAgent } from "../dist/agents-store.js";
+import { BOX_IDS } from "../dist/place-offers.js";
+import { agent, flowAgent, follow, serve } from "./support.mjs";
+import { storeOn } from "./store-helpers.mjs";
 
 const storedBodies = (data) => {
   const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
   try {
-    return db.prepare("SELECT body_json FROM revisions").all().map((row) => JSON.parse(row.body_json));
+    return db.prepare("SELECT body FROM revisions ORDER BY created_at, rowid").all().map((row) => JSON.parse(row.body));
   } finally {
     db.close();
   }
 };
 
 const BOXED = [
-  { mode: "sandbox", box: "bwrap" },
   { mode: "sandbox", box: "docker" },
   { mode: "sandbox", box: "modal" },
   { mode: "sandbox", box: "daytona" },
 ];
 
-// SKIP (follow-up #2078): it reads the old store column body_json, which the store switch removed
-test.skip("a definition that names no place stores none, answers none, and runs as before", async (t) => {
+test("a definition that names no place stores none, answers none, and runs as before", async (t) => {
   const { api, data } = await serve(t);
   const made = await api("POST", "/agents", agent("plain"));
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -42,8 +41,7 @@ test.skip("a definition that names no place stores none, answers none, and runs 
   await follow(api, run.body.run_id, ["completed"]);
 });
 
-// SKIP (follow-up #2078): it reads the old store column body_json, which the store switch removed
-test.skip("an explicit runner place is stored and echoed, is another revision than none, and runs", async (t) => {
+test("an explicit runner place is stored and echoed, is another revision than none, and runs", async (t) => {
   const { api, data } = await serve(t);
   const plain = await api("POST", "/agents", agent("plain"));
   const made = await api("POST", "/agents", agent("runner", { place: { mode: "runner" } }));
@@ -57,8 +55,7 @@ test.skip("an explicit runner place is stored and echoed, is another revision th
   await follow(api, run.body.run_id, ["completed"]);
 });
 
-// SKIP (follow-up #2078): it reads the old store column body_json, which the store switch removed
-test.skip("a sandbox place on each box, bwrap included, is stored and echoed as given on an agentic revision; a workflow revision's is a 422, and nothing is saved", async (t) => {
+test("a sandbox place on each box is stored and echoed as given on an agentic revision; a workflow revision's is a 422, and nothing is saved", async (t) => {
   const { api, data } = await serve(t);
   for (const [index, place] of BOXED.entries()) {
     const made = await api("POST", "/agents", agent(`boxed-${index}`, { place }));
@@ -81,9 +78,10 @@ test("a place of the wrong shape is a 422 at definition.place with a plain messa
     [null, "wrong_type", /is an object/],
     [{}, "missing", /mode is one of runner, sandbox/],
     [{ mode: "elsewhere" }, "not_an_option", /mode is one of runner, sandbox/],
-    [{ mode: "tool-box", box: "bwrap" }, "not_an_option", /mode is one of runner, sandbox/],
-    [{ mode: "sandbox" }, "missing", /names its box: one of bwrap, docker, modal, daytona/],
-    [{ mode: "sandbox", box: "podman" }, "not_an_option", /box is one of bwrap, docker, modal, daytona/],
+    [{ mode: "tool-box", box: "docker" }, "not_an_option", /mode is one of runner, sandbox/],
+    [{ mode: "sandbox" }, "missing", /names its box: one of docker, modal, daytona/],
+    [{ mode: "sandbox", box: "podman" }, "not_an_option", /box is one of docker, modal, daytona/],
+    [{ mode: "sandbox", box: "bwrap" }, "not_an_option", /box is one of docker, modal, daytona/],
     [{ mode: "runner", box: "docker" }, "not_allowed", /runner place uses no box/],
     [{ mode: "runner", home: "/data" }, "not_allowed", /keeps only mode and box, not home/],
     [{ mode: "sandbox", box: "docker", region: "eu" }, "not_allowed", /keeps only mode and box, not region/],
@@ -97,7 +95,7 @@ test("a place of the wrong shape is a 422 at definition.place with a plain messa
   }
   assert.equal((await api("GET", "/agents")).body.agents.length, 0);
   const made = await api("POST", "/agents", agent("good"));
-  const edit = await api("PUT", "/agents/good/definition", { definition: { instructions: "Answer.", place: { mode: "tool-box", box: "bwrap" } } }, { "if-match": `"${made.body.revision}"` });
+  const edit = await api("PUT", "/agents/good/definition", { definition: { instructions: "Answer.", place: { mode: "tool-box", box: "docker" } } }, { "if-match": `"${made.body.revision}"` });
   assert.equal(edit.status, 422, JSON.stringify(edit.body));
   assert.ok(edit.body.error.fields.some((i) => i.field === "definition.place" && i.reason === "not_an_option"));
   assert.equal((await api("GET", "/agents/good")).body.revisions, 1);
@@ -109,9 +107,9 @@ test("a sandbox place this server can't run saves with a warning that names the 
   // (resolve-computer.ts computerReadiness): no such provider, Mode 1's Docker-only sandbox, or the Docker box's own
   // reason (with the box it names, `box`), each naming what to do.
   const SETTINGS = "for this agent's computer in Settings → Computers";
-  const SANDBOXES = PROVIDERS.filter((one) => one.kinds.includes("sandbox")).map((one) => one.label).join(", ");
+  // Under --faux (every served test's), its sandboxes are offered beside the package's.
+  const SANDBOXES = [...PROVIDERS.filter((one) => one.kinds.includes("sandbox")).map((one) => one.label), "Faux sandbox", "Faux broken"].join(", ");
   for (const [id, body, words, box] of [
-    ["bwrapped", agent("bwrapped", { place: { mode: "sandbox", box: "bwrap" } }), `"bwrap" is no computer provider this server knows: pick one of ${SANDBOXES} ${SETTINGS}.`, undefined],
     ["sandboxed", agent("sandboxed", { place: { mode: "sandbox", box: "daytona" } }), `Mode 1 runs a sandbox only on Docker: a Daytona sandbox can't reach the run's folder on this machine. Pick Docker ${SETTINGS}, or another kind of computer.`, undefined],
     ["docked", agent("docked", { place: { mode: "sandbox", box: "docker" } }), "This agent's computer is a Docker sandbox, and this server cannot run it: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker.", "docker"],
   ]) {
@@ -157,17 +155,16 @@ test("an edit identical to the current revision is a no-op, whether it names the
 });
 
 test("an edit without If-Match that another edit overtakes while it is checked is built again on the new current revision: it never restores the place or harness it read", async (t) => {
-  const agents = new Agents(join(await scratch(t), "agents"));
-  t.after(() => agents.close());
-  const made = await agents.create({ definition: { id: "raced", name: "raced", instructions: "Answer.", place: { mode: "runner" } } });
+  const { store } = await storeOn(t);
+  const made = await createAgent(store, { definition: { id: "raced", name: "raced", instructions: "Answer.", place: { mode: "runner" } } });
   let overtaken = false;
   const checked = [];
-  const edited = await agents.commit(made, { definition: { instructions: "Answer briefly." } }, {
+  const edited = await commitAgent(store, made, { definition: { instructions: "Answer briefly." } }, {
     check: async (revision) => {
-      checked.push(revision.place);
+      checked.push(revision.body.place);
       if (overtaken) return;
       overtaken = true;
-      await agents.commit(await agents.get("raced"), { definition: { instructions: "Answer.", place: { mode: "sandbox", box: "docker" }, harness: "codex" } });
+      await commitAgent(store, await getAgent(store, "raced"), { definition: { instructions: "Answer.", place: { mode: "sandbox", box: "docker" }, harness: "codex" } });
     },
   });
   assert.equal(edited.revision.body.instructions, "Answer briefly.");
@@ -183,8 +180,8 @@ test("capabilities lists the place modes, this host's default, and each box: non
   assert.deepEqual(Object.keys(places), ["modes", "default_place", "default_reason", "boxes", "allow"]);
   assert.deepEqual(places.modes, ["runner", "sandbox"], "one boxed mode: no tool-box");
   assert.deepEqual(places.default_place, { mode: "runner" }, "no docker here, so a new agent, and a revision that names no place, runs on the runner");
-  assert.deepEqual(places.boxes.map((b) => [b.id, b.available]), [["bwrap", false], ["docker", false], ["modal", false], ["daytona", false]]);
-  for (const box of places.boxes) assert.equal(box.reason, box.id === "bwrap" ? "the bwrap box is not in this release yet: use the docker box" : `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${box.id}`);
+  assert.deepEqual(places.boxes.map((b) => [b.id, b.available]), [["docker", false], ["modal", false], ["daytona", false]]);
+  for (const box of places.boxes) assert.equal(box.reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${box.id}`);
 });
 
 test("one box table: capabilities' boxes, a place's 422 and every box enum of the OpenAPI document come from the box registry's ids", async (t) => {

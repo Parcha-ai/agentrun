@@ -1,19 +1,17 @@
 {
   "name": "@parcha/pi-browser",
-  "version": "0.1.0-beta.32",
+  "version": "0.1.0-beta.37",
   "description": "Your agent gets its own browser, and you can take over and hand it back.",
   "keywords": [
-    "pi-package",
     "pi-durable",
     "browser",
-    "stagehand",
-    "browserbase"
+    "stagehand"
   ],
   "type": "module",
   "license": "Apache-2.0",
   "author": "Parcha Labs, Inc.",
   "engines": {
-    "node": ">=24.11.0"
+    "node": ">=24.22.3"
   },
   "exports": {
     ".": {
@@ -24,17 +22,9 @@
       "types": "./dist/durable.d.ts",
       "import": "./dist/durable.js"
     },
-    "./recorder": {
-      "types": "./dist/recorder/index.d.ts",
-      "import": "./dist/recorder/index.js"
-    },
     "./live-view": {
       "types": "./dist/live-view/index.d.ts",
       "import": "./dist/live-view/index.js"
-    },
-    "./providers/browserbase": {
-      "types": "./dist/providers/browserbase.d.ts",
-      "import": "./dist/providers/browserbase.js"
     },
     "./providers/cdp": {
       "types": "./dist/providers/cdp.d.ts",
@@ -48,41 +38,29 @@
       "types": "./dist/providers/chrome-args.d.ts",
       "import": "./dist/providers/chrome-args.js"
     },
-    "./providers/assigned": {
-      "types": "./dist/providers/assigned.d.ts",
-      "import": "./dist/providers/assigned.js"
-    },
-    "./providers/kernel": {
-      "types": "./dist/providers/kernel.d.ts",
-      "import": "./dist/providers/kernel.js"
-    },
     "./driver/stagehand": {
       "types": "./dist/driver/stagehand.d.ts",
       "import": "./dist/driver/stagehand.js"
     },
+    "./driver/cdp": {
+      "types": "./dist/driver/cdp.d.ts",
+      "import": "./dist/driver/cdp.js"
+    },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js"
-    },
-    "./coding-agent": {
-      "types": "./dist/coding-agent.d.ts",
-      "import": "./dist/coding-agent.js"
     }
   },
   "files": [
     "dist",
     "!dist/**/*.map",
     "src/vendor/stagehand-facade/UPSTREAM.json",
+    "src/vendor/browser-use-pi/UPSTREAM.json",
     "CHANGELOG.md",
     "LICENSE",
     "NOTICE",
     "README.md"
   ],
-  "pi": {
-    "extensions": [
-      "./dist/coding-agent.js"
-    ]
-  },
   "sideEffects": false,
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json",
@@ -100,19 +78,11 @@
     "zod": "~4.6.6"
   },
   "peerDependencies": {
-    "@browserbasehq/sdk": ">=2.20.0 <3",
-    "@earendil-works/chord": "1.5.0",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-durable": "1.5.0"
+    "@earendil-works/chord": "1.5.2",
+    "@earendil-works/pi-durable": "1.5.2"
   },
   "peerDependenciesMeta": {
-    "@browserbasehq/sdk": {
-      "optional": true
-    },
     "@earendil-works/chord": {
-      "optional": true
-    },
-    "@earendil-works/pi-coding-agent": {
       "optional": true
     },
     "@earendil-works/pi-durable": {
@@ -120,10 +90,9 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/chord": "1.5.0",
-    "@earendil-works/pi-ai": "1.5.0",
-    "@earendil-works/pi-coding-agent": "1.5.0",
-    "@earendil-works/pi-durable": "1.5.0"
+    "@earendil-works/chord": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-durable": "1.5.2"
   },
   "repository": {
     "type": "git",

@@ -42,7 +42,7 @@ const until = async (done, what, ms = 30_000) => {
 async function asking(t, input, env = {}, hook = undefined) {
   const log = join(await scratch(t), "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_LOG: log, ...env }, KEYS);
-  const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), fauxBrowser: FAUX_BROWSER, faux: BROWSE_ASK_BROWSE });
+  const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), fauxBrowser: FAUX_BROWSER, faux: BROWSE_ASK_BROWSE, webhookPrivateTargets: true });
   const origin = `http://127.0.0.1:${server.port}`;
   const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: PASSWORD } });
   assert.equal(made.status, 201, made.text);
@@ -132,10 +132,34 @@ test("the wait in the claim is bounded as a hand-over is: past the bound the bro
   const booked = (await w.records()).entries.filter((entry) => entry.kind === "runner.request").map((entry) => entry.data?.model);
   assert.ok(booked.includes(WAIT_HOLD), `the person's time was held on the run's ledger while it waited: ${JSON.stringify(booked)}`);
   assert.ok(booked.includes("paid:this browser session's time"), `the session's time, the wait's included, is booked at its release: ${JSON.stringify(booked)}`);
-  assert.equal((await w.computer()).state, "none", "no live view once the browser is let go");
+  const gone = await w.computer();
+  assert.equal(gone.state, "none", "no live view once the browser is let go");
+  // The Screen tab's ended state: why and when, from the one settings row the wait's end wrote, not "waiting".
+  assert.equal(gone.ended?.why, "The browser was released after 1 min waiting for you", JSON.stringify(gone));
+  assert.ok(Number.isFinite(Date.parse(gone.ended.at)), JSON.stringify(gone.ended));
   const view = await w.server.api("GET", `/runs/${w.runId}`);
   assert.equal(view.body.status, "input_required");
   assert.equal(view.body.pending?.kind, "question", JSON.stringify(view.body.pending));
+  // The answer after the release goes on with a new browser: its launch clears the ended state, whatever let the old
+  // session go (here, the park's close release, not the browser_release tool).
+  assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "Yes, go on." })).status, 202);
+  await follow(w.server.api, w.runId, ["completed", "failed"]);
+  assert.equal(w.ops().filter((op) => op.op === "create").length, 2, "a new session for the answer");
+  assert.equal(await w.server.store.settings.get(`browser_wait_ended:${w.runId}`), undefined, "the new session's launch cleared the ended state");
+});
+
+test("a run parked past its wait that ends with no browser again leaves no ended-state row behind", { timeout: 180_000 }, async (t) => {
+  const w = await asking(t, "Browse the example page.", { FAUX_BROWSER_PERSON_MS: "3000,60000" });
+  await released(w, "parked");
+  assert.ok(await w.server.store.settings.get(`browser_wait_ended:${w.runId}`), "the wait's end kept its row while the run is parked");
+  // Cancelled while parked: no new browser opens, and the run's end lets the row go (the runner's endRun, or the Screen's
+  // read of an ended run). A stopped run is not ended (it waits on its next message), so its row stays true.
+  const stopped = await w.server.api("POST", `/runs/${w.runId}/cancel`, {});
+  assert.ok(stopped.status < 300, `cancel: ${stopped.status} ${JSON.stringify(stopped.body)}`);
+  await released(w, "stopped");
+  assert.equal(w.ops().filter((op) => op.op === "create").length, 1, "no new browser for the end");
+  await until(async () => (await w.computer()).ended === undefined, "the ended run's Screen says nothing of the wait");
+  await until(async () => (await w.server.store.settings.get(`browser_wait_ended:${w.runId}`)) === undefined, "the row removed at the run's end");
 });
 
 for (const [act, state] of [["stop", "stopped"], ["cancel", "stopped"]]) {

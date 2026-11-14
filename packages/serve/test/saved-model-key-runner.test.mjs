@@ -7,7 +7,7 @@ import { createServer, request } from "node:http";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { PROVIDER_KEYS } from "../dist/model.js";
-import { agent, answerFlow, flowAgent, follow, serve, withEnv } from "./support.mjs";
+import { agent, answered, answerFlow, flowAgent, follow, serve, withEnv } from "./support.mjs";
 
 /** Every model setting and key a host may hold: none reaches the server, so its only model key is the one saved. */
 const MODEL_ENV = [
@@ -84,7 +84,7 @@ test("a model key saved in Settings → Model keys, with none where AgentRun sta
   const first = `${canary}-first`;
   const saved = await api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: first } });
   assert.equal(saved.status, 204, `the key is saved: ${JSON.stringify(saved.body)}`);
-  assert.equal((await api("POST", "/agents", agent("on-saved"))).status, 201);
+  await answered(api("POST", "/agents", agent("on-saved")), 201);
 
   const one = await ran(api, "on-saved", "Report.");
   assert.equal(one.status, "completed", `the run on the saved key completes: ${JSON.stringify(one.run.error ?? one.run)}`);
@@ -94,7 +94,7 @@ test("a model key saved in Settings → Model keys, with none where AgentRun sta
 
   // Saved again with a new value, still with no restart: the next run carries the new one, never the old.
   const second = `${canary}-second`;
-  assert.equal((await api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: second } })).status, 204);
+  await answered(api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: second } }), 204);
   const before = standIn.keys.length;
   const two = await ran(api, "on-saved", "Report again.");
   assert.equal(two.status, "completed", `the run on the key saved again completes: ${JSON.stringify(two.run.error ?? two.run)}`);
@@ -104,7 +104,7 @@ test("a model key saved in Settings → Model keys, with none where AgentRun sta
 
   // A workflow's model node resolves its tier on the runner the same way: its requests carry the saved key. (The
   // stand-in answers in plain text, so the node's extraction may not finish; the key on the request is what is read.)
-  assert.equal((await api("POST", "/agents", flowAgent("flow-saved", answerFlow()))).status, 201);
+  await answered(api("POST", "/agents", flowAgent("flow-saved", answerFlow())), 201);
   const flowBefore = standIn.keys.length;
   const flow = await api("POST", "/agents/flow-saved/runs", { input: { question: "What is six times seven?" } });
   assert.ok(flow.status === 201 || flow.status === 202, `the workflow run starts: ${flow.status} ${JSON.stringify(flow.body)}`);
@@ -144,8 +144,8 @@ test("a claude-agent run on a model key saved in Settings → Model keys, with n
   // No faux model, and Claude Code linked into the server's data as a first use installs it.
   const { api } = await serve(t, { faux: undefined });
   const key = `${canary}-anthropic`;
-  assert.equal((await api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: key } })).status, 204);
-  assert.equal((await api("POST", "/agents", agent("claude-saved", { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }))).status, 201);
+  await answered(api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: key } }), 204);
+  await answered(api("POST", "/agents", agent("claude-saved", { harness: "claude-agent", model: "anthropic/claude-haiku-5-5" })), 201);
   const done = await ran(api, "claude-saved", "Say what you did.");
   assert.equal(done.status, "completed", `the claude-agent run on the saved key completes: ${JSON.stringify(done.run.error ?? done.run)}`);
   assert.ok(fake.messages().length > 0, "Claude Code's requests reached Anthropic's stand-in");

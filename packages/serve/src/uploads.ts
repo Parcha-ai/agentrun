@@ -1,11 +1,11 @@
 // Uploads: a file reserved (POST /v2/files) and its bytes sent (PUT /v2/files/{file_id}), or sent in one call (POST
-// /v2/files?path=..., the bytes the body); listed, read and deleted; and the ready files a run names (`file_ids`) copied
-// into its workspace before its process starts. Each file is `<data>/files/<file_id>/`: its bytes
+// /v2/files?path=..., the bytes the body); listed, read and deleted; and the ready files a run names (`file_ids`) held
+// for it at its start and copied into its workspace at its claim. Each file is `<data>/files/<file_id>/`: its bytes
 // (`bytes`) and its record (`file.json`, the contract's File), both 0600, the record written whole. A ready file's bytes
 // never change, and a run gets a copy of them through its Workspace, never a link: nothing a run does reaches the upload.
 import { createHash, randomBytes } from "node:crypto";
-import { type FileHandle, lstat, mkdir, open, readdir, readFile, rename, rm, unlink } from "node:fs/promises";
-import { DISK_DIR } from "@parcha/pi-durable-agent";
+import { copyFile, type FileHandle, link, lstat, mkdir, open, readdir, readFile, rename, rm, unlink } from "node:fs/promises";
+import { DISK_DIR } from "./server-fs.js";
 import { dirname, join } from "node:path";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { typeOf } from "./file-types.js";
@@ -23,6 +23,9 @@ export const INPUTS_DIR = "inputs";
 export const UPLOADS_DIR = "files";
 const RECORD = "file.json";
 const BYTES = "bytes";
+/** Under the root: each started run's hold of its files until its claim copies them (Uploads.hold). A dot-name, never a
+ *  file id (ID starts with a letter or digit), so the files' list and the sweep pass it by. */
+const HELD_DIR = ".held";
 /** The `upload.expires_at` the answer to a reservation gives, which the contract requires: advisory, not enforced in this
  *  release. A later PUT is still taken, and nothing deletes an upload. */
 const UPLOAD_WINDOW_MS = 86_400_000;
@@ -406,11 +409,12 @@ export class Uploads {
   }
 
   /** Copies `files` into the run's `inputs/` through its Workspace, each at its `path` with its folders, in order, before
-   *  the run's process exists: a name taken already (the same path twice, a file where another's folder goes, or what
-   *  the folder held before) gets the next free suffix (`notes-2.txt`, `docs-2/`), the same for the same files in the
-   *  same order. Each copy is a new file written whole by the Workspace, never a link to the upload; a link on the way
-   *  fails the copy (ESCAPE), and nothing is written through it. The run's start still hands its folder's path. */
-  async copyInto(work: Workspace | string, files: readonly UploadedFile[]): Promise<void> {
+   *  the run's first turn: a name taken already (the same path twice, a file where another's folder goes, or what the
+   *  folder held before) gets the next free suffix (`notes-2.txt`, `docs-2/`), the same for the same files in the same
+   *  order. Each copy is a new file written whole by the Workspace, never a link to the upload; a link on the way fails
+   *  the copy (ESCAPE), and nothing is written through it. `bytesOf`: where each file's bytes are read (its upload's own,
+   *  or the run's hold of them, `held`). */
+  async copyInto(work: Workspace | string, files: readonly UploadedFile[], bytesOf: (file: UploadedFile) => string = (file) => join(this.root, file.file_id, BYTES)): Promise<void> {
     const workspace = workspaceAt(work);
     await uploadTestHooks.beforeCopy?.(workspace);
     const names = takenNames(workspace);
@@ -419,9 +423,80 @@ export class Uploads {
       let dir = INPUTS_DIR;
       for (const segment of segments.slice(0, -1)) dir = `${dir}/${free(await names(dir), segment, "dir")}`;
       const name = free(await names(dir), segments.at(-1)!, "file");
-      await workspace.write(`${dir}/${name}`, await readFile(join(this.root, file.file_id, BYTES)));
+      await workspace.write(`${dir}/${name}`, await readFile(bytesOf(file)));
     }
   }
+
+  /** At a run's start, before its row is written: each of its files (`ids`, ready) held for it under
+   *  `<root>/.held/<run id>/`, its record and its bytes (a hard link to the upload's, which never change once ready; a
+   *  copy where the disk links none). The run's claim copies from the hold (heldFiles), so a file deleted after the start
+   *  and before the claim is still the run's: a started run keeps the files it was started with. In turn with each file's
+   *  delete, so a hold either has the bytes or the start fails at that file (422, as readyFiles words it). */
+  async hold(runId: string, ids: readonly string[]): Promise<void> {
+    const dir = join(this.root, HELD_DIR, runId);
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    for (const [i, id] of ids.entries()) {
+      await this.exclusive(id, async () => {
+        const file = await this.get(id);
+        if (file?.status !== "ready") throw invalid([{ field: `file_ids[${i}]`, reason: "not_an_option", message: `There is no file ${id}: reserve it with POST /v2/files.` }]);
+        const bytes = join(dir, `${id}.${BYTES}`);
+        await link(join(this.root, id, BYTES), bytes).catch(async (error: NodeJS.ErrnoException) => {
+          if (error.code !== "EEXIST") await copyFile(join(this.root, id, BYTES), bytes);
+        });
+        await writeDurable(join(dir, `${id}.json`), `${JSON.stringify(file)}\n`);
+      });
+    }
+  }
+
+  /** The files run `runId` holds (hold), in `ids`' order: a file with no hold (a run started before holds, or one whose
+   *  hold went) read as it is now (readyFiles). With where each one's bytes are. */
+  async heldFiles(runId: string, ids: readonly string[]): Promise<{ files: UploadedFile[]; bytesOf: (file: UploadedFile) => string }> {
+    const dir = join(this.root, HELD_DIR, runId);
+    const held = new Map<string, UploadedFile>();
+    for (const id of ids) {
+      const record = ID.test(id) ? await readJson(join(dir, `${id}.json`)) : null;
+      if (isFile(record) && record.file_id === id && (await lstat(join(dir, `${id}.${BYTES}`)).catch(() => null))?.isFile()) held.set(id, record);
+    }
+    const live = await this.readyFiles(ids.filter((id) => !held.has(id)));
+    const now = new Map(live.map((file) => [file.file_id, file]));
+    return {
+      files: ids.map((id) => held.get(id) ?? now.get(id)!),
+      bytesOf: (file) => (held.has(file.file_id) ? join(dir, `${file.file_id}.${BYTES}`) : join(this.root, file.file_id, BYTES)),
+    };
+  }
+
+  /** Lets go of run `runId`'s hold: once its files are in its workspace, or when it ends without them (released). */
+  async release(runId: string): Promise<void> {
+    await rm(join(this.root, HELD_DIR, runId), { recursive: true, force: true });
+  }
+
+  /** The run ids that hold files here (hold), for a start's sweep of the holds of runs that ended. */
+  async holders(): Promise<string[]> {
+    return (await readdir(join(this.root, HELD_DIR)).catch(() => [] as string[])).filter((name) => ID.test(name));
+  }
+}
+
+/** The words a run fails in when its files cannot be copied into its workspace at its claim. */
+export const notCopied = (why: string): string => `The run's files could not be copied into its workspace: ${why}`;
+
+/** At a run's claim: its uploaded files (`ids`, the launch's file_ids) copied into its work/inputs/ once, from its hold
+ *  (Uploads.hold), and the hold let go. A resumed claim finds inputs/ there and copies nothing, so the copy's suffixes
+ *  never duplicate a file across claims. A copy that fails throws in notCopied's words: the run ends failed, saying why. */
+export async function copyRunFiles(data: string, runId: string, workspace: Workspace, ids: readonly string[]): Promise<void> {
+  const uploads = new Uploads(join(data, UPLOADS_DIR));
+  const copied = await workspace.list(INPUTS_DIR).then(() => true, () => false);
+  if (!copied) {
+    try {
+      const { files, bytesOf } = await uploads.heldFiles(runId, ids);
+      await uploads.copyInto(workspace, files, bytesOf);
+    } catch (error) {
+      // The run ends failed on this: its hold goes with it.
+      await uploads.release(runId).catch(() => undefined);
+      const why = error instanceof ApiError ? error.extra.fields?.map((issue) => issue.message).join("; ") || error.message : (error as Error).message;
+      throw new Error(notCopied(why), { cause: error });
+    }
+  }
+  await uploads.release(runId);
 }
 
 type Kind = Entry["kind"];

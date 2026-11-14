@@ -12,8 +12,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { createHarnessRunner } from '@parcha/agentrun-kernel';
+import { NATIVE_SEARCH_USD } from '@parcha/agentrun-kernel/host';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
-import { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_SDK_VERSION, CLAUDE_WEB_SEARCH_TOOL, CLAUDE_WEB_SEARCH_USD, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent } from '@parcha/agentrun-harness-claude';
+import { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_SDK_VERSION, CLAUDE_WEB_SEARCH_TOOL, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent } from '@parcha/agentrun-harness-claude';
 import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF } from '../dist/harness.js';
 import { fakeAnthropic } from '@parcha/agentrun-harness-claude/testing';
 import { CLAUDE_BETAS, CLAUDE_BLOCKS, CLAUDE_MESSAGES_ROUTES } from '../dist/host/policy.js';
@@ -111,7 +112,7 @@ test("the pinned CLI's tool set is the one the harness's lists decide: each of i
 });
 
 const MODEL = 'claude-sonnet-5-5';
-const SMALL = 'claude-haiku-4-5';
+const SMALL = 'claude-haiku-5-5';
 
 test("the CLI's every built-in, the web, a sub-agent and another MCP server are unavailable; only the host's tools run", { skip, timeout: 240_000 }, async (t) => {
   const dir = mkdtempSync(join(ROOT, 'run-'));
@@ -279,7 +280,7 @@ test("with webSearch on, the CLI's WebSearch runs through the proxy, exactly the
   const usages = events.filter((e) => e.type === 'request_end').map((e) => e.usage);
   const booked = usages.filter((u) => u.webSearches);
   assert.deepEqual(booked.map((u) => u.webSearches), [3]);
-  assert.equal(booked[0].usd, priced('', booked[0]) + 3 * CLAUDE_WEB_SEARCH_USD);
+  assert.equal(booked[0].usd, priced('', booked[0]) + 3 * NATIVE_SEARCH_USD);
   assert.deepEqual(logged.filter((l) => /thinking\.disabled/.test(l.message)), [], 'the search request thinks at the session level too');
   t.diagnostic(`requests: ${forwarded.length}, search request betas: ${searched[0].headers['anthropic-beta']}`);
 });

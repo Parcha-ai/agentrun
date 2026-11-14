@@ -318,8 +318,7 @@ async function dueAfterATry(store, id, keys) {
   for (const key of keys) await store.triggers.settle(id, key, { attempts: 1, retryAt: Date.parse("2026-06-01T00:00:05Z") });
 }
 
-// SKIP (follow-up #2078): firings a restart finds due are not queued behind a slow one as before
-test.skip("firings a restart finds due past their retry wait, queued behind a slow lookup, are each driven once: the timer asks for none of them again meanwhile", async (t) => {
+test("firings a restart finds due past their retry wait, queued behind a slow lookup, are each driven once: the timer asks for none of them again meanwhile", async (t) => {
   const first = await engine(t, {});
   const made = await first.triggers.create(body({ every_s: 600 }));
   first.triggers.close();
@@ -333,6 +332,8 @@ test.skip("firings a restart finds due past their retry wait, queued behind a sl
   let atOnce = 0;
   const { arm } = second.clock;
   second.clock.arm = (fire, ms) => (ms <= 0 && atOnce++, arm(fire, ms));
+  // The restart's first lookup comes after the store's reads, slower on Postgres: the others are watched from there.
+  await until(() => lookups.length === 1, "the first firing looked up");
   for (let i = 0; i < 20; i++) {
     second.clock.to("2026-06-01T00:01:00Z");
     await sleep(1);

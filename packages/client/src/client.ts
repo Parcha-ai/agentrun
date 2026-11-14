@@ -145,6 +145,7 @@ export class AgentRun {
       streamed: op.answer === "bytes" && options?.stream === true,
     });
     const answer = await readAnswer(op, route, response, options?.stream === true, secretOp ? scrubberOf(secrets) : undefined);
+    if (answer instanceof Response) return guarded(answer, this.baseUrl, options?.signal);
     return op.tagged ? { body: answer, etag: response.headers.get("etag") } : answer;
   }
 
@@ -157,6 +158,10 @@ export class AgentRun {
       if (left <= 0) throw LATE;
       const timeout = AbortSignal.timeout(wholeMs(Math.min(x.timeoutMs ?? this.timeoutMs, left)));
       const signal = x.signal ? AbortSignal.any([x.signal, timeout]) : timeout;
+      // This try's timer is the wait's deadline when the deadline is what bounds it. A timer can fire a little before the
+      // clock reads the deadline, so the deadline is reached when that timer fired, or when the clock says so.
+      const bounded = left <= (x.timeoutMs ?? this.timeoutMs);
+      const late = () => (bounded && timeout.aborted) || Date.now() >= deadline;
       let response: Response;
       try {
         response = await this.#follow(x, signal);
@@ -165,7 +170,7 @@ export class AgentRun {
       } catch (error) {
         if (x.signal?.aborted) throw x.signal.reason;
         if (error instanceof AgentRunError) throw error;
-        if (Date.now() >= deadline) throw LATE;
+        if (late()) throw LATE;
         const cause = causeOf(error);
         // A server never reached is unreachable at once; a dropped connection is tried again, even on the first request,
         // and so is a refused one once the server has answered before (it may be restarting); a timeout is not.
@@ -182,7 +187,7 @@ export class AgentRun {
         continue;
       }
       if (response.ok) return response;
-      throw await refusal(x, response, this.#apiKey);
+      throw await refusal(x, response, this.#apiKey, late);
     }
   };
 
@@ -226,14 +231,14 @@ function secretAt(method: string, url: string): Operation | undefined {
  *  read into a message. A caller's abort while the body is still coming is thrown as the caller's own reason, and a read
  *  that ends at or past the exchange's deadline (a wait's timeout) as LATE: cancelled or late work is never reported as a
  *  refusal or a bad key. */
-async function refusal(x: Exchange, response: Response, apiKey: string): Promise<AgentRunError> {
+async function refusal(x: Exchange, response: Response, apiKey: string, late: () => boolean): Promise<AgentRunError> {
   let error: ServerError | undefined;
   try {
     const parsed = JSON.parse(new TextDecoder().decode(await response.arrayBuffer())) as { error?: unknown };
     if (parsed?.error && typeof parsed.error === "object" && !Array.isArray(parsed.error)) error = scrubberOf([apiKey, ...(x.secrets ?? [])])(parsed.error as ServerError);
   } catch {
     if (x.signal?.aborted) throw x.signal.reason;
-    if (Date.now() >= (x.deadline ?? Infinity)) throw LATE;
+    if (late()) throw LATE;
     error = undefined;
   }
   const code = typeof error?.code === "string" && /^[a-z0-9_]+$/.test(error.code) ? error.code : undefined;
@@ -245,6 +250,29 @@ async function refusal(x: Exchange, response: Response, apiKey: string): Promise
 }
 
 const badAnswer = (route: string, status: number, what: string) => new AgentRunRefused(route, status, "bad_answer", undefined, `The server's answer to ${route} is not ${what}.`);
+
+/** A download's Response, asked to stream, with its body guarded: a read that fails (the call's timeout passes before
+ *  the body ends, the body is cut before its length) rejects with AgentRunUnreachable and the failure's code, or with the
+ *  caller's own reason once its signal aborted, never the platform's error. It is a Response of the client's own, the
+ *  server's status and headers on it (its `url` is empty); nothing is tried again, since what was read is the caller's. */
+function guarded(response: Response, baseUrl: string, signal: AbortSignal | undefined): Response {
+  const source = response.body;
+  if (source === null) return response;
+  const reader = source.getReader();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      } catch (error) {
+        controller.error(signal?.aborted ? signal.reason : new AgentRunUnreachable(baseUrl, causeOf(error)));
+      }
+    },
+    cancel: (reason) => reader.cancel(reason),
+  });
+  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
 
 /** A success's body as the operation answers: JSON parsed (a secret body's values cut from it), text as a string, a
  *  file's bytes as they came, or the Response itself for a download asked to stream. */

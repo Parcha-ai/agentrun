@@ -8,7 +8,7 @@
 // The claim is the one fence for a run: claim() moves the run's epoch up by one, and every write a runner makes for the
 // run (its row, its journal commits, a command taken) carries the epoch it holds. A write under a lower epoch than the
 // run's is refused (Fenced) and writes nothing.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
 import type { JournalPage } from "./journal/storage.js";
 
@@ -67,14 +67,13 @@ export interface AgentRow {
   readonly externalRef: string | null;
 }
 
-/** A template's package, kept on the revision made from it. */
+/** The template package an agent was applied from, kept on the revision the apply made (its first): the package's id
+ *  (a bundled one's name, an imported one's `github:<owner>/<repo>[/<path>]`), its SemVer version, and the commit SHA it
+ *  was imported at (null for a bundled one, which is the server's own build). */
 export interface TemplatePackage {
-  readonly name: string;
+  readonly id: string;
   readonly version: string;
-  readonly source: "builtin" | "git";
-  readonly ref?: string;
-  readonly sha?: string;
-  readonly parameters?: unknown;
+  readonly sha: string | null;
 }
 
 export interface NewRevision {
@@ -109,9 +108,19 @@ export interface RevisionRow {
   readonly externalVersion: string | null;
 }
 
-/** How an ended run (state 'ended') ended apart from being done: 'escalated' (it finished its work and waits for a person,
- *  which the v2 status reads as completed with a review) or 'completed'. A failed or stopped run says so in its state. */
-export type RunOutcome = "completed" | "escalated";
+/** How a run ended, beside its state. An ended run (state 'ended'): 'escalated' (it finished its work and waits for a
+ *  person, which the v2 status reads as completed with a review) or 'completed'. A stopped run (state 'stopped'): 'stopped'
+ *  when a person stopped it (its turn ended, never the run: an agentic run reads input_required and idle, as main's
+ *  statusOf reads a stopped run, and a person's message reopens it), 'cancelled' when it was cancelled (over for good). A
+ *  failed run says so in its state. */
+export type RunOutcome = "completed" | "escalated" | "stopped" | "cancelled";
+
+/** Whether `run`, of a revision of `kind`, was stopped by a person and waits for them (state 'stopped', outcome 'stopped',
+ *  an agentic run started here): its turn is over, the run is not. A workflow's stop, a cancel and an imported run's stop
+ *  are over for good. */
+export function stoppedByPerson(run: Pick<RunRow, "state" | "outcome" | "importedFrom">, kind: string): boolean {
+  return run.state === "stopped" && run.outcome === "stopped" && kind === "agentic" && run.importedFrom === null;
+}
 
 /** The harness an imported run came from. */
 export type ImportSource = "claude-code" | "codex" | "pi";
@@ -150,7 +159,7 @@ export interface RunRow {
   readonly costUsd: number | null;
   readonly metrics: unknown;
   readonly summary: string | null;
-  /** An ended run's outcome (RunOutcome), null for a plain completion or a run not ended this way. */
+  /** How the run ended beside its state (RunOutcome), null for a plain completion, a failure, or a run not ended. */
   readonly outcome: RunOutcome | null;
   /** When the run itself was archived (its agent's archive is read apart); null when it is not. */
   readonly archivedAt: number | null;
@@ -171,7 +180,7 @@ export interface RunPatch {
   readonly costUsd?: number | null;
   readonly metrics?: unknown;
   readonly summary?: string | null;
-  /** An ended run's outcome, set in its end commit; null clears it. */
+  /** How the run ended (RunOutcome), set in its end commit; null clears it. */
   readonly outcome?: RunOutcome | null;
   /** The SHA-256 hashes of the sign-in pointers handed to the run, which the runner writes at its claim (under the epoch
    *  fence); null clears them. While the run runs, a sign-in hashing to one of these cannot be forgotten (sign-ins-store.ts). */
@@ -187,7 +196,9 @@ export type UpdatedRun = RunRow & { readonly save?: boolean };
 
 /** A run's launch, as the server writes it at start: its JSON `body` (run-launch.ts: the first input, title, place, effort,
  *  cap, trigger and origin), and `sealed` ciphertext for any secret it carries (sealed with the server's key outside the
- *  store, AAD `run_launch|<run_id>|sealed`), or none. Written once, in the same transaction as the queued run. */
+ *  store, AAD `run_launch|<run_id>|sealed`: the MCP credentials its caller handed it, store/seal.ts sealRunMcpAuth), or
+ *  none. The body is written once, in the same transaction as the queued run. `sealed` is the run's for its life only: a
+ *  message may replace it (runs.command and runs.reopen, `launchSealed`), and the write that ends the run erases it. */
 export interface RunLaunchInput {
   readonly body: unknown;
   readonly sealed?: Uint8Array | null;
@@ -200,6 +211,12 @@ export interface RunLaunchRow {
   readonly body: unknown;
   readonly sealed: Uint8Array | null;
   readonly createdAt: number;
+}
+
+/** A message's new launch secrets (runs.command, runs.reopen): `launchSealed` replaces the run's launch `sealed` in the
+ *  command's own transaction, so the runner that takes the command reads them, and a run already final takes neither. */
+export interface LaunchSealedWrite {
+  readonly launchSealed?: Uint8Array;
 }
 
 /** A run imported from another harness's session: an ended run with where it came from, its launch (built from the
@@ -227,16 +244,22 @@ export interface ImportRunInput {
 export type AlsoRow =
   | { readonly table: "channel_posts"; readonly row: ChannelPost }
   | { readonly table: "channel_told"; readonly row: { channel: string; marker: string } }
-  /** What the run's end-of-run turn kept: the turn and the proposal checked from it (the run's agent is the row's). */
-  | { readonly table: "learning_proposals"; readonly row: { turn: unknown; proposal: unknown } }
+  /** What the run's end-of-run turn kept: the turn and the proposal checked from it (the run's agent is the row's), and
+   *  its `round` (absent: 1): the run's first end is round 1, each end after a follow-up opened it again the next. */
+  | { readonly table: "learning_proposals"; readonly row: { turn: unknown; proposal: unknown; round?: number } }
   /** The learning run that grades and merges the kept proposal: a queued run `id` of the run's agent and revision. Started
    *  once: the same id staged again (an end replayed after a crash) adds nothing. */
-  /** `model`: the grade model (gradeModelOf, as the server resolves it), on the learning run's launch; none, the agent's own. */
-  | { readonly table: "learning_run"; readonly row: { id: string; model?: string } };
+  /** `model`: the grade model (gradeModelOf, as the server resolves it), on the learning run's launch; none, the agent's own.
+   *  `round`: the round it grades (absent: 1), named in its launch. `capUsd`: what the run's cap leaves once everything it
+   *  spent is counted (learning-end.ts gradeCapOf), the learning run's own cap (its launch's max_cost_usd), so its grade
+   *  never takes the run past its cap; absent for an uncapped run, whose grade is capped by nothing. */
+  | { readonly table: "learning_run"; readonly row: { id: string; model?: string; round?: number; capUsd?: number } };
 
 /** A run's kept learning (learning_proposals): what its end-of-run turn asked and answered, and the proposal checked from it. */
 export interface LearningProposal {
   readonly runId: string;
+  /** Which of the run's looks back: 1 for its first end, then one more for each end after a follow-up opened it again. */
+  readonly round: number;
   readonly agentId: string;
   readonly turn: unknown;
   readonly proposal: unknown;
@@ -247,10 +270,28 @@ export interface LearningProposal {
 
 /** Learning on the runner: the kept proposals, written only beside a run's end (AlsoRow learning_proposals). */
 export interface Learning {
-  /** The run's kept proposal; undefined when its end kept none. */
-  proposal(runId: string): Promise<LearningProposal | undefined>;
-  /** The agent's kept proposals, newest first. */
+  /** The run's kept proposal of round `round`, else its newest round's; undefined when its end kept none. */
+  proposal(runId: string, round?: number): Promise<LearningProposal | undefined>;
+  /** The agent's kept proposals (each round of a run one), newest first. */
   proposals(agentId: string, options?: { limit?: number }): Promise<LearningProposal[]>;
+  /** What learning spent outside any run, in one read: each run (not imported) whose learning ended in [from, to) (ms),
+   *  its agent, when its learning ended and what its grade cost (null: unknown; 0: nothing graded). A learning dropped
+   *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
+   *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
+  spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
+  /** What was spent beside run `runId` on its behalf, the one figure every cap gate of the run reads with its own
+   *  sessions (and its grade's cap, learning-end.ts gradeCapOf): each learning run its rounds queued (`beforeRound`: only
+   *  those of the rounds before it), one that ended at its cost, one not ended at its own cap (the most its grade may
+   *  take), and one that ended at an unknown cost at that cap too, the most it could have taken. Null: unknown (one with
+   *  neither). 0 for a run that queued none. */
+  spentBeside(runId: string, options?: { beforeRound?: number }): Promise<number | null>;
+}
+
+/** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */
+export interface LearningSpend {
+  readonly agentId: string;
+  readonly at: number;
+  readonly costUsd: number | null;
 }
 
 /** A command a journal commit takes, with the id of the record that is its effect, an id the effect's batch newly
@@ -262,6 +303,8 @@ export interface Learning {
 export interface StagedTake {
   readonly command: number;
   readonly effect: number;
+  /** What the command answers, JSON, written with its take (Store.answerOf reads it once). */
+  readonly answer?: unknown;
 }
 
 /** What a journal commit writes beside its batches, in its one transaction, under its fence: the run row's patch and rows
@@ -301,6 +344,91 @@ export interface ChannelPost {
   readonly moment: string;
   readonly body: unknown;
   readonly nextAt?: number;
+}
+
+/** A channel post as the store keeps it (store schema `channel_posts`): `body` its JSON text, byte for byte as it was
+ *  given; `state` queued (still to send), sending, sent or dropped (given up, `reason` says why). */
+export interface ChannelPostRow {
+  readonly id: string;
+  readonly channel: string;
+  readonly runId: string | null;
+  readonly moment: string;
+  readonly body: string;
+  readonly attempts: number;
+  readonly nextAt: number;
+  readonly state: "queued" | "sending" | "sent" | "dropped";
+  readonly reason: string | null;
+  /** Until when a sender's claim holds the post (state sending); null when none does. */
+  readonly claimedUntil: number | null;
+  /** The try whose claim took the post last, and whose settle may write it (Channels.settle's fence); null once a write
+   *  outside every claim (a redelivery's landing, a drop, a start's release) took it from that try. */
+  readonly claim: string | null;
+  readonly createdAt: number;
+}
+/** One try of a channel's post (store schema `channel_attempts`): its HTTP status, or null when none came back. `tryId`
+ *  names the try, once: a settle written again (its outcome unknown) logs it once. */
+export interface ChannelAttemptRow {
+  readonly tryId: string;
+  readonly postId: string;
+  readonly moment: string;
+  readonly at: number;
+  readonly statusCode: number | null;
+  readonly latencyMs: number;
+  readonly error: string | null;
+  readonly retryAt: number | null;
+  readonly redelivery: boolean;
+}
+/** What a channel was told of a run (store schema `channel_told`): a marker, and when. */
+export interface ChannelToldRow {
+  readonly runId: string;
+  readonly marker: string;
+  readonly at: number;
+}
+
+/** A channel's outbox (channel_posts), the tries of its posts (channel_attempts) and what it told each run
+ *  (channel_told), for a channel the server sends itself (the outbound webhook). */
+export interface Channels {
+  /** Queues `post` (by its id: one already there is left as it is) and, in the same transaction, `told` (each marker of
+   *  its run; `replacing`, a prefix, drops that run's markers with it first). Answers whether the post is new. */
+  post(
+    post: { id: string; channel: string; runId?: string | null; moment: string; body: string; nextAt: number },
+    told?: { runId: string; marker: string; replacing?: string },
+  ): Promise<boolean>;
+  /** The post `id`, or undefined. */
+  get(id: string): Promise<ChannelPostRow | undefined>;
+  /** `channel`'s posts still to send (queued or sending), oldest first. */
+  queued(channel: string): Promise<ChannelPostRow[]>;
+  /** The post `id` claimed by the try `token` until `now + leaseMs` (state sending, `claim` the token), by
+   *  compare-and-set: it is queued and due (`next_at` at or before `now`), or a claim on it ran out. The post as the claim
+   *  took it, for the one caller that took it; undefined for any other at the same time, and for a post sent, dropped or
+   *  held. */
+  claim(id: string, now: number, leaseMs: number, token: string): Promise<ChannelPostRow | undefined>;
+  /** Every claim on `channel`'s posts let go (sending back to queued, no try's claim): a server's start, when it is the
+   *  store's one server and no try of an earlier one is still out. Answers how many. */
+  release(channel: string): Promise<number>;
+  /** A try's outcome: the post's new state (`to`, none for a try that leaves it as it is), with `attempt` added to its
+   *  channel's tries in the same transaction, once by its tryId. Fenced by `claim`, the token of the claim that made the
+   *  try: the state is written only while the post still holds that claim (compare-and-set), so a write that comes late,
+   *  after a newer claim, a redelivery's landing or a drop, changes nothing; written again with the same fence (its
+   *  outcome unknown), it writes the same row. With no `claim`, the state is written whatever holds the post, and the
+   *  post's claim goes with it (a redelivery's landing: sent is final). Answers whether `to` was written; a try that
+   *  wrote nothing is logged with no retry_at. The channel keeps its newest `kept` tries (50 by default), and of its sent
+   *  or dropped posts only those a kept try names or `sending` lists (a try of it still in flight, which a redelivery may
+   *  send again). */
+  settle(
+    id: string,
+    to: { state: ChannelPostRow["state"]; attempts?: number; nextAt?: number; reason?: string | null } | undefined,
+    attempt?: ChannelAttemptRow,
+    options?: { kept?: number; sending?: readonly string[]; claim?: string },
+  ): Promise<boolean>;
+  /** Every queued or sending post of `channel` dropped, `reason` kept on each, no try's claim left on it: how many. */
+  dropAll(channel: string, reason: string): Promise<number>;
+  /** `channel`'s newest tries, newest first, at most `limit`. */
+  attempts(channel: string, limit: number): Promise<ChannelAttemptRow[]>;
+  /** What `channel` told: every run's markers, or `runId`'s. */
+  told(channel: string, runId?: string): Promise<ChannelToldRow[]>;
+  /** The told rows given go. */
+  forget(channel: string, rows: readonly { runId: string; marker: string }[]): Promise<void>;
 }
 
 /** A trigger as a template or an upgrade gives it. `scopes`: the (kind, scope) keys it answers, rows only while enabled. */
@@ -446,14 +574,19 @@ export interface Agents {
   /** The agent an external reference ("<source>:<kind>:<id>") maps to (Runs.createInline), or undefined before its first
    *  run. */
   byExternal(ref: string): Promise<AgentRow | undefined>;
+  /** Whether the agent already has the revision that maps `version` of its owning system (one row looked up, no bodies read). */
+  hasExternalVersion(agentId: string, version: string): Promise<boolean>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
    *  run of the agent (triggers.fire refuses it, AgentArchived), and none of its triggers is made on or turned on.
    *  Unarchived, none turns on again: the answer is empty. */
   archive(id: string, archived: boolean, why?: unknown): Promise<{ id: string; name: string }[]>;
-  /** Adds a revision and makes it the agent's current one, in one commit. */
-  addRevision(revision: NewRevision & { agentId: string }): Promise<void>;
+  /** Adds a revision and makes it the agent's current one, in one commit. With `ifCurrent` (a revision id, or null for
+   *  none), only while that is still the agent's current revision, compared in the same transaction under the agent row's
+   *  lock: RevisionMoved, and nothing written, when another writer (this server's, or another server's on the same store)
+   *  moved it first. */
+  addRevision(revision: NewRevision & { agentId: string; ifCurrent?: string | null }): Promise<void>;
   /** Makes `revisionId`, one of the agent's own, its current one. StoreConstraint when it is not a revision of `agentId`. */
   setCurrent(agentId: string, revisionId: string): Promise<void>;
   revision(id: string): Promise<RevisionRow | undefined>;
@@ -551,21 +684,35 @@ export interface Runs {
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
-   *  false: not); its agent's archive is read apart. `labels`: only runs holding every one of these labels, key and value. */
+   *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value. */
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
-  /** A person's follow-up to a run that ended completed: in one transaction, the run goes back to running with no runner
+  /** A person's follow-up to a run that ended completed, or that a person stopped: in one transaction, the run goes back to running with no runner
    *  (released, so a runner claims it at once by the claimable rule's released branch), its end's own fields cleared
    *  (ended_at, summary, outcome, its waits) and everything it did kept (its epoch, its journal, its cost and metrics,
    *  so its next turn is booked on top of what it spent), and `command` (the follow-up's steer) is written untaken for it.
-   *  Only an agentic run that ended completed (state 'ended'), not imported and not a learning run, reopens: a workflow,
-   *  a failed, stopped or cancelled run, any other, or none is RunFinal, and nothing is written. */
-  reopen(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
+   *  Only an agentic run that ended completed (state 'ended') or that a person stopped (state 'stopped', outcome
+   *  'stopped'), not imported and not a learning run, reopens: a workflow, a failed or cancelled run, any other, or none
+   *  is RunFinal, and nothing is written. */
+  reopen(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite): Promise<Command>;
+  /** Wakes a parked run: its wake_at set to now on the deadlines' clock, so a runner claims it at its next poll (the
+   *  claimable rule's wake branch) and its loop reads what it waits on again. True when the run was parked; a run in any
+   *  other state (or none) is left as it is, false. Its claim, if one holds it while it parks, is let go as before: the
+   *  release sets wake_at as the loop's end says. */
+  wake(runId: string): Promise<boolean>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
   claimable(options?: { limit?: number }): Promise<string[]>;
+  /** The epoch a runner's claim holds run `runId` at now, judged by the store's own clock (the one claims are stamped
+   *  and fenced by), never a reader's; undefined when no claim holds it (none, released, or run out) or there is no
+   *  such run. */
+  heldAt(runId: string): Promise<number | undefined>;
+  /** The claims `runner` holds now (its name on the run's row, its lease not run out on the store's clock), each with the
+   *  epoch it holds at: what a runner reads back when a claim or release commit was answered Unanswered, to learn
+   *  whether it landed. `from` is "running" (the claim's own `from` is not kept). */
+  claimsOf(runner: string): Promise<Claim[]>;
   /** Claims up to `k` claimable runs for `runner`, oldest first, in one transaction: each at its own epoch + 1, with its
    *  `from`. A runner fills its free loops with one call. */
   claimMany(runner: string, k: number, options?: { leaseMs?: number }): Promise<Claim[]>;
@@ -577,6 +724,43 @@ export interface Runs {
    *  pointer, counting a running run and (within `signInSettleMs` of leaving running, a vendor's settle window) one that
    *  recently left running. `signInSettleMs` defaults to 0 (other vendors free the lease the instant a run leaves running). */
   update(claim: Claim, patch: RunPatch, rows?: { readonly also?: readonly AlsoRow[]; readonly take?: readonly number[]; readonly signInSettleMs?: number }): Promise<UpdatedRun>;
+  /** The run changes after `cursor` (undefined: from the feed's start), oldest first, at most `limit` (default
+   *  RUN_CHANGES_PAGE), and the cursor to read on from (`next`; the one given when nothing is new). A change is a run
+   *  reaching a final state, or its runner letting it go (parked, or running with no runner), recorded by the write that
+   *  made it, in that write's own transaction, with the row as that write left it.
+   *
+   *  The guarantee: every change is read exactly once by a reader that reads on from each `next` it was handed. None is
+   *  skipped, even one committed after a change numbered above it was already read (concurrent writers): `next` never
+   *  passes a change a transaction still in flight may yet commit (a watermark; a store with one writer commits in the
+   *  order it numbers, so its watermark is its last change). None is read twice from a later cursor. The cursor is the
+   *  store's own: never a time, so writes in one millisecond are each read. */
+  changedSince(cursor: RunChangeCursor | undefined, options?: { limit?: number }): Promise<RunChanges>;
+  /** The feed's head, in one read: the cursor a reader holds once it has read on until a page comes back empty, so one
+   *  that starts here reads only the changes made after. It keeps changedSince's watermark: never past a change a
+   *  transaction still in flight may yet commit. */
+  changesHead(): Promise<RunChangeCursor>;
+}
+
+/** A position in the run-change feed (Runs.changedSince): opaque, the store's own; only one it handed back is valid. */
+export type RunChangeCursor = string;
+
+/** The most run changes one read returns unless asked for fewer. */
+export const RUN_CHANGES_PAGE = 200;
+
+/** A run change (Runs.changedSince): the run, and its row as the write that made the change left it. */
+export interface RunChange {
+  readonly id: string;
+  readonly state: RunState;
+  /** When it ended (ms): set for a final state, null otherwise. */
+  readonly endedAt: number | null;
+  readonly epoch: number;
+  readonly runner: string | null;
+}
+
+/** One read of the run-change feed: its changes, oldest first, and the cursor to read on from. */
+export interface RunChanges {
+  readonly changes: readonly RunChange[];
+  readonly next: RunChangeCursor;
 }
 
 /** A saved MCP server: its listed tools (each with whether it can be granted, and why not), the owner's prices, and its
@@ -605,6 +789,9 @@ export interface McpServerRow {
    *  never by its own clock against the set's expires_at, which the writer stamped on its clock. Null when the writer
    *  gave no measure of the token's life. */
   readonly tokenLeftMs: number | null;
+  /** The token's end as the store stamped it (token_until), read in the same snapshot as `sealed`: the end of the very
+   *  token the sealed set holds. A refresh by any claim moves it. Null as tokenLeftMs. */
+  readonly tokenUntil: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
   /** When the tools were last listed (ms): a refresh moves this, not updatedAt, so a refresh is not read as an owner edit.
@@ -613,6 +800,18 @@ export interface McpServerRow {
   /** When the sealed credential was last set (ms): a new credential's save or a sign-in, never a token refresh. Null with
    *  no credential. */
   readonly credentialChangedAt: number | null;
+}
+
+/** A saved MCP server's stamp (Mcp.stamp): its url and auth, when its credential last changed (credentialChangedAt), and
+ *  its access token's time left by the store's own clock (tokenLeftMs), as on its row. */
+export interface McpServerStamp {
+  readonly url: string;
+  readonly auth: string;
+  readonly credentialChangedAt: number | null;
+  readonly tokenLeftMs: number | null;
+  /** Its access token's end as the store stamped it (token_until, the store's clock): a refresh by any claim moves it, so a
+   *  claim that opened the row at one end knows the token it holds is not the row's once this differs. */
+  readonly tokenUntil: number | null;
 }
 
 /** A run's MCP pin: what it may call, per granted server (url, tools, prices), written once at its first claim. */
@@ -638,6 +837,10 @@ export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + STORE_WRITE_DEADLINE_M
  *  refresh keeps the time; a new credential or a sign-in moves it). Null: no server by that name. */
 export type McpCredentialMark = { readonly auth: string; readonly sealed: boolean; readonly changedAt: number | null } | null;
 
+/** The row a removal deleted, as the statement that deleted it saw it: the address and the sealed credential as they were
+ *  at that instant (a token refresh landing earlier is in it, one landing later finds no row to keep). */
+export type McpRemoved = { readonly url: string; readonly sealed: Uint8Array | null };
+
 /** The fields of a server's write (Mcp.put). */
 export type McpServerWrite = { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null; tokenLeftMs?: number | null };
 
@@ -658,13 +861,18 @@ export interface Mcp {
    *  set. undefined, writing nothing, when the credential changed meanwhile (a refresh kept a rotated set) or the row went:
    *  the caller reads it again and re-applies its change onto the fresh row, a bounded few times. */
   rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: Uint8Array | null): Promise<McpServerRow | undefined>;
-  remove(name: string): Promise<void>;
+  /** Deletes the row, answering what it held as it went (McpRemoved); undefined when there was none. */
+  remove(name: string): Promise<McpRemoved | undefined>;
   /** remove(), only while the server's credential is still `expected` (its mark as the remover read it), compared and
-   *  deleted in one statement. False, deleting nothing, when it is not (or the server is gone). */
-  removeIfCredential(name: string, expected: NonNullable<McpCredentialMark>): Promise<boolean>;
+   *  deleted in one statement. Undefined, deleting nothing, when it is not (or the server is gone). */
+  removeIfCredential(name: string, expected: NonNullable<McpCredentialMark>): Promise<McpRemoved | undefined>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
   server(name: string): Promise<McpServerRow | undefined>;
+  /** The server's stamp, read cheaply (no tools, no sealed bytes): what a claimed run checks before each call
+   *  (runner/mcp-claim.ts) to see its credential removed, replaced or moved, or its access token near its end. Undefined
+   *  when it is no longer saved. */
+  stamp(name: string): Promise<McpServerStamp | undefined>;
   /** The run's pin, or none (a run that grants no MCP tool has none). */
   pin(runId: string): Promise<McpPinRow | undefined>;
   /** Writes the run's pin under `claim` unless it has one, in one transaction with the claim's epoch fence, and answers the
@@ -704,6 +912,12 @@ export interface Settings {
   /** Saves `value` under `key` only when the key has no row yet, in one statement, so of two processes that race the first
    *  wins; the value saved under it after (this one, or the one there before). */
   putIfAbsent(key: string, value: unknown): Promise<unknown>;
+  /** Saves `value` under `key` only while its row still holds `was` (as get read it), in one statement: a compare-and-set,
+   *  so of two writers that read one row only one replaces it. True when it was replaced; false, with nothing written,
+   *  when the row changed since or is gone. */
+  replaceIf(key: string, was: unknown, value: unknown): Promise<boolean>;
+  /** The key's row goes only while it still holds `was`, in one statement: true when it went. */
+  removeIf(key: string, was: unknown): Promise<boolean>;
   /** The key's row goes; a key with no row is left as it is. */
   remove(key: string): Promise<void>;
   /** Every setting, by key. */
@@ -764,12 +978,94 @@ export interface ComputerLedgerRow {
 export interface ComputerLedger {
   /** Saves `labels` and `detail` for `provider`'s session `sessionId`, inserted or replaced in place. */
   put(provider: string, sessionId: string, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<void>;
+  /** Saves `labels` and `detail` for the session only while no row is kept for it, in one statement (two writers never
+   *  both claim it): true when it was saved; false, with nothing written, when a row was there. */
+  claim(provider: string, sessionId: string, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<boolean>;
   /** The session's row, or undefined when none is kept. */
   get(provider: string, sessionId: string): Promise<ComputerLedgerRow | undefined>;
   /** Every session of `provider`, by its id. */
   list(provider: string): Promise<ComputerLedgerRow[]>;
   /** The session's row goes. */
   remove(provider: string, sessionId: string): Promise<void>;
+  /** Replaces the session's `labels` and `detail` only while its row still holds `was`'s, in one statement (a
+   *  compare-and-set, so two writers that read one row never both write it): true when it was replaced; false, with
+   *  nothing written, when the row changed since or is gone. */
+  swap(provider: string, sessionId: string, was: { readonly labels: Readonly<Record<string, string>>; readonly detail: Readonly<Record<string, unknown>> }, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<boolean>;
+}
+
+/** A person's own machine paired with this server (spec/computer/attach.md, store schema `paired_computers`): its driver
+ *  dials the attach socket with the token pairing gave it, of which the store keeps only the SHA-256. */
+export interface PairedComputerRow {
+  readonly id: string;
+  /** What the person calls it. */
+  readonly name: string;
+  /** Its driver's last hello: at pairing, then each socket's (kind, os, groups, features). Kind and os stay what it
+   *  paired as, since a socket that says others is refused at hello; groups follow its driver, so an updated driver's
+   *  new groups serve the kinds they make. */
+  readonly hello: Readonly<Record<string, unknown>>;
+  /** The driver build its last hello named. */
+  readonly driver: string;
+  readonly labels: Readonly<Record<string, string>>;
+  /** The pairing (addCode's id) whose code made it. */
+  readonly pairingId: string;
+  readonly createdAt: number;
+  /** When its last socket said hello; null before its first. */
+  readonly seenAt: number | null;
+  /** When it was removed: its token no longer dials. Null while it is paired. */
+  readonly revokedAt: number | null;
+}
+
+/** What pairing records for a new computer: its row's own fields, and its token's SHA-256. */
+export interface NewPairedComputer {
+  readonly id: string;
+  readonly name: string;
+  readonly hello: Readonly<Record<string, unknown>>;
+  readonly labels: Readonly<Record<string, string>>;
+  readonly tokenSha256: string;
+}
+
+/** Paired computers and the pairing codes that make them (store schema `paired_computers`, `pairing_codes`). A code is
+ *  kept by its SHA-256 alone, good once until its expiry; a computer by its token's SHA-256. */
+export interface PairedComputers {
+  /** Keeps a new code's SHA-256 until `expiresAt`, under the pairing `id` the computer it makes keeps. Codes past their
+   *  expiry go in the same write. */
+  addCode(id: string, codeSha256: string, expiresAt: number): Promise<void>;
+  /** Burns the code and records `computer`, in one transaction: false, with nothing written, when no unexpired code has
+   *  that SHA-256 (wrong, used or expired alike). */
+  pair(codeSha256: string, computer: NewPairedComputer): Promise<boolean>;
+  /** The computer's row, removed or not; undefined when no computer has that id. */
+  get(id: string): Promise<PairedComputerRow | undefined>;
+  /** The paired (not removed) computer whose token has this SHA-256. */
+  byToken(tokenSha256: string): Promise<PairedComputerRow | undefined>;
+  /** Every paired computer not removed, oldest first. */
+  list(): Promise<PairedComputerRow[]>;
+  /** A socket of the computer said `hello` now: kept as its hello, and its build (`hello.version`) as its driver. */
+  seen(id: string, hello: Readonly<Record<string, unknown>>): Promise<void>;
+  /** Removes the computer: its token dials no more. False when it was not paired (unknown, or removed already). */
+  revoke(id: string): Promise<boolean>;
+}
+
+/** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
+ *  (`github:<owner>/<repo>[/<path>]`), its source as given, the commit SHA read, its publisher (the GitHub account), and
+ *  its files as they were read, by path, base64. The server checks them again (templates.ts readPackage) as it loads them
+ *  at its start, so a package this build no longer takes is never served. */
+export interface ImportedTemplateRow {
+  readonly id: string;
+  readonly source: string;
+  readonly sha: string;
+  readonly publisher: string;
+  readonly files: Readonly<Record<string, string>>;
+  /** When it was last imported (stamped by the store). */
+  readonly importedAt: number;
+}
+
+export interface ImportedTemplates {
+  /** Every imported package, by id. */
+  list(): Promise<ImportedTemplateRow[]>;
+  /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it). */
+  put(row: Omit<ImportedTemplateRow, "importedAt">): Promise<void>;
+  /** Removes the package: false when none had that id. */
+  remove(id: string): Promise<boolean>;
 }
 
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one
@@ -837,16 +1133,15 @@ export interface SignInRow {
 }
 
 /** A forgotten sign-in's pointer, kept sealed byte for byte as its live row held it (so it still opens under the same
- *  binding), only so a server started later can cut it from what a run it was handed shows. */
+ *  binding), only so a server started later can cut it from what a run it was handed shows and from what its agent
+ *  learned. Every one is kept, never only the newest: a note may quote the agent's first pointer, and a shorter list
+ *  would show it. */
 export interface SignInTombstoneRow {
   readonly agentId: string;
   readonly provider: string;
   readonly pointerSealed: Uint8Array;
   readonly forgottenAt: number;
 }
-
-/** How many forgotten pointers an agent keeps per store, the oldest dropped first. */
-export const SIGN_IN_TOMBSTONES_KEPT = 32;
 
 export interface SignIns {
   /** Saves the one live sign-in for the agent and provider, its pointer already sealed by the caller: inserted, or replaced
@@ -871,7 +1166,7 @@ export interface SignIns {
   /** Forgets the agent's live sign-in for the provider, in the one transaction a launch shares as its lock: when a running
    *  run holds `hash` in its sign_in_handed (or, with `heldUnreadable`, when any running run was handed a sign-in at all),
    *  the forget is refused (SignInHandedTo, naming the run) and nothing is written; otherwise the live row's sealed pointer
-   *  moves to a tombstone (the newest SIGN_IN_TOMBSTONES_KEPT kept) and the live row goes. SignInMissing when the agent has
+   *  moves to a tombstone (every one kept) and the live row goes. SignInMissing when the agent has
    *  no live sign-in for the provider. */
   forget(agentId: string, provider: string, held: { hash?: string; heldUnreadable?: boolean }): Promise<SignInTombstoneRow>;
   /** The id of a running run whose sign_in_handed holds `hash`, if one does; undefined otherwise. The check the runner
@@ -908,7 +1203,9 @@ export type ViewerKind = "browser" | "desktop" | "phone";
 
 /** One open computer session's viewer as the store keeps it: one row per (run, computer kind, session tag), its token
  *  sealed (sealedAt.liveViewer), `at` the store's clock when it was put, `runner` the claim's holder. */
-export type LiveViewerRow = { kind: ViewerKind; tag: string; port: number; id: string; sealed: Uint8Array; at: number; runner: string };
+/** `host`: where the viewer answers when its runner is on another host than the server (live-reach.ts); none, the
+ *  server's own machine (loopback). */
+export type LiveViewerRow = { kind: ViewerKind; tag: string; host?: string; port: number; id: string; sealed: Uint8Array; at: number; runner: string };
 
 /** The computer sessions' viewer hand-overs (browser-live.ts): the runner puts and drops them under its claim, the server
  *  reads them. The rows go with the run's end (its end commit), a take or reclaim of the run (a newer epoch, in the
@@ -916,7 +1213,7 @@ export type LiveViewerRow = { kind: ViewerKind; tag: string; port: number; id: s
 export interface LiveViewers {
   /** The runner's put under its claim, upsert on (run_id, kind, tag), `at` stamped by the store: false when the claim is
    *  stale (its epoch moved on, or its lease ran out), and nothing written. */
-  put(claim: Claim, viewer: { kind: ViewerKind; tag: string; port: number; id: string; sealed: Uint8Array }): Promise<boolean>;
+  put(claim: Claim, viewer: { kind: ViewerKind; tag: string; host?: string; port: number; id: string; sealed: Uint8Array }): Promise<boolean>;
   /** The runner's drop, fenced by its claim's epoch: with no kind every row of the run; a kind with no tag that kind's
    *  rows; a kind and a tag that one row. */
   drop(claim: Claim, kind?: ViewerKind, tag?: string): Promise<void>;
@@ -949,8 +1246,14 @@ export interface Store {
   readonly sealedKeys: SealedKeys;
   /** The labels of the sessions a provider runs with none of its own (a phone provider's). */
   readonly computerLedger: ComputerLedger;
+  /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
+  readonly pairedComputers: PairedComputers;
+  /** The template packages imported from GitHub, their files kept as read. */
+  readonly importedTemplates: ImportedTemplates;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */
   readonly triggerSettings: TriggerSettings;
+  /** The outbox of a channel the server sends itself, its tries and what it told each run. */
+  readonly channels: Channels;
   /** MCP OAuth sign-ins in flight (design 2.1): one row per pending sign-in, its verifier sealed. */
   readonly mcpOauth: McpOauth;
   /** Each agent's saved browser sign-ins (design 2.1): one live row per agent and provider, its pointer sealed, with the
@@ -973,6 +1276,15 @@ export interface Store {
   /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
    *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
   journal(claim: Claim): Journal;
+  /** The store this one reads from: itself, but for the store a snapshot hands its callback, which is a new object at each
+   *  snapshot and gives the store it was taken of. What a reader keeps per store (a served answer's cache) is kept by this. */
+  readonly origin: Store;
+  /** `read` against this store as it stood at one moment: every read it makes sees one snapshot (one read-only transaction),
+   *  so a write that lands meanwhile, a runner's commit among them, is in all of its reads or in none. The store it is given
+   *  only reads. On SQLite the transaction holds this process's one connection until `read` settles, so `read` awaits the
+   *  store it is given and nothing else: never this store (that waits for the snapshot, which waits for it), and no
+   *  network or disk. Its deadline is the transaction's (StoreDeadline). */
+  snapshot<T>(read: (store: Store) => Promise<T>): Promise<T>;
   /** A run's journal opened for reading only (JournalReads): the server's reads of a run, which hold no claim. Its reads
    *  alone, never a commit; a read never fences, so it needs no claim. A run with no journal yet reads as empty. */
   readJournal(runId: string): JournalReads;
@@ -988,7 +1300,7 @@ export interface Store {
    *  not run twice, at a run's end and when a claim is released. */
   flush(): Promise<void>;
   /** Writes a command for the run. RunFinal when the run is final; unknown runs are refused the same way. */
-  command(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
+  command(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite): Promise<Command>;
   /** The run's commands with an id above `after`, in id order. */
   commands(runId: string, after: number): Promise<Command[]>;
   /** Every run's commands with an id above its own cursor, in id order, in one read: a runner's poll of all it holds. A run
@@ -997,6 +1309,15 @@ export interface Store {
   /** Marks the command taken (or refused, with `reason`) under the claim, once: a command already taken stays as it was.
    *  Fenced on a stale claim. */
   take(claim: Claim, commandId: number, outcome?: "taken" | "refused", reason?: string): Promise<void>;
+  /** What the run's command answered, read once: the row's answer is cleared in the same transaction, so its bytes do not
+   *  stay in the store. Undefined when the row is untaken, refused, taken with no answer, already read, or not the run's. */
+  answerOf(runId: string, commandId: number): Promise<{ readonly value: unknown } | undefined>;
+  /** Tells `listener` when a command of a run in this store is written ("written", after command() commits) or taken,
+   *  refused or answered ("answered": a take, a run update that takes, a journal commit that takes or ends the run), and
+   *  when a run is queued ("queued": runs.create, runs.createInline or a trigger's fire committed it, claimable now).
+   *  A hint to read now, for handles in this process only: a row another process writes wakes nothing here, the reader's
+   *  poll finds it. Called after the commit, asynchronously; a listener's throw is swallowed. Answers the unsubscribe. */
+  watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" | "queued" }) => void): () => void;
   /** Counts a failed resume on the untaken command that woke the run, under the claim, and answers its tries; the command
    *  stays untaken. Fenced on a stale claim; StoreConstraint when the command is taken or not the run's. */
   retry(claim: Claim, commandId: number): Promise<number>;
@@ -1098,7 +1419,18 @@ export class SchemaVersionUnknown extends Error {
   readonly found: number | null;
   readonly known: number;
   constructor(file: string, found: number | null, known: number) {
-    super(found === null ? `the store at ${file} has no schema yet: the server sets it up at its start` : `the store at ${file} is schema version ${found}; this build knows version ${known}`);
+    // `file` is a path (SQLite) or already a phrase (Postgres: "the Postgres schema x").
+    const store = file.startsWith("the ") ? file : `the store at ${file}`;
+    super(
+      found === null
+        ? `${store} has no schema yet: the server sets it up at its start`
+        : found < known
+          ? `${store} is schema version ${found}, and this release (version ${known}) can't open a store an earlier release set up.\n` +
+            "Start the server on a new, empty data folder with --data <new folder> (docker run or compose arguments: --data /data/<new folder> --listen 0.0.0.0 --port 7340 --drain-timeout 6s), then add your agents, MCP servers, keys and sign-ins again.\n" +
+            'On Render the Docker Command replaces the image\'s entrypoint too, so it must be the whole start command shown in "Before you upgrade" in the release notes.\n' +
+            "Keep the old folder as it is: the earlier release still opens it."
+          : `${store} is schema version ${found}, set up by a later release than this one (this release knows version ${known}). Run that release or a later one.`,
+    );
     this.name = "SchemaVersionUnknown";
     this.found = found;
     this.known = known;
@@ -1131,15 +1463,39 @@ export type ConstraintRule = "check" | "unique" | "foreign_key" | "not_null";
 
 /** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). When the
  *  database said which rule refused it, `rule`; for a duplicate, `unique`: the table and the columns whose values were
- *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. */
+ *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. `index`:
+ *  the unique index (or constraint) the database named, when it named one: an index on an expression (one answer per
+ *  approval, schema.ts ONE_ANSWER_INDEX) has no plain columns to name, only its name. */
 export class StoreConstraint extends Error {
   readonly rule?: ConstraintRule;
   readonly unique?: { readonly table: string; readonly columns: readonly string[] };
-  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] } } = {}) {
+  readonly index?: string;
+  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] }; index?: string } = {}) {
     super(message);
     this.name = "StoreConstraint";
     if (details.rule) this.rule = details.rule;
     if (details.unique) this.unique = details.unique;
+    if (details.index) this.index = details.index;
+  }
+}
+
+/** An approve or deny command refused because its approval is answered already: an unrefused answer naming it was
+ *  written first (the one-answer index, schema.ts ONE_ANSWER_INDEX), so this one lost. Both stores raise it from that
+ *  index's unique violation alone, at the command's insert; any other refusal stays a plain StoreConstraint. Its caller
+ *  reads the answer that won: approve's 409 already_answered, or nothing to do. */
+export class AnswerTaken extends StoreConstraint {
+  constructor(message: string, index: string) {
+    super(message, { rule: "unique", index });
+    this.name = "AnswerTaken";
+  }
+}
+
+/** An agent's current revision is not the one a conditional write expected (addRevision's `ifCurrent`): another write
+ *  moved it first. `current` is the agent's current revision now. Nothing was written. */
+export class RevisionMoved extends Error {
+  constructor(readonly agentId: string, readonly current: string | null) {
+    super(`the current revision of agent ${agentId} moved (now ${current ?? "none"})`);
+    this.name = "RevisionMoved";
   }
 }
 

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/apps"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/archilsync"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/desktop"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
@@ -36,6 +37,9 @@ type Options struct {
 	SyncSocket string
 	// SyncOwner is who that socket and its folder must belong to; nil is root, and this daemon's own group.
 	SyncOwner *archilsync.Owner
+	// Fence is how init holds its programs off the computer's network, as hello reports it: "netns", "userns-netns", or
+	// "" for no network of their own.
+	Fence string
 }
 
 type mountSyncParams struct{}
@@ -72,14 +76,26 @@ type HelloParams struct {
 	Client string `json:"client"`
 }
 
+// ProtocolVersion is the version of the protocol this daemon speaks (spec/computer), apart from its own version: the
+// TypeScript side's PROTOCOL_VERSION, which a test keeps equal.
+const ProtocolVersion = "0.2"
+
 type HelloResult struct {
-	Version string   `json:"version"`
-	OS      string   `json:"os"`
-	Kind    string   `json:"kind"`
-	Arch    string   `json:"arch"`
-	Groups  []string `json:"groups"`
+	Protocol string   `json:"protocol"`
+	Version  string   `json:"version"`
+	OS       string   `json:"os"`
+	Kind     string   `json:"kind"`
+	Arch     string   `json:"arch"`
+	Groups   []string `json:"groups"`
 	// Display is the DISPLAY a desktop's screen and input methods drive, such as ":99"; absent on any other computer.
 	Display string `json:"display,omitempty"`
+	// Fence is how init holds its programs off the computer's network: "netns" (a network namespace of its own, made by
+	// root) or "userns-netns" (made inside a user namespace of its own, where root may not make one); absent when its
+	// programs have no network of their own.
+	Fence string `json:"fence,omitempty"`
+	// Features is what this computer's groups can do here past each group's methods, by the names in protocol.ts's
+	// FEATURES: a desktop's screen.watch takes an ask ahead (screen.ahead).
+	Features map[string]bool `json:"features,omitempty"`
 }
 
 type ExecRunParams struct {
@@ -106,10 +122,12 @@ func Handlers(version string, table *process.Table, options Options) map[string]
 	handlers := map[string]rpc.Handler{
 		"hello": func(context.Context, json.RawMessage) (any, error) {
 			kind, groups, name := Kind, slices.Clone(Groups), ""
+			var features map[string]bool
 			if extra := display.Groups(); len(extra) > 0 {
 				kind, groups, name = "desktop", append(groups, extra...), display.Name()
+				features = map[string]bool{"screen.ahead": true}
 			}
-			return HelloResult{Version: version, OS: runtime.GOOS, Kind: kind, Arch: runtime.GOARCH, Groups: groups, Display: name}, nil
+			return HelloResult{Protocol: ProtocolVersion, Version: version, OS: runtime.GOOS, Kind: kind, Arch: runtime.GOARCH, Groups: groups, Display: name, Fence: options.Fence, Features: features}, nil
 		},
 		"ping": func(context.Context, json.RawMessage) (any, error) {
 			return struct{}{}, nil
@@ -121,6 +139,7 @@ func Handlers(version string, table *process.Table, options Options) map[string]
 	maps.Copy(handlers, fileHandlers())
 	maps.Copy(handlers, processHandlers(table))
 	maps.Copy(handlers, display.Handlers())
+	maps.Copy(handlers, apps.Handlers(display, table, apps.Options{}))
 	return handlers
 }
 

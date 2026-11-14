@@ -1,0 +1,4 @@
+# The parameters this case's agent is applied with. No MCP server: the diff is in the prompt.
+parameters:
+  owner: example
+  repo: shop

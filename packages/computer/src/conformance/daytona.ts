@@ -3,29 +3,12 @@
 // another organization's key on a host that runs other Daytona work) and passes each to create() as its option, the key
 // read only when createProvider() runs. Every sandbox of a run has a bounded life besides its TTL: Daytona stops one
 // after 30 minutes with no outside activity and deletes it as soon as it stops, so a stop deletes, and the provider
-// declares it (stopDeletes; see conformanceNotes).
-import { create, DAYTONA_DEFAULT_SNAPSHOT, type DaytonaCreateOptions, type DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
-import type { MountKind } from "../mount.js";
-import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
+// declares it (stopDeletes; see conformanceNotes). The live sweep (sweep.ts, --provider daytona) reads the same names
+// through createHost: it makes nothing.
+import { create, type DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
+import { DAYTONA_DEFAULT_SNAPSHOT } from "../descriptors/daytona.js";
+import type { MachineHost } from "../host.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
-import type { RunFolder } from "./types.js";
-
-/** The Archil disk's settings for the mount cases, by name (COMPUTER_ARCHIL_*: all five, or none). */
-export { ARCHIL_ENV } from "./archil.js";
-
-/**
- * A fresh run folder for the mount cases: an Archil one on the disk the COMPUTER_ARCHIL_* settings name (the shared
- * archilRunFolder; the run's snapshot is then one of box/Dockerfile, and COMPUTER_DAYTONA_USER is 2510:2510); none when
- * they name none, and none for a bind, which a remote computer cannot take.
- */
-export async function mountFor(
-	kind: MountKind,
-	{ env = process.env, archil = {} }: { env?: Record<string, string | undefined>; archil?: Pick<ArchilRunFolderOptions, "objects" | "Archil" | "baseUrl"> } = {},
-): Promise<RunFolder | undefined> {
-	if (kind !== "archil") return undefined;
-	const settings = archilSettings(env);
-	return settings === undefined ? undefined : archilRunFolder({ ...settings, ...archil });
-}
 
 /** The environment this module reads, by name, each for the option its comment names. */
 export const DAYTONA_ENV = {
@@ -45,6 +28,8 @@ export const DAYTONA_ENV = {
 	user: "COMPUTER_DAYTONA_USER",
 	/** The snapshot every computer of the run starts from; default "default", Daytona's default snapshot. */
 	snapshot: "COMPUTER_DAYTONA_SNAPSHOT",
+	/** gpuSnapshot: the GPU snapshot of box/Dockerfile GPU computers are made from (box/build-daytona.py --gpu); default daytona-gpu. */
+	gpuSnapshot: "COMPUTER_DAYTONA_GPU_SNAPSHOT",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
@@ -54,7 +39,7 @@ export const ENV = DAYTONA_ENV;
  * The provider's options this module reads from env, each only when its name is set; throws in words without the key,
  * never echoing one. create() checks the rest.
  */
-export function settingsFromEnv(env: Record<string, string | undefined> = process.env): DaytonaCreateOptions {
+export function settingsFromEnv(env: Record<string, string | undefined> = process.env): DaytonaProviderOptions {
 	const apiKey = env[DAYTONA_ENV.key];
 	if (apiKey === undefined || apiKey === "") throw new Error(`set ${DAYTONA_ENV.key} to a Daytona API key: the conformance module reads it there and nowhere else, never from DAYTONA_API_KEY`);
 	const named = (name: string) => (env[name] ? { value: env[name] as string } : undefined);
@@ -64,15 +49,19 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	const arch = named(DAYTONA_ENV.arch);
 	const sandboxClass = named(DAYTONA_ENV.sandboxClass);
 	const user = named(DAYTONA_ENV.user);
+	const gpuSnapshot = named(DAYTONA_ENV.gpuSnapshot);
 	return {
 		apiKey,
 		...(url ? { apiUrl: url.value } : {}),
 		...(target ? { target: target.value } : {}),
 		...(daemon ? { daemonPath: daemon.value } : {}),
-		...(arch ? { arch: arch.value } : {}),
+		// create() refuses any other arch in words.
+		...(arch ? { arch: arch.value as "amd64" | "arm64" } : {}),
 		// create() refuses any other class in words.
 		...(sandboxClass ? { sandboxClass: sandboxClass.value as "container" | "linux-vm" } : {}),
 		...(user ? { daemonUser: user.value } : {}),
+		// create() refuses a name that is not one of ours in words.
+		...(gpuSnapshot ? { gpuSnapshot: gpuSnapshot.value } : {}),
 	};
 }
 
@@ -101,7 +90,7 @@ export interface DaytonaModuleOptions {
 }
 
 /** The provider's options: what this module reads from the environment (settingsFromEnv), with the run's bounds. */
-function optionsOf({ env = process.env, fetch, webSocket, timeouts, onNote }: DaytonaModuleOptions): DaytonaCreateOptions {
+function optionsOf({ env = process.env, fetch, webSocket, timeouts, onNote }: DaytonaModuleOptions): DaytonaProviderOptions {
 	return {
 		...settingsFromEnv(env),
 		autoStopMinutes: CONFORMANCE_AUTO_STOP_MINUTES,
@@ -121,6 +110,14 @@ export function conformanceImage({ env = process.env }: Pick<DaytonaModuleOption
 /** The provider the CLI runs; throws in words when a setting is missing or wrong. */
 export function createProvider(options: DaytonaModuleOptions = {}): DaytonaProvider {
 	return create(optionsOf(options));
+}
+
+/**
+ * The Daytona host the live sweep (sweep.ts) lists and deletes through, from the same settings (the key and the API
+ * URL); it calls nothing until the sweep does.
+ */
+export async function createHost({ env = process.env, fetch }: Pick<DaytonaModuleOptions, "env" | "fetch"> = {}): Promise<MachineHost> {
+	return create({ ...settingsFromEnv(env), ...(fetch ? { fetch } : {}) }).host;
 }
 
 /** The same provider with a daemon that reports another version, built with Go for the drift case. */

@@ -4,8 +4,8 @@
 // (workspace/, not a run directory the server owns); its browser state and its timeline read the run's launch, revision and
 // journal. The live halves (a run's open browser viewer, the timeline's live stream) read the runner's live state through
 // the store (live/stream.ts watchRun) and the viewer handover, which the runner publishes.
-import type { Context } from "@earendil-works/chord";
-import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import type { Context } from "@earendil-works/chord/context";
+import type { TimelineEvent } from "./timeline/index.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ApiError } from "./errors.js";
 import { GRAPH_CACHE_BYTES, PartCache, servedGraphView } from "./graph-served.js";
@@ -15,7 +15,9 @@ import { costOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { listFiles, sendFile, type FileView } from "./run-files.js";
 import { readLaunchBody } from "./run-launch.js";
-import { runTimeline } from "./store-reads/journal.js";
+import { costIsBooked } from "./runner/metrics.js";
+import { runEntries, runTimeline } from "./store-reads/journal.js";
+import type { RunStated } from "./store-view.js";
 import { StoreLaunchMissing, type Store } from "./store/index.js";
 import { isUnavailable, type Plane, recheckPlane, whyUnavailable } from "./tool-plane.js";
 import type { Workspace } from "./workspace/index.js";
@@ -38,8 +40,9 @@ export interface RunReadsDeps {
   /** The run's open live browser viewer, when its runner serves one (its link), or undefined. The runner publishes the
    *  viewer handover to the store; until that lands, the switch leaves this unset and the live branch is never taken. */
   liveViewer?(runId: string): Promise<{ viewer: string } | undefined>;
-  /** The run's v2 view as the store serves it (viewOverStore): its status, kind, revision and times, for the graph. */
-  runView(store: RunReadsStore, runId: string): Promise<Record<string, unknown> | undefined>;
+  /** The run's facts (store-view.ts factsOverStore): its status, kind, revision, times and whether it is withheld, for the
+   *  graph, with no word of the run served, so a graph read redacts nothing outside its own cached parts. */
+  runFacts(store: RunReadsStore, runId: string): Promise<RunStated | undefined>;
   /** Whether the run's served output is withheld: its browser sign-in can't be read, so nothing it said is shown
    *  (store-view's `unshown`). The graph refuses when it is, as the route did. */
   withheld(store: RunReadsStore, runId: string): Promise<boolean>;
@@ -105,31 +108,36 @@ const graphParts = new PartCache(GRAPH_CACHE_BYTES);
  *  runGraph, the store path). An agentic run has none (404, the route's words); a run whose output is withheld is refused
  *  (403 WITHHELD_SIGN_IN), as the route refused it, before anything of it is served. */
 export async function runGraphView(store: Store, runId: string, deps: RunReadsDeps): Promise<Record<string, unknown>> {
-  const view = await deps.runView(store, runId);
-  if (!view) throw new ApiError("not_found", `There is no run ${runId}.`);
-  if (view.kind !== "workflow") throw new ApiError("not_found", `the run ${runId} is an agentic run; only a workflow run has a graph`);
-  if (await deps.withheld(store, runId)) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
-  const revision = await store.agents.revision(String(view.revision));
+  // The run's facts, never its served view: the view serves the run's words (its output, its title), each a redaction
+  // pass on every read, and the graph needs none of them. Its own parts are redacted once per held set (servedGraphView).
+  const facts = await deps.runFacts(store, runId);
+  if (!facts) throw new ApiError("not_found", `There is no run ${runId}.`);
+  if (facts.kind !== "workflow") throw new ApiError("not_found", `the run ${runId} is an agentic run; only a workflow run has a graph`);
+  if (facts.unshown) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
+  const revision = await store.agents.revision(facts.revision);
   const workflow = (revision?.body as { workflow?: unknown } | undefined)?.workflow;
-  const status = String(view.status);
-  const ended = view.ended_at !== null;
+  const status = facts.status;
+  const ended = facts.endedAt !== null;
   const launch = await store.runs.launch(runId).then((row) => readLaunchBody(row.body), (error) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
-  // The run's model-node cost from its rows once it ended (0 before), as the old graph read it from run.rows.
+  // The run's model-node cost from its rows once it ended (0 before), as the old graph read it from run.rows: a workflow's
+  // usage row is its booking's (store-reads/journal.ts bookedUsage), its model nodes', its `llm` calls' and its paid
+  // tools', never its decisions', which the graph sums from their receipts. Its `llm` calls' answers are then all in it
+  // (llmRead), never counted again from the node log.
   const rows = ended ? await runTimeline(store, runId, deps.context) : [];
+  const booked = ended && costIsBooked(await runEntries(store, runId, deps.context), false);
   // Every field it serves is cut by the run's one cut (graph-served.ts servedGraphView): its nodes, decisions and calls by
   // servedPart, and every other field (its workflow, its structure, any added later) whole.
   const cut = await deps.cutValues(store, runId);
   if (cut === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   return servedGraphView(await runGraph({
-    run: { id: runId, agent: String(view.agent_id), revision: String(view.revision), status, paused: status === "paused", startedAt: String(view.created_at), endedAt: view.ended_at as string | null },
+    run: { id: runId, agent: facts.agentId, revision: facts.revision, status, paused: status === "paused", startedAt: facts.createdAt, endedAt: facts.endedAt },
     ended,
     workflow,
-    // No per-run store file and no run directory now: the store and a context carry the journal the graph reads.
-    storeFile: "",
+    // No run directory now: the store and a context carry the journal the graph reads.
     root: "",
     input: launch?.input ?? {},
     modelCost: ended ? costOf(rows) : 0,
-    llmRead: 0,
+    llmRead: booked ? Number.MAX_SAFE_INTEGER : 0,
     store,
     context: deps.context,
   }), cut.values, graphParts);
@@ -184,8 +192,13 @@ export function runTimelines(deps: TimelineDeps): { page(store: Store, runId: st
   const pollMs = deps.pollMs ?? 1_000;
 
   async function once(store: Store, runId: string, after: number, limit: number): Promise<TimelinePage> {
-    const [rows, view] = await Promise.all([deps.timelineRows(store, runId, deps.context), deps.runView(store, runId)]);
+    // The view first, then the rows, never both at once: the journal only grows, so the rows read after the view hold
+    // every entry its status was read from. Read together, a message committed between the two reads gave a page that
+    // said working before the message row it works on (#2307), or a waiting status with its parked call's row still
+    // missing. The rows may run ahead of the status, never behind it.
+    const view = await deps.runView(store, runId);
     if (!view) throw new ApiError("not_found", `There is no run ${runId}.`);
+    const rows = await deps.timelineRows(store, runId, deps.context);
     const status = String(view.status);
     const state = String(view.state);
     const log = logOf(runId);

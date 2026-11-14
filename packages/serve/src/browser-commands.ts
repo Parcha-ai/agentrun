@@ -1,8 +1,7 @@
 // The browser person's hand-over, over the one store (design 2.1): the agent asks for the person in its browser
 // (pi-browser's browser_request_handoff), and the person answers. The ask is a journal entry the run's runner writes when
-// the agent asks; the person's answer is a command row the runner reads and applies (as every act on a run is now). The old
-// on-disk records go: the ask's record (BROWSER_ASK_DIR/<id>.json) and its answer (<id>.answer.json) are the run's journal
-// and a command, read here. The person-time holds under the run's cap are unchanged (browser-cost.ts); nothing here touches
+// the agent asks, and its one record: no file holds it (browser-person.ts). The person's answer is a command row the
+// runner reads and applies (as every act on a run is now), read here. The person-time holds under the run's cap are unchanged (browser-cost.ts); nothing here touches
 // a ledger.
 //
 // The journal contract the runner writes (so this reader can show the ask and the writer can answer it): when the agent
@@ -40,8 +39,8 @@ const TAG = /^[A-Za-z0-9._:-]{1,200}$/;
 const OUTCOMES: readonly AskOutcome[] = ["done", "cancelled", "expired"];
 
 /** The ask a `waiting` hand-over entry holds, or undefined when the entry is not one (or is damaged). The runner writes the
- *  session as `session`; a PendingAsk names it `tag`. */
-function waitingAsk(data: unknown): PendingAsk | undefined {
+ *  session as `session`; a PendingAsk names it `tag`. The one reading of an ask, the server's and the run's process's. */
+export function waitingAsk(data: unknown): PendingAsk | undefined {
   const v = data as Partial<PendingAsk> & { state?: string; session?: string } | undefined;
   if (!v || v.state !== "waiting") return undefined;
   const tag = v.tag ?? v.session;
@@ -49,7 +48,7 @@ function waitingAsk(data: unknown): PendingAsk | undefined {
   return ok ? { id: v.id!, tag, instruction: v.instruction!, completion_condition: v.completion_condition!, asked_at: v.asked_at!, expires_at: v.expires_at! } : undefined;
 }
 
-/** A valid `at` (ms): a finite epoch millisecond, as a Timeline phase row's time (pi-durable-agent's bound). */
+/** A valid `at` (ms): a finite epoch millisecond, as a Timeline phase row's time. */
 const atOf = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 8.64e15 ? value : undefined);
 
 /** How an ask was answered, as the journal or a command holds it: how it ended, and when (`at`, ms, the person's own answer
@@ -100,14 +99,14 @@ function asksIn(entries: readonly JournalEntry[]): PendingAsk[] {
 }
 
 /** The browser ask the run view shows: the newest ask still waiting (unanswered and not expired), or undefined. Over the
- *  run's journal entries and its hand-over commands, as the old openAsk read it over the run's files. (store-view.ts calls
+ *  run's journal entries and its hand-over commands. (store-view.ts calls
  *  this for the run's served `pending`.) */
 export function browserAsk(entries: readonly JournalEntry[], commands: readonly Command[] = [], now = Date.now()): PendingAsk | undefined {
   const answered = answersOf(entries, commands);
   return asksIn(entries).find((ask) => !answered.has(ask.id) && Date.parse(ask.expires_at) > now);
 }
 
-/** The ask a hand-over answer targets and how it already stands, mirroring the old answerAsk's choice: the newest ask still
+/** The ask a hand-over answer targets and how it already stands: the newest ask still
  *  waiting, else the newest ask at all; its answer when it has one, `expired` when it is past its expiry, else open (no
  *  answer). Undefined when the run has asked nothing. */
 export function handBackTarget(entries: readonly JournalEntry[], commands: readonly Command[] = [], now = Date.now()): { id: string; answer?: AskOutcome; at?: number } | undefined {

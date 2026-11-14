@@ -22,6 +22,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
+const { runTimeline, runEntries } = await import("../dist/store-reads/journal.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const RUN = "run-1";
@@ -76,13 +77,13 @@ async function piRun(t, { tools, learned }) {
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools, ...(learned ? { learning: true } : {}) } });
   const seed = learned ? await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]) : undefined;
-  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-4-5" }, ...(learned ? { learning: startAt(seed) } : {}) };
+  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, ...(learned ? { learning: startAt(seed) } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   // The run's one model route: pi's model and the node's both go through the session proxy to the loopback gateway, priced
   // at the route's catalog cost.
-  const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
-  const route = { model: "claude-sonnet-4-5", provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
+  const price = (_model, usage) => ((usage.input ?? 0) * 2 + (usage.output ?? 0) * 10 + (usage.cacheRead ?? 0) * 0.1 + (usage.cacheWrite ?? 0) * 2.5) / 1e6;
+  const route = { model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
   runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(launch, run, deps, claim)) });
   const row = await until(async () => {
@@ -95,7 +96,11 @@ async function piRun(t, { tools, learned }) {
   for (const key of await sessions.keys()) for (const record of await sessions.read(key)) all.push(record);
   const requests = all.filter((record) => record.kind === "runner.request").map((record) => record.data);
   const turns = all.filter((record) => record.kind === "runner.turn").map((record) => record.data);
-  return { row, requests, turns };
+  // The run's timeline as served from the store: a learned_workflow call's result row carries its nodes.
+  const timeline = await runTimeline(server, RUN, ctx, { settled: true });
+  // What its claim laid of its learning seed (KINDS.learningLaid): the newest entry.
+  const laid = (await runEntries(server, RUN, ctx)).findLast((entry) => entry.kind === "agentrun.learning.laid")?.data;
+  return { row, requests, turns, timeline, laid };
 }
 
 test("a pi run's learned_workflow model node books on the run's one ledger, a side call labelled learned_workflow", async (t) => {
@@ -114,4 +119,14 @@ test("a pi run with no learned workflow books nothing under the learned_workflow
   const { row, requests } = await piRun(t, { tools: ["read"], learned: false });
   assert.notEqual(row.state, "failed", `the run did not fail: ${JSON.stringify(row)}`);
   assert.deepEqual(requests.filter((request) => request.host === LEARNED_WORKFLOW_TOOL), [], "no learned workflow, nothing booked under its label");
+});
+
+test("a pi run's learned_workflow call shows the nodes its workflow ran on its result row", async (t) => {
+  const { row, timeline, laid } = await piRun(t, { tools: ["read"], learned: true });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  const result = timeline.find((one) => one.kind === "tool_result" && one.tool_name === LEARNED_WORKFLOW_TOOL);
+  assert.ok(result, `a learned_workflow result row: ${JSON.stringify(timeline.map((one) => [one.kind, one.tool_name]))}`);
+  assert.deepEqual(result.learned_nodes?.map(({ label, kind, status }) => ({ label, kind, status })), [{ label: "answer", kind: "extract", status: "ok" }], JSON.stringify(result));
+  assert.equal(typeof result.learned_nodes[0].duration_ms, "number");
+  assert.deepEqual(laid, { skills: [], workflows: ["answer"] }, "its claim recorded the learned workflow it laid");
 });

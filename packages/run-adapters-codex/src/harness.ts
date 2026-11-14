@@ -190,7 +190,7 @@ export interface CodexMachine {
   commandTimeoutMs?: number;
 }
 
-export const DEFAULT_MODEL = 'openai/gpt-5.4-mini';
+export const DEFAULT_MODEL = 'openai/gpt-6-luna';
 
 const SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
 
@@ -1036,7 +1036,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         if (resume && summary.dangling.length > 0) {
           // Calls the rollout has no output for get theirs from the log.
           const items = summary.dangling.map((c) => ({ type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) }));
-          await code.recoverItems(items, summary.dangling, lines, note.turn.since);
+          await code.recoverItems(items, summary.dangling, lines, note.turn.since, true);
           await guard(rpc.request('thread/inject_items', { threadId, items }));
           await guard(synced());
         }

@@ -1,116 +1,135 @@
 ---
 name: phone-computer
-description: Use a phone (a cloud Android or an iPhone) through the phone_tree, phone_screen, phone_tap, phone_swipe, phone_type, phone_key, phone_apps and phone_open tools. It covers looking, acting, checking what happened and recovering, and what a phone cannot do. Use when a run has a phone and the task needs its screen or apps.
+description: Use a phone (a cloud Android or an iPhone) through computer_observe, computer_act, computer_screenshot and computer_script. It covers reading the screen's elements, acting on them by ref, running known steps as one script, checking what happened, recovering, and what a phone cannot do. Use when a run has a phone and the task needs its screen or apps.
 ---
 
 # Using a phone
 
-The run has a phone, a real one, rented while the run lives. You read its screen two ways: its structure (what can be
-tapped or typed into, with exact positions) and screenshots. You act with one finger, a few keys, and its apps. Every
-act answers in words, never with a picture, so you look again to see what an act did.
+The run has a phone, a real one, rented while the run lives. Where it lists its elements (the `ui` group, an Android's
+today), you read the screen as lines of elements and act on them by their refs. Where it doesn't (an iPhone today), you
+see it through screenshots and act with one finger at their pixels. The tools say which one you have.
 
 ## The tools
 
-| Tool | What it does |
+**`computer_observe` `{app?, image?, full?}`** shows the app in front as compact lines, one per element:
+
+```
+state s2 · com.android.settings "Settings" · window 360×800 pt
+@e1 generic
+  @e3 searchbox "Search settings"
+  @e5 button "Network & internet"
+  @e9 button "About phone"
+```
+
+Each line is a ref (`@e5`), a role, a name, a value after `=`, what else the element says in parentheses (a row's
+second line: `("Mobile, Wi-Fi, hotspot")`) and flags in brackets. A child is indented under its parent. The head line names the **state**. `image: true` adds a screenshot, for what the elements can't tell you:
+layout, images, colours. Without the `ui` group, observe is the screenshot.
+
+**`computer_act` `{steps, state?, expect?, observe?}`** runs steps in order:
+
+| Step | What it does |
 |---|---|
-| `phone_tree` | Lists what on the screen can be tapped or typed into, one line each: its class, its text or label, its id, whether it is a field (and focused), its **center** (to tap) and its bounds. |
-| `phone_screen` | A screenshot of the whole screen. Its size in pixels is in the answer. |
-| `phone_tap` `{x, y}` | One tap at that point. |
-| `phone_swipe` `{from, to, duration_ms?}` | One finger from `from` to `to` (300 ms by default, at most 10 000). |
-| `phone_type` `{text}` | Types the text into the field that has focus. |
-| `phone_key` `{key}` | Presses `back` (leaves a page, closes a dialog or the keyboard), `home` (the home screen) or `enter` (submits the field in focus). |
-| `phone_apps` | The installed apps by id, and which app is in front. |
-| `phone_open` `{id}` | Opens an app by its id, on its first screen. |
+| `{press: "@e9"}` | The element's own tap. The surest step. |
+| `{set: "@e3", value: "wifi"}` | Sets a field's text, or a switch's `"on"` or `"off"`. |
+| `{click: "@e9"}` or `{click: [x, y]}` | A tap; `button: "right"` is a long press. |
+| `{type: "text", into?: "@e3"}` | Types, into the element when named, else into the field in focus. |
+| `{nav: "back"}`, `{nav: "home"}`, `{nav: "app_switch"}` | The system's own navigation. |
+| `{scroll: "@e1", dy: 600}` | Scrolls the element by points: `dy` above 0 shows what is below. |
+| `{drag: [[x1, y1], [x2, y2]], ms?}` | One finger along the path. |
+| `{key: "enter"}` | A key, where the phone has keys. |
 
-**Coordinates are screenshot pixels**, origin top left, `x` to the right and `y` down, in whole numbers.
-`phone_tree`'s centers and bounds are in the same pixels as `phone_screen`. A phone's screen is large (for example
-720 x 1280) and its text is small, so tap a center from the tree rather than a point you estimate from a picture.
+Each step answers its route and whether a readback verified it; the answer ends with whether the screen changed and its
+new state. `expect: {text: "Android version"}` waits after the steps until that text shows (`gone: true`: until it is
+gone). `observe: true` adds the new outline: one call instead of two. The first refused step stops the rest.
 
-## The loop: look, act, check, recover
+Prefer refs. A step at a point is read against a state and refused as **stale** once the screen moved under it:
+observe again and use the new state. Without the `ui` group, points are screenshot pixels and there are no refs,
+states or expects.
 
-1. **Look.** Call `phone_tree` first. Find your target by its text, label or id, and note its center. Take
-   `phone_screen` when the tree doesn't settle it: to see layout, images and colours, or to find a node that has no
-   name in the tree.
-   - A list row is often listed with no name, because the row's title is drawn by something inside it. Match the
-     row's bounds to the screenshot to see which row it is.
-   - The tree holds at most 150 nodes. Its last line counts any it left out: scroll, or use the screenshot.
-2. **Act.** Do one act that changes the screen (a tap that opens something, a swipe, a key), then look again. Don't
-   chain taps blind: once the screen changes under you, the second tap lands on something else.
-3. **Check.** Take a screenshot or the tree again, and look for the change the act should have made:
-   - after a tap on a list row: the list is replaced by that row's page;
-   - after a swipe up: the rows have moved up;
-   - after typing: the field holds the text.
-4. **Recover.** If nothing changed, look closer before trying again. A dialog, the keyboard or a banner may cover
-   your target, or the tap may have landed between two rows. Use the tree's center rather than a guess. After two or
-   three tries that change nothing, change approach:
-   - `phone_key` `back` to leave the page or close what covers it;
-   - then `home`;
-   - then `phone_open` the app afresh.
+**`computer_screenshot` `{region?}`** is the whole screen, or `region: [x, y, w, h]` of it, in pixels.
+
+**`computer_script` `{code}`** runs JavaScript in an isolate whose only binding is `computer`. Its tool description
+gives the `computer` object's types for this phone. The body is an async function: `await` the calls and `return` what
+you need.
+
+```js
+await computer.apps.open("com.android.settings");
+const settings = computer.app("com.android.settings");
+await settings.observe();
+const about = settings.find({ text: "About phone" })[0];
+const page = await settings.press(about.ref, { expect: { text: "Android version" }, observe: true });
+return { met: page.expect, lines: page.after.outline.split("\n").filter((line) => /version/i.test(line)) };
+```
+
+**Your harness's own code mode.** pi's `codemode` binds `computer` as computer_script does. Codex's `exec` does not:
+there, call the tools, each answering its value as JSON text, or call `tools.computer_script` with the code above.
+
+```js
+const page = JSON.parse(await tools.computer_observe({ app: "com.android.settings" }));
+const about = page.elements.find((node) => node.name === "About phone");
+```
+
+**The screen itself.** Prefer an app's steps. A script's `computer.input.act([...])` is the screen-level way out, at
+screenshot pixels, for what the app's window can't reach: a swipe from the screen's top edge opens the notification
+shade (`{ type: "swipe", path: [[540, 5], [540, 1200]] }`), and anything outside the app.
+
+**Only the tools you were given.** An agent's computer setting may leave some out: a code-only agent has its script
+tool and no `computer_observe`, `computer_act` or `computer_screenshot`; a tools-only agent has those and no script
+tool; an agent whose exec is off has no shell of any kind. Use what your tool list shows.
+
+## How to work: observe, then act by ref, then check
+
+1. **Observe** first. Find your target by its name, role or id, and note its ref. A list row is often an unnamed
+   button whose title sits on a child text: the outline shows it indented under the row.
+2. **Act** by ref. A step that changes the screen (opening a page, a back) ends the call, unless you put an `expect`
+   on it for what the next screen shows.
+3. **Check** the answer's routes, `changed` and the expect. When it doesn't settle it, observe again.
+4. **Recover.** `stale`: observe again. Nothing changed: a dialog, the keyboard or a banner may cover the target.
+   `{nav: "back"}` closes what covers it; `computer.apps.open(id)` in a script starts an app afresh on its first
+   screen, the surest way back to a known place.
+
+## When to write a script
+
+- **Known steps**: open an app, press through a known path, read one value: one script, an `expect` on each page.
+- **A few facts out of a long screen**: `find()` inside the script and return only those, never whole observations.
+  `find({ role, text, id })`: a role is the same name on every phone, a text matches the name, the value or what the
+  parentheses say, and an id is the app's own (an Android resource-id).
+- **Loops**: scroll a list until a row shows.
+
+When you are unsure what is on the screen, observe before you act, and decide from what it shows.
 
 ## What the screen looks like
 
-- **A page's title may not be in the tree.** On current Android a page shows its title as a large heading in a header
-  that shrinks as you scroll, and the header is a label, not something to tap. The page opened when its own items are
-  in the tree and the list you tapped is gone. Don't wait for the title as a line in the tree.
+- **A page's title may not be an element.** On current Android the title is drawn in a header that shrinks as you
+  scroll. The page opened when its own items show and the list you pressed is gone.
+- **The keyboard** covers the lower part of the screen while a field has focus; `{nav: "back"}` closes it.
 - **The status bar** across the top (time, battery) is not the app.
-- **The on-screen keyboard** appears when a field has focus and covers the lower part of the screen; what it covers
-  cannot be tapped. `phone_key` `back` closes it.
-- **Loading.** A screen may need a moment after a tap. If the screen hasn't changed yet, look again before acting.
-  Don't repeat the tap, which may land on the new screen.
-
-## Moving around
-
-- **Scroll** with a swipe the opposite way to where you want to go. A swipe **up** (from low on the screen to high)
-  moves a list **down**. Swipe in the middle of the list, from about 75% of its height to about 25%, then look again.
-- **Long press**: `phone_swipe` with `from` and `to` the same point and `duration_ms` about 800.
-- **Go back**: `phone_key` `back`, or the page's back arrow (in the tree as "Navigate up" on Android).
-- **Open an app**: `phone_apps` gives the ids (like `com.android.settings`), then `phone_open` with one of them.
-  - `phone_open` starts the app on its first screen, not where it was left, which makes it the surest way back to a
-    known place.
-  - Check with the tree or `phone_apps` that the app is in front.
-  - An app may first show another app's screen (a sign-in or a permission prompt). Deal with that screen, then go
-    on.
-
-## Typing
-
-1. Tap the field: `phone_tree` marks it "a field", and "focused" once it has focus.
-2. `phone_type` with the text. `phone_key` `enter` submits it, or a line break in the text does.
-3. Look again to read what the field holds now.
-
-The phone types plain ASCII (letters, digits, punctuation, spaces) and line breaks; other characters are refused in
-words before anything is typed. To clear a field, select its text if the app offers it, or open the page afresh.
 
 ## What a phone cannot do here
 
 - No pinch or zoom, and no gesture with more than one finger.
-- No keys beyond `back`, `home` and `enter`: no volume, no key combinations, no arrow keys.
 - No shell, files or installs.
+- Plain ASCII typing only: other characters are refused in words before anything is typed.
 
-Don't fake any of these with tricks. Say in your answer what the task needed that the phone could not do.
+Say in your answer what the task needed that the phone could not do.
 
 ## When a tool answers an error
 
-Errors come in words, and they say what was wrong. Read them, and act on what they say. Don't repeat the same call.
+Errors come in words, and they say what was wrong. Read them, act on what they say, and don't repeat the same call.
 
-- **A wrong argument** (a point outside the screen, an unknown key, a swipe too long): fix it and call again, once.
-- **An app id the phone doesn't know**: list the apps with `phone_apps` and use an id from it.
-- **"This phone does not offer its UI tree" or "its keys"**: this phone has no structure or keys to give. Work from
-  screenshots, the page's own back arrows and `phone_open`.
-- **"The person had this phone"**: a person took the phone over and has handed it back, and your act was not done.
-  The screen may have changed, so look again before you act.
-- **The phone is gone or unreachable**: the run's phone ended (its time ran out, or it was released). Don't keep
-  calling. Say what you finished and what you could not.
+- **"The person had this computer"**: a person took the phone over and has handed it back, and your act was not done.
+  The screen may have changed: observe again before you act.
+- **A step refused as `unsupported`** names what this phone can't do (an element step without the `ui` group, a key
+  on a phone with no keys). Use another step.
+- **The phone is gone or unreachable**: the run's phone ended. Don't keep calling. Say what you finished and what you
+  could not.
 
 ## Time and cost
 
-The phone may be billed by the minute, and it lives only for the run's lifetime. Work steadily:
-- know what you want before each look;
-- don't loop on screenshots or the tree just to wait;
-- stop once the task is done, or once it can't be done.
-
-A short plan before the first tap (which app, which screens, what will show success) saves more than fast tapping.
+The phone may be billed by the minute and lives only for the run's lifetime. Plan first (which app, which screens,
+what will show success), script what is certain, and stop once the task is done or can't be done.
 
 ## Finishing
 
-Before you call the task done, take a final screenshot that shows the result. Describe what is on it in your answer,
-and name anything you could not finish or check.
+Before you call the task done, check the result with an observe (or a screenshot when it is visual). Say what it shows
+in your answer, and name anything you could not finish or check.

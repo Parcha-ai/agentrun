@@ -1,0 +1,666 @@
+// A standing rule for every reply is a note, never a skill: notes are served whole on every run, a skill loads only when a
+// job calls for it. The grader judges it (learn/grade.ts GRADE_RUBRIC: a skill that is a standing rule for every reply
+// or report is mis-kept), and its verdict re-files such a skill as a note (decision `note`, parseVerdict and skillAsNote:
+// `<name>.md`, the skill's description and body, of type feedback), merged in the skill's place (runner/learning-loop.ts
+// keptOf, mergeChangeOf), pending when risky. A skill that would be no note is dropped, saying where it belongs. `note`
+// is a skill's decision alone. Then a learning run whose faux grader re-files a skill writes the note to the folder, and
+// no skill; a note of that name main already holds is never written over, and never fails the run: the same text is no
+// change, other text drops that item alone, saying so, and the rest merges. One copy of each rule: a new note whose body
+// is exactly an active note's (whitespace and case aside), under another name, is a duplicate, at the checks and at the
+// merge; of two new notes the same, the first is kept.
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { agentWithRevision, storeOn } from "./store-helpers.mjs";
+
+const { GRADE_RUBRIC, gradedItems, gradePrompt, NOTES_FULL, parseVerdict, REFILE_FAILED, skillAsNote, UNREADABLE_REASON } = await import("../dist/learn/grade.js");
+const { parseNoteFile, retire, ruleOf } = await import("../dist/learn/notes.js");
+const { checkProposal } = await import("../dist/learn/check.js");
+const { keptOf, mergeChangeOf, NOTE_NAME_IN_RUN, NOTE_NAME_TAKEN, takenOnMain } = await import("../dist/runner/learning-loop.js");
+const { SAME_NOTE, wordsOf } = await import("../dist/learning-words.js");
+const { learningLoopFactory } = await import("../dist/runner/learning-factory.js");
+const { folderTestHooks, learningWorkspace, readSnapshot } = await import("../dist/learn/folder.js");
+const { learningCommit, mainTexts, mergedAt } = await import("../dist/learn/commit.js");
+const { CAPS } = await import("../dist/learn/check.js");
+const { KINDS } = await import("../dist/runner/journal-kinds.js");
+const { journalEntries } = await import("../dist/runner/journal-reader.js");
+const { seedOf } = await import("../dist/learning.js");
+const { runLearningEnd } = await import("../dist/store-reads/learning.js");
+
+/** The QA finding: a rule for every report, written as a skill. */
+const SKILL = { file: "skills/report-format/SKILL.md", text: "---\nname: report-format\ndescription: How every report is laid out\n---\nStart every report with STATUS, at most 5 lines, and end it with Next:.\n" };
+const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: Retry a flaky fetch twice\ntype: feedback\n---\nRetry a flaky fetch twice.\n" };
+const verdictOf = (items, merge = true) => JSON.stringify({ merge, reason: "Worth keeping.", items });
+
+test("the rubric names a standing rule for every reply as mis-kept as a skill, and re-filed as a note; the prompt offers the note decision", () => {
+  const flat = GRADE_RUBRIC.replace(/\s+/g, " ");
+  assert.match(flat, /Is a skill a standing rule for every reply or every report, whatever the job, rather than the steps of one kind of job\? It is mis-kept as a skill/);
+  assert.match(flat, /re-file it as a note, which every later run reads/);
+  const prompt = gradePrompt({ run: "run-1", instructions: "Report on the week.", active: [], superseded: [], proposed: [NOTE], files: [SKILL], asked: [] });
+  assert.match(prompt, /"decision": "keep", "pending", "note" or "drop"/);
+  assert.match(prompt, /note, for a skill alone, re-files it as a note/);
+});
+
+test("a skill re-filed as a note: the note is <name>.md, the skill's description and body, of type feedback", () => {
+  const note = skillAsNote(SKILL.file, SKILL.text);
+  assert.equal(note.file, "report-format.md");
+  const parsed = parseNoteFile(note.file, note.text);
+  assert.ok(!Array.isArray(parsed), JSON.stringify(parsed));
+  assert.deepEqual([parsed.name, parsed.description, parsed.type, parsed.body.trim()], ["Report format", "How every report is laid out", "feedback", "Start every report with STATUS, at most 5 lines, and end it with Next:."]);
+  assert.equal(skillAsNote(SKILL.file, "---\nname: report-format\n---\nNo description.\n"), undefined, "no description, no note");
+  assert.equal(skillAsNote("workflows/report/workflow.json", "{}"), undefined, "a skill's alone");
+});
+
+test("parseVerdict: a skill's decision note keeps it as that note, pending when Risky; note on any other item is no merge; one that would be no note is dropped, saying it belongs in a note", () => {
+  const items = gradedItems([NOTE], [SKILL]);
+  const refiled = parseVerdict(verdictOf([{ file: NOTE.file, decision: "keep", general: true, why: "useful" }, { file: SKILL.file, decision: "note", general: true, origin: "you", why: "a rule for every report" }]), items);
+  assert.equal(refiled.merge, true);
+  const item = refiled.items.find(({ file }) => file === SKILL.file);
+  assert.deepEqual([item.keep, item.pending, item.origin, item.note?.file], [true, undefined, "you", "report-format.md"]);
+  const held = parseVerdict(verdictOf([{ file: NOTE.file, decision: "keep", general: true, why: "useful" }, { file: SKILL.file, decision: "note", general: true, question: "Risky", why: "a rule for every report" }]), items);
+  assert.equal(held.items.find(({ file }) => file === SKILL.file).pending, true);
+  const onNote = parseVerdict(verdictOf([{ file: NOTE.file, decision: "note", general: true, why: "x" }, { file: SKILL.file, decision: "keep", general: true, why: "y" }]), items);
+  assert.deepEqual([onNote.merge, onNote.reason], [false, UNREADABLE_REASON]);
+  const bare = { file: SKILL.file, text: "---\nname: report-format\ndescription: \n---\nStart every report with STATUS.\n" };
+  const failed = parseVerdict(verdictOf([{ file: NOTE.file, decision: "keep", general: true, why: "useful" }, { file: SKILL.file, decision: "note", general: true, why: "a rule for every report" }]), gradedItems([NOTE], [bare]));
+  const dropped = failed.items.find(({ file }) => file === SKILL.file);
+  assert.deepEqual([dropped.keep, dropped.why, dropped.note], [false, REFILE_FAILED, undefined]);
+  assert.equal(failed.merge, true, "the note it kept still merges");
+});
+
+test("keptOf and mergeChangeOf: a re-filed skill merges as its note, held when pending, with its item's origin; the skill is not merged", () => {
+  const proposal = { seed: "s1", notes: [NOTE], files: [SKILL] };
+  const verdict = parseVerdict(verdictOf([{ file: NOTE.file, decision: "keep", general: true, why: "useful" }, { file: SKILL.file, decision: "note", general: true, origin: "you", question: "Risky", why: "a rule for every report" }]), gradedItems([NOTE], [SKILL]));
+  const merging = keptOf(proposal, verdict);
+  assert.deepEqual(merging.notes.map(({ file }) => file), ["retries.md", "report-format.md"]);
+  assert.deepEqual(merging.files, []);
+  const change = mergeChangeOf("run-1", merging, verdict, {});
+  assert.deepEqual(change.files.map(({ path }) => path), ["retries.md", "report-format.md"]);
+  assert.deepEqual(change.held, ["report-format.md"]);
+  assert.match(change.files[1].text, /^origin: you$/m, "the user's own words");
+});
+
+/** A learning run of run-1, which proposed NOTE and SKILL; its faux grader keeps NOTE and re-files SKILL as a note.
+ *  `existing`: a note's text main holds at report-format.md first. Answers its end, the folder's notes and skills after,
+ *  and the words its learning ended with. */
+async function refileRun(t, { existing, retired = [], skill, committed, edited = {}, race = {}, notes: runNotes = [NOTE], files = [SKILL], answer: given } = {}) {
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(tmpdir(), "learn-refile-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await agentWithRevision(store);
+  await seedOf(data, "agent-1");
+  /** Each of `notes` (file to text) committed on main, as a person or another run's merge lands it. */
+  const land = async (notes) => {
+    for (const [file, text] of Object.entries(notes)) {
+      const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+      try {
+        const made = await learningCommit(folder.workspace, { kind: "person", action: "created", file, text, ifMatch: null });
+        assert.equal(made.ok, true, JSON.stringify(made));
+      } finally {
+        await folder.end();
+      }
+    }
+  };
+  await land(typeof existing === "string" ? { "report-format.md": existing } : (existing ?? {}));
+  // `retired`: notes of `existing` a person retires before the run, so main holds them retired.
+  for (const file of retired) {
+    const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+    try {
+      const note = (await readSnapshot(folder.workspace)).notes.find((one) => one.file === file);
+      const text = (await mainTexts(folder.workspace, [file]))[file];
+      const made = await learningCommit(folder.workspace, { kind: "person", action: "retired", file, text: retire(text, "active"), ifMatch: `"${note.oid}"` });
+      assert.equal(made.ok, true, JSON.stringify(made));
+    } finally {
+      await folder.end();
+    }
+  }
+  // `skill`: a skill's SKILL.md main holds first, as an earlier run's merge landed it.
+  if (skill) {
+    const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+    try {
+      const made = await learningCommit(folder.workspace, { kind: "merge", runId: "run-old", reason: "learned a skill", graded: {}, files: [{ path: skill.file, text: skill.text }] });
+      assert.equal(made.ok, true, JSON.stringify(made));
+    } finally {
+      await folder.end();
+    }
+  }
+  const seed = (await seedOf(data, "agent-1")).sha;
+  // `committed`: run-1's merge landing on main while it is graded (these files), as a learning run that committed and
+  // went down before it recorded its end leaves it for its resume: graded, and its own merge already on main.
+  const commitFirst = async () => {
+    if (!committed) return;
+    const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+    try {
+      const made = await learningCommit(folder.workspace, { kind: "merge", runId: "run-1", reason: "first attempt", graded: {}, files: committed });
+      assert.equal(made.ok, true, JSON.stringify(made));
+      // `edited`: notes a person edits on main after that commit, before the resume reads it.
+      for (const [file, text] of Object.entries(edited)) {
+        const oid = (await readSnapshot(folder.workspace)).notes.find((note) => note.file === file).oid;
+        const edit = await learningCommit(folder.workspace, { kind: "person", action: "edited", file, text, ifMatch: `"${oid}"` });
+        assert.equal(edit.ok, true, JSON.stringify(edit));
+      }
+    } finally {
+      await folder.end();
+    }
+  };
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const proposal = { seed, notes: runNotes, files, asked: ["start every report with STATUS, at most 5 lines, end with Next:"] };
+  const kept = { state: "proposed", notes: runNotes.map(({ file }) => file), skills: files.map(({ file }) => file.split("/")[1]), workflows: [], proposal, detail: "Proposed." };
+  await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: { answer: "…" }, proposal: kept } }, { table: "learning_run", row: { id: "learn-1" } }] });
+  const claim = await store.claim("learn-1", "runner-a", { leaseMs: 60_000 });
+  const answer = given ?? verdictOf([{ file: NOTE.file, decision: "keep", general: true, why: "useful" }, { file: SKILL.file, decision: "note", general: true, why: "a rule for every report, whatever the job" }]);
+  // `race`: notes another run merges while this one is graded, after its read of main and before its merge.
+  const loop = learningLoopFactory({ store, data, ask: async () => (await land(race), await commitFirst(), { text: answer, usd: 0 }) })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
+  const end = await loop.start(claim);
+  const entries = await journalEntries(store.journal(claim), BACKGROUND_CONTEXT);
+  const words = entries.find((entry) => entry.kind === KINDS.learningMerged || entry.kind === KINDS.learningDropped)?.data.detail;
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    const snapshot = await readSnapshot(folder.workspace);
+    const notes = await mainTexts(folder.workspace, snapshot.notes.map(({ file }) => file));
+    return { end, notes, skills: snapshot.skills, words, learning: await runLearningEnd(store, "run-1") };
+  } finally {
+    await folder.end();
+  }
+}
+
+test("a learning run whose grader re-files the skill writes the note to the folder beside the run's other note, and no skill", async (t) => {
+  const { end, notes, skills, words } = await refileRun(t);
+  assert.deepEqual(end, { state: "ended" });
+  assert.deepEqual(Object.keys(notes).sort(), ["report-format.md", "retries.md"], "the rule is a note");
+  assert.equal(notes["report-format.md"], skillAsNote(SKILL.file, SKILL.text).text);
+  assert.deepEqual(skills, [], "and no skill");
+  assert.match(words, /Learned 2 notes/);
+});
+
+test("a re-filed rule main already holds the same is no change: dropped as a duplicate, never said, and the run's other note merges", async (t) => {
+  const same = skillAsNote(SKILL.file, SKILL.text).text;
+  const { end, notes, skills, words } = await refileRun(t, { existing: same });
+  assert.deepEqual(end, { state: "ended" }, "the run never fails on it");
+  assert.equal(notes["report-format.md"], same, "main's note as it was");
+  assert.ok(notes["retries.md"], "the run's other note merged");
+  assert.deepEqual(skills, []);
+  assert.equal(words, "Learned: Retries", "nothing said of the duplicate");
+});
+
+test("a re-filed rule whose note name main holds with other text is dropped alone, saying so; main's note stands and the run's other note merges", async (t) => {
+  const other = "---\nname: Report format\ndescription: How a report is laid out\ntype: feedback\n---\nOpen every report with a summary line.\n";
+  const { end, notes, skills, words } = await refileRun(t, { existing: other });
+  assert.deepEqual(end, { state: "ended" }, "the run never fails on it");
+  assert.equal(notes["report-format.md"], other, "never written over");
+  assert.ok(notes["retries.md"], "the run's other note merged");
+  assert.deepEqual(skills, []);
+  assert.match(words, /^Learned: Retries\. Not kept: A note named report-format was added since this run started, or was there already; this one wasn't kept\.$/);
+});
+
+/** A run's new note named like one another run merged meanwhile: check-units.md, with `body`. */
+const UNITS = (body, extra = "") => ({ file: "check-units.md", text: `---\nname: Check units\ndescription: Convert amounts to one unit first\ntype: feedback\n${extra}---\n${body}\n` });
+const KEEP_BOTH = (files) => verdictOf(files.map((file) => ({ file, decision: "keep", general: true, why: "useful" })));
+
+test("a new note another run merged meanwhile by the same name and text is no change: dropped unsaid, and the run's other note merges", async (t) => {
+  const units = UNITS("Convert every amount to cents before comparing.");
+  const { end, notes, words } = await refileRun(t, { race: { [units.file]: units.text }, notes: [units, NOTE], files: [], answer: KEEP_BOTH([units.file, NOTE.file]) });
+  assert.deepEqual(end, { state: "ended" }, "never a failed learning run");
+  assert.equal(notes[units.file], units.text);
+  assert.ok(notes["retries.md"], "the other note merged");
+  assert.equal(words, "Learned: Retries");
+});
+
+test("a new note whose name another run merged meanwhile with other text is dropped alone, saying so; main's note stands and the run's other note merges", async (t) => {
+  const theirs = UNITS("Convert every amount to cents before comparing.");
+  const ours = UNITS("Convert every amount to dollars before comparing.");
+  const { end, notes, words } = await refileRun(t, { race: { [theirs.file]: theirs.text }, notes: [ours, NOTE], files: [], answer: KEEP_BOTH([ours.file, NOTE.file]) });
+  assert.deepEqual(end, { state: "ended" }, "never a failed learning run");
+  assert.equal(notes[theirs.file], theirs.text, "never written over");
+  assert.ok(notes["retries.md"], "the other note merged");
+  assert.match(words, /^Learned: Retries\. Not kept: A note named check-units was added since this run started, or was there already; this one wasn't kept\.$/);
+});
+
+test("takenOnMain and the merge: a kept note that supersedes the note of its own name, which main holds, is a modification written over it; one that does not is dropped alone; the same text is dropped unsaid", async (t) => {
+  const theirs = UNITS("Convert every amount to cents before comparing.");
+  const ours = UNITS("Convert every amount to cents, rounding half up, before comparing.", "supersedes: [check-units.md]\n");
+  const verdict = parseVerdict(KEEP_BOTH([ours.file, NOTE.file]), [ours, NOTE]);
+  const settled = takenOnMain({ notes: [ours, NOTE] }, verdict, { [ours.file]: theirs.text });
+  assert.deepEqual([settled.verdict.merge, settled.replace, settled.verdict.items.map((item) => item.keep)], [true, [ours.file], [true, true]]);
+  const other = takenOnMain({ notes: [UNITS("Dollars."), NOTE] }, parseVerdict(KEEP_BOTH([ours.file, NOTE.file]), [UNITS("Dollars."), NOTE]), { [ours.file]: theirs.text });
+  assert.deepEqual([other.replace, other.verdict.items.map((item) => item.keep), other.verdict.items[0].why], [[], [false, true], NOTE_NAME_TAKEN("check-units")]);
+  const same = takenOnMain({ notes: [theirs, NOTE] }, parseVerdict(KEEP_BOTH([theirs.file, NOTE.file]), [theirs, NOTE]), { [theirs.file]: theirs.text });
+  assert.equal(same.verdict.items[0].why, SAME_NOTE);
+  // The merge takes it as a modification: written over main's note, never refused as exists.
+  const data = mkdtempSync(join(tmpdir(), "learn-refile-replace-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await seedOf(data, "agent-1");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    assert.equal((await learningCommit(folder.workspace, { kind: "person", action: "created", file: theirs.file, text: theirs.text, ifMatch: null })).ok, true);
+    const change = mergeChangeOf("run-9", keptOf({ seed: "s", notes: [ours, NOTE], files: [] }, settled.verdict), settled.verdict, settled.graded);
+    const merged = await learningCommit(folder.workspace, { ...change, replace: settled.replace });
+    assert.equal(merged.ok, true, JSON.stringify(merged));
+    assert.match((await mainTexts(folder.workspace, [ours.file]))[ours.file], /rounding half up/);
+  } finally {
+    await folder.end();
+  }
+});
+
+/** A note named `name` (its file `<slug>.md`) whose body is `body`. */
+const noteNamed = (slug, name, body, extra = "") => ({ file: `${slug}.md`, text: `---\nname: ${name}\ndescription: ${name}, as a rule\ntype: feedback\n${extra}---\n${body}\n` });
+
+test("ruleOf: a note's rule is its body alone, whitespace and case set aside; nothing near is the same", () => {
+  assert.equal(ruleOf("Convert every amount\n to   CENTS first."), ruleOf("convert every amount to cents first."));
+  assert.notEqual(ruleOf("Convert every amount to cents first."), ruleOf("Convert every amount to cents, first."));
+});
+
+test("the checks: a new note whose rule an active note of the seed holds, under another name, is a duplicate; of two new notes the same, the first passes; one that supersedes the note it repeats is no duplicate", () => {
+  const active = noteNamed("units", "Units", "Convert every amount to cents first.");
+  const base = { files: ["MEMORY.md", active.file], active: [parseNoteFile(active.file, active.text)], rules: new Map([[ruleOf("Convert every amount to cents first."), active.file]]) };
+  const change = ({ file, text }) => ({ path: file, status: "added", mode: "100644", bytes: Buffer.from(text) });
+  const again = noteNamed("check-units", "Check units", "convert every amount  to CENTS first.");
+  const one = checkProposal({ base, changes: [change(again)] });
+  assert.deepEqual(one.problems.map(({ rule, path, detail }) => [rule, path, detail]), [["duplicate", again.file, "it says what units.md says"]]);
+  const first = noteNamed("first", "First", "Retry a flaky fetch twice.");
+  const second = noteNamed("second", "Second", "retry a flaky fetch twice.");
+  const two = checkProposal({ base, changes: [change(first), change(second)] });
+  assert.deepEqual(two.problems.map(({ rule, path }) => [rule, path]), [["duplicate", second.file]]);
+  const update = noteNamed("units-v2", "Units", "Convert every amount to cents first.", "supersedes: [units.md]\n");
+  assert.deepEqual(checkProposal({ base, changes: [change(update)] }).problems, []);
+});
+
+test("the merge: a kept note whose rule main's active note holds under another name is dropped unsaid, and the run's other note merges", async (t) => {
+  const units = noteNamed("units", "Units", "Convert every amount to cents first.");
+  const again = noteNamed("check-units", "Check units", "convert every amount  to CENTS first.");
+  const { end, notes, words } = await refileRun(t, { existing: { [units.file]: units.text }, notes: [again, NOTE], files: [], answer: KEEP_BOTH([again.file, NOTE.file]) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(notes[again.file], undefined, "not kept under its other name");
+  assert.equal(notes[units.file], units.text);
+  assert.ok(notes["retries.md"], "the other note merged");
+  assert.equal(words, "Learned: Retries");
+});
+
+test("the merge: of two kept notes of one rule, the first is kept; a skill re-filed as a note of a rule main holds is a duplicate too", async (t) => {
+  const first = noteNamed("first", "First", "Start every report with STATUS, at most 5 lines, and end it with Next:.");
+  const second = noteNamed("second", "Second", "start every report with status, at most 5 lines, and end it with next:.");
+  const { end, notes, words } = await refileRun(t, { notes: [first, second, NOTE], files: [SKILL], answer: verdictOf([...[first, second, NOTE].map(({ file }) => ({ file, decision: "keep", general: true, why: "useful" })), { file: SKILL.file, decision: "note", general: true, why: "a rule for every report" }]) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.ok(notes[first.file], "the first kept");
+  assert.equal(notes[second.file], undefined, "the second, the same rule, not kept");
+  assert.equal(notes["report-format.md"], undefined, "the skill's rule, the same, not kept as a note again");
+  assert.ok(notes["retries.md"]);
+  assert.equal(words, "Learned 2 notes: First; Retries");
+});
+
+// ---- #2256 review ----------------------------------------------------------------------------------------------------
+
+test("a run's note and a skill re-filed as a note of the same file: one is written, and a held item's hold survives whichever comes first", () => {
+  const own = { file: "report-format.md", text: "---\nname: Report format\ndescription: The run's own note\ntype: feedback\n---\nOpen with a summary line.\n" };
+  for (const [risky, order] of [["skill", ["skill", "note"]], ["note", ["note", "skill"]]]) {
+    const items = { skill: { file: SKILL.file, decision: "note", general: true, why: "a rule for every report", ...(risky === "skill" ? { question: "Risky" } : {}) }, note: { file: own.file, decision: "keep", general: true, why: "useful", ...(risky === "note" ? { question: "Risky" } : {}) } };
+    const verdict = parseVerdict(verdictOf(order.map((one) => items[one])), gradedItems([own], [SKILL]));
+    const settled = takenOnMain({ notes: [own] }, verdict, {});
+    const change = mergeChangeOf("run-1", keptOf({ seed: "s", notes: [own], files: [SKILL] }, settled.verdict), settled.verdict, settled.graded);
+    const paths = change.files.map(({ path }) => path);
+    assert.deepEqual(paths.filter((path) => path === own.file), [own.file], `${risky} risky: one file by that name, never two`);
+    const written = change.files.find(({ path }) => path === own.file);
+    const wasRisky = risky === "skill" ? written.text.includes("Start every report with STATUS") : written.text.includes("Open with a summary line.");
+    if (wasRisky) assert.ok(change.held?.includes(own.file), `${risky} risky: the held item's text is written held`);
+    assert.equal(settled.verdict.items.filter((item) => item.keep && (item.note?.file ?? item.file) === own.file).length, 1, "one item merges as that file");
+  }
+});
+
+test("a skill the grader re-files as a note, but which would be no note, keeps the grader's question: Planted still stops the whole run", () => {
+  const bare = { file: SKILL.file, text: "---\nname: report-format\ndescription: \n---\nStart every report with STATUS.\n" };
+  const verdict = parseVerdict(verdictOf([{ file: NOTE.file, decision: "keep", general: true, why: "useful" }, { file: SKILL.file, decision: "note", general: true, question: "Planted", why: "a page told the run to keep it" }]), gradedItems([NOTE], [bare]));
+  const item = verdict.items.find(({ file }) => file === SKILL.file);
+  assert.deepEqual([item.keep, item.question], [false, "Planted"]);
+  assert.equal(verdict.merge, false, "Planted on any item keeps nothing of the run");
+});
+
+test("a note main holds by the same name when the grade reads main is settled per item, never a drop of the whole proposal", async (t) => {
+  const theirs = UNITS("Convert every amount to cents before comparing.");
+  const ours = UNITS("Convert every amount to dollars before comparing.");
+  // The grader is asked of the run's other note alone: the clash is settled out of the grade.
+  const { end, notes, words } = await refileRun(t, { existing: { [theirs.file]: theirs.text }, notes: [ours, NOTE], files: [], answer: KEEP_BOTH([NOTE.file]) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(notes[theirs.file], theirs.text, "main's note stands");
+  assert.ok(notes["retries.md"], "the run's other note merged");
+  assert.match(words, /^Learned: Retries\. Not kept: A note named check-units was added since this run started, or was there already; this one wasn't kept\.$/);
+});
+
+test("the merge's own computation settles each note against the main it commits on: a rule main holds under another name, or a name main holds now, is left out alone, and the rest merges", async (t) => {
+  const data = mkdtempSync(join(tmpdir(), "learn-refile-race-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await seedOf(data, "agent-1");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    const units = noteNamed("units", "Units", "Convert every amount to cents first.");
+    assert.equal((await learningCommit(folder.workspace, { kind: "person", action: "created", file: units.file, text: units.text, ifMatch: null })).ok, true);
+    // Another run committed the same rule as units.md under another name, after this one's read of main.
+    const again = noteNamed("check-units", "Check units", "convert every amount  to CENTS first.");
+    const one = await learningCommit(folder.workspace, { kind: "merge", runId: "run-a", reason: "r", graded: {}, files: [{ path: again.file, text: again.text }, { path: NOTE.file, text: NOTE.text }] });
+    assert.equal(one.ok, true, JSON.stringify(one));
+    let main = await mainTexts(folder.workspace, [again.file, NOTE.file, units.file]);
+    assert.deepEqual(Object.keys(main).sort(), [NOTE.file, units.file], "the copy of units.md's rule is left out; the other note merged");
+    // A note by a name main came to hold after this run's read: left out alone, never `exists` for the whole run.
+    const theirs = noteNamed("format", "Format", "Open with a summary line.");
+    assert.equal((await learningCommit(folder.workspace, { kind: "person", action: "created", file: theirs.file, text: theirs.text, ifMatch: null })).ok, true);
+    const ours = noteNamed("format", "Format", "Open with a status line.");
+    const other = noteNamed("budget", "Budget", "Stay under the cap.");
+    const two = await learningCommit(folder.workspace, { kind: "merge", runId: "run-b", reason: "r", graded: {}, files: [{ path: ours.file, text: ours.text }, { path: other.file, text: other.text }] });
+    assert.equal(two.ok, true, JSON.stringify(two));
+    main = await mainTexts(folder.workspace, [ours.file, other.file]);
+    assert.equal(main[ours.file], theirs.text, "never written over");
+    assert.ok(main[other.file], "the rest merged");
+  } finally {
+    await folder.end();
+  }
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62ayl3): a copy of a main note's rule, then an update of that note: the update holds the rule.
+test("the merge: a copy of a main note's rule, then an update of that note: the update merges, the copy is left out", async (t) => {
+  const data = mkdtempSync(join(tmpdir(), "learn-refile-update-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await seedOf(data, "agent-1");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    const units = noteNamed("units", "Units", "Convert every amount to cents first.");
+    assert.equal((await learningCommit(folder.workspace, { kind: "person", action: "created", file: units.file, text: units.text, ifMatch: null })).ok, true);
+    const copy = noteNamed("copy", "Copy", "convert every amount  to CENTS first.");
+    const update = { file: "update.md", text: noteNamed("update", "Update", "Convert every amount to cents first.").text.replace("---\n", `---\nsupersedes: [${units.file}]\n`) };
+    const done = await learningCommit(folder.workspace, { kind: "merge", runId: "run-u", reason: "r", graded: {}, files: [{ path: copy.file, text: copy.text }, { path: update.file, text: update.text }] });
+    assert.equal(done.ok, true, JSON.stringify(done));
+    const main = await mainTexts(folder.workspace, [copy.file, update.file]);
+    assert.deepEqual(Object.keys(main), [update.file], "the update merged, the copy did not");
+  } finally {
+    await folder.end();
+  }
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62n9cX): the skill retires only while an active note holds its rule as the merge commits.
+test("the merge retires a re-filed skill only while an active note holds its rule: a holder a person retired since the grade leaves the skill active", async (t) => {
+  const data = mkdtempSync(join(tmpdir(), "learn-refile-retire-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await seedOf(data, "agent-1");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    assert.equal((await learningCommit(folder.workspace, { kind: "merge", runId: "run-old", reason: "learned a skill", graded: {}, files: [{ path: SKILL.file, text: SKILL.text }] })).ok, true);
+    const rule = ruleOf(parseNoteFile("report-format.md", skillAsNote(SKILL.file, SKILL.text).text).body);
+    const retire = [{ skill: SKILL.file, note: "report-format.md", rule }];
+    const status = async () => (await readSnapshot(folder.workspace)).skills.map(({ name, status: one }) => [name, one]);
+    // No active note holds the rule (the one that did was retired after the grade read main): the skill stays.
+    const one = await learningCommit(folder.workspace, { kind: "merge", runId: "run-a", reason: "r", graded: {}, files: [{ path: NOTE.file, text: NOTE.text }], retire });
+    assert.equal(one.ok, true, JSON.stringify(one));
+    assert.deepEqual(await status(), [["report-format", "active"]], "the rule has no active note: its skill stays");
+    // An active note holds it: the skill retires in the same write.
+    const holder = skillAsNote(SKILL.file, SKILL.text);
+    assert.equal((await learningCommit(folder.workspace, { kind: "person", action: "created", file: holder.file, text: holder.text, ifMatch: null })).ok, true);
+    const other = noteNamed("budget", "Budget", "Stay under the cap.");
+    const two = await learningCommit(folder.workspace, { kind: "merge", runId: "run-b", reason: "r", graded: {}, files: [{ path: other.file, text: other.text }], retire });
+    assert.equal(two.ok, true, JSON.stringify(two));
+    assert.deepEqual(await status(), [["report-format", "retired"]], "a note holds the rule: the skill retires");
+    // A replacement saved pending in the merge retires its skill too: the rule is the note's once the owner approves.
+    const again = { file: SKILL.file.replace("report-format", "other-format"), text: SKILL.text.replace("report-format", "other-format").replace("Start every report", "Begin every report") };
+    assert.equal((await learningCommit(folder.workspace, { kind: "merge", runId: "run-c", reason: "r", graded: {}, files: [{ path: again.file, text: again.text }] })).ok, true);
+    const pending = skillAsNote(again.file, again.text);
+    const three = await learningCommit(folder.workspace, { kind: "merge", runId: "run-d", reason: "r", graded: {}, files: [{ path: pending.file, text: pending.text }], held: [pending.file], retire: [{ skill: again.file, note: pending.file, rule: ruleOf(parseNoteFile(pending.file, pending.text).body) }] });
+    assert.equal(three.ok, true, JSON.stringify(three));
+    assert.deepEqual((await status()).find(([name]) => name === "other-format"), ["other-format", "retired"], "a pending replacement retires its skill");
+  } finally {
+    await folder.end();
+  }
+});
+
+test("re-filing an update to a skill main holds retires that skill in the same write: no old SKILL.md stays active beside the note", async (t) => {
+  const old = { file: SKILL.file, text: "---\nname: report-format\ndescription: How every report is laid out\n---\nStart every report with STATUS.\n" };
+  const { end, notes, skills } = await refileRun(t, { skill: old });
+  assert.deepEqual(end, { state: "ended" });
+  assert.ok(notes["report-format.md"], "the rule is a note");
+  assert.deepEqual(skills.map(({ name, status }) => [name, status]), [["report-format", "retired"]], "the old skill is retired, not left active");
+});
+
+test("a skill re-filed as a note stays within a run's note cap, so the host's origin and pending lines never take it past the stored cap", () => {
+  const head = skillAsNote(SKILL.file, "---\nname: report-format\ndescription: How every report is laid out\n---\nx\n").text;
+  const over = CAPS.runNote + 10 - Buffer.byteLength(head) + 1;
+  const text = `---\nname: report-format\ndescription: How every report is laid out\n---\n${"y".repeat(over)}\n`;
+  const size = Buffer.byteLength(head) - 1 + over;
+  assert.ok(size > CAPS.runNote && size <= CAPS.note, `a note between the caps (${size})`);
+  assert.equal(skillAsNote(SKILL.file, text), undefined, "over the run's cap: no note");
+});
+
+test("a note the merge leaves out is no note the run learned: its learning end lists it neither as learned nor as waiting, and its item says it was left out", async (t) => {
+  // The merge's own settle leaves check-units.md out (units.md, active on main, holds its rule); a re-filed rule whose name
+  // main holds with other text is left out before the commit (takenOnMain). Neither is learned.
+  const units = noteNamed("units", "Units", "Convert every amount to cents first.");
+  const again = noteNamed("check-units", "Check units", "convert every amount  to CENTS first.");
+  const other = "---\nname: Report format\ndescription: How a report is laid out\ntype: feedback\n---\nOpen every report with a summary line.\n";
+  const answer = verdictOf([{ file: again.file, decision: "keep", general: true, why: "useful" }, { file: NOTE.file, decision: "keep", general: true, why: "useful" }, { file: SKILL.file, decision: "note", general: true, question: "Risky", why: "a rule for every report" }]);
+  const { end, learning } = await refileRun(t, { existing: { [units.file]: units.text, "report-format.md": other }, notes: [again, NOTE], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(learning.state, "merged");
+  assert.deepEqual(learning.learned.map(({ file }) => file), ["retries.md"], "only the note written is learned");
+  assert.equal(learning.pending, undefined, "the held re-filed rule was left out: nothing waits");
+  const item = (file) => learning.verdict.items.find((one) => one.file === file);
+  assert.deepEqual([item(again.file).keep, item(again.file).why], [false, SAME_NOTE], "left out, as the same rule");
+  assert.deepEqual([item(SKILL.file).keep, item(SKILL.file).why], [false, NOTE_NAME_TAKEN("report-format")], "left out, its name taken");
+});
+
+test("a merge already on main (a resume after its commit) reads the same: its left-out note is neither learned nor waiting, and says why", async (t) => {
+  const units = noteNamed("units", "Units", "Convert every amount to cents first.");
+  const again = noteNamed("check-units", "Check units", "convert every amount  to CENTS first.");
+  // The first attempt's commit wrote retries.md alone (check-units.md left out); the resume meets that merge.
+  const { end, learning, words, notes } = await refileRun(t, { existing: { [units.file]: units.text }, committed: [{ path: NOTE.file, text: NOTE.text }], notes: [again, NOTE], files: [], answer: KEEP_BOTH([again.file, NOTE.file]) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(notes[again.file], undefined);
+  assert.deepEqual(learning.learned.map(({ file }) => file), ["retries.md"]);
+  assert.equal(learning.pending, undefined);
+  assert.deepEqual([learning.verdict.items.find(({ file }) => file === again.file).keep, learning.verdict.items.find(({ file }) => file === again.file).why], [false, SAME_NOTE]);
+  assert.equal(words, "Learned: Retries", "the resumed merge says what the first would have");
+});
+
+// #2256 review, P1: a merge on main whose end was never recorded (the runner stopped between the commit and the record).
+// Its resume reads the run's own notes on main; they are its merge's, never "already there", so they are learned.
+test("a note-only merge committed before its end was recorded (a crash between them) resumes merged: its notes learned, never dropped as already there", async (t) => {
+  const { end, learning, words, notes } = await refileRun(t, { committed: [{ path: NOTE.file, text: NOTE.text }], notes: [NOTE], files: [], answer: verdictOf([{ file: NOTE.file, decision: "keep", general: true, why: "useful" }]) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.ok(notes[NOTE.file], "the first attempt's note is on main");
+  assert.equal(learning.state, "merged", JSON.stringify(learning));
+  assert.deepEqual(learning.learned.map(({ file }) => file), ["retries.md"]);
+  assert.equal(words, "Learned: Retries");
+});
+
+// #2256 review, P2: a skill re-filed as a note counts against a run's new-note cap, as the run's own notes do; one past it
+// is left out alone, saying so, never merged as a ninth note.
+test("a skill re-filed as a note counts against the new-note cap: past it, that item alone is left out, saying so", () => {
+  const own = Array.from({ length: CAPS.newNotes }, (_, i) => noteNamed(`rule-${i}`, `Rule ${i}`, `Rule number ${i} applies.`));
+  const keepAll = verdictOf([...own.map(({ file }) => ({ file, decision: "keep", general: true, why: "useful" })), { file: SKILL.file, decision: "note", general: true, why: "a rule for every report" }]);
+  const full = parseVerdict(keepAll, [...own, SKILL]);
+  const refiled = full.items.find(({ file }) => file === SKILL.file);
+  assert.deepEqual([refiled.keep, refiled.why, refiled.note], [false, NOTES_FULL, undefined], JSON.stringify(refiled));
+  assert.equal(full.merge, true, "the run's own notes still merge");
+  assert.equal(keptOf({ seed: "s1", notes: own, files: [SKILL] }, full).notes.length, CAPS.newNotes);
+  // One of its own notes dropped: the re-filed rule fits.
+  const roomy = parseVerdict(verdictOf([...own.map(({ file }, i) => ({ file, decision: i ? "keep" : "drop", general: true, question: "Useless", why: "useful" })), { file: SKILL.file, decision: "note", general: true, why: "a rule for every report" }]), [...own, SKILL]);
+  assert.equal(roomy.items.find(({ file }) => file === SKILL.file).note?.file, "report-format.md");
+  assert.equal(keptOf({ seed: "s1", notes: own, files: [SKILL] }, roomy).notes.length, CAPS.newNotes);
+});
+
+// #2256 review, P2: a merged run's words, rebuilt from its record's verdict (a read's detail), leave out a rule main
+// already held (SAME_NOTE), as the merge's own words do.
+test("a merged run's words rebuilt from its verdict never say a rule main already held", () => {
+  const learning = { state: "merged", reason: null, detail: null, learned: [{ file: "retries.md", name: "Retries", supersedes: [] }], verdict: { merge: true, reason: "ok", items: [{ file: "retries.md", keep: true, why: "useful" }, { file: SKILL.file, keep: false, question: "Duplicate", why: SAME_NOTE }] } };
+  assert.equal(wordsOf(learning, (text) => text), "Learned: Retries");
+});
+
+// #2256 review, P2: a resume after the commit settles a file the run's own note and a re-filed skill share as the first
+// attempt did (one file is one item's): the run's note stands, the skill is left out, and nothing is listed twice or
+// marked held by the skill's hold.
+test("a resumed merge keeps one item per file: a re-filed skill whose note file the run's own note takes is left out, and the note is not held", async (t) => {
+  const own = "---\nname: Report format\ndescription: How a report opens\ntype: feedback\n---\nOpen every report with a summary line.\n";
+  const answer = verdictOf([{ file: "report-format.md", decision: "keep", general: true, why: "useful" }, { file: SKILL.file, decision: "note", general: true, question: "Risky", why: "a rule for every report" }]);
+  const { end, learning } = await refileRun(t, { committed: [{ path: "report-format.md", text: own }], notes: [{ file: "report-format.md", text: own }], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(learning.state, "merged", JSON.stringify(learning));
+  assert.deepEqual(learning.learned.map(({ file }) => file), ["report-format.md"], JSON.stringify(learning));
+  assert.equal(learning.pending, undefined, "the run's own note is not held by the skill's hold");
+  const skill = learning.verdict.items.find(({ file }) => file === SKILL.file);
+  assert.deepEqual([skill.keep, skill.why], [false, NOTE_NAME_IN_RUN("report-format")]);
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62B7CR): a note main holds by the same name with the same rule, in other front matter,
+// case or spacing (another run merged it while this one was graded), is no change, dropped unsaid, as readMain and the
+// merge's own settle read it (notes.ts ruleOf), never a name clash.
+test("takenOnMain reads the same rule under other front matter, case or spacing as the same note: dropped unsaid, never a name clash", () => {
+  const ours = UNITS("Convert every amount to cents before comparing.");
+  const theirs = { file: ours.file, text: "---\nname: Check units\ndescription: Cents first\ntype: reference\n---\nconvert every amount  to CENTS before comparing.\n" };
+  const settled = takenOnMain({ notes: [ours, NOTE] }, parseVerdict(KEEP_BOTH([ours.file, NOTE.file]), [ours, NOTE]), { [ours.file]: theirs.text });
+  assert.deepEqual([settled.verdict.items[0].keep, settled.verdict.items[0].why, settled.replace], [false, SAME_NOTE, []]);
+  assert.equal(settled.verdict.items[1].keep, true, "the other note merges");
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62B7CQ): a resume reads which item's text the merge saved, not only which paths it
+// changed. The run's own note supersedes report-format.md (the merge marks it superseded, a changed path), and a skill
+// re-filed as report-format.md was left out by the first attempt (main's name, another rule): never revived as learned.
+test("a resumed merge reads each note's text on main: a changed path that holds another rule (a note marked superseded) saves no re-filed skill", async (t) => {
+  const old = "---\nname: Report format\ndescription: How a report opens\ntype: feedback\n---\nOpen every report with a summary line.\n";
+  const v2 = noteNamed("report-format-v2", "Report format v2", "Open every report with the status, then a summary line.", "supersedes: [report-format.md]\n");
+  const answer = verdictOf([{ file: v2.file, decision: "keep", general: true, why: "useful" }, { file: SKILL.file, decision: "note", general: true, why: "a rule for every report" }]);
+  const { end, learning, notes } = await refileRun(t, { existing: { "report-format.md": old }, committed: [{ path: v2.file, text: v2.text }], notes: [v2], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.match(notes["report-format.md"], /^status: superseded$/m, "the first attempt marked the old note superseded");
+  assert.equal(learning.state, "merged", JSON.stringify(learning));
+  assert.deepEqual(learning.learned.map(({ file }) => file), [v2.file], JSON.stringify(learning));
+  assert.equal(learning.pending, undefined);
+  const skill = learning.verdict.items.find(({ file }) => file === SKILL.file);
+  assert.deepEqual([skill.keep, skill.why], [false, NOTE_NAME_TAKEN("report-format")]);
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62DEyt): a note reserves its rule only once it passes its other checks, its own merge
+// onto the base among them. a.md supersedes a note the folder does not hold (refused at the merge check); b.md says the
+// same rule and supersedes nothing: b.md is no duplicate of a note that is refused, and the checks name a.md alone.
+test("the checks: a note refused for what it supersedes reserves no rule, so a valid copy of its rule is no duplicate", () => {
+  const base = { files: ["MEMORY.md"], active: [], rules: new Map() };
+  const change = ({ file, text }) => ({ path: file, status: "added", mode: "100644", bytes: Buffer.from(text) });
+  const a = noteNamed("a", "A", "Retry a flaky fetch twice.", "supersedes: [missing.md]\n");
+  const b = noteNamed("b", "B", "Retry a flaky fetch twice.");
+  const checked = checkProposal({ base, changes: [change(a), change(b)] });
+  assert.deepEqual(checked.problems.map(({ rule, path }) => [rule, path]), [["supersedes", a.file]], JSON.stringify(checked.problems));
+  const alone = checkProposal({ base, changes: [change(b)] });
+  assert.deepEqual([alone.ok, alone.notes.map(({ file }) => file)], [true, [b.file]], "with a.md left out, b.md passes");
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62DYhZ): a re-filed skill alone, whose note main already holds the same: no new item is
+// left to merge, but the skill main holds is still retired, so the old skill never stays served beside the note.
+test("a re-filed skill alone whose note main already holds the same still retires the old skill", async (t) => {
+  const same = skillAsNote(SKILL.file, SKILL.text).text;
+  const answer = verdictOf([{ file: SKILL.file, decision: "note", general: true, why: "a rule for every report" }]);
+  const { end, notes, skills, learning } = await refileRun(t, { existing: same, skill: SKILL, notes: [], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(notes["report-format.md"], same, "the note stands as it was");
+  assert.deepEqual(skills.map(({ name, status }) => [name, status]), [["report-format", "retired"]], "the old skill is retired, not left active");
+  assert.notEqual(learning?.state, undefined);
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62DgJ_): at a full index, which note repeats which is settled before the index is
+// counted: the repeat is left out, and the rest fits (a.md adds a line, b.md replaces two with one).
+test("the checks at a full index: a repeat is left out before the index is counted, and the other notes fit", () => {
+  const actives = Array.from({ length: 200 }, (_, i) => noteNamed(`old-${i}`, `Old ${i}`, `Old rule number ${i}.`));
+  const base = { files: ["MEMORY.md", ...actives.map(({ file }) => file)], active: actives.map(({ file, text }) => parseNoteFile(file, text)), rules: new Map(actives.map(({ file }, i) => [ruleOf(`Old rule number ${i}.`), file])) };
+  const change = ({ file, text }) => ({ path: file, status: "added", mode: "100644", bytes: Buffer.from(text) });
+  const a = noteNamed("a", "A", "A brand new rule.");
+  const b = noteNamed("b", "B", "Old rules zero and one, together.", "supersedes: [old-0.md, old-1.md]\n");
+  const c = noteNamed("c", "C", "a brand  NEW rule.");
+  const checked = checkProposal({ base, changes: [change(a), change(b), change(c)] });
+  assert.deepEqual(checked.problems.map(({ rule, path }) => [rule, path]), [["duplicate", c.file]], JSON.stringify(checked.problems));
+});
+
+// #2335 review (PRRT_kwDOUmdVMs62DtnX, on #2256's check): c.md and a.md both supersede old.md, b.md repeats a.md. The
+// merge's check refuses a.md (old.md superseded twice), so a.md holds no rule and b.md, a valid copy, is kept.
+test("the checks: a note the merge's shared checks refuse holds no rule, so its valid copy is kept", () => {
+  const old = noteNamed("old", "Old", "The old rule.");
+  const base = { files: ["MEMORY.md", old.file], active: [parseNoteFile(old.file, old.text)], rules: new Map([[ruleOf("The old rule."), old.file]]) };
+  const change = ({ file, text }) => ({ path: file, status: "added", mode: "100644", bytes: Buffer.from(text) });
+  const c = noteNamed("c", "C", "The newer rule, version C.", "supersedes: [old.md]\n");
+  const a = noteNamed("a", "A", "The newer rule, version A.", "supersedes: [old.md]\n");
+  const b = noteNamed("b", "B", "The newer rule, version A.");
+  const checked = checkProposal({ base, changes: [change(c), change(a), change(b)] });
+  assert.deepEqual(checked.problems.map(({ rule, path }) => [rule, path]), [["supersedes", a.file]], JSON.stringify(checked.problems));
+  const next = checkProposal({ base, changes: [change(c), change(b)] });
+  assert.deepEqual([next.ok, next.notes.map(({ file }) => file)], [true, [c.file, b.file]]);
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62FG35): a resume reads what this run's merge saved at its own commit, never main's text
+// now: a person's edit of the note after the commit (before the runner came back) never unsays what the run learned.
+test("a resumed merge reads each note as its own commit saved it: a person's edit on main since never unsays it", async (t) => {
+  const edited = "---\nname: Retries\ndescription: Retry a flaky fetch three times\ntype: feedback\n---\nRetry a flaky fetch three times, a person said.\n";
+  const { end, learning, words, notes } = await refileRun(t, { committed: [{ path: NOTE.file, text: NOTE.text }], edited: { [NOTE.file]: edited }, notes: [NOTE], files: [], answer: verdictOf([{ file: NOTE.file, decision: "keep", general: true, why: "useful" }]) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.match(notes[NOTE.file], /a person said/, "main holds the person's edit");
+  assert.equal(learning.state, "merged", JSON.stringify(learning));
+  assert.deepEqual(learning.learned.map(({ file }) => file), [NOTE.file], JSON.stringify(learning));
+  assert.equal(words, "Learned: Retries");
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62GnoZ, P1): a resume reads the kept notes alone at the run's merge commit, one read of
+// those paths, never the whole folder and its history: a big folder never keeps a resume parked.
+test("a resume reads only the kept notes' paths at the run's merge commit, never the whole folder or its log", async (t) => {
+  const data = mkdtempSync(join(tmpdir(), "learn-refile-merged-at-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await seedOf(data, "agent-1");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    const many = Array.from({ length: 60 }, (_, i) => ({ path: `other-${i}.md`, text: noteNamed(`other-${i}`, `Other ${i}`, `Other rule number ${i}.`).text }));
+    assert.equal((await learningCommit(folder.workspace, { kind: "merge", runId: "run-old", reason: "many", graded: {}, files: many })).ok, true);
+    assert.equal((await learningCommit(folder.workspace, { kind: "merge", runId: "run-1", reason: "first attempt", graded: {}, files: [{ path: NOTE.file, text: NOTE.text }] })).ok, true);
+    const ops = [];
+    folderTestHooks.exec = (argv) => ops.push(argv.slice(2));
+    t.after(() => void (folderTestHooks.exec = undefined));
+    const merge = await mergedAt(folder.workspace, "run-1", [NOTE.file, "not-there.md"]);
+    assert.deepEqual(Object.keys(merge.texts), [NOTE.file]);
+    assert.match(merge.texts[NOTE.file], /Retry a flaky fetch twice\./);
+    assert.equal(ops.some(([op]) => op === "read"), false, `no whole-folder read: ${JSON.stringify(ops)}`);
+    assert.ok(ops.length <= 1, `one read of the asked paths: ${JSON.stringify(ops)}`);
+  } finally {
+    await folder.end();
+  }
+});
+
+// #2335 review (PRRT_kwDOUmdVMs62RAsf, on #2256's code): a re-filed skill whose note main holds with the same rule is
+// retired only when that note is active. A note a person retired keeps the rule out of every run, so retiring the skill
+// too would leave the rule nowhere: the skill stays, and the re-filed note is left out as a name main holds.
+test("a re-filed skill whose same-rule note on main is retired is not retired: the rule never vanishes", async (t) => {
+  const same = skillAsNote(SKILL.file, SKILL.text).text;
+  const answer = verdictOf([{ file: SKILL.file, decision: "note", general: true, why: "a rule for every report" }]);
+  const { end, notes, skills } = await refileRun(t, { existing: same, retired: ["report-format.md"], skill: SKILL, notes: [], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.match(notes["report-format.md"], /^status: retired$/m, "main's note stays retired");
+  assert.deepEqual(skills.map(({ name, status }) => [name, status]), [["report-format", "active"]], "the skill is not retired: the rule stays served");
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62XH5h, P1): a rule is held only by a note that stays active after this merge. old.md
+// holds R; the run keeps a note of rule S that supersedes old.md, and a skill re-filed as a note of R under another
+// name. The re-filed note is no copy of a rule main keeps (old.md goes), so it is kept and the skill retired: R stays
+// served, by the re-filed note.
+const R_OLD = noteNamed("old-format", "Old format", "Start every report with STATUS, at most 5 lines, and end it with Next:.");
+const S_NEW = noteNamed("report-v2", "Report v2", "Open every report with a one-line summary.", "supersedes: [old-format.md]\n");
+
+test("the checks: a seed rule whose note this proposal supersedes is held by no one, so its copy under another name is kept", () => {
+  const base = { files: ["MEMORY.md", R_OLD.file], active: [parseNoteFile(R_OLD.file, R_OLD.text)], rules: new Map([[ruleOf("Start every report with STATUS, at most 5 lines, and end it with Next:."), R_OLD.file]]) };
+  const change = ({ file, text }) => ({ path: file, status: "added", mode: "100644", bytes: Buffer.from(text) });
+  const copy = noteNamed("report-format", "Report format", "start every report with STATUS, at most 5 lines, and end it with Next:.");
+  const checked = checkProposal({ base, changes: [change(S_NEW), change(copy)] });
+  assert.deepEqual(checked.problems, [], JSON.stringify(checked.problems));
+  assert.deepEqual(checked.notes.map(({ file }) => file), [S_NEW.file, copy.file]);
+});
+
+test("the merge: a rule whose note the merge supersedes is kept by its re-filed copy, and the skill retired: the rule is never left unserved", async (t) => {
+  const answer = verdictOf([{ file: S_NEW.file, decision: "keep", general: true, why: "useful" }, { file: SKILL.file, decision: "note", general: true, why: "a rule for every report" }]);
+  const { end, notes, skills, learning } = await refileRun(t, { existing: { [R_OLD.file]: R_OLD.text }, skill: SKILL, notes: [S_NEW], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.match(notes[R_OLD.file], /^status: superseded$/m, "old-format.md superseded by report-v2.md");
+  assert.ok(notes["report-format.md"], `the rule is served by the re-filed note: ${JSON.stringify(Object.keys(notes))}`);
+  assert.match(notes["report-format.md"], /Start every report with STATUS/);
+  assert.deepEqual(skills.map(({ name, status }) => [name, status]), [["report-format", "retired"]]);
+  assert.deepEqual(learning.learned.map(({ file }) => file).sort(), ["report-format.md", S_NEW.file].sort(), JSON.stringify(learning));
+});

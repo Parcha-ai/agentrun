@@ -27,8 +27,7 @@ async function failedRun(api, name, body, content) {
 
 const SAID = { responses: "Response incomplete: content_filter", completions: "Provider finish_reason: content_filter", anthropic: "The model refused to complete the request" };
 for (const [api, said] of Object.entries(SAID)) {
-  // SKIP (follow-up #2078): a content-filter stop fails the run in different words on the runner
-  test.skip(`pi: a provider's content filter (pi-ai's words on the ${api} API) fails the run moderated, in plain words; the Timeline keeps the provider's`, { timeout: 60_000 }, async (t) => {
+  test(`pi: a provider's content filter (pi-ai's words on the ${api} API) fails the run moderated, in plain words; the Timeline keeps the provider's`, { timeout: 60_000 }, async (t) => {
     const { api: call } = await serve(t);
     const { run, errors } = await failedRun(call, `filtered-${api}`, {}, `Stop on the content filter (${api}).`);
     assert.deepEqual([run.status, run.error?.code, run.error?.message, run.error?.retryable], ["failed", "moderated", WORDS, false], JSON.stringify(run.error));
@@ -37,8 +36,7 @@ for (const [api, said] of Object.entries(SAID)) {
 }
 
 for (const harness of ["claude-agent", "codex"]) {
-  // SKIP (follow-up #2078): a content-filter stop fails the run in different words on the runner
-  test.skip(`${harness}: a turn the harness ended on the provider's content filter fails the run moderated, in plain words`, { timeout: 60_000 }, async (t) => {
+  test(`${harness}: a turn the harness ended on the provider's content filter fails the run moderated, in plain words`, { timeout: 60_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const { run } = await failedRun(api, `filtered-${harness}`, { harness, instructions: `Fail with: ${FILTERED}` }, "What is 2 plus 2?");
     assert.deepEqual([run.status, run.error?.code, run.error?.message, run.error?.retryable], ["failed", "moderated", WORDS, false], JSON.stringify(run.error));
@@ -49,15 +47,14 @@ for (const harness of ["claude-agent", "codex"]) {
 function refusedStream() {
   const usage = { input_tokens: 12, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 };
   const events = [
-    ["message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: "claude-haiku-4-5", content: [], stop_reason: null, stop_sequence: null, usage } }],
+    ["message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: "claude-haiku-5-5", content: [], stop_reason: null, stop_sequence: null, usage } }],
     ["message_delta", { type: "message_delta", delta: { stop_reason: "refusal", stop_sequence: null }, usage }],
     ["message_stop", { type: "message_stop" }],
   ];
   return events.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join("");
 }
 
-// SKIP (follow-up #2078): a content-filter stop fails the run in different words on the runner
-test.skip("claude-agent on the Claude CLI: a provider that stops every answer on its content filter ends the run moderated, after one request", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("claude-agent on the Claude CLI: a provider that stops every answer on its content filter ends the run moderated, after one request", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   // The CLI handles a refusal its own way (a retry, a fallback model) and would ask for the refused answer again; the
   // session's model proxy reads the stop and the harness ends the turn at the first.
   const asked = [];
@@ -79,9 +76,9 @@ test.skip("claude-agent on the Claude CLI: a provider that stops every answer on
     Object.assign(process.env, saved);
   });
   delete process.env.AGENT_MODEL_BASE_URL;
-  Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}`, AGENT_MODEL: "anthropic/claude-haiku-4-5" });
+  Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}`, AGENT_MODEL: "anthropic/claude-haiku-5-5" });
   const { api } = await serve(t, { faux: undefined });
-  assert.equal((await api("POST", "/agents", agent("filtered-cli", { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("filtered-cli", { harness: "claude-agent", model: "anthropic/claude-haiku-5-5" }))).status, 201);
   const started = await api("POST", "/agents/filtered-cli/runs", { input: { content: "What is 2 plus 2?" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   // However the CLI ends it (failed, completed or waiting on the person), so a run that does not fail reads as such.

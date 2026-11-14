@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.37 (2026-11-13)
+
+- Every harness sees a desktop or a phone through one surface: the tools `computer_observe`, `computer_act`, `computer_screenshot` and `computer_script`, the same answers from a script, an MCP client or a tool call. Breaking: the `desktop_*` and `phone_*` tools are gone, replaced by the `computer_*` tools (a desktop's and a phone's alike, held to the `desktop` or `phone` setting), and the script API's `apps.open(id)` returns nothing; bind the app with `computer.app(id)`.
+  - `computer_script` runs JavaScript in an isolate in serve whose only binding is `computer` (no network, no keys, no timers); its types are `spec/computer/computer.d.ts`, generated with the tools' schemas by `scripts/generate-computer-surface.mjs` (`--check` in CI). A model reads them compactly (no comments, one line a declaration); `computer_act`'s schema types its steps with no words, and its description declares them as TypeScript.
+  - A script's `computer.shell` and `computer.files` are held to the run's tool settings as the `bash`, `write` and `read` tools are (a deny or a read-only bash policy refuses inside the script; a setting that asks refuses, since a script can't wait for a person), and a refused step throws in the script, so the steps after it never run. Without the ui group a scroll goes as wheel clicks (about 120 pixels each), which every driver takes.
+  - pi offers its code mode (`codemode`) beside its tools with a desktop or a phone, `computer` bound in its scripts; the call is held to the computer kind's setting.
+  - In Codex's code mode a script's call of a computer tool answers the tool's value as JSON, its images' data in it; any other tool answers its words and a line saying its images were not sent (in code mode an image reaches a script only as text). A call a script repeats after a restart, of a computer tool that completed, gets that same JSON again.
+  - agentrun-serve's `computerMcp` serves a run's computer tools to an MCP client, each answer with `structuredContent`.
+  - The desktop-computer and phone-computer skills teach the route: observe, act by ref, check, and one script for steps already known.
+- A web search on a GPT-6 model (gpt-6-luna, gpt-6.1-sol, gpt-6.1-terra) is booked at OpenAI's $0.01 a call, as on GPT-5. Before, its search had no known price. A pi run's native web_search on a GPT-6 model under any spend cap was refused before it was sent ("the size of the next model request's input is unknown, so the run's cap cannot be kept"). A Codex run with `webSearch: "live"`, or an uncapped pi run, booked an unknown cost for any response that searched.
+- A web_search setting of deny or ask now applies to a Claude Code or Codex run's own web search at its next search, including a run that started while it was allow. Before, the setting was read only when the run started, so a run that started with native search kept searching after the setting changed.
+  - Claude Code: each WebSearch asks the run's gate before it runs, as a host tool's call does. A deny refuses it in the gate's words. An ask parks the run on the person with nothing searched; once they allow it, the model's next search with the same query runs once, with no second card.
+  - Codex: its search runs inside the provider's model request, so its proxy reads web_search's setting before each request and offers the provider its search only while the setting is allow. A failed read offers no search.
+  - `SessionIO.permission(tool)` (agentrun-kernel) is the host's setting for a harness's own tool at the time of the read. The runner reads it from the store each time. `ProviderPolicy.apply` may return a promise.
+  - A runner run whose plane resolves web_search to native now gets the harness's own search (#2458). The runner had built the run's environment without its plane, so Claude Code and Codex runs on a runner never had it on.
+- A web_search that resolves to the model provider's own search works again on the runner for pi (#2458). It used to answer "web_search has no model to search on" every time:
+  - A pi run's own web_search on an Anthropic or OpenAI model. That is what `auto` picks for pi, and `native` too. Each search now goes through the run's model proxy with the provider's search tool, and its searches are booked at the provider's price on top of its tokens.
+  - A learned workflow's call node whose web_search resolves native, on any harness.
+
+  Each run's search uses that run's own model route, never one shared by the whole process. Hand-written workflow agents were not affected: their web_search never resolves native. Both harness packages now export their `withWebSearches` price wrapper, and the Codex one its `webSearchUsd`. A claude-agent or codex run's own search is not switched on by this change.
+
+  A capped run holds a hosted search's fees with its tokens before the request is sent, at the most searches the request allows, so the fees can't pass the cap. The kernel's model proxy takes a policy's `feeMaxUsd(body)` and holds it as the request's `feeUsd`; a fee it can't bound leaves the request unmeasured. The proxy also hands `usageOf` the sent body as a second argument, so a pi request on OpenAI's Responses that offered no search reads 0 searches from its body, even when its answer names a search call.
+
+## 0.1.0-beta.36 (2026-11-13)
+
+- Model defaults move to the current models. The OpenAI default (and OpenRouter's, for pi, codex and opencode) is now gpt-6.1-sol, where OpenRouter's was gpt-6-sol. The Claude Agent adapter's default is now claude-sonnet-5-5 (was claude-sonnet-4-5) and the Codex adapter's is openai/gpt-6-luna (was openai/gpt-5.4-mini). A host that relied on a default names its model; the READMEs' examples name the current ones.
+- The two harness adapters list `@parcha/agentrun-dsl` as a dev dependency, since only their tests import it, and serve's package keywords drop the retired `pi-durable`.
+
+## 0.1.0-beta.35 (2026-11-11)
+
+- A capped run that reads screenshots is no longer refused at its cap after the first one. A model request's input bound counted an image's base64 as one token per byte, and then the image's billed maximum on top. A 1280x720 screenshot (about a megabyte of base64) read as some 1.3 million input tokens, so a Sonnet step under a $1.50 cap "needed at least $4.83" when Claude bills it a few cents.
+
+  Each image, in every turn, now counts at what the routed model's provider can bill it as, in place of its data's bytes, whatever API carries it. The size comes from the image's own header (PNG, JPEG, GIF or WebP):
+  - Anthropic: its 28-pixel patches or its area at 750 pixels a token, whichever is more, at most 4,784.
+  - OpenAI: its 512-pixel tiles after resizing (85 + 170 each; 85 at detail low), or for a patch-billed mini or nano model its 32-pixel patches at that model's multiplier when more, at most 73,800.
+  - Google: 258 per 768-pixel tile, at least 1,120.
+  - Any other provider: the most of the three.
+  An image whose size can't be read counts at its provider's per-image maximum, never at its bytes. An image-shaped object outside where the API reads images (a tool call's arguments) is counted at its bytes, as text.
+
+  `InputShape.images` (the kernel host's `providerInputOverhead`) is now a list of images, each with the bytes its data takes and its size when known; `InputShape.model` names the routed model; the figure can be below 0, and so can a policy's `serverInputOverhead`, never past the body's bytes. Upgrading: pass `images: [{ bytes, width?, height? }]`, built with `imageInputOf`, `messagesImagesIn` or `responsesImagesIn`, and the model, in place of a count.
+
+## 0.1.0-beta.34 (2026-11-11)
+
+- The server checks a harness's pinned binary (claude-agent's CLI, Codex, OpenCode: its sha256, then the version it reports) without holding its event loop, so requests, timers and store answers go on while a binary of hundreds of MiB is hashed and run. Before, the first check in a process held every request for one to several seconds (GET /v2/capabilities, a server's start, an adapter made for a run). The binary is now hashed off the loop a chunk at a time and run as a child the loop does not wait on. A pass is kept for the adapter's own check, which then reads nothing, and two checks of one binary at once read it once. New: `checkedOnceAsync` and `sha256OfFileAsync` (kernel host), `verifyClaudeAgentCliAsync` (claude-agent), and `verifyCodexAsync` and `verifyCodexBinaryAsync` (Codex). Who breaks: a program that calls the kernel's `checkedOnce` with its own check. A check is now a `BinaryCheck`, a generator that yields each probe (`{ kind: "sha256", path }` or `{ kind: "run", path, args, env, timeoutMs }`) and is given back its answer, so one check runs either way.
+- A codex, opencode or claude-agent run that reads one of its skills' files (`read_skill_file`) now shows the call and its result on the run's Timeline, as pi's tool calls are shown. On the runner, the adapter's own skill reader ran outside the run's record, so the Timeline had no row for it. The read now goes through the host's tool path (the record, the rule before a side effect, the host's hooks on its result); a new `SessionIO.hostTool` hands an adapter's own tool to the host, and the kernel's `hostedTool(io, tool)` applies it.
+  - Upgrading: nothing to change.
+
 ## 0.1.0-beta.32 (2026-11-10)
 
 - The code copied from the upstream durable harness is now AgentRun's own: the port froze, and the pristine upstream copies, the named patches, the import tables, `scripts/port-durable-harness.mjs` and `npm run verify:port` are gone. `vendor/durable-harness/UPSTREAM.json` still records where each copy came from, and each copy keeps its header and NOTICE its attribution. With it go the kernel's paths that never run:

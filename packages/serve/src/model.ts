@@ -6,11 +6,12 @@
 // launcher hands the server every one, and a run's process those of its model's provider, never in an environment.
 import { withLocalModels } from "./local-models.js";
 import { pathToFileURL } from "node:url";
-import type { ModelCost, ModelThinkingLevel, Provider, ProviderStreams } from "@earendil-works/pi-ai";
+import type { ModelCost, Provider, ProviderStreams } from "@earendil-works/pi-ai";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
-import type { Revision } from "@parcha/pi-durable-agent";
+import type { Revision } from "./agent-rows.js";
 import { gatewayBase } from "./provider.js";
+import { modelFormWhy } from "./model-form.js";
 // Leaves, which the key rows below read as this module loads, in any import order (wires.ts, adapter-facts.ts).
 import { ADAPTER_FACTS } from "./adapter-facts.js";
 import { WIRES } from "./wires.js";
@@ -28,21 +29,22 @@ export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object
  *  tests' fake upstream), in place of their APIs. With it they are registered beside the faux model, for a tool's own
  *  request to the provider the revision's model names (web_search's, hosted-search.ts); the run's turns stay faux. */
 export const FAUX_UPSTREAM_ENV = "AGENTRUN_SERVE_FAUX_UPSTREAM";
-/** A run's `effort`, passed to its child. */
-export const EFFORT_ENV = "AGENTRUN_SERVE_EFFORT";
 /** The model the server's keys give a run that names none (hostModel at the run's launch, from every key the server
  *  holds), passed to its child as its effort is: behind a gateway the run holds the gateway's key alone, never the key
- *  that names its default (runs.ts). A model id, never a secret, so its name has no secret's segment (pi-durable-disk's
- *  secret-name rule): a harness's log keeps it (adapters.ts harnessLog). */
+ *  that names its default (runs.ts). A model id, never a secret, so its name has no secret's segment: a harness's log keeps it (adapters.ts harnessLog). */
 export const DEFAULT_MODEL_ENV = "AGENTRUN_SERVE_DEFAULT_MODEL";
 export const MODEL_PROVIDER = "agent-model";
 export const EFFORTS = ["low", "medium", "high"] as const;
 export type Effort = (typeof EFFORTS)[number];
 /** The thinking levels a revision or the host may name. Never off. */
 export const THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export const TIERS = ["fast", "default", "strong"] as const;
 export type Tier = (typeof TIERS)[number];
 const TIER_ENV: Record<Tier, string> = { fast: "AGENT_MODEL_FAST", default: "AGENT_MODEL", strong: "AGENT_MODEL_STRONG" };
+/** The model `env` names for `tier` of its own (AGENT_MODEL_FAST, AGENT_MODEL_STRONG; AGENT_MODEL for the default), or
+ *  undefined when it names none: a tier the host has no model of, whose request runs on the run's own model. */
+export const tierModelOf = (env: NodeJS.ProcessEnv, tier: Tier): string | undefined => env[TIER_ENV[tier]] || undefined;
 /** The workflow node kinds that run on a model. */
 export const MODEL_NODES = ["agent", "decide", "extract", "report"] as const;
 
@@ -61,7 +63,7 @@ export const MODEL_KEYS: readonly { id: string; label: string; field: string; mo
   { id: "anthropic", label: "Anthropic", field: "ANTHROPIC_API_KEY", model: "anthropic/claude-sonnet-5-5", harnesses: onVendor("anthropic") },
   { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: onVendor("openai") },
   // OpenRouter serves both wires: every harness runs on its key, an adapter harness on its wire's vendor's model there.
-  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6-sol", harnesses: [DEFAULT_HARNESS, ...ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6-sol" } },
+  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, ...ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6.1-sol" } },
 ]);
 
 /** pi, and the adapter harnesses whose wire (their facts') runs `vendor`'s models: those that talk to its own API. */
@@ -180,18 +182,21 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
     if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or add a model key in Settings → Model keys.`, host: true, needs: "key" };
     // A revision's model, and a key's default (MODEL_KEYS: "provider/model"), go as the gateway takes its ids (bare: the
     // part after the provider), that provider pricing them; the host's own AGENT_MODEL or tier id goes as configured.
-    const id = ref ?? ([env[TIER_ENV[tier]], env.AGENT_MODEL].includes(named) ? undefined : named);
+    // A name equal to one of the host's configured ids (the picker lists them: model-form.ts pickerCandidates) is that
+    // host id whoever names it, so a revision that picks it is sent what the host configured, never a cut of it.
+    const configured = [env.AGENT_MODEL, env.AGENT_MODEL_FAST, env.AGENT_MODEL_STRONG].includes(named);
+    const id = ref ?? (configured ? undefined : named);
     const slash = id?.indexOf("/") ?? -1;
-    const sent = id && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? id.slice(slash + 1) : named;
+    const sent = id && !configured && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? id.slice(slash + 1) : named;
     return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(id && slash > 0 ? { namedProvider: id.slice(0, slash) } : {}) };
   }
   if (!named) return { why: `${none}: ${ADD_A_KEY}`, host: true, needs: "key" };
   const slash = named.indexOf("/");
-  if (slash < 1) return { why: `The host's default model ${named} is not a provider/model-id.`, host: true, needs: "model" };
+  if (slash < 1) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
   const models = await providerModels(env);
   const model = models.getModel(provider, modelId);
-  if (!model) return { why: `pi-ai knows no model ${modelId} of ${provider}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined, needs: "model" };
+  if (!model) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
   // A gateway ANTHROPIC_BASE_URL names that a key may not go to (gatewayBase): no Anthropic model runs, by its words.
   const refused = provider === "anthropic" ? anthropicRefusal(models) : undefined;
   if (refused) return { why: refused, host: true, needs: "key" };
@@ -259,6 +264,7 @@ export const PROVIDER_KEYS: Readonly<Record<string, readonly string[]>> = {
   "qwen-token-plan": ["QWEN_TOKEN_PLAN_API_KEY"],
   "qwen-token-plan-cn": ["QWEN_TOKEN_PLAN_CN_API_KEY"],
   "qwen-token-plan-individual": ["QWEN_TOKEN_PLAN_API_KEY"],
+  "qwen-token-plan-individual-cn": ["QWEN_TOKEN_PLAN_CN_API_KEY"],
   radius: ["RADIUS_API_KEY"],
   together: ["TOGETHER_API_KEY"],
   typesafe: ["TYPESAFE_API_KEY"],
@@ -290,11 +296,10 @@ export function modelKeys(env: NodeJS.ProcessEnv, ref: string | undefined, tiers
   return [...new Set(providers.flatMap((provider) => PROVIDER_KEYS[provider] ?? []))];
 }
 
-/** A run's thinking level: its `effort`, else its revision's `thinking`, else the host's `AGENT_THINKING`, else medium.
- *  Never off. */
-export function thinkingOf(env: NodeJS.ProcessEnv, revision?: string): ModelThinkingLevel {
-  const level = [env[EFFORT_ENV], revision, env.AGENT_THINKING].find((name) => (THINKING_LEVELS as readonly unknown[]).includes(name));
-  return (level ?? "medium") as ModelThinkingLevel;
+/** `value` as a thinking level (THINKING_LEVELS, exactly), else undefined: a revision's `thinking` or the host's
+ *  `AGENT_THINKING` that names none is no level. A run's effort is its own, else these (runs-over-store.ts prepareLaunch). */
+export function thinkingLevel(value: unknown): ThinkingLevel | undefined {
+  return (THINKING_LEVELS as readonly unknown[]).includes(value) ? (value as ThinkingLevel) : undefined;
 }
 
 /** The helpers a faux module's reply gets, so it needs no import of its own. */
@@ -312,15 +317,16 @@ export type FauxHelpers = {
 /** The models for a run, and its model of each tier it uses and of no other: an agentic revision's `ref` (or the
  *  default) is its `default` (a claimed run's: its pin, chooseModel), and a workflow's tiers are the ones its nodes name.
  *  The faux module's replies, the gateway in the environment, or pi-ai's providers. `unpriced`: the ids of its models
- *  serve has no price for (a gateway model the catalog does not list, with no price set), which a cap cannot be kept on. */
-export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined, tiers: readonly Tier[] = ["default"], harness: string = DEFAULT_HARNESS) {
+ *  serve has no price for (a gateway model the catalog does not list, with no price set), which a cap cannot be kept on.
+ *  `tierRefs`: a model named for another tier (a subagent's model_tiers), chosen for it in place of the host's. */
+export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined, tiers: readonly Tier[] = ["default"], harness: string = DEFAULT_HARNESS, tierRefs: Readonly<Partial<Record<Tier, string>>> = {}) {
   const ai = await import("@earendil-works/pi-ai");
   const { createModels, createProvider } = await import("@earendil-works/pi-ai/models");
   const faux = env[FAUX_ENV];
   const byTier = new Map<Tier, ModelRef>();
   const namedBy = new Map<Tier, string>();
   for (const tier of new Set(tiers)) {
-    const chosen = await chooseModel(env, tier === "default" ? ref : undefined, tier, harness);
+    const chosen = await chooseModel(env, tier === "default" ? ref : tierRefs[tier], tier, harness);
     if ("why" in chosen) throw new Error(chosen.why);
     byTier.set(tier, chosen.model);
     if (chosen.namedProvider) namedBy.set(tier, chosen.namedProvider);
@@ -340,6 +346,9 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
     const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: Tokens | "unknown"; contextWindow?: number; maxTokens?: number; usage?: (context: unknown, usage: Tokens) => Tokens };
     const price = typeof mod.cost === "object" ? mod.cost : undefined;
     if (typeof mod.default !== "function") throw new Error(`the faux module ${faux} has no default export function`);
+    // A faux model with no price ("unknown"), as a provider that does not price it: unpriced, so the runner's route books
+    // its requests at no known price (null), never at the placeholder cost's $0 (model-route.ts routeOf).
+    if (mod.cost === "unknown") for (const id of ids) unpriced.add(id);
     const reply = mod.default as (context: unknown, helpers: FauxHelpers) => unknown;
     const helpers: FauxHelpers = { message: ai.fauxAssistantMessage, text: ai.fauxText, thinking: ai.fauxThinking, toolCall: ai.fauxToolCall };
     // `contextWindow` sizes the faux model's window, so a test can make a run long enough to compact; `maxTokens` its
@@ -420,7 +429,8 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
 /** The price of each gateway model of `byTier` (its tiers' models, `namedBy` the provider a ref named), in USD per million
  *  input, output, cache-read and cache-write tokens: a tier's own price (`AGENT_MODEL_FAST_PRICE`,
  *  `AGENT_MODEL_STRONG_PRICE`) goes with its model, else the default's (`AGENT_MODEL_PRICE`); a model two tiers share
- *  takes the default's. With none set, pi-ai's catalog prices it (catalogPrice), a $0 entry included. An id with no price
+ *  takes the default's. With none set, pi-ai's catalog prices it (catalogPrice), from a metered entry alone: a $0 one (a
+ *  plan's, a free tier's) never prices it (#2339). An id with no price
  *  is absent: its answers carry no total (unpricedApi) and a harness books it unknown (adapters.ts priceOf), so the run's
  *  cost reads unknown, never $0, and a cap refuses it (blockersOf refuses a capped run on it before it starts). */
 async function gatewayPrices(env: NodeJS.ProcessEnv, byTier: ReadonlyMap<Tier, ModelRef>, namedBy: ReadonlyMap<Tier, string>): Promise<Map<string, ModelCost>> {
@@ -612,31 +622,57 @@ export function catalogPrice(catalog: ReadonlyMap<string, readonly Listed[]>, id
   return catalogEntries(catalog, id.slice(slash + 1), id.slice(0, slash));
 }
 
-/** The forms of `id` with its version's separators written the other way: each digit-dash-digit as a dot (gpt-5-4-mini,
- *  gpt-5.4-mini; pair by pair, so llama-3-1-8b is llama-3.1-8b), and each digit-dot-digit as a dash (claude-haiku-4.5,
- *  claude-haiku-4-5). Not `id` itself. */
+/** The forms of `id` with its version's separators written the other way: each digit-dash-digit as a dot (gpt-6-1-terra,
+ *  gpt-6.1-terra; pair by pair, so llama-3-1-8b is llama-3.1-8b), and each digit-dot-digit as a dash (claude-haiku-5.5,
+ *  claude-haiku-5-5). Not `id` itself. */
 const flippedForms = (id: string): string[] => [...new Set([id.replace(/(\d)-(\d)/g, "$1.$2"), id.replace(/(\d)\.(\d)/g, "$1-$2")])].filter((form) => form !== id);
 
-/** `id`'s price in `catalog` (listedPrice): its own entries when the catalog lists it; else those of its flipped forms
- *  (flippedForms), only when every entry they hold has one price. A flip that finds different prices, across providers
- *  or across the two flips, leaves the model unpriced: the cap refuses it rather than keep a price picked by luck. */
+/** `id`'s price in `catalog` (listedPrice): its own entries' metered price when the catalog lists one; else its flipped
+ *  forms' (flippedForms), only when every metered entry they hold has one base price (input, output, cacheRead,
+ *  cacheWrite; a long-context `tiers` table is not part of the comparison), the entry that carries `tiers` when one does
+ *  (a long prompt is priced at the higher tier, erring high; entries with different `tiers` tables stay unpriced), else the first; else the metered price a gateway lists
+ *  under a vendor's id for it (`<vendor>/<id>`, the named vendor's first: pi-ai lists the bare id of some models only
+ *  under subscription plans, at $0, and the gateways that meter them under the vendor's). A flip that finds different
+ *  prices leaves the model unpriced, and so does an id with no metered entry anywhere (#2339: a plan's $0 never prices a
+ *  metered model): the cap refuses it rather than keep a price picked by luck or a $0 nobody bills. */
 function catalogEntries(catalog: ReadonlyMap<string, readonly Listed[]>, id: string, named: string | undefined): ModelCost | undefined {
   const own = catalog.get(id);
-  if (own) return listedPrice(own, named);
-  const flipped = flippedForms(id).flatMap((form) => catalog.get(form) ?? []);
-  if (!flipped.length) return undefined;
-  const one = JSON.stringify(flipped[0]!.cost);
-  return flipped.every((entry) => JSON.stringify(entry.cost) === one) ? flipped[0]!.cost : undefined;
+  const listed = own ? listedPrice(own, named) : undefined;
+  if (listed) return listed;
+  const flipped = flippedForms(id).flatMap((form) => (catalog.get(form) ?? []).filter(({ cost }) => cost.input + cost.output > 0));
+  if (flipped.length) {
+    const base = ({ input, output, cacheRead, cacheWrite }: ModelCost) => JSON.stringify([input, output, cacheRead, cacheWrite]);
+    const one = base(flipped[0]!.cost);
+    if (!flipped.every((entry) => base(entry.cost) === one)) return undefined;
+    const tiered = flipped.filter((entry) => entry.cost.tiers?.length);
+    if (tiered.some((entry) => JSON.stringify(entry.cost.tiers) !== JSON.stringify(tiered[0]!.cost.tiers))) return undefined;
+    return (tiered[0] ?? flipped[0]!).cost;
+  }
+  return vendorPrice(catalog, id, named);
 }
 
-/** A gateway model's catalog price: the paid entry of the provider its ref names, when the catalog lists one. Else, as
- *  the gateway does not say whose model answers (a named provider is a hint), the highest any provider lists, so the
- *  estimate and a cap on it err high: one entry's whole price, the one with the most input plus output (the first of
- *  equals), so a $0 entry never wins over a paid one, a named provider's included. An id the catalog lists at $0 is a
- *  known $0; one it does not list has no price (undefined). */
+/** The metered price gateways list for `id` under a vendor's id (`<vendor>/<id>`, or a flipped form of it): the named
+ *  vendor's id when the catalog has one, else every vendor's; the highest paid entry, so an estimate errs high. */
+function vendorPrice(catalog: ReadonlyMap<string, readonly Listed[]>, id: string, named: string | undefined): ModelCost | undefined {
+  const forms = new Set([id, ...flippedForms(id)]);
+  const keyed = (key: string) => {
+    const slash = key.indexOf("/");
+    return slash > 0 && forms.has(key.slice(slash + 1)) ? key.slice(0, slash) : undefined;
+  };
+  const vendors = [...catalog.keys()].filter((key) => keyed(key) !== undefined);
+  const chosen = named !== undefined && vendors.some((key) => keyed(key) === named) ? vendors.filter((key) => keyed(key) === named) : vendors;
+  return listedPrice(chosen.flatMap((key) => catalog.get(key) ?? []), undefined);
+}
+
+/** A gateway model's catalog price from `entries`: the metered (paid) entry of the provider its ref names, when the
+ *  catalog lists one. Else, as the gateway does not say whose model answers (a named provider is a hint), the highest
+ *  paid entry any provider lists, so the estimate and a cap on it err high: one entry's whole price, the one with the
+ *  most input plus output (the first of equals). A $0 entry (a plan's, a free tier's) never prices it: with no paid
+ *  entry the price is unknown (undefined), never $0. */
 function listedPrice(entries: readonly Listed[], named: string | undefined): ModelCost | undefined {
-  if (!entries.length) return undefined;
-  const own = named === undefined ? undefined : entries.find((entry) => entry.provider === named);
-  if (own && own.cost.input + own.cost.output > 0) return own.cost;
-  return entries.reduce<ModelCost>((top, { cost }) => (cost.input + cost.output > top.input + top.output ? cost : top), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  const paid = entries.filter(({ cost }) => cost.input + cost.output > 0);
+  if (!paid.length) return undefined;
+  const own = named === undefined ? undefined : paid.find((entry) => entry.provider === named);
+  if (own) return own.cost;
+  return paid.reduce((top, entry) => (entry.cost.input + entry.cost.output > top.cost.input + top.cost.output ? entry : top)).cost;
 }

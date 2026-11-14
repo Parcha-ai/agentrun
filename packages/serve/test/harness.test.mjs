@@ -12,14 +12,13 @@ import { fauxTable } from "./fixtures/faux-table.mjs";
 const storedBodies = (data) => {
   const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
   try {
-    return db.prepare("SELECT body_json FROM revisions").all().map((row) => JSON.parse(row.body_json));
+    return db.prepare("SELECT body FROM revisions").all().map((row) => JSON.parse(row.body));
   } finally {
     db.close();
   }
 };
 
-// SKIP (follow-up #2078): it reads the old store column body_json, which the store switch removed
-test.skip("a definition that names no harness reads as pi, and naming pi stores nothing: the stored body is the same either way", async (t) => {
+test("a definition that names no harness reads as pi, and naming pi stores nothing: the stored body is the same either way", async (t) => {
   const { api, data } = await serve(t);
   const plain = await api("POST", "/agents", agent("plain"));
   assert.equal(plain.status, 201, JSON.stringify(plain.body));
@@ -41,8 +40,7 @@ test("a harness the server does not know is a 422 on the field, and nothing is s
   assert.equal((await api("GET", "/agents")).body.agents.length, 0);
 });
 
-// SKIP (follow-up #2078): it reads the old store column body_json, which the store switch removed
-test.skip("a harness this server does not run saves with a warning on the field, and a run of it is a 409 agent_not_runnable naming it: nothing starts, nothing runs on pi", async (t) => {
+test("a harness this server does not run saves with a warning on the field, and a run of it is a 409 agent_not_runnable naming it: nothing starts, nothing runs on pi", async (t) => {
   const { api, data } = await serve(t);
   for (const [id, body, harness] of [["claude", agent("claude", { harness: "claude-agent" }), "claude-agent"], ["flow", flowAgent("flow", undefined, { harness: "codex" }), "codex"]]) {
     const made = await api("POST", "/agents", body);
@@ -84,14 +82,14 @@ test("an edit that names no harness keeps the agent's; one that names pi moves i
   assert.equal((await edit({ instructions: "Answer at length." })).body.definition.harness, "pi", "and pi stays pi");
 });
 
-test("ask_person on a harness other than pi saves with a warning on the tool, and a run of it is 409 agent_not_runnable naming the tool", async (t) => {
+test("ask_person on a harness other than pi is bound there as on pi: no warning on the tool, and a run of it is refused only for its harness", async (t) => {
   const { api } = await serve(t);
   const made = await api("POST", "/agents", agent("asker", { harness: "codex", tools: ["read", "ask_person"] }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  assert.deepEqual(made.body.warnings.map((w) => [w.field, w.reason]).sort(), [["definition.harness", "not_set_up_here"], ["definition.tools[1]", "not_set_up_here"]]);
+  assert.deepEqual(made.body.warnings.map((w) => [w.field, w.reason]), [["definition.harness", "not_set_up_here"]], "only the harness, which this server does not run, is warned of");
   const run = await api("POST", "/agents/asker/runs", { input: { content: "hi" } });
   assert.deepEqual([run.status, run.body.error.code], [409, "agent_not_runnable"]);
-  assert.deepEqual(run.body.error.details.unbound, ["ask_person"]);
+  assert.deepEqual([run.body.error.details.unbound, run.body.error.details.harness], [[], "codex"], `refused for its harness, no tool unbound: ${JSON.stringify(run.body.error.details)}`);
   const onPi = await api("POST", "/agents", agent("pi-asker", { tools: ["ask_person"] }));
   assert.deepEqual(onPi.body.warnings, [], "on pi it is bound");
 });
@@ -108,13 +106,13 @@ test("a workflow on a harness other than pi saves with a warning and its runs ar
 
 test("a harness is checked on the revision's own model, never refused for the server's default: claude-agent runs an Anthropic model on a server whose default is OpenAI", { timeout: 60_000 }, async (t) => {
   // Both providers configured (no real keys), the server's default model OpenAI's.
-  withEnv(t, { AGENT_MODEL: "openai/gpt-4o-mini", OPENAI_API_KEY: `not-a-secret-${"openai"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` }, ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "AGENTRUN_HARNESS_TABLE"]);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-luna", OPENAI_API_KEY: `not-a-secret-${"openai"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` }, ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "AGENTRUN_HARNESS_TABLE"]);
   // A copy: serve checks a harness once per environment object, and process.env outlives this test.
   const env = { ...process.env };
   const revision = (model) => ({ kind: "agentic", instructions: "Answer.", harness: "claude-agent", ...(model ? { model } : {}) });
-  assert.deepEqual(await blockersOf(env, revision("anthropic/claude-haiku-4-5")), [], "its own Anthropic model runs");
-  const named = await blockersOf(env, revision("openai/gpt-4o-mini"));
+  assert.deepEqual(await blockersOf(env, revision("anthropic/claude-haiku-5-5")), [], "its own Anthropic model runs");
+  const named = await blockersOf(env, revision("openai/gpt-6-luna"));
   assert.deepEqual(named.map((b) => [b.field, b.host]), [["definition.model", true]], "an OpenAI model it is given does not run");
-  assert.match(named[0].message, /claude-agent runs Anthropic models; the run's model is openai\/gpt-4o-mini/);
+  assert.match(named[0].message, /claude-agent runs Anthropic models; the run's model is openai\/gpt-6-luna/);
   assert.deepEqual(await blockersOf(env, revision(undefined)), [], "a model-less revision runs on the Anthropic model its key gives, never the server's OpenAI default");
 });

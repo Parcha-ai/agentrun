@@ -8,8 +8,6 @@ import { existsSync } from "node:fs";
 import { copyFile, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { capModels, paidCall, useSpend } from "../dist/cap.js";
 import { join } from "node:path";
 import { test } from "node:test";
 import { KEY } from "./fixtures/faux-monid.mjs";
@@ -25,13 +23,12 @@ const ASK = "Run monid's /person/enrich, called again after a raise.";
 const ALLOWED = { "monid.run": { permission: "allow" } };
 /** The paid call's refusal, held at monid's run allowance ($1, no inspect quoted it), of a $0.5 cap: what the run has
  *  spent (the faux harness's requests cost $0.001 each, pi's faux model nothing) and any model request still held. */
-const WORDS = /^Not sent: this run has spent \$[\d.]+( and holds \$[\d.]+ for steps still running,)? of its \$0\.50 cap, and the next step, monid_run, could cost up to \$1 \(no price was quoted for it in this run, so it counts at the \$1 allowance; monid_inspect gives its price\)\. Raise the cap to at least \$1\.\d\d to continue\.$/;
+const WORDS = /^Not sent: this run has spent (?:\$[\d.]+|less than a cent)( and holds \$[\d.]+ for steps still running,)? of its \$0\.50 cap, and the next step, monid_run, could cost up to \$1 \(no price was quoted for it in this run, so it counts at the \$1 allowance; monid_inspect gives its price\)\. Raise the cap to at least \$1\.\d\d to continue\.$/;
 const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
 const monidRuns = async (log) => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((call) => call.path === "/v1/run").length;
 
 for (const harness of ["pi", "claude-agent", "codex"]) {
-  // SKIP (follow-up #2078): a paid call the cap refuses does not pause the run as before on the runner
-  test.skip(`${harness}: a paid call the cap refuses for room pauses the run, its result saying it was not sent; a raise sends it on and the model's next call is made, once`, { timeout: 120_000 }, async (t) => {
+  test(`${harness}: a paid call the cap refuses for room pauses the run, its result saying it was not sent; a raise sends it on and the model's next call is made, once`, { timeout: 120_000 }, async (t) => {
     const log = join(await scratch(t), "monid-calls.jsonl");
     withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
     const { api } = await serve(t, { fauxMonid: FAUX_MONID, ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS) }) });
@@ -40,7 +37,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: ASK }, max_cost_usd: 0.5 });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     const runId = started.body.run_id;
-    const { rows } = await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
+    const { rows, pages } = await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
     const paused = await view(api, runId);
     assert.deepEqual([paused.status, paused.state, paused.error, paused.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(paused));
     const spent = paused.pending.spent_usd;
@@ -50,7 +47,8 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.match(paused.pending.said, WORDS);
     assert.equal(await monidRuns(log), 0, "the refused call was not sent");
     const result = rows.find((row) => row.kind === "tool_result");
-    assert.match(result?.text ?? result?.summary ?? "", /Not sent: .*the next step, monid_run, could cost up to \$1/, JSON.stringify(result));
+    const now = (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((row) => row.kind === "tool_result");
+    assert.match(result?.text ?? result?.summary ?? "", /Not sent: .*the next step, monid_run, could cost up to \$1/, `${JSON.stringify(result)} pages ${JSON.stringify(pages.map((page) => [page.status, page.state, page.has_more, page.rows.map((row) => [row.kind, row.id, (row.text ?? row.summary ?? "").slice(0, 40)])]))} read again ${JSON.stringify(now.map((row) => [row.id, (row.text ?? "").slice(0, 60)]))}`);
     // The suggested raise sends the run on, and the model calls again: that call is made, once.
     const raised = await api("PATCH", `/runs/${runId}`, { max_cost_usd: paused.pending.suggested_cap_usd });
     assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
@@ -61,8 +59,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
   });
 }
 
-// SKIP (follow-up #2078): the run stays paused at its cap after the raise: a raise does not resume it on the runner
-test.skip("pi: after a raise, a model that calls twice makes two calls: none is added, and none retried", { timeout: 120_000 }, async (t) => {
+test("pi: after a raise, a model that calls twice makes two calls: none is added, and none retried", { timeout: 120_000 }, async (t) => {
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api } = await serve(t, { fauxMonid: FAUX_MONID });
@@ -99,8 +96,7 @@ async function gateway(t, answers) {
   return { seen, outputs, origin: `http://127.0.0.1:${server.address().port}` };
 }
 
-// SKIP (follow-up #2078): a paid call the cap refuses does not pause the run as before on the runner
-test.skip("opencode: a paid call the cap refuses for room pauses the run, its result saying it was not sent; a raise sends the request after it on", { timeout: 120_000 }, async (t) => {
+test("opencode: a paid call the cap refuses for room pauses the run, its result saying it was not sent; a raise sends the request after it on", { timeout: 120_000 }, async (t) => {
   // The model calls monid's run, then (its next request refused, the run paused, its cap raised) answers. The stand-in
   // runs on a real gateway, so serve runs no faux module, faux monid's among them: nothing here may reach monid, and
   // what says the call was not sent is the result the model reads and a cost with no monid charge in it.
@@ -134,7 +130,7 @@ test.skip("opencode: a paid call the cap refuses for room pauses the run, its re
   assert.equal(Math.round(done.cost.usd * 1e6) / 1e6, 0.00024, JSON.stringify(done.cost));
 });
 
-// SKIP (follow-up #2078): a paid call the cap refuses does not pause the run as before on the runner
+// SKIP (#2430): the person's message after a stopped turn answers 409 until a person's stop ends the turn, not the run.
 test.skip("claude-agent: a turn stopped between a refused paid call and its next request leaves no pause behind: the person's next message runs, never refused for the call they moved on from", { timeout: 120_000 }, async (t) => {
   const log = join(await scratch(t), "monid-calls.jsonl");
   const signal = join(await scratch(t), "held");
@@ -158,59 +154,3 @@ test.skip("claude-agent: a turn stopped between a refused paid call and its next
   assert.equal(await monidRuns(log), 0, "the refused call never sent");
 });
 
-test("pi: a paid call's refusal pauses only the turn's next request, the one after its result; a request after a message of the person's (a stop came first) is judged as any other", async (t) => {
-  const sent = [];
-  const send = () => {
-    const events = createAssistantMessageEventStream();
-    sent.push(events);
-    queueMicrotask(() => {
-      const message = { role: "assistant", content: [{ type: "text", text: "ok" }], api: "fake", provider: "fake", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() };
-      events.push({ type: "done", reason: "stop", message });
-      events.end(message);
-    });
-    return events;
-  };
-  const models = { stream: send, streamSimple: send, complete: (...a) => send(...a).result(), completeSimple: (...a) => send(...a).result(), streamDeferred: send, fetchDeferred: (...a) => send(...a).result() };
-  const model = { id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 1_000 };
-  t.after(() => useSpend(undefined));
-  const capped = await capModels(models, 0.5, 0);
-  const afterResult = { messages: [{ role: "user", content: "go", timestamp: 0 }, { role: "toolResult", toolCallId: "c1", toolName: "monid_run", content: [{ type: "text", text: "Not sent" }], isError: true, timestamp: 1 }] };
-  const afterPerson = { messages: [...afterResult.messages, { role: "user", content: "Go on without it.", timestamp: 2 }] };
-  const hold = { usd: 1, basis: "the allowance" };
-  // The turn's next request, after the refused call's result: refused in the call's words.
-  assert.ok("refused" in (await paidCall("monid_run", async () => 0, () => 0, hold)));
-  const next = await capped.streamSimple(model, afterResult).result();
-  assert.match(next.errorMessage ?? "", /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.50 cap, and the next step, monid_run, could cost up to \$1 \(the allowance\)\./);
-  assert.equal(sent.length, 0, "not sent");
-  // A refusal a stop left behind, and the person's next message: that request goes.
-  assert.ok("refused" in (await paidCall("monid_run", async () => 0, () => 0, hold)));
-  const after = await capped.streamSimple(model, afterPerson).result();
-  assert.deepEqual([after.stopReason, sent.length], ["stop", 1], JSON.stringify(after));
-});
-
-test("pi: a side request through the run's models (native web_search's own, one fresh message) between a refused paid call and the turn's next request is judged as any other, and leaves the refusal for that next request, which pauses", async (t) => {
-  const sent = [];
-  const send = () => {
-    const events = createAssistantMessageEventStream();
-    sent.push(events);
-    queueMicrotask(() => {
-      const message = { role: "assistant", content: [{ type: "text", text: "ok" }], api: "fake", provider: "fake", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() };
-      events.push({ type: "done", reason: "stop", message });
-      events.end(message);
-    });
-    return events;
-  };
-  const models = { stream: send, streamSimple: send, complete: (...a) => send(...a).result(), completeSimple: (...a) => send(...a).result(), streamDeferred: send, fetchDeferred: (...a) => send(...a).result() };
-  const model = { id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 1_000 };
-  t.after(() => useSpend(undefined));
-  const capped = await capModels(models, 0.5, 0);
-  // hosted-search.ts's request: one user message of its own, through the run's models (app.ts searchOn).
-  const search = { messages: [{ role: "user", content: [{ type: "text", text: "Search the web for: Ada\n\nAnswer briefly from what the search finds, and name each source by its URL." }], timestamp: 0 }] };
-  const afterResult = { messages: [{ role: "user", content: "go", timestamp: 0 }, { role: "toolResult", toolCallId: "c1", toolName: "monid_run", content: [{ type: "text", text: "Not sent" }], isError: true, timestamp: 1 }] };
-  assert.ok("refused" in (await paidCall("monid_run", async () => 0, () => 0, { usd: 1, basis: "the allowance" })));
-  const searched = await capped.completeSimple(model, search);
-  assert.deepEqual([searched.stopReason, sent.length], ["stop", 1], "the search's request is judged as any other and sent");
-  const next = await capped.streamSimple(model, afterResult).result();
-  assert.match(next.errorMessage ?? "", /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.50 cap, and the next step, monid_run, could cost up to \$1 \(the allowance\)\./, JSON.stringify(next));
-  assert.equal(sent.length, 1, "the turn's next request not sent");
-});

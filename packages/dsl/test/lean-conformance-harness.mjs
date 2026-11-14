@@ -1,12 +1,10 @@
 // Runs one Lean-conformance case (spec/lean/conformance/*.json) through the TypeScript
 // interpreter with adapters scripted by the case. The Lean model reads the same files
 // (`lake exe conformance`), so both sides are checked against one `expected` block.
+import { WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError } from '../dist/workflow.js';
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import {
-  runWorkflow, validateWorkflow, WorkflowStateError, WorkflowInvalidError, WorkflowInputInvalidError,
-  WorkflowOutputInvalidError, EscalationSignal, EffectOutcomeUnknownError,
-} from "../dist/index.js";
+import { runWorkflow, validateWorkflow, WorkflowStateError, EscalationSignal, EffectOutcomeUnknownError } from "../dist/index.js";
 
 export const CASES_DIR = fileURLToPath(new URL("../../../spec/lean/conformance/", import.meta.url));
 const COMPARED = new Set(["node.start", "node.end", "loop.exited", "escalate.evaluated", "route.chosen"]);

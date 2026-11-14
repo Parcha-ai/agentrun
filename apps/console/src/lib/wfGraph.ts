@@ -1,10 +1,12 @@
-// The workflow graph, drawn into an SVG: packages/pi-durable-agent/src/serve/graph.js ported to a module, with what the
+// The workflow graph, drawn into an SVG, with what the
 // console adds on top. The shape comes from the paths alone: a chain is a spine, an escalate step an exit pill off it, a
 // route or a parallel fans its branches out under its card and joins them, and a map, a loop or a child workflow is a
 // frame around its body. The console adds: a decision node's provider and model, its question count and its image and
 // web badges; a map's items as a grid of cells, one per item, each in its state; a decision's verdict on its card; and
 // the selected node or item. Every label, branch name and value is data from a workflow document or a run: it reaches the
 // drawing only as text nodes, and every attribute is a number, a fixed word or a node's path.
+import { mcpCallTool } from "./mcp";
+import { kindWithModel, ranOnWords } from "./nodeModel";
 import type { NodeMeta } from "./workflowDoc";
 
 export type GraphInput = { nodes: { path: string; kind: string; label?: string; via?: string }[] };
@@ -21,6 +23,8 @@ export type GraphMarks = {
   items?: Record<string, ItemMark[]>;
   verdict?: Record<string, string>;
   selected?: { path: string; item?: number | null } | null;
+  /** What a run's model nodes ran on, by path: the model, and the tier the node asked for when it named one. */
+  ran?: Record<string, { model: string; tier?: string }>;
 };
 
 const NS = "http://www.w3.org/2000/svg";
@@ -101,7 +105,10 @@ function look(ctx: Ctx, path: string) {
 function group(ctx: Ctx, node: Node, shape: string) {
   const l = look(ctx, node.path);
   const meta = ctx.marks.meta?.[node.path];
-  let title = `${node.label} (${node.kind}${node.via ? ` via ${node.via}` : ""}${meta?.provider ? `, ${meta.provider}${meta.model ? ` ${meta.model}` : ""}` : ""})`;
+  const mcp = meta?.tool ? mcpCallTool(meta.tool) : null;
+  const ran = ctx.marks.ran?.[node.path];
+  const shownModel = meta?.decision ? (ran?.model ?? meta.model) : meta?.model;
+  let title = `${node.label} (${node.kind}${mcp ? `: ${mcp.tool} on ${mcp.server}, an MCP server's tool` : node.via ? ` via ${node.via}` : ""}${meta?.provider ? `, ${meta.provider}${shownModel ? ` ${shownModel}` : ""}` : ""}${ran && !meta?.decision ? `, ${ranOnWords(ran)}` : ""})`;
   if (l.state) title += `: ${l.state.replace("-", " ")}`;
   if (l.tag) title += `${l.state ? ", " : ": "}${l.tag.toLowerCase()}`;
   if (meta?.questions?.length) title += `\n${meta.questions.map((q) => `• ${q.text}`).join("\n")}`;
@@ -128,8 +135,8 @@ function tag(g: SVGElement, x: number, y: number, word: string, cls = "tag") {
 const isDecision = (ctx: Ctx, node: Node) => !!ctx.marks.meta?.[node.path]?.decision;
 const cardH = (ctx: Ctx, node: Node) => (isDecision(ctx, node) ? HD : H);
 
-/** A card: a square coloured by who works, the label, the kind (and a call's transport or tool), the state's word or the
- *  verdict, the diff's tag on its top edge. A decision card adds a row: its provider, its model, and badges for images and
+/** A card: a square coloured by who works, the label, the kind (and a call's transport or tool: an MCP server's tool as
+ *  "<tool> on <server>" with an MCP badge), the state's word or the verdict, the diff's tag on its top edge. A decision card adds a row: its provider, its model, and badges for images and
  *  the web. */
 function card(ctx: Ctx, g: SVGElement, node: Node, x: number, y: number) {
   const l = look(ctx, node.path);
@@ -138,8 +145,12 @@ function card(ctx: Ctx, g: SVGElement, node: Node, x: number, y: number) {
   const verdict = ctx.marks.verdict?.[node.path];
   const word = l.state in WORD ? WORD[l.state] : l.state;
   const nq = meta?.questions?.length ?? 0;
-  const kind = node.kind + (meta?.tool ? ` · ${meta.tool}` : node.via ? ` · ${node.via}` : "") + (meta?.decision && nq ? ` · ${nq} ${nq === 1 ? "question" : "questions"}` : "");
-  const badges = [meta?.images?.length ? "IMG" : "", meta?.web ? "WEB" : ""].filter(Boolean);
+  // An MCP server's tool (`mcp:<server>/<tool>`) reads as "<tool> on <server>", with an MCP badge; any other by its name.
+  // A model node a run ran names its tier and the model it ran on; a decision's model is on its chip row.
+  const mcp = meta?.tool ? mcpCallTool(meta.tool) : null;
+  const ran = ctx.marks.ran?.[node.path];
+  const kind = (ran && !meta?.decision ? kindWithModel(node.kind, ran) : node.kind) + (mcp ? ` · ${mcp.tool} on ${mcp.server}` : meta?.tool ? ` · ${meta.tool}` : node.via ? ` · ${node.via}` : "") + (meta?.decision && nq ? ` · ${nq} ${nq === 1 ? "question" : "questions"}` : "");
+  const badges = [meta?.images?.length ? "IMG" : "", meta?.web ? "WEB" : "", mcp ? "MCP" : ""].filter(Boolean);
   const badgeW = badges.reduce((s, b) => s + tagWidth(b) + 4, 0);
   if (l.selected) g.appendChild(el("rect", { x: x - 4, y: y - 4, width: W + 8, height: h + 8, class: "sel" }));
   add(g, [
@@ -156,7 +167,9 @@ function card(ctx: Ctx, g: SVGElement, node: Node, x: number, y: number) {
     const pw = tag(g, x + 24, y + 38, meta.provider, "chip");
     const v = verdict ? clipVerdict(verdict, fits(W - 44 - pw - 20, VERDICT)) : "";
     const room = W - 40 - pw - (v ? wide(v, VERDICT) + 10 : 0);
-    if (meta.model && room > 24) g.appendChild(el("text", { x: x + 24 + pw + 6, y: y + 47.5, class: "model" }, clip(meta.model, fits(room, SMALL))));
+    // The model its provider answered with, once the run has it, else the one its definition names.
+    const model = ran?.model ?? meta.model;
+    if (model && room > 24) g.appendChild(el("text", { x: x + 24 + pw + 6, y: y + 47.5, class: "model" }, clip(model, fits(room, SMALL))));
     if (v) g.appendChild(el("text", { x: x + W - 10, y: y + 47.5, class: "verdict", "text-anchor": "end" }, v));
   } else if (verdict) g.appendChild(el("text", { x: x + W - 10, y: y + 17, class: "verdict", "text-anchor": "end" }, verdict));
   if (l.tag) tag(g, x + W - tagWidth(l.tag), y - 7, l.tag);
@@ -345,24 +358,53 @@ function frameBox(ctx: Ctx, node: Node, body: Node): Box {
   };
 }
 
+/** How a node is drawn: an exit, a card with nothing inside, a chain (only the line its steps sit on, no box of its own),
+ *  a fan of branches under its card, or a frame round its one body. The drawing and its node count both read it. */
+function drawnAs(node: Node, kids: Kid[]): "exit" | "leaf" | "chain" | "fan" | "frame" {
+  if (node.kind === "escalate") return "exit";
+  if (!kids.length) return "leaf";
+  if (node.kind === "chain") return "chain";
+  if (node.kind === "route" || node.kind === "parallel") return "fan";
+  return "frame";
+}
+
 function layout(ctx: Ctx, node: Node): Box {
   const kids = ctx.kids[node.path] ?? [];
-  if (node.kind === "escalate") return exitRow(ctx, node, true);
-  if (!kids.length) return leaf(ctx, node);
-  if (node.kind === "chain") return chainBox(ctx, node, kids);
-  if (node.kind === "route" || node.kind === "parallel") return fanBox(ctx, node, kids);
+  const as = drawnAs(node, kids);
+  if (as === "exit") return exitRow(ctx, node, true);
+  if (as === "leaf") return leaf(ctx, node);
+  if (as === "chain") return chainBox(ctx, node, kids);
+  if (as === "fan") return fanBox(ctx, node, kids);
   return frameBox(ctx, node, kids[0].node);
 }
+
+/** The nodes the drawing shows as boxes of their own (a card or an exit), laid out from the root: every node but a chain
+ *  with steps, and a frame's one body only. The count every page prints beside a graph. */
+export function drawnNodeCount(graph: GraphInput | null | undefined): number {
+  const { byPath, kids } = treeOf(nodesOf(graph));
+  const count = (node: Node): number => {
+    const k = kids[node.path] ?? [];
+    const as = drawnAs(node, k);
+    const inner = as === "frame" ? count(k[0].node) : as === "chain" || as === "fan" ? k.reduce((n, c) => n + count(c.node), 0) : 0;
+    return (as === "chain" ? 0 : 1) + inner;
+  };
+  return byPath["/root"] ? count(byPath["/root"]) : 0;
+}
+
+/** A count of nodes in words: "1 node", "4 nodes". */
+export const nodesWord = (n: number) => `${n} ${n === 1 ? "node" : "nodes"}`;
+
+/** The graph's nodes the drawing can place: each with a path and a kind. */
+const nodesOf = (graph: GraphInput | null | undefined): Node[] => (graph && Array.isArray(graph.nodes) ? graph.nodes : [])
+  .filter((n) => n && typeof n.path === "string" && typeof n.kind === "string")
+  .map((n) => ({ path: n.path, kind: n.kind, label: String(n.label ?? n.kind), via: typeof n.via === "string" ? n.via : "" }));
 
 /** Draws `graph` (the DSL's workflowGraph) into `svg` at its natural size, which CSS shrinks to fit and never grows.
  *  Drawing again clears the last. Returns the drawing's size. */
 export function drawWorkflowGraph(svg: SVGSVGElement, graph: GraphInput | null | undefined, marks: GraphMarks = {}): { w: number; h: number } {
   while (svg.firstChild) svg.removeChild(svg.firstChild);
   svg.classList.add("wf");
-  const nodes: Node[] = (graph && Array.isArray(graph.nodes) ? graph.nodes : [])
-    .filter((n) => n && typeof n.path === "string" && typeof n.kind === "string")
-    .map((n) => ({ path: n.path, kind: n.kind, label: String(n.label ?? n.kind), via: typeof n.via === "string" ? n.via : "" }));
-  const tree = treeOf(nodes);
+  const tree = treeOf(nodesOf(graph));
   const size = (w: number, h: number) => {
     svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
     svg.setAttribute("width", String(w));

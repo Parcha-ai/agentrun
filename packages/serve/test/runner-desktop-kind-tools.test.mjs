@@ -1,7 +1,8 @@
 // A desktop computer brings its kind's tools to a run on the runner. An agent names its computer (definition.computer
 // {kind: "desktop", provider}), never the desktop's tools (definition.tools refuses them), so the run's spec binds,
-// beside what the revision grants, the tools the CLAIMED computer brings by its kind: desktop_screen, desktop_input and
-// computer_request_handoff, by the kernel registry's own list (DESKTOP_TOOL_DEFS), each once. They go through the run's
+// beside what the revision grants, the tools the CLAIMED computer brings as its groups offer them: computer_observe,
+// computer_act, computer_screenshot, computer_script and computer_request_handoff, by the kernel registry's own list
+// (computerToolsFor), each once. They go through the run's
 // one gate under the kind's settings key (`desktop`), so a deny refuses them in its words (naming desktop). A run with no computer gets
 // none of them.
 // The pi spec (adapter-run-spec.ts) through specFor, the CLI spec (cli-run-spec.ts) through the runner on Codex's
@@ -9,14 +10,14 @@
 // a grey screen. Loopback only: no provider, no key.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { specFor, toolNames } from "./runner-spec-support.mjs";
 
-const { DESKTOP_TOOL_DEFS } = await import("../../run-adapters/dist/kernel/registry/index.js");
+const { computerToolsFor } = await import("../../run-adapters/dist/kernel/registry/index.js");
 const { computerDepsFrom } = await import("../dist/workspace/index.js");
 const { fauxComputers } = await import("../dist/faux-computers.js");
 const { deniedText } = await import("../dist/tool-gate.js");
@@ -29,29 +30,33 @@ const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { CODEX_STANDIN_ENV } = await import("../dist/adapters.js");
 
 /** The desktop's tools, as the kernel's registry lists them: imported, never retyped. */
-const DESKTOP = DESKTOP_TOOL_DEFS.map((def) => def.name);
+const DESKTOP = computerToolsFor(["screen", "input.pointer", "input.keys"]);
 const FAUX_DESKTOP = { kind: "desktop", provider: "faux-desktop" };
 const DENY_DESKTOP = { desktop: { permission: "deny" } };
-const CLICK = { actions: [{ type: "click", at: [10, 10] }] };
+const CLICK = { steps: [{ click: [10, 10] }] };
 
 /** The runner's one composer over --faux's computers: a faux desktop for a claim whose agent names one. */
-const fauxComposer = ({ store, sealKey }) => computerDepsFrom({ env: {}, store, sealKey, faux: fauxComputers({ viewerBase: "http://127.0.0.1:9" }) });
+const fauxComposer = ({ store, sealKey }) => computerDepsFrom({ env: {}, store, sealKey, faux: fauxComputers() });
 const callOf = (spec, name) => spec.session.tools.find((tool) => tool.name === name);
 const ctx = (callId) => ({ callId, signal: new AbortController().signal, attempt: 0 });
 
-test("pi: a run of an agent whose computer is a desktop is handed desktop_screen, desktop_input and computer_request_handoff, each once, beside what it was granted; a desktop_screen call runs and answers a screenshot", async (t) => {
-  assert.deepEqual([...DESKTOP].sort(), ["computer_request_handoff", "desktop_input", "desktop_screen"], "the registry's desktop tools");
-  // desktop_screen is granted too (the store keeps a body the API would refuse): it is bound once.
-  const { spec } = await specFor(t, { body: { tools: ["read", "desktop_screen"], computer: FAUX_DESKTOP }, computer: fauxComposer });
+test("pi: a run of an agent whose computer is a desktop is handed computer_screenshot, computer_act and computer_request_handoff, each once, beside what it was granted; a computer_screenshot call runs and answers a screenshot", async (t) => {
+  assert.deepEqual([...DESKTOP], ["computer_observe", "computer_act", "computer_screenshot", "computer_script", "computer_request_handoff"], "the registry's tools for the faux desktop's groups");
+  // computer_screenshot is granted too (the store keeps a body the API would refuse): it is bound once.
+  const { spec } = await specFor(t, { body: { tools: ["read", "computer_screenshot"], computer: FAUX_DESKTOP }, computer: fauxComposer });
   const names = toolNames(spec);
   for (const name of DESKTOP) assert.equal(names.filter((given) => given === name).length, 1, `${name} is handed once: ${JSON.stringify(names)}`);
   assert.ok(names.includes("read"), "what the revision grants is still handed");
-  assert.equal(await spec.gate({ callId: "g1", tool: "desktop_screen", args: {} }), "allow", "desktop is allowed by default");
-  const shot = await callOf(spec, "desktop_screen").call({}, ctx("c1"));
+  assert.equal(await spec.gate({ callId: "g1", tool: "computer_screenshot", args: {} }), "allow", "desktop is allowed by default");
+  const shot = await callOf(spec, "computer_screenshot").call({}, ctx("c1"));
   assert.notEqual(shot.isError, true, `the screenshot ran: ${shot.text}`);
   assert.ok(shot.images?.length === 1, `it answers the screen as an image: ${JSON.stringify({ ...shot, images: shot.images?.length })}`);
-  const input = await callOf(spec, "desktop_input").call(CLICK, ctx("c2"));
+  const input = await callOf(spec, "computer_act").call(CLICK, ctx("c2"));
   assert.notEqual(input.isError, true, `the click ran: ${input.text}`);
+  // The script runs in serve's isolate over the same computer: the value it returns is the answer's.
+  const script = await callOf(spec, "computer_script").call({ code: "const shot = await computer.screen.shot(); return { width: shot.width, ui: typeof computer.app };" }, ctx("c3"));
+  assert.notEqual(script.isError, true, `the script ran: ${script.text}`);
+  assert.deepEqual(script.structured, { width: 1280, ui: "undefined" }, "the faux desktop has no ui group: no app()");
 });
 
 test("pi: the agent's computer_request_handoff asks the person through the claim's hold: the call waits for their answer, never refused at once, and a stop ends the wait", async (t) => {
@@ -70,16 +75,29 @@ test("pi: the agent's computer_request_handoff asks the person through the claim
   assert.doesNotMatch(answer.text ?? "", /not available|needs a|no host tool/i, `the stop ended the ask, not a missing port: ${answer.text}`);
 });
 
+test("pi: an agent whose desktop's surface is tools is handed computer_observe, computer_act, computer_screenshot and the hand-over, never computer_script", async (t) => {
+  const { spec } = await specFor(t, { body: { tools: ["read"], computer: { ...FAUX_DESKTOP, surface: "tools" } }, computer: fauxComposer });
+  const names = toolNames(spec);
+  assert.deepEqual(DESKTOP.filter((name) => names.includes(name)), ["computer_observe", "computer_act", "computer_screenshot", "computer_request_handoff"], JSON.stringify(names));
+  assert.ok(!names.includes("codemode"), "no code mode among the session's tools");
+});
+
+test("pi: an agent whose desktop's surface is code is handed the hand-over alone of the computer's tools: its code mode is the script, and computer_observe, computer_act and computer_screenshot are not listed", async (t) => {
+  const { spec } = await specFor(t, { body: { tools: ["read"], computer: { ...FAUX_DESKTOP, surface: "code" } }, computer: fauxComposer });
+  const names = toolNames(spec);
+  assert.deepEqual(DESKTOP.filter((name) => names.includes(name)), ["computer_request_handoff"], JSON.stringify(names));
+});
+
 test("pi: a run with no computer is handed none of the desktop's tools", async (t) => {
   const { spec } = await specFor(t, { body: { tools: ["read"] }, computer: fauxComposer });
   const names = toolNames(spec);
   assert.deepEqual(DESKTOP.filter((name) => names.includes(name)), [], `no desktop tool: ${JSON.stringify(names)}`);
 });
 
-test("pi: desktop set to deny on this server refuses desktop_input and desktop_screen at the run's gate, in the deny words naming desktop's setting", async (t) => {
+test("pi: desktop set to deny on this server refuses computer_act and computer_screenshot at the run's gate, in the deny words naming desktop's setting", async (t) => {
   const { spec } = await specFor(t, { body: { tools: ["read"], computer: FAUX_DESKTOP }, settings: DENY_DESKTOP, computer: fauxComposer });
-  assert.ok(toolNames(spec).includes("desktop_input"), "the tool is handed, and the gate holds it");
-  for (const [tool, args] of [["desktop_input", CLICK], ["desktop_screen", {}]]) {
+  assert.ok(toolNames(spec).includes("computer_act"), "the tool is handed, and the gate holds it");
+  for (const [tool, args] of [["computer_act", CLICK], ["computer_screenshot", {}]]) {
     const given = await spec.gate({ callId: `d-${tool}`, tool, args });
     // The gate asks a kind's tool as its kind (tool-gate.ts askedAs), so its words name the setting the owner set: desktop.
     assert.deepEqual(given, { deny: deniedText("desktop") }, `${tool} is refused in desktop's deny words`);
@@ -110,15 +128,28 @@ function findAll(dir, name, found = []) {
   return found;
 }
 
+/** The claim's spec, its release first keeping a copy of each CODEX_HOME under `dir` in `kept`: the release sweeps the
+ *  CLI's scratch folder, its home with it, so the test reads the home the run had once the run has settled. */
+function keepingHomes(spec, dir, kept) {
+  return {
+    ...spec,
+    release: async () => {
+      for (const home of findAll(dir, "codex-home")) cpSync(home, join(kept, String(readdirSync(kept).length), "codex-home"), { recursive: true });
+      await spec.release?.();
+    },
+  };
+}
+
 /** A codex run on the runner path, on Codex's stand-in, its agent's computer --faux's desktop, whose model calls `tool`
  *  with `args` (its first message is the stand-in's call). `settings`: the server's tool settings. Returns the tools
  *  Codex was handed and the call's answer from Codex's session record (undefined when none came within 15 s). */
-async function codexCall(t, tool, args, settings) {
+async function codexCall(t, tool, args, settings, computer = FAUX_DESKTOP) {
   const was = process.env.AGENTRUN_CODEX_STANDIN;
   process.env.AGENTRUN_CODEX_STANDIN = "1";
   t.after(() => (was === undefined ? delete process.env.AGENTRUN_CODEX_STANDIN : (process.env.AGENTRUN_CODEX_STANDIN = was)));
   const origin = await gateway(t, "Codex answered.");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-desktop-tools-"));
+  const kept = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-desktop-tools-homes-"));
   const standIn = join(dir, "codex-stand-in.mjs");
   await copyStandIn(standIn);
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -129,8 +160,9 @@ async function codexCall(t, tool, args, settings) {
     await store.close().catch(() => {});
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
+    rmSync(kept, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Use the desktop.", harness: "codex", tools: ["read"], computer: FAUX_DESKTOP } });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Use the desktop.", harness: "codex", tools: ["read"], computer } });
   if (settings) await server.settings.put("tool-settings", settings);
   const launch = { input: { content: `call ${tool} ${JSON.stringify(args)}` }, title: "t", place: { mode: "runner" }, harness: "codex", model: { provider: "openai", modelId: "gpt-test" } };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
@@ -150,7 +182,7 @@ async function codexCall(t, tool, args, settings) {
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
     createLoop: createDispatchLoop({
       launchOf: (runId) => store.runs.launch(runId),
-      resolve: (name, given) => (name === "codex" ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined),
+      resolve: (name, given) => (name === "codex" ? createAdapterLoop(async (claim, run) => keepingHomes(await cliRunSpecFromLaunch(given, run, deps, claim), dir, kept)) : undefined),
     }),
   });
   const end = Date.now() + 90_000;
@@ -162,7 +194,9 @@ async function codexCall(t, tool, args, settings) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.ok(["ended", "parked"].includes(row.state), `the run did its turn: ${JSON.stringify(row)}; log ${JSON.stringify(log)}`);
-  const homes = findAll(dir, "codex-home");
+  // Codex's home as the claim's release found it (keepingHomes): the release follows the run's end commit, so it is waited for.
+  for (const by = Date.now() + 15_000; !findAll(kept, "codex-home").length && Date.now() < by; ) await new Promise((resolve) => setTimeout(resolve, 25));
+  const homes = findAll(kept, "codex-home");
   assert.equal(homes.length, 1, `one CODEX_HOME for the run: ${JSON.stringify(homes)}`);
   const rollouts = readdirSync(join(homes[0], "sessions"), { recursive: true }).map(String).filter((path) => path.endsWith(".jsonl"));
   assert.ok(rollouts.length >= 1, "Codex recorded its session");
@@ -174,16 +208,23 @@ async function codexCall(t, tool, args, settings) {
   return { handed: (lines[0].payload.dynamic_tools ?? []).map((given) => given.name), calls: lines.filter((line) => line.payload?.type === "function_call").map((line) => line.payload.name), answer: outputs()[0] };
 }
 
-test("codex: a run of an agent whose computer is a desktop is handed desktop_screen, desktop_input and computer_request_handoff, and the model's desktop_screen call runs", { timeout: 120_000 }, async (t) => {
-  const { handed, calls, answer } = await codexCall(t, "desktop_screen", {});
+test("codex: a run of an agent whose computer is a desktop is handed computer_screenshot, computer_act and computer_request_handoff, and the model's computer_screenshot call runs", { timeout: 120_000 }, async (t) => {
+  const { handed, calls, answer } = await codexCall(t, "computer_screenshot", {});
   for (const name of DESKTOP) assert.ok(handed.includes(name), `${name} is among Codex's tools: ${JSON.stringify(handed)}`);
-  assert.deepEqual(calls, ["desktop_screen"], "the model's call reached Codex");
+  assert.deepEqual(calls, ["computer_screenshot"], "the model's call reached Codex");
   assert.ok(answer !== undefined, "the call answered");
   assert.doesNotMatch(answer, /not available|Permission denied|error/i, `the screenshot ran: ${answer}`);
 });
 
-test("codex: desktop set to deny on this server refuses the model's desktop_input call in the deny words naming desktop's setting", { timeout: 120_000 }, async (t) => {
-  const { handed, answer } = await codexCall(t, "desktop_input", CLICK, DENY_DESKTOP);
-  assert.ok(handed.includes("desktop_input"), `desktop_input is handed, and the gate holds it: ${JSON.stringify(handed)}`);
+test("codex: an agent whose desktop's surface is code is handed computer_script and the hand-over, none of the per-step tools, and the model's script runs", { timeout: 120_000 }, async (t) => {
+  const { handed, answer } = await codexCall(t, "computer_script", { code: "return (await computer.screen.shot()).width;" }, undefined, { ...FAUX_DESKTOP, surface: "code" });
+  const computers = handed.filter((name) => DESKTOP.includes(name));
+  assert.deepEqual(computers, ["computer_script", "computer_request_handoff"], `the script and the hand-over alone: ${JSON.stringify(handed)}`);
+  assert.match(answer ?? "", /1280/, `the script ran: ${answer}`);
+});
+
+test("codex: desktop set to deny on this server refuses the model's computer_act call in the deny words naming desktop's setting", { timeout: 120_000 }, async (t) => {
+  const { handed, answer } = await codexCall(t, "computer_act", CLICK, DENY_DESKTOP);
+  assert.ok(handed.includes("computer_act"), `computer_act is handed, and the gate holds it: ${JSON.stringify(handed)}`);
   assert.ok(answer?.includes(deniedText("desktop")), `refused in desktop's deny words: ${answer}`);
 });

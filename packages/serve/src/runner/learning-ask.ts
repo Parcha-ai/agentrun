@@ -1,9 +1,11 @@
 // The learning run's grader call (learning-loop.ts LearningLoopDeps.ask): a paid model request like a pi turn, on the
 // same path. Its session ("learning.grade") lives in the learning run's own journal (journalSessions); the host's check
-// before it leaves is the learning run's cap, asked with the run's totals (runBooking, the run's one booking); its record
+// before it leaves is the learning run's cap, asked with the run's totals (runBooking, the run's one booking), and a
+// request it refuses is never sent (the ask throws GradeOverCap, and the loop skips the grade); its record
 // is written and made durable before it leaves, and its cost booked when it answers (modelPortFor); and it reaches the
 // provider only through the kernel's model proxy, which admits and books it (startModelProxy with the booking's port).
-// What it spent is that booking's, and its tokens the answer's usage: the grade's cost_usd and tokens.
+// What it spent is that booking's, and its tokens the answer's usage: the grade's cost_usd and tokens. Each answer, and
+// each refusal, carries the booking's whole spend (`booked`): an earlier attempt's requests are the grade's too.
 import { randomBytes } from "node:crypto";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -13,9 +15,14 @@ import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import type { Tokens } from "../learning.js";
 import { sessionProvider } from "../port-models.js";
 import { policyFor } from "./adapters/pi.js";
-import type { LearningLoopDeps } from "./learning-loop.js";
+import { GradeOverCap, type LearningLoopDeps } from "./learning-loop.js";
+import type { RouteCost } from "./model-route.js";
 import { journalSessions } from "./sessions.js";
 
+/** How long the ask waits, once the grade answered, for the proxy to book its request: the proxy books a request after its
+ *  client has the whole answer (when the provider's stream ends, which can come later), so the spend is read once it is
+ *  booked. One booked later than this reads unknown (null), never $0. */
+export const GRADE_BOOKING_WAIT_MS = 10_000;
 /** The session the grader's requests are booked under, in the learning run's journal. */
 export const GRADE_SESSION = "learning.grade";
 const PROVIDER = "agentrun-grade";
@@ -32,6 +39,11 @@ export interface GraderRoute {
   readonly price?: (model: string, usage: { input: number; output: number; cacheRead: number; cacheWrite: number }) => number | null;
   /** The upstream fetch (a test's scripted origin). */
   readonly fetch?: typeof fetch;
+  /** The catalog's cost of the model, tiers included, whether serve has a price for it at all, and its output ceiling:
+   *  what a capped grade is judged at before it leaves (model-route.ts ModelRoute; adapter-run-spec.ts capModelOf). */
+  readonly cost?: RouteCost;
+  readonly unpriced?: boolean;
+  readonly outputCeiling?: number | null;
 }
 
 export interface BookedAskOptions extends GraderRoute {
@@ -65,6 +77,8 @@ export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
       // The cap is the learning run's: asked with every session of the run summed, never this one's alone.
       const hostCheck = options.beforeRequest ? runBooking(sessions, options.beforeRequest) : undefined;
       let refused: Refusal | undefined;
+      // Told once the grade's own request is booked (its request_end), never by a cut request booked before it.
+      let booked: (() => void) | undefined;
       const booking = await modelPortFor(writer, {
         key: GRADE_SESSION,
         label: "grade",
@@ -76,11 +90,13 @@ export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
         // The rule before a side effect: the request's record is durable before the request leaves.
         onEvent: async (event) => {
           if (event.type === "request_start") await run.flush();
+          if (event.type === "request_end") booked?.();
         },
       });
       // A grade request an earlier attempt sent and a crash cut is booked first, at its held figure.
       await booking.bookCut();
       const before = booking.spentUsd();
+      const bookedOnce = new Promise<true>((resolve) => (booked = () => resolve(true)));
       // The policy of the route's wire, as pi's session takes it (pi.ts policyFor: claude-agent's on Messages, codex's on
       // Responses, no fork); the grade offers no tool.
       const proxy = await startModelProxy({
@@ -98,16 +114,32 @@ export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
         const models = createModels();
         models.setProvider(sessionProvider(options.provider.api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_GRADE_KEY", like: { ...options.like, maxTokens: request.maxTokens }, reasoning: false }));
         const target = models.getModel(PROVIDER, model);
-        const answer = (await models.completeSimple(target as never, { messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }] } as never, { signal, maxTokens: request.maxTokens } as never)) as unknown as Answer;
-        if (refused) throw new Error(refused.refuse);
+        // Refused by the cap before it left: nothing of it was sent or spent, and the grade is not run (GradeOverCap),
+        // however its client came back.
+        // What the grade spent before it is its records' (every attempt's requests), never $0 for an earlier attempt's.
+        const overCap = () => (refused ? new GradeOverCap(refused.refuse, refused.forGood === true, { usd: booking.spentUsd(), turns: booking.turns() }) : undefined);
+        let answer: Answer;
+        try {
+          answer = (await models.completeSimple(target as never, { messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }] } as never, { signal, maxTokens: request.maxTokens } as never)) as unknown as Answer;
+        } catch (error) {
+          throw overCap() ?? error;
+        }
+        const over = overCap();
+        if (over) throw over;
         if (answer.stopReason === "error" || answer.stopReason === "aborted") throw new Error(`the grade's request failed: ${answer.errorMessage ?? answer.stopReason}`);
         const text = answer.content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("");
-        const after = booking.spentUsd();
+        // The spend once the proxy booked this request: read before, it is the spend without it ($0 for the grade). Not
+        // booked within the wait: unknown.
+        let timer: NodeJS.Timeout | undefined;
+        const inTime = await Promise.race([bookedOnce, new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), GRADE_BOOKING_WAIT_MS)))]);
+        clearTimeout(timer);
+        const after = inTime ? booking.spentUsd() : null;
         const usd = before === null || after === null ? null : after - before;
         // pi-ai counts cache reads and writes apart from input, as the grade's tokens do.
         const used = answer.usage;
         const tokens: Tokens | null = used ? { input: used.input, cache_read: used.cacheRead ?? 0, cache_write: used.cacheWrite ?? 0, output: used.output } : null;
-        return { text, usd, tokens };
+        // The grade's records after it: every grade request of the learning run, an earlier attempt's included.
+        return { text, usd, tokens, booked: { usd: after, turns: booking.turns() } };
       } finally {
         await proxy.close().catch(() => undefined);
       }

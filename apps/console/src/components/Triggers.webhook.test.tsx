@@ -31,7 +31,7 @@ type Call = { method: string; path: string; body: unknown; key: string | null };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 // `held`: the new secret's answer waits for it (a rotation still out).
-function server({ triggers = [NIGHTLY, HOOK], create, held }: { triggers?: Trigger[]; create?: (call: Call) => Response; held?: Promise<void> } = {}) {
+function server({ triggers = [NIGHTLY, HOOK], create, held, secret }: { triggers?: Trigger[]; create?: (call: Call) => Response; held?: Promise<void>; secret?: (call: Call) => Response | Promise<Response> } = {}) {
   const calls: Call[] = [];
   // Its own copies: a PATCH here never leaks into the next test's triggers.
   triggers = triggers.map((t) => structuredClone(t));
@@ -45,6 +45,7 @@ function server({ triggers = [NIGHTLY, HOOK], create, held }: { triggers?: Trigg
     const t = m && triggers.find((x) => x.id === decodeURIComponent(m[1]));
     if (m && !t) return json(404, { error: { code: "not_found", message: "no trigger", retryable: false } });
     if (m?.[2] === "/firings") return json(200, { firings: [fired({})] });
+    if (m?.[2] === "/secret" && secret) return secret(call);
     if (m?.[2] === "/secret") { await held; return json(200, { signing_secret: "CANARY-VALUE-0b2d4e6f" }); }
     if (m?.[2] === "/fire") return json(201, fired({ key: "fir_2", by: "manual" }));
     if (m && call.method === "PATCH") { Object.assign(t!, call.body); return json(200, t); }
@@ -132,14 +133,14 @@ describe("Triggers: schedules and webhooks", () => {
   });
 
   it("says a refused create in the server's words", async () => {
-    const s = server({ create: () => json(409, { error: { code: "no_sealing_key", message: "This server was handed no seal key to keep a webhook trigger's secret under.", retryable: false } }) });
+    const s = server({ create: () => json(409, { error: { code: "agent_archived", message: "The agent triage is archived: unarchive it to make a trigger of it.", retryable: false } }) });
     const t = await open(s.v2, { trigger: null, kind: "webhook" });
     await t.set("name", "on deploy");
     await t.set("agent", "triage");
     await t.set("content", "Check the deploy.");
     await t.set("maxCost", "1");
     await t.click(/^Create webhook$/);
-    expect(t.text()).toContain("This server was handed no seal key to keep a webhook trigger's secret under.");
+    expect(t.text()).toContain("The agent triage is archived: unarchive it to make a trigger of it.");
   });
 
   it("a webhook's page shows its URL and firings; Rotate secret shows the new one once; Pause and Delete act on it", async () => {
@@ -226,5 +227,76 @@ describe("Triggers: schedules and webhooks", () => {
     const page = await open(server({ triggers: [FILTERED] }).v2, { trigger: "trg_f" });
     expect(page.text()).toContain("deploy.finished (succeeded) where /env is one of \"prod\" and /ref starts with \"refs/tags/\"");
     expect(page.text()).not.toContain("on each signed request");
+  });
+});
+
+const COMPOSIO: Trigger = { ...HOOK, id: "trg_c", name: "on issue", source: { kind: "webhook", signature: "composio" } };
+
+describe("Triggers: a composio webhook's secret is Composio's, set on the trigger", () => {
+  it("choosing composio on create sends signature composio and no secret", async () => {
+    const s = server({ create: (call) => json(201, { ...COMPOSIO, ...(call.body as object), id: "trg_new" }) });
+    const t = await open(s.v2, { trigger: null, kind: "webhook" });
+    await t.set("name", "on issue");
+    await t.set("agent", "triage");
+    await t.set("content", "Triage it.");
+    await t.set("maxCost", "1");
+    await act(async () => { (t.host.querySelector('input[name="signature"][value="composio"]') as HTMLInputElement).click(); });
+    await t.click(/^Create webhook$/);
+    const made = s.calls.find((c) => c.method === "POST" && c.path === "/v2/triggers")!;
+    expect((made.body as { source: unknown }).source).toEqual({ kind: "webhook", signature: "composio" });
+    expect(made.body).not.toHaveProperty("secret");
+  });
+
+  const typed = async (t: Awaited<ReturnType<typeof open>>, value: string) => { await t.click(/Set secret$/); await t.set("secret", value); };
+  const field = (t: Awaited<ReturnType<typeof open>>) => t.host.querySelector('[name="secret"]') as HTMLInputElement | null;
+
+  it("Set secret sends {secret} to the trigger's secret route, and the field is gone and empty after it", async () => {
+    const s = server({ triggers: [COMPOSIO], secret: () => json(200, { secret: { name: "trigger:trg_c", set: true, source: "console", changed_at: null } }) });
+    const t = await open(s.v2, { trigger: "trg_c" });
+    expect(t.button(/Rotate secret/)).toBeUndefined();
+    await typed(t, "cmp-secret-given-by-composio-1234");
+    await t.click(/^Save$/);
+    const sent = s.calls.find((c) => c.path === "/v2/triggers/trg_c/secret")!;
+    expect([sent.method, sent.body]).toEqual(["POST", { secret: "cmp-secret-given-by-composio-1234" }]);
+    expect(field(t)).toBeNull();
+    await t.click(/Set secret$/);
+    expect(field(t)!.value).toBe("");
+  });
+
+  it("Cancel clears the field", async () => {
+    const t = await open(server({ triggers: [COMPOSIO] }).v2, { trigger: "trg_c" });
+    await typed(t, "cmp-secret-given-by-composio-1234");
+    await t.click(/^Cancel$/);
+    expect(field(t)).toBeNull();
+    await t.click(/Set secret$/);
+    expect(field(t)!.value).toBe("");
+  });
+
+  it("a refused save keeps the form and its value for a retry", async () => {
+    let first = true;
+    const s = server({ triggers: [COMPOSIO], secret: () => (first ? ((first = false), json(422, { error: { code: "input_invalid", message: "secret holds at least 24 bytes", retryable: false } })) : json(200, { secret: { name: "trigger:trg_c", set: true, source: "console", changed_at: null } })) });
+    const t = await open(s.v2, { trigger: "trg_c" });
+    await typed(t, "cmp-secret-given-by-composio-1234");
+    await t.click(/^Save$/);
+    expect(field(t)!.value).toBe("cmp-secret-given-by-composio-1234");
+    expect(t.text()).toContain("secret holds at least 24 bytes");
+    await t.click(/^Save$/);
+    expect(s.calls.filter((c) => c.path === "/v2/triggers/trg_c/secret")).toHaveLength(2);
+    expect(field(t)).toBeNull();
+  });
+
+  it("a second save is blocked while one is out", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const s = server({ triggers: [COMPOSIO], secret: async () => { await held; return json(200, { secret: { name: "trigger:trg_c", set: true, source: "console", changed_at: null } }); } });
+    const t = await open(s.v2, { trigger: "trg_c" });
+    await typed(t, "cmp-secret-given-by-composio-1234");
+    await t.click(/^Save$/);
+    await t.click(/^Save$/);
+    expect(s.calls.filter((c) => c.path === "/v2/triggers/trg_c/secret")).toHaveLength(1);
+    expect((t.button(/^Save$/) as HTMLButtonElement).disabled).toBe(true);
+    release();
+    await t.settle();
+    expect(field(t)).toBeNull();
   });
 });

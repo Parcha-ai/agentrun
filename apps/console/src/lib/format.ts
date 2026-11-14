@@ -76,6 +76,14 @@ export const soFarNote = (c: { unpriced: number }, { ended = false }: { ended?: 
 const ENDED_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
 export const runEnded = (status: string | undefined | null): boolean => typeof status === "string" && ENDED_STATUSES.has(status);
 
+/** A charge on a timeline row, in words: "$0.0018", or what is known so far ("so far $0.001, 1 not priced") when one of its
+ *  charges has no price; on a run that has ended (`ended`), what is known without "so far" ("$0.001 known, 1 not priced"),
+ *  as cost says the run's. */
+export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpriced?: number }, { ended = false }: { ended?: boolean } = {}): string =>
+  u.usd !== null ? dollars(u.usd)
+    : typeof u.so_far_usd === "number" ? (ended ? `${soFarDollars(u.so_far_usd)} known, ${u.unpriced ?? 0} not priced` : `so far ${soFarDollars(u.so_far_usd)}, ${u.unpriced ?? 0} not priced`)
+    : "not priced";
+
 /** A local estimate stays an estimate, and a cost the server does not know says so: the contract's "Null while unknown.
  *  A client shows null as unknown, never as $0" (a request cut before its answer, a cost still pending, or a model with
  *  no price). When the server says what is known so far, that is said ("so far $0.0123 · 1 not priced"), never as the
@@ -87,6 +95,25 @@ export function cost(c: Cost | null | undefined, { ended = false }: { ended?: bo
   if (known) return ended ? `${soFarDollars(known.so_far_usd)}${est(known)} known · ${known.unpriced} not priced` : `so far ${soFarDollars(known.so_far_usd)}${est(known)} · ${known.unpriced} not priced`;
   if (!c || c.usd === null) return "Unknown";
   return `${dollars(c.usd)}${est(c)}`;
+}
+
+/** A run's cost as its header says it, beside its spend cap when it has one (`cap`, the run's `cost.cap_usd`): "$0.0059
+ *  est. of $1.00". A cost that is not one figure (unknown, or known so far with calls not priced) keeps its words, the cap
+ *  after them ("Unknown · cap $1.00"). `text`: the cost already worded (a workflow run's graph totals). No cap: the cost. */
+export function costOfCap(c: Cost | null | undefined, cap: number | null | undefined, { ended = false, text }: { ended?: boolean; text?: string } = {}): string {
+  const shown = text ?? cost(c, { ended });
+  if (typeof cap !== "number") return shown;
+  // One figure ("$0.0059 est.", "<$0.0001"): "of" the cap. A partial total ("$0.0188 + 2 unknown") or a word: the cap after.
+  const figure = text !== undefined ? ONE_FIGURE.test(text) : !soFar(c) && !!c && c.usd !== null;
+  return figure ? `${shown} of ${capDollars(cap)}` : `${shown} · cap ${capDollars(cap)}`;
+}
+const ONE_FIGURE = /^<?\$[\d.,]+( est\.)?$/;
+
+/** A spend cap in dollars as it was set: two places at least ($1.00, $2.50), more when the cap has them ($0.013), so a
+ *  raise finer than a cent still reads as a change. */
+export function capDollars(usd: number): string {
+  for (let places = 2; places < 8; places++) if (Number(usd.toFixed(places)) === usd) return `$${usd.toFixed(places)}`;
+  return `$${usd.toFixed(8)}`;
 }
 
 /** The run files a run's Markdown may link to: their paths as GET /v2/runs/{id}/files lists them, and `from`, the folder
@@ -113,6 +140,8 @@ function runFile(href: string, files: LinkedFiles): string | null {
  *  to another app (mailto:, tel:) is as marked and the sanitizer leave it. */
 export function markdown(text: string, files?: LinkedFiles): string {
   const body = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { RETURN_DOM: true }) as HTMLElement;
+  // A code block wraps inside its box (a long line breaks, never runs past the page's edge).
+  for (const pre of [...body.querySelectorAll("pre")]) pre.classList.add("whitespace-pre-wrap", "break-words", "[overflow-wrap:anywhere]");
   for (const a of [...body.querySelectorAll("a[href]")]) {
     const href = a.getAttribute("href")!.trim();
     if (/^(https?|ftps?):/i.test(href)) { a.setAttribute("target", "_blank"); a.setAttribute("rel", "noopener noreferrer"); continue; }

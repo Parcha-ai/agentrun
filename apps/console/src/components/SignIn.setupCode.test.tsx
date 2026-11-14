@@ -19,7 +19,7 @@ function mount() {
 describe("SignIn's setup code field", () => {
   it("is a one-time code with a name of its own, never a login's username", () => {
     const host = mount();
-    const code = [...host.querySelectorAll("label")].find((l) => l.querySelector("span")?.textContent === "Setup code")!.querySelector("input")!;
+    const code = [...host.querySelectorAll("label")].find((l) => l.textContent === "Setup code")!.control as HTMLInputElement;
     expect(code.getAttribute("autocomplete")).toBe("one-time-code");
     expect(code.getAttribute("name")).toBe("setup-code");
     expect(code.id).toBe("setup-code");

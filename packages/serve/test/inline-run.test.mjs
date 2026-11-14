@@ -6,7 +6,7 @@
 // an agent made with POST /agents.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { follow, serve } from "./support.mjs";
+import { answerFlow, follow, serve } from "./support.mjs";
 
 const DEFINITION = { name: "Expert 42", description: "Answers questions.", instructions: "Answer.", skills: [], tools: [] };
 const external = (version = 7, id = "42") => ({ source: "grep", kind: "expert", id, version });
@@ -66,6 +66,17 @@ test("a first use makes the agent and its revision and starts the run; a reuse o
     assert.deepEqual([refused.status, refused.body.error?.code], [403, "forbidden"], `${method} ${path}: ${JSON.stringify(refused.body)}`);
     assert.match(refused.body.error.message, /managed by its source/);
   }
+});
+
+test("a new version's first workflow run is titled with that version's name, not the name before it", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { runner: false });
+  const flow = (version, name) => inline({ external: external(version, "flow"), definition: { name, workflow: answerFlow() }, input: { question: "What is six times seven?" } });
+  const first = await api("POST", "/runs", flow(1, "Flow v1"));
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  assert.equal(first.body.title, "Flow v1: What is six times seven?");
+  const next = await api("POST", "/runs", flow(2, "Flow v2"));
+  assert.equal(next.status, 202, JSON.stringify(next.body));
+  assert.equal(next.body.title, "Flow v2: What is six times seven?", "the new version's name, which its first run brings the agent up to");
 });
 
 test("two first uses at once make one agent and one revision", { timeout: 120_000 }, async (t) => {
@@ -152,8 +163,10 @@ test("a run started inline reads exactly as a run of an agent made with POST /ag
   const external_ = await api("POST", "/runs", inline({ input, max_cost_usd: 1 }));
   assert.deepEqual([plain.status, external_.status], [202, 202], JSON.stringify([plain.body, external_.body]));
   const ids = (run) => [[run.run_id, "<run>"], [run.agent_id, "<agent>"], [run.revision, "<revision>"]];
-  // The start's own answer.
-  assert.deepEqual(shapeOf(external_.body, ids(external_.body)), shapeOf(plain.body, ids(plain.body)), "the 202");
+  // The start's own answer. It is the run as the server read it back, and the runner beside it claims a queued run at once
+  // (the store's wake), so where the run has got to by then (its claim, its status and state) is not compared.
+  const started = (body) => shapeOf({ ...body, claim: "<claim>", status: "<status>", state: "<state>" }, ids(body));
+  assert.deepEqual(started(external_.body), started(plain.body), "the 202");
   await follow(api, plain.body.run_id, ["completed"]);
   await follow(api, external_.body.run_id, ["completed"]);
   const read = async (path, run) => shapeOf((await api("GET", path)).body, ids(run));

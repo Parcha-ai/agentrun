@@ -83,7 +83,7 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   assert.equal(out.split("\n").filter(Boolean).length, 1, "nothing more on stdout");
 });
 
-test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on PATH), the bin says on stderr that the Docker box is on by default, and the box image's first build as it starts and as it ends; stdout stays the one running line", { timeout: 120_000 }, async (t) => {
+test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on PATH), the bin says on stderr that the Docker box is on by default; stdout stays the one running line", { timeout: 120_000 }, async (t) => {
   const { env } = bare(t);
   delete env.AGENTRUN_BOXES;
   const dir = mkdtempSync(join(tmpdir(), "agentrun-npx-docker-"));
@@ -91,8 +91,6 @@ test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on P
   mkdirSync(join(dir, "bin"));
   mkdirSync(join(dir, "state"));
   writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
-  // The build holds until the test lets it go: the start's line comes first, and the end's only once it ends.
-  writeFileSync(join(dir, "state", "build-hold"), "");
   const child = spawn(process.execPath, [BIN, "--no-open"], { env: { ...env, PATH: `${join(dir, "bin")}:${env.PATH}`, FAKE_DOCKER_STATE: join(dir, "state") }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
   t.after(() => stopChild(child, exited));
@@ -100,62 +98,16 @@ test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on P
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (err += chunk));
-  const until = async (pattern) => {
-    for (let i = 0; !pattern.test(err); i++) {
-      assert.ok(i < 1000, `the bin printed ${pattern}: ${out}${err}`);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  };
-  await until(/^Preparing the Docker box image .*\n/m);
-  const said = () => err.split("\n").filter((line) => start.SAID.test(line));
+  for (let i = 0; !(/^Boxes: .*\n/m.test(err) && /\n$/.test(out)); i++) {
+    assert.ok(i < 1000, `the bin printed its boxes line: ${out}${err}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const said = err.split("\n").filter((line) => start.SAID.test(line));
   assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, "stdout is the one running line a script reads");
-  assert.match(said()[0], /^Boxes: docker \(on by default; set AGENTRUN_BOXES to change\)\. docker is preparing \(building the box image [^\n]*\)\./);
-  assert.equal(said()[1], "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.");
-  assert.equal(said().length, 2, err);
-  rmSync(join(dir, "state", "build-hold"));
-  await until(/^The Docker box image is ready\.\n/m);
-  assert.deepEqual(said().slice(2), ["The Docker box image is ready."], "one line as the build ends, nothing else");
-  assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, "still the one line on stdout");
+  assert.match(said[0], /^Boxes: docker \(on by default; set AGENTRUN_BOXES to change\)\./);
+  assert.equal(said.length, 1, err);
   child.kill("SIGTERM");
   assert.equal(await exited, 0, err);
-});
-
-test("a terminal that closes its pipes after the address (`| head -n 1`) ends no command: a box image line said later goes nowhere, and the server keeps running until it is stopped", { timeout: 120_000 }, async (t) => {
-  const { home, env } = bare(t);
-  delete env.AGENTRUN_BOXES;
-  const dir = mkdtempSync(join(tmpdir(), "agentrun-npx-pipe-"));
-  removeAtEnd(dir);
-  mkdirSync(join(dir, "bin"));
-  mkdirSync(join(dir, "state"));
-  writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
-  writeFileSync(join(dir, "state", "build-hold"), "");
-  const child = spawn(process.execPath, [BIN, "--no-open"], { env: { ...env, PATH: `${join(dir, "bin")}:${env.PATH}`, FAKE_DOCKER_STATE: join(dir, "state") }, stdio: ["ignore", "pipe", "pipe"] });
-  const exited = new Promise((resolve) => child.on("exit", resolve));
-  t.after(() => stopChild(child, exited));
-  let out = "";
-  let err = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  child.stderr.on("data", (chunk) => (err += chunk));
-  // Read on either pipe: what this test checks is that a line said once the reader has gone ends nothing, wherever it goes.
-  for (let i = 0; !/^Preparing the Docker box image /m.test(out + err); i++) {
-    assert.ok(i < 1000, `the bin printed its lines: ${out}${err}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  // The reader goes, as `head -n 1` does once it has its line: both pipes close. The command says its later lines through
-  // console, which drops a write's error; a raw stream write there would end it on the closed pipe (EPIPE).
-  child.stdout.destroy();
-  child.stderr.destroy();
-  rmSync(join(dir, "state", "build-hold"));
-  // The build ends (the server's record of the image says so), and the server says it, a line the command passes on.
-  const record = join(STORE(home), "box-image.json");
-  for (let i = 0; !(existsSync(record) && JSON.parse(readFileSync(record, "utf8")).state === "ready"); i++) {
-    assert.ok(i < 600, "the image's build ended");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  await new Promise((resolve) => setTimeout(resolve, 2_000));
-  assert.equal(child.exitCode, null, "the command is still running after a line it said went nowhere");
-  child.kill("SIGTERM");
-  assert.equal(await exited, 0, "a stop then is a clean one");
 });
 
 test("a subcommand is the server's own, on ~/.agentrun: import --dry-run", { timeout: 60_000 }, async (t) => {
@@ -325,8 +277,23 @@ test("the address to open is the URL on the server's first \"Open \" line, howev
   assert.equal(await openUrl(elsewhere.stdout), "http://127.0.0.1:7343/", "only an http(s) URL on the loopback address this command started the server on");
 });
 
-test("the lines after the Open line go on, one whole line at a time, however the output is cut; the bin says the boxes and box image lines among them", async (t) => {
-  const server = stub(["agentrun-serve on http://127.0.0.1:7344/v2\nOpen http://127.0.0.1:7344/\nBox", "es: docker (on by default; set AGENTRUN_BOXES to change).\nGET /v2/health 200\n", "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.\n", "The Docker box image is ready.\n"]);
+test("an API-only server's line stands for the Open line: the address is its AGENTRUN_BASE_URL line's, on the loopback address or the public URL alone", async (t) => {
+  const api = stub(["agentrun-serve on http://127.0.0.1:7345/v2 (agent store in /tmp/x)\nAGENTRUN_BASE_URL=http://127.0.0.1:7345/v2\nAGENTRUN_API_KEY=$AGENTRUN_TOKEN\n", "API only (AGENTRUN_API_ONLY=1): the run routes are served; the console, sign-in, setup, settings, MCP, triggers and hooks are refused.\n", "GET /v2/health 200\n"]);
+  t.after(() => api.kill());
+  assert.equal(await openUrl(api.stdout), "http://127.0.0.1:7345/v2");
+  const published = stub(["AGENTRUN_BASE_URL=https://agents.example.com/v2\n", "API only (AGENTRUN_API_ONLY=1): the run routes are served.\n"]);
+  t.after(() => published.kill());
+  assert.equal(await openUrl(published.stdout, "https://agents.example.com"), "https://agents.example.com/v2", "at the public URL the server was started with");
+  const elsewhere = stub(["AGENTRUN_BASE_URL=https://agents.example.com/v2\n", "API only (AGENTRUN_API_ONLY=1): the run routes are served.\n"], { exit: true });
+  t.after(() => elsewhere.kill());
+  assert.equal(await openUrl(elsewhere.stdout), undefined, "a base URL on another host is no address this command names");
+  const early = stub(["API only (AGENTRUN_API_ONLY=1): the run routes are served.\n", "AGENTRUN_BASE_URL=http://127.0.0.1:7346/v2\n"], { exit: true });
+  t.after(() => early.kill());
+  assert.equal(await openUrl(early.stdout), undefined, "the API-only line stands for the Open line only after the base URL it names");
+});
+
+test("the lines after the Open line go on, one whole line at a time, however the output is cut; the bin says the boxes and setup lines among them", async (t) => {
+  const server = stub(["agentrun-serve on http://127.0.0.1:7344/v2\nOpen http://127.0.0.1:7344/\nBox", "es: docker (on by default; set AGENTRUN_BOXES to change).\nGET /v2/health 200\n", "Set up this server: https://agentrun.example.com/setup#code=AbCd", "EfGh\n", "GET /v2/agents 200\n"]);
   t.after(() => server.kill());
   const after = [];
   assert.equal(await openUrl(server.stdout, undefined, [], (line) => after.push(line)), "http://127.0.0.1:7344/");
@@ -334,7 +301,7 @@ test("the lines after the Open line go on, one whole line at a time, however the
     assert.ok(i < 100, JSON.stringify(after));
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  assert.deepEqual(after.filter((line) => start.SAID.test(line)), ["Boxes: docker (on by default; set AGENTRUN_BOXES to change).", "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.", "The Docker box image is ready."]);
+  assert.deepEqual(after.filter((line) => start.SAID.test(line)), ["Boxes: docker (on by default; set AGENTRUN_BOXES to change).", "Set up this server: https://agentrun.example.com/setup#code=AbCdEfGh"]);
   assert.equal(start.SAID.test("GET /v2/health 200"), false);
 });
 
@@ -366,11 +333,23 @@ test("a server whose output ends with no \"Open \" line gives no address", async
 
 // The repository's Node rule, at the top of the bin and not behind a main-module guard (Node 20 has none, and a guarded
 // check there would pass by doing nothing): an older Node gets one line saying what to install, and exit 1.
-test("on Node 20 the bin says, in one line, which Node it needs, and exits 1 before it loads anything", () => {
-  for (const node of ["20.20.0", "22.18.0", "23.11.0", "24.1.0"]) {
-    const fake = `data:text/javascript,${encodeURIComponent(`Object.defineProperty(process, "versions", { value: { ...process.versions, node: "${node}" } });`)}`;
-    const run = spawnSync(process.execPath, ["--import", fake, BIN, "--help"], { encoding: "utf8" });
-    assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun needs Node.js 22.19 or newer on 22, or 24.2 or newer; you have v${node}.\n`], node);
+test("on a Node below the package's engines floor the bin says, in one line, the floor it needs, and exits 1 before it loads anything", () => {
+  // The floor the line names is the package's engines.node, never a number of its own (it once said 22.19 and 24.2).
+  const engines = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).engines.node;
+  const [, needMajor, needMinor, needPatch] = /^>=(\d+)\.(\d+)\.(\d+)$/.exec(engines).map(Number);
+  assert.deepEqual([needMajor, needMinor, needPatch], [24, 22, 3], "the floor this test was written at: Node's November 2026 security release");
+  const floor = `${needMajor}.${needMinor}.${needPatch}`;
+  const fakeNode = (node) => `data:text/javascript,${encodeURIComponent(`Object.defineProperty(process, "versions", { value: { ...process.versions, node: "${node}" } });`)}`;
+  // The patch counts: a Node on the floor's minor below its patch lacks the security fixes, and is refused too.
+  for (const node of ["20.20.0", "22.23.5", "23.11.0", "24.2.0", "24.11.0", "24.21.0", `${needMajor}.${needMinor - 1}.9`, `${needMajor}.${needMinor}.0`, `${needMajor}.${needMinor}.${needPatch - 1}`]) {
+    const run = spawnSync(process.execPath, ["--import", fakeNode(node), BIN, "--help"], { encoding: "utf8" });
+    assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun needs Node.js ${floor} or newer; you have v${node}.\n`], node);
+  }
+  // At the floor itself, and past it on a later patch, the check passes: the bin goes on and prints its usage.
+  for (const node of [floor, `${needMajor}.${needMinor}.${needPatch + 7}`, `${needMajor}.${needMinor + 1}.0`]) {
+    const at = spawnSync(process.execPath, ["--import", fakeNode(node), BIN, "--help"], { encoding: "utf8" });
+    assert.doesNotMatch(at.stderr, /AgentRun needs Node\.js/, `${node}: ${at.stderr}`);
+    assert.equal(at.status, 0, `${node}: ${at.stderr}`);
   }
 });
 

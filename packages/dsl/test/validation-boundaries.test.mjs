@@ -1,6 +1,7 @@
+import { WorkflowInvalidError } from '../dist/workflow.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateWorkflow, runWorkflow, runWorkflowSlice, WorkflowInvalidError, assertWorkflowCapabilities, desugarWorkflow, compileQuestions } from '../dist/index.js';
+import { validateWorkflow, runWorkflow, runWorkflowSlice, assertWorkflowCapabilities, desugarWorkflow, compileQuestions } from '../dist/index.js';
 
 const result = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false };
 const agent = { node: 'agent', label: 'answer', instructions: 'Answer', out: 'Result', as: 'answer' };

@@ -8,9 +8,9 @@
 //
 // onComputerHold is the change signal for whoever else in the runner's process shows the hold (tl-browser's run-side
 // viewer and its bar): it fires after each computer.hold change entry is committed, with that change's Timeline words.
-import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
+import { HOST_PHASE } from "../timeline/index.js";
 import {
-  COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, holdWords, takeEndedWords,
+  COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, holdIn, holdWords, takeEndedWords,
 } from "../computer-commands.js";
 import type { HeldComputer, HoldEnd, HoldEvent, HoldState } from "../workspace/computer-hold.js";
 import type { Command, CommandOutcome } from "./loop-contract.js";
@@ -98,8 +98,19 @@ export function journalHold(runId: string, computer: RunComputerHold, commit: (e
     void write(entries).then(() => change && signal(runId, change), () => undefined);
   });
   return {
-    /** The run's computer is up for this pass: the server shows it live, the agent driving. */
-    up: (): Promise<void> => {
+    /** The run's computer is up for this pass: the server shows it live, the agent driving. `prior`, the run's root
+     *  entries before this pass: a take they still hold in force was on the computer of an earlier claim, whose runner
+     *  lost the run (a crash, a lapsed lease: its own end of the take, if it wrote one, was refused by the fence) and
+     *  whose computer this claim's start let go (releaseOlder deletes a lower epoch's computers). That take ends here,
+     *  `released`, once, with its row when it had reached the person, so they read why the desktop is the agent's again.
+     *  Only a hold that has had no take yet (a new claim's computer) ends one so: a restart within the claim keeps its own. */
+    up: async (prior: readonly { readonly kind: string; readonly data?: unknown }[] = []): Promise<void> => {
+      const before = holdIn(prior.map((entry) => ({ kind: entry.kind, data: entry.data })));
+      if (before.up && before.state !== "agent" && before.take !== undefined && hold.epoch() === 0) {
+        const at = now();
+        const ended: RootEntry = { kind: COMPUTER_HOLD_KIND, data: { state: "agent", take: before.take, computer: kind, at, ended: "released" } };
+        await write(before.state === "person" ? [ended, phase(words.ended.released, at)] : [ended]);
+      }
       const at = now();
       const take = hold.current();
       // A pass that starts while a take is in force (a restart within the claim) says so after the up entry.
@@ -113,7 +124,8 @@ export function journalHold(runId: string, computer: RunComputerHold, commit: (e
     apply(command: Command): CommandOutcome {
       const body = (command.body ?? {}) as Record<string, unknown>;
       if (command.kind === COMPUTER_TAKE_OVER) {
-        return hold.take({ by: command.id }) ? { taken: true } : { refused: `The ${kind} is already taken over, or not up now.` };
+        if (hold.take({ by: command.id })) return { taken: true };
+        return { refused: hold.finishing() ? `The agent is done and the run is ending, so its ${kind} can't be taken over now.` : `The ${kind} is already taken over, or not up now.` };
       }
       if (typeof body.ask === "string") {
         const outcome = body.outcome === "cancelled" ? "cancelled" : "done";
@@ -122,6 +134,26 @@ export function journalHold(runId: string, computer: RunComputerHold, commit: (e
       // A hand-back of another take (one that ended, and a new one since) never ends this one.
       if (typeof body.take !== "string" || body.take !== hold.current()) return { refused: takeEndedWords(kind, "given") };
       return hold.give("given", { by: command.id }) ? { taken: true } : { refused: takeEndedWords(kind, "given") };
+    },
+    /** The run's end (#2134). From here nothing new is taken (hold.finish), so no take begins after this wait and is cut
+     *  by the release. While a person holds the computer, the Timeline says the run waits for the hand-back, and this
+     *  resolves once the agent drives again (a hand-back, the hold's idle bound, the viewer gone) or `cut` settles first
+     *  (a stop, a lost claim). With the agent driving, it resolves at once and writes nothing. */
+    async heldAtEnd(cut: Promise<unknown>): Promise<void> {
+      hold.finish();
+      let off: () => void = () => {};
+      const back = new Promise<void>((resolve) => {
+        off = hold.on(() => void (hold.state() === "agent" && resolve()));
+        if (hold.state() === "agent") resolve();
+      });
+      try {
+        if (hold.state() === "agent") return;
+        // A row the journal refuses (a lost claim's fence) is the cut's to answer, not this wait's.
+        await write([phase(words.ending, now())]).catch(() => undefined);
+        await Promise.race([back, cut]);
+      } finally {
+        off();
+      }
     },
     /** Whether `data`, a computer entry's, is the change row `id` made: the commit that writes it takes the row. */
     madeBy: (data: Record<string, unknown>, id: number): boolean => data.by === id,

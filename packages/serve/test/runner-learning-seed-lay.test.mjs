@@ -33,10 +33,10 @@ const { retire } = await import("../dist/learn/index.js");
 const { agentFolderOf } = await import("../dist/files.js");
 const { servedSkill } = await import("../dist/learn/skills.js");
 const { seedOf } = await import("../dist/learning.js");
-const { saveArchilSettings } = await import("../dist/archil-settings.js");
+const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
-const { seal } = await import("@parcha/pi-durable-agent");
+const { seal } = await import("../dist/sealing.js");
 const { archilControlFetch } = await import("./archil-control-fake.mjs");
 
 const AGENT = "agent-1";
@@ -75,7 +75,7 @@ async function landSeed(data, { note = NOTE, more = {}, held = false } = {}) {
       const merged = await learningCommit(folder.workspace, { kind: "merge", runId: "run-learned", reason: "Learned.", files: [{ path: "ask-first.md", text: PENDING }], held: ["ask-first.md"], graded: {} });
       assert.equal(merged.ok, true, JSON.stringify(merged));
       const oid = (await readSnapshot(folder.workspace)).notes.find((one) => one.file === "old-way.md").oid;
-      const retired = await learningCommit(folder.workspace, { kind: "person", action: "retired", file: "old-way.md", text: retire(RETIRED), ifMatch: oid });
+      const retired = await learningCommit(folder.workspace, { kind: "person", action: "retired", file: "old-way.md", text: retire(RETIRED, "active"), ifMatch: oid });
       assert.equal(retired.ok, true, JSON.stringify(retired));
     }
   } finally {
@@ -157,7 +157,7 @@ async function cliSpec(t, harness, { seed = "landed", archil, more, held = false
     await landSeed(dir, { note: NOTE.replace("Wait a little longer", "Call again at once") });
     folderTestHooks.workspace = (place) => learningWorkspace({ mode: "local", data: place.mode === "archil" ? diskFolder : place.data, agentId: place.agentId });
   }
-  const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-4-5" } : { provider: "openai", modelId: "gpt-5" };
+  const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-5-5" } : { provider: "openai", modelId: "gpt-6.1-sol" };
   await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: ["read"], learning: true } });
   const launch = { input: { content: "Read your notes." }, title: "t", place: { mode: "runner" }, harness, model, ...(sha !== undefined ? { learning: startAt(sha) } : {}) };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });
@@ -165,6 +165,8 @@ async function cliSpec(t, harness, { seed = "landed", archil, more, held = false
   const control = archil ? archilControlFetch() : undefined;
   if (archil) {
     await saveArchilSettings(server, ARCHIL_SETTINGS);
+    // The agent's own disk, made by an earlier run (run-disk.ts): this run keeps its folder there.
+    await storeAgentDisk(server, AGENT, { diskId: ARCHIL_SETTINGS.diskId });
     await server.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(SEAL_KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
   }
   await server.flush?.();

@@ -15,29 +15,37 @@
 // was read at; a later page is read at that main while this server still holds its snapshot, else as the first page of
 // main now. A text that leaves holding one of the host's secrets as they are now (a value made secret after it was
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
+import type { DraftAsk } from "./learn/skills.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { join } from "node:path";
-import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
-import { beforeRetire, blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
+import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR, unclearFront, restorable, restore, restoredLearned } from "./learn/index.js";
+import type { DraftDecisions } from "./learn/skills.js";
+import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, runDiffKey, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, textsAt, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
-import { readJson } from "./files.js";
-import { currentLearning, holdsForOk, type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, PROPOSAL, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
+import { type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, reasonShown, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
-import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
 import type { Workspace } from "./workspace/index.js";
+import { launchOf } from "./handed-values.js";
+import { learningStartOf } from "./run-launch.js";
+import { type LearnedUse, runLearningEnd } from "./store-reads/learning.js";
+import type { Store } from "./store/store.js";
 
 /** The agent view's first pages, and the most a page holds. */
 const NOTES_PAGE = 50;
 const LOG_PAGE = 20;
 const PAGE_MAX = 200;
 /** What a retire adds to a note, on top of the note cap a retired note may fill (learn/notes.ts retire). */
-const RETIRED_LINE = Buffer.byteLength("status: retired\n");
+/** What a retire adds to a note: its status line and the status it took it from (the longer of the two). */
+const RETIRED_LINE = Buffer.byteLength("status: retired\nretired_from: pending\n");
 
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
 type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string; retired?: Retired; last_change?: LastChange; runs: { given: number; read: number } };
 /** When a retired note, skill or draft was retired, and by whom: a person (its retire's commit), else a run. */
-type Retired = { at: string; by: "person" | "run" };
+/** Who retired a retired item, and when, and `from`, the status its restore gives back; or, for a skill or draft that
+ *  reads retired only because its file can't be read (its front matter reads no way: unclearFront, read from its file as
+ *  the view is made), that no one did: the host could not read it (`why`), with no `from`, since its restore waits for
+ *  the file to be fixed. One closed shape. */
+type Retired = { at: string; by: "person" | "run" | "host"; from?: "active" | "pending"; why?: "unreadable" };
 /** The newest change to a note, skill or draft (its file: the note, a SKILL.md, a draft's README.md): what it was, by
  *  whom and when. A person's is named by its commit (`learning: <kind> by a person: <file>`); a run's merge is `learned`. */
 type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded"; by: "person" | "run"; at: string };
@@ -97,7 +105,9 @@ async function reading<T>(data: string, agentId: string, read: (folder: { ws: Wo
 
 /** A retired item's `retired`: its newest retire by a person; else, one a person made retired another way (an edit to
  *  status: retired, or created so), their newest change; else (retired by none of theirs) its newest change's time. */
-const retiredOf = (history: SnapHistory): Retired => (history.retire ? { at: history.retire.at, by: "person" } : history.person ? { at: history.person.at, by: "person" } : { at: history.at, by: "run" });
+/** `from`: the status its restore gives back (its retire recorded it, retired_from; none recorded reads pending, as its
+ *  restore gives it: only an approval makes an item active). `unread`: the host could not read its file. */
+const retiredOf = (history: SnapHistory, from: "active" | "pending" | undefined, unread = false): Retired => (unread ? { at: history.at, by: "host", why: "unreadable" } : { ...(history.retire ? { at: history.retire.at, by: "person" as const } : history.person ? { at: history.person.at, by: "person" as const } : { at: history.at, by: "run" as const }), from: from ?? "pending" });
 
 /** A note as the view shows it, cut of the host's secrets: its name and the one that superseded it whole; with its
  *  ETag, the one its file's GET answers, so an edit or a retire from the card names the version it shows; its last
@@ -105,7 +115,7 @@ const retiredOf = (history: SnapHistory): Retired => (history.retire ? { at: his
 const noteView = (note: SnapNote, text: string, shown: Shown, runs: NoteRuns): NoteView => ({
   file: shown.name(note.file), name: shown.text(note.name), description: shown.text(note.description), type: note.type, status: note.status, origin: note.origin, superseded_by: note.superseded_by === null ? null : shown.name(note.superseded_by), text: shown.text(text), etag: etagOf(note.oid), runs: { ...(runs.get(note.file) ?? { given: 0, read: 0 }) },
   ...(note.history.last ? { last_change: note.history.last } : {}),
-  ...(note.status === "retired" ? { retired: retiredOf(note.history) } : {}),
+  ...(note.status === "retired" ? { retired: retiredOf(note.history, note.retired_from) } : {}),
 });
 
 /** A skill or a workflow draft as the view lists it: its folder's name, its file (a skill's SKILL.md, a draft's
@@ -113,13 +123,13 @@ const noteView = (note: SnapNote, text: string, shown: Shown, runs: NoteRuns): N
  *  last changed it, its size in bytes, and the ETag of the file that says whether it waits (a SKILL.md, a README.md),
  *  which an approval names; cut of the host's secrets (a name or a file holding one reads [redacted]). */
 type LearnedView = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: LastChange };
-function learnedView(item: SnapLearned, kind: "skill" | "workflow", shown: Shown): LearnedView {
+function learnedView(item: SnapLearned, kind: "skill" | "workflow", shown: Shown, unread = false): LearnedView {
   const file = kind === "skill" ? item.file : `${WORKFLOWS_DIR}/${item.name}/workflow.json`;
   const bytes = item.files.find(({ path }) => path === file)?.bytes ?? item.bytes;
   return {
     name: shown.name(item.name), file: shown.name(file), ...(kind === "workflow" ? { readme: shown.name(item.file) } : {}), description: shown.text(item.description), status: item.status, run: item.run, bytes, etag: etagOf(item.oid),
     ...(item.history.last ? { last_change: item.history.last } : {}),
-    ...(item.status === "retired" ? { retired: retiredOf(item.history) } : {}),
+    ...(item.status === "retired" ? { retired: retiredOf(item.history, item.retired_from, unread) } : {}),
   };
 }
 
@@ -206,7 +216,10 @@ export async function agentLearning(data: string, agentId: string, shown: Shown,
   return reading<AgentView>(data, agentId, async ({ snapshot, body }) => {
     const index = snapshot.index.bytes ? await body(INDEX_FILE, snapshot.index.oid) : "";
     const notes = await notesPage(snapshot.notes, snapshot.main, 0, NOTES_PAGE, body, shown, runs);
-    return { agent: agentId, main: snapshot.main, index: shown.text(index), notes, skills: snapshot.skills.map((item) => learnedView(item, "skill", shown)), workflows: snapshot.workflows.map((item) => learnedView(item, "workflow", shown)), log: logPage(snapshot, 0, LOG_PAGE, shown), counts, impact };
+    // A retired skill or draft whose key file can't be read is said so (unclearFront), read from its file now, as the
+    // snapshot's status was: a few retired items, one read each.
+    const unread = async (item: SnapLearned) => item.status === "retired" && unclearFront(await body(item.file, item.oid));
+    return { agent: agentId, main: snapshot.main, index: shown.text(index), notes, skills: await Promise.all(snapshot.skills.map(async (item) => learnedView(item, "skill", shown, await unread(item)))), workflows: await Promise.all(snapshot.workflows.map(async (item) => learnedView(item, "workflow", shown, await unread(item)))), log: logPage(snapshot, 0, LOG_PAGE, shown), counts, impact };
   }, () => ({ agent: agentId, main: null, index: "", notes: EMPTY, skills: [], workflows: [], log: EMPTY, counts, impact }));
 }
 
@@ -239,6 +252,39 @@ export async function learningLog(data: string, agentId: string, query: URLSearc
     const page = pageAt(agentId, snapshot, at);
     return logPage(page.snapshot, page.offset, limit, shown);
   }, () => EMPTY);
+}
+
+/** The most revisions a workflow's history answers, and its default. */
+const REVISIONS_MAX = 50;
+const REVISIONS_DEFAULT = 20;
+/** One revision of a learned workflow: a commit on main that changed its workflow.json, with that commit's text (null
+ *  when the commit holds no such file: it was deleted there), cut of the host's secrets. */
+type WorkflowRevision = { commit: string; at: string; by: Change["by"]; reason: string; text: string | null };
+
+/** GET /agents/{id}/learning/workflows/{name}/revisions?limit=: the latest revisions of learned workflow `name` (the
+ *  commits on main's log that changed `workflows/<name>/workflow.json`), oldest first, each with the workflow's text at
+ *  that commit, so a person can step through how it changed. One read-only exec per revision (textsAt), at most `limit`
+ *  of them. `total` counts every such commit the log holds, `truncated` says the log itself is cut (it keeps the latest
+ *  LOG_KEEP changes). A workflow no commit of the log changed is not_found. */
+export async function workflowRevisions(data: string, agentId: string, name: string, query: URLSearchParams, shown: Shown): Promise<{ name: string; revisions: WorkflowRevision[]; total: number; truncated: boolean }> {
+  if (!learnedName("workflow", name)) throw new ApiError("bad_request", "A workflow's folder is named with lowercase letters, digits, dashes and underscores.");
+  const given = query.get("limit");
+  const limit = given === null ? REVISIONS_DEFAULT : Number(given);
+  if ((given !== null && !/^\d+$/.test(given)) || limit < 1 || limit > REVISIONS_MAX) throw new ApiError("bad_request", `limit is an integer from 1 to ${REVISIONS_MAX}`);
+  const path = `${WORKFLOWS_DIR}/${name}/workflow.json`;
+  if (shown.name(path) !== path) throw new ApiError("not_found", "the agent's learning folder has no such workflow");
+  const found = await reading(data, agentId, async ({ ws, snapshot }) => {
+    const touched = snapshot.log.filter((change) => change.files.includes(path));
+    const latest = touched.slice(0, limit).reverse();
+    const revisions: WorkflowRevision[] = [];
+    for (const change of latest) {
+      const texts = await textsAt(ws, change.commit, [path]).catch((error: unknown) => { throw routeFailure(error); });
+      revisions.push({ commit: change.commit, at: change.at, by: change.by, reason: shown.text(change.reason), text: texts?.[path] === undefined ? null : shown.text(texts[path]!) });
+    }
+    return { revisions, total: touched.length, truncated: snapshot.log_more };
+  }, () => undefined);
+  if (!found || !found.total) throw new ApiError("not_found", "the agent's learning folder has no such workflow");
+  return { name, ...found };
 }
 
 /** The blob of `file` on the snapshot's main, as a route names it: the index, a note, a skill's SKILL.md, a draft's
@@ -349,7 +395,7 @@ const NOT_NOTE = "The folder's file by this name on main is no note (not a regul
  *  `Approved-Via: console` on an approval), main moved only from the main it read (computed again on a main that moved
  *  meanwhile), then the checked-out files and the snapshot. A note the checks refuse is never written to git. A retire
  *  of a note that is not active, and an edit that changes nothing, commit nothing. `refuse`: the host's secrets. */
-export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string> }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
+export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default">; ask?: DraftAsk; decisions?: DraftDecisions }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
   const file = fileOf(raw, input.approve ? "approve" : input.restore ? "restore" : input.body === undefined ? "retire" : "write");
   // A skill's SKILL.md or a draft's README.md: only ever approved or retired here.
   const learned = learnedPlace(file);
@@ -377,17 +423,27 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         if (condition.absent && current) throw new ApiError("precondition_failed", "The folder has a note by this name: read it, then edit it with If-Match.");
         // A note whose text holds one of the host's secrets as they are now (a value made secret after it was written) is
         // read cut of it, under its own ETag: an edit of what was shown would write the cut over the hidden text. Only a
-        // retire reaches it.
+        // retire reaches it. So is one holding a loopback address, read as "a local address" (secretsShown).
         if (given !== undefined && current && secretsShown(input.refuse).holds(current.text)) {
           throw refused([{ rule: "secret_value", path: file, detail: "This note holds a value the server now keeps secret, so its text was shown with that value hidden, and saving would replace the hidden text. Retire it and write a new note instead." }]);
         }
+        if (given !== undefined && current && secretsShown(input.refuse).text(current.text) !== current.text) {
+          throw refused([{ rule: "note", path: file, detail: "This note holds a local address, so its text was shown with it hidden, and saving would replace it. Retire it and write a new note instead." }]);
+        }
         let text = given;
         // A note that waits for its owner's OK is made active by an approval alone: an edit keeps it waiting, so one that
-        // drops or changes its status is refused, whoever sends it.
+        // drops or changes its status is refused, whoever sends it. A retired note comes back by its restore alone, to the
+        // status its retire recorded: an edit keeps it retired and keeps that record (retired_from) as it is.
         if (given !== undefined && current) {
           const was = parseNoteFile(file, current.text);
           const now = parseNoteFile(file, given);
           if (!Array.isArray(was) && was.status === "pending" && !Array.isArray(now) && now.status !== "pending") throw refused([printable({ rule: "status", path: file, detail: "it waits for its owner's OK: an edit keeps status: pending, only an approval makes it active, and a retire takes it out" }, input.refuse)]);
+          if (!Array.isArray(was) && was.status === "retired" && !Array.isArray(now)) {
+            const kept = was.retired_from ?? "pending";
+            if (now.status !== "retired" || (now.keys.includes("retired_from") && now.retired_from !== kept)) throw refused([printable({ rule: "status", path: file, detail: `it is retired: an edit keeps status: retired and retired_from: ${kept}, and only its restore brings it back, as it was before its retire` }, input.refuse)]);
+            // What its retire recorded is the host's: the edit carries it, written or not.
+            text = retire(given, kept);
+          }
         }
         // Beside the note itself: what an approve marks of the notes the approved one supersedes.
         const also = new Map<string, string>();
@@ -396,19 +452,22 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         const mark = async (superseded: readonly string[]) => {
           for (const old of superseded) if (notes.get(old)?.status === "active") also.set(old, supersede(await body(old, noteOid(old)), file));
         };
-        let heldBefore = false;
         if (input.restore) {
-          // Restored, a retired note, skill or draft is active again: given to every later run. It is checked again as a
-          // new one is (secrets' shapes, the host's values, hidden characters, its format, every file of a skill's or a
-          // draft's folder): a retire takes a leaking one out of every run unchecked, and a restore never brings it back.
-          // One that waited for its owner's OK before its retire is recorded as their approval too (Approved-Via).
-          const before = await beforeRetire(ws, main!, file);
-          heldBefore = before !== undefined && (learned ? learnedStatus(before) === "pending" : ((note) => !Array.isArray(note) && note.status === "pending")(parseNoteFile(file, before)));
+          // Restored, a retired note, skill or draft goes back to the status its retire recorded (retired_from): active, so
+          // given to every later run, or waiting for its owner's OK again, so a retire and a restore never skip that OK
+          // (a retire that recorded none restores it waiting). It is checked again as a new one is (secrets' shapes, the
+          // host's values, hidden characters, its format, every file of a skill's or a draft's folder): a retire takes a
+          // leaking one out of every run unchecked, and a restore never brings it back. A restore is never an approval.
           if (learned) {
             const status = learnedStatus(current!.text);
             const kind = learned.kind === "skill" ? "skill" : "workflow";
             if (status !== "retired") throw new ApiError("bad_request", `The ${kind} is not retired: it is ${status}.`);
-            text = released(current!.text);
+            // Read as retired since its front matter reads no way, or its status (or the retired_from its retire recorded) is
+            // set on more than one line, which no writer edits (learnedStatus, restorable): refused until it is written so.
+            if (!restorable(current!.text)) throw refused([printable({ rule: kind, path: file, detail: UNCLEAR_FRONT }, input.refuse)]);
+            // Back to the status its retire recorded (restoredLearned: retired_from, read by the one reader), never active
+            // unless it was active: a held skill or draft waits for its owner's OK again.
+            text = restoredLearned(current!.text);
             const problems = skillProblems(text, learned.name).map((detail) => printable({ rule: kind, path: file, detail }, input.refuse));
             const extra = (frontKeys(text) ?? []).filter((key) => !LEARNED_KEYS.includes(key) && key !== "status");
             if (extra.length) problems.push(printable({ rule: "skill_front_matter", path: file, detail: `its front matter sets ${extra.join(", ")}: a learned ${kind} sets name and description alone` }, input.refuse));
@@ -420,20 +479,21 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
             // a restore never brings back a draft no run could run.
             const draft = changes.find(({ path }) => path === `${folder}workflow.json`);
             if (learned.kind !== "skill" && draft && input.draftTools) {
-              const { tools, gated } = await input.draftTools();
+              const { tools, gated, deniedBy, ask, decisions } = await input.draftTools();
               const dsl = await import("@parcha/agentrun-dsl");
-              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
+              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated, deniedBy ?? {}, ask, decisions)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
             }
             if (problems.length) throw refused(problems);
           } else {
             const note = parseNoteFile(file, current!.text);
             if (Array.isArray(note)) throw refused(note.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
             if (note.status !== "retired") throw new ApiError("bad_request", `The note is not retired: it is ${note.status}.`);
-            text = approve(current!.text);
+            text = restore(current!.text, note);
             const { problems } = checkNote(file, Buffer.from(text, "utf8"), input.refuse);
             if (problems.length) throw refused(problems);
-            // What it supersedes, and is active still, is superseded now, as an approval marks it.
-            await mark(note.supersedes);
+            // Back active, what it supersedes, and is active still, is superseded now, as an approval marks it; back
+            // waiting, it supersedes nothing until it is approved.
+            if (note.retired_from === "active") await mark(note.supersedes);
           }
         } else if (text === undefined && learned && !input.approve) {
           // Retired, as a note is: no later run is given it. One already retired is answered as it is; nothing else in
@@ -460,11 +520,11 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
           // A retire is how a person takes a note out of every later run's prompt, a leaking one above all, so it always
           // can: only the note's format is checked as retired (its front matter parses, and it fits the note cap with the
           // status line added), never a secret in its name or text. Every answer cuts those as any read does.
-          text = retire(current!.text);
+          text = retire(current!.text, note.status === "pending" ? "pending" : "active");
           const retired = parseNoteFile(file, text);
           if (Array.isArray(retired)) throw refused(retired.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
           const size = Buffer.byteLength(text);
-          if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status line a retire adds` }, input.refuse)]);
+          if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status lines a retire adds` }, input.refuse)]);
         }
         if (current && text === current.text) return { result: { status: 200, file, text, etag: etagOf(current.oid) } };
         const after = learned ? [...notes.values()] : [...[...notes.values()].filter((note) => note.file !== file && !also.has(note.file)), parseNoteFile(file, text!) as LearnedNote, ...[...also].map(([old, marked]) => parseNoteFile(old, marked) as LearnedNote)];
@@ -473,7 +533,7 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         const kind: PersonKind = input.approve ? "approved" : input.restore ? "restored" : given === undefined ? "retired" : current ? "edited" : "created";
         const change: FolderChange = {
           // Who approved, and how, in the trailers; the commit's own date is when. Never the note's text.
-          by: { person: kind, file, approved: Boolean(input.approve || heldBefore) },
+          by: { person: kind, file, approved: Boolean(input.approve) },
           writes: [{ path: file, text: text! }, { path: INDEX_FILE, text: buildIndex(after) }, ...[...also].map(([path, marked]) => ({ path, text: marked }))],
           // A create takes a name main holds nothing by, as git holds it: a file the notes leave out included.
           ...(current ? {} : { absent: [file] }),
@@ -491,24 +551,59 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
   });
 }
 
-/** GET /runs/{id}/learning: the run's learning whole, or null for a run that does not learn: its detail cut of the
- *  host's secrets now, and the notes it read and learned as its view shows them (learning.ts notesView). */
-export async function runLearning(run: Run, shown: Shown, secrets: readonly string[], data: string) {
-  // What it held for its owner's OK as it reads now (learning.ts currentLearning); its record stays as the merge wrote it.
-  const learning = holdsForOk(run.meta.learning) ? currentLearning(run.meta.learning, await statusesOf(data, run.agentId)) : run.meta.learning;
-  if (!learning) return null;
-  const pin = await readPin(run.dir).catch(() => undefined);
-  return runLearningBody({ id: run.id, learning, seed: pin?.seed ?? null, settled: run.settled }, shown, secrets);
+/** A learned workflow as a promotion makes it into an agent of its own: its folder's name, its README's description,
+ *  its workflow.json parsed, and the tools its call nodes call. */
+export type Promotable = { name: string; description: string; workflow: Record<string, unknown>; calls: string[] };
+
+/** POST /agents/{id}/learning/workflows/{name}/promote's read of the learned workflow `raw` (percent-encoded) on agent
+ *  `agentId`'s main: an active one alone, as every later run is given it. One that waits for its owner's OK, or that a
+ *  person retired, is 409 learned_not_active: a promotion never runs what the owner has not let every run use. Each of
+ *  its files is checked again as a restore checks it (unstorable: a secret's shape, the host's values as they are now,
+ *  a hidden character), and its workflow.json as the learning checker checks a run's draft against the agent's tools and
+ *  its gate (draftProblems: the DSL's validation with no code run, no code node, no shell or executor call, no call node
+ *  on a tool the agent does not have or the gate holds to ask or deny). Any of those is 400 with `problems`, printable.
+ *  Reads only: the folder is never written. */
+export async function promotable(data: string, agentId: string, raw: string, input: { refuse: readonly string[]; draftTools: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default">; decisions?: DraftDecisions }> }): Promise<Promotable> {
+  let name: string;
+  try {
+    name = decodeURIComponent(raw);
+  } catch {
+    throw new ApiError("bad_request", "the workflow's name is not percent-encoded right");
+  }
+  if (!learnedName("workflow", name)) throw new ApiError("bad_request", "A learned workflow's folder is named with lowercase letters, digits, dashes and underscores.");
+  const found = await reading(data, agentId, async ({ snapshot, body }) => {
+    const item = snapshot.workflows.find((one) => one.name === name);
+    if (!item) return undefined;
+    if (item.status !== "active") return { item, files: [] };
+    return { item, files: await Promise.all(item.files.map(async ({ path, oid }) => ({ path, text: await body(path, oid) }))) };
+  }, () => undefined);
+  if (!found) throw new ApiError("not_found", "the agent's learning folder has no such workflow on main");
+  const { item, files } = found;
+  if (item.status === "pending") throw new ApiError("learned_not_active", "This workflow waits for your OK: approve it first. Making it an agent never skips your OK.");
+  if (item.status !== "active") throw new ApiError("learned_not_active", "This workflow is retired: restore it first to make it an agent.");
+  const file = `${WORKFLOWS_DIR}/${name}/workflow.json`;
+  const json = files.find(({ path }) => path === file);
+  const problems: Problem[] = unstorable(files.map(({ path, text }) => ({ path, status: "modified" as const, bytes: Buffer.from(text, "utf8") })), input.refuse);
+  if (!json) problems.push(printable({ rule: "workflow", path: file, detail: "the workflow's folder holds no workflow.json" }, input.refuse));
+  const dsl = await import("@parcha/agentrun-dsl");
+  if (json && !problems.length) {
+    // A learned workflow's decision nodes (LS-07) are checked on this server's decision providers, as a restore checks them.
+    const { tools, gated, deniedBy, decisions } = await input.draftTools();
+    for (const { rule, detail } of draftProblems(dsl as never, json.text, tools, gated, deniedBy ?? {}, undefined, decisions)) problems.push(printable({ rule, path: file, detail }, input.refuse));
+  }
+  if (problems.length) throw new ApiError("bad_request", `The workflow does not pass the checks: ${[...new Set(problems.map((problem) => problem.rule))].join(", ")}.`, { problems });
+  const workflow = JSON.parse(json!.text) as Record<string, unknown>;
+  return { name, description: item.description, workflow, calls: dsl.inspectWorkflow(workflow).requires.tools };
 }
 
 /** GET /runs/{id}/learning's body, from the run's learning as it reads now, the seed it started from and whether it
- *  settled: the one shape, read from a run's files (runLearning) or from the one store (store-reads/learning.ts
+ *  settled: the one shape, read from the one store (store-reads/learning.ts
  *  runLearningOverStore). */
-export function runLearningBody(input: { readonly id: string; readonly learning: Learning; readonly seed: string | null; readonly settled: boolean }, shown: Shown, secrets: readonly string[]) {
+export function runLearningBody(input: { readonly id: string; readonly learning: Learning; readonly seed: string | null; readonly settled: boolean; readonly used?: LearnedUse }, shown: Shown, secrets: readonly string[]) {
   const { learning } = input;
   const { state, reason, at, verdict, problems, merged, cost_usd, tokens, pending } = learning;
   return {
-    run: input.id, state, reason, detail: detailShown(learning, shown), at,
+    run: input.id, state, reason: reasonShown(reason, shown), detail: detailShown(learning, shown), at,
     // Once it settled (a run that runs again for a follow-up is still reading).
     ...notesView(learning, shown, input.settled),
     seed: input.seed,
@@ -516,12 +611,19 @@ export function runLearningBody(input: { readonly id: string; readonly learning:
     // The merge's notes that wait for a person's OK: on main as `status: pending`, read by no run until approved.
     pending: (pending ?? []).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })),
     // The grader's, with its item for each new note: a name holding one of the host's secrets reads [redacted], and
-    // each text is cut of them.
-    verdict: verdict ? { merge: verdict.merge, reason: shown.text(verdict.reason), items: (verdict.items ?? []).map(({ file, keep, pending: waits, origin, question, why }) => ({ file: shown.name(file), keep, ...(waits ? { pending: true } : {}), ...(origin ? { origin } : {}), ...(question ? { question: shown.text(question) } : {}), why: shown.text(why) })) } : null,
-    problems: (problems ?? []).map((problem) => printable(problem, secrets)),
+    // each text is cut of them, its origin too (a kept row read back is untrusted).
+    verdict: verdict ? { merge: verdict.merge, reason: shown.text(verdict.reason), items: (verdict.items ?? []).map(({ file, keep, pending: waits, origin, question, why }) => ({ file: shown.name(file), keep, ...(waits ? { pending: true } : {}), ...(origin ? { origin: shown.text(origin) as typeof origin } : {}), ...(question ? { question: shown.text(question) } : {}), why: shown.text(why) })) } : null,
+    // Each cut of the host's secrets (printable), then as every served text is (`shown`: no loopback address).
+    problems: (problems ?? []).map((problem) => printable(problem, secrets)).map(({ rule, path, detail }) => ({ rule: shown.text(rule) as typeof rule, ...(path === undefined ? {} : { path: shown.text(path) }), detail: shown.text(detail) })),
     // The grade's alone: the end-of-run turn's cost is in the run's own totals.
     cost_usd: { grade: cost_usd?.grade ?? null },
     tokens: { grade: tokens?.grade ?? null },
+    // What the job did with the learned skills and workflows it was offered (store-reads/learning.ts learnedUseOf), apart
+    // from the skills and workflows it learned (notesView's), each name cut of the host's secrets as a note's is.
+    used: {
+      skills: (input.used?.skills ?? []).map(({ name, read }) => ({ name: shown.name(name), read })),
+      workflows: (input.used?.workflows ?? []).map(({ name, calls, failed }) => ({ name: shown.name(name), calls, failed })),
+    },
   };
 }
 
@@ -534,25 +636,35 @@ function addedPatch(text: string): string {
   return `@@ -0,0 +1${added.length === 1 ? "" : `,${added.length}`} @@\n${added.join("")}`;
 }
 
-/** GET /runs/{id}/learning/diff: once merged, its merge commit against its parent, as its merge's script wrote it
- *  (`.agentrun/diffs/<run>.json`); before, its proposal (new notes only) against its seed; a run that proposed nothing,
- *  no file. A file's patch is withheld when too large (as the script wrote it), or when it holds one of the host's
- *  secrets now. */
-export async function runDiff(data: string, run: Run, shown: Shown) {
-  const learning = run.meta.learning;
-  if (!learning) throw new ApiError("not_found", "the run does not learn, so it proposed nothing");
+/** GET /runs/{id}/learning/diff over the one store: once merged (its learning end, store-reads/learning.ts
+ *  runLearningEnd), its merge commit against its parent, as its merge's script wrote it (`.agentrun/diffs/<run>.json` in
+ *  its agent's learning folder); before, its kept proposal (new notes only, from its learning_proposals row) against its
+ *  seed; a run that proposed nothing, no file, against the seed its launch's learning start names. A run that does not
+ *  learn (no learning start and no learning end) is not_found. A file's patch is withheld when too large (as the script
+ *  wrote it), or when it holds one of the host's secrets now (`shown`); any other is served as every learning text is
+ *  (`shown.text`: a loopback address reads "a local address"). */
+export async function runDiffOverStore(data: string, store: Store, runId: string, shown: Shown) {
+  const [end, kept, launch, row] = await Promise.all([runLearningEnd(store, runId), store.learning.proposal(runId), launchOf(store, runId), store.runs.get(runId)]);
+  const start = launch ? learningStartOf(launch) : undefined;
+  if (!row || (!end && !start)) throw new ApiError("not_found", "the run does not learn, so it proposed nothing");
   const file = (name: string, status: string, patch: string) => {
     const path = shown.name(name);
-    return Buffer.byteLength(patch) > PATCH_CAP ? { path, status, withheld: "too_large" } : shown.holds(patch) ? { path, status, withheld: "secret" } : { path, status, patch };
+    if (Buffer.byteLength(patch) > PATCH_CAP) return { path, status, withheld: "too_large" };
+    if (shown.holds(patch)) return { path, status, withheld: "secret" };
+    const served = shown.text(patch);
+    return Buffer.byteLength(served) > PATCH_CAP ? { path, status, withheld: "too_large" } : { path, status, patch: served };
   };
-  if (learning.merged) {
-    const folder = learningFolderOf(data, run.agentId);
-    const diff = await readRunDiff(folder.workspace, run.id).catch((error: unknown) => Promise.reject(routeFailure(error))).finally(() => folder.end());
-    if (!diff || diff.merge !== learning.merged) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");
+  if (end?.merged) {
+    const folder = learningFolderOf(data, row.agentId);
+    const diff = await readRunDiff(folder.workspace, runDiffKey(runId, kept?.round)).catch((error: unknown) => Promise.reject(routeFailure(error))).finally(() => folder.end());
+    if (!diff || diff.merge !== end.merged) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");
     return { base: diff.parent, head: diff.merge, files: diff.files.map((entry) => ("patch" in entry ? file(entry.path, entry.status, entry.patch) : { path: shown.name(entry.path), status: entry.status, withheld: entry.withheld })) };
   }
-  const proposal = await readJson(join(run.dir, PROPOSAL));
-  const notes = isObject(proposal) && typeof proposal.seed === "string" && Array.isArray(proposal.notes) ? proposal.notes.filter((note): note is { file: string; text: string } => isObject(note) && typeof note.file === "string" && NOTE_FILE.test(note.file) && typeof note.text === "string") : undefined;
-  if (notes) return { base: proposal!.seed as string, head: null, files: notes.map((note) => file(note.file, "added", addedPatch(note.text))) };
-  return { base: (await readPin(run.dir).catch(() => undefined))?.seed ?? null, head: null, files: [] };
+  const kept_ = isObject(kept?.proposal) ? kept.proposal.proposal : undefined;
+  const proposal = isObject(kept_) && typeof kept_.seed === "string" && Array.isArray(kept_.notes) ? { seed: kept_.seed, notes: kept_.notes } : undefined;
+  if (proposal) {
+    const notes = proposal.notes.filter((note): note is { file: string; text: string } => isObject(note) && typeof note.file === "string" && NOTE_FILE.test(note.file) && typeof note.text === "string");
+    return { base: proposal.seed, head: null, files: notes.map((note) => file(note.file, "added", addedPatch(note.text))) };
+  }
+  return { base: start?.seed ?? null, head: null, files: [] };
 }

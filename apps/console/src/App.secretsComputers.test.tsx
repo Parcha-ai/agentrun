@@ -13,7 +13,7 @@ globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); location.hash = ""; });
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const COMPUTERS = { kinds: [{ kind: "sandbox", offered: true, groups: [], tools: [], providers: [
+const COMPUTERS = { paired: [], kinds: [{ kind: "sandbox", offered: true, groups: [], tools: [], providers: [
   { id: "e2b", name: "E2B", metered: true, secrets: [{ name: "computer:e2b:E2B_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:e2b:E2B_API_KEY"], ready: false, why: "E2B needs E2B_API_KEY saved" },
 ] }] };
 const ARCHIL = { on: false, secret: { name: "workspace:archil", set: false, source: null, changed_at: null } };
@@ -22,7 +22,7 @@ async function open(hash: string, session: Record<string, unknown>) {
   vi.stubGlobal("fetch", async (url: string) => {
     const path = new URL(url, "http://serve.test").pathname;
     if (path === "/v2/auth/session") return json(200, session);
-    if (path === "/v2/capabilities") return json(200, { harnesses: [], tools: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+    if (path === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], tools: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
     if (path === "/v2/computers") return json(200, COMPUTERS);
     if (path === "/v2/workspace/archil") return json(200, ARCHIL);
     if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });

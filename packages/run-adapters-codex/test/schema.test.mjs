@@ -14,6 +14,7 @@ import { codexAdapter, codexSchemaProblems as codexSchemaProblemsOfPackage } fro
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 import { codexSchemaProblems, describeDropped, describedDescription, DESCRIBED_HEADING, stripDescribed } from '../dist/schema.js';
+import { CLASSIC_MODEL, codeModeOffer, exec } from './offer.mjs';
 
 process.env.AGENTRUN_CODEX_STANDIN = '1';
 const P = (inner) => ({ type: 'object', properties: { p: inner } });
@@ -116,11 +117,6 @@ test('the adapter refuses a session whose tool Codex would mangle, before anythi
   assert.match(problems[1], /^worse: \/properties\/p\/enum: enum with a non-scalar value/);
 });
 
-test("the adapter declares Codex's own MCP client: the kernel's proxy mounts the session's MCP door from it, and reads a call's id from callId (its mcpToolCall item's id)", () => {
-  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
-  assert.deepEqual(codex.capabilities(), { mcpClient: { callIdMeta: 'callId' } });
-});
-
 test('the package gives the shapes check() refuses for Codex (codexSchemaProblems), for a host to refuse a remote MCP tool sooner', () => {
   assert.equal(codexSchemaProblemsOfPackage, codexSchemaProblems);
   assert.match(codexSchemaProblemsOfPackage('greet', P({ not: {} }))[0], /^greet: \/properties\/p\/not: not is not supported by Codex 0\.164\.0/);
@@ -153,28 +149,45 @@ const skip = problem && process.env.AGENTRUN_CODEX_REQUIRE_BINARY !== '1' ? prob
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-codex-schema-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
 
-test("on the pinned binary, the constraints Codex strips reach the model in the tool's description, and the schema it forwards is the original less exactly those", { skip, timeout: 60_000 }, async () => {
-  const schema = { type: 'object', properties: { score: { type: 'integer', minimum: 0, maximum: 4, description: 'A score.' }, id: { type: 'string', pattern: '^[a-z]+$', minLength: 1 } }, required: ['score'] };
-  const tool = { name: 'rate', description: 'Rate a thing.', inputSchema: schema, replay: 'safe', call: async () => ({ text: 'ok' }) };
+/** One turn of a session with `tools` on the pinned binary, its model answering `first` and then text; the requests sent. */
+async function turn(model, key, tools, first = []) {
   const seen = [];
   const fetch = async (_url, init) => {
     seen.push(JSON.parse(init.body));
-    const items = seen.length === 1 ? [{ type: 'function_call', name: 'rate', arguments: '{"score":3}', call_id: 'call_rate' }] : [{ type: 'message', role: 'assistant', id: 'm', content: [{ type: 'output_text', text: 'done' }] }];
+    const items = seen.length === 1 && first.length ? first : [{ type: 'message', role: 'assistant', id: 'm', content: [{ type: 'output_text', text: 'done' }] }];
     const usage = { input_tokens: 10, input_tokens_details: null, output_tokens: 2, output_tokens_details: null, total_tokens: 12 };
     const events = [{ type: 'response.created', response: { id: 'r' } }, ...items.map((item) => ({ type: 'response.output_item.done', item })), { type: 'response.completed', response: { id: 'r', usage } }];
     return new Response(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
-  const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: join(ROOT, 'sessions'), fetch });
-  const spec = { key: 'step:described', label: 'x', system: [], tools: [tool], context: 'fresh' };
-  const store = memorySessionStore();
-  const session = await codex.open(spec, { writer: await store.open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: AbortSignal.timeout(50_000), onEvent: () => {} });
+  const codex = codexAdapter({ model, provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: join(ROOT, `${key}-${model}`), fetch });
+  const spec = { key: `step:${key}`, label: 'x', system: [], tools, context: 'fresh' };
+  assert.deepEqual(codex.check(spec), [], 'the session passes the check');
+  const session = await codex.open(spec, { writer: await memorySessionStore().open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: AbortSignal.timeout(50_000), onEvent: () => {} });
   await session.send('go');
   assert.equal((await session.turnEnd()).status, 'completed');
   await session.close();
+  return seen;
+}
+
+const RATE = { type: 'object', properties: { score: { type: 'integer', minimum: 0, maximum: 4, description: 'A score.' }, id: { type: 'string', pattern: '^[a-z]+$', minLength: 1 } }, required: ['score'] };
+const RATE_LINES = ['- id: string, matches ^[a-z]+$, at least 1 characters', '- score: integer, at least 0, at most 4'];
+const rateTool = () => ({ name: 'rate', description: 'Rate a thing.', inputSchema: RATE, replay: 'safe', call: async () => ({ text: 'ok' }) });
+
+test("on the pinned binary, for a classic model, the constraints Codex strips reach the model in the tool's description, and the schema it forwards is the original less exactly those", { skip, timeout: 60_000 }, async () => {
+  const seen = await turn(CLASSIC_MODEL, 'described', [rateTool()], [{ type: 'function_call', name: 'rate', arguments: '{"score":3}', call_id: 'call_rate' }]);
   const offered = seen[0].tools.find((t) => t.name === 'rate');
   assert.ok(offered.description.startsWith('Rate a thing.'), offered.description);
-  for (const line of ['- id: string, matches ^[a-z]+$, at least 1 characters', '- score: integer, at least 0, at most 4']) assert.ok(offered.description.includes(line), `${line} in ${JSON.stringify(offered.description)}`);
-  assert.deepEqual(offered.parameters, stripDescribed(schema), 'Codex forwarded the original less exactly the described keywords');
+  for (const line of RATE_LINES) assert.ok(offered.description.includes(line), `${line} in ${JSON.stringify(offered.description)}`);
+  assert.deepEqual(offered.parameters, stripDescribed(RATE), 'Codex forwarded the original less exactly the described keywords');
+});
+
+test("on the pinned binary, for a code-mode model (gpt-6-luna), the constraints Codex strips reach the model in the tool's section of exec, above a declaration that carries none of them", { skip, timeout: 60_000 }, async () => {
+  const seen = await turn('gpt-6-luna', 'described', [rateTool()], [exec('call_rate', 'text(await tools.rate({ score: 3 }));')]);
+  const section = codeModeOffer(seen[0]).nested.get('rate');
+  assert.ok(section?.startsWith('Rate a thing.'), String(section));
+  for (const line of RATE_LINES) assert.ok(section.includes(line), `${line} in ${JSON.stringify(section)}`);
+  const declaration = /```ts\n([\s\S]*?)```/.exec(section)?.[1] ?? '';
+  assert.equal(declaration, 'declare const tools: { rate(args: {\n  id?: string;\n  // A score.\n  score: number;\n}): Promise<unknown>; };\n', 'the arguments, less every described keyword');
 });
 
 test("Codex's check() runs the shared cases: every place the shared check refuses is refused, first, and nothing it allows is refused for a shared reason", () => {
@@ -206,7 +219,7 @@ test('on the pinned binary, a tool with a bad root, a schema that is not valid 2
   };
   for (const [name, [schema, message]] of Object.entries(bad)) {
     const requests = [];
-    const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: join(ROOT, `bad-${name.length}`), fetch: async (url) => { requests.push(url); throw new Error('no request should leave'); } });
+    const codex = codexAdapter({ model: 'gpt-6-luna', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: join(ROOT, `bad-${name.length}`), fetch: async (url) => { requests.push(url); throw new Error('no request should leave'); } });
     const spec = { key: `step:bad-${name.length}`, label: 'x', system: [], tools: [{ name: 'bad', description: 'd', inputSchema: schema, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' };
     const problems = codex.check(spec);
     assert.ok(problems.length >= 1 && message.test(problems[0]), `${name}: ${JSON.stringify(problems)}`);
@@ -234,21 +247,11 @@ test('Codex drops `$schema` whatever it names, so a dialect marker the harnesses
   assert.deepEqual(stripDescribed(schema), { type: 'object', properties: { a: { type: 'string' } } });
   assert.deepEqual(describeDropped(schema), ['a: string, at least 2 characters'], '$schema is dropped without a word');
   const tool = { name: 'draft', description: 'A draft-07 schema.', inputSchema: schema, replay: 'safe', call: async () => ({ text: 'ok' }) };
-  const seen = [];
-  const fetch = async (_url, init) => {
-    seen.push(JSON.parse(init.body));
-    const usage = { input_tokens: 10, input_tokens_details: null, output_tokens: 2, output_tokens_details: null, total_tokens: 12 };
-    const events = [{ type: 'response.created', response: { id: 'r' } }, { type: 'response.output_item.done', item: { type: 'message', role: 'assistant', id: 'm', content: [{ type: 'output_text', text: 'done' }] } }, { type: 'response.completed', response: { id: 'r', usage } }];
-    return new Response(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  };
-  const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: join(ROOT, 'draft'), fetch });
-  const spec = { key: 'step:draft', label: 'x', system: [], tools: [tool], context: 'fresh' };
-  assert.deepEqual(codex.check(spec), [], 'a draft-07 $schema passes the check');
-  const session = await codex.open(spec, { writer: await memorySessionStore().open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: AbortSignal.timeout(50_000), onEvent: () => {} });
-  await session.send('go');
-  assert.equal((await session.turnEnd()).status, 'completed');
-  await session.close();
-  assert.equal(seen[0].tools.find((t) => t.name === 'draft').parameters.$schema, undefined, 'Codex forwarded it without $schema');
+  const classic = await turn(CLASSIC_MODEL, 'draft', [tool]);
+  assert.equal(classic[0].tools.find((t) => t.name === 'draft').parameters.$schema, undefined, 'Codex forwarded it without $schema');
+  const luna = codeModeOffer((await turn('gpt-6-luna', 'draft', [tool]))[0]).nested.get('draft');
+  assert.ok(luna?.startsWith('A draft-07 schema.'), String(luna));
+  assert.ok(!/\$schema|draft-07\/schema/.test(luna), `a code-mode model is not shown it either: ${JSON.stringify(luna)}`);
 });
 
 test('a schema of any depth is walked without a stack overflow: described and refused like any other, and check() never throws', () => {

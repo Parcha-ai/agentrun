@@ -19,8 +19,8 @@ const KINDS = [
   { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], providers: [{ id: "faux-sandbox", name: "Faux sandbox", secrets: [], required: [], ready: true }] },
 ];
 const CAPS = {
-  harnesses: [{ id: "pi", available: true }], tools: toolOffers([{ name: "read", available: true }]), thinking: [],
-  places: placesOf({ places: { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true }] } }),
+  harnesses: [{ id: "pi", available: true }], tools: toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }]), thinking: [],
+  places: placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "runner" }, boxes: [{ id: "docker", available: true }] } }),
 };
 
 async function open(computers: () => Response) {

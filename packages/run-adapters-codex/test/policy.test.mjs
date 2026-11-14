@@ -13,8 +13,8 @@ const { startModelProxy } = host;
 
 const KEY = 'session-key-for-tests';
 const fixture = (name) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
-const RECORDED_REQUEST = JSON.parse(fixture('responses-request-gpt-5.4-mini.json'));
-const RECORDED_STREAM = fixture('responses-stream-gpt-5.4-mini.sse');
+const RECORDED_REQUEST = JSON.parse(fixture('responses-request-recorded.json'));
+const RECORDED_STREAM = fixture('responses-stream-recorded.sse');
 const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
 const completed = (usage, extra = {}) => ({ type: 'response.completed', response: { object: 'response', status: 'completed', ...extra, usage } });
 
@@ -84,11 +84,28 @@ test("the Responses API adds no billed input the body does not carry: the input 
 const imageItem = { type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgo=' };
 const withImages = (n) => ({ ...RECORDED_REQUEST, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }], input: [...RECORDED_REQUEST.input, { type: 'function_call_output', call_id: 'c1', output: Array.from({ length: n }, () => imageItem) }] });
 
-test("each image adds the most one image is billed as on the Responses API, 73,800 tokens (30,000 patches x 2.46), through the shared figures", () => {
+test("each image counts at the most one image is billed as on the Responses API, 73,800 tokens (30,000 patches x 2.46), in place of its data URL's bytes, through the shared figures", () => {
   const policy = codexPolicy({ model: 'session-model', tools: ['lookup'] });
+  const bytes = imageItem.image_url.length;
   assert.equal(host.OPENAI_IMAGE_TOKENS_MAX, 73_800);
-  assert.deepEqual([withImages(1), withImages(3)].map((body) => policy.serverInputOverhead(body)), [73_800, 3 * 73_800]);
-  assert.equal(policy.serverInputOverhead(withImages(1)), host.providerInputOverhead?.('openai-responses', { tools: true, images: 1 }), 'the policy and the shared function agree');
+  assert.deepEqual([withImages(1), withImages(3)].map((body) => policy.serverInputOverhead(body)), [73_800 - bytes, 3 * (73_800 - bytes)]);
+  assert.equal(policy.serverInputOverhead(withImages(1)), host.providerInputOverhead?.('openai-responses', { tools: true, images: [{ bytes }] }), 'the policy and the shared function agree');
+});
+
+test("a 1280x720 screenshot on an OpenAI model counts at its tiles (1,105: 3 x 2 tiles of 512 px at 170 and a base of 85, about a thousand tokens), never the 73,800 maximum or its megabyte of base64; at detail low, 85", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: ['lookup'] });
+  // A PNG's header saying 1280x720, and a megabyte of pixel data after it, as a real screen's.
+  const png = Buffer.alloc(1_000_000);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]).copy(png, 0);
+  png.write('IHDR', 12, 'latin1');
+  png.writeUInt32BE(1280, 16);
+  png.writeUInt32BE(720, 20);
+  const url = `data:image/png;base64,${png.toString('base64')}`;
+  const screen = (detail) => ({ ...RECORDED_REQUEST, model: 'gpt-5.1-codex', tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }], input: [...RECORDED_REQUEST.input, { type: 'function_call_output', call_id: 'c1', output: [{ type: 'input_image', image_url: url, ...(detail ? { detail } : {}) }] }] });
+  const counted = (body) => policy.serverInputOverhead(body) + url.length;
+  assert.equal(counted(screen()), 1105, 'its tiles');
+  assert.ok(counted(screen()) < 73_800 / 50, 'never the per-image maximum');
+  assert.equal(counted(screen('low')), 85, 'detail low');
 });
 
 test("a body with a file input (billed by its pages, with no stated bound) leaves the input bound unmeasured, so a cap treats it as unknown", async () => {
@@ -114,13 +131,15 @@ test("a request whose body fits what is left, but not with its image's allowance
     await send(p.url, { body });
     return sent;
   };
-  // Room for the body's bytes and all of the image's allowance but one token: refused, the provider sees nothing.
+  // Room for the body's bytes and all of the image's allowance but one token: refused, the provider sees nothing. The
+  // allowance is counted in place of the bytes its data URL takes in the body.
+  const allowance = 73_800 - imageItem.image_url.length;
   let bytes;
-  const refused = await sentBy((r) => { bytes = r.inputTokensMax - 73_800; return bytes + 73_800 - 1; });
+  const refused = await sentBy((r) => { bytes = r.inputTokensMax - allowance; return bytes + allowance - 1; });
   assert.equal(refused.length, 0);
-  const passed = await sentBy(() => bytes + 73_800);
+  const passed = await sentBy(() => bytes + allowance);
   assert.equal(passed.length, 1);
-  assert.equal(Buffer.byteLength(passed[0], 'utf8'), bytes, 'the bound is the sent body\'s bytes plus the image allowance');
+  assert.equal(Buffer.byteLength(passed[0], 'utf8'), bytes, 'the bound is the sent body\'s bytes plus the image allowance, less its data URL\'s bytes');
 });
 
 test("the recorded stream's usage is booked from response.completed, read as JSON", async () => {
@@ -232,7 +251,7 @@ test('a refusal names the kind of thing refused, never a value from the request'
 });
 
 test('a node with an output schema: the recorded request carries `text` with a JSON schema, and it is shaped and sent', async () => {
-  const recorded = JSON.parse(fixture('responses-request-schema-gpt-5.4-mini.json'));
+  const recorded = JSON.parse(fixture('responses-request-schema-recorded.json'));
   const { p, forwarded } = await proxy();
   const r = await send(p.url, { body: recorded });
   assert.equal(r.status, 200, r.text);
@@ -245,7 +264,7 @@ test('a node with an output schema: the recorded request carries `text` with a J
 });
 
 test('`text` carries only a format (plain text, or a JSON schema) and a verbosity; anything else is refused, echoing nothing', async () => {
-  const recorded = JSON.parse(fixture('responses-request-schema-gpt-5.4-mini.json'));
+  const recorded = JSON.parse(fixture('responses-request-schema-recorded.json'));
   const { p, forwarded } = await proxy();
   const secret = 'value-from-the-request-t4';
   for (const text of [
@@ -502,7 +521,7 @@ const searched = (n) => RECORDED_STREAM.split('\n').map((line) => {
 const TOKENS_USD = 13907 / 1e6;
 
 test('web search off: the live web search tool the CLI sends is dropped, a tool_choice naming it refused, and the usage booked as before', async () => {
-  const { p, forwarded, reports } = await proxy({ model: 'gpt-5.4-mini', answer: streamed(searched(2)) });
+  const { p, forwarded, reports } = await proxy({ model: 'gpt-6-luna', answer: streamed(searched(2)) });
   assert.equal((await send(p.url, { body: { ...LIVE_REQUEST, tools: [...LIVE_REQUEST.tools, LOOKUP] } })).status, 200);
   assert.deepEqual(forwarded[0].body.tools, [LOOKUP]);
   assert.equal((await send(p.url, { body: { ...LIVE_REQUEST, tool_choice: { type: 'web_search' } } })).status, 400);
@@ -511,9 +530,9 @@ test('web search off: the live web search tool the CLI sends is dropped, a tool_
 });
 
 test('web search live: the recorded request reaches the provider with exactly its live web search tool, and a tool_choice naming it passes', async () => {
-  const policy = codexPolicy({ model: 'gpt-5.4-mini', tools: ['lookup'], webSearch: 'live' });
+  const policy = codexPolicy({ model: 'gpt-6-luna', tools: ['lookup'], webSearch: 'live' });
   assert.deepEqual([policy.serverInputOverhead({ tools: [LIVE_TOOL] }), policy.serverInputOverhead({ tools: [LOOKUP] })], [undefined, 0], 'no bound with web search, as the policy says it: no failure');
-  const { p, forwarded, asked } = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini' });
+  const { p, forwarded, asked } = await proxy({ webSearch: 'live', model: 'gpt-6-luna' });
   assert.deepEqual(LIVE_TOOL, { type: 'web_search', external_web_access: true });
   const r = await send(p.url, { body: { ...LIVE_REQUEST, tools: [...LIVE_REQUEST.tools, LOOKUP] } });
   assert.equal(r.status, 200, r.text);
@@ -525,7 +544,7 @@ test('web search live: the recorded request reaches the provider with exactly it
 });
 
 test('web search live: any other web search tool is refused, web_search_preview still dropped, every other hosted tool refused, echoing nothing', async () => {
-  const { p, forwarded } = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini' });
+  const { p, forwarded } = await proxy({ webSearch: 'live', model: 'gpt-6-luna' });
   const secret = 'value-from-the-request-x9';
   const refused = [{ ...LIVE_TOOL, search_context_size: 'high' }, { ...LIVE_TOOL, filters: { allowed_domains: [secret] } }, { ...LIVE_TOOL, external_web_access: false }, { ...LIVE_TOOL, indexed_web_access: true }, { type: 'web_search' }, { type: 'file_search' }, { type: secret }];
   for (const tool of refused) {
@@ -542,18 +561,18 @@ test('web search live: any other web search tool is refused, web_search_preview 
 });
 
 test("web search live: each search response.completed reports is booked at OpenAI's $0.01 a call, streamed, whole, or past the window", async () => {
-  const { p, reports } = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini', answer: streamed(searched(3)) });
+  const { p, reports } = await proxy({ webSearch: 'live', model: 'gpt-6-luna', answer: streamed(searched(3)) });
   assert.equal((await send(p.url, { body: LIVE_REQUEST })).status, 200);
   await settled();
   assert.deepEqual(reports.map(({ usd, ...u }) => u), [{ input: 13902, output: 5, cacheRead: 0, cacheWrite: 0, webSearches: 3, estimated: true }]);
   assert.ok(Math.abs(reports[0].usd - (TOKENS_USD + 3 * 0.01)) < 1e-12, String(reports[0].usd));
   const usage = { input_tokens: 10, output_tokens: 2 };
-  const live = codexPolicy({ model: 'gpt-5.4-mini', tools: [], webSearch: 'live' });
+  const live = codexPolicy({ model: 'gpt-6-luna', tools: [], webSearch: 'live' });
   assert.equal(live.usageOf(JSON.stringify({ object: 'response', usage, tool_usage: { web_search: { num_requests: 2 } } })).webSearches, 2, 'a whole JSON body');
-  assert.ok(!('webSearches' in codexPolicy({ model: 'gpt-5.4-mini', tools: [] }).usageOf(searched(2))), 'off, no search is read');
+  assert.ok(!('webSearches' in codexPolicy({ model: 'gpt-6-luna', tools: [] }).usageOf(searched(2))), 'off, no search is read');
   // A completed event longer than the window the proxy keeps (its encrypted reasoning): the count is read from the tail.
   const reasoning = { type: 'reasoning', encrypted_content: 'e'.repeat(200 * 1024), summary: [] };
-  const long = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini', answer: streamed(sse([{ type: 'response.created', response: { usage: null } }, completed(usage, { output: [reasoning], tool_usage: { web_search: { num_requests: 4 } } })])) });
+  const long = await proxy({ webSearch: 'live', model: 'gpt-6-luna', answer: streamed(sse([{ type: 'response.created', response: { usage: null } }, completed(usage, { output: [reasoning], tool_usage: { web_search: { num_requests: 4 } } })])) });
   assert.equal((await send(long.p.url, { body: LIVE_REQUEST })).status, 200);
   await settled();
   assert.equal(long.reports[0].webSearches, 4);
@@ -561,22 +580,48 @@ test("web search live: each search response.completed reports is booked at OpenA
 });
 
 test('web search live: a model with no known search price, or an answer that does not say how many searches it ran, is an unknown cost, never $0', async () => {
-  assert.deepEqual(['gpt-5.4-mini', 'gpt-5.5', 'gpt-5', 'o3', 'o4-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4.1-mini', 'openai/gpt-5.4-mini', 'claude-sonnet-4-5'].map(webSearchUsd), [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, undefined, undefined, undefined, undefined]);
+  assert.deepEqual(['gpt-6.1-terra', 'gpt-5.5', 'gpt-5', 'o3', 'o4-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4.1-mini', 'openai/gpt-6.1-terra', 'claude-sonnet-4-5'].map(webSearchUsd), [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, undefined, undefined, undefined, undefined]);
   const u = { input: 1, output: 1, cacheRead: 0 };
   const price = withWebSearches(() => 0.5);
-  assert.deepEqual([price('gpt-5.4-mini', { ...u, webSearches: 2 }), price('gpt-4o-mini', { ...u, webSearches: 1 }), price('gpt-4o-mini', { ...u, webSearches: 0 }), price('gpt-5.4-mini', { ...u, webSearches: null }), withWebSearches(() => null)('gpt-5.4-mini', { ...u, webSearches: 0 })], [0.52, null, 0.5, null, null]);
+  assert.deepEqual([price('gpt-6-luna', { ...u, webSearches: 2 }), price('gpt-4o-mini', { ...u, webSearches: 1 }), price('gpt-4o-mini', { ...u, webSearches: 0 }), price('gpt-6-luna', { ...u, webSearches: null }), withWebSearches(() => null)('gpt-6-luna', { ...u, webSearches: 0 })], [0.52, null, 0.5, null, null]);
   const unknown = await proxy({ webSearch: 'live', model: 'gateway/some-model', answer: streamed(searched(1)) });
-  const silent = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini', answer: streamed(sse([completed({ input_tokens: 10, output_tokens: 2 })])) });
+  const silent = await proxy({ webSearch: 'live', model: 'gpt-6-luna', answer: streamed(sse([completed({ input_tokens: 10, output_tokens: 2 })])) });
   for (const q of [unknown, silent]) assert.equal((await send(q.p.url, { body: LIVE_REQUEST })).status, 200);
   await settled();
   assert.deepEqual([unknown.reports[0].webSearches, unknown.reports[0].usd, silent.reports[0].webSearches, silent.reports[0].usd], [1, null, null, null]);
+});
+
+test('web search live: a GPT-6 model (gpt-6-luna, gpt-6.1-sol, gpt-6.1-terra) books each search at $0.01, as GPT-5 does; a look-alike id is still unknown', async () => {
+  assert.deepEqual(['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-sol', 'gpt-6'].map(webSearchUsd), [0.01, 0.01, 0.01, 0.01, 0.01]);
+  assert.deepEqual(['gpt-60', 'gpt-6x', 'openai/gpt-6-luna'].map(webSearchUsd), [undefined, undefined, undefined]);
+  assert.equal(withWebSearches(() => 0.5)('gpt-6.1-sol', { input: 1, output: 1, cacheRead: 0, webSearches: 2 }), 0.52);
+  const q = await proxy({ webSearch: 'live', model: 'gpt-6-luna', answer: streamed(searched(3)) });
+  assert.equal((await send(q.p.url, { body: { ...LIVE_REQUEST, model: 'gpt-6-luna' } })).status, 200);
+  await settled();
+  assert.equal(q.reports[0].webSearches, 3);
+  assert.ok(typeof q.reports[0].usd === 'number' && q.reports[0].usd >= 0.03, `a GPT-6 response that ran 3 searches has a known cost, $0.03 of it the searches': ${JSON.stringify(q.reports[0])}`);
+});
+
+test("web search live: a side request that offered no search (a learned workflow's submit-only node through the session's port) ran none, so its known token cost stays known", () => {
+  const policy = codexPolicy({ model: 'gpt-6-luna', tools: [], webSearch: 'live' });
+  // The answer says nothing of searches (no tool_usage), as an answer to a request with no search tool does.
+  const silent = sse([completed({ input_tokens: 10, output_tokens: 2 })]);
+  const submitOnly = { model: 'gpt-6-luna', input: [{ role: 'user', content: 'Answer by calling submit.' }], tools: [{ type: 'function', name: 'submit', parameters: { type: 'object' } }] };
+  const price = withWebSearches((_model, u) => (u.input + u.output) / 1e6);
+  const side = policy.usageOf(silent, submitOnly);
+  assert.equal(side.webSearches, 0, `no search offered, none ran: ${JSON.stringify(side)}`);
+  assert.ok(Math.abs(price('gpt-6-luna', side) - 12 / 1e6) < 1e-15, `its tokens, known: ${price('gpt-6-luna', side)}`);
+  // A request that offered the live search and whose answer does not say how many it ran stays unknown, as before.
+  const live = policy.usageOf(silent, LIVE_REQUEST);
+  assert.equal(live.webSearches, null, `offered, count unsaid: ${JSON.stringify(live)}`);
+  assert.equal(price('gpt-6-luna', live), null);
 });
 
 test("web search live: the runner books each search into the session's spend, and the host's cap refuses the next request once it is crossed", async () => {
   // A cap of $0.03: the recorded answer's tokens ($0.0139) are under it, and with two searches ($0.02) over it.
   const session = async (searches) => {
     const booking = await modelPortFor({}, { key: 'k', budgetUsd: 0.03, records: [], append: async () => {}, beforeRequest: ({ spentUsd, budgetUsd }) => (spentUsd === null || spentUsd >= budgetUsd ? { refuse: 'over the cap' } : undefined) });
-    const { p, forwarded } = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini', hooks: booking.models, answer: streamed(searched(searches)) });
+    const { p, forwarded } = await proxy({ webSearch: 'live', model: 'gpt-6-luna', hooks: booking.models, answer: streamed(searched(searches)) });
     const statuses = [];
     for (let i = 0; i < 2; i++) statuses.push((await send(p.url, { body: LIVE_REQUEST })).status);
     await settled();
@@ -597,7 +642,7 @@ test("web search live: the count is the terminal event's own; an earlier event's
   const started = { object: 'response', status: 'in_progress', usage: null, tool_usage: { web_search: { num_requests: 0 } } };
   const book = async (response) => {
     const events = [{ type: 'response.created', response: started }, { type: 'response.in_progress', response: started }, { type: 'response.completed', response: { object: 'response', status: 'completed', ...response, usage } }];
-    const q = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini', answer: streamed(`${sse(events)}data: [DONE]\n\n`) });
+    const q = await proxy({ webSearch: 'live', model: 'gpt-6-luna', answer: streamed(`${sse(events)}data: [DONE]\n\n`) });
     assert.equal((await send(q.p.url, { body: LIVE_REQUEST })).status, 200);
     await settled();
     const [{ input, output, webSearches, usd }] = q.reports;
@@ -615,14 +660,13 @@ test("web search live: the count is the terminal event's own; an earlier event's
   assert.deepEqual(await book({ output: [reasoning] }), unknown);
 });
 
-test("a remote MCP server's granted tools pass in the namespace the pinned CLI offers them in (mcp__<server>); its other tools, another server's and a bare name do not", () => {
-  const policy = codexPolicy({ model: 'm', tools: ['lookup'], mcpTools: ['mcp__fake__add'] });
+test("a run's MCP tool passes as the host tool it is (mcp_<server>__<tool>, the name Codex is given it); an MCP server's namespace of Codex's own never does, nor a bare name", () => {
+  const policy = codexPolicy({ model: 'm', tools: ['lookup', 'mcp_fake__add'] });
   const fn = (name) => ({ type: 'function', name, description: name, parameters: { type: 'object', properties: {} } });
-  // As Codex 0.164 sent a granted server through a loopback proxy: one namespace per server, each tool by its own name.
-  const body = { model: 'x', input: [], tools: [fn('lookup'), { type: 'namespace', name: 'mcp__fake', description: '', tools: [fn('add'), fn('delete_thing')] }, { type: 'namespace', name: 'mcp__other', description: '', tools: [fn('add')] }, fn('add')] };
+  // A namespace as Codex 0.164 sends a server of its own MCP client's: one per server, each tool by its own name.
+  const body = { model: 'x', input: [], tools: [fn('lookup'), fn('mcp_fake__add'), { type: 'namespace', name: 'mcp__fake', description: '', tools: [fn('add'), fn('lookup')] }, fn('add')] };
   const out = policy.apply(body);
-  assert.deepEqual(out.tools.map((tool) => (tool.type === 'namespace' ? `${tool.name}:${tool.tools.map((t) => t.name).join(',')}` : tool.name)), ['lookup', 'mcp__fake:add']);
-  assert.equal(codexPolicy({ model: 'm', tools: ['lookup'] }).apply(body).tools.length, 1, 'with no grant, no MCP tool passes');
+  assert.deepEqual(out.tools.map((tool) => tool.name), ['lookup', 'mcp_fake__add']);
 });
 
 test("a stopped Responses request's hidden reasoning, as the policy reads it from the body: its effort's budget; with no effort (or no reasoning object), its max_output_tokens, the conservative side; with effort none, none", () => {

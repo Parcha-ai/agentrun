@@ -15,9 +15,13 @@ export type { AlsoRow, Claim, Command, Journal };
 export const cutAtLimit = (tokens?: number): string =>
   `the model stopped at its output limit${tokens !== undefined && Number.isSafeInteger(tokens) && tokens > 0 ? ` (${tokens} tokens)` : ""} before finishing its answer`;
 
+/** What the step keeps with its end-of-run turn as the turn is first asked (EndOfRunTurn ask's `keep`): written with the
+ *  turn's prompt, durable before the turn's first request leaves. */
+export type EndOfRunKept = Readonly<Record<string, string | number | boolean | null>>;
+
 /** How an end-of-run turn the loop asked ended: its answer's text, its deadline passed (the turn is aborted), or it
- *  failed. */
-export type EndOfRunAnswer = { readonly ended: true; readonly answer: string } | { readonly timedOut: true } | { readonly failed: { readonly code: string; readonly message: string } };
+ *  failed. `kept`: what the turn's first ask kept (its `keep`), an earlier claim's when that claim asked it first. */
+export type EndOfRunAnswer = ({ readonly ended: true; readonly answer: string } | { readonly timedOut: true } | { readonly failed: { readonly code: string; readonly message: string } }) & { readonly kept?: EndOfRunKept };
 
 /**
  * The end-of-run step (the learning lane's end-of-run turn): asked once, after the job's last turn ended and before the
@@ -36,8 +40,17 @@ export type EndOfRunTurn = (input: {
   /** The run was cut before it could look back: by a person's stop (`stopped`), by one during the end-of-run turn
    *  (`stopped-looking`), or by a fault (`faulted`). The step must not call `ask`: it returns only what a cut run keeps. */
   readonly cut?: "stopped" | "stopped-looking" | "faulted";
-  /** `again`: the turn asked once more in the same session (its first answer out of format), as its own request. */
-  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true }): Promise<EndOfRunAnswer>;
+  /** `again`: the turn asked once more in the same session (its first answer out of format), as its own request.
+   *  `round`: which end of the run this is (1, its first, when absent): an end after a follow-up opened the run again is
+   *  a later round, asked of the model anew under a request of its own. `keep`: what the step keeps with the turn as it
+   *  is first asked (the run's spend and time as it starts), written with its prompt before its first request leaves; a
+   *  turn an earlier claim asked answers with that claim's (`kept`), never this one's, so a restart mid-turn never moves
+   *  what the earlier attempt spent into the job's. A loop that keeps no record of its own (pi's) keeps none. */
+  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true; readonly round?: number; readonly keep?: EndOfRunKept }): Promise<EndOfRunAnswer>;
+  /** What round `round`'s turn kept as it was first asked (its ask's `keep`), when it was asked already: a look-back an
+   *  earlier claim (or this one) started, readable before `ask`, so a step that skips or is cut never asks, and still
+   *  closes that look-back with its first ask's figures. Undefined when none asked it, or the loop keeps no record (pi's). */
+  keptOf?(round: number): EndOfRunKept | undefined;
   readonly signal: AbortSignal;
 }) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
 
@@ -71,6 +84,13 @@ export function endedBy(cancel: boolean | undefined): string {
   return cancel ? "cancelled" : "stopped by a person";
 }
 
+/** The run's end on a person's stop or a cancel, as every loop and the runner write it: state 'stopped', words that say
+ *  which (endedBy), and the outcome the store tells them apart by: 'stopped' (the turn is over, never the run, as main's
+ *  stop leaves a run: a message reopens it) or 'cancelled' (over for good). */
+export function stopEnd(cancel: boolean | undefined): { readonly state: "stopped"; readonly summary: string; readonly outcome: "stopped" | "cancelled" } {
+  return { state: "stopped", summary: endedBy(cancel), outcome: cancel ? "cancelled" : "stopped" };
+}
+
 /** The refusal a denied call's model reads: serve's own words for a call a person denied (refusal-words.ts refusedText,
  *  one copy with the tool gate's), the person's note with it. Asked before its intent, the call never ran. */
 export function deniedText(tool: string, note?: string): string {
@@ -97,6 +117,10 @@ export interface Loop {
   command(command: Command): Promise<CommandOutcome>;
   /** Aborts the in-flight turn; resolves once the loop will write nothing more. */
   stop(reason: StopReason): Promise<void>;
+  /** Whether a person's stop `reason` ends only the agent, the run keeping its computer for its owner (a held computer,
+   *  computer-held.ts): the runner then goes on handing it rows (the owner's calls and release) until it ends. Absent:
+   *  never. */
+  keepsComputer?(reason: StopReason): boolean;
 }
 
 export interface LoopDeps {
@@ -113,6 +137,10 @@ export interface LoopDeps {
    *  or at once when there were none: a resumed ask with no answer row waits for it before it parks again, so an
    *  approve already on its way is never raced. Never rejects. */
   delivered?: Promise<void>;
+  /** Hands the run's command rows the runner has not handed on yet to command() now, not at its next poll (up to its
+   *  command poll away), and resolves once each call returned: a turn that ends asks it before the run may end, so a
+   *  message sent while the turn worked is answered, never refused by the run's end. Absent: nothing to hand on. */
+  deliverNow?: () => Promise<void>;
   /** Where the loop reports what its run shows before it is stored (a running tool, a partial answer), as it changes: a
    *  reader of the newest held state (`undefined` once there is nothing held), called once per tick by the runner's live
    *  ticker (runner/live-ticker.ts), never on every change, so a change costs the same however long the answer has grown.

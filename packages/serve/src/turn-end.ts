@@ -5,17 +5,13 @@
 /** `{ kind: TURN_END, data: TurnEndData }`: a turn of the session `key` is over. Written in the same commit as the turn's
  *  last entries. #1424's first form held only `key` and `status`, and closes the message sent last before it. The
  *  timeline reads it too (the next message is not a steer), so the kind is the timeline's. */
-export { TURN_END } from "@parcha/pi-durable-agent/timeline";
+export { TURN_END } from "./timeline/index.js";
 
 /** The root's record of a message the door accepted (`{ key, id, content }`), and of its end (`{ key, id, sent }`):
  *  `sent` to the session, or dropped by a stop. The bridge writes a TURN_END naming the message once its turn is over;
  *  for a message an older bridge sent and wrote no end for, the run's next process writes it as it opens. */
 export const MESSAGE = "adapter.message";
 export const MESSAGE_END = "adapter.message_end";
-/** The root's marker of a paid request already written as a pi.assistant entry (`{ key, request, unpriced? }`, in the
- *  entry's commit): `unpriced` when its cost was not in yet, which a REQUEST_COST_LATE naming it brings. */
-export const BOOKED = "adapter.request";
-
 /** What a turn's end says: the message it took (the MESSAGE id), the session's own outcome (`failed` too when the bridge
  *  wrote the turn's error, in `error`), the entry of the turn's answer (its last request with text and no call; null
  *  when the turn showed no text), and whether a request it made is still unbooked (its cost then comes later, as a

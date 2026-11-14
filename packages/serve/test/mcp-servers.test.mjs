@@ -10,12 +10,11 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { startServe } from "../dist/index.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { sealColumn, sealedAt } from "../dist/store/index.js";
 import { DatabaseSync } from "node:sqlite";
-import { client, FAUX, scratch, serve, storeBytes, withEnv } from "./support.mjs";
+import { client, FAUX, scratch, serve, startServe, storeBytes, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
@@ -53,7 +52,8 @@ async function plain(t, answer) {
 /** A server on `data` that a test closes before starting another on it, and that is closed after the test whatever
  *  happens. */
 async function started(t, data) {
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  // A local install, as its operator says: its fake MCP servers are on loopback.
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true });
   let closed;
   const close = () => (closed ??= server.close());
   t.after(close);
@@ -120,7 +120,7 @@ test("preview agrees the protocol with a 2026-07-28 server and with a 2025 one, 
   assert.ok(legacy.log.some((entry) => entry.method === "initialize"), "the 2025 server was met with initialize");
   assert.deepEqual((await api("GET", "/settings/mcp-servers")).body, { servers: [] }, "a preview stores nothing");
   const caps = (await api("GET", "/capabilities")).body;
-  assert.deepEqual(caps.features.mcp_client, { transports: ["streamable-http"], auth: ["none", "bearer", "headers", "oauth", "github_app"], at_rest: "sealed", harnesses: ["pi", "claude-agent", "codex"] });
+  assert.deepEqual(caps.features.mcp_client, { transports: ["streamable-http"], auth: ["none", "bearer", "headers", "oauth", "github_app", "per_run"], at_rest: "sealed", harnesses: ["pi", "claude-agent", "codex", "opencode"] });
 });
 
 test("preview tells a server that wants a credential (bearer or OAuth), one that is not MCP, one that is down, and one that redirects apart", async (t) => {
@@ -180,7 +180,7 @@ test("preview tells a server that wants a credential (bearer or OAuth), one that
   const leakyRedirect = await preview(`${leakyHop}/mcp`, { type: "bearer", token });
   assert.equal(leakyRedirect.body.error.fields[0].reason, "redirect");
   holdsNone(JSON.stringify(leakyRedirect.body), token, "a redirect's refusal");
-  assert.match(leakyRedirect.body.error.fields[0].message, /token=\[credential\]/, "where it points is named, the token cut");
+  assert.match(leakyRedirect.body.error.fields[0].message, /token=\[redacted\]/, "where it points is named, the token cut");
   // A server that speaks JSON-RPC but fails every request, echoing the bare token in its error.
   const echo = await plain(t, async (req, res) => {
     let body = "";
@@ -192,7 +192,40 @@ test("preview tells a server that wants a credential (bearer or OAuth), one that
   const echoed = await preview(`${echo}/mcp`, { type: "bearer", token });
   assert.equal(echoed.status, 424, JSON.stringify(echoed.body));
   holdsNone(JSON.stringify(echoed.body), token, "an upstream failure's message");
-  assert.match(echoed.body.error.message, /\[credential\]/, "the server's words are kept, the token cut");
+  assert.match(echoed.body.error.message, /\[redacted\]/, "the server's words are kept, the token cut");
+});
+
+test("a preview's failure cuts the bare token of any header scheme a server echoes (Basic, Token), as the run's gateway does", async (t) => {
+  const { api } = previews;
+  const token = made();
+  const echo = await plain(t, async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const id = JSON.parse(body || "{}").id ?? null;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: `key ${token} is not allowed here` } }));
+  });
+  for (const scheme of ["Basic", "Token"]) {
+    const echoed = await api("POST", "/settings/mcp-servers/preview", { url: `${echo}/mcp`, auth: { type: "headers", headers: { "x-api-key": `${scheme} ${token}` } } });
+    assert.equal(echoed.status, 424, JSON.stringify(echoed.body));
+    holdsNone(JSON.stringify(echoed.body), token, `a ${scheme} header's echo`);
+    assert.match(echoed.body.error.message, /key \[redacted\] is not allowed here/, "the server's words are kept, the token cut in the gateway's word");
+  }
+});
+
+test("a preview's failure cuts a short credential (under 8 characters) a server echoes, as the probe always did", async (t) => {
+  const { api } = previews;
+  const echo = await plain(t, async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const id = JSON.parse(body || "{}").id ?? null;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: "key k9x2q is not allowed here" } }));
+  });
+  const echoed = await api("POST", "/settings/mcp-servers/preview", { url: `${echo}/mcp`, auth: { type: "headers", headers: { "x-api-key": "k9x2q" } } });
+  assert.equal(echoed.status, 424, JSON.stringify(echoed.body));
+  assert.ok(!JSON.stringify(echoed.body).includes("k9x2q"), "a short echoed credential is cut");
+  assert.match(echoed.body.error.message, /key \[redacted\] is not allowed here/);
 });
 
 test("PUT seals the credential: reads say `sealed` and never hold it, nor does the file; a PUT without one keeps it; refresh says what was added, removed and changed; DELETE forgets", async (t) => {
@@ -212,7 +245,8 @@ test("PUT seals the credential: reads say `sealed` and never hold it, nor does t
   assert.equal(one.status, 200);
   assert.equal(one.body.credential, "sealed");
   const all = await api("GET", "/settings/mcp-servers");
-  assert.deepEqual(all.body.servers.map((s) => [s.name, s.url, s.credential]), [["fake", server.url, "sealed"]]);
+  // Its URL shown as its origin, the path and query held (shownUrl).
+  assert.deepEqual(all.body.servers.map((s) => [s.name, s.url, s.credential]), [["fake", `${new URL(server.url).origin}/…`, "sealed"]]);
   holdsNone(JSON.stringify([saved.body, one.body, all.body]), token, "a read");
 
   // Sealed at rest: no store byte (the DB and its WAL/shm) holds the credential in the clear. How it is sealed in its row,

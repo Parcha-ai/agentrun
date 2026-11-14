@@ -117,7 +117,7 @@ test("a revision that names no browser gets none of its tools on a pi root", { t
 });
 
 test("a CLI root gets no browser tool from the runner, whatever its revision names", { timeout: 120_000 }, async (t) => {
-  const opened = await storeWith(t, { harness: "opencode", tools: ["read", "browser"] }, { ...PI_LAUNCH, harness: "opencode", model: { provider: "openai", modelId: "gpt-5" } });
+  const opened = await storeWith(t, { harness: "opencode", tools: ["read", "browser"] }, { ...PI_LAUNCH, harness: "opencode", model: { provider: "openai", modelId: "gpt-6.1-sol" } });
   const [claim] = await opened.store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
   const registry = createRegistry();
   const harness = await Harness.open(opened.store.journal(claim), { models: () => undefined, registry, onReport: () => {} }, ctx);
@@ -163,7 +163,7 @@ test("end to end on the runner: a run handed its agent's saved sign-in opens its
   assert.equal(r.row.state, "ended", JSON.stringify(r.row));
   const ops = readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
   assert.deepEqual(ops.filter((op) => op.op === "sign-in").map(({ ref, save, ref_in_env }) => ({ ref, save, ref_in_env })), [{ ref: pointer, save: true, ref_in_env: false }], "handed the saved sign-in, to save");
-  assert.deepEqual(ops.filter((op) => op.op === "profile").map(({ name, save }) => ({ name, save })), [{ name: "default", save: true }], "its session opened on the profile, saving");
+  assert.deepEqual(ops.filter((op) => op.op === "profile").map(({ pointer: opened, save }) => ({ opened, save })), [{ opened: pointer, save: true }], "its session opened on the saved sign-in, saving");
   assert.equal(r.seen, true, "its viewer was handed over through the store while it ran");
   assert.deepEqual(await r.opened.server.liveViewers.of(RUN), [], "and gone with the run");
   assert.ok((await signInViews(r.opened.server, SEAL_KEY, "agent-1"))[0]?.verified_at, "its release saved: the sign-in verified");
@@ -212,6 +212,25 @@ test("the run's cut on the browser's answers (c): another tool's key the claim h
   const r = await piRun(t, { body: { tools: ["browser", "web_search"] }, keys: { ...BROWSERBASE, PARALLEL_API_KEY: key }, launch: { ...PI_LAUNCH, plane: { browser: "browserbase", web_search: "parallel" } }, script: [{ call: "snapshot" }, { sayLastResult: true }] });
   assert.ok(r.requests.some((body) => JSON.stringify(body).includes("The page shows")), "the page's text reached the model");
   noPieceOf(r, key, "Parallel's key");
+});
+
+/** Every image block of every tool result the model was sent, as its source. */
+const imagesSent = (requests) => requests.flatMap((body) => (body.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : [])
+  .filter((block) => block.type === "tool_result" && Array.isArray(block.content)).flatMap((block) => block.content.filter((part) => part.type === "image").map((part) => part.source))));
+
+test("the run's cut on the browser's answers leaves a screenshot whole: with the claim's key held, the model is sent the capture's own base64, never \"[redacted]\"", { timeout: 120_000 }, async (t) => {
+  // A real PNG of a page, its base64 well past the 8,192 characters the cut reads as one piece of text.
+  const fixture = new URL("./fixtures/screenshot.png", import.meta.url).pathname;
+  const data = readFileSync(fixture).toString("base64");
+  assert.ok(data.length > 8_192);
+  switches(t, { FAUX_BROWSER_SCREENSHOT: fixture });
+  const key = `bb_live_${shapeless(32)}`;
+  const r = await piRun(t, { body: { tools: ["browser"] }, keys: { BROWSERBASE_API_KEY: key, BROWSERBASE_PROJECT_ID: "fake-project" }, script: [{ call: "screenshot" }, { say: "done" }] });
+  assert.equal(r.row.state, "ended", JSON.stringify(r.row));
+  const sent = imagesSent(r.requests);
+  assert.ok(sent.length >= 1, `the screenshot reached the model: ${JSON.stringify(r.requests.at(-1)?.messages?.at(-1)).slice(0, 600)}`);
+  for (const source of sent) assert.deepEqual({ ...source, data: source.data === data ? "the capture's own" : source.data.slice(0, 40) }, { type: "base64", media_type: "image/png", data: "the capture's own" });
+  noPieceOf(r, key, "the Browserbase key");
 });
 
 test("the agent's hand-over on the runner: browser_request_handoff writes its waiting ask while the run holds its claim and session; the person's hand-back (a browser_hand_back row) answers it, first answer wins, and the call returns done", { timeout: 120_000 }, async (t) => {

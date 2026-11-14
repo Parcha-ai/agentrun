@@ -11,6 +11,7 @@ import * as computer from "../dist/index.js";
 const {
 	ARCHIL_HELPER,
 	ARCHIL_MOUNT_LABEL,
+	archilEgressOf,
 	archilLabels,
 	archilMount,
 	archilReadBack,
@@ -34,7 +35,7 @@ const fail = (code, message) => ({ ok: false, error: { code, message } });
 const noToken = (value, what) => assert.ok(!JSON.stringify(value ?? null).includes(TOKEN), `${what} holds the token`);
 
 /** What a computer's preflight prints when it is as the image makes it. */
-const GOOD_PREFLIGHT = ["uid 0", `helper ${HELPER_SHA} -rwxr-xr-x 0 0`, "archil Archil Client: v0.10.1-1793222256, 1001, proto=Version2", "tool 2510:2510", "sudo none"].join("\n");
+const GOOD_PREFLIGHT = ["uid 0", `helper ${HELPER_SHA} -rwxr-xr-x 0 0`, "archil Archil Client: v0.10.1-1793222256, 1001, proto=Version2", "tool 2510:2510", "sudo none", "fuse present"].join("\n");
 
 /** A root channel that records each call and answers by the helper's verb (or "preflight"). */
 function fakeRoot(answers = {}) {
@@ -91,6 +92,20 @@ test("archilMount's preflight gives the helper back to root, 0755, a regular fil
 	assert.ok(restore < script.indexOf("sha256sum"), "restored before the sha256 is read");
 });
 
+test("archilMount: a computer with no /dev/fuse is refused in those words alone, before the takeover or any mount", async () => {
+	// Daytona's GPU host (live 11-11): root, the helper and the client all as the image makes them, but no FUSE device.
+	const root = fakeRoot({ preflight: { exitCode: 0, output: GOOD_PREFLIGHT.replace("fuse present", "fuse absent") } });
+	let took = false;
+	const done = await archilMount({ root, mount: MOUNT, self: { id: "c", name: "c" }, releaseOlder: async () => ((took = true), ok({ released: [], kept: [], unproven: [] })), timeoutMs: 1000 });
+	assert.deepEqual(done, fail("refused", "this computer has no /dev/fuse, so the Archil folder can't be mounted"));
+	assert.deepEqual(root.verbs(), ["preflight"], "nothing after the preflight");
+	assert.equal(took, false, "no takeover");
+	assert.match(root.calls[0].argv[2], /echo "fuse \$\(\[ -c \/dev\/fuse \] && echo present \|\| echo absent\)"/);
+	// A preflight that says nothing of FUSE is an image other than the package's: refused as drift.
+	const silent = await archilMount({ root: fakeRoot({ preflight: { exitCode: 0, output: GOOD_PREFLIGHT.replace("\nfuse present", "") } }), mount: MOUNT, self: { id: "c", name: "c" }, releaseOlder: released(), timeoutMs: 1000 });
+	assert.match(silent.error.message, /the preflight did not find \/dev\/fuse/);
+});
+
 test("archilMount: preflight, the takeover, mount, then serve, each as root through the provider's own exec (no netlock: the tools' network is init's own namespace); the token on the mount's stdin alone", async () => {
 	const root = fakeRoot();
 	const done = await archilMount({ root, mount: MOUNT, releaseOlder: released(), timeoutMs: 1000 });
@@ -104,6 +119,22 @@ test("archilMount: preflight, the takeover, mount, then serve, each as root thro
 		if (at !== 1) assert.equal(call.stdin, undefined, `call ${at} gets no stdin`);
 	}
 	assert.equal(computer.archilNetwork, undefined, "no netlock read-back");
+});
+
+test("archilMount with an egress gateway hands the helper's mount egress=<gateway>:<mount lane>:<data lane>, last, and serve nothing new", async () => {
+	const root = fakeRoot();
+	const egress = { gateway: "10.60.0.40", mountLane: 18100, dataLane: 42050 };
+	const done = await archilMount({ root, mount: MOUNT, releaseOlder: released(), timeoutMs: 1000, egress });
+	assert.deepEqual(done, ok(undefined));
+	assert.deepEqual(root.calls[1].argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder, "egress=10.60.0.40:18100:42050"]);
+	assert.deepEqual(root.calls[2].argv, [ARCHIL_HELPER, "serve"]);
+});
+
+test("archilEgressOf reads <IPv4 gateway>:<mount lane>:<data lane> as the helper does, and refuses every other shape in words", () => {
+	assert.deepEqual(archilEgressOf("10.60.0.40:18100:42050"), { gateway: "10.60.0.40", mountLane: 18100, dataLane: 42050 });
+	for (const text of ["", "10.60.0.40", "10.60.0.40:18100", "10.60.0.40:18100:18100", "10.60.0.40:8100:42050", "10.60.0.40:18100:32050", "10.60.0.40:0:42050", "10.60.0.40:65536:42050", "10.60.0.400:18100:42050", "proxy.internal:18100:42050", "10.60.0.40:18100:42050:1", "10.60.0.40:018100:42050", " 10.60.0.40:18100:42050"]) {
+		assert.throws(() => archilEgressOf(text), /the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>/, JSON.stringify(text));
+	}
 });
 
 test("archilMount: a takeover releases the lower epochs before any mount; released any, or the folder held, it revokes; a failed release revokes nothing", async () => {

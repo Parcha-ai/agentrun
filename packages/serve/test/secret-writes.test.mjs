@@ -5,7 +5,7 @@
 // fields are secrets), in one refusal text. GET /v2/auth/session says whether this browser may (secrets_writable), and if
 // not, why (secrets_reason: sign_in, no_accounts, token), from the same one decision.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
 import { test } from "node:test";
@@ -51,9 +51,9 @@ function at(host, port, { method = "GET", path = "/", headers = {}, body } = {})
   });
 }
 
-/** The accounts-off console's session (the launch link's cookie: GET /?token=), on `host`:`port`. */
-async function launchSession(host, port, token) {
-  const link = await at(host, port, { path: `/?token=${token}` });
+/** The accounts-off console's session (the launch link's cookie: GET /?launch=<code>), on `host`:`port`. */
+async function launchSession(host, port, code) {
+  const link = await at(host, port, { path: `/?launch=${code}` });
   assert.equal(link.status, 303, `the launch link sets the console's cookie: ${link.text}`);
   return { cookie: cookieOf(link), origin: `http://${host}:${port}` };
 }
@@ -117,7 +117,7 @@ test("accounts off on loopback: the launch link's console saves a tool key, and 
   const server = await serve(t, { runner: false });
   const mod = await secretWrites();
   assert.ok(mod, "secret-writes.js exists");
-  const { cookie, origin } = await launchSession("127.0.0.1", server.port, server.token);
+  const { cookie, origin } = await launchSession("127.0.0.1", server.port, server.launchCode);
   const session = await call(server.port, { path: "/v2/auth/session", headers: { cookie } });
   assert.equal(session.status, 200, `it answers with accounts off: ${session.text}`);
   assert.deepEqual(session.json, { accounts: false, secrets_writable: true }, "the launch link's console may; no user field");
@@ -130,6 +130,32 @@ test("accounts off on loopback: the launch link's console saves a tool key, and 
   assert.deepEqual(tokenSession.json, { accounts: false, secrets_writable: false, secrets_reason: "token" });
   const stranger = await call(server.port, { path: "/v2/auth/session" });
   assert.deepEqual(stranger.json, { accounts: false, secrets_writable: false, secrets_reason: "sign_in" }, "a browser that didn't follow the launch link");
+});
+
+test("accounts off on loopback, the API token gets no console session: a cookie computed from it is no session, its link sets none, and a secret write under either is refused; the launch link's session writes", async (t) => {
+  withEnv(t, SEAL);
+  const server = await serve(t, { runner: false });
+  const mod = await secretWrites();
+  const origin = `http://127.0.0.1:${server.port}`; // key-gate: loopback, the server under test
+  const save = (headers) => call(server.port, { method: "PUT", path: "/v2/settings/tool-keys/monid", headers: { ...json, origin, ...headers }, body: { values: { MONID_API_KEY: planted() } } });
+  // The cookie the token used to stand for (an HMAC of the token), and the token itself as the cookie: neither is a session.
+  for (const value of [createHmac("sha256", server.token).update("agentrun-serve page").digest("base64url"), server.token]) {
+    const forged = `agentrun-${server.port}=${value}`;
+    const refused = await save({ cookie: forged });
+    assert.equal(refused.status, 401, `a cookie made from the token is no credential: ${refused.text}`);
+    const session = await call(server.port, { path: "/v2/auth/session", headers: { cookie: forged } });
+    assert.deepEqual(session.json, { accounts: false, secrets_writable: false, secrets_reason: "sign_in" });
+  }
+  // The token's own link signs no browser in: the token leaves the address, and no cookie is set.
+  const link = await call(server.port, { path: `/?token=${encodeURIComponent(server.token)}` });
+  assert.deepEqual([link.status, link.headers.location, link.headers["set-cookie"]], [303, "/", undefined], "the token's link sets nothing");
+  // The token with the console's origin and a JSON body, as a script can forge them: still the token, refused.
+  const scripted = await save({ authorization: `Bearer ${server.token}` });
+  assert.deepEqual([scripted.status, scripted.json?.error?.message], [403, mod.SECRET_WRITE_REFUSAL]);
+  // The launch link's session writes.
+  const { cookie } = await launchSession("127.0.0.1", server.port, server.launchCode); // key-gate: loopback, the server under test
+  assert.equal((await save({ cookie })).status, 204, "the launch link's console saves it");
+  assert.ok(!cookie.includes(server.token), "its cookie is not the token");
 });
 
 test("the test client sends a secret write from the owner's session on either kind of server: the launch link's console with accounts off, the password's with accounts on", async (t) => {
@@ -154,7 +180,7 @@ test("accounts off on a server bound off loopback: its console session is refuse
   const mod = await secretWrites();
   assert.ok(mod, "secret-writes.js exists");
   const server = await serve(t, { runner: false, host });
-  const { cookie, origin } = await launchSession(host, server.port, server.token);
+  const { cookie, origin } = await launchSession(host, server.port, server.launchCode);
   const session = await at(host, server.port, { path: "/v2/auth/session", headers: { cookie } });
   assert.deepEqual(session.json, { accounts: false, secrets_writable: false, secrets_reason: "no_accounts" }, `off loopback: ${session.text}`);
   const refused = await at(host, server.port, { method: "PUT", path: "/v2/settings/tool-keys/monid", headers: { ...json, cookie, origin }, body: { values: { MONID_API_KEY: planted() } } });

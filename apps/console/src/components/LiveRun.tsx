@@ -128,10 +128,10 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   };
 
   // A take-over or a hand-back of the run's computer (an ask's answer among them): its answer goes back to the Screen tab
-  // (who drives, or the refusal), and the run and its timeline are read again after it either way: an answered ask moves
-  // the run on.
+  // (who drives, or the refusal) as soon as it comes, and the run and its timeline are read again after it either way (an
+  // answered ask moves the run on), without the tab waiting for that read.
   const computerMove = async <T,>(go: () => Promise<T>): Promise<T> => {
-    try { return await go(); } finally { await refresh(); setFollows((n) => n + 1); }
+    try { return await go(); } finally { void refresh(); setFollows((n) => n + 1); }
   };
 
   // A workflow run's graph is read here, outside the tabs, so the header's cost (its totals) stays current whichever tab is
@@ -148,12 +148,13 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   // While it works, the run with the newest page's cost; ended, the run as its own read says (the end-of-run read).
   const shown = pageCost && !FINAL_RUN.has(run.status) ? { ...run, cost: pageCost } : run;
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col short:h-auto">
       {error && <div className="border-b p-3"><RunError title={error.title} error={error.api} /></div>}
       <RunDetail key={run.run_id} run={shown} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
-        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} readComputer={() => v2.runComputer(runId)} onTakeOver={() => computerMove(() => v2.takeOverComputer(runId))} onHandBack={(outcome) => computerMove(() => v2.handBackComputer(runId, outcome))} readComputers={() => v2.computers()} onMessage={message} onApprove={approve}
+        outputSchema={harness.state === "read" ? harness.outputSchema : undefined}
+        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} readLearning={() => v2.runLearning(runId)} readComputer={() => v2.runComputer(runId)} onTakeOver={() => computerMove(() => v2.takeOverComputer(runId))} onHandBack={(outcome) => computerMove(() => v2.handBackComputer(runId, outcome))} readComputers={() => v2.computers()} onMessage={message} onApprove={approve}
         actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), onRaiseCap: raiseCap, busy }} />
     </div>
   );

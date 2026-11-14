@@ -70,7 +70,8 @@ export const schedule: TriggerAdapter = {
       const given = instantOf(value.at);
       if (given === undefined) return bad("at", "invalid", "at is an RFC 3339 date-time with its offset"), undefined;
       const at = Math.floor(given / 1000) * 1000;
-      if (at <= now) return bad("at", "invalid", "at is in the past"), undefined;
+      // In words a person reads, on the field (the console's time field; an SDK user's error), never the raw field name.
+      if (at <= now) return bad("at", "invalid", `Pick a time in the future: ${second(at)} has already passed.`), undefined;
       return { kind: "schedule", at: second(at) };
     }
     issues.push(...unknownSourceFields(value, ["kind", "every_s", "start_at"]));

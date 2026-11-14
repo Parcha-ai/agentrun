@@ -1,17 +1,16 @@
-export { createHarnessRunner, modelPortFor, sessionSpendOf, SUBMIT_TOOL, RUNNER_RECORDS } from "./runner.js";
+export { answeredUnpriced, createHarnessRunner, modelPortFor, sessionSpendOf, SUBMIT_TOOL, RUNNER_RECORDS } from "./runner.js";
 export { runBooking, type RunSessions } from "./run-booking.js";
 export type { Admission, BeforeRequest, Refusal, HarnessRunner, HarnessRunnerOptions, InFlight, ModelBooking, ModelPortEvent, ModelPortOptions, SessionCost } from "./runner.js";
-export { DELEGATE_RESULT_SCHEMA, DELEGATE_TOOL, delegateProblems, delegateTool } from "./delegate.js";
-export type { DelegateAgent, DelegateEvent, DelegateOptions } from "./delegate.js";
 export { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
+export { CODEMODE, DEFER_CATALOG_OVER, defersCatalog, isCatalogName, META_TOOLS, TOOLS_CALL, TOOLS_SEARCH } from "./tool-deferral.js";
 export { toolSchemaProblems } from "./schema-check.js";
 export { READ_SKILL_FILE, readSkillFileTool, SKILL_BYTES, skillProblems } from "./skill-files.js";
 export type { HostSkill, SkillFileList } from "./skill-files.js";
 export type { HarnessRunReason } from "./errors.js";
-export { CONTENT_FILTERED, HOST_RESULT_MAX_CHARS } from "./types.js";
+export { CONTENT_FILTERED, HOST_RESULT_MAX_CHARS, hostedTool } from "./types.js";
 export { bookRequest, isConnectCode, isGatewayTimeout, rejectionCode } from "./booking.js";
 export type { Booked, Ended, Priced } from "./booking.js";
 export type {
-  AdapterCapabilities, AdapterEvent, AdapterSession, AgentAdapter, AdapterFacts, GateAnswer, GateCall, SessionPort, Wire, HarnessEvent, HostTool, McpCallResult, McpClient, McpTool, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage, NoteRequest,
-  NodeRequest, SessionIO, SessionMcp, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, TurnStatus,
+  AdapterEvent, AdapterSession, AgentAdapter, AdapterFacts, GateAnswer, GateCall, SessionPort, Wire, HarnessEvent, HostTool, McpCallResult, McpTool, NestedCalls, NestedResult, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage, NoteRequest,
+  NodeRequest, SessionIO, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, ToolPermission, TurnStatus,
 } from "./types.js";

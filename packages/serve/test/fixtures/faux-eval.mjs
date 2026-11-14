@@ -23,6 +23,6 @@ export default function reply(context, faux) {
   return faux.message(JSON.stringify({
     merge,
     reason: merge ? "Each note is the eval's keep or pending." : "A note is the eval's drop.",
-    items: files.map((file) => ({ file, decision: decision(file), ...(decision(file) === "pending" ? { origin: "you", question: "Risky" } : decision(file) === "drop" ? { question: "General" } : {}), why: `Labelled ${decision(file)}.` })),
+    items: files.map((file) => ({ file, decision: decision(file), general: decision(file) !== "drop", ...(decision(file) === "pending" ? { origin: "you", question: "Risky" } : decision(file) === "drop" ? { question: "General" } : {}), why: `Labelled ${decision(file)}.` })),
   }));
 }

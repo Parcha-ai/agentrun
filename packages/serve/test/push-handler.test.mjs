@@ -4,12 +4,11 @@
 // is said as such.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
 import { ApiError } from "../dist/errors.js";
 import { sealedSettingsOverStore } from "../dist/sealed-settings-store.js";
 import { headersRefusal, MIN_KEY_BYTES, verify } from "../dist/standard-webhooks.js";
@@ -17,7 +16,7 @@ import { openapiDocument } from "../dist/openapi.js";
 import { TRIGGER_ADAPTERS } from "../dist/trigger-adapters.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
-import { agent, client, FAUX, follow, scratch, withEnv } from "./support.mjs";
+import { agent, client, FAUX, scratch, startServe, withEnv } from "./support.mjs";
 import { firings, RUN_EXEC } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");

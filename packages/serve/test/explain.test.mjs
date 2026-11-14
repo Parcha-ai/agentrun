@@ -67,10 +67,10 @@ test("the five wrong bodies of a coding agent's first tries: each 422 names the 
   await cleared("POST", "/agents", { definition: {} }, "definition.name", DOC.name);
   await cleared("POST", "/agents", { definition: {} }, "definition.instructions", field(empty, "definition.instructions").example);
 
-  // 3. A switch given a word: it is true or false.
+  // 3. A switch given a word it doesn't take: it is true, false or "notes".
   const word = { definition: { name: "Business due diligence", instructions: "Research.", tools: ["web_search", "web_fetch"], learning: "on" } };
   const learning = await refused("POST", "/agents", word);
-  assert.deepEqual(field(learning, "definition.learning"), { field: "definition.learning", reason: "wrong_type", message: "definition.learning is true or false, e.g. true", example: true });
+  assert.deepEqual(field(learning, "definition.learning"), { field: "definition.learning", reason: "wrong_type", message: 'definition.learning is true, false or "notes": true learns notes, skills and workflows, "notes" notes and skills alone, e.g. true', example: true });
   await cleared("POST", "/agents", word, "definition.learning", true);
 
   // 4 and 5. A run's input as a string, then under another name: it is an object, and content is what it needs.
@@ -127,8 +127,7 @@ test("a suggested value is one the server takes: a bad id gets the documented on
   assert.equal((await api("POST", "/agents/brief/runs", { input: input.example })).status, 202);
 });
 
-// SKIP (follow-up #2078): only 3 of the 4 workflow agents are offered an input their workflow takes (red since the cutover took #2093)
-test.skip("a workflow agent's run is told from its workflow's input schema: never the agentic {content}, and a suggested input starts the run", async (t) => {
+test("a workflow agent's run is told from its workflow's input schema: never the agentic {content}, and a suggested input starts the run", async (t) => {
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent("asks"))).status, 201, "its input requires question, a string");
   let offered = 0;
@@ -141,7 +140,8 @@ test.skip("a workflow agent's run is told from its workflow's input schema: neve
         assert.doesNotMatch(issue.message, /e\.g\./);
         continue;
       }
-      assert.equal(issue.field, "input", JSON.stringify(issue));
+      // The input, or the schema path in it its problem is at (#2093: `input at #/properties/question`).
+      assert.match(issue.field, /^input(?: at #\/\S*)?$/, JSON.stringify(issue));
       assert.deepEqual(issue.example, { question: "…" }, "made from the workflow's input schema: its required question, a string");
       offered++;
       const sent = await api("POST", "/agents/asks/runs", { ...body, input: issue.example });

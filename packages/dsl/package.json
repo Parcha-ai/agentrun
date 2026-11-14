@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-dsl",
-  "version": "0.1.0-beta.32",
+  "version": "0.1.0-beta.37",
   "description": "Composable, typed workflows for agents",
   "type": "module",
   "license": "Apache-2.0",
@@ -47,7 +47,7 @@
     "skills"
   ],
   "engines": {
-    "node": ">=24.11.0"
+    "node": ">=24.22.3"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

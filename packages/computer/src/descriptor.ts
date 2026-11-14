@@ -1,0 +1,194 @@
+// A provider's descriptor: everything a server, Settings and the conformance kit need to know of a vendor before any
+// of its code loads. Each vendor declares one, once, in its descriptor module (src/descriptors/<id>.ts, data and a lazy
+// load() alone), and its provider module takes its MOUNT and CAPABILITIES from it. The kind registry's PROVIDERS and
+// the provider registry are derived from the descriptors; nothing beside them repeats what a descriptor says.
+import type { ComputerSettingKind, KindCapabilities } from "./kinds.js";
+import type { MountKind, Unmounted } from "./mount.js";
+import type { NetworkForm } from "./provider.js";
+import type { ProviderModule } from "./providers.js";
+
+/** One key a provider takes in Settings: its serve-side name, the create() option it fills, and whether it is needed. */
+export interface DescriptorKey {
+	/** The name Settings stores it under and shows (DAYTONA_API_KEY); never a value. */
+	readonly name: string;
+	/** The create() option it fills (apiKey). */
+	readonly option: string;
+	readonly required: boolean;
+	/**
+	 * A person picks its value from the vendor's own list rather than typing it (Orgo's workspace, by name): Settings
+	 * offers what the built provider's keyChoices(option) reads with the other keys. Absent: typed.
+	 */
+	readonly picked?: boolean;
+}
+
+/** A setting that is no key but fills a create() option, with the value used when the server names none. */
+export interface DescriptorSetting {
+	/** Its name in the server's settings (modalApp). */
+	readonly name: string;
+	/** The create() option it fills (app). */
+	readonly option: string;
+	/** The value when the server's settings name none. */
+	readonly default?: string;
+}
+
+/**
+ * A configuration its module builds but the provider does not offer yet: its kind, groups, image and create() options,
+ * as an offered one's, and why it is parked, in words. The conformance suite holds a built one to it as to an offered one.
+ */
+export type ParkedConfiguration = KindCapabilities & { readonly image: string; readonly why: string };
+
+/** A program a provider runs on the server's own machine: the command it looks for on PATH, and what installs it. */
+export interface HostCommand {
+	readonly command: string;
+	/** What gives the command, in words a person installs it by: "Android platform-tools". */
+	readonly from: string;
+	/**
+	 * The machines it is built for, as Node names them (`${process.platform}-${process.arch}`: "linux-x64"). A server on
+	 * any other cannot install it, and says so. Absent: every machine.
+	 */
+	readonly builds?: readonly string[];
+}
+
+/**
+ * A provider, declared once. Every field is data but load(), which imports the provider module only when called:
+ * reading a descriptor loads no provider and no vendor SDK.
+ */
+export interface ProviderDescriptor<Module extends ProviderModule = ProviderModule> {
+	/** Its id, in the provider registry and in Settings: lowercase letters, digits and hyphens. */
+	readonly id: string;
+	/** Its name in words, as Settings shows it. */
+	readonly label: string;
+	/** The keys Settings takes for it, by name, and the option each fills; [] for none (Docker's host is local). */
+	readonly keys: readonly DescriptorKey[];
+	/** Settings that are no key but go to its options (Modal's app). */
+	readonly settings?: readonly DescriptorSetting[];
+	/** The vendor bills by time; prices are the vendor's page, not ours. */
+	readonly metered: boolean;
+	/** The mount kinds its computers take, as its providers' capabilities().mount declare them; [] for none. */
+	readonly mounts: readonly MountKind[];
+	/**
+	 * Mount kinds its computers don't take though a caller would ask for them, each with why in one sentence: check()
+	 * refuses such a mount in these words, and serve says them where the run's folder can't be had (Daytona's archil).
+	 */
+	readonly unmounted?: Unmounted;
+	/**
+	 * The network forms its computers make, as its providers' capabilities().network declare them: ["none"], a remote
+	 * computer whose programs run in a network of their own; ["open"], the vendor's own network, which no allowlist of
+	 * this server reaches; Docker's makes all three. A provider of several configurations declares every form they make.
+	 */
+	readonly network: readonly NetworkForm[];
+	/**
+	 * The machine kind and groups of each configuration it offers, as each built provider's capabilities() declare them;
+	 * where it offers more than one image of a kind, each one's image (the name a setting selects it by) and the create()
+	 * options that build it (KindCapabilities).
+	 */
+	readonly capabilities: readonly KindCapabilities[];
+	/**
+	 * The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no
+	 * default, and the caller refuses the setting in words (Docker's sandbox: the server builds its image, prepareImage).
+	 */
+	readonly defaultImage?: Partial<Record<ComputerSettingKind, string>>;
+	/** Its built providers have prepareImage(): the image a computer starts from is made or pulled before the first create. */
+	readonly prepareImage?: boolean;
+	/**
+	 * The server's environment variable that, when its operator sets it, names the image every computer of this provider
+	 * starts from in place of defaultImage (Daytona's snapshot of box/Dockerfile, which an Archil mount needs). The
+	 * provider's own check() still judges the image. Absent: its images are its defaultImage alone.
+	 */
+	readonly imageEnv?: string;
+	/** Its computers run on this machine's container engine: a server passes it its local host options (volume, host addresses). */
+	readonly local?: boolean;
+	/** create() takes a ledger the server keeps for it, as `options[ledger.option]` (the phone harness's sessions). */
+	readonly ledger?: { readonly option: string };
+	/**
+	 * The server's own environment variables its provider reads on this machine, by name (Local Chrome's, where it finds
+	 * Chrome; a cloud browser's, the gateway a server reaches its API through): a server passes their values, and no other
+	 * variable of its own, as `options.env`. The provider itself reads no environment.
+	 */
+	readonly hostEnv?: readonly string[];
+	/**
+	 * A program its computers need on the server's own machine, found on PATH (the phone's adb): a server looks for it at
+	 * its start and, when it is missing, says from this alone that the provider can't run there and why.
+	 */
+	readonly hostCommand?: HostCommand;
+	/**
+	 * Configurations its module builds but does not offer yet (Orgo's Windows and macOS desktops), each by the image a
+	 * setting would name and why: a setting naming one is refused in its words, saying it is parked, never as an unknown
+	 * image. No setting kind lists one, and Settings never offers one.
+	 */
+	readonly parked?: readonly ParkedConfiguration[];
+	/** The provider module, loaded on demand: its create(), its conformance module. */
+	load(): Promise<Module>;
+}
+
+const ID = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * A descriptor, checked: its id's shape, its keys' and settings' names and options unique and non-empty, and one
+ * configuration at least. Throws in words naming what is wrong, so a bad descriptor never reaches a registry. The const
+ * type parameter keeps its literal id and its module's type, so ProviderOptions can read a create()'s options from it.
+ */
+export function defineProvider<const Descriptor extends ProviderDescriptor>(descriptor: Descriptor): Descriptor {
+	const problems = descriptorProblems(descriptor);
+	if (problems.length > 0) throw new Error(`the provider descriptor ${JSON.stringify(descriptor?.id)}: ${problems.join("; ")}`);
+	return descriptor;
+}
+
+/** What is wrong with a value offered as a descriptor, in words; none when it is one. */
+export function descriptorProblems(value: unknown): string[] {
+	if (typeof value !== "object" || value === null) return ["it is not an object"];
+	const d = value as Partial<ProviderDescriptor>;
+	const problems: string[] = [];
+	if (typeof d.id !== "string" || !ID.test(d.id)) problems.push(`id ${JSON.stringify(d.id)} is not lowercase letters, digits and hyphens`);
+	if (typeof d.label !== "string" || d.label.trim() === "") problems.push("label is not a name in words");
+	if (typeof d.metered !== "boolean") problems.push("metered is not true or false");
+	if (typeof d.load !== "function") problems.push("load is not a function that imports the provider module");
+	if (!Array.isArray(d.mounts) || d.mounts.some((kind) => kind !== "bind" && kind !== "archil")) problems.push("mounts is not a list of mount kinds (bind, archil)");
+	if (d.unmounted !== undefined) {
+		const entries = typeof d.unmounted === "object" && d.unmounted !== null && !Array.isArray(d.unmounted) ? Object.entries(d.unmounted) : undefined;
+		if (entries === undefined || entries.some(([kind, why]) => (kind !== "bind" && kind !== "archil") || typeof why !== "string" || why.trim() === "")) problems.push("unmounted maps mount kinds (bind, archil) to why, in words");
+		else if (Array.isArray(d.mounts) && entries.some(([kind]) => d.mounts?.includes(kind as MountKind))) problems.push("unmounted names a mount kind that mounts declares");
+	}
+	if (!Array.isArray(d.network) || d.network.length === 0 || d.network.some((form) => form !== "none" && form !== "open" && form !== "allow")) problems.push("network is not a list of the network forms its computers make (none, open, allow)");
+	if (!Array.isArray(d.capabilities) || d.capabilities.length === 0) problems.push("capabilities is not a list of one configuration or more");
+	else if (d.capabilities.some((one) => typeof one?.kind !== "string" || !Array.isArray(one.groups))) problems.push("each configuration is a machine kind and its groups");
+	else {
+		const images = new Set<string>();
+		for (const one of d.capabilities) {
+			if (one.image !== undefined && (typeof one.image !== "string" || one.image.trim() === "" || one.image !== one.image.trim())) problems.push(`a configuration's image ${JSON.stringify(one.image)} is not a name`);
+			else if (one.image !== undefined && images.has(`${one.kind} ${one.image}`)) problems.push(`two ${one.kind} configurations have the image ${one.image}`);
+			else if (one.image !== undefined) images.add(`${one.kind} ${one.image}`);
+			if (one.options !== undefined && (typeof one.options !== "object" || one.options === null || Array.isArray(one.options))) problems.push("a configuration's options are an object, as create() takes them");
+		}
+	}
+	const named = (list: unknown, what: string) => {
+		if (list === undefined) return;
+		if (!Array.isArray(list)) return void problems.push(`${what} is not a list`);
+		const names = new Set<string>();
+		const options = new Set<string>();
+		for (const one of list as { name?: unknown; option?: unknown }[]) {
+			if (typeof one?.name !== "string" || one.name === "" || typeof one.option !== "string" || one.option === "") problems.push(`each of ${what} has a name and the option it fills`);
+			else if (names.has(one.name) || options.has(one.option)) problems.push(`${what} names ${one.name} or fills ${one.option} twice`);
+			else names.add(one.name), options.add(one.option);
+		}
+	};
+	if (d.keys === undefined) problems.push("keys is not a list");
+	named(d.keys, "keys");
+	named(d.settings, "settings");
+	if (Array.isArray(d.keys) && d.keys.some((key) => typeof key?.required !== "boolean")) problems.push("each key says whether it is required");
+	if (Array.isArray(d.keys) && d.keys.some((key) => key?.picked !== undefined && typeof key.picked !== "boolean")) problems.push("a key's picked is true or false");
+	if (d.ledger !== undefined && (typeof d.ledger?.option !== "string" || d.ledger.option === "")) problems.push("ledger names the option it fills");
+	if (d.imageEnv !== undefined && (typeof d.imageEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(d.imageEnv))) problems.push("imageEnv is an environment variable name (capital letters, digits and underscores)");
+	if (d.hostEnv !== undefined && (!Array.isArray(d.hostEnv) || d.hostEnv.some((name) => typeof name !== "string" || name === ""))) problems.push("hostEnv is a list of environment variable names");
+	if (d.hostCommand !== undefined) {
+		const { command, from, builds } = (d.hostCommand ?? {}) as Partial<HostCommand>;
+		if (typeof command !== "string" || !/^[A-Za-z0-9._-]+$/.test(command)) problems.push("hostCommand's command is a program's name, with no path");
+		if (typeof from !== "string" || from.trim() === "") problems.push("hostCommand says in words what installs it (from)");
+		if (builds !== undefined && (!Array.isArray(builds) || builds.length === 0 || builds.some((one) => typeof one !== "string" || !/^[a-z0-9]+-[a-z0-9]+$/.test(one)))) problems.push("hostCommand's builds are machines as Node names them (linux-x64)");
+	}
+	if (d.parked !== undefined) {
+		if (!Array.isArray(d.parked) || d.parked.some((one) => typeof one?.image !== "string" || one.image === "" || typeof one.why !== "string" || one.why === "" || typeof one.kind !== "string" || !Array.isArray(one.groups))) problems.push("parked is a list of configurations, each with its image and why it is parked");
+		else if (Array.isArray(d.capabilities) && d.parked.some((one) => d.capabilities!.some((offered) => offered?.image === one.image))) problems.push("a parked image is also offered");
+	}
+	return problems;
+}

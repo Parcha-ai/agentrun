@@ -2,11 +2,15 @@
 // every input event it gets as one JSON line in a file the case reads over files. On a desktop it is computerd-fixture,
 // a test-only static binary: a 200x200 override-redirect window at (0, 0) in four known colors, which grabs focus. On
 // Android it is a small APK that logs touches and its own launch to its files directory and shows a button with a fixed
-// id. This file is their contract: the binary and the APK come with the PRs that first run them.
+// id. This file is their contract: the binary and the APK come with the PRs that first run them. On a Windows desktop it
+// is a PowerShell script this package carries (windows-fixture.ts), the same window, started detached with Start-Process.
+// On a Mac it is UIFixture.app (daemon-macos) started with --input-log: the same quadrants at the display's top left,
+// whose ready line gives its bounds in pixels.
 import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "../files.js";
 import type { Button, Group, Point, Rect } from "../protocol.js";
 import type { CaseContext } from "./types.js";
+import { WINDOWS_FIXTURE } from "./windows-fixture.js";
 
 /** The desktop fixture's window, in screenshot pixels. */
 export const FIXTURE_WINDOW: Rect = [0, 0, 200, 200];
@@ -19,7 +23,7 @@ export const FIXTURE_COLORS: ReadonlyArray<readonly [number, number, number]> = 
 ];
 /** The fixture APK's application id. */
 export const FIXTURE_APP_ID = "ai.agentrun.fixture";
-/** The APK's button, found in apps.ui_tree by its id. */
+/** The APK's button, found in ui.observe by its id, its name the button's text. */
 export const FIXTURE_BUTTON = { id: `${FIXTURE_APP_ID}:id/button`, text: "agentrun fixture" } as const;
 /** Where the APK is written on a phone before apps.install. */
 export const FIXTURE_APK_PATH = "/data/local/tmp/agentrun-fixture.apk";
@@ -87,7 +91,47 @@ async function ready(t: CaseContext, events: () => Promise<FixtureEvent[]>, what
  * the fixture's stop as soon as it is launched, before it logs ready, so a fixture that never does is stopped too.
  */
 export async function startFixture(t: CaseContext, path: string, launched: (stop: () => Promise<void>) => void): Promise<StartedFixture> {
-	const { kind } = t.provider.capabilities();
+	const { kind, os } = t.provider.capabilities();
+	if (kind === "desktop" && os === "windows") {
+		// No processes on a Windows desktop Orgo's API answers: the script is started detached with Start-Process (its
+		// file and its log as one argument list) and stopped by the pid its ready line logs.
+		needs(t, ["exec", "files"], "the Windows desktop fixture");
+		const dir = await t.dir();
+		const script = `${dir}\\agentrun-fixture.ps1`;
+		const log = `${dir}\\events.jsonl`;
+		t.ok(await writeFile(t.client, script, Buffer.from(WINDOWS_FIXTURE, "utf8"), { signal: t.signal }), `files.write of the fixture to ${script}`);
+		const started = await t.exec(["Start-Process", "powershell.exe", `-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "${script}" "${log}"`]);
+		t.equal(started.exitCode, 0, `Start-Process of the fixture (stderr ${JSON.stringify(started.err.trim())})`);
+		const events = () => logOf(t, log);
+		const stop = async () => {
+			const ready = (await events().catch(() => [] as FixtureEvent[])).find((e) => e.event === "ready") as { pid?: unknown } | undefined;
+			if (Number.isSafeInteger(ready?.pid)) await t.client.call("exec.run", { argv: ["taskkill.exe", "/PID", String(ready?.pid), "/F"], timeoutMs: 30_000 });
+		};
+		launched(stop);
+		await ready(t, events, "the Windows desktop fixture");
+		return { bounds: FIXTURE_WINDOW, events, stop };
+	}
+	if (kind === "desktop" && os === "macos") {
+		// A Mac's fixture is UIFixture.app already on it (path is the app), started by open with --input-log, so it
+		// comes to the front as an app does. Its ready line names its pid and its window in screenshot pixels: the
+		// window sits at the display's top left, its size in pixels the display's scale times 200 points.
+		needs(t, ["exec", "files"], "the macOS desktop fixture");
+		const log = `${await t.dir()}/events.jsonl`;
+		const started = await t.exec(["/usr/bin/open", "-n", "-a", path, "--args", "--input-log", log]);
+		t.equal(started.exitCode, 0, `open of the fixture ${path} (stderr ${JSON.stringify(started.err.trim())})`);
+		const events = () => logOf(t, log);
+		const readyLine = async () => (await events().catch(() => [] as FixtureEvent[])).find((e) => e.event === "ready") as { pid?: unknown; bounds?: unknown } | undefined;
+		const stop = async () => {
+			const pid = (await readyLine())?.pid;
+			if (Number.isSafeInteger(pid)) await t.client.call("exec.run", { argv: ["/bin/kill", String(pid)], timeoutMs: 30_000 });
+		};
+		launched(stop);
+		await ready(t, events, "the macOS desktop fixture");
+		const bounds = (await readyLine())?.bounds;
+		const isRect = Array.isArray(bounds) && bounds.length === 4 && bounds.every((n) => Number.isSafeInteger(n));
+		t.assert(isRect, `the macOS fixture's ready line gives its bounds as [x, y, w, h], not ${JSON.stringify(bounds)}`);
+		return { bounds: bounds as Rect, events, stop };
+	}
 	if (kind === "desktop") {
 		needs(t, ["exec", "files", "processes"], "the desktop fixture");
 		const dir = await t.dir();

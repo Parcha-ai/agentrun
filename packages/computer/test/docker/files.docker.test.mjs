@@ -12,7 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { DockerProvider, pullTar, pushTar } from "../../dist/index.js";
+import { DockerProvider } from "../../dist/docker.js";
+import { newRequest } from "./request.mjs";
+import { pullTar, pushTar } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
@@ -51,7 +53,7 @@ describe("the host's tar and a Docker computer", { skip: LIVE ? false : "set AGE
 		const daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
 		const provider = new DockerProvider({ daemonPath });
-		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", labels: { "agentrun.test": "files" } });
+		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", labels: { "agentrun.test": "files" } }, newRequest("files"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		made.push(created.value.name);
 		const connected = await provider.connect(created.value);

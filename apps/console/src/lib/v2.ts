@@ -53,6 +53,8 @@ export type TemplateView = Answer<"listTemplates">["templates"][number];
 export type TemplateApply = Body<"applyTemplate">;
 /** What an apply made: the agent, its triggers, and its warnings. */
 export type TemplateApplied = Answer<"applyTemplate">;
+/** A package read from GitHub (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
+export type TemplateImported = Answer<"importTemplate">;
 
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null. */
 export type Cost = components["Cost"];
@@ -67,7 +69,6 @@ export type TriggerSource = Trigger["source"];
 export type TriggerTarget = Extract<Trigger["target"], { kind: "start_run" }>;
 /** One firing: by the schedule or by hand (Run now), for `nominal_at`, and what came of it. */
 export type Firing = NonNullable<Trigger["last_firing"]>;
-export type FiringStatus = Firing["status"];
 /** An edit's body. */
 export type TriggerInput = Body<"updateTrigger">;
 /** A create's body (POST /v2/triggers). */
@@ -76,17 +77,40 @@ export type TriggerCreate = Body<"createTrigger">;
 export type TriggerMade = Answer<"createTrigger">;
 /** A webhook trigger's new signing secret (POST /v2/triggers/{id}/secret), shown that once. */
 export type TriggerSecret = Answer<"rotateTriggerSecret">;
-/** A question the run asked a person (ask_person): a message answers it. */
-export type PendingQuestion = Extract<NonNullable<Run["pending"]>, { kind: "question" }>;
 /** A tool call set to ask, waiting for the owner's approval (approvals/1): POST /v2/runs/{id}/approvals/{id} answers it. */
 export type PendingApproval = Extract<NonNullable<Run["pending"]>, { kind: "approval" }>;
 /** A run paused at its spend cap: what is left of its cap cannot buy its next request's least, which was not sent. */
 export type BudgetPending = Extract<NonNullable<Run["pending"]>, { kind: "budget" }>;
 
-export type RunReview = NonNullable<Run["review"]>;
-
 export type TimelineKind = components["TimelineKind"];
 export type TimelineRow = components["TimelineRow"];
+/** One node of a learned workflow's run, on its learned_workflow call's result row (learnednodes/1): its label, its kind,
+ *  how it ended (`ok`, `failed`, `escalated`) and how long it took. Never why it failed. */
+export type LearnedNode = NonNullable<TimelineRow["learned_nodes"]>[number];
+/** GET /v2/runs/{id}/learning: a run's learning, null for a run that does not learn. */
+export type RunLearningRead = Answer<"getRunLearning">;
+/** GET /v2/agents/{id}/learning/cost's answer: the agent's runs in the order they started, what each cost and what
+ *  learning added for it, the path it took, and what the series shows (the takeover, the levels before and after it). */
+export type LearningCost = Answer<"getLearningCost">;
+/** The held-out tests recorded for an agent (GET /v2/agents/{id}/learning/evals), newest first. */
+export type LearningEvals = Answer<"listLearningEvals">;
+export type LearningEval = LearningEvals["evals"][number];
+/** One run of that series. `path`: `workflow` a learned workflow finished it alone, `handed_back` one ran and the agent
+ *  went on, `agent` none ran. */
+/** A learning batch (learn from rows): GET /v2/agents/{id}/learning/batches/{batch_id}'s answer, its list's headers, a start's body and a row. */
+export type LearningBatch = Answer<"getLearningBatch">;
+export type LearningBatchHead = Answer<"listLearningBatches">["batches"][number];
+export type LearningBatchStart = Body<"createLearningBatch">;
+export type LearningBatchRow = LearningBatch["rows"][number];
+export type CostRun = LearningCost["runs"][number];
+export type RunPath = CostRun["path"];
+/** GET /v2/agents/{id}/learning/workflows/{name}/revisions' answer: the commits on main that changed a learned workflow's
+ *  workflow.json, oldest first, each with the text it had then. */
+export type WorkflowRevisions = Answer<"listLearnedWorkflowRevisions">;
+export type WorkflowRevision = WorkflowRevisions["revisions"][number];
+/** What the run's job did with the learned skills and workflows it was offered (`used`): each skill and whether its job
+ *  read it, each learned workflow it called, how many times and how many of those failed. */
+export type LearnedUse = NonNullable<RunLearningRead>["used"];
 export type TimelinePage = components["TimelinePage"];
 
 export type RunFile = components["RunFile"];
@@ -154,8 +178,11 @@ export type Recorded<T> = { request: { method: string; path: string }; status: n
 /** GET /v2/computers: each kind, whether this server offers it, and its providers. */
 export type Computers = Answer<"listComputers">;
 export type ComputerKindView = Computers["kinds"][number];
-/** A kind of computer an agent can be given. */
-export type ComputerKind = ComputerKindView["kind"];
+/** A person's own computer paired with this server: its name, what it paired as, its driver's build, whether it is
+ *  attached now, and the run that holds it. */
+export type PairedComputer = Computers["paired"][number];
+/** POST /v2/computers/pairings' answer: a code good once, until it expires. */
+export type Pairing = Answer<"createPairing">;
 /** A provider of computers: its secrets ("computer:<provider>:<KEY>", set or not, where from and when, never a value),
  *  the full names of those it requires, whether it is metered, and whether a run could have it now. */
 export type ComputerProvider = Answer<"saveComputerKeys">;
@@ -164,6 +191,10 @@ export type ComputerSecret = ComputerProvider["secrets"][number];
 export type ComputerKeysBody = Body<"saveComputerKeys">;
 /** POST /v2/computers/{provider}/test's answer. */
 export type ComputerTest = Answer<"testComputer">;
+/** GET /v2/computers/{provider}/choices: each picked key (the provider's `picked`), its choices read from the vendor, or
+ *  why there are none. */
+export type ComputerChoices = Answer<"listComputerChoices">;
+export type ComputerKeyChoices = ComputerChoices["choices"][number];
 /** GET /v2/workspace/archil: Archil (Mode 2) on or off, its disk settings, and its secret ("workspace:archil"), never a
  *  value. */
 export type Archil = Answer<"getWorkspaceArchil">;
@@ -171,3 +202,11 @@ export type Archil = Answer<"getWorkspaceArchil">;
 export type ArchilBody = Body<"putWorkspaceArchil">;
 /** POST /v2/workspace/archil/test's answer. */
 export type ArchilTest = Answer<"testWorkspaceArchil">;
+/** One of an agent's saved browser sign-ins, as GET /v2/agents/{id} shows it: never its pointer. `held` while a run holds
+ *  its save lease (`held_by`); `unreadable`, its pointer doesn't open under this server's seal key, so runs start signed
+ *  out until it is forgotten. */
+export type SignIn = components["SignIn"];
+/** DELETE /v2/agents/{id}/sign-ins/{key}'s answer: what each vendor did with its object. */
+export type SignInForgotten = Answer<"forgetSignIn">;
+/** GET /v2/agents/{id}'s answer as served. */
+export type ServedAgent = Answer<"getAgent">;

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { agent, serve, withEnv } from "./support.mjs";
+import { agent, retried, serve, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
@@ -23,7 +23,7 @@ test("the console's MCP requests, replayed on a real server, are taken and answe
   const fill = (value) => JSON.parse(Object.entries(vars).reduce((text, [key, to]) => text.split(`{${key}}`).join(to), JSON.stringify(value)));
   // The agent the editor's test edits, as it reads it.
   const grant = recorded.requests.find((r) => r.step === "grant fake/add");
-  assert.equal((await api("POST", "/agents", agent("calc", { name: "Calc", harness: "pi", tools: ["read"] }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("calc", { name: "Calc", harness: "pi", tools: ["read"] }))).status, 201);
 
   const answers = {};
   for (const request of recorded.requests.map(fill)) {
@@ -47,7 +47,7 @@ test("the console's MCP requests, replayed on a real server, are taken and answe
     assert.equal(answers[step].status, 200, said(step));
     assert.deepEqual([answers[step].body.name, answers[step].body.credential, answers[step].body.tools.length], ["fake", "sealed", 4], step);
   }
-  assert.deepEqual(answers["the list"].body.servers.map((s) => [s.name, s.url, s.credential]), [["fake", mcp.url, "sealed"]]);
+  assert.deepEqual(answers["the list"].body.servers.map((s) => [s.name, s.url, s.credential]), [["fake", `${new URL(mcp.url).origin}/…`, "sealed"]], "the list shows the address as origin and /…");
   for (const step of Object.keys(answers)) assert.ok(!said(step).includes(token), `${step}: no answer holds the token`);
 
   assert.equal(answers.refresh.status, 200, said("refresh"));

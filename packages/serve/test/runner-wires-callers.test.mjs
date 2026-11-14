@@ -36,20 +36,20 @@ const { beforeRequestOf } = await import("../../run-adapters/dist/kernel/cap/ind
 const KEY = `not-a-secret-${"w"}`;
 const TIMING = { leaseMs: 1_000, renewEveryMs: 250, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
 const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: Retry a flaky fetch twice\ntype: reference\n---\nRetry a flaky fetch twice.\n" };
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }] });
 /** The gateway env serve's operator sets: its own Responses route, priced $1 a million each way. */
 const GATEWAY_ENV = (url) => ({ AGENT_MODEL_BASE_URL: `${url}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "team-model", AGENT_MODEL_PRICE: "1,1" });
 
 /** On each wire, a source whose route speaks it straight to the gateway (no translation), and where its requests land. */
 const SOURCES = {
-  "anthropic-messages": { model: "anthropic/claude-sonnet-4-5", env: (url) => ({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: url }), path: "/v1/messages" },
+  "anthropic-messages": { model: "anthropic/claude-sonnet-5-5", env: (url) => ({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: url }), path: "/v1/messages" },
   "openai-responses": { model: undefined, env: GATEWAY_ENV, path: "/v1/responses" },
 };
 
 /** A source pi-ai speaks neither wire to: OpenRouter's openai/* models are openai-completions in pi-ai, not a wire of
  *  WIRES, so their route stays the Messages translation (model-route.ts messagesFetch, the runner's redactor on it), and
  *  their requests land on Chat Completions. */
-const TRANSLATED = { model: "openrouter/openai/gpt-5", env: () => ({ OPENROUTER_API_KEY: KEY }), path: "/v1/chat/completions" };
+const TRANSLATED = { model: "openrouter/openai/gpt-6.1-sol", env: () => ({ OPENROUTER_API_KEY: KEY }), path: "/v1/chat/completions" };
 /** A fetch that sends each request to the gateway at `url`, on its own path: OpenRouter's origin stood in for. */
 const toGateway = (url) => (target, init) => fetch(`${url}${new URL(String(target)).pathname}`, init);
 
@@ -112,7 +112,8 @@ for (const wire of Object.keys(SOURCES)) {
     const refused = await gradeOn(t, route, 1e-9);
     assert.deepEqual(refused.end, { state: "ended" });
     assert.equal(gateway.requests.length, before, "past the cap: not sent");
-    assert.equal((await runLearningEnd(refused.store, "run-1"))?.reason, "grade_failed");
+    // Refused by the cap before it was sent: skipped for room, never a failure (learning-loop.ts GradeOverCap).
+    assert.equal((await runLearningEnd(refused.store, "run-1"))?.reason, "no_budget");
   });
 }
 

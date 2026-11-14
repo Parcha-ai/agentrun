@@ -1,4 +1,4 @@
-// Docker by default: a server started with AGENTRUN_BOXES not set at all probes Docker as if it were listed (boxes.ts
+// Docker by default: a server started with AGENTRUN_BOXES not set at all probes Docker as if it were listed (place-offers.ts
 // enabledBoxes), and offers it when Docker answers, so a new agent lands in the Docker box with a shell (place.ts
 // newAgentPlace). Where Docker is not there, new agents run on the runner and capabilities, the start's banner and the
 // console's editor say why in words a first-time user can act on. An operator's AGENTRUN_BOXES still wins: a list probes
@@ -7,11 +7,13 @@
 // daemon is reached, nothing is pulled or built, and no box provider is called.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { boxRegistry, enabledBoxes, VM_PROVIDER } from "../dist/boxes.js";
+import { fileURLToPath } from "node:url";
+import { enabledBoxes, placeOffers, remoteNoList, withNetworks } from "../dist/place-offers.js";
+import { dockerHost } from "./docker-host-fake.mjs";
 import { client, follow, jsonLines, printed, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -24,7 +26,6 @@ const NO_DOCKER = "Docker isn't running on this machine (no docker command on PA
 const NO_DAEMON = "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun";
 const NOT_IN_GROUP = "This server's process isn't in the docker group: restart your user manager with `sudo systemctl restart user@$(id -u)`, or log in again if linger is off";
 const JOIN_GROUP = "This server's process isn't in the docker group: add this user to it with `sudo usermod -aG docker $USER`, then restart your user manager with `sudo systemctl restart user@$(id -u)`, or log in again if linger is off";
-const PREPARING = "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.";
 const NOT_ENABLED = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker";
 
 /** A fake docker first on PATH, its state directory set, and AGENTRUN_BOXES as `boxes` says (undefined: not set at all). */
@@ -61,19 +62,25 @@ const until = async (done, what, ms = 30_000) => {
   }
 };
 
-// SKIP (follow-up #2080): the default Docker box's run ends failed on the runner instead of writing out.txt in the box.
-test.skip("demo through the API: with AGENTRUN_BOXES not set and Docker answering, docker is on by default; a new agent is saved in the Docker box with bash, and its run writes out.txt there", { timeout: 120_000 }, async (t) => {
-  const docker = await fakeDocker(t, undefined);
+// The Docker box is a computer (computerd in a container the computer package makes). This demo runs over the computer
+// package's fake docker with its fake computerd (docker-host-fake.mjs, computerd: true): the run's bash runs in the
+// computer's folders, /workspace the run's folder. The Go daemon file is only copied and bound, never run.
+const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64", import.meta.url));
+const NO_COMPUTERD_FILE = !existsSync(DAEMON) &&"no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)";
+test("demo through the API: with AGENTRUN_BOXES not set and Docker answering, docker is on by default; a new agent is saved in the Docker box with bash, and its run writes out.txt there", { timeout: 120_000, skip: NO_COMPUTERD_FILE }, async (t) => {
+  const host = dockerHost({ computerd: true });
+  withEnv(t, { PATH: `${host.dir}:${process.env.PATH}` }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW", "DAYTONA_API_KEY"]);
+  const docker = { calls: host.calls };
   const server = await serve(t, { faux: PROBE });
   const { api } = server;
   const places = await placesOf(api);
   assert.equal(dockerOf(places).available, true, JSON.stringify(dockerOf(places)));
-  assert.ok(["ready", "preparing"].includes(dockerOf(places).state));
+  assert.equal(dockerOf(places).state, "ready");
   assert.deepEqual(places.default_place, DOCKER);
   assert.equal("default_reason" in places, false);
   assert.ok(server.boxesLine.startsWith(ON_BY_DEFAULT), server.boxesLine);
   assert.ok(docker.calls().some((args) => args[0] === "version"), "docker was probed");
-  for (const id of ["daytona", VM_PROVIDER.id]) assert.equal(places.boxes.find((box) => box.id === id).reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${id}`, "every other box stays opt-in, and its setting keeps docker");
+  for (const id of ["daytona", "modal"]) assert.equal(places.boxes.find((box) => box.id === id).reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${id}`, "every other box stays opt-in, and its setting keeps docker");
   const made = await api("POST", "/agents", fresh("shelly"));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.definition.place, DOCKER);
@@ -82,7 +89,11 @@ test.skip("demo through the API: with AGENTRUN_BOXES not set and Docker answerin
   assert.equal(run.status, 202, JSON.stringify(run.body));
   assert.deepEqual(run.body.place, DOCKER);
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
-  assert.ok(docker.calls().some((args) => args[0] === "exec" && args.join(" ").includes("out.txt")), "bash ran in the box, through docker exec");
+  // The command travels as a computerd call over `docker exec -i <computer> computerd stdio`, never in the argv: bash ran in
+  // the box when its computer was made for this run and attached by that exec, and the file it wrote is the run's, read below.
+  const computer = docker.calls().find((args) => args[0] === "run" && args.includes(`agentrun.run=${run.body.run_id}`) && args.includes("agentrun.computer=1"));
+  assert.ok(computer, "the run's computer was made in Docker");
+  assert.ok(docker.calls().some((args) => args[0] === "exec" && args.includes(computer[computer.indexOf("--name") + 1]) && args.at(-1) === "stdio"), "bash ran in the box, through docker exec of its computerd");
   assert.equal((await api("GET", `/runs/${run.body.run_id}/files/out.txt`)).body, "hello from the box\n");
 });
 
@@ -104,8 +115,8 @@ test("with AGENTRUN_BOXES not set and a Docker daemon that does not answer, the 
   const bin = join(await scratch(t), "bin");
   await mkdir(bin);
   await writeFile(join(bin, "docker"), "#!/bin/sh\necho 'Cannot connect to the Docker daemon' >&2\nexit 1\n", { mode: 0o755 });
-  const registry = await boxRegistry({ PATH: bin });
-  assert.deepEqual(registry.offers().find((offer) => offer.id === "docker"), { id: "docker", available: false, reason: NO_DAEMON });
+  const offers = await placeOffers({ PATH: bin });
+  assert.deepEqual(offers.find((offer) => offer.id === "docker"), { id: "docker", available: false, reason: NO_DAEMON });
 });
 
 /** Docker's words for a socket that refused this process: the CLI's, and a bare connect's EACCES. */
@@ -132,7 +143,7 @@ test("a docker socket that refuses this process: the group file lists the user, 
   const never = await groupFile(t, ["someone"]);
   for (const words of [CLI_DENIED, CONNECT_DENIED]) {
     const bin = await deniedDocker(t, words);
-    const reasonOf = async (groups) => (await boxRegistry({ PATH: bin }, { groups })).offers().find((offer) => offer.id === "docker");
+    const reasonOf = async (groups) => (await placeOffers({ PATH: bin }, { groups })).find((offer) => offer.id === "docker");
     assert.deepEqual(await reasonOf({ file: joined, user: "manuel", ids: [100] }), { id: "docker", available: false, reason: NOT_IN_GROUP }, words);
     assert.deepEqual(await reasonOf({ file: never, user: "manuel", ids: [100] }), { id: "docker", available: false, reason: JOIN_GROUP }, words);
     // In the group and holding it, yet refused: no restart would help, so the reason says to join (the full fix).
@@ -184,13 +195,31 @@ for (const value of ["", "none", " none "]) {
   });
 }
 
-test("the published server installs the Docker box's provider: @parcha/pi-transport is a dependency at the server's version, not an optional peer", () => {
-  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  const transport = JSON.parse(readFileSync(new URL("../../pi-transport/package.json", import.meta.url), "utf8"));
-  assert.equal(manifest.dependencies["@parcha/pi-transport"], manifest.version);
-  assert.equal(transport.version, manifest.version);
-  assert.equal(manifest.peerDependencies?.["@parcha/pi-transport"], undefined);
-  assert.equal(manifest.peerDependenciesMeta?.["@parcha/pi-transport"], undefined);
+test("daytona and modal are offered by their computer provider's required keys, read through keyOf (the environment, else a key saved in Settings → Computers); neither vendor is asked anything", async () => {
+  const saved = { DAYTONA_API_KEY: "fake-test-key", MODAL_TOKEN_ID: "saved-modal-id" };
+  const asked = [];
+  const keyOf = async (name) => (asked.push(name), saved[name]);
+  const offers = await placeOffers({ AGENTRUN_BOXES: "daytona,modal" }, { keyOf });
+  assert.deepEqual(offers.find((offer) => offer.id === "daytona"), { id: "daytona", available: true, reason: "configured; not probed at start" });
+  assert.deepEqual(offers.find((offer) => offer.id === "modal"), { id: "modal", available: false, reason: "needs MODAL_TOKEN_SECRET" }, "a token pair with one half missing is not offered");
+  assert.deepEqual(asked.sort(), ["DAYTONA_API_KEY", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"], "only each provider's required keys are read");
+  // With no keyOf, the environment alone; no key's value is in an offer.
+  const fromEnv = await placeOffers({ AGENTRUN_BOXES: "modal", MODAL_TOKEN_ID: "env-id", MODAL_TOKEN_SECRET: "env-secret" });
+  assert.deepEqual(fromEnv.find((offer) => offer.id === "modal"), { id: "modal", available: true, reason: "configured; not probed at start" });
+  const shown = JSON.stringify([...offers, ...fromEnv]);
+  assert.ok(!shown.includes("fake-test-key") && !shown.includes("saved-modal-id") && !shown.includes("env-"), "no key's value in an offer");
+});
+
+test("what each available box reaches: docker through its egress proxy (or none, or unavailable as refused); daytona and modal never get the host list", () => {
+  const offers = [{ id: "docker", available: true }, { id: "modal", available: true }, { id: "daytona", available: true }];
+  const by = (list) => Object.fromEntries(list.map((offer) => [offer.id, offer]));
+  const listed = by(withNetworks(offers, ["pypi.org"], { hostAddresses: ["docker-host-address"] }));
+  assert.deepEqual(listed.docker, { id: "docker", available: true, network: "allowlist", host_addresses: ["docker-host-address"] });
+  assert.deepEqual(listed.daytona, { id: "daytona", available: true, network: "none", network_reason: remoteNoList("daytona") });
+  assert.deepEqual(listed.modal, { id: "modal", available: true, network: "none", network_reason: remoteNoList("modal") });
+  const none = by(withNetworks(offers, "none"));
+  assert.deepEqual([none.docker.network, none.docker.network_reason, none.daytona.network, none.daytona.network_reason, none.modal.network_reason], ["none", "AGENTRUN_BOX_ALLOW is none", "none", undefined, undefined]);
+  assert.deepEqual(by(withNetworks(offers, ["pypi.org"], { refused: "Docker is another machine's" })).docker, { id: "docker", available: false, state: "unavailable", reason: "Docker is another machine's" });
 });
 
 test("none stands alone: AGENTRUN_BOXES that names none and a box refuses the start, naming why", () => {
@@ -209,8 +238,6 @@ test("fresh-HOME start of the built CLI with AGENTRUN_BOXES not set, a fake dock
   t.after(() => {
     if (child.exitCode === null) process.kill(-child.pid, "SIGTERM");
   });
-  let all = "";
-  child.stdout.on("data", (chunk) => (all += chunk));
   const out = await printed(child, /^Boxes: /m);
   const line = out.split("\n").find((text) => text.startsWith("Boxes: "));
   assert.ok(line.startsWith(ON_BY_DEFAULT), line);
@@ -226,10 +253,6 @@ test("fresh-HOME start of the built CLI with AGENTRUN_BOXES not set, a fake dock
   assert.deepEqual(made.body.definition.place, DOCKER);
   assert.ok(made.body.definition.tools.includes("bash"), JSON.stringify(made.body.definition.tools));
   assert.ok(docker.calls().some((args) => args[0] === "version"), "the CLI's start probed docker");
-  // The box image's first build, said as it starts and as it ends, after the banner.
-  await until(async () => /^The Docker box image is ready\.$/m.test(all), "the image's end line");
-  const said = all.split("\n");
-  const at = (text) => said.indexOf(text);
-  assert.ok(at(PREPARING) > said.findIndex((text) => text.startsWith("Boxes: ")), all);
-  assert.ok(at("The Docker box image is ready.") > at(PREPARING), all);
+  // The start builds and pulls nothing: a Docker computer makes its image ready on its first run.
+  assert.deepEqual(docker.calls().filter((args) => ["build", "pull", "image", "buildx"].includes(args[0])), [], "no image asked for at the start");
 });

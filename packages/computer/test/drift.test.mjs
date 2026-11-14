@@ -4,7 +4,7 @@ import test from "node:test";
 import * as computer from "../dist/index.js";
 import { report } from "./fake-docker.mjs";
 
-const { drift, helloDrift } = computer;
+const { drift, helloDrift, PROTOCOL_VERSION } = computer;
 const hostOf = (info) => computer.hostOf(info);
 
 const DEADLINE = "2026-11-06T12:00:00.000Z";
@@ -12,7 +12,7 @@ const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "non
 const SIZED = { ...SPEC, network: "open", cpus: 1.5, memoryMb: 512, pids: 64 };
 const EXPECTED = { version: "1.2.3", kind: "linux", groups: ["exec", "files", "processes"], arch: "amd64", daemonPath: "/data/computerd", deadline: DEADLINE, user: "1000:1000", apparmor: false, selinux: false };
 const MIB = 1024 * 1024;
-const HELLO = { version: "1.2.3", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+const HELLO = { protocol: PROTOCOL_VERSION, version: "1.2.3", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 /** The tmpfs options create gives 1000:1000, before their sizes. */
 const WORK_OPTIONS = "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700";
 const SOCKET_OPTIONS = "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700";
@@ -335,10 +335,15 @@ test("hello: the provider's version, its kind and exactly its groups, linux, and
 	one(helloDrift({ ...HELLO, groups: [...HELLO.groups, "screen"] }, EXPECTED), /offers groups screen, which the provider does not declare/);
 	one(helloDrift({ ...HELLO, kind: "desktop" }, EXPECTED), /kind desktop, expected linux/);
 	one(helloDrift({ ...HELLO, kind: undefined }, EXPECTED), /kind nothing, expected linux/);
-	one(helloDrift({ version: "1.2.3", os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"] }, EXPECTED).filter((m) => !/kind/.test(m)), /groups/);
+	one(helloDrift({ protocol: PROTOCOL_VERSION, version: "1.2.3", os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"] }, EXPECTED).filter((m) => !/kind/.test(m)), /groups/);
 	one(helloDrift({ ...HELLO, os: "windows" }, EXPECTED), /os windows/);
 	one(helloDrift({ ...HELLO, arch: "arm64" }, EXPECTED), /arch arm64.*amd64/);
 	assert.deepEqual(helloDrift({ ...HELLO, arch: "arm64" }, { ...EXPECTED, arch: undefined }), [], "arch is checked only when known");
+	// init --own-network: hello says the fence, a network namespace init made or one made inside a user namespace.
+	for (const fence of ["netns", "userns-netns"]) assert.deepEqual(helloDrift({ ...HELLO, fence }, { ...EXPECTED, fence: true }), [], fence);
+	one(helloDrift(HELLO, { ...EXPECTED, fence: true }), /fence nothing: init was started with --own-network, so its programs must be held behind one, netns or userns-netns/);
+	one(helloDrift({ ...HELLO, fence: "none" }, { ...EXPECTED, fence: true }), /fence none: /);
+	assert.deepEqual(helloDrift(HELLO, EXPECTED), [], "no fence asked (Docker's own network), none checked");
 	one(drift(SPEC, inspected(), { ...HELLO, version: "0.0.1" }, EXPECTED), /version 0\.0\.1/);
 });
 

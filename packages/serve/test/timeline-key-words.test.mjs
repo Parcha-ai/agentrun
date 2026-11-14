@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { agent, answerFlow, flowAgent, follow, serve, withEnv } from "./support.mjs";
-import { redacted, withoutLoopback } from "../dist/key-refusal.js";
+import { redacted, withoutLoopback, withoutLoopbackAddresses } from "../dist/key-refusal.js";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -80,7 +80,7 @@ test("pi: a gateway that refuses its key (401): the Timeline row says what the r
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  withEnv(t, { AGENT_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/api`, AGENT_MODEL: "openai/gpt-6-sol", AGENT_MODEL_API_KEY: KEY, AGENT_MODEL_PRICE: "1,2,0.5" }, NAMES);
+  withEnv(t, { AGENT_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/api`, AGENT_MODEL: "openai/gpt-6.1-sol", AGENT_MODEL_API_KEY: KEY, AGENT_MODEL_PRICE: "1,2,0.5" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("refused"))).status, 201);
   const started = await api("POST", "/agents/refused/runs", { input: { content: "Say hi." } });
@@ -100,7 +100,7 @@ test("pi: a gateway that refuses its key (401): the Timeline row says what the r
 // tier on OpenAI and the strong tier on Anthropic, a strong node's 401 must not read as OpenAI refusing OPENAI_API_KEY:
 // the row keeps the provider's own words (no loopback address) rather than name a key that may be the wrong one.
 test("a workflow whose tiers send different keys: a node's 401 keeps its own words on the Timeline, never another tier's key", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5", OPENAI_API_KEY: `not-a-secret-${"openai-key"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic-key"}` }, [...NAMES, "AGENT_MODEL_STRONG", "AGENT_MODEL_FAST"]);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5", OPENAI_API_KEY: `not-a-secret-${"openai-key"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic-key"}` }, [...NAMES, "AGENT_MODEL_STRONG", "AGENT_MODEL_FAST"]);
   const { api } = await serve(t);
   const flow = answerFlow("Fail with a refused key.");
   flow.root.steps[0].tier = "strong";
@@ -130,7 +130,7 @@ test("a refused key's plain words carry no loopback address either: a gateway th
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  withEnv(t, { AGENT_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/api`, AGENT_MODEL: "openai/gpt-6-sol", AGENT_MODEL_API_KEY: KEY, AGENT_MODEL_PRICE: "1,2,0.5" }, NAMES);
+  withEnv(t, { AGENT_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/api`, AGENT_MODEL: "openai/gpt-6.1-sol", AGENT_MODEL_API_KEY: KEY, AGENT_MODEL_PRICE: "1,2,0.5" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("rejected"))).status, 201);
   const started = await api("POST", "/agents/rejected/runs", { input: { content: "Say hi." } });
@@ -150,7 +150,7 @@ test("a refused key's plain words carry no loopback address either: a gateway th
 const ECHOED = `not-a-secret-${"echoed-key-0123"}`;
 
 test("a workflow node's 401 that echoes a held key: the Timeline and the run say [redacted], never the key", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: ECHOED }, NAMES);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: ECHOED }, NAMES);
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent("echoes", answerFlow("Fail echoing a held key.")))).status, 201);
   const started = await api("POST", "/agents/echoes/runs", { input: { question: "x" } });
@@ -164,7 +164,7 @@ test("a workflow node's 401 that echoes a held key: the Timeline and the run say
 });
 
 test("an agentic run's error that is no 401 but echoes a held key: the Timeline and the run's error say [redacted]", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: ECHOED }, NAMES);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: ECHOED }, NAMES);
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("echoes-too"))).status, 201);
   const started = await api("POST", "/agents/echoes-too/runs", { input: { content: "Fail echoing a held key." } });
@@ -185,7 +185,7 @@ const pieces = (value) => Array.from({ length: value.length - 7 }, (_, i) => val
 
 for (const [what, content] of [["across the summary's and the text's cut", "Fail across the cut."], ["base64-encoded", "Fail echoing an encoded key."], ["with a line break in its middle (its summary is its first line)", "Fail with a wrapped key."], ["on line after line, past what a row shows", "Fail repeating a held key."]]) {
   test(`an agentic run's error echoing a held key ${what}: no 8 characters of it on the Timeline or in the run's error`, { timeout: 60_000 }, async (t) => {
-    withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
+    withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
     const { api } = await serve(t);
     assert.equal((await api("POST", "/agents", agent("cut"))).status, 201);
     const started = await api("POST", "/agents/cut/runs", { input: { content } });
@@ -205,7 +205,7 @@ for (const [what, content] of [["across the summary's and the text's cut", "Fail
 // A loopback rewrite takes time in proportion to the text, so no caller can block the loop with a long one; and a
 // loopback address with no scheme (a refused connection to serve's proxy) is rewritten as the others are.
 test("the loopback rewrite is linear: 200 KB of the worst shapes in under 200 ms each", () => {
-  for (const text of [`,${" ".repeat(200_000)}x`, "url: ".repeat(40_000), `url: http://127.0.0.1${"a".repeat(200_000)} x`, `${"http://localhost:1/".repeat(10_000)}`]) {
+  for (const text of [`,${" ".repeat(200_000)}x`, "url: ".repeat(40_000), `url: http://127.0.0.1${"a".repeat(200_000)} x`, `${"http://localhost:1/".repeat(10_000)}`, `${"localhost:1/a.".repeat(15_000)}`, `localhost:1/${"a.".repeat(100_000)}`]) {
     const started = performance.now();
     withoutLoopback(text);
     const took = performance.now() - started;
@@ -218,6 +218,34 @@ test("a bare loopback address with its port (a refused connection to serve's pro
   assert.equal(withoutLoopback("connect ECONNREFUSED [::1]:39543 again"), "connect ECONNREFUSED a local address again");
   assert.equal(withoutLoopback("it runs on localhost"), "it runs on localhost");
   assert.equal(withoutLoopback("see localhost.run:443"), "see localhost.run:443");
+});
+
+// #2311: a bare loopback address that ends a sentence is rewritten whole, its path too, and the full stop kept; a port
+// followed by more than a full stop names no address of the host's, and is kept.
+test("a bare loopback address at a sentence's end is rewritten, with or without a path, its full stop kept", () => {
+  for (const host of ["localhost", "127.0.0.1", "[::1]"]) {
+    for (const [said, served] of [
+      [`The proxy is at ${host}:9000.`, "The proxy is at a local address."],
+      [`The proxy is at ${host}:9000. Then retry.`, "The proxy is at a local address. Then retry."],
+      [`The proxy is at ${host}:9000/v1/responses.`, "The proxy is at a local address."],
+      [`The proxy is at ${host}:9000/v1/responses.\nThen retry.`, "The proxy is at a local address.\nThen retry."],
+      [`The proxy is at ${host}:9000/v1.json now.`, "The proxy is at a local address now."],
+    ]) assert.equal(withoutLoopback(said), served, said);
+  }
+  assert.equal(withoutLoopback("see localhost:9000.example"), "see localhost:9000.example");
+});
+
+// The address alone (withoutLoopbackAddresses), the one pattern withoutLoopback and a learning text share: a scheme's
+// address keeps a sentence's full stop as a bare one does, and a path ends at a JSON string's escape, so a quoted
+// address in a compact workflow.json leaves it valid; no `url:` label or line is taken, only the address.
+test("an address alone is rewritten: its full stop, a url: label, its line's end and a JSON string's escape stay", () => {
+  assert.equal(withoutLoopback("Open http://localhost:8080/v1."), "Open a local address.");
+  assert.equal(withoutLoopback("Open http://127.0.0.1:8080. Then retry."), "Open a local address. Then retry.");
+  assert.equal(withoutLoopbackAddresses("failed, url: http://127.0.0.1:39543/v1/responses\n"), "failed, url: a local address\n");
+  assert.equal(withoutLoopback("unexpected status 500, url: http://127.0.0.1:39543/v1/responses"), "unexpected status 500", "a run error's tail still goes");
+  const flow = JSON.stringify({ steps: [{ note: 'Call "http://localhost:8080/x" or localhost:9000.' }, { note: "url: http://[::1]:9000" }] });
+  const served = withoutLoopbackAddresses(flow);
+  assert.deepEqual(JSON.parse(served).steps.map((step) => step.note), ['Call "a local address" or a local address.', "url: a local address"], served);
 });
 
 // Redaction reads no more of an error than serve can show (a Timeline row's 2000 characters, plus room for the longest

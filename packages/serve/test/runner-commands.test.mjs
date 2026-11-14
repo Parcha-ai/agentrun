@@ -51,11 +51,14 @@ test("a command for an ended run is refused: in the insert once it is final, and
   // first delivery reads the run's rows once: a steer sent before that read is the loop's, never a late one. That read is
   // held here until the test lets it go (a loaded machine's slow first read), and the steer is sent only once the first
   // delivery is done (LoopDeps.delivered): the order comes from that, never from a clock. (The 10 s is a failure bound.)
+  // The runner's store hears no write (watchCommands), as a runner in another process does not: a row written beside it
+  // would reach the loop at once.
   let letFirstReadGo;
   const firstReadMayGo = new Promise((resolve) => (letFirstReadGo = resolve));
   let firstRead = true;
   const slowFirstRead = (store) => ({
     ...store,
+    watchCommands: () => () => {},
     commands: async (runId, after) => {
       if (firstRead) {
         firstRead = false;
@@ -69,14 +72,16 @@ test("a command for an ended run is refused: in the insert once it is final, and
   await until(() => faux.loops[0]?.claim, "the loop runs");
   letFirstReadGo();
   await faux.loops[0].deps.delivered;
-  const late = await sendCommand(server, "run-1", { kind: "steer", body: { text: "one more thing" } });
+  // A raise as the late command: a person's message (a steer) still waiting at a completed run's end opens the run again
+  // with it instead (run-patch.ts refuseLeftovers; runner-message-while-working.test.mjs).
+  const late = await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 5 } });
 
   await until(async () => (await server.runs.get("run-1")).state === "ended", "the run ends");
   const row = await until(async () => {
     const now = await commandRow(server, "run-1", late.id);
     return now.takenAt !== null && now;
-  }, "the runner settles the late steer");
-  assert.match(row.refused ?? "", /ended/, `the late steer is refused with the reason: ${JSON.stringify(row)}`);
+  }, "the runner settles the late raise");
+  assert.match(row.refused ?? "", /ended/, `the late raise is refused with the reason: ${JSON.stringify(row)}`);
   assert.equal(faux.loops[0].received.length, 0, "the loop never received it");
 
   await assert.rejects(sendCommand(server, "run-1", { kind: "steer", body: { text: "too late" } }), { name: "RunFinal" });

@@ -1,7 +1,6 @@
 // A registry bound to a run (serve/src/workspace/run-tools.ts bindTools): the registry's tools the run names, as the
-// kernel's HostTool an adapter's session takes, each call through the run's gate first and its answer rendered as a host
-// tool's has always been: the output, the failure's words, the diagnostics; a path in an error, a write's or an edit's
-// answer named relative to the run's folder. The registry here is a stand-in over the run's own executors, shaped as the
+// kernel's HostTool an adapter's session takes, its answer rendered as a host tool's is (hostToolOf): the output, the
+// failure's words, the diagnostics; a path in an error, a write's or an edit's answer named relative to the run's folder. The registry here is a stand-in over the run's own executors, shaped as the
 // kernel's (run-adapters kernel/registry): its definitions, words and limits are not this test's.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -9,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { hostTools } from "../dist/host-tools.js";
+import { hostToolsOf } from "./host-tools-of.mjs";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { bashTool, fileTools, piEnv } from "../dist/workspace/pi-env.js";
 import { bindTools, runHands } from "../dist/workspace/run-tools.js";
@@ -51,7 +50,7 @@ test("bound: the registry's tools the run names, in the run's order, with their 
 test("bound: a call's text is today's host tool's for the same call on the same files, a path named relative to the run's folder (bash on a Mode 2 run: a Mode 1 run with no computer has none)", async () => {
   const [left, right] = [scratch(), scratch()];
   const leftEnv = piEnv(localWorkspace(left), { cwd: left, env: { PATH: "/usr/bin:/bin" }, defaultTimeoutS: 120 });
-  const today = Object.fromEntries(hostTools({ env: async () => leftEnv }, ["read", "write", "edit", "bash"], ctx, new Map(), [...fileTools(), bashTool()]).map((tool) => [tool.name, tool]));
+  const today = Object.fromEntries(hostToolsOf({ env: async () => leftEnv }, ["read", "write", "edit", "bash"], ctx, new Map(), [...fileTools(), bashTool()]).map((tool) => [tool.name, tool]));
   const run = await runHands(localWorkspace(right), undefined, { mode: 1, context: ctx });
   // bash on Archil's exec (Mode 2), here over the same folder: its texts name no path.
   const shell = await runHands(localWorkspace(right), undefined, { mode: 2, context: ctx });
@@ -75,22 +74,14 @@ test("bound: a call's text is today's host tool's for the same call on the same 
   }
 });
 
-test("bound: each call passes the run's gate first; a refused one runs nothing, a parked one says so; a replayed attempt tells the gate; a thrown failure is the answer's text", async () => {
+test("bound: a call reaches the registry with the run's hands, and a thrown failure is the answer's text, its path relative to the run's folder", async () => {
   const root = scratch();
   const run = await runHands(localWorkspace(root), undefined, { mode: 1, context: ctx });
   const calls = [];
   const registry = registryOf(run, calls);
-  const entered = [];
-  const verdicts = { write: { text: "denied", isError: true }, bash: { text: "waits for a person", isError: false, parked: true } };
-  const park = { commit: async () => undefined };
-  const gate = { enter: async (name, args, callId, given, options) => (entered.push([name, callId, given === park, options]), verdicts[name]) };
-  const tools = Object.fromEntries(bindTools(run, { ...registry, list: () => [...registry.list(), { name: "boom", description: "", parameters: {}, replaySafe: false }] }, ["read", "write", "bash", "boom"], { gated: { gate, park } }).map((tool) => [tool.name, tool]));
-  assert.deepEqual(await tools.write.call({ path: "w.txt", content: "w" }, { callId: "c1", signal: signal() }), { text: "denied", isError: true });
-  assert.deepEqual(await tools.bash.call({ command: "touch ran" }, { callId: "c2", signal: signal() }), { text: "waits for a person", isError: false, parked: true });
-  assert.deepEqual(calls, [], "neither ran");
-  const read = await tools.read.call({ path: "a.txt" }, { callId: "c3", signal: signal(), attempt: 1 });
+  const tools = Object.fromEntries(bindTools(run, { ...registry, list: () => [...registry.list(), { name: "boom", description: "", parameters: {}, replaySafe: false }] }, ["read", "boom"]).map((tool) => [tool.name, tool]));
+  const read = await tools.read.call({ path: "a.txt" }, { callId: "c1", signal: signal() });
   assert.equal(read.text, "one\ntwo\n");
-  assert.deepEqual(entered, [["write", "c1", true, {}], ["bash", "c2", true, {}], ["read", "c3", true, { replayed: true }]]);
   assert.deepEqual(calls.map(([name, , hands]) => [name, hands]), [["read", true]], "the registry is invoked with the run's hands");
-  assert.deepEqual(await tools.boom.call({}, { callId: "c4", signal: signal() }), { text: "boom at x", isError: true }, "a thrown failure, its path relative to the run's folder");
+  assert.deepEqual(await tools.boom.call({}, { callId: "c2", signal: signal() }), { text: "boom at x", isError: true }, "a thrown failure, its path relative to the run's folder");
 });

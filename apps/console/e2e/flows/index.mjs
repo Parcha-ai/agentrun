@@ -17,9 +17,11 @@ import githubTrigger from "./github-trigger.mjs";
 import setupOpen from "./setup-open.mjs";
 import setupPublic from "./setup-public.mjs";
 import setupLinkFollow from "./setup-link-follow.mjs";
+import setupRender from "./setup-render.mjs";
 import signIn from "./sign-in.mjs";
 import signOutScope from "./sign-out-scope.mjs";
 import signedOutElsewhere from "./signed-out-elsewhere.mjs";
+import reportJson from "./report-json.mjs";
 import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
 import askDone from "./ask-done.mjs";
@@ -27,16 +29,23 @@ import secretsWriteOnly from "./secrets-write-only.mjs";
 import templateApply from "./template-apply.mjs";
 import templateUnattended from "./template-unattended.mjs";
 import watchLive from "./watch-live.mjs";
+import screenUnopened from "./screen-unopened.mjs";
 import serverDeny from "./server-deny.mjs";
 import computersKeys from "./computers-keys.mjs";
 import workspaceArchil from "./workspace-archil.mjs";
 import triggerRowLabel from "./trigger-row-label.mjs";
 import computerStep from "./computer-step.mjs";
+import agentCardFooter from "./agent-card-footer.mjs";
+import costPerRun from "./cost-per-run.mjs";
+import workflowReplay from "./workflow-replay.mjs";
+import toolCards from "./tool-cards.mjs";
+import narrowLayouts from "./narrow-layouts.mjs";
 
 export const flows = [
   setupOpen,
   setupPublic,
   setupLinkFollow,
+  setupRender,
   signIn,
   signOutScope,
   connectGitHub,
@@ -45,7 +54,9 @@ export const flows = [
   templateApply,
   templateUnattended,
   runToEnd,
+  reportJson,
   watchLive,
+  screenUnopened,
   takeOver,
   askDone,
   signedOutElsewhere,
@@ -53,7 +64,11 @@ export const flows = [
   secretsWriteOnly,
   computersKeys,
   workspaceArchil,
-  { name: "box-image-banner", pending: "waits on a server whose Docker box image is still being built or pulled (capabilities.places.boxes state preparing): the e2e servers have no Docker daemon to build one" },
   triggerRowLabel,
   computerStep,
+  agentCardFooter,
+  costPerRun,
+  workflowReplay,
+  toolCards,
+  ...narrowLayouts,
 ];

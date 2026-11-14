@@ -6,8 +6,18 @@
 // a folder swapped for a link after the walk is never followed: the read, write, rename, unlink, readdir, mkdir and
 // exec's working directory all go through the handle. The last part is opened with O_NOFOLLOW, or acted on by a call
 // that does not follow it (rename, unlink, rmdir), after an lstat refuses a link there. A recursive remove walks the
-// tree by handles too, and removes a link it meets, never what it points at. Elsewhere (macOS) the walk is the same, but
-// later calls resolve the path again, so a swap between the walk and the call can be followed.
+// tree by handles too, and removes a link it meets, never what it points at.
+//
+// Elsewhere (macOS: Docker Desktop binds the run's folder, so a box process can swap a folder in it for a link) there
+// is no /proc/self/fd, and node has no openat, so later calls resolve the path again. There every open (each folder the
+// walk holds, and each file a read, write, append or grep opens) refuses a link anywhere below the root, not only at
+// the end (beneath.ts: macOS's O_NOFOLLOW_ANY): a folder swapped for a link before or during the open is ELOOP, so
+// ESCAPE, and what the handle holds was reached through real folders of the root's at the open itself. Nothing is
+// resolved again after it, so a swap after the open, or one that comes and goes, changes nothing a read returns. A
+// call that acts on a name instead (unlink, rmdir, rename, readdir, lstat, mkdir, exec's cwd) checks, just before,
+// that its folder's path opens the same way to the folder held: a link swapped in by then is ESCAPE. What remains is
+// the gap between that check and the call itself, which only an unlinkat or a fchdir closes. The path-resolving branch
+// is chosen by `procFd`, so a test runs it on Linux too.
 //
 // Durability. write is a temporary file in the same folder (O_EXCL), its bytes, fsync, rename over the name, then fsync
 // of the folder. append is O_APPEND, its bytes, fdatasync, and the folder's fsync when it made the file. mkdir fsyncs
@@ -29,6 +39,7 @@ import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import type { MountSpec } from "@parcha/agentrun-computer";
 import { type AttachableComputer, attachedWorkspace, checkReadBack, type MountCheck, noProcesses } from "./attach.js";
+import { openBeneath } from "./beneath.js";
 import type { GrepJob } from "./grep-worker.js";
 import { relativeSegments } from "./paths.js";
 import {
@@ -83,59 +94,153 @@ const bytesOf = (data: Uint8Array | string): Uint8Array => {
 
 const byName = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
+export type LocalWorkspaceOptions = {
+  /** A name below a held folder resolves through /proc/self/fd/<fd> (default: on Linux, where it is there). false takes
+   *  the branch every other platform (macOS) takes, which resolves paths again and checks each one (the file's head). */
+  readonly procFd?: boolean;
+  /** A test's hook: called each time a folder below the root is held, with its path, before anything is done in it:
+   *  where another process's swap of that folder for a link would land. */
+  readonly onHeld?: (abs: string) => void | Promise<void>;
+};
+
+/** How names below the root are reached: the root's real path, whether through /proc/self/fd, and the test's hook. */
+type Reach = { readonly root: string; readonly procFd: boolean; readonly onHeld?: (abs: string) => void | Promise<void> };
+
+/** A link swapped in on the way to `path` since it was walked: ESCAPE. */
+const swapped = (path: string): WorkspaceError =>
+  new WorkspaceError("ESCAPE", `${show(path)} runs through a symbolic link swapped in on the way, and a workspace follows none`, { path });
+
 /** A folder held open. On Linux a name in it resolves through /proc/self/fd/<fd>, inside the folder the handle holds,
- *  never through the folder's path again; elsewhere through its path. */
+ *  never through the folder's path again; elsewhere through its path: opened through no link (open), and each other
+ *  act checked first (confirm). */
 class Held {
-  constructor(readonly handle: FileHandle, readonly abs: string) {}
+  constructor(readonly handle: FileHandle, readonly abs: string, readonly reach: Reach) {}
+  /** The folder's path below the root ("" for the root). */
+  get below(): string {
+    return this.abs === this.reach.root ? "" : this.abs.slice(this.reach.root.length + 1);
+  }
   /** The folder itself, as a path a call (or exec's cwd) can take. */
   get self(): string {
-    return LINUX ? `/proc/self/fd/${this.handle.fd}` : this.abs;
+    return this.reach.procFd ? `/proc/self/fd/${this.handle.fd}` : this.abs;
   }
   /** Entry `name` of the folder. */
   at(name: string): string {
-    return LINUX ? `/proc/self/fd/${this.handle.fd}/${name}` : join(this.abs, name);
+    return this.reach.procFd ? `/proc/self/fd/${this.handle.fd}/${name}` : join(this.abs, name);
+  }
+  /** Entry `name` opened with `flags`. Off /proc/self/fd through no link anywhere below the root (beneath.ts): a link
+   *  on the way, a folder swapped for one, fails ELOOP, so what opens is under the root. */
+  open(name: string, flags: number, mode?: number): Promise<FileHandle> {
+    if (this.reach.procFd) return open(this.at(name), flags, mode);
+    return openBeneath(this.reach.root, this.below === "" ? name : `${this.below}/${name}`, flags, mode);
+  }
+  /** Off /proc/self/fd, that this folder's path still opens, through no link, to the folder held (dev and inode), else
+   *  ESCAPE (NOT_FOUND when it is gone): run just before each call that resolves a name in it again. On Linux there is
+   *  nothing to check. */
+  async confirm(path: string): Promise<void> {
+    if (this.reach.procFd) return;
+    let there: FileHandle;
+    try {
+      there = await openBeneath(this.reach.root, this.below, DIR_FLAGS);
+    } catch (error) {
+      if (errno(error) === "ELOOP") throw swapped(path);
+      throw failed(error, path);
+    }
+    try {
+      const [held, now] = await Promise.all([this.handle.stat(), there.stat()]);
+      if (now.dev !== held.dev || now.ino !== held.ino) throw swapped(path);
+    } finally {
+      await there.close();
+    }
+  }
+  /** Makes entry `name`, the file `made` just made by `open`, durable: syncs the folder it was made in. On Linux that is
+   *  the folder held. Elsewhere `open` went by the folder's path, which may name another folder under the root by now
+   *  (one put in its place), so the folder the path opens now, through no link, is synced, once its `name` is that very
+   *  file (dev and inode); else ESCAPE, as for any swap. */
+  async syncMade(name: string, made: Stats, path: string): Promise<void> {
+    if (this.reach.procFd) return this.handle.sync();
+    let parent: FileHandle | undefined;
+    let entry: FileHandle | undefined;
+    try {
+      parent = await openBeneath(this.reach.root, this.below, DIR_FLAGS);
+      entry = await openBeneath(this.reach.root, this.below === "" ? name : `${this.below}/${name}`, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+      const now = await entry.stat();
+      if (now.dev !== made.dev || now.ino !== made.ino) throw swapped(path);
+      await parent.sync();
+    } catch (error) {
+      throw errno(error) === "ELOOP" ? swapped(path) : error;
+    } finally {
+      await entry?.close();
+      await parent?.close();
+    }
+  }
+  /** `fn`, its folder confirmed before and after: what it read was read in the folder held. */
+  async confirmed<T>(path: string, fn: () => Promise<T>): Promise<T> {
+    await this.confirm(path);
+    const result = await fn();
+    await this.confirm(path);
+    return result;
+  }
+  /** Folder `name` of this one, just opened as `handle` (by `open`), held. The caller still owns the handle (it closes
+   *  it, whether this resolves or not). */
+  async hold(handle: FileHandle, name: string): Promise<Held> {
+    const next = new Held(handle, join(this.abs, name), this.reach);
+    await this.reach.onHeld?.(next.abs);
+    return next;
   }
 }
 
-/** Everything in held folder `dir` removed, folders by handle: a link is removed, never followed. */
-async function emptyTree(dir: Held): Promise<void> {
-  for (const name of await readdir(dir.self)) {
+/** Everything in held folder `dir` removed, folders by handle: a link is removed, never followed. Off /proc/self/fd,
+ *  each name is acted on only once its folder is confirmed (Held.confirm), and each folder is entered by Held.open. */
+async function emptyTree(dir: Held, path: string): Promise<void> {
+  for (const name of await dir.confirmed(path, () => readdir(dir.self))) {
+    await dir.confirm(path);
     const stats = await lstatOrNot(dir.at(name));
     if (stats === undefined) continue;
     if (!stats.isDirectory()) {
+      // Not a folder (a file, or a link: unlink removes the link itself, never what it points at).
+      await dir.confirm(path);
       await unlink(dir.at(name));
       continue;
     }
     let handle: FileHandle;
     try {
-      handle = await open(dir.at(name), DIR_FLAGS);
+      handle = await dir.open(name, DIR_FLAGS);
     } catch (error) {
       if (errno(error) !== "ENOTDIR" && errno(error) !== "ELOOP") throw error;
+      await dir.confirm(path);
       await unlink(dir.at(name));
       continue;
     }
     try {
-      await emptyTree(new Held(handle, join(dir.abs, name)));
+      await emptyTree(await dir.hold(handle, name), path);
     } finally {
       await handle.close();
     }
+    await dir.confirm(path);
     await rmdir(dir.at(name));
   }
 }
 
 class LocalWorkspace implements Workspace {
   readonly #root: string;
-  #real: string | undefined;
+  readonly #options: LocalWorkspaceOptions;
+  #reach: Reach | undefined;
 
-  constructor(root: string) {
+  constructor(root: string, options: LocalWorkspaceOptions) {
     this.#root = root;
+    this.#options = options;
+  }
+
+  /** The folder `work` is over, by its path, when it is a LocalWorkspace; undefined for any other Workspace. */
+  static folderOf(work: Workspace): string | undefined {
+    return work instanceof LocalWorkspace ? work.#root : undefined;
   }
 
   /** The root, its links resolved once (the root itself is trusted; nothing below it is), held open. */
   async #openRoot(): Promise<Held> {
     try {
-      this.#real ??= await realpath(this.#root);
-      return new Held(await open(this.#real, DIR_FLAGS), this.#real);
+      this.#reach ??= { root: await realpath(this.#root), procFd: this.#options.procFd ?? LINUX, ...(this.#options.onHeld ? { onHeld: this.#options.onHeld } : {}) };
+      return new Held(await open(this.#reach.root, DIR_FLAGS), this.#reach.root, this.#reach);
     } catch (error) {
       throw new WorkspaceError("UNAVAILABLE", `the workspace's folder ${this.#root} is not there`, { cause: error });
     }
@@ -163,12 +268,13 @@ class LocalWorkspace implements Workspace {
         let handle: FileHandle | undefined;
         for (let made = false; handle === undefined;) {
           try {
-            handle = await open(dir.at(name), DIR_FLAGS);
+            handle = await dir.open(name, DIR_FLAGS);
           } catch (error) {
             const code = errno(error);
             if (code === "ENOENT" && options.make && !made) {
               made = true;
               try {
+                await dir.confirm(path);
                 await makeDir(dir.at(name), 0o777);
                 await dir.handle.sync();
               } catch (making) {
@@ -183,7 +289,13 @@ class LocalWorkspace implements Workspace {
             throw new WorkspaceError(options.make ? "EXISTS" : i === count - 1 ? options.notDir ?? "NOT_FOUND" : "NOT_FOUND", `${show(part)} is not a directory`, { path });
           }
         }
-        const next = new Held(handle, join(dir.abs, name));
+        let next: Held;
+        try {
+          next = await dir.hold(handle, name);
+        } catch (error) {
+          await handle.close().catch(() => undefined);
+          throw error;
+        }
         await dir.handle.close();
         dir = next;
       }
@@ -204,7 +316,7 @@ class LocalWorkspace implements Workspace {
     return this.#in(path, segments, segments.length - 1, async (dir) => {
       let handle: FileHandle;
       try {
-        handle = await open(dir.at(segments.at(-1)!), O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+        handle = await dir.open(segments.at(-1)!, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
       } catch (error) {
         throw failed(error, path);
       }
@@ -235,16 +347,17 @@ class LocalWorkspace implements Workspace {
     const name = segments.at(-1)!;
     await this.#in(path, segments, segments.length - 1, async (dir) => {
       try {
-        const existing = await lstatOrNot(dir.at(name));
+        const existing = await dir.confirmed(path, () => lstatOrNot(dir.at(name)));
         if (existing?.isSymbolicLink()) throw escape(path, path);
         if (existing !== undefined && !existing.isFile()) throw new WorkspaceError("REFUSED", `${show(path)} is ${existing.isDirectory() ? "a directory" : "not a file"}`, { path });
         const temp = `.workspace-${randomBytes(8).toString("hex")}.tmp`;
-        const handle = await open(dir.at(temp), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW, 0o666);
+        const handle = await dir.open(temp, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW, 0o666);
         try {
           if (existing !== undefined) await handle.chmod(existing.mode & 0o777);
           await handle.writeFile(bytes);
           await handle.sync();
           await handle.close();
+          await dir.confirm(path);
           await rename(dir.at(temp), dir.at(name));
         } catch (error) {
           await handle.close().catch(() => undefined);
@@ -267,25 +380,27 @@ class LocalWorkspace implements Workspace {
         let made = false;
         let handle: FileHandle;
         try {
-          handle = await open(dir.at(target), O_RDWR | O_APPEND | O_NOFOLLOW | O_NONBLOCK);
+          handle = await dir.open(target, O_RDWR | O_APPEND | O_NOFOLLOW | O_NONBLOCK);
         } catch (error) {
           if (errno(error) !== "ENOENT") throw error;
           try {
-            handle = await open(dir.at(target), O_RDWR | O_APPEND | O_CREAT | O_EXCL | O_NOFOLLOW, 0o666);
+            handle = await dir.open(target, O_RDWR | O_APPEND | O_CREAT | O_EXCL | O_NOFOLLOW, 0o666);
             made = true;
           } catch (again) {
             if (errno(again) !== "EEXIST") throw again;
-            handle = await open(dir.at(target), O_RDWR | O_APPEND | O_NOFOLLOW | O_NONBLOCK);
+            handle = await dir.open(target, O_RDWR | O_APPEND | O_NOFOLLOW | O_NONBLOCK);
           }
         }
+        let stats: Stats;
         try {
-          if (!(await handle.stat()).isFile()) throw new WorkspaceError("REFUSED", `${show(path)} is not a file`, { path });
+          stats = await handle.stat();
+          if (!stats.isFile()) throw new WorkspaceError("REFUSED", `${show(path)} is not a file`, { path });
           await handle.writeFile(bytes);
           await handle.datasync();
         } finally {
           await handle.close();
         }
-        if (made) await dir.handle.sync();
+        if (made) await dir.syncMade(target, stats, path);
       } catch (error) {
         throw failed(error, path);
       }
@@ -303,7 +418,7 @@ class LocalWorkspace implements Workspace {
     try {
       return await this.#in(path, segments, segments.length - 1, async (dir) => {
         try {
-          const stats = await lstatOrNot(dir.at(segments.at(-1)!));
+          const stats = await dir.confirmed(path, () => lstatOrNot(dir.at(segments.at(-1)!)));
           return stats === undefined ? undefined : of(stats);
         } catch (error) {
           throw failed(error, path);
@@ -320,14 +435,15 @@ class LocalWorkspace implements Workspace {
     const segments = relativeSegments(dir);
     return this.#in(dir, segments, segments.length, async (held) => {
       try {
-        const entries = await Promise.all((await readdir(held.self)).map(async (name): Promise<Entry | undefined> => {
+        // Off /proc/self/fd the folder is confirmed before and after: a listing of a folder swapped in is ESCAPE.
+        const entries = await held.confirmed(dir, async () => Promise.all((await readdir(held.self)).map(async (name): Promise<Entry | undefined> => {
           const stats = await lstatOrNot(held.at(name));
           if (stats?.isDirectory()) return { name, kind: "dir", size: 0, mtimeMs: stats.mtimeMs };
           if (!stats?.isFile()) return undefined;
           // Only a flag for the listing: the read itself is what refuses (REFUSED, permission denied).
           const readable = await access(held.at(name), constants.R_OK).then(() => true, () => false);
           return { name, kind: "file", size: stats.size, mtimeMs: stats.mtimeMs, ...(readable ? {} : { unreadable: true as const }) };
-        }));
+        })));
         return entries.filter((entry): entry is Entry => entry !== undefined).sort((a, b) => byName(a.name, b.name));
       } catch (error) {
         throw failed(error, dir);
@@ -353,19 +469,22 @@ class LocalWorkspace implements Workspace {
     const from = options.path ?? "";
     const segments = relativeSegments(from);
     const job = { pattern, glob: options.glob, limit: Math.min(max, GREP_MAX), fileMax: GREP_FILE_MAX, lineMax: GREP_LINE_MAX, probe: BINARY_PROBE };
-    const search = (dir: Held, rel: string, only?: string): Promise<GrepResult> =>
-      LocalWorkspace.#searchIn({ ...job, dir: dir.self, rel, ...(only === undefined ? {} : { only }) }, Math.min(timeMs, GREP_TIME_MS));
+    // Off /proc/self/fd the worker opens each entry through no link below the root, as a read does (grep-worker.ts).
+    const search = async (dir: Held, rel: string, only?: string): Promise<GrepResult> => {
+      await dir.confirm(from);
+      return LocalWorkspace.#searchIn({ ...job, dir: dir.self, rel, procFd: dir.reach.procFd, root: dir.reach.root, ...(only === undefined ? {} : { only }) }, Math.min(timeMs, GREP_TIME_MS));
+    };
     if (segments.length === 0) return this.#in(from, segments, 0, (root) => search(root, ""));
     return this.#in(from, segments, segments.length - 1, async (parent) => {
       const name = segments.at(-1)!;
-      const stats = await lstatOrNot(parent.at(name)).catch((error: unknown) => { throw failed(error, from); });
+      const stats = await parent.confirmed(from, () => lstatOrNot(parent.at(name))).catch((error: unknown) => { throw failed(error, from); });
       if (stats === undefined) throw new WorkspaceError("NOT_FOUND", `${show(from)} is not there`, { path: from });
       if (stats.isSymbolicLink()) throw escape(from, from);
       if (stats.isFile()) return search(parent, segments.join("/"), name);
       if (!stats.isDirectory()) throw new WorkspaceError("REFUSED", `${show(from)} is neither a file nor a directory`, { path: from });
-      const handle = await open(parent.at(name), DIR_FLAGS).catch((error: unknown) => { throw failed(error, from); });
+      const handle = await parent.open(name, DIR_FLAGS).catch((error: unknown) => { throw failed(error, from); });
       try {
-        return await search(new Held(handle, join(parent.abs, name)), segments.join("/"));
+        return await search(await parent.hold(handle, name), segments.join("/"));
       } finally {
         await handle.close();
       }
@@ -376,8 +495,8 @@ class LocalWorkspace implements Workspace {
    *  through can be let go. */
   static #searchIn(job: GrepJob, timeMs: number): Promise<GrepResult> {
     return new Promise<GrepResult>((resolve, reject) => {
-      // No process flags: the worker needs none, and some it would inherit refuse a worker started from a file (the
-      // launcher's `--input-type=module -e`).
+      // No process flags: the worker needs none, and some it would inherit refuse a worker started from a file (a
+      // process started with `--input-type=module -e`).
       const worker = new Worker(GREP_WORKER, { workerData: job, execArgv: [] });
       const matches: GrepMatch[] = [];
       let done: GrepResult["truncated"] | undefined;
@@ -405,19 +524,22 @@ class LocalWorkspace implements Workspace {
     try {
       await this.#in(path, segments, segments.length - 1, async (dir) => {
         try {
-          const stats = await lstatOrNot(dir.at(name));
+          const stats = await dir.confirmed(path, () => lstatOrNot(dir.at(name)));
           if (stats === undefined) throw new WorkspaceError("NOT_FOUND", `${show(path)} is not there`, { path });
           if (stats.isSymbolicLink()) throw escape(path, path);
-          if (!stats.isDirectory()) await unlink(dir.at(name));
-          else {
+          if (!stats.isDirectory()) {
+            await dir.confirm(path);
+            await unlink(dir.at(name));
+          } else {
             if (options.recursive) {
-              const handle = await open(dir.at(name), DIR_FLAGS);
+              const handle = await dir.open(name, DIR_FLAGS);
               try {
-                await emptyTree(new Held(handle, join(dir.abs, name)));
+                await emptyTree(await dir.hold(handle, name), path);
               } finally {
                 await handle.close();
               }
             }
+            await dir.confirm(path);
             await rmdir(dir.at(name));
           }
           await dir.handle.sync();
@@ -443,12 +565,14 @@ class LocalWorkspace implements Workspace {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new WorkspaceError("REFUSED", "exec's timeoutMs is a number above 0");
     const cap = options.maxOutput ?? EXEC_OUTPUT_MAX;
     if (!Number.isSafeInteger(cap) || cap < 0) throw new WorkspaceError("REFUSED", "exec's maxOutput is a whole number, 0 or more");
+    if (options.network !== undefined) throw new WorkspaceError("REFUSED", "a command here runs on this machine, which cannot deny its network: nothing ran");
     const cwd = options.cwd ?? "";
     const segments = relativeSegments(cwd);
     const { signal } = options;
     if (signal?.aborted) throw abortError(signal);
-    // The child starts in the held folder itself (/proc/self/fd/<fd> on Linux), held until the child is done.
-    return this.#in(cwd, segments, segments.length, (dir) => new Promise<ExecResult>((resolve, reject) => {
+    // The child starts in the held folder itself (/proc/self/fd/<fd> on Linux), held until the child is done. Off
+    // /proc/self/fd its path is confirmed just before the spawn.
+    return this.#in(cwd, segments, segments.length, (dir) => dir.confirm(cwd).then(() => new Promise<ExecResult>((resolve, reject) => {
       if (signal?.aborted) return reject(abortError(signal));
       const child = spawn(argv[0]!, argv.slice(1), {
         cwd: dir.self,
@@ -521,7 +645,7 @@ class LocalWorkspace implements Workspace {
         child.stdin!.on("error", () => undefined);
         child.stdin!.end(Buffer.from(options.stdin.buffer, options.stdin.byteOffset, options.stdin.byteLength));
       }
-    }), { notDir: "REFUSED" });
+    })), { notDir: "REFUSED" });
   }
 
   /** No computer: every background call is refused in words. */
@@ -547,11 +671,10 @@ class LocalWorkspace implements Workspace {
   async #syncUp(path: string, only?: "file"): Promise<boolean> {
     const segments = relativeSegments(path);
     const entry = await this.#in(path, segments, segments.length - 1, async (dir) => {
-      const at = dir.at(segments.at(-1)!);
       for (const flags of [O_RDONLY, O_WRONLY]) {
         let handle: FileHandle;
         try {
-          handle = await open(at, flags | O_NOFOLLOW | O_NONBLOCK);
+          handle = await dir.open(segments.at(-1)!, flags | O_NOFOLLOW | O_NONBLOCK);
         } catch (error) {
           if (errno(error) === "ENOENT" || errno(error) === "ELOOP") return true;
           if (errno(error) !== "EACCES") throw failed(error, path);
@@ -567,8 +690,13 @@ class LocalWorkspace implements Workspace {
   }
 }
 
-/** A Workspace on folder `root` of this machine. The folder must be there when it is first used (else UNAVAILABLE). */
-export const localWorkspace = (root: string): Workspace => new LocalWorkspace(root);
+/** A Workspace on folder `root` of this machine. The folder must be there when it is first used (else UNAVAILABLE).
+ *  `options` are a test's: the path-resolving branch forced, and a hook where a swap would land. */
+export const localWorkspace = (root: string, options: LocalWorkspaceOptions = {}): Workspace => new LocalWorkspace(root, options);
+
+/** The folder of this machine that `work` is, by its path: a LocalWorkspace's root; undefined for any other Workspace (a
+ *  Mode 2 run's folder on its disk, one attached to a computer), whose files no local path reaches. */
+export const localFolderOf = (work: Workspace): string | undefined => LocalWorkspace.folderOf(work);
 
 /** `work` as a Workspace: a folder of this machine, by its path, becomes its LocalWorkspace. For the callers that still
  *  hand a run's folder by its path (the run's start and its process), until they hand the run's Workspace. */

@@ -7,7 +7,7 @@
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable, Writable } from "node:stream";
-import { homeBusy, storeBusy } from "./agents.js";
+import { answerOf, logged } from "./agents.js";
 import { ApiError, invalid } from "./errors.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { isJson, ownOrigin } from "./page.js";
@@ -150,12 +150,12 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "runs_start", title: "Start a run", annotations: { ...WRITE, openWorldHint: true },
-    description: "Starts a run of the agent's current revision, or of `revision` (POST /v2/agents/{agent_id}/runs), and answers at once with the run, queued. Then call runs_get until its status is completed, failed or cancelled, or input_required (answer with runs_respond). An agentic run's input is {content: \"the first message\"}; a workflow run's is what its workflow's input schema takes.",
+    description: "Starts a run of the agent's current revision, or of `revision` (POST /v2/agents/{agent_id}/runs), and answers at once with the run, queued. Then call runs_get until its status is completed, failed or cancelled, or input_required (answer with runs_respond). An agentic run's input is {content: \"the first message\"}, or, when its definition has an input_schema (agents_list shows it), an object that schema takes: its fields by name, content among them when the schema says so; one it refuses is input_invalid, a path per field. A workflow run's is what its workflow's input schema takes.",
     inputSchema: {
       type: "object", required: ["agent_id", "input"],
       properties: {
         agent_id: AGENT_ID,
-        input: { type: "object", description: "{content: string} for an agentic agent; the workflow's input for a workflow agent." },
+        input: { type: "object", description: "{content: string} for an agentic agent, or what its definition's input_schema takes; the workflow's input for a workflow agent." },
         effort: { type: "string", enum: ["low", "medium", "high"], description: "Optional: how hard the model works on this run. Absent, the revision's own." },
         revision: { type: "string", description: "Optional: a revision id of this agent to run in place of the current one." },
       },
@@ -290,8 +290,9 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
       if (!res.writableEnded && !res.destroyed) throw new Error(`${call.method} ${target} gave no answer`);
       await res.settled;
     } catch (error) {
-      const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
-      if (!(error instanceof ApiError) && !storeBusy(error)) process.stderr.write(`agentrun-serve: mcp: ${(error as Error)?.stack ?? String(error)}\n`);
+      // The same answer the HTTP route gives (answerOf): a store busy or past a write's deadline is home_busy, never 500.
+      const known = answerOf(error);
+      if (logged(error)) process.stderr.write(`agentrun-serve: mcp: ${(error as Error)?.stack ?? String(error)}\n`);
       return { status: known.status, headers: { "content-type": "application/json" }, bytes: Buffer.from(JSON.stringify(known.body(requestId))), tooBig: false };
     }
     return res.answered();
