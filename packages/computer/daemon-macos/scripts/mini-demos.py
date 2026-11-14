@@ -703,6 +703,9 @@ class Task:
         # Settings domains the task's fixture changed for the movie, each with its whole old content (`defaults export`),
         # put back by the teardown. Kept in memory only: a person's settings never reach a file.
         self.restore = []
+        # What the task's fixture changed in a running app for the movie (Notes' window and zoom), each undone by the
+        # teardown on its connection, last first: (words, undo(c)).
+        self.undo = []
         # Each ref the task's observes showed, as serve's record names it: its role, and its name when it has one.
         self.names = {}
 
@@ -1116,12 +1119,12 @@ def notes_prepare(t):
     alert, and the snapshot sees none of it."""
     t.launch()
     _, pressed = first_run(t, t.observe())
-    if not pressed:
-        return
-    setup = f"{NAME} setup"
-    t.say("Made and removed a setup folder, answering the iCloud alert it raised")
-    with shielded():
-        notes_setup_folder(t, setup)
+    if pressed:
+        setup = f"{NAME} setup"
+        t.say("Made and removed a setup folder, answering the iCloud alert it raised")
+        with shielded():
+            notes_setup_folder(t, setup)
+    notes_look(t)
 
 
 def notes_setup_folder(t, setup):
@@ -1145,23 +1148,54 @@ def notes_setup_folder(t, setup):
         t.run_exec(["/usr/bin/osascript", "-e", REMOVE_FOLDERS, setup], "remove the setup folder")
 
 
-def notes_probe(t):
-    """A one-off look at Notes' menus and settings on CI, for sizing its text in the movie."""
-    try:
-        built = subprocess.run(["swiftc", os.path.join(here, "probe-menus.swift"), "-o", "/tmp/probe-menus"], capture_output=True, text=True, timeout=300)
-        print(f"    probe build: {built.returncode} {built.stderr[-800:]}", flush=True)
-        print("    probe menus:\n" + exec_run(t.c, ["/tmp/probe-menus", "com.apple.Notes"]), flush=True)
-    except Exception as e:
-        print(f"    probe menus failed: {e!r}", flush=True)
-    for argv in (["/usr/bin/defaults", "read", "com.apple.universalaccess"], ["/usr/bin/defaults", "-currentHost", "read", "-g"]):
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=30)
-        print(f"    probe {' '.join(argv[1:])}: {done.returncode}\n{done.stdout[-3000:]}\n{done.stderr[-300:]}", flush=True)
+def notes_probe(t, when):
+    """A one-off look at Notes' settings on CI (removed before merge): what its zoom keeps."""
+    done = subprocess.run(["/usr/bin/defaults", "read", "com.apple.Notes"], capture_output=True, text=True, timeout=30)
+    print(f"    probe {when}: {done.returncode}\n{done.stdout[-4000:]}", flush=True)
+
+
+# Notes' window and zoom for the movie. Its window (1000 by 660 points on CI's 1024 by 737 screen) is drawn at 1.31x, so its
+# 13-point body text read about 17 px tall against TextEdit's 30-point Menlo at 2x. A window 920 by 430 points is drawn
+# at 2x, and View > Zoom In (⇧⌘.) NOTES_ZOOM times brings the body text to TextEdit's size. Both are put back by the
+# teardown, live (Actual Size, ⇧⌘0, and the window's old bounds), so Notes keeps them as they were when it quits.
+NOTES_WINDOW = (920, 430)
+NOTES_ZOOM = 4
+NOTES_BOUNDS = """on run argv
+  tell application "Notes"
+    if (count of argv) is 4 then set bounds of front window to {(item 1 of argv) as integer, (item 2 of argv) as integer, (item 3 of argv) as integer, (item 4 of argv) as integer}
+    set b to bounds of front window
+  end tell
+  return ((item 1 of b) as text) & " " & ((item 2 of b) as text) & " " & ((item 3 of b) as text) & " " & ((item 4 of b) as text)
+end run"""
+
+
+def notes_key(c, chord):
+    """One chord to Notes' main window (a menu item's, which the driver presses when Notes is in the background)."""
+    reply = c.call("ui.act", {"target": {"app": "com.apple.Notes"}, "steps": [{"key": chord}]})
+    step = ((reply.get("result") or {}).get("steps") or [{}])[0]
+    if "error" in reply or "error" in step:
+        raise Failed(f"Notes {chord}: {(reply.get('error') or step.get('error') or {}).get('message')}")
+
+
+def notes_look(t):
+    """With --movie, Notes' window sized and its notes zoomed for the movie (NOTES_WINDOW, NOTES_ZOOM), each undone by
+    the teardown."""
+    if not t.rec:
+        return
+    old = [int(n) for n in osa(t.c, NOTES_BOUNDS).split()]
+    t.undo.append(("put back Notes' window", lambda c: osa(c, NOTES_BOUNDS, *map(str, old))))
+    left, top = old[0], old[1]
+    print(f"    Notes' window {old} -> {osa(t.c, NOTES_BOUNDS, str(left), str(top), str(left + NOTES_WINDOW[0]), str(top + NOTES_WINDOW[1])).strip()}", flush=True)
+    if CI:
+        notes_probe(t, "before the zoom")
+    t.undo.append(("put back Notes' zoom (Actual Size)", lambda c: notes_key(c, "super+shift+0")))
+    t.act([{"key": "super+shift+."}] * NOTES_ZOOM, f"zoom Notes in {NOTES_ZOOM} times (View > Zoom In)")
+    if CI:
+        notes_probe(t, "after the zoom")
 
 
 def notes_new_note(t):
     """mac.notes.new-note: a note whose first line is its title and whose second line is given, in the task's folder."""
-    if CI and t.rec:
-        notes_probe(t)
     # The line starts with a capital: Notes capitalizes a line's first word as it is typed (it did on CI's runner).
     title, line = f"{NAME} groceries", "Oat milk and eggs"
     t.say("Made the task's Notes folder (AppleScript)")
@@ -1724,6 +1758,7 @@ def teardown(t):
             ("delete the task's Notes folder and its notes", lambda: osa(c, REMOVE_FOLDERS, NAME)),
             ("delete the task's files", remove_files),
         ]
+        parts += [(words, lambda undo=undo: undo(c)) for words, undo in reversed(t.undo)]
         if t.restore:
             parts.append(("put back the settings the task's look changed", lambda: settings_back(t)))
         for words, part in parts:
