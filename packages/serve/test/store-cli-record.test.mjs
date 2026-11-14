@@ -397,7 +397,7 @@ test("a workflow whose only bookings are decisions has a graph model-node cost o
 /** A run on `harness` that made two model requests at $0.01 each and one call to an MCP tool with no price (the gateway's
  *  agentrun.tool_unmetered on the root), as pi writes it or as a CLI harness's record and booking do; ended unless
  *  `running`. */
-async function unmeteredRun(t, harness, { running = false } = {}) {
+async function unmeteredRun(t, harness, { running = false, stopped = false } = {}) {
   const { store } = await storeOn(t);
   const claim = await claimed(store, { harness, runId: "run-1" });
   const j = store.journal(claim);
@@ -428,7 +428,8 @@ async function unmeteredRun(t, harness, { running = false } = {}) {
       entry(await j.mintId(), "agentrun.message", { role: "model", text: "Done." }),
     ], context);
   }
-  if (!running) await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Done.", costUsd: 0.02, endedAt: T0 + 9 });
+  if (stopped) await store.runs.update(claim, { state: "stopped", outcome: "stopped", summary: "Stopped.", costUsd: 0.02, endedAt: T0 + 9 });
+  else if (!running) await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "Done.", costUsd: 0.02, endedAt: T0 + 9 });
   return store;
 }
 
@@ -445,6 +446,13 @@ for (const harness of ["pi", "codex", "claude-agent"]) {
     assert.deepEqual(await usageRowsOf(await unmeteredRun(t, harness)), [ended, ended]);
   });
 }
+
+test("an agentic run a person stopped (its turn over, the run can go on) says its cost so far in the served Timeline and the view alike", async (t) => {
+  for (const harness of ["pi", "codex"]) {
+    const live = [[{ usd: 0.02, requests: 2, not_metered: 1 }, "Cost so far: $0.0200 over 2 model requests; 1 tool call not metered"]];
+    assert.deepEqual(await usageRowsOf(await unmeteredRun(t, harness, { stopped: true })), [live, live], harness);
+  }
+});
 
 test("a running run's usage row says what it has cost so far, on pi and a CLI harness alike", async (t) => {
   for (const harness of ["pi", "codex"]) {

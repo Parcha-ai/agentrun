@@ -766,7 +766,9 @@ function createProjector(options: TimelineOptions) {
         // One with no price of its own (a provider's refusal sends none) is a cost unknown, never $0: the provider may
         // still bill it (run-adapters answeredUnpriced). Its row says so, as the usage row counts it "not priced".
         const priced = Number.isFinite(obj(obj(message.usage)?.cost)?.total);
-        add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}${priced ? "" : UNPRICED_FAILURE}`, text: why }));
+        // The note is ours, so it stays whole: only the provider's words give way when the summary's cap (make) would cut it.
+        const [head, note] = ["Model request failed: ", priced ? "" : UNPRICED_FAILURE];
+        add(make("error", conv, base, { summary: `${head}${cut(firstLine(why), Math.max(0, caps.summary - head.length - note.length))}${note}`, text: why }));
       } else if (message.stopReason !== "aborted") {
         const blocks = blocksOf(message);
         const settled = provisional.get(conv);
