@@ -1961,8 +1961,8 @@ Agent37 runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): 
 start, the stdio bridge, the probe, the janitor's extend, idempotent create by the request's name label). An Agent37
 computer is an instance made from a workspace template, by default `agent37-base`, Agent37's plain Debian 12. It is
 kind `linux`, on type `vm` (a VM with its own kernel, the default) or `default` (Agent37's gVisor sandbox). With
-`kind: "desktop"` it is a Linux desktop on `agentrun-box`, our box image as a template of the key's workspace
-([below](#the-desktop-agentrun-box)).
+`kind: "desktop"` it is a Linux desktop on `agentrun-box-<recipe hash>`, our public box image registered as a template
+of the key's workspace on its first run ([below](#the-desktop-agentrun-box)).
 
 ### Two keys
 
@@ -2044,7 +2044,7 @@ AGENTRUN_COMPUTER_LIVE_AGENT37=1 COMPUTER_AGENT37_API_KEY=... COMPUTER_AGENT37_S
 The conformance module, `dist/conformance/agent37.js`, checks `AGENTRUN_COMPUTER_LIVE_AGENT37=1` first, then reads
 `COMPUTER_AGENT37_API_KEY` (`apiKey`, required), `COMPUTER_AGENT37_SSH_KEY` (`sshKey`, required, the key's contents),
 `COMPUTER_AGENT37_KIND` (`linux`, the default, or `desktop`), `COMPUTER_AGENT37_TEMPLATE` (the run's image, default
-`agent37-base`, or `agentrun-box` for kind `desktop`), `COMPUTER_AGENT37_TYPE`, `COMPUTER_AGENT37_REGION`,
+`agent37-base`, or for kind `desktop` the box template `prepareImage()` registers), `COMPUTER_AGENT37_TYPE`, `COMPUTER_AGENT37_REGION`,
 `COMPUTER_AGENT37_API_URL`, `COMPUTER_AGENT37_DAEMON` (`daemonPath`), `COMPUTER_AGENT37_MAX_LIFETIME_MS` and
 `COMPUTER_AGENT37_USER` (`daemonUser`), never `AGENT37_API_KEY`. Every computer of a run lives at most 30 minutes.
 `createDriftedProvider()` uploads a daemon built as `<version>-drift`. The live sweep is the shared one,
@@ -2068,23 +2068,21 @@ kernel `4.19.0-gvisor`): root has no `CAP_SYS_ADMIN`, and init made its namespac
 adapter gives init `DISPLAY` and starts `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp` through the daemon as the tool
 user (`src/desktop.ts`), as on E2B, so the X server is one process in init's table, in its own network namespace, and
 ends with the computer; xfwm4 starts the same way once the display answers, its session bus out of the user's reach, as
-on E2B. Its default image is `agentrun-box`
-(`AGENT37_BOX_TEMPLATE`): `box/Dockerfile` (the archil client, the helper, the tool user, FUSE, no sudo) plus Xvfb,
-xfwm4, and the apps E2B Desktop has that are cheap to carry (Xfce's terminal and Mousepad, Firefox ESR, xdotool),
-which the `apps` group lists and opens, built as a template of the key's own workspace by `box/build-agent37.mjs`:
+on E2B. It starts from the box image the release publishes, `ghcr.io/parcha-ai/agentrun-box:<recipe hash>`
+(`box/Dockerfile`: the archil client, the helper, the tool user, FUSE, no sudo, plus Xvfb, xfwm4, and the apps E2B
+Desktop has that are cheap to carry, which the `apps` group lists and opens), as a template of the key's own workspace
+named `agentrun-box-<recipe hash>`. A sandbox that mounts an Archil disk starts from the same template.
 
-```sh
-AGENT37_API_KEY=... node packages/computer/box/build-agent37.mjs   # prints template=agentrun-box
-```
-
-Agent37 keeps a template's revisions under one name, so the name is fixed and the recipe's hash (the Dockerfile, the
-helper and the desktop's lines in the script) is in the template's description: a workspace whose template names the
-hash already is built nothing, and a changed recipe publishes a new revision, which every instance made after it starts
-from. The script's calls: `GET /v1/templates/agentrun-box`, then `POST /v1/template-builds` (`name`, `size_bytes`,
-`description`), a `PUT` of the gzipped context (the Dockerfile and the helper at its root) to the presigned
-`upload_url` with no Agent37 key, `POST .../{id}/start`, and `GET .../{id}/logs?offset=N` until `succeeded` or `failed`.
-Builds are free, at most three at once per workspace and 45 minutes each (docs: templates, "Build an image in the
-cloud"). A workspace template is the workspace's own, so each workspace that runs desktops builds it once first.
+The descriptor says `prepareImage`, so the provider makes that template itself: `prepareImage()` reads
+`GET /v1/templates/agentrun-box-<hash>`, and on a 404 registers the public image under that name
+(`POST /v1/templates` with `name` and `image_ref`, no build), reporting the wait to `onWait` as a pull. Agent37's POST
+answers once the template is usable, which for an image this size takes minutes, so it is bounded at 15 minutes. A 409
+is another registration of the same name in flight, and the provider reads the template until it is there. A template
+the workspace already has is used as it is, so only a workspace's first run waits. The name carries the recipe's hash
+because Agent37 keeps a template's revisions under one name: a changed recipe is a new template, never a new revision
+under a run's feet. A refusal (an image Agent37 can't pull, a key it refuses) is the run's error, in Agent37's words.
+The hash is `box/recipe.mjs`'s, read from the `box/` folder this package ships, so a server asks for the image its own
+release published.
 
 Why not Agent37's own `agent37-ubuntu`, which ships a desktop: its image (`ghcr.io/agent37-platform/ubuntu:2026.10.13c`,
 entrypoint `images/vm/ubuntu/entrypoint.sh` of agent37-platform/templates) runs `Xtigervnc :1 ... -ac` as root, with

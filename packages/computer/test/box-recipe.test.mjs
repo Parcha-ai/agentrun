@@ -259,7 +259,7 @@ test("a build's context is box/, the files the npm package ships there, and the 
   assert.deepEqual(copied, [["agentrun-archil"]], "one COPY, of the helper, with no flags (no --from, no remote ADD)");
   // No .dockerignore: everything here is public already (the package ships box/ whole), and the image copies the helper
   // alone. A new file here is read for what it is before this list takes it.
-  assert.deepEqual(BOX_FILES.sort(), ["Dockerfile", "README.md", "agentrun-archil", "build-agent37.mjs", "build-daytona.py", "build-e2b.mjs", "build-modal.py", "recipe.mjs"]);
+  assert.deepEqual(BOX_FILES.sort(), ["Dockerfile", "README.md", "agentrun-archil", "build-agent37.mjs", "build-daytona.py", "build-e2b.mjs", "build-modal.py", "recipe.d.mts", "recipe.mjs"]);
 });
 
 test("box/ holds no file named like a key or a credential and no key material, and the Dockerfile takes no secret", () => {

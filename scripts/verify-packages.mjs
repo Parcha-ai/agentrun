@@ -82,8 +82,9 @@ const allowedExtraFiles = {
   // installer (skill.mjs) and its template package check (template.mjs).
   // The computer package ships its image recipe for remote computers with an Archil mount: the root helper, whose sha256
   // the provider reads at run time to check an image (src/mount-archil.ts), its Dockerfile, and the scripts that build it
-  // as a Daytona snapshot, a Modal image, an E2B template or an Agent37 template.
-  computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/build-agent37.mjs', 'package/box/recipe.mjs', 'package/box/README.md'],
+  // as a Daytona snapshot, a Modal image, an E2B template or an Agent37 template, and the recipe's hash with its types
+  // (dist/box-image.js names the published image by it).
+  computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/build-agent37.mjs', 'package/box/recipe.mjs', 'package/box/recipe.d.mts', 'package/box/README.md'],
   agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs'],
 };
 const allowedEndpoints = {
@@ -144,10 +145,11 @@ const usedEndpoints = new Set();
 // from (packages/computer/scripts/daemon-source.mjs), which must be this tree's: a checkout without Go takes the binaries
 // from the published package by that record. Its ./mount subpath is what a host reads the mount rule from. The Docker
 // provider binds dist/docker and package.json into each egress proxy container, which runs the egress files with Node alone.
+// dist/box-image.js imports box/recipe.mjs at run time, to name the published box image Agent37 registers.
 const daemonMachines = { amd64: 0x3e, arm64: 0xb7 };
 const egressCode = ['egress-main.js', 'egress-proxy.js', 'egress-table.js'];
 const requiredFiles = {
-  computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`), `package/dist/${DAEMON_RECORD}`],
+  computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', 'package/box/recipe.mjs', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`), `package/dist/${DAEMON_RECORD}`],
 };
 
 try {

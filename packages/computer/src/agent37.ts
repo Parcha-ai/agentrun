@@ -1,4 +1,4 @@
-// The Agent37 host: Agent37 Cloud instances (kind linux, or kind desktop on our box template, agentrun-box, whose Xvfb
+// The Agent37 host: Agent37 Cloud instances (kind linux, or kind desktop on our box template, agentrun-box-<hash>, whose Xvfb
 // the adapter starts through the daemon), each a whole VM by default (type "vm"), or a gVisor sandbox
 // (type "default"). The control plane is Agent37's REST API over fetch (https://api.agent37.com/v1, a Bearer key);
 // every command (the daemon's upload, its install, init's start, the stdio bridge) goes over SSH, as root, through the
@@ -83,7 +83,7 @@ export interface Agent37ProviderOptions extends Omit<HostedOptions, "maxLifetime
 	region?: Agent37Region;
 	/**
 	 * linux (default): no screen; desktop: an X server started through the daemon (Xvfb on :0 unless options.desktop says
-	 * otherwise), so the spec's image is a template that has one: our box template, agentrun-box (box/build-agent37.mjs).
+	 * otherwise), so the spec's image is a template that has one: our box template, which prepareImage() registers.
 	 */
 	kind?: "desktop" | "linux";
 	/** The longest lifetime check takes: 24 h by default, the janitor's cap; Agent37 itself never ends an instance. */
