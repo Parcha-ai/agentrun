@@ -64,9 +64,11 @@ public enum FeatureName {
 	public static let navOff = "macOS has no system back, home or app switcher: use the app's own controls or a key chord such as super+["
 	/// screen.shot and screen.watch capture the whole screen.
 	public static let screenCapture = "screen.capture"
-	/// screen.watch takes an ask ahead (after one past the newest frame). computerd on a Linux desktop lists it; this
-	/// driver answers one ask at a time and does not.
+	/// screen.watch takes an ask ahead (after one past the newest frame). computerd on a Linux desktop has it on; this
+	/// driver answers one ask at a time, so it is off here.
 	public static let screenAhead = "screen.ahead"
+	/// Why screen.ahead is off: the watch here captures for one ask at a time; the client asks again after each frame.
+	public static let screenAheadOff = "screen.watch here captures for one ask at a time: ask for the next frame after each one"
 
 	public static let all = [screenCapture, screenAhead, appsBackground, tree, image, background, foreground, page, nav]
 }
