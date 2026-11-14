@@ -396,7 +396,7 @@ test("a round marks only the grade it was opened for: a replacement given in the
 test("a run's learning read hides a secret in its grade's workflow name", { timeout: 120_000 }, async (t) => {
   const { server, start } = await world(t);
   const done = await start("run-secret-name", 1, { byHand: true });
-  const secret = "sk-live-registered-after-the-run-7781";
+  const secret = "registered-after-the-run-7781";
   await putGrade(server.settings, "agent-1", { run: done.id, correct: false, source: "feedback", at: new Date().toISOString(), path: "workflow", workflow: `answer-${secret}`, feedback: null });
   const read = await runLearningOverStore(server, done.id, secretsShown([secret]), [secret]);
   assert.ok(read?.graded, `the read says the grade: ${JSON.stringify(read)}`);
