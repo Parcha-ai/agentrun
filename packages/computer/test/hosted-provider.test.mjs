@@ -869,6 +869,15 @@ test("a desktop's window manager starts once the display answers, with DISPLAY; 
 		managed.fake.requests.some(({ machine, method, params }) => machine === m.id && method === "process.wait" && params.timeoutMs === 1000),
 		"create watches the window manager for a second",
 	);
+
+	// The watch has its own bound: a display with a short timeoutMs that came up with less than a second of it left still
+	// gets a healthy manager, whose process.wait computerd holds the whole second.
+	let held;
+	held = setup(
+		{ kind: "desktop", desktop: { windowManager: ["xfwm4"], timeoutMs: 700 } },
+		{ onStep: async (name) => (name === "process.wait" && held.fake.requests.at(-1).params.timeoutMs === 1000 ? new Promise((done) => setTimeout(done, 1000)) : undefined) },
+	);
+	made(await create(held.provider));
 	assert.throws(() => setup({ kind: "desktop", desktop: { windowManager: [""] } }), /windowManager must be a program and its arguments/);
 });
 

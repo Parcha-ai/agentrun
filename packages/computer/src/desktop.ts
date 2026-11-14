@@ -5,7 +5,7 @@
 // Docker's desktops, E2B's and Agent37's start the display this way.
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ComputerClient } from "./protocol.js";
-import { fail, ok, type Result, vendorFail } from "./result.js";
+import { type ComputerErrorCode, fail, ok, type Result, vendorFail } from "./result.js";
 
 export interface DesktopOptions {
 	/** The display the daemon and the X server use, given to the daemon as DISPLAY. Default ":0". */
@@ -36,6 +36,8 @@ const DISPLAY = /^:\d{1,5}(\.\d{1,5})?$/;
 const DISPLAY_POLL_MS = 100;
 /** How long create watches a window manager it started: one that ends within it (it could not take the display) fails create. */
 const WM_SETTLE_MS = 1_000;
+/** The longest create gives a window manager's start and that watch, apart from the display's own timeoutMs. */
+const WM_BOUND_MS = 15_000;
 /** The longest a Node timer or AbortSignal.timeout holds. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
@@ -80,7 +82,7 @@ export async function startDisplay(
 	for (;;) {
 		const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${version}` }, { signal: either });
 		if (!hello.ok) return timedOut() ? late() : hello;
-		if (Array.isArray(hello.value.groups) && hello.value.groups.includes("screen")) return await startWindowManager(client, desktop, vendor, either, timedOut, late);
+		if (Array.isArray(hello.value.groups) && hello.value.groups.includes("screen")) return await startWindowManager(client, desktop, vendor, signal);
 		const waited = await client.call("process.wait", { id, timeoutMs: 0 }, { signal: either });
 		if (waited.ok && !waited.value.running) {
 			const read = await client.call("process.read", { id, stream: "stderr", offset: 0 }, { signal: either });
@@ -97,23 +99,31 @@ export async function startDisplay(
 
 /**
  * Starts the desktop's window manager, if it has one, on the display that answers. A manager that cannot start, or ends
- * within WM_SETTLE_MS (xfwm4 with no session bus, or no display it may open), fails create with its last words.
+ * within WM_SETTLE_MS (xfwm4 with no session bus, or no display it may open), fails create with its last words. It has
+ * its own bound, WM_BOUND_MS, not what is left of the display's: a display that came up late still gets its manager's
+ * full second. The caller's abort still ends it.
  */
 async function startWindowManager(
 	client: ComputerClient,
 	desktop: Required<DesktopOptions>,
 	vendor: string,
-	signal: AbortSignal,
-	timedOut: () => boolean,
-	late: () => Result<never>,
+	caller: AbortSignal | undefined,
 ): Promise<Result<void>> {
 	if (desktop.windowManager.length === 0) return ok(undefined);
 	const manager = desktop.windowManager.join(" ");
+	const bound = AbortSignal.timeout(WM_BOUND_MS);
+	const signal = caller ? AbortSignal.any([caller, bound]) : bound;
+	const stopped = (code: ComputerErrorCode, message: string) =>
+		caller?.aborted
+			? fail("aborted", "create was aborted while the window manager started")
+			: bound.aborted
+				? fail("timeout", `the window manager (${manager}) did not start on ${desktop.display} within ${WM_BOUND_MS / 1000} s`)
+				: fail(code, message);
 	const started = await client.call("process.start", { argv: [...desktop.windowManager], env: { DISPLAY: desktop.display } }, { signal });
-	if (!started.ok) return timedOut() ? late() : fail(started.error.code, `the window manager (${manager}) did not start on ${desktop.display}: ${started.error.message}`);
+	if (!started.ok) return stopped(started.error.code, `the window manager (${manager}) did not start on ${desktop.display}: ${started.error.message}`);
 	const { id } = started.value;
 	const waited = await client.call("process.wait", { id, timeoutMs: WM_SETTLE_MS }, { signal });
-	if (!waited.ok) return timedOut() ? late() : fail(waited.error.code, `the window manager (${manager}) could not be waited on: ${waited.error.message}`);
+	if (!waited.ok) return stopped(waited.error.code, `the window manager (${manager}) could not be waited on: ${waited.error.message}`);
 	if (waited.value.running) return ok(undefined);
 	const read = await client.call("process.read", { id, stream: "stderr", offset: 0 }, { signal });
 	const words = read.ok ? Buffer.from(read.value.data, "base64").toString("utf8").trim().split("\n").slice(-5).join("; ") : "";
