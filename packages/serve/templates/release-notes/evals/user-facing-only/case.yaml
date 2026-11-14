@@ -1,4 +1,5 @@
 # Parameters the case's agent is applied with.
 parameters:
-  repo: "acme/lantern"
+  owner: "acme"
+  repo: "lantern"
   groups: "Search, Output, Speed"

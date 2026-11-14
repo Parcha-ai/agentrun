@@ -15,6 +15,8 @@ import { scratch } from "./support.mjs";
 import { firings, keyOf } from "./trigger-support.mjs";
 
 const REPO = "acme/widgets";
+/** REPO as the shipped packages take it: its owner and its name apart. */
+const SHIPPED = { owner: "acme", repo: "widgets" };
 const ACCEPT = '[{ event: pull_request, actions: [opened, reopened, synchronize, ready_for_review], where: [{ pointer: /repository/full_name, in: ["${parameters.repo}"] }] }]';
 /** What a skipped github trigger's warning says: what to do, then what it would run on, in the template's own words. */
 const connectWords = (subject) => `Connect GitHub in Settings, then apply again so it runs by itself: ${subject} runs on each pull request to ${REPO}.`;
@@ -112,14 +114,14 @@ test("(c) end to end: a signed pull_request for the template's repository fires 
 
 test("(d) the release-notes package this server ships: without GitHub its trigger is skipped with a warning in its own words; connected, each release published on its repository fires a run, and another repository's release or a release not yet published fires none", { timeout: 120_000 }, async (t) => {
   const unconnected = await connectable(t);
-  const skipped = await unconnected.api("POST", "/templates/release-notes/apply", { parameters: { repo: REPO } });
+  const skipped = await unconnected.api("POST", "/templates/release-notes/apply", { parameters: SHIPPED });
   assert.equal(skipped.status, 201, JSON.stringify(skipped.body));
   assert.deepEqual(skipped.body.trigger_ids, [], "skipped, the agent still made");
   assert.deepEqual(skipped.body.warnings.filter((w) => w.field === "triggers.0"), [{ field: "triggers.0", reason: "not_set_up_here", message: `Connect GitHub in Settings, then apply again so it runs by itself: Release notes runs on each release to ${REPO}.` }]);
 
   const server = await connectable(t);
   await connect(server);
-  const applied = await server.api("POST", "/templates/release-notes/apply", { parameters: { repo: REPO } });
+  const applied = await server.api("POST", "/templates/release-notes/apply", { parameters: SHIPPED });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   assert.equal(applied.body.trigger_ids.length, 1, JSON.stringify(applied.body));
   assert.deepEqual(applied.body.warnings.filter((w) => w.field === "triggers.0"), [{ field: "triggers.0", reason: "not_an_option", message: `Release notes runs on each release to ${REPO}.` }]);
@@ -143,17 +145,17 @@ test("(d) the release-notes package this server ships: without GitHub its trigge
   assert.match(content, /v1\.2\.0/, "the event, with its tag, rides in the input");
 });
 
-test("the code-review package as it ships: its pull-requests trigger takes the repo parameter in its where, so a pull_request for that repository fires a run and one for another fires none; with GitHub not connected its own words say what connecting does", { timeout: 120_000 }, async (t) => {
+test("the code-review package as it ships: its pull-requests trigger takes the owner and repo parameters in its where, so a pull_request for that repository fires a run and one for another fires none; with GitHub not connected its own words say what connecting does", { timeout: 120_000 }, async (t) => {
   const server = await connectable(t);
-  const unconnected = await server.api("POST", "/templates/code-review/apply", { parameters: { repo: REPO } });
+  const unconnected = await server.api("POST", "/templates/code-review/apply", { parameters: SHIPPED });
   assert.equal(unconnected.status, 201, JSON.stringify(unconnected.body));
   assert.deepEqual(unconnected.body.warnings.filter((w) => w.field === "triggers.0"), [{ field: "triggers.0", reason: "not_set_up_here", message: connectWords("Code review") }]);
   await connect(server);
-  const applied = await server.api("POST", "/templates/code-review/apply", { parameters: { repo: REPO } });
+  const applied = await server.api("POST", "/templates/code-review/apply", { parameters: SHIPPED });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   const [id] = applied.body.trigger_ids;
   const trigger = (await server.api("GET", `/triggers/${id}`)).body;
-  assert.deepEqual(trigger.source.accept[0].where, [{ pointer: "/repository/full_name", in: [REPO] }], "the repo parameter filled in");
+  assert.deepEqual(trigger.source.accept[0].where, [{ pointer: "/repository/full_name", in: [REPO] }], "the owner and repo parameters filled in");
   assert.deepEqual(applied.body.warnings.filter((w) => w.field === "triggers.0"), [{ field: "triggers.0", reason: "not_an_option", message: `Code review runs on each pull request to ${REPO}.` }]);
   const { webhook_secret: secret } = server.github.app;
   assert.deepEqual((await deliver(server.baseUrl, secret, "pull_request", pr("acme/other"))).body, { ok: "ignored" }, "another repository: no trigger takes it");

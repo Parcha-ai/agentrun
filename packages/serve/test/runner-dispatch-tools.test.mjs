@@ -38,12 +38,9 @@ const HANDS = hostToolDefs({ maxExecS: 60, shell: "computer" }).map((def) => def
 const NO_SHELL_HANDS = hostToolDefs({ maxExecS: 60, shell: "none" }).map((def) => def.name);
 /** A granted host tool that is not a hand, one the runner binds (adapter-run-spec.ts bindNonHandTools): web_fetch. */
 const HOST_TOOL = WEB_FETCH_TOOL;
-/** The host's search, call-by-name and script tools, offered beside a run's own tools on every harness. */
-const { TOOLS_SEARCH, TOOLS_CALL, CODEMODE } = await import("../dist/meta-tool-names.js");
-const METAS = [TOOLS_SEARCH, TOOLS_CALL, CODEMODE];
-/** The agent is granted every hand and the host tool: the first request offers exactly these, by name, and the host's three. */
+/** The agent is granted every hand and the host tool: the first request offers exactly these, by name, and none of the host's three (a run of this size is not offered them). */
 const GRANTED = [...HANDS, HOST_TOOL];
-const OFFERED = [...GRANTED, ...METAS].sort();
+const OFFERED = [...GRANTED, "codemode"].sort();
 
 /** On each wire, a source whose route speaks it to the gateway, and where its requests land. */
 const SOURCES = {
@@ -153,7 +150,7 @@ test("a pi run with no computer (a runner place, Mode 1) is offered no bash fami
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.deepEqual(toolsOf(gateway.requests[0]), [...NO_SHELL_HANDS, HOST_TOOL, ...METAS].sort(), "the first request offers the file tools and web_fetch: no bash family");
+  assert.deepEqual(toolsOf(gateway.requests[0]), [...NO_SHELL_HANDS, HOST_TOOL, "codemode"].sort(), "the first request offers the file tools and web_fetch: no bash family");
   const [bash, read] = resultsOf(gateway.requests.at(-1));
   assert.ok(bash && read, `both calls answered: ${JSON.stringify(resultsOf(gateway.requests.at(-1)))}`);
   assert.match(bash[0], /bash is not available/i, "the bash call answers that the tool is not available");

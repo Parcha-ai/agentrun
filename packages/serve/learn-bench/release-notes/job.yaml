@@ -3,7 +3,7 @@
 # not "bot"), learned from feedback on a past draft; 05 changes it ("assistant", never "agent" or "bot"), and 06-08's
 # graders check the new word, so a learned note that was never superseded fails them.
 template: release-notes
-parameters: { repo: acme/lantern, groups: "Slack, Admin, Status" }
+parameters: { owner: acme, repo: lantern, groups: "Slack, Admin, Status" }
 grants: []
 fakes: {}
 harnesses: [pi, claude-agent]

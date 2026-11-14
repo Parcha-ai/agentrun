@@ -228,7 +228,8 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
   });
   const byName = new Map(bridged.map((t) => [t.name, t]));
   return {
-    tools: bridged,
+    // What is listed to the model: a deferred tool is run by name (a nested call, `get`, `call`) and never listed.
+    tools: bridged.filter((_, index) => !tools[index]!.deferred),
     get: (name) => byName.get(name),
     call: async (name, args, callId, signal) => {
       const tool = byName.get(name);

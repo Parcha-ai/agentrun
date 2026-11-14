@@ -207,8 +207,8 @@ first is the baseline. On serve, the arm is an agent definition: `harness` and `
 `thinking` level, `computer: {kind, provider?, surface, exec?}` (`kind` from the task, `provider` from
 `options.provider`, `surface` the arm's: "code", the harness's script tool alone; "tools", the per-step computer tools
 alone; and `exec: false` for a task that denies exec), and `options.definition` any other field of the definition as it
-is. Its `computer` may pin more (a provider, say) but never `kind`, `surface` or `exec`: the bench sets those. One agent per bench run, arm, kind and exec (and step budget, on pi): its id is
-`<bench>-<arm>-<kind>-<surface>[-ui][-s<steps>]`, `-ui` where exec is denied.
+is. Its `computer` may pin more (a provider, say) but never `kind`, `surface` or `exec`: the bench sets those. One agent per bench run, arm, kind and exec: its id is
+`<bench>-<arm>-<kind>-<surface>[-ui]`, `-ui` where exec is denied.
 
 ```json
 [
@@ -246,8 +246,7 @@ missing.
    answer the checks read is the Timeline's `final_answer` row, there once the agent ends, before the release.
 6. Budgets: the money budget is the run's `max_cost_usd`. The step budget is computer calls: on every harness the bench
    counts the computer calls on the Timeline's tool rows and cancels the run past it, which lets the computer go, so the
-   checks after a cancel find it gone. On pi the agent's `max_tool_calls` is the budget too, a backstop (one agent per
-   budget there). Labels are gone: the bench's agent ids say which bench run made them.
+   checks after a cancel find it gone. Labels are gone: the bench's agent ids say which bench run made them.
 7. An agent's computer takes `surface` ("code" or "tools") and `exec: false` (no exec or processes group, no shell),
    which the bench sets from the arm and the task.
 

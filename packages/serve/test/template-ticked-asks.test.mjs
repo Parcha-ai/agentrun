@@ -20,7 +20,8 @@ test("a ticked tool is granted with no permission written, a read and a write al
   const dir = join(await scratch(t), "templates");
   for (const approvals of ["ask", "never"]) {
     const pkg = readPackage(twoToolPackage(dir, `two-tools-${approvals}`, undefined, approvals));
-    const made = compiled(pkg, {}, { mcp: pkg.mcp, defaultTools: [], grants: BOTH, approvals }).agent.definition;
+    // Served by a saved server named as its toolkit, as an apply maps it.
+    const made = compiled(pkg, {}, { mcp: pkg.mcp.map((need) => ({ ...need, server: need.toolkit })), defaultTools: [], grants: BOTH, approvals }).agent.definition;
     assert.deepEqual(made.tools, BOTH, approvals);
     assert.equal(made.tool_settings, undefined, `${approvals}: a tick writes no permission`);
   }
@@ -34,7 +35,7 @@ test("pi: under approvals ask a ticked write parks for the owner, and their deny
   const { api } = server;
   const fake = await startFakeMcp();
   t.after(() => fake.close());
-  assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" }, toolkit: "fake" })).status, 200);
   const applied = await whenFree(() => api("POST", "/templates/two-tools-ask/apply", { grants: BOTH }));
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   const id = applied.body.agent_id;

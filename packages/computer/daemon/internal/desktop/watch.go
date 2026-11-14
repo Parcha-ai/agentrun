@@ -11,10 +11,11 @@ package desktop
 // The X server says where the screen changed (DAMAGE, damage.go): a watch reads only the rectangles drawn since its last
 // read, into its own copy of the screen, and makes a frame when a pixel or the pointer's place changed, at most one
 // each frameGap. While nothing changes it reads no pixels at all, and looks only where the pointer is, each frameGap.
-// A display with no DAMAGE is read whole each pollEvery instead. Each read holds the display only while it reads, so
-// input.actions and screen.shot go on meanwhile. One connection keeps one watch (its seq, its copy of the screen and
-// the newest frame); a second watch on it waits its turn. The rest of each of the last two frames over a chunk is held
-// for screen.read, as screen.shot's PNG is, so an ask ahead never drops the frame before it.
+// An X server with no DAMAGE extension is refused, unsupported, in words: the watch has no other way to see a change.
+// Each read holds the display only while it reads, so input.actions and screen.shot go on meanwhile. One connection
+// keeps one watch (its seq, its copy of the screen and the newest frame); a second watch on it waits its turn. The rest
+// of each of the last two frames over a chunk is held for screen.read, as screen.shot's PNG is, so an ask ahead never
+// drops the frame before it.
 
 import (
 	"bytes"
@@ -39,13 +40,10 @@ const (
 	maxFrameWidth = 16_384
 )
 
-// frameGap is the least time between two frames of a watch on a display with DAMAGE: at most 15 frames a second.
-// Typing and a moving pointer look smooth at it, and each frame is one JPEG of the whole screen, the watch's cost on
-// the computer (about 20 ms of one core at 1280x800).
+// frameGap is the least time between two frames of a watch: at most 15 frames a second. Typing and a moving pointer
+// look smooth at it, and each frame is one JPEG of the whole screen, the watch's cost on the computer (about 20 ms of
+// one core at 1280x800).
 var frameGap = time.Second / 15
-
-// pollEvery is how often a watch reads the whole screen on a display with no DAMAGE: at most 5 frames a second.
-var pollEvery = 200 * time.Millisecond
 
 type watchParams struct {
 	After    *int `json:"after"`
@@ -75,8 +73,8 @@ type WatchResult struct {
 // watching is one connection's watch: one call at a time (turn), its seq, its copy of the screen as last read, when it
 // last read pixels or made a frame (read), the newest frame, and the rests of the last two frames for screen.read
 // (held: its own, so a screen.shot never evicts them; next is the one the next frame's rest goes in). damage is the
-// display's damage it is subscribed to, nil while the display is polled; dirty is where the screen changed since its
-// last read, and wake is told of each change. dmu guards dirty.
+// display's damage it is subscribed to; dirty is where the screen changed since its last read, and wake is told of
+// each change. dmu guards dirty.
 type watching struct {
 	turn   chan struct{}
 	read   time.Time
@@ -180,28 +178,21 @@ func (d *Display) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	deadline := time.Now().Add(time.Duration(waitMs) * time.Millisecond)
 	for {
-		damage := d.damageFor(w)
-		gap := pollEvery
-		if damage {
-			gap = frameGap
+		if err := d.damageFor(ctx, w); err != nil {
+			return nil, err
 		}
-		// Pixels are read, and frames made, at most once each gap, across calls too: an animated screen acked at once
-		// is no faster than the cap.
-		if wait := time.Until(w.read.Add(gap)); wait > 0 {
+		// Pixels are read, and frames made, at most once each frameGap, across calls too: an animated screen acked at
+		// once is no faster than the cap.
+		if wait := time.Until(w.read.Add(frameGap)); wait > 0 {
 			if err := pause(ctx, wait, nil); err != nil {
 				return nil, err
 			}
 		}
-		region := everything
-		if damage {
-			region = w.take()
-		}
-		cursor, changed, err := d.look(ctx, w, region)
+		region := w.take()
+		cursor, changed, at, err := d.look(ctx, w, region)
 		if err != nil {
-			if damage {
-				// Not read (a cancel while input held the display, or the display went): the next look reads it.
-				w.damaged(region)
-			}
+			// Not read (a cancel while input held the display, or the display went): the next look reads it.
+			w.damaged(region)
 			return nil, err
 		}
 		if changed || w.cursor == nil || *w.cursor != cursor {
@@ -209,8 +200,11 @@ func (d *Display) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 			if err != nil {
 				return nil, err
 			}
+			if !changed {
+				// A frame of the pointer alone read no pixels, but it is a whole JPEG all the same: it keeps the cap too.
+				w.read = at
+			}
 			w.seq++
-			w.read = time.Now()
 			w.jpeg, w.frameW, w.frameH, w.cursor = frame, fw, fh, &cursor
 			return d.frame(w), nil
 		}
@@ -218,12 +212,8 @@ func (d *Display) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 		if left <= 0 {
 			return WatchResult{Seq: w.seq, Width: w.width, Height: w.height}, nil
 		}
-		// Until the screen changes, the pointer is looked at each gap; a change wakes the watch at once.
-		var wake chan struct{}
-		if damage {
-			wake = w.wake
-		}
-		if err := pause(ctx, min(left, gap), wake); err != nil {
+		// Until the screen changes, the pointer is looked at each frameGap; a change wakes the watch at once.
+		if err := pause(ctx, min(left, frameGap), w.wake); err != nil {
 			return nil, err
 		}
 		if time.Until(deadline) <= 0 {
@@ -247,19 +237,20 @@ func pause(ctx context.Context, d time.Duration, wake chan struct{}) error {
 
 // look holds the display while it reads the region of the screen into the watch's copy (the whole screen on the first
 // read, or once its size changed) and where the pointer is; an empty region reads no pixels. changed says whether a
-// pixel of the copy changed.
-func (d *Display) look(ctx context.Context, w *watching, region image.Rectangle) (cursor [2]int, changed bool, err error) {
+// pixel of the copy changed; at is when it had the display.
+func (d *Display) look(ctx context.Context, w *watching, region image.Rectangle) (cursor [2]int, changed bool, at time.Time, err error) {
 	if err := d.hold(ctx, "screen.watch"); err != nil {
-		return cursor, false, err
+		return cursor, false, at, err
 	}
 	defer d.letGo()
+	at = time.Now()
 	c, err := d.connection()
 	if err != nil {
-		return cursor, false, err
+		return cursor, false, at, err
 	}
 	width, height, err := c.RootSize()
 	if err != nil {
-		return cursor, false, d.gone(c, err)
+		return cursor, false, at, d.gone(c, err)
 	}
 	whole := image.Rect(0, 0, width, height)
 	if w.screen == nil || w.screen.Bounds() != whole {
@@ -268,14 +259,16 @@ func (d *Display) look(ctx context.Context, w *watching, region image.Rectangle)
 	region = region.Intersect(whole)
 	var img *image.RGBA
 	if !region.Empty() {
+		// The cap counts from the read's start, so the read and the frame's encode are inside the gap, not added to it.
+		started := time.Now()
 		if img, err = c.GetImage(region.Min.X, region.Min.Y, region.Dx(), region.Dy()); err != nil {
-			return cursor, false, d.gone(c, err)
+			return cursor, false, at, d.gone(c, err)
 		}
-		w.read = time.Now()
+		w.read = started
 	}
 	x, y, err := c.QueryPointer()
 	if err != nil {
-		return cursor, false, d.gone(c, err)
+		return cursor, false, at, d.gone(c, err)
 	}
 	w.width, w.height = width, height
 	switch {
@@ -284,7 +277,7 @@ func (d *Display) look(ctx context.Context, w *watching, region image.Rectangle)
 	case img != nil:
 		changed = patch(w.screen, img, region.Min)
 	}
-	return [2]int{x, y}, changed, nil
+	return [2]int{x, y}, changed, at, nil
 }
 
 // patch copies img into screen at at, row by row, and says whether any pixel differed.

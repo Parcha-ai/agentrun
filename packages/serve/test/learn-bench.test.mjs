@@ -143,7 +143,7 @@ test("a job's filled pins are set on the server before its apply, as the templat
     if (method === "PUT" && path === "/settings/tools") return (puts.push(body), { status: 200, body, headers: new Headers() });
     return { status: 404, body: null, headers: new Headers() };
   };
-  await bench.serverPins(api, pkg, { parameters: { repo: "example/shop" }, grants: [] });
+  await bench.serverPins(api, pkg, { parameters: { owner: "acme", repo: "lantern" }, grants: [] });
   assert.equal(puts.length, 1, "one write of the server's tool settings");
   assert.ok(Object.values(puts[0]).some((setting) => setting.pin), JSON.stringify(puts[0]));
 });

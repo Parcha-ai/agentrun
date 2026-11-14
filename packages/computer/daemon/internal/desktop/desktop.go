@@ -19,7 +19,6 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/files"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
@@ -51,12 +50,11 @@ type Display struct {
 
 	shots atomic.Int64
 
-	// dmu guards damage, the watches' view of where the screen changed (damage.go), damageStarting, while a watch
-	// starts it, and noDamageUntil, before which a display that had no DAMAGE is not asked again.
+	// dmu guards damage, the watches' view of where the screen changed (damage.go), and damageStarting, closed once
+	// the start a watch is making ends.
 	dmu            sync.Mutex
 	damage         *damages
-	damageStarting bool
-	noDamageUntil  time.Time
+	damageStarting chan struct{}
 }
 
 // New is the display DISPLAY named when computerd started; "" is none.

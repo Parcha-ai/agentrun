@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
-import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
+import { defersCatalog, type GateAnswer, type GateCall } from '@parcha/agentrun-kernel';
 import { type DriveContext, type Harness, type HostTool, type ReplayPolicy, Restart, type SessionState, type Submission, Unavailable } from './host/kernel.js';
 import {
   askGate,
@@ -344,15 +344,16 @@ export const CLAUDE_BUILTINS = ['Bash', 'Read', 'Edit', 'Write', 'NotebookEdit',
 export const CLAUDE_SAFE_BUILTINS = ['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch', 'ToolSearch', 'Skill'];
 
 /**
- * ENABLE_TOOL_SEARCH for a session whose tools are `toolNames` (the host's names): with an MCP server's tools among them
- * (`mcp__<server>__<tool>`), `true`: the CLI's own tool search is on, its ToolSearch among its tools, and those tools are
+ * ENABLE_TOOL_SEARCH for a session whose tools are `toolNames` (the host's names): when the run's catalog tools are
+ * deferred (the kernel's defersCatalog: more than DEFER_CATALOG_OVER of them; the host's own tools_search and tools_call
+ * are never offered beside it), `true`: the CLI's own tool search is on, its ToolSearch among its tools, and those tools are
  * deferred (served through `hands`, the rest of the session's tools listed to load always: tool-server.ts listedTools),
  * each sent to the model once ToolSearch finds it. Without, `false`. The pinned CLI (2.1.286) leaves it off behind a
  * proxy unless told, and its `auto` defers only past a tenth of the model's context (on a 1M-token model, never in
  * practice); set either way, so a CLI that changes that default changes nothing here. The session's proxy admits what the
  * CLI sends with it on (anthropicPolicy `toolSearch`).
  */
-export const claudeToolSearch = (toolNames: readonly string[]): 'true' | 'false' => (toolNames.some((name) => name.startsWith('mcp__')) ? 'true' : 'false');
+export const claudeToolSearch = (toolNames: readonly string[]): 'true' | 'false' => (defersCatalog(toolNames) ? 'true' : 'false');
 /** The CLI's own tool that finds a deferred tool: it only reads the CLI's list of the session's tools. */
 export const CLAUDE_TOOL_SEARCH = 'ToolSearch';
 

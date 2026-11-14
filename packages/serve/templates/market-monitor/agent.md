@@ -1,26 +1,35 @@
 ---
 name: market-monitor
 display_name: Market monitor
-version: 0.1.0
+version: 0.2.0
 description: Every Monday, a short digest of what changed at the companies you watch (launches, pricing, notable hires, funding and news), each item dated, linked and with a line on why it matters, nothing repeated from last week. Posted to Slack or email when a server for it is saved, else returned.
 license: Apache-2.0
 author: { name: Parcha Labs }
 repository: https://github.com/Parcha-ai/agentrun
+category: marketing
+tags: [competitors, digest, slack, gmail]
 harness: [pi]
 model: { tier: fast }
 effort: low
 tools: [web_search, web_fetch, read]
 mcp:
-  - server: slack
-    tools: [slack_send_message]
+  - source: composio
+    toolkit: slack
+    tools: [SLACK_SEND_MESSAGE]
     required: false
+    reason: "Posts the weekly digest to the one Slack channel you set, and nowhere else."
     allow: []
-    pin: { slack_send_message: { channel_id: "${parameters.channel}" } }
-  - server: gmail
+    # channel_id is the name the action also takes a channel by: held absent, so the pinned channel is the only one.
+    pin: { SLACK_SEND_MESSAGE: { channel: "${parameters.channel}", channel_id: null } }
+  - source: composio
+    toolkit: gmail
     tools: [GMAIL_SEND_EMAIL]
     required: false
+    reason: "Emails the weekly digest to the one address you set, with no cc or bcc."
     allow: []
-    pin: { GMAIL_SEND_EMAIL: { recipient_email: "${parameters.channel}", cc: null, bcc: null, extra_recipients: null } }
+    # `to` is the name the action also takes the recipient by, and from_email picks the sending address: both held
+    # absent, so the mail goes from the connected account to the one address set.
+    pin: { GMAIL_SEND_EMAIL: { recipient_email: "${parameters.channel}", to: null, cc: null, bcc: null, extra_recipients: null, from_email: null } }
 parameters:
   competitors: { type: string, required: true, pattern: "^[^\\n]{2,2000}$", description: "the companies to watch, comma-separated, each a name and its domain: \"Acme (acme.com), Globex (globex.io)\"" }
   topics: { type: string, pattern: "^[^\\n]{0,500}$", description: "optional market keywords, comma-separated (\"payments orchestration, KYB\"): market news on them is in scope too" }

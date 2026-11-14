@@ -130,7 +130,7 @@ async function savedGitHub(t, auth, options = {}) {
   await mkdir(data, { recursive: true });
   const store = await openSqliteStore({ dataDir: data, role: "server" });
   try {
-    const tools = ["list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "search_pull_requests", "pull_request_read", "get_file_contents", "search_issues", "get_label", "issue_write", "search_code", "get_repository_tree", "pull_request_review_write", "add_comment_to_pending_review"].map((name) => ({ name, description: `GitHub's ${name}.`, input_schema: { type: "object", properties: {}, additionalProperties: true } }));
+    const tools = ["list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "list_pull_requests", "pull_request_read", "get_file_contents", "list_issues", "get_label", "issue_write", "get_repository_tree", "pull_request_review_write", "add_comment_to_pending_review"].map((name) => ({ name, description: `GitHub's ${name}.`, input_schema: { type: "object", properties: {}, additionalProperties: true } }));
     await store.mcp.put({ name: "github", url: "https://api.githubcopilot.com/mcp/", auth, tools });
   } finally {
     await store.close();
@@ -140,28 +140,30 @@ async function savedGitHub(t, auth, options = {}) {
 
 /** The apply's grants that tick release-notes' issue write. */
 const ISSUE_WRITE = ["mcp:github/issue_write"];
+/** The one repository each apply here is for. */
+const WIDGETS = { owner: "acme", repo: "widgets" };
 
 test("release-notes applied against an installation whose GitHub says Issues: read names it in the apply answer; with no App to ask it says it could not check; code-review and the owner's own token are not warned", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { api } = await savedGitHub(t, "github_app", { fauxGitHub: true });
   // Only a tool the owner ticks is the agent's, so only a ticked one is checked: unticked, issue_write is not said.
-  const unticked = await api("POST", "/templates/release-notes/apply", { parameters: { repo: "acme/widgets" } });
+  const unticked = await api("POST", "/templates/release-notes/apply", { parameters: WIDGETS });
   assert.equal(unticked.status, 201, JSON.stringify(unticked.body));
   assert.deepEqual(unticked.body.warnings.filter((w) => w.field === "grants.mcp:github/issue_write"), [], "an unticked tool is not granted: nothing to check");
-  const notes = await api("POST", "/templates/release-notes/apply", { parameters: { repo: "acme/widgets" }, grants: ISSUE_WRITE });
+  const notes = await api("POST", "/templates/release-notes/apply", { parameters: WIDGETS, grants: ISSUE_WRITE });
   assert.equal(notes.status, 201, JSON.stringify(notes.body));
   assert.deepEqual(notes.body.warnings.filter((w) => w.field === "grants.mcp:github/issue_write"), [{ field: "grants.mcp:github/issue_write", reason: "not_allowed", message: WORDS.replace("on acme", "on faux-org") }]);
-  const review = await api("POST", "/templates/code-review/apply", { parameters: { repo: "acme/widgets" }, grants: ["pull_request_read", "get_file_contents", "search_code", "get_repository_tree", "pull_request_review_write", "add_comment_to_pending_review"].map((tool) => `mcp:github/${tool}`) });
+  const review = await api("POST", "/templates/code-review/apply", { parameters: WIDGETS, grants: ["pull_request_read", "get_file_contents", "get_repository_tree", "pull_request_review_write", "add_comment_to_pending_review"].map((tool) => `mcp:github/${tool}`) });
   assert.equal(review.status, 201, JSON.stringify(review.body));
   assert.ok(!review.body.warnings.some((w) => w.message.includes("GitHub App has")), JSON.stringify(review.body.warnings));
   const bare = await savedGitHub(t, "github_app");
-  const unchecked = await bare.api("POST", "/templates/release-notes/apply", { parameters: { repo: "acme/widgets" }, grants: ISSUE_WRITE });
+  const unchecked = await bare.api("POST", "/templates/release-notes/apply", { parameters: WIDGETS, grants: ISSUE_WRITE });
   assert.equal(unchecked.status, 201, JSON.stringify(unchecked.body));
   const said = unchecked.body.warnings.filter((w) => w.field === "grants.mcp:github/issue_write");
   assert.equal(said.length, 1, JSON.stringify(unchecked.body.warnings));
   assert.match(said[0].message, /could not check whether it has it \(this server has no GitHub App\)/);
   const own = await savedGitHub(t, "bearer");
-  const mine = await own.api("POST", "/templates/release-notes/apply", { parameters: { repo: "acme/widgets" }, grants: ISSUE_WRITE });
+  const mine = await own.api("POST", "/templates/release-notes/apply", { parameters: WIDGETS, grants: ISSUE_WRITE });
   assert.equal(mine.status, 201, JSON.stringify(mine.body));
   assert.ok(!mine.body.warnings.some((w) => /GitHub App/.test(w.message)), "the owner's own token is theirs to scope");
 });

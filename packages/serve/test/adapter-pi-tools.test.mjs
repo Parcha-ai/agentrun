@@ -7,9 +7,6 @@ import { closeOpenSessions, hostTools, MODEL, scriptedOrigin } from "./conforman
 import { capRun, quiet } from "./adapter-pi-cap-support.mjs";
 
 const { piAdapter, piPolicy } = await import("../dist/runner/adapters/pi.js");
-/** The host's search, call-by-name and script tools, offered beside a session's own on every harness. */
-const { TOOLS_SEARCH, TOOLS_CALL, CODEMODE } = await import("../dist/meta-tool-names.js");
-const METAS = [TOOLS_SEARCH, TOOLS_CALL, CODEMODE];
 after(closeOpenSessions);
 
 const provider = { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` };
@@ -33,7 +30,7 @@ test("pi's tool definitions reach the provider: the request the provider gets of
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(sent.length, 2, "the call's round and the answer's");
   for (const [i, body] of sent.entries()) {
-    assert.deepEqual((body.tools ?? []).map((tool) => tool.name).sort(), ["note", "read", ...METAS].sort(), `request ${i} offers the session's tools, and the host's three beside them`);
+    assert.deepEqual((body.tools ?? []).map((tool) => tool.name).sort(), ["codemode", "note", "read"], `request ${i} offers the session's tools and codemode, and no tools_search or tools_call: a run with no catalog tools lists every tool`);
   }
   // The session's own policy, on the very body the provider got: the turn's request, never a side call.
   assert.equal(piPolicy(MODEL, ["note", "read"]).answers(sent[0]), true, "the turn's answer request");

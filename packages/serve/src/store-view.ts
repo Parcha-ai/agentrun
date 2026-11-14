@@ -258,7 +258,8 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
   // Its final answer whole (store-reads/journal.ts wholeAnswers), as main served a run's answer: a row's cut is no answer's.
-  const timelineOptions = { settled: terminal, redact: (text: string) => redacted(text, values) };
+  // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far.
+  const timelineOptions = { settled: terminal, ended: terminal, redact: (text: string) => redacted(text, values) };
   const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions), timelineOptions, wholeAnswerFor(values)));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
@@ -335,7 +336,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // A run that waits on its person (a parked question) and has just been answered reads as going on from the answer's
   // row, never input_required again until its runner places it, as main's run read once the message was submitted.
   // Read only for a run not working now (a working run reads working anyway), so a run list adds no read for those; and
-  // only a message that may answer a person counts (a trigger's, answers: false, never does, and is refused while it waits).
+  // only a message that may answer a person counts (a trigger's, answers: false, never does: it waits, untaken, for a turn of its own after the answer).
   // A run parked at its cap counts its raises not taken yet the same way: raised, it reads as going on from the raise's
   // row, never input_required again until its runner takes it (and parks it anew if the raise falls short).
   const pending = (command: { kind: string; takenAt: number | null; refused: string | null; body: unknown }) =>
