@@ -276,10 +276,11 @@ test("the read-back: Daytona's states as the adapter's, its end, its GPUs and it
 		const { provider } = setup({ [`GET /api/sandbox/${sb.id}`]: { body: sb } });
 		return await provider.host.get(sb.id, { timeoutMs: 1_000 });
 	};
-	const clean = await read();
+	const autoDestroyAt = "2026-01-02T03:04:05.000Z";
+	const clean = await read({ autoDestroyAt });
 	assert.deepEqual(Object.keys(clean).sort(), ["endsAt", "id", "labels", "state"], "no drift, network, size or image: Daytona's create options are not read back");
 	assert.equal(clean.state, "running");
-	assert.equal(clean.endsAt.toISOString(), sandbox().autoDestroyAt);
+	assert.equal(clean.endsAt.toISOString(), autoDestroyAt);
 	for (const [state, want] of [
 		["started", "running"],
 		["creating", "starting"],

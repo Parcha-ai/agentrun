@@ -254,7 +254,7 @@ class ModalHost implements MachineHost {
 		let base: Image;
 		if (MODAL_IMAGE_ID.test(req.image)) {
 			const fromId = this.#sdk.images.fromId;
-			if (typeof fromId !== "function") throw new HostError("invalid",`the image ${req.image} is a Modal image id, and options.sdk has no images.fromId to open it: pass the SDK's own ModalClient`);
+			if (typeof fromId !== "function") throw new HostError("invalid", `the image ${req.image} is a Modal image id, and options.sdk has no images.fromId to open it: pass the SDK's own ModalClient`);
 			base = await fromId.call(this.#sdk.images, req.image);
 		} else base = this.#sdk.images.fromRegistry(req.image);
 		const cpus = req.cpus ?? DEFAULT_CPUS;

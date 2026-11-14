@@ -154,11 +154,10 @@ and `MOUNT`; the suite reads `PROVIDERS` either way. After that, the contract ty
 A vendor on the shared machine-host adapter writes a `MachineHost` (`packages/computer/src/host.ts`), and its `exec` is
 the whole protocol: the adapter installs and starts `computerd` through it, then runs `computerd stdio` through it and
 talks to the daemon over that one process's stdin and stdout for the computer's whole life ([`stdio.md`](stdio.md)).
-`exec(id, argv, ctx)` must answer a process, or throw, and the process must be:
+`exec(id, argv, { stdin })` must give a process that is:
 
 - **Two-way and live.** Each `write()` reaches the process's stdin as it is written, and stdout and stderr bytes come
   back as the process writes them, while it runs. Not request and response, and never held until the process exits.
-  stdin is always open; `end()` closes it, and the adapter calls it at once for a command it gives no input.
 - **Byte-exact.** Every byte value 0-255, both ways: no UTF-8 decode or encode, no newline translation, no terminal,
   nothing added or dropped.
 - **Without a timeout.** The process runs until it exits or `kill()` ends it. The vendor's command timeout, and any idle
