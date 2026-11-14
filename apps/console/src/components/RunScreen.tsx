@@ -1,10 +1,29 @@
 import { Globe, Maximize2, Minimize2, Monitor, Smartphone, Terminal } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ClientError } from "@/lib/client";
 import { METERED } from "@/lib/computers";
 import { httpHref } from "@/lib/safeUrl";
+import { cn } from "@/lib/utils";
 import type { ComputerHold, RunComputer, RunMachine } from "@/lib/v2";
+
+/** The run page's tab body keeps this much padding below its content (its py-8). */
+const PANE_BELOW = 32;
+/** A phone's frame is never shorter than this (a short page scrolls instead) nor taller than 70% of the window. */
+const PHONE_MIN = 360;
+const PHONE_MOST = 0.7;
+
+/** The height a page's scroll pane shows below `el`, as if scrolled to its top: the pane's visible height less where
+ *  `el` starts in it and the padding under it. Without a pane, the window's. */
+export function roomBelow(el: HTMLElement, pane: HTMLElement | null): number {
+  const top = el.getBoundingClientRect().top;
+  if (!pane) return window.innerHeight - (top + window.scrollY) - PANE_BELOW;
+  const at = top - pane.getBoundingClientRect().top + pane.scrollTop;
+  return pane.clientHeight - at - PANE_BELOW;
+}
+
+/** A phone frame's height for `room` px of page below it, in a window `viewport` px tall. */
+export const phoneHeight = (room: number, viewport: number): number => Math.round(Math.max(PHONE_MIN, Math.min(room, viewport * PHONE_MOST)));
 
 /** The run's screen as the page shows it: the server's answer (never `off`: that is no screen), or signed out (a read
  *  refused 401), said in the tab. */
@@ -25,7 +44,7 @@ export type ScreenView = Exclude<RunComputer, { state: "off" }> | { state: "sign
  *  opened (none, opening), a take-over waiting for the agent's step (pending), and for HURRY_MS after the page's own
  *  take-over or hand-back, whose answer is read right after its row is written, before the run applies it. So the first
  *  frame and who drives show when they happen, not up to a whole `every` later. */
-export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000, soon = Math.min(every, SOON_MS)): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
+export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000, soon = Math.min(every, SOON_MS), starting = false): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
   const [now, setNow] = useState<ScreenView | null>(null);
   // A caller the route refuses (401, 403) is read no more, whatever the run does.
   const [refused, setRefused] = useState(false);
@@ -42,9 +61,16 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
   // next one forward (none while no read is waiting).
   const hurryUntil = useRef(0);
   const hurry = useRef<(() => void) | null>(null);
+  // The desktop or phone this page saw live while the run goes. Its claim holds it from the run's start to its end, so
+  // once it was live, an answer of opening (its viewer gone, the run not yet read as ended) is the one that was let go:
+  // released, never one to wait for. A new turn opens a new one, which is waited for: the memory goes when the run ends,
+  // and when a turn's claim is `starting` it (the run queued: a follow-up after the run completed or was stopped).
+  const wasLive = useRef<RunMachine["kind"] | null>(null);
+  useEffect(() => { if (starting) wasLive.current = null; }, [starting]);
   const has = !!read;
   useEffect(() => {
     if (!has || refused) return;
+    if (!going) wasLive.current = null;
     if (!going && answered.current && !unopened.current) { setNow((prev) => (prev ? closed(prev) : prev)); return; }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -53,9 +79,11 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
     let onItsWay = false;
     const once = async () => {
       try {
-        const next = await reader.current!();
+        const read = await reader.current!();
         if (!alive) return;
         answered.current = true;
+        if (read.state === "live") wasLive.current = read.kind;
+        const next: RunComputer = read.state === "none" && read.session === "opening" && read.kind !== "browser" && read.kind === wasLive.current ? { ...read, session: "closed" } : read;
         unopened.current = next.state === "none" && next.session === "unopened";
         onItsWay = (next.state === "none" && next.session === "opening") || (next.state === "live" && next.hold === "pending");
         if (next.state === "off") setNow(null);
@@ -126,8 +154,11 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   // Each viewer gets an iframe of its own (a new session is a new page); the key is a count, never the viewer itself.
   const session = useRef({ viewer: "", n: 0 });
   if (screen?.state === "live" && screen.viewer !== session.current.viewer) session.current = { viewer: screen.viewer, n: session.current.n + 1 };
-  const src = screen?.state === "live" ? framedViewer(screen.viewer, runId) : undefined;
   const kind: Kind = screen && screen.state !== "signed_out" ? screen.kind : machine?.kind ?? "browser";
+  // A desktop's or a phone's Take over and Hand back are this header's: the viewer is told so (hands=page, in the
+  // fragment beside its token), and its own bar shows neither, nor who drives. A browser's are its viewer's own.
+  const framed = screen?.state === "live" ? framedViewer(screen.viewer, runId) : undefined;
+  const src = framed && kind !== "browser" ? `${framed}${framed.includes("#") ? "&" : "#"}hands=page` : framed;
   const Icon = ICONS[kind];
   const live = screen?.state === "live" ? screen : null;
   // Take over and Hand back, here for a desktop or a phone up now (a browser's are its viewer's own): one in flight at a
@@ -151,6 +182,21 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   const wasFull = useRef(false);
   const showing = Boolean(live && src);
   useEffect(() => { if (!showing) setFull(false); }, [showing]);
+  // A phone is tall: its frame takes the height the run page shows below it (phoneHeight), so the whole phone is on
+  // screen at once, its bottom (the keyboard, the nav bar) never under the composer.
+  const [phoneH, setPhoneH] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    const el = frame.current;
+    if (kind !== "phone" || full || !showing || !el) return;
+    const pane = el.closest<HTMLElement>("[data-scroll-pane]");
+    const fit = () => setPhoneH(phoneHeight(roomBelow(el, pane), window.innerHeight));
+    fit();
+    // The pane's size, and its content's: a card that comes or goes above the frame moves it, the pane staying as it was.
+    const watch = typeof ResizeObserver === "function" && pane ? new ResizeObserver(fit) : undefined;
+    if (pane) for (const box of [pane, ...pane.children]) watch?.observe(box);
+    window.addEventListener("resize", fit);
+    return () => { watch?.disconnect(); window.removeEventListener("resize", fit); };
+  }, [kind, full, showing, said, metered, session.current.n]);
   // While it fills the window it is a modal dialog: focus moves into its bar, Tab stays among its bar and the viewer, and
   // closing puts the focus back on the button that opened it (when the screen is still up).
   useEffect(() => {
@@ -224,7 +270,7 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
             )}
             {/* A refused Take over or Hand back, said where the person is looking. */}
             {full && said && <p className="border-b px-4 py-2 text-small text-warning-text" role="alert">{said}</p>}
-            <iframe ref={frame} key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={full ? "block min-h-0 w-full flex-1 bg-background" : kind === "phone" ? "mx-auto block aspect-[9/19] h-[70vh] max-w-full bg-background" : "block aspect-[16/10] w-full bg-background"} />
+            <iframe ref={frame} key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={full ? "block min-h-0 w-full flex-1 bg-background" : kind === "phone" ? cn("mx-auto block aspect-[9/19] max-w-full bg-background", phoneH === undefined && "h-[70vh]") : "block aspect-[16/10] w-full bg-background"} style={!full && kind === "phone" && phoneH !== undefined ? { height: `${phoneH}px` } : undefined} />
           </div>
         : <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">{words(kind, screen, machine, opens, followUp)}</p>}
     </section>
@@ -248,8 +294,9 @@ function words(kind: Kind, screen: ScreenView | null, machine: RunMachine | unde
     if (!opens) return `This run didn't open its ${kind}.${followUp ? " A follow-up opens one if the agent needs it." : ""}`;
     return kind === "browser" ? "This run hasn't opened its browser. The agent's page shows here if it opens one." : `This run hasn't opened its ${kind}. Its screen shows here if the agent opens one.`;
   }
-  // Opened, and not up now, while the run goes on: nothing is opening one until the agent asks again.
-  if (opens && session === "closed") return kind === "browser" ? "The run's browser isn't open now. The agent's page shows here if it opens one again." : `The run's ${kind} isn't up now. Its screen shows here when it comes up again.`;
+  // Opened, and not up now, while the run goes on: a browser opens again when the agent asks; a desktop or a phone, held
+  // to the run's end, was let go (useRunScreen reads it so once it was live), and the run is ending.
+  if (opens && session === "closed") return kind === "browser" ? "The run's browser isn't open now. The agent's page shows here if it opens one again." : `This ${kind} has been released.`;
   // Being opened (or no answer read yet).
   if (opens) return kind === "browser" ? "Waiting for the browser. The agent's page shows here once it opens one." : `Waiting for the ${kind}. Its screen shows here once it is up.`;
   return `The ${kind} closed when the run ended.${followUp ? " A follow-up opens a new one if the agent needs it." : ""}`;

@@ -14,7 +14,7 @@ import { after, test } from "node:test";
 import { readBackOf } from "@parcha/agentrun-computer";
 import { putSealedKey } from "../dist/server-keys.js";
 import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
-import { computerReadyWords } from "../dist/workspace/computer-deps.js";
+import { computerReadyWords, computerStartingWords } from "../dist/workspace/computer-deps.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { GPU_ARCHIL_KINDS, KINDS } from "./workspace-kinds-fixture.mjs";
 
@@ -99,16 +99,16 @@ function views(refusal) {
   return { open, opened, closed, holds };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, hostWhy } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const record = { created: [], released: [], options: [], ...(existing ? { existing } : {}) };
-  const providers = Object.fromEntries(["docker", "e2b", "daytona", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}) })]));
+  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
-  const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode, kinds, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(hostWhy ? { hostWhy } : {}) });
+  const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode, kinds, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}) });
   return { root, record, run };
 }
 
@@ -189,6 +189,21 @@ test("once its computer is connected, the claim says what it is, from its hello:
   await (await sandbox.run()).release();
   assert.deepEqual(said[1], { provider: "Docker", kind: "sandbox", hello: { os: "linux", arch: "amd64" } }, "no version where the hello names none");
   assert.equal(computerReadyWords(said[1]), "The sandbox is ready: Linux (amd64), from Docker.");
+});
+
+test("before its computer is made the claim says it is starting one, so the run's timeline is never blank while a phone boots", async () => {
+  const PHONE = ["screen", "input.touch", "input.keys", "apps", "ui"];
+  const said = [];
+  const phone = await claim({ kind: "phone", provider: "phone-harness" }, {
+    keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: PHONE, machine: "android",
+    onStarting: (one) => void said.push(["starting", one, phone.record.created.length]),
+    onConnected: () => void said.push(["ready"]),
+  });
+  const answer = await phone.run();
+  assert.deepEqual(said, [["starting", { provider: "Phone harness", kind: "phone" }, 0], ["ready"]], "said once, before anything is made, then ready");
+  assert.equal(computerStartingWords(said[0][1]), "Starting a phone from Phone harness…");
+  await answer.release();
+  assert.equal(said.length, 2, "never at the release");
 });
 
 test("a provider whose program this machine lacks is refused in words before anything is rented", async () => {
@@ -283,13 +298,16 @@ test("a desktop whose setting names an image is made with that configuration's o
 });
 
 test("a sandbox's GPUs go into the spec its provider makes the computer with; GPUs its provider does not give are refused before anything is made", async () => {
-  // A GPU computer that takes the Archil mount (a GPU snapshot with root and the Archil client), in Mode 2.
-  const { record, run } = await claim({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: { DAYTONA_API_KEY: "dk" }, kinds: GPU_ARCHIL_KINDS });
+  // A GPU computer that takes the Archil mount (Modal's, once its FUSE mount is proven there), in Mode 2.
+  const MODAL_KEYS = { MODAL_TOKEN_ID: "mi", MODAL_TOKEN_SECRET: "ms" };
+  const { record, run } = await claim({ kind: "sandbox", provider: "modal", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: MODAL_KEYS, kinds: GPU_ARCHIL_KINDS });
   const answer = await run();
   assert.deepEqual(record.created[0].gpu, { type: "H100", count: 1 });
   assert.equal(record.created[0].mount?.kind !== undefined, true, "with the run's folder mounted beside them");
   await answer.release();
-  // A Daytona GPU computer takes no mount: in Mode 2 it is refused before anything is made, saying why and what to use.
-  assert.equal(await refusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: { DAYTONA_API_KEY: "dk" } }), "A Daytona GPU computer can't mount this run's folder: Daytona's GPU runtime gives it no /dev/fuse. Use a GPU computer from the library, or this sandbox without a GPU.");
+  // The registry's Modal GPU computer takes no mount yet: in Mode 2 it is refused before anything is made, saying why and what to use.
+  assert.equal(await refusal({ kind: "sandbox", provider: "modal", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: MODAL_KEYS }), "A Modal GPU computer can't mount this run's folder yet: Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279). Use a GPU computer from the library, or this sandbox without a GPU.");
+  // A Daytona sandbox takes no Archil mount at all, with GPUs or without: refused in Mode 2, saying why.
+  assert.equal(await refusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: { DAYTONA_API_KEY: "dk" } }), "A Daytona sandbox can't mount the run's folder from Archil (Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes): pick another sandbox for this agent's computer in Settings → Computers.");
   assert.match(await refusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
 });

@@ -1,6 +1,5 @@
 // A run's remote MCP servers: the one place every harness's MCP call goes through. A claimed run's spec builds one per
-// claim from its MCP claim step (runner/mcp-run.ts mcpForClaim); pi calls it through the runner's host tools, and a
-// harness with its own MCP client through the session proxy's /mcp/<server> (@parcha/agentrun-kernel/host mcpRoute).
+// claim from its MCP claim step (runner/mcp-run.ts mcpForClaim); every harness calls it through the runner's host tools.
 //  - What a run may call is pinned (mcpPinOf): each granted tool as the server listed it when its owner saved it, and
 //    the server's URL then. A later refresh of the server never changes a running agent's tools.
 //  - Its credentials come from the claim step, only for the servers it grants, with each server's URL now, read at every
@@ -17,20 +16,19 @@
 //    tool with no price runs, marked "not metered" on the run's root (TOOL_UNMETERED), outside the run's cost.
 import { randomUUID } from "node:crypto";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
+import type { McpCallResult, McpTool } from "@parcha/agentrun-kernel";
 import { TOOL_UNMETERED } from "./timeline/index.js";
 import { filedAnswer } from "./filed-answer.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
+import { capped, mcpClient, scrub } from "./mcp-wire.js";
 import { mcpNameOf, mcpToolName } from "./tool-names.js";
 import { type Workspace, workspaceAt, workspaceErrorWords } from "./workspace/index.js";
 
 /** The longest answer the model reads whole; past it, the rest is filed in the run's work/ as lines read pages through
  *  (filed-answer.ts). Within the host's result bound (HOST_RESULT_MAX_CHARS), so every harness passes it whole. */
 export const MCP_CLIP = 60_000;
-/** The most of one upstream answer read. */
-export const MAX_RESPONSE = 4 * 1024 * 1024;
 /** The longest one upstream call may take, and its first connection. */
 export const CALL_MS = 120_000;
 export const CONNECT_MS = 30_000;
@@ -167,12 +165,6 @@ function unreachable(error: unknown): string {
 
 const said = (text: string, isError = false): McpCallResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
 
-/** `text` with every credential value in `values` replaced, whole and as its bare token (with any one-word scheme, such
- *  as `Bearer ` or `Basic `, taken off): an upstream answer or error that echoes a header, or only its token, never shows
- *  it to the model, the harness or the run's files. */
-const scrub = (text: string, values: Iterable<string>) =>
-  [...values].flatMap((value) => [value, value.replace(/^[A-Za-z][A-Za-z0-9_-]*\s+(?=\S+$)/, "")]).sort((a, b) => b.length - a.length).reduce((out, value) => (value.length >= 8 ? out.split(value).join("[redacted]") : out), text);
-
 /** `work` until `signal` aborts: a connection shared by calls is never held by one that stopped. */
 const until = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
   new Promise((resolve, reject) => {
@@ -202,21 +194,18 @@ export interface McpGatewayOptions {
   /** The claim's per-call check of a server's credential (its custody stamp): awaited before each call is checked for
    *  sending, it may drop the credential (`credentials[server].unopened`), which the call then refuses unsent; one that
    *  throws (a store read failed, the call was stopped) refuses the call unsent too, in words, and the run goes on. Only
-   *  the runner's MCP claim step passes it: a github_app token whose App was disconnected or replaced. A CLI harness's
-   *  session proxy ends in the same call. */
+   *  the runner's MCP claim step passes it: a github_app token whose App was disconnected or replaced. */
   beforeCall?: (server: string, signal: AbortSignal) => Promise<void>;
 }
 
 /** A run's journal commit. */
 export type McpCommit = <T>(change: (tx: unknown) => Promise<T>) => Promise<T>;
 
-/** What a call with no call id answers where a gate must know it by one: nothing was sent. */
-export const noCallId = (name: string): string => `The ${name} call was not sent: it came with no call id, so it cannot wait for a person's approval.`;
-
 /** The gateway: a session's servers, and their calls. `credentials` is read at every call and every request, never
  *  copied: a change the claim step makes after (a token refreshed behind the claim, a server removed) reaches it, even
  *  through a client already connected. */
-export type McpGateway = Omit<SessionMcp, "call"> & {
+export type McpGateway = {
+  servers: readonly { name: string; tools: readonly McpTool[] }[];
   call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string }): Promise<McpCallResult>;
   /** The credential values the calls in flight hold for their scrub, every call's together (none when idle). */
   heldValues(): string[];
@@ -277,16 +266,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const response = await through(input, { ...init, headers: sent, redirect: "manual" });
     status.last = response.status;
     if (response.status >= 300 && response.status < 400) throw new Error(`it answered a redirect (HTTP ${response.status}), which is never followed`);
-    if (!response.body) return response;
-    let read = 0;
-    const capped = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        read += chunk.byteLength;
-        if (read > MAX_RESPONSE) controller.error(new Error(`its answer is longer than ${MAX_RESPONSE} bytes`));
-        else controller.enqueue(chunk);
-      },
-    }));
-    return new Response(capped, { status: response.status, statusText: response.statusText, headers: response.headers });
+    return capped(response);
   };
 
   const connect = (server: string, url: string, headers: Record<string, string>): Promise<Upstream> => {
@@ -295,10 +275,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       const status: { last?: number } = {};
       statuses.set(server, status);
       upstream = (async () => {
-        const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");
-        // The 2026-07-28 revision first, a 2025-era server through its initialize, as a preview connects.
-        const client = new Client({ name: "agentrun", version: "1.0.0" }, { capabilities: {}, versionNegotiation: { mode: "auto" } });
-        await client.connect(new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(server, () => credentials.get(server)?.headers ?? {}, status) as never }), { timeout: options.bounds?.connectMs ?? CONNECT_MS });
+        const { client, transport } = mcpClient(await import("@modelcontextprotocol/client"), { name: "agentrun", version: "1.0.0", url: new URL(url), fetch: guarded(server, () => credentials.get(server)?.headers ?? {}, status) as never });
+        await client.connect(transport, { timeout: options.bounds?.connectMs ?? CONNECT_MS });
         return client as unknown as Upstream;
       })();
       clients.set(server, upstream);

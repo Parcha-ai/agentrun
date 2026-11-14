@@ -75,6 +75,19 @@ test("pi: the agent's computer_request_handoff asks the person through the claim
   assert.doesNotMatch(answer.text ?? "", /not available|needs a|no host tool/i, `the stop ended the ask, not a missing port: ${answer.text}`);
 });
 
+test("pi: an agent whose desktop's surface is tools is handed computer_observe, computer_act, computer_screenshot and the hand-over, never computer_script", async (t) => {
+  const { spec } = await specFor(t, { body: { tools: ["read"], computer: { ...FAUX_DESKTOP, surface: "tools" } }, computer: fauxComposer });
+  const names = toolNames(spec);
+  assert.deepEqual(DESKTOP.filter((name) => names.includes(name)), ["computer_observe", "computer_act", "computer_screenshot", "computer_request_handoff"], JSON.stringify(names));
+  assert.ok(!names.includes("codemode"), "no code mode among the session's tools");
+});
+
+test("pi: an agent whose desktop's surface is code is handed the hand-over alone of the computer's tools: its code mode is the script, and computer_observe, computer_act and computer_screenshot are not listed", async (t) => {
+  const { spec } = await specFor(t, { body: { tools: ["read"], computer: { ...FAUX_DESKTOP, surface: "code" } }, computer: fauxComposer });
+  const names = toolNames(spec);
+  assert.deepEqual(DESKTOP.filter((name) => names.includes(name)), ["computer_request_handoff"], JSON.stringify(names));
+});
+
 test("pi: a run with no computer is handed none of the desktop's tools", async (t) => {
   const { spec } = await specFor(t, { body: { tools: ["read"] }, computer: fauxComposer });
   const names = toolNames(spec);
@@ -130,7 +143,7 @@ function keepingHomes(spec, dir, kept) {
 /** A codex run on the runner path, on Codex's stand-in, its agent's computer --faux's desktop, whose model calls `tool`
  *  with `args` (its first message is the stand-in's call). `settings`: the server's tool settings. Returns the tools
  *  Codex was handed and the call's answer from Codex's session record (undefined when none came within 15 s). */
-async function codexCall(t, tool, args, settings) {
+async function codexCall(t, tool, args, settings, computer = FAUX_DESKTOP) {
   const was = process.env.AGENTRUN_CODEX_STANDIN;
   process.env.AGENTRUN_CODEX_STANDIN = "1";
   t.after(() => (was === undefined ? delete process.env.AGENTRUN_CODEX_STANDIN : (process.env.AGENTRUN_CODEX_STANDIN = was)));
@@ -149,7 +162,7 @@ async function codexCall(t, tool, args, settings) {
     rmSync(dir, { recursive: true, force: true });
     rmSync(kept, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Use the desktop.", harness: "codex", tools: ["read"], computer: FAUX_DESKTOP } });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Use the desktop.", harness: "codex", tools: ["read"], computer } });
   if (settings) await server.settings.put("tool-settings", settings);
   const launch = { input: { content: `call ${tool} ${JSON.stringify(args)}` }, title: "t", place: { mode: "runner" }, harness: "codex", model: { provider: "openai", modelId: "gpt-test" } };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
@@ -201,6 +214,13 @@ test("codex: a run of an agent whose computer is a desktop is handed computer_sc
   assert.deepEqual(calls, ["computer_screenshot"], "the model's call reached Codex");
   assert.ok(answer !== undefined, "the call answered");
   assert.doesNotMatch(answer, /not available|Permission denied|error/i, `the screenshot ran: ${answer}`);
+});
+
+test("codex: an agent whose desktop's surface is code is handed computer_script and the hand-over, none of the per-step tools, and the model's script runs", { timeout: 120_000 }, async (t) => {
+  const { handed, answer } = await codexCall(t, "computer_script", { code: "return (await computer.screen.shot()).width;" }, undefined, { ...FAUX_DESKTOP, surface: "code" });
+  const computers = handed.filter((name) => DESKTOP.includes(name));
+  assert.deepEqual(computers, ["computer_script", "computer_request_handoff"], `the script and the hand-over alone: ${JSON.stringify(handed)}`);
+  assert.match(answer ?? "", /1280/, `the script ran: ${answer}`);
 });
 
 test("codex: desktop set to deny on this server refuses the model's computer_act call in the deny words naming desktop's setting", { timeout: 120_000 }, async (t) => {

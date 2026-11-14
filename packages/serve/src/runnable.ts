@@ -6,8 +6,8 @@ import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionModelsNamed, providerMissing, providersNamed } from "./decisions.js";
 import { isHostTool } from "./tool-list.js";
 import { type InputIssue, sentence } from "./errors.js";
-import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOffers } from "./harness.js";
-import { builtinHarness, harnessOf, onAdapter } from "./harness-table.js";
+import { DEFAULT_HARNESS, type HarnessCapability, harnessOffers } from "./harness.js";
+import { harnessOf, onAdapter } from "./harness-table.js";
 import { chooseModel } from "./model.js";
 import { llmTiers, MODEL_NODES, type ModelRef, nodeTiers, type Tier, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./place-offers.js";
@@ -18,14 +18,10 @@ import { denyPlace, permissionFrom, permissionOf } from "./tool-gate.js";
 import { approvalsOf } from "./approvals.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
-import { wireName } from "./catalog.js";
 import { mcpHeaderProblem } from "./mcp-gateway.js";
-import { isMcpName, mcpNameOf } from "./tool-names.js";
+import { isMcpName, mcpDroppedWords, MCP_HANDS_WORDS, mcpNameOf, mcpWireProblem } from "./tool-names.js";
 import type { McpTool } from "@parcha/agentrun-kernel";
 import type { ShellPlace } from "@parcha/agentrun-kernel/kernel";
-
-/** The harnesses an agent's MCP tools run on here. */
-export const MCP_HARNESSES: readonly string[] = HARNESSES.filter((id) => builtinHarness(id)!.mcp);
 
 /** A revision's computer setting: a kind, its provider, the image it starts from, and a sandbox's GPUs
  *  (computer-setting.ts). */
@@ -137,9 +133,9 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   // save. A bound or a format it only strips is not: the server still checks it, and its error reaches the model.
   const schemaProblems = revision.kind === "agentic" ? harnessOf(env, harness)?.facts?.schemaProblems : undefined;
   /** What keeps the grant of `tool`, an `mcp:` name, from running here (the first thing), at `field`; undefined when
-   *  nothing does. A remote MCP server's tool runs when its saved snapshot lists it, on a harness that binds them; a
-   *  workflow's nodes bind none. The one check of an MCP grant, for an agentic revision's tools and for every tool a
-   *  workflow grants (grantedTools). */
+   *  nothing does. A remote MCP server's tool runs when its saved snapshot lists it, on every harness (a host tool
+   *  like any other); a workflow's nodes bind none. The one check of an MCP grant, for an agentic revision's tools and
+   *  for every tool a workflow grants (grantedTools). */
   const mcpGrant = (field: string, tool: string): Blocker | undefined => {
     const named = mcpNameOf(tool);
     const saved = named && mcp?.(named.server);
@@ -151,18 +147,18 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     const dropped = schema && named && schemaProblems ? schemaProblems(`mcp__${named.server}__${named.tool}`, schema)[0] : undefined;
     if (!named) return { field, reason: "not_an_option", message: `${tool} is not an MCP tool's name: mcp:<server>/<tool>, the server's name in lowercase letters, digits and -, the tool's in letters, digits, _ and -, at most 64.`, host: false, tool };
     // claude-agent's own tools are its MCP server `hands`: a remote server of that name could never be called there.
-    if (named.server === "hands") return { field, reason: "not_an_option", message: `${tool} names the MCP server hands, a name the harnesses keep for their own tools: save the server under another name.`, host: false, tool };
+    if (named.server === "hands") return { field, reason: "not_an_option", message: `${tool} ${MCP_HANDS_WORDS}`, host: false, tool };
     // A meta tool runs other actions by name: a grant of it could not name the action (mcp-meta.ts). Refused before
     // the harness's check, since no host setup makes it grantable.
     if (listedTool?.grantable === false) return { field, reason: "not_an_option", message: `${tool} can't be granted: ${listedTool.reason}`, host: false, notGrantable: { tool, reason: listedTool.reason! } };
     // A workflow's nodes bind no MCP tool here (app.ts): its run would go without it, so its grant is refused.
     if (revision.kind === "workflow") return { field, reason: "not_an_option", message: `${tool}: a workflow's nodes don't bind MCP tools here yet; grant it to an agentic agent.`, host: false, tool };
-    if (!MCP_HARNESSES.includes(harness)) return { field, reason: NOT_SET_UP, message: `${tool} runs on ${MCP_HARNESSES.slice(0, -1).join(", ")} and ${MCP_HARNESSES.at(-1)} here; on ${harness} MCP tools are not bound yet.`, host: true, tool };
     if (!listed) return { field, reason: "not_an_option", message: `No MCP server ${named.server} is saved on this server: add it in Settings → MCP servers first.`, host: false, tool };
     if (!listed.includes(named.tool)) return { field, reason: "not_an_option", message: `The MCP server ${named.server} has no tool ${named.tool}; its tools are ${listed.join(", ") || "none"}.`, host: false, tool };
-    if (dropped) return { field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} cannot be offered on ${harness}: ${dropped.replace(/^mcp__\S+: /, "")}.`, host: false, tool };
+    if (dropped) return { field, reason: "not_an_option", message: mcpDroppedWords(named.server, named.tool, harness, dropped), host: false, tool };
     if (declared) return { field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} declares a header it cannot send: ${declared}.`, host: false, tool };
-    if (wireName(tool) !== `mcp__${named.server}__${named.tool}`) return { field, reason: "not_an_option", message: `${tool} is too long: mcp__${named.server}__${named.tool} must be at most 52 characters, the budget every harness's tool names share.`, host: false, tool };
+    const wire = mcpWireProblem(named.server, named.tool);
+    if (wire) return { field, reason: "not_an_option", message: `${tool} ${wire}`, host: false, tool };
     return undefined;
   };
   if (revision.kind === "agentic") {
@@ -179,9 +175,9 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner" && !runnerShell.has(tool)) out.push(shellOnRunner(tool, `definition.tools[${index}]`, !!place && !revision.unnamed));
       // Its writes into work/ go by path from this machine, and a box's command could swap a link in on their way.
       else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
-      // Another harness gets the host tools only (host-tools.ts: the file tools, web_fetch, web_search and
-      // monid's): any other tool this host binds, ask_person among them, is pi's here and refuses the run, never runs
-      // without it.
+      // Another harness gets the host tools only (host-tools.ts: the file tools, ask_person, web_fetch, web_search and
+      // monid's): any other tool this host binds (the browser, subagent, pdf_pages, llm) is pi's here and refuses the
+      // run, never runs without it.
       else if (onAdapter(env, harness) && !isHostTool(tool)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
       else {
         unset(`definition.tools[${index}]`, tool);
