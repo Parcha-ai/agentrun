@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"image/jpeg"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -377,25 +376,52 @@ func TestOnTheFakeWithDamageAPointerMovingAllTheTimeGivesFramesAtTheCap(t *testi
 	}
 }
 
-// One ask at a time: an after one past the newest frame is invalid, in words, on an unchanged screen and on one that
-// changes, and the watch's next ask still answers.
-func TestOnTheFakeAnAskOnePastTheNewestFrameIsRefused(t *testing.T) {
+// screen.ahead: a caller keeps a second ask waiting while the first answers, with after one past the newest frame;
+// it waits as an ask for the newest does, so frames come at the computer's pace, not one each round trip.
+func TestOnTheFakeAWatchAheadByOneWaitsForTheNextFrame(t *testing.T) {
 	c, shade, f := damaged(t)
-	var first, next watchResult
+	var first, second, third watchResult
 	c.ok("screen.watch", map[string]any{"after": 0}, &first)
-	r := c.call("screen.watch", map[string]any{"after": first.Seq + 1, "waitMs": 300})
-	if r.Error == nil || r.Error.Data.Kind != "invalid" || !strings.Contains(r.Error.Message, "past the newest frame") {
-		t.Fatalf("an ask one past the newest on an unchanged screen: %+v; want invalid, past the newest frame", r)
+	// An ask ahead whose ask before it answered no change: it waits for the next frame, as an ask for the newest does.
+	c.ok("screen.watch", map[string]any{"after": first.Seq + 1, "waitMs": 300}, &second)
+	if second.Changed || second.Seq != first.Seq {
+		t.Fatalf("an ask ahead on an unchanged screen: %+v; want no change, seq %d", second, first.Seq)
 	}
+	a := c.send("screen.watch", map[string]any{"after": first.Seq, "waitMs": 10_000})
+	time.Sleep(100 * time.Millisecond) // a has the watch's turn; b waits for it, as a caller's ask ahead does
+	b := c.send("screen.watch", map[string]any{"after": first.Seq + 1, "waitMs": 10_000})
+	time.Sleep(100 * time.Millisecond)
 	shade.Store(0x20)
 	f.Damaged(0, 0, 4, 4)
-	r = c.call("screen.watch", map[string]any{"after": first.Seq + 1, "waitMs": 300})
-	if r.Error == nil || r.Error.Data.Kind != "invalid" {
-		t.Fatalf("an ask one past the newest on a changed screen: %+v; want invalid", r)
+	ra := c.awaitEither(a, b)
+	if ra.Error != nil || json.Unmarshal(ra.Result, &second) != nil || !second.Changed || second.Seq != first.Seq+1 {
+		t.Fatalf("the first answer: %+v %s; want frame %d", ra.Error, ra.Result, first.Seq+1)
 	}
-	c.ok("screen.watch", map[string]any{"after": first.Seq, "waitMs": 2_000}, &next)
-	if !next.Changed || next.Seq != first.Seq+1 {
-		t.Fatalf("the ask after the refusal: %+v; want frame %d", next, first.Seq+1)
+	time.Sleep(150 * time.Millisecond)
+	shade.Store(0x40)
+	f.Damaged(0, 0, 4, 4)
+	rb := c.awaitEither(a, b)
+	if rb.ID == ra.ID || rb.Error != nil || json.Unmarshal(rb.Result, &third) != nil || !third.Changed || third.Seq != first.Seq+2 {
+		t.Fatalf("the second answer: %+v %s; want frame %d, after the second change", rb.Error, rb.Result, first.Seq+2)
+	}
+}
+
+// With asks ahead, two frames are on their way at once: the older one's rest is still read after the newer is made.
+func TestOnTheFakeTheLastTwoFramesOverAChunkAreBothHeld(t *testing.T) {
+	defer desktop.SetChunkForTest(100)()
+	c, shade, f := damaged(t)
+	var first, second watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &first)
+	shade.Store(0x20)
+	f.Damaged(0, 0, x11fake.Width, x11fake.Height)
+	c.ok("screen.watch", map[string]any{"after": first.Seq}, &second)
+	if first.EOF || second.EOF || second.Seq != first.Seq+1 {
+		t.Fatalf("want two frames over a chunk; got %+v and %+v", first, second)
+	}
+	for _, r := range []watchResult{first, second} {
+		if _, err := jpeg.Decode(bytes.NewReader(frameOf(t, c, r))); err != nil {
+			t.Fatalf("frame %d: %v", r.Seq, err)
+		}
 	}
 }
 
@@ -599,7 +625,7 @@ func TestOnTheFakeAWatchRefusesParamsItCannotTakeInWords(t *testing.T) {
 	for _, params := range []map[string]any{
 		{},
 		{"after": -1},
-		{"after": first.Seq + 1},
+		{"after": first.Seq + 2},
 		{"after": 0, "waitMs": 10_001},
 		{"after": 0, "waitMs": -1},
 		{"after": 0, "quality": 0},
