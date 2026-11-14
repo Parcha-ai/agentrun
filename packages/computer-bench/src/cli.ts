@@ -200,9 +200,9 @@ async function run(values: Record<string, unknown>): Promise<number> {
 function report(values: Record<string, unknown>, positionals: readonly string[]): number {
 	const out = positionals[0];
 	if (!out) throw new Usage("report needs the run's out folder");
-	const { results, labels } = readResults(out);
+	const { results, labels, bench } = readResults(out);
 	const split = oneOf<Split>(values.split as string | undefined, ["dev", "heldout"], "split");
-	const built = buildReport(results, labels, { split });
+	const built = buildReport(results, labels, { split, bench });
 	const markdown = reportMarkdown(built);
 	const suffix = split ? `-${split}` : "";
 	writeFileSync(join(out, `report${suffix}.md`), markdown);

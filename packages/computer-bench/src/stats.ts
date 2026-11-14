@@ -75,3 +75,11 @@ export function pairedDifference(a: ReadonlyMap<string, { k: number; n: number }
 }
 
 export const mean = (values: readonly number[]): number | undefined => (values.length === 0 ? undefined : values.reduce((sum, v) => sum + v, 0) / values.length);
+
+/** The middle value (the mean of the two middle ones for an even count). */
+export const median = (values: readonly number[]): number | undefined => {
+	if (values.length === 0) return undefined;
+	const sorted = [...values].sort((a, b) => a - b);
+	const mid = Math.floor(sorted.length / 2);
+	return sorted.length % 2 === 1 ? (sorted[mid] as number) : ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
+};

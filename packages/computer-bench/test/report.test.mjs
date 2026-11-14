@@ -110,6 +110,85 @@ test("the paired difference compares a task on the seeds both arms scored, never
 	assert.equal(both.paired[0].difference.estimate, 0.5, "b passes 2 of the 2 seeds a ran, a 1 of 2; b's seed 3 has no pair");
 });
 
+/** A bench folder written by hand: its bench.json (arms in their order, seeds, judge) and its results, terra's first. */
+function blogRun() {
+	const dir = tmp();
+	const bench = { bench: "b", arms: [{ id: "sonnet-5.5", harness: "pi", surface: "code", model: "s" }, { id: "gpt-6.1-terra", harness: "pi", surface: "code", model: "t" }], seeds: [1, 2], judge: "anthropic:claude-opus-5-5", retries: 2 };
+	writeFileSync(join(dir, "bench.json"), JSON.stringify(bench));
+	const row = (task, platform, exec, seed, arm, outcome, steps, tool_calls, wall_s, cost_usd, exec_calls) => ({ bench: "b", run: `${task}-${seed}-${arm}`, task, version: 1, sha256: `sha-${task}`, split: "dev", platform, exec, seed, arm, attempt: 1, outcome, scored: outcome !== "infra", rerun: false, steps, tool_calls, wall_s, cost_usd, exec_calls, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 });
+	const rows = [
+		row("a1", "android phone", "deny", 1, "gpt-6.1-terra", "pass", 6, 3, 12, 0.01, 0),
+		row("a1", "android phone", "deny", 2, "gpt-6.1-terra", "pass", 5, 5, 14, 0.01, 0),
+		row("a2", "android phone", "allow", 1, "gpt-6.1-terra", "pass", 3, 3, 8, 0.005, 0),
+		row("a2", "android phone", "allow", 2, "gpt-6.1-terra", "infra", 0, 0, 0, undefined, 0),
+		row("l1", "linux desktop", "allow", 1, "gpt-6.1-terra", "fail", 12, 6, 40, 0.02, 0),
+		row("a1", "android phone", "deny", 1, "sonnet-5.5", "pass", 4, 2, 10, 0.02, 0),
+		row("a1", "android phone", "deny", 2, "sonnet-5.5", "fail", 8, 4, 20, 0.04, 0),
+		row("a2", "android phone", "allow", 1, "sonnet-5.5", "pass", 2, 1, 6, 0.01, 1),
+		row("a2", "android phone", "allow", 2, "sonnet-5.5", "pass", 3, 2, 7, 0.01, 0),
+		row("l1", "linux desktop", "allow", 1, "sonnet-5.5", "pass", 10, 5, 30, 0.05, 2),
+	];
+	writeFileSync(join(dir, "results.jsonl"), rows.map((one) => JSON.stringify(one)).join("\n"));
+	return dir;
+}
+
+test("the report follows bench.json's arms: the first arm is the baseline, not the first to finish or the first alphabetically", () => {
+	const { results, labels, bench } = readResults(blogRun());
+	assert.deepEqual(bench.arms.map((one) => one.id), ["sonnet-5.5", "gpt-6.1-terra"]);
+	const report = buildReport(results, labels, { bench });
+	assert.deepEqual(report.arms.map((one) => one.arm), ["sonnet-5.5", "gpt-6.1-terra"]);
+	assert.deepEqual([report.paired[0].arm, report.paired[0].against], ["gpt-6.1-terra", "sonnet-5.5"]);
+	const markdown = reportMarkdown(report);
+	assert.ok(markdown.indexOf("| sonnet-5.5 | ") < markdown.indexOf("| gpt-6.1-terra | "), "the first arm's row first");
+	assert.match(markdown, /\| task \| split \| sonnet-5\.5 \| gpt-6\.1-terra \|/);
+	assert.match(markdown, /## Against the first arm \(sonnet-5\.5, paired by task\)/);
+	// Without bench.json the order is the arms' first appearance, and an arm bench.json does not name comes after.
+	assert.equal(buildReport(results).arms[0].arm, "gpt-6.1-terra");
+});
+
+test("the report for the blog: a table per platform with the paired difference, medians and $ per pass, tasks per platform, and how we measured", () => {
+	const { results, labels, bench } = readResults(blogRun());
+	const report = buildReport(results, labels, { bench });
+	assert.deepEqual(report.platforms.map((one) => one.platform), ["android phone", "linux desktop"]);
+	const [android, linux] = report.platforms;
+	const [sonnet, terra] = android.arms;
+	assert.deepEqual([sonnet.arm, sonnet.passed, sonnet.scored, sonnet.steps_median, sonnet.tool_calls_median, sonnet.wall_s_median], ["sonnet-5.5", 3, 4, 3.5, 2, 8.5]);
+	close(sonnet.usd_per_pass, 0.08 / 3);
+	assert.equal(sonnet.difference, undefined, "the first arm is the baseline");
+	assert.deepEqual([terra.arm, terra.passed, terra.scored, terra.steps_median, terra.tool_calls_median, terra.wall_s_median], ["gpt-6.1-terra", 3, 3, 5, 3, 12]);
+	close(terra.usd_per_pass, 0.025 / 3);
+	assert.equal(terra.difference.tasks, 2, "a2 seed 2 is infra for terra: a2 pairs on seed 1 alone");
+	close(terra.difference.estimate, 0.25);
+	assert.deepEqual([linux.arms[1].difference.estimate, linux.arms[1].difference.tasks], [-1, 1]);
+	assert.deepEqual(android.tasks.map((one) => [one.task, one.exec, one.arms["sonnet-5.5"].k, one.arms["sonnet-5.5"].n, one.arms["gpt-6.1-terra"].k, one.arms["gpt-6.1-terra"].n]), [
+		["a1", "deny", 1, 2, 2, 2],
+		["a2", "allow", 2, 2, 1, 1],
+	]);
+	assert.deepEqual(report.exec, { deny: ["a1"], allow: ["a2", "l1"] });
+	assert.deepEqual(
+		report.arms.map((one) => [one.arm, one.exec_passes]),
+		[
+			["sonnet-5.5", { passes: 2, of: 4 }],
+			["gpt-6.1-terra", { passes: 0, of: 3 }],
+		],
+	);
+	const markdown = reportMarkdown(report);
+	assert.match(markdown, /## android phone\n\n\| arm \| passed \/ scored \| success \| difference vs sonnet-5\.5 \(95% CI\) \| median computer steps \| median model turns \| median wall s \| \$ \/ pass \|/);
+	assert.match(markdown, /\| sonnet-5\.5 \| 3 \/ 4 \| 75\.0% \| baseline \| 3\.5 \| 2 \| 8\.5 \| 0\.027 \|/);
+	assert.match(markdown, /\| gpt-6\.1-terra \| 3 \/ 3 \| 100\.0% \| \+25\.0 pt \(-?\d+\.\d to \d+\.\d\), 2 tasks \| 5 \| 3 \| 12 \| 0\.008 \|/);
+	assert.match(markdown, /### android phone: tasks\n\n\| task \| exec \| sonnet-5\.5 \| gpt-6\.1-terra \|\n\|---\|---\|---\|---\|\n\| a1 \| deny \| 1\/2 \| 2\/2 \|/);
+	assert.match(markdown, /## linux desktop\n/);
+	assert.match(markdown, /\| sonnet-5\.5 \| 2 of 4 \|/);
+	const measured = markdown.slice(markdown.indexOf("## How we measured"));
+	assert.match(measured, /3 tasks \(android phone 2, linux desktop 1\)/);
+	assert.match(measured, /seeds 1, 2/);
+	assert.match(measured, /anthropic:claude-opus-5-5/);
+	assert.match(measured, /infra/);
+	assert.match(measured, /re-run up to 2 times/);
+	assert.match(measured, /deny exec \(1\): a1/);
+	assert.match(measured, /allow exec \(2\): a2, l1/);
+});
+
 test("a bench run refuses a folder that already holds results", async () => {
 	const s = store();
 	await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("fake-right")], seeds: [1], backend: fakeBackend({ agents: FAKE_AGENTS }), store: s, grade: "never" });

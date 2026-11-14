@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { FAKE_AGENTS, FakeWorld, fakeBackend, helper, pngOf } from "../dist/fake-world.js";
 import { ENTRY, runBench, runChecks } from "../dist/index.js";
-import { arm, fakeTasks, jsonl, recordOf, store } from "./support.mjs";
+import { arm, fakeTasks, jsonl, recordOf, store, withSpec } from "./support.mjs";
 
 test("the fake agents: right passes every fake task, wrong and null fail every task whose checks are sufficient", async () => {
 	const s = store();
@@ -310,6 +310,57 @@ test("null mode runs no agent, and oracle mode solves the task on the bench's ch
 		solved.map((result) => result.outcome),
 		["pass", "pass"],
 	);
+});
+
+test("the arm's surface is real: tools gives the agent one method per tool call, code one script per tool call and no bare call", async () => {
+	const s = store();
+	const [tools, code] = await runBench({ tasks: fakeTasks("fake.notes.new-note"), arms: [arm("fake-right", "right-tools", "tools"), arm("fake-right", "right-code", "code")], seeds: [1], backend: fakeBackend({ agents: FAKE_AGENTS }), store: s, grade: "never" });
+	assert.deepEqual([tools.outcome, code.outcome], ["pass", "pass"]);
+	assert.deepEqual([tools.steps, tools.tool_calls], [4, 4], "tools: each of the four computer calls is its own tool call");
+	assert.deepEqual([code.steps, code.tool_calls], [4, 1], "code: one script of four computer calls is one tool call");
+	const agentSteps = (result) => recordOf(s, result.run).filter((entry) => entry.kind === ENTRY.step && entry.data.phase === "agent").map((entry) => entry.data);
+	assert.deepEqual(agentSteps(tools).map((step) => step.turn), [1, 2, 3, 4]);
+	assert.deepEqual(agentSteps(code).map((step) => step.turn), [1, 1, 1, 1]);
+	assert.deepEqual(recordOf(s, code.run)[0].data.agent, { surface: "code", exec: "allow", groups: ["exec", "files", "screen", "input.pointer", "input.keys", "apps", "ui"] });
+	// What each surface is given, as the agent sees it.
+	const seen = {};
+	const probe = async (wire, request) => {
+		const bare = await wire.call("ui.observe", { target: { app: "fake.settings" } });
+		seen[request.arm.surface] = { script: typeof wire.script, bare: bare.ok ? "ok" : `${bare.error.code}: ${bare.error.message}` };
+		if (wire.script) await wire.script(async (computer) => computer.call("ui.observe", { target: { app: "fake.settings" } }));
+		return { outcome: "done" };
+	};
+	await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("probe", "probe-tools", "tools"), arm("probe", "probe-code", "code")], seeds: [1], backend: fakeBackend({ agents: { probe } }), store: store(), grade: "never" });
+	assert.deepEqual(seen.tools, { script: "undefined", bare: "ok" });
+	assert.equal(seen.code.script, "function");
+	assert.match(seen.code.bare, /^denied: .*code mode.*script/);
+});
+
+test("exec deny: the agent's grant has no exec or processes, the record and result say so; exec allow keeps the shell", async () => {
+	const [task] = fakeTasks("fake.settings.dark-theme");
+	const deny = withSpec(task, { exec: "deny" });
+	const shell = async (wire) => {
+		const ran = await wire.call("exec.run", { argv: ["set", "dark", "yes"] });
+		const started = await wire.call("process.start", { argv: ["true"] });
+		return { outcome: "done", message: `${ran.ok ? "ran" : ran.error.code} ${started.ok ? "started" : started.error.code}` };
+	};
+	const worlds = [];
+	const s = store();
+	const groups = ["exec", "processes", "files", "screen", "input.pointer", "input.keys", "apps", "ui"];
+	const [denied] = await runBench({ tasks: [deny], arms: [arm("shell")], seeds: [1], backend: fakeBackend({ agents: { shell }, worlds, world: () => new FakeWorld({ groups }) }), store: s, grade: "never" });
+	assert.equal(denied.exec, "deny");
+	assert.equal(denied.outcome, "fail");
+	assert.equal(worlds[0].settings.get("dark"), "no", "the world never saw the exec.run");
+	assert.equal(denied.exec_calls, 0, "a refused exec.run is no use of the shell");
+	const header = recordOf(s, denied.run)[0].data;
+	assert.deepEqual(header.agent, { surface: "tools", exec: "deny", groups: ["files", "screen", "input.pointer", "input.keys", "apps", "ui"] });
+	const refused = recordOf(s, denied.run).filter((entry) => entry.kind === ENTRY.step && entry.data.phase === "agent").map((entry) => [entry.data.method, entry.data.error?.code]);
+	assert.deepEqual(refused, [["exec.run", "denied"], ["process.start", "denied"]]);
+	const [allowed] = await runBench({ tasks: [task], arms: [arm("shell")], seeds: [1], backend: fakeBackend({ agents: { shell } }), store: store(), grade: "never" });
+	assert.equal(allowed.exec, "allow");
+	assert.equal(allowed.outcome, "pass", "exec allow: the agent may use the shell");
+	assert.equal(allowed.exec_calls, 1);
+	assert.equal(allowed.platform, "macos desktop");
 });
 
 test("parallel episodes give the same verdicts as one at a time", async () => {

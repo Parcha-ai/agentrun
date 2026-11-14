@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { type CheckResult, nodeLine, nodeMatches, type ObservedNode, runChecks, type Stage1, stage1Of } from "./checks.js";
 import { combine, GRADER_STEPS, type GradeWhen, type GraderInput, type GraderVerdict, type Judge, wantsGrader } from "./grader.js";
 import { type ComputerIdentity, ENTRY, imageType, type RunHeader, type RunRecord, type Step, type Store } from "./record.js";
-import { Frames, frameSourceOf, tap } from "./tap.js";
+import { type AgentWire, Frames, frameSourceOf, tap } from "./tap.js";
 import { type Call, type ResolvedTask, resolveTask, type Task, type UiQuery } from "./task.js";
 import { fromBase64, type Hello, hasGroup, type Json, type JsonObject, type Wire, type WireResult } from "./wire.js";
 
@@ -37,7 +37,9 @@ export interface AgentResult {
 	message?: string;
 	cost_usd?: number;
 	tokens?: { input?: number; output?: number; cache_read?: number; cache_write?: number };
-	turns?: number;
+	/** The model's tool calls (its turns at the computer and every other tool), where the backend counts them apart from
+	 *  its computer calls (serve's Timeline). Absent: the agent tap's count. */
+	tool_calls?: number;
 	/** sha256 of what the agent was given. */
 	given?: RunHeader["given"];
 	/** Where its transcript is, when the backend keeps one (a serve run id, a file). */
@@ -51,9 +53,12 @@ export interface AgentRequest {
 	budget: ResolvedTask["budget"];
 	/** Ends at the wall budget, or when the step budget is spent, or when the bench run is stopped. */
 	signal: AbortSignal;
-	/** The agent's wire: route every one of the agent's computer calls through it (it records, budgets and grants).
-	 *  A backend whose steps are recorded elsewhere (serve's journal) reports them with onStep instead. */
-	tap(wire: Wire): Wire;
+	/** Whether the agent may run programs on its computer: deny gives it no exec or processes group and no shell. */
+	exec: "allow" | "deny";
+	/** The agent's wire: route every one of the agent's computer calls through it (it records, budgets and grants, and
+	 *  is the arm's surface: on "code" calls go through its script). A backend whose steps are recorded elsewhere
+	 *  (serve's journal) reports them with onStep instead. */
+	tap(wire: Wire): AgentWire;
 	onStep(step: Omit<Step, "n">): void;
 }
 
@@ -63,8 +68,11 @@ export interface Episode {
 	/** The bench's own channel to the computer: hello, setup, frames, checks, teardown. It may hold groups the agent is
 	 *  not given (exec on a phone). */
 	bench: Wire;
-	/** The groups the agent is given, from those the computer offers. Absent: all of them. */
+	/** The groups the agent is given, from those the computer offers. Absent: all of them. A task that denies exec takes
+	 *  exec and processes out of either. */
 	agentGroups?: readonly string[];
+	/** The agent that will drive it, where the backend names one (serve's agent id). */
+	agentId?: string;
 	agent(request: AgentRequest): Promise<AgentResult>;
 	release(): Promise<void>;
 }
@@ -98,6 +106,10 @@ export interface Result {
 	version: number;
 	sha256: string;
 	split: string;
+	/** The task's os and kind, "android phone", "linux desktop", "macos desktop": the report's tables are per platform. */
+	platform: string;
+	/** Whether the task let the agent run programs (exec deny: done through the UI alone). */
+	exec: "allow" | "deny";
 	seed: number;
 	arm: string;
 	attempt: number;
@@ -114,7 +126,12 @@ export interface Result {
 	grade?: { verdict: string; locus: string; by: string; confidence: string; judge: string };
 	by?: "checks" | "grader";
 	queue?: string;
+	/** The agent's computer calls (a code-mode script of six calls is six). */
 	steps: number;
+	/** The model's tool calls, computer or not: its turns. */
+	tool_calls: number;
+	/** The agent's computer calls that ran a program and answered: exec.run, process.*, or a shell tool's call. */
+	exec_calls: number;
 	cost_usd?: number;
 	wall_s: number;
 	routes: Record<string, number>;
@@ -151,6 +168,15 @@ export interface RunOptions {
 }
 
 const sinceS = (t0: number) => Math.round((Date.now() - t0) / 100) / 10;
+
+/** The groups a task that denies exec takes from the agent: running a program, and starting one. */
+const NO_EXEC = new Set(["exec", "processes"]);
+
+/** A task's platform, its os and kind: "android phone", "linux desktop", "macos desktop". */
+export const platformOf = (task: Task): string => `${task.spec.needs.os} ${task.spec.needs.kind}`;
+
+/** What every result of a job says about it: the task as it was, its platform and exec, the seed and the arm. */
+const jobOf = (task: Task, seed: number, arm: Arm) => ({ task: task.spec.id, version: task.spec.version, sha256: task.sha256, split: task.spec.split, platform: platformOf(task), exec: task.spec.exec ?? "allow", seed, arm: arm.id });
 
 /** Why a hello can't run a task, or undefined when it can. */
 export function helloMismatch(hello: Hello, task: Task, agentGroups: readonly string[], mode: "agent" | "null" | "oracle" = "agent"): string | undefined {
@@ -268,6 +294,12 @@ async function readTree(wire: Wire, hello: Hello, signal: AbortSignal): Promise<
 	return [head, ...lines, ...(nodes.length > 400 || value.truncated ? [`… ${nodes.length - Math.min(nodes.length, 400)} more`] : [])].join("\n");
 }
 
+/** The tools that are a shell: a call of one that answered ran a program. */
+const SHELL_TOOLS = new Set(["bash", "bash_background", "shell"]);
+
+/** Whether an agent's step ran a program: exec.run, a process method, or a shell tool's call, answered. */
+export const ranProgram = (step: Step): boolean => step.ok && (step.phase === "agent" ? step.method === "exec.run" || step.method.startsWith("process.") : step.phase === "tool" && SHELL_TOOLS.has(step.method));
+
 /** A run's tallies from its agent steps. */
 function tally(steps: readonly Step[]) {
 	const agent = steps.filter((step) => step.phase === "agent" && step.method !== "hello" && step.method !== "ping");
@@ -276,6 +308,7 @@ function tally(steps: readonly Step[]) {
 	let noop = 0;
 	let verified = 0;
 	let stale = 0;
+	const exec_calls = steps.filter(ranProgram).length;
 	for (const step of agent) {
 		stale += step.stale ?? 0;
 		if (step.method === "ui.act") {
@@ -288,13 +321,13 @@ function tally(steps: readonly Step[]) {
 		}
 		if ((step.method === "ui.act" || step.method === "input.actions") && step.ok && step.changed === false) noop += 1;
 	}
-	return { steps: agent.length, routes, acts, noop, verified, stale };
+	return { steps: agent.length, routes, acts, noop, verified, stale, exec_calls };
 }
 
 /** A run whose checks ran and whose computer is released, waiting for its verdict. */
 interface Checked {
-	ctx: { record: RunRecord; end: (result: Omit<Result, "bench" | "run" | "task" | "version" | "sha256" | "split" | "seed" | "arm" | "attempt" | "scored" | "rerun">) => Result; resolved: ResolvedTask; arm: Arm };
-	common: Pick<Result, "steps" | "routes" | "acts" | "noop" | "verified" | "stale" | "cost_usd" | "wall_s" | "answer">;
+	ctx: { record: RunRecord; end: (result: Omit<Result, "bench" | "run" | "task" | "version" | "sha256" | "split" | "platform" | "exec" | "seed" | "arm" | "attempt" | "scored" | "rerun">) => Result; resolved: ResolvedTask; arm: Arm };
+	common: Pick<Result, "steps" | "tool_calls" | "exec_calls" | "routes" | "acts" | "noop" | "verified" | "stale" | "cost_usd" | "wall_s" | "answer">;
 	/** A check that could not run ended the run as infra, so stage 1 here has passed or failed. */
 	stage1: "pass" | "fail";
 	checks: CheckResult[];
@@ -327,8 +360,9 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 		steps.push(step);
 		record.entry(ENTRY.step, step);
 	};
-	const base = { bench, run, task: task.spec.id, version: task.spec.version, sha256: task.sha256, split: task.spec.split, seed: resolved.seed, arm: arm.id, attempt: n };
-	const empty = { steps: 0, wall_s: 0, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 };
+	const base = { bench, run, ...jobOf(task, resolved.seed, arm), attempt: n };
+	const empty = { steps: 0, tool_calls: 0, exec_calls: 0, wall_s: 0, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 };
+	let turns = 0;
 	const end = (result: Omit<Result, keyof typeof base | "scored" | "rerun">): Result => {
 		const full: Result = { ...base, ...result, scored: result.outcome === "pass" || result.outcome === "fail" || result.outcome === "budget", rerun: false };
 		record.entry(ENTRY.verdict, full);
@@ -345,11 +379,13 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 		const greeted = await episode.bench.call("hello", { client: `computer-bench/${BENCH_VERSION}` }, { signal });
 		if (!greeted.ok) return end({ ...empty, outcome: "infra", phase: "hello", why: `hello failed: ${greeted.error.code}: ${greeted.error.message}` });
 		const hello = greeted.value as Hello;
-		const agentGroups = episode.agentGroups ?? hello.groups;
+		// A task that denies exec gives the agent no way to run a program, whatever the computer offers.
+		const agentGroups = (episode.agentGroups ?? hello.groups).filter((group) => base.exec === "allow" || !NO_EXEC.has(group));
 		const header: RunHeader = {
 			bench: { version: BENCH_VERSION, run: bench },
 			task: { id: task.spec.id, version: task.spec.version, sha256: task.sha256, split: task.spec.split, seed: resolved.seed, nonce: resolved.nonce, params: resolved.params, instruction: resolved.instruction, ...(task.spec.source ? { source: `${task.spec.source.suite}:${task.spec.source.id}` } : {}) },
 			arm: { id: arm.id, harness: arm.harness, surface: arm.surface, model: arm.model, ...(arm.effort ? { effort: arm.effort } : {}) },
+			agent: { surface: arm.surface, exec: base.exec, groups: [...agentGroups], ...(episode.agentId ? { id: episode.agentId } : {}) },
 			attempt: n,
 			budget: resolved.budget,
 			computer: { ...episode.identity, hello },
@@ -383,6 +419,7 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 					arm,
 					instruction: resolved.instruction,
 					budget: resolved.budget,
+					exec: base.exec,
 					signal: agentSignal,
 					tap: (wire) =>
 						tap(wire, {
@@ -394,6 +431,8 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 							steps: resolved.budget.steps,
 							grant: agentGroups,
 							frames,
+							surface: arm.surface,
+							onTurn: () => ++turns,
 							onSpent: () => {
 								spent ??= "steps";
 								stop.abort(new Error("the task's step budget is spent"));
@@ -417,7 +456,7 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 		const agentWall = sinceS(agentStart);
 		if (signal.aborted) return end({ ...empty, outcome: "infra", phase: "agent", why: "the bench run was stopped" });
 		const tallies = tally(steps);
-		const common = { ...tallies, cost_usd: agent.cost_usd, wall_s: agentWall, ...(agent.answer === undefined ? {} : { answer: agent.answer }) };
+		const common = { ...tallies, tool_calls: agent.tool_calls ?? turns, cost_usd: agent.cost_usd, wall_s: agentWall, ...(agent.answer === undefined ? {} : { answer: agent.answer }) };
 		if (agent.outcome === "infra" || agent.outcome === "refused") return end({ ...common, outcome: agent.outcome, phase: "agent", why: agent.message ?? `the agent's run ended ${agent.outcome}` });
 
 		// Stage 1, on the computer as the agent left it, before anything else touches it.
@@ -552,6 +591,7 @@ export async function runBench(options: RunOptions): Promise<Result[]> {
 				mode: options.mode ?? "agent",
 				judge: options.judge?.id ?? null,
 				grade: options.grade ?? "auto",
+				retries: options.retries ?? 2,
 				seeds: options.seeds,
 				arms: options.arms,
 				tasks: options.tasks.map((task) => ({ id: task.spec.id, version: task.spec.version, sha256: task.sha256, split: task.spec.split })),
@@ -576,7 +616,7 @@ export async function runBench(options: RunOptions): Promise<Result[]> {
 						fatal ??= error;
 						return undefined;
 					}
-					return { bench, run: "-", task: job.task.spec.id, version: job.task.spec.version, sha256: job.task.sha256, split: job.task.spec.split, seed: job.seed, arm: job.arm.id, attempt: n, outcome: "infra", scored: false, rerun: false, why: `the runner threw: ${error.message}`, steps: 0, wall_s: 0, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 };
+					return { bench, run: "-", ...jobOf(job.task, job.seed, job.arm), attempt: n, outcome: "infra", scored: false, rerun: false, why: `the runner threw: ${error.message}`, steps: 0, tool_calls: 0, exec_calls: 0, wall_s: 0, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 };
 				});
 				// A fatal error stops this worker, and the others before their next job.
 				if (!result) return;
