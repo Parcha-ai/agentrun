@@ -6,6 +6,8 @@ start), lists them at `GET /v2/templates` and applies one with `POST /v2/templat
 runs at apply: it is read, checked, and made into the same agent and trigger records `POST /v2/agents` and
 `POST /v2/triggers` make. `agentrun template validate DIR` runs the server's own check on a folder.
 
+[Giving a template tools](TOOLS.md) is the short guide to declaring, pinning and approving a template's tools.
+
 ```
 code-review/
   agent.md                 front matter = the whole manifest; body = the agent's instructions
