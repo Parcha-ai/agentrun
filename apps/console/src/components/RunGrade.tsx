@@ -52,9 +52,9 @@ function outcome(graded: RunGraded, reviewing: boolean, learning: Run["learning"
 }
 
 export type RunGradeProps = {
-  run: Pick<Run, "status" | "learning" | "ended_at">;
-  /** The run's grade as its learning read gives it back (`graded`, with the round it opened), a grade this page sent
-   *  taken into it: null when it has none, or before the read. */
+  run: Pick<Run, "status" | "learning">;
+  /** The run's grade as its learning read gives it back (`graded`, with the round it opened and whether that ended), a
+   *  grade this page sent taken into it: null when it has none, or before the read. */
   graded: RunGraded | null;
   /** Sends the grade (PUT /v2/runs/{id}/grade), reads the run again and takes the answer into the learning read; rejects
    *  when it was not taken. */
@@ -77,11 +77,10 @@ export function RunGrade({ run, graded, onGrade, onOpenTimeline }: RunGradeProps
   // Held outside React's state, so two clicks in the same tick are still one grade.
   const sending = useRef(false);
   const ended = runEnded(run.status);
-  // The round the grade opened runs until a run read says the run ended again after the grade and its learning settled.
-  // The grade's PUT reopens the run before it answers; a run read after it that failed leaves the page holding the run's
-  // end from before the grade, which never says the round ended.
-  const endedAgain = ended && !!run.ended_at && !!graded && Date.parse(run.ended_at) > Date.parse(graded.graded_at);
-  const reviewing = !!graded?.feedback && (!endedAgain || underWay(run.learning ?? undefined));
+  // The round the grade opened runs until the learning read says it ended (`feedback_ended`, from the run's journal) and
+  // the run's learning settled. Never the API server's `graded_at` against the runner's `ended_at`: two hosts' clocks. A
+  // grade this page sent says running until a read after it says otherwise, so a read that failed never shows it ended.
+  const reviewing = !!graded?.feedback && (!graded.feedback_ended || underWay(run.learning ?? undefined));
   if (!gradable(run) || (!ended && !graded)) return null;
   const form = open === "auto" ? (graded ? "closed" : "choose") : open;
   const canGrade = ended && !reviewing;

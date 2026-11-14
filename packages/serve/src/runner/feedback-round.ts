@@ -18,6 +18,7 @@ import type { RunPath } from "../learning-cost.js";
 import { readLaunchBody } from "../run-launch.js";
 import { RunFinal, type Store } from "../store/store.js";
 import { KINDS } from "./journal-kinds.js";
+import { commandRequest } from "./loop.js";
 import { servedAnswerText } from "./workflow-first.js";
 
 export const FEEDBACK_ROUNDS = ["revise", "look_back"] as const;
@@ -77,13 +78,29 @@ export function feedbackAsk(feedback: FeedbackData, seen?: { readonly job: strin
   return [...(seen ? [seen.job, servedAnswerText(seen.served.workflow, seen.served.answer)] : []), graded, "", feedback.text].join("\n\n").replace(/\n{3,}/g, "\n\n");
 }
 
+/** Whether the feedback round opened on steer command `command` (store.runs.reopen's id) ended, read from its run's root
+ *  `entries` in journal order: the FEEDBACK entry that took that steer (its requestId names the command) has the run's
+ *  end entry after it. One writer orders both (the run's runner), so no clock is compared: a round whose steer no runner
+ *  took yet, or whose run has not ended since, is running (false). */
+export function feedbackEnded(entries: readonly { readonly kind: string; readonly data?: unknown }[], command: number): boolean {
+  const request = commandRequest(command);
+  const at = entries.findIndex((entry) => entry.kind === KINDS.feedback && (entry.data as { requestId?: unknown } | undefined)?.requestId === request);
+  return at >= 0 && entries.slice(at + 1).some((entry) => entry.kind === KINDS.end);
+}
+
+/** A feedback round opened: the round, and the steer command it opened the run again on (feedbackEnded reads its end). */
+export interface OpenedRound {
+  readonly round: FeedbackRound;
+  readonly command: number;
+}
+
 /** Opens run `grade.run` again on the feedback round its grade asks for (feedbackRoundOf), with the grade's words
- *  (`label`, else feedbackWords'), and says which: only a run that learns (its launch's learning start, never one that
- *  only uses what was learned, nor a notes-only run's revision ask), neither archived nor of an archived agent (closed
- *  history: a grade of it starts no paid work), and one the store opens again (an agentic run that answered or that a
- *  person stopped). Null when the grade asks for nothing more, or the run can't be opened again (the grade is kept either
- *  way). */
-export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, grade: Grade, label: string | undefined): Promise<FeedbackRound | null> {
+ *  (`label`, else feedbackWords'), and says which, with its steer: only a run that learns (its launch's learning start,
+ *  never one that only uses what was learned, nor a notes-only run's revision ask), neither archived nor of an archived
+ *  agent (closed history: a grade of it starts no paid work), and one the store opens again (an agentic run that answered
+ *  or that a person stopped). Null when the grade asks for nothing more, or the run can't be opened again (the grade is
+ *  kept either way). */
+export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, grade: Grade, label: string | undefined): Promise<OpenedRound | null> {
   const words = label?.trim() ? label.trim() : undefined;
   const round = feedbackRoundOf(grade, words);
   if (!round) return null;
@@ -94,8 +111,8 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
   if (!learning || learning.use || (round === "revise" && learning.notesOnly)) return null;
   const feedback = { round, correct: grade.correct, ...(round === "revise" && grade.workflow ? { workflow: grade.workflow } : {}) };
   try {
-    await store.runs.reopen(grade.run, { kind: "steer", body: { text: feedbackWords(grade.correct, words, grade.expected), feedback } });
-    return round;
+    const steer = await store.runs.reopen(grade.run, { kind: "steer", body: { text: feedbackWords(grade.correct, words, grade.expected), feedback } });
+    return { round, command: steer.id };
   } catch (error) {
     if (error instanceof RunFinal) return null;
     throw error;
@@ -103,11 +120,11 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
 }
 
 /** A grade's write (PUT /runs/{id}/grade): keeps `grade` for agent `agentId` naming no round, opens its run again on the
- *  round it asks for (openFeedbackRound), and only then marks the kept grade with that round. The grade is kept first, so
- *  the round's end reads it; the round is named last, so a reopen that fails (thrown, or a run that can't be opened again)
- *  leaves a grade naming none, never one claiming a round that didn't open. The grade as kept. */
+ *  round it asks for (openFeedbackRound), and only then marks the kept grade with that round and its steer. The grade is
+ *  kept first, so the round's end reads it; the round is named last, so a reopen that fails (thrown, or a run that can't
+ *  be opened again) leaves a grade naming none, never one claiming a round that didn't open. The grade as kept. */
 export async function keepGrade(store: Pick<Store, "runs" | "agents" | "settings">, agentId: string, grade: Grade, label: string | undefined): Promise<Grade> {
   const kept = await putGrade(store.settings, agentId, { ...grade, feedback: null });
-  const feedback = await openFeedbackRound(store, kept, label);
-  return feedback ? markGradeRound(store.settings, agentId, kept, feedback) : kept;
+  const opened = await openFeedbackRound(store, kept, label);
+  return opened ? markGradeRound(store.settings, agentId, kept, opened) : kept;
 }

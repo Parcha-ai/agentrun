@@ -1119,7 +1119,7 @@ const RUN_LEARNING = {
       }, "What the run's job did with the learned skills and workflows it was offered, apart from `skills` and `workflows`, the ones it learned."),
     }, {
       ...LEARNING_NOTES,
-      graded: { ...closedWith(GRADE_FIELDS, {}), description: "The run's grade (PUT /runs/{run_id}/grade), as its agent keeps it and the PUT answered it, never its `expected`: the newest, since a later grade replaces it. Absent when it has none kept." },
+      graded: { ...closedWith({ ...GRADE_FIELDS, feedback_ended: { type: "boolean", description: "Whether the round the grade opened (`feedback`) ended: its run took the grade's words and ended after them, as the run's journal orders it (no clock compared). false while that round runs, and for a grade that opened none." } }, {}), description: "The run's grade (PUT /runs/{run_id}/grade), as its agent keeps it and the PUT answered it, never its `expected`: the newest, since a later grade replaces it, and whether the round it opened ended. Absent when it has none kept." },
     }),
     { type: "null" },
   ],

@@ -185,7 +185,7 @@ export type RaiseAnswer = Answer<"raiseRunCap">;
 export type GradeBody = Body<"gradeRun">;
 export type GradeAnswer = Answer<"gradeRun">;
 /** A run's grade as GET /v2/runs/{id}/learning reads it back (`graded`): the newest, as the PUT answered it without
- *  `expected`, with the round it opened (`feedback`). */
+ *  `expected`, with the round it opened (`feedback`) and whether that round ended (`feedback_ended`). */
 export type RunGraded = NonNullable<NonNullable<RunLearningRead>["graded"]>;
 
 /** A recorded response (src/fixtures): what the server answered, exactly. The console's own, not a wire type. */

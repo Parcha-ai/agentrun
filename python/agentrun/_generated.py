@@ -3902,6 +3902,7 @@ class GetRunLearningResponseObjectGraded(TypedDict):
     workflow: str | None
     workflow_digest: str | None
     feedback: Literal["revise", "look_back"] | None
+    feedback_ended: bool
 
 
 class GetRunLearningDiffResponse(TypedDict):

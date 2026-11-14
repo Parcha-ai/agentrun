@@ -8,14 +8,15 @@ import type { GradeAnswer, LearnedUse, Run, RunGraded, RunLearningRead } from "@
 const newer = (read: RunGraded | null, sent: RunGraded | null): RunGraded | null =>
   !sent ? read : !read || Date.parse(sent.graded_at) > Date.parse(read.graded_at) ? sent : read;
 
-/** The run's learning (GET /v2/runs/{id}/learning), read for a run that learns, once and again when it ends (a skill read
- *  late counts; a grade's feedback round ends it again): what its job did with the learned skills and workflows its agent
- *  gave it (`used`). `read` is null while unread, when the read failed, or for a run with nothing to read it from.
- *  `grade` is the run's grade with the round it opened: the newer of the read's (`graded`) and the one this page sent,
- *  taken by `graded` from the PUT's answer (PUT /v2/runs/{id}/grade, without `expected`). It is kept apart from the read,
- *  so a read still pending or failed never loses it, and a read begun before it never replaces it. A grade changes
- *  nothing else the read says, so it is not read again for it. */
-export function useRunLearning(run: Pick<Run, "run_id" | "learning">, ended: boolean, read?: () => Promise<RunLearningRead>): { read: RunLearningRead | null; grade: RunGraded | null; graded: (answer: GradeAnswer) => void } {
+/** The run's learning (GET /v2/runs/{id}/learning), read for a run that learns, once and again when it ends or its end
+ *  moves (a skill read late counts; a grade's feedback round ends it again, and says it ended here): what its job did
+ *  with the learned skills and workflows its agent gave it (`used`). `read` is null while unread, when the read failed,
+ *  or for a run with nothing to read it from. `grade` is the run's grade with the round it opened: the newer of the
+ *  read's (`graded`) and the one this page sent, taken by `graded` from the PUT's answer (PUT /v2/runs/{id}/grade,
+ *  without `expected`, its round running). It is kept apart from the read, so a read still pending or failed never loses
+ *  it, and a read begun before it never replaces it. A grade changes nothing else the read says, so it is not read again
+ *  for it. */
+export function useRunLearning(run: Pick<Run, "run_id" | "learning" | "ended_at">, ended: boolean, read?: () => Promise<RunLearningRead>): { read: RunLearningRead | null; grade: RunGraded | null; graded: (answer: GradeAnswer) => void } {
   const learns = !!read && !!run.learning;
   const [got, setGot] = useState<RunLearningRead | null>(null);
   const [sent, setSent] = useState<{ run: string; grade: RunGraded } | null>(null);
@@ -25,9 +26,9 @@ export function useRunLearning(run: Pick<Run, "run_id" | "learning">, ended: boo
     // A reader that throws at once shows nothing, as one that rejects: these panels are never the page's error.
     Promise.resolve().then(() => read!()).then((r) => { if (live) setGot(r ?? null); }, () => { if (live) setGot(null); });
     return () => { live = false; };
-  }, [run.run_id, learns, ended]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [run.run_id, learns, ended, run.ended_at]); // eslint-disable-line react-hooks/exhaustive-deps
   const graded = useCallback(({ expected: _, ...answer }: GradeAnswer) => {
-    setSent({ run: answer.run_id, grade: answer });
+    setSent({ run: answer.run_id, grade: { ...answer, feedback_ended: false } });
   }, []);
   const shown = learns ? got : null;
   return { read: shown, grade: newer(shown?.graded ?? null, sent?.run === run.run_id ? sent.grade : null), graded };

@@ -94,9 +94,9 @@ export default {
       check(learning.graded?.correct === false && learning.learned?.some((n) => n.file === "reviewed.md"), `${width}px: the run's learning after the round: ${JSON.stringify(learning)}`);
       await shoot(page.locator("main"), `grade-timeline-${width}.png`);
 
-      // Read again: the grade read back with the round it opened (`graded.feedback`), so the round's outcome is still
-      // said (role="status"), with Grade again.
-      check(learning.graded?.feedback === "look_back", `${width}px: the learning read's grade: ${JSON.stringify(learning.graded)}`);
+      // Read again: the grade read back with the round it opened (`graded.feedback`) and that it ended
+      // (`graded.feedback_ended`), so the round's outcome is still said (role="status"), with Grade again.
+      check(learning.graded?.feedback === "look_back" && learning.graded?.feedback_ended === true, `${width}px: the learning read's grade: ${JSON.stringify(learning.graded)}`);
       await page.reload();
       const again = page.getByRole("region", { name: "Grade" });
       await again.getByText("Graded wrong").waitFor({ timeout: 15_000 });

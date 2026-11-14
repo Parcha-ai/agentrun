@@ -8,7 +8,7 @@
 // orchestration is runner/promotion.ts, the threshold refit learn/refit.ts.
 import type { GuardRow } from "../learned-nodes.js";
 import type { RunPath } from "../learning-cost.js";
-import type { FeedbackRound } from "../runner/feedback-round.js";
+import type { FeedbackRound, OpenedRound } from "../runner/feedback-round.js";
 import type { Settings } from "../store/store.js";
 import { answerJson } from "../answer-json.js";
 import { workflowNodes } from "./workflow-nodes.js";
@@ -46,6 +46,9 @@ export interface Grade {
   /** The feedback round the grade opened its run again on, null for none (runner/feedback-round.ts keepGrade). Set only
    *  once the round opened, so a kept grade never names a round that didn't. */
   readonly feedback?: FeedbackRound | null;
+  /** The steer command that round opened the run again on (store.runs.reopen's id), set with `feedback`: the run's journal
+   *  says when that round ended (runner/feedback-round.ts feedbackEnded), never a clock. Not in the API's view. */
+  readonly feedbackCommand?: number;
 }
 
 /** What a replay says (learn/refit.ts scoreRows), the shape the promotion record keeps (SPEC: replay {n, agree, agent_acc, wf_acc, delta}):
@@ -166,12 +169,13 @@ export const putGrade = async (settings: Pick<Settings, "get" | "putIfAbsent" | 
   return kept;
 };
 
-/** Marks the kept grade `grade` (its run, given at its `at`, kept at its `seq`) with the feedback round it opened, in
- *  place: its `seq` stays, so a serving digest's check never counts it twice. A newer grade of the run is left as it is,
- *  one given in the same millisecond too (its `seq` is another). The grade, marked. */
-export const markGradeRound = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, grade: Grade, feedback: FeedbackRound): Promise<Grade> => {
-  await updateKept<Grade>(settings, gradesKey(agentId), (items) => items.map((one) => (one.run === grade.run && one.at === grade.at && one.seq === grade.seq ? { ...one, feedback } : one)));
-  return { ...grade, feedback };
+/** Marks the kept grade `grade` (its run, given at its `at`, kept at its `seq`) with the feedback round it opened and
+ *  that round's steer, in place: its `seq` stays, so a serving digest's check never counts it twice. A newer grade of the
+ *  run is left as it is, one given in the same millisecond too (its `seq` is another). The grade, marked. */
+export const markGradeRound = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, grade: Grade, opened: OpenedRound): Promise<Grade> => {
+  const mark = { feedback: opened.round, feedbackCommand: opened.command };
+  await updateKept<Grade>(settings, gradesKey(agentId), (items) => items.map((one) => (one.run === grade.run && one.at === grade.at && one.seq === grade.seq ? { ...one, ...mark } : one)));
+  return { ...grade, ...mark };
 };
 
 /** The agent's promotion records, oldest first. */
