@@ -526,21 +526,11 @@ export class HostedProvider implements ComputerProvider {
 		}
 		const [kept, ...others] = holders.sort(oldestFirst(holders));
 		for (const other of others) {
-			const gone = await this.#discard(other, signal);
+			const { letGo, gone } = await this.#remove({ id: other.id, name }, other, signal);
+			if (!letGo.ok) this.#onNote?.({ computer: name, note: `${other.id}, a second machine of one request, was deleted, and ${letGo.error.message}` });
 			if (!gone.ok) return this.#fail(gone.error.code, `${holders.length} machines carry the name ${name}: ${kept?.id}, the oldest, is kept, and ${other.id} could not be deleted (${gone.error.message})`);
 		}
 		return ok(kept);
-	}
-
-	/** A machine create does not keep, deleted and read back gone; a running Archil computer lets go of its folder first. */
-	async #discard(machine: Machine, signal?: AbortSignal): Promise<Result<void>> {
-		const ref = { id: machine.id, name: machine.labels[NAME_LABEL] as string };
-		if (recordedArchil(machine.labels) !== undefined && machine.state === "running") {
-			const letGo = await this.#letGo(ref, signal);
-			if (!letGo.ok) this.#onNote?.({ computer: ref.name, note: `${machine.id}, a second machine of one request, was deleted, and ${letGo.error.message}` });
-		}
-		const killed = await this.#kill(machine.id);
-		return killed.ok ? this.#settle(ref, signal) : killed;
 	}
 
 	/**
@@ -683,15 +673,12 @@ export class HostedProvider implements ComputerProvider {
 	async #abandon(ref: ComputerRef, error: { code: ComputerError["code"]; message: string; vendor?: string }, signal?: AbortSignal, mounted = false): Promise<Result<never>> {
 		this.#end(ref.name);
 		// A computer create made whole (its Archil folder mounted) lets go of the folder first, as release does.
-		if (mounted) {
-			const read = await this.#get(ref.id);
-			if (read.ok && read.value !== undefined && recordedArchil(read.value.labels) !== undefined && read.value.state === "running") await this.#letGo(ref, signal);
-		}
-		const killed = await this.#kill(ref.id);
-		const gone = killed.ok ? await this.#settle(ref, signal) : killed;
+		const read = mounted ? await this.#get(ref.id) : undefined;
+		const { gone } = await this.#remove(ref, read?.ok ? read.value : undefined, signal);
+		// The delete is never signalled, so an abort is the wait's, after the delete took.
 		const after = gone.ok
 			? "was deleted"
-			: killed.ok && gone.error.code === "aborted"
+			: gone.error.code === "aborted"
 				? `was deleted, and the wait for it to go was aborted; ${this.#label} ends it at its deadline if the delete did not take`
 				: `could not be deleted (${gone.error.message}); it ends at its deadline`;
 		return this.#fail(error.code, `the computer ${ref.name} ${after}: ${error.message}`);
@@ -716,8 +703,7 @@ export class HostedProvider implements ComputerProvider {
 		if (found.length === 0) return `; no machine named ${name} was listed within ${seconds(listedMs)}, and any it made ends at its deadline`;
 		const said: string[] = [];
 		for (const machine of found) {
-			const killed = await this.#kill(machine.id);
-			const gone = killed.ok ? await this.#settle({ id: machine.id, name }) : killed;
+			const { gone } = await this.#remove({ id: machine.id, name }, undefined);
 			said.push(gone.ok ? `${machine.id} was deleted and read back gone` : `${machine.id} may be left (${gone.error.message}), which ends at its deadline`);
 		}
 		return `; the machine named ${name} it made: ${said.join("; ")}`;
@@ -1306,9 +1292,10 @@ export class HostedProvider implements ComputerProvider {
 		if (found.value === undefined) return ok(undefined);
 		if (!ours(found.value.labels, ref.name)) return this.#fail("not_found", `no ${this.#label} computer is ${ref.name} (${ref.id}): the machine is not this provider's, so it is left as it is`);
 		// A stop and a delete alike let go of a running Archil computer's folder first: a stopped one holds no folder.
-		const letGo = recordedArchil(found.value.labels) !== undefined && found.value.state === "running" ? await this.#letGo(ref, signal) : ok(undefined);
+		let letGo: Result<void>;
 		let done: Result<void>;
 		if (how === "stop" && stop) {
+			letGo = await this.#letGoOf(ref, found.value, signal);
 			// The host only asks: the adapter waits until the machine reads stopped, or gone where a stop deletes it.
 			const { facts } = this.host;
 			const want = facts.stopDeletes || (found.value.gpu !== undefined && facts.gpu?.stopDeletes) ? "gone" : "stopped";
@@ -1317,13 +1304,27 @@ export class HostedProvider implements ComputerProvider {
 			if (done.ok) done = await this.#settle(ref, signal, want, ask);
 		} else {
 			this.#end(ref.name);
-			const killed = await this.#kill(ref.id);
-			done = killed.ok ? await this.#settle(ref, signal) : killed;
+			({ letGo, gone: done } = await this.#remove(ref, found.value, signal));
 		}
 		if (letGo.ok) return done;
 		if (!done.ok) return this.#fail(done.error.code, `${done.error.message}; and ${letGo.error.message}`);
 		this.#onNote?.({ computer: ref.name, note: `${ref.name} was ${how === "stop" ? "stopped" : "deleted"}, and ${letGo.error.message}` });
 		return done;
+	}
+
+	/**
+	 * The one delete: machine's folder let go first (where it is a running Archil computer, as read; none for undefined),
+	 * then the host's delete, then the wait until the vendor reads it gone. The callers word what failed.
+	 */
+	async #remove(ref: ComputerRef, machine: Machine | undefined, signal?: AbortSignal): Promise<{ letGo: Result<void>; gone: Result<void> }> {
+		const letGo = await this.#letGoOf(ref, machine, signal);
+		const killed = await this.#kill(ref.id);
+		return { letGo, gone: killed.ok ? await this.#settle(ref, signal) : killed };
+	}
+
+	/** #letGo where machine, as read, is a running Archil computer: a stopped one holds no folder. */
+	#letGoOf(ref: ComputerRef, machine: Machine | undefined, signal?: AbortSignal): Promise<Result<void>> {
+		return machine !== undefined && recordedArchil(machine.labels) !== undefined && machine.state === "running" ? this.#letGo(ref, signal) : Promise.resolve(ok(undefined));
 	}
 
 	/** A running Archil computer's folder let go: the final sync through a connection when it answers, then checkin as root. */
