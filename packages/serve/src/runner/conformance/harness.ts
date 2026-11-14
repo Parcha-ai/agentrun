@@ -1136,7 +1136,7 @@ const CASES: readonly Case[] = [
   },
   {
     id: "meta-codemode-crash",
-    title: "a crash after a script's call's intent: the script runs again, the call is told interrupted, never run twice, and the script ends there",
+    title: "a crash after a codemode script's call's intent: the script runs again, the call is told interrupted, never run twice, and the script ends there",
     async body(subject, t) {
       const script = "await tools.effect({});\nawait tools.read({});\nreturn 'end';";
       const { ran } = await crashThenResume(subject, t, "effect", "beforeResult", [{ call: "codemode", args: { script } }, { say: "done" }]);
