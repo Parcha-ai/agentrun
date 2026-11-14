@@ -22,7 +22,7 @@
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
 import { randomUUID } from "node:crypto";
 import type { BrowserSpec, ComputerConnection, ComputerOwner, ComputerProvider, ComputerSpec, HelloResult, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
-import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
+import { epochOf, isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { getSealedKey } from "../server-keys.js";
@@ -153,8 +153,23 @@ export interface ComputerForClaimDeps {
   /** Told what became of the agent's own computer at the claim (a persistent setting): made, attached from an earlier
    *  run, or made again because the one this server kept is gone. The run's caller says it on the run's timeline. */
   readonly onComputerNote?: (words: string) => void;
+  /** The server's failover order of computer providers (computer-deps.ts failoverOrder, AGENTRUN_COMPUTER_FAILOVER): a
+   *  launch on one that fails transiently goes on to the next that takes the setting. Absent: none. */
+  readonly failover?: readonly string[];
+  /** Told once a launch failed over, and again once what the failed provider may have made is let go of (or given up
+   *  on): the run's caller says it on the run's timeline. */
+  readonly onFailover?: (said: FailoverSaid) => void;
+  /** How the failed provider's computers of the run are let go of; FAILOVER_CLEANUP unless given (a test's). */
+  readonly failoverCleanup?: FailoverCleanup;
   readonly signal?: AbortSignal;
 }
+
+/** A failover as the run's timeline says it: the provider it left and why, the one it went to; and, later, how the
+ *  computers the left one may have made for the run were let go of. */
+export type FailoverSaid =
+  | { readonly kind: ComputerSettingKind; readonly from: string; readonly to: string; readonly reason: string }
+  | { readonly from: string; readonly released: number }
+  | { readonly from: string; readonly failed: string };
 
 /** The run's computer at its claim: what runTools takes, the person's hold on a desktop's or phone's ports, the hold
  *  itself with the computer's kind (`held`, what the adapter loop takes as AdapterRunSpec.computer: it commits the hold's
@@ -174,6 +189,46 @@ const unavailable = (words: string): Error => Object.assign(new Error(words), { 
 const claimLost = (words: string): Error => Object.assign(new Error(words), { code: "claim_lost" });
 const noop = async (): Promise<void> => {};
 
+/** A provider's failure as a launch throws it: its words, and its transient mark (ComputerError.transient), which a
+ *  failover reads (resolve-computer.ts transientLaunch). */
+const launchError = (error: { readonly message: string; readonly transient?: true }): Error => Object.assign(new Error(error.message), error.transient === true ? { transient: true } : {});
+
+/** How the run's computers on a provider a launch failed over from are let go of: asked again after each pause (they
+ *  double from pauseMs up to maxPauseMs) until that provider answers, at most `attempts` times. */
+export type FailoverCleanup = { readonly pauseMs: number; readonly maxPauseMs: number; readonly attempts: number };
+/** About six hours of asking: past the length of a vendor's outage, short of a computer's lifetime (the vendor's own
+ *  timer, or the janitor, ends one at its deadline either way). */
+export const FAILOVER_CLEANUP: FailoverCleanup = Object.freeze({ pauseMs: 15_000, maxPauseMs: 5 * 60_000, attempts: 80 });
+
+/**
+ * The run's computers on `provider` of this claim's epoch or an earlier one, released (deleted), asked again until the
+ * provider answers: after a failover, whatever the failed launch may have made (a create whose answer never came) goes,
+ * and no later claim's computer is touched. Answers how many went, or the last failure's words once it gives up.
+ */
+export async function releaseAfterFailover(provider: ComputerProvider, claim: { readonly runId: string; readonly epoch: number }, cleanup: FailoverCleanup = FAILOVER_CLEANUP, pause: (ms: number) => Promise<void> = (ms) => new Promise((done) => setTimeout(done, ms).unref())): Promise<{ readonly released: number } | { readonly failed: string }> {
+  let last = "it was not asked";
+  for (let attempt = 0; attempt < cleanup.attempts; attempt++) {
+    if (attempt > 0) await pause(Math.min(cleanup.maxPauseMs, cleanup.pauseMs * 2 ** (attempt - 1)));
+    const listed = await provider.list({ [RUN_LABEL]: claim.runId });
+    if (!listed.ok) {
+      last = listed.error.message;
+      continue;
+    }
+    const ours = listed.value.filter((info) => {
+      const epoch = epochOf(info.labels);
+      return epoch.ok && epoch.value <= claim.epoch;
+    });
+    let failed: string | undefined;
+    for (const info of ours) {
+      const released = await provider.release(info.ref, "delete");
+      if (!released.ok && released.error.code !== "not_found" && released.error.code !== "gone") failed = released.error.message;
+    }
+    if (failed === undefined) return { released: ours.length };
+    last = failed;
+  }
+  return { failed: last };
+}
+
 /** A claim's create request: the run and its claim epoch, so a retry of the claim's create finds the computer it made. */
 const claimRequestId = (claim: { readonly runId: string; readonly epoch: number }) => `${claim.runId}#${claim.epoch}`;
 
@@ -184,7 +239,7 @@ const claimRequestId = (claim: { readonly runId: string; readonly epoch: number 
 async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly runId: string; readonly epoch: number }, signal: AbortSignal | undefined): Promise<void> {
   if (claim.epoch <= 1) return;
   const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
-  if (!older.ok) throw new Error(older.error.message);
+  if (!older.ok) throw launchError(older.error);
 }
 
 /** The agent's computer setting: the launch's, else its revision's (computer, else place), else the launch's place. */
@@ -324,7 +379,7 @@ async function providerLaunch(
   await releaseOlderClaims(provider, claim, signal);
   // The claim is the request: a retry of this launch under the same epoch gets the computer it made, never a second.
   const created = await provider.create(spec, { requestId: claimRequestId(claim), ...(signal ? { signal } : {}) });
-  if (!created.ok) throw new Error(created.error.message);
+  if (!created.ok) throw launchError(created.error);
   const ref = { id: created.value.id, name: created.value.name };
   const release = async () => {
     const released = await provider.release(ref, "delete");
@@ -333,7 +388,7 @@ async function providerLaunch(
   const connected = await provider.connect(ref);
   if (!connected.ok) {
     await release().catch(() => undefined);
-    throw new Error(connected.error.message);
+    throw launchError(connected.error);
   }
   const { client, hello } = connected.value;
   const watch = watchOf(provider, ref);
@@ -539,8 +594,21 @@ export async function computerForClaim(
     if (!options.ok) throw new Error(options.error.message);
     return make({ ...options.options, ...configuration.options }, { ledger: storeLedger(store.computerLedger, entry.id), ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }) });
   };
+  const order = deps.failover ?? [];
   const side: ClaimSide = {
     keysOf: providerKeys(kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
+    // The providers after this one in the server's order; a paired computer, which is a person's machine, never fails over.
+    failoverOf: (provider) => (paired.some((row) => row.id === provider) || !order.includes(provider) ? [] : order.slice(order.indexOf(provider) + 1)),
+    failedOver({ from, to, kind, reason, keys, configuration }) {
+      deps.onFailover?.({ kind, from: from.label, to: to.label, reason });
+      // What the failed launch may have made for the run goes once its provider answers again, in the background: the
+      // run does not wait on a provider that is down.
+      void (async () => {
+        const provider = await vendorProvider(from, keys, configuration);
+        const done = await releaseAfterFailover(provider, launch, deps.failoverCleanup);
+        deps.onFailover?.({ from: from.label, ...done });
+      })().catch((error: unknown) => deps.onFailover?.({ from: from.label, failed: error instanceof Error ? error.message : String(error) }));
+    },
     answers: deps.answers ?? (async () => false),
     ...(deps.daemon ? { daemon: deps.daemon } : {}),
     async launch(entry, { kind, keys, configuration, mount, gpu, persistent, signal }) {

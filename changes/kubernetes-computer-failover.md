@@ -1,0 +1,8 @@
+---
+packages: @parcha/agentrun-computer, @parcha/agentrun-serve
+kind: feature
+---
+A Kubernetes computer provider (`kubernetes`), and failover from one computer provider to the next when a launch fails transiently.
+- `@parcha/agentrun-computer/kubernetes`: a computer is a plain Pod per run, or a `SandboxClaim` of kubernetes-sigs/agent-sandbox against a warm pool (`object: "claim"`). It reaches the API by kubeconfig (JSON), in-cluster service account, a bearer token or token file, or GKE through Google Application Default Credentials (`auth: "gke-adc"`, external accounts included, with the `userinfo.email` scope GKE needs). Exec and upload go over the API server's exec WebSocket. No Archil mount yet: one is refused in words. See the README's Kubernetes section.
+- `ComputerError.transient`: the shared REST client, the hosted adapter and the Kubernetes transport mark a 429, a 5xx, a call that did not answer in time and an API not reached. A 4xx never is.
+- Serve: `AGENTRUN_COMPUTER_FAILOVER=daytona,kubernetes` (an ordered list of provider ids, checked at the start) moves a run whose computer's launch fails transiently on one provider to the next one that takes the agent's setting as it is (kind, GPUs, the same mount of the run's folder), resolved by the usual rules with its own keys and default image. The run's timeline says which provider it left, why, and where it went. Whatever the failed provider may have made for the run (this claim's epoch or earlier) is deleted in the background once that provider answers again, for about six hours; past that it ends at its deadline. An agent's own (persistent) computer, a paired computer and a refusal of the call never fail over.
