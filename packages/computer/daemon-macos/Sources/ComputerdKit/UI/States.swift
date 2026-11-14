@@ -8,8 +8,11 @@ struct View: Sendable {
 	/// The window image's hash: always read when the tree has no nodes (ui.tree off), and for a look kept as a state;
 	/// nil on the looks a settle and an expect take, where the tree says what changed.
 	let frame: Int?
+	/// When the read began, on the platform's Clock, for an app whose changes the platform tells (Platform.changes): a
+	/// change told after it may be missing from this look. nil for an app that tells none.
+	let at: Double?
 
-	func with(frame: Int?) -> View { View(target: target, nodes: nodes, truncated: truncated, frame: frame) }
+	func with(frame: Int?) -> View { View(target: target, nodes: nodes, truncated: truncated, frame: frame, at: at) }
 
 	/// The node for an element, if this look has it.
 	func node(_ handle: ElementHandle) -> RawNode? {

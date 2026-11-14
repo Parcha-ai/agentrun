@@ -100,7 +100,16 @@ const safeTest = (pattern: string, text: string): boolean => {
 };
 /** A schedule's fields a parameter may fill: its time, read by the server as the schedule, and checked at apply. */
 const SCHEDULE_FIELDS = ["cron", "timezone"];
+/** Where an imported package came from (POST /v2/templates/import): its source as given, ref and all (the ref an upgrade
+ *  reads again), the full commit SHA that ref was at when it was read, which is what was imported, and the GitHub account
+ *  that publishes it. */
+export type PackageOrigin = { source: string; sha: string; publisher: string };
 export type Package = {
+  /** Its identity here, the one apply and delete take: a bundled package's name (`kyb`); an imported one's source without
+   *  its ref (`github:<owner>/<repo>[/<path>]`), so the bundled kyb and an imported kyb are two packages. */
+  id: string;
+  /** Null for a package this server ships. */
+  origin: PackageOrigin | null;
   name: string;
   /** The agent's name, placeholders unfilled; absent, the package's name. */
   displayName?: string;
@@ -159,7 +168,11 @@ export class PackageError extends Error {
   }
 }
 
-/** A github source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
+/** The source kinds whose accept rules a parameter may fill: a github trigger's, and a webhook trigger's (a provider that
+ *  sends every trigger of a project to one URL, as Composio does, is filtered to the owner's own repository by them). */
+const FILTERED_KINDS = ["github", "webhook"];
+
+/** A github or webhook source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
  *  condition's list, and `rest`, the source without them. */
 function whereIns(source: Json): { ins: unknown[]; rest: Json } {
   const ins: unknown[] = [];
@@ -270,6 +283,59 @@ function pinFilled(value: PinValue, given: Record<string, unknown>): { value: Pi
   return { value: each.map((one) => one.value), empty: each.flatMap((one) => one.empty) };
 }
 
+/** One entry of a package's folder, as readdirSync's withFileTypes gives it. */
+export type PackageEntry = { name: string; isDirectory(): boolean; isFile(): boolean };
+/** Where readPackage reads a package's files from: a folder on disk (the packages a server ships, `agentrun template
+ *  validate`), or files held in memory (a package imported from GitHub, template-source.ts), which never touch the disk.
+ *  Paths are from the package's folder, with forward slashes; "" is the folder itself. */
+export type PackageFiles = {
+  /** The package's name: its folder's. */
+  readonly name: string;
+  /** Where it is, as a refusal names it. */
+  readonly where: string;
+  /** The entries of the folder at `sub`. */
+  entries(sub: string): PackageEntry[];
+  kind(path: string): "dir" | "file" | "other" | undefined;
+  size(path: string): number;
+  text(path: string): string;
+};
+
+/** A package's folder on disk: each entry as lstat sees it, so a link is an entry of its own kind, never followed. */
+export function folderFiles(dir: string): PackageFiles {
+  return {
+    name: basename(dir),
+    where: dir,
+    entries: (sub) => readdirSync(join(dir, sub), { withFileTypes: true }),
+    kind: (path) => {
+      const stat = lstatSync(join(dir, path), { throwIfNoEntry: false });
+      return stat?.isDirectory() ? "dir" : stat?.isFile() ? "file" : stat ? "other" : undefined;
+    },
+    size: (path) => lstatSync(join(dir, path)).size,
+    text: (path) => readFileSync(join(dir, path), "utf8"),
+  };
+}
+
+/** A package held in memory, by path (template-source.ts keeps regular files alone): its folders are those its files'
+ *  paths name. */
+export function memoryFiles(name: string, where: string, files: ReadonlyMap<string, Buffer>): PackageFiles {
+  const kind = (path: string) => (files.has(path) ? "file" as const : path === "" || [...files.keys()].some((one) => one.startsWith(`${path}/`)) ? "dir" as const : undefined);
+  return {
+    name,
+    where,
+    entries: (sub) => {
+      const prefix = sub ? `${sub}/` : "";
+      const names = new Set([...files.keys()].filter((path) => path.startsWith(prefix)).map((path) => path.slice(prefix.length).split("/")[0]!));
+      return [...names].map((one) => {
+        const at = `${prefix}${one}`;
+        return { name: one, isDirectory: () => kind(at) === "dir", isFile: () => kind(at) === "file" };
+      });
+    },
+    kind,
+    size: (path) => files.get(path)?.length ?? 0,
+    text: (path) => files.get(path)?.toString("utf8") ?? "",
+  };
+}
+
 /** A scalar input's (or a list's item's) JSON Schema from its manifest keys, each checked by `bad` (said at `at`):
  *  pattern, format and lengths for a string, bounds for a number, an enum of distinct values of its type. */
 function scalarSchema(type: (typeof PARAMETER_TYPES)[number], f: Json, at: string, bad: (message: string) => void): Json {
@@ -367,24 +433,24 @@ function inputsSchema(value: unknown, bad: (message: string) => void): Json | un
   return { type: "object", additionalProperties: false, ...(required.length ? { required } : {}), properties };
 }
 
-/** Reads `dir` checked whole: a valid package, or PackageError with every problem found. */
-export function readPackage(dir: string): Package {
+/** Reads the package at `from` (its folder, or its files: PackageFiles) checked whole: a valid package, or PackageError
+ *  with every problem found. */
+export function readPackage(from: string | PackageFiles): Package {
+  const src = typeof from === "string" ? folderFiles(from) : from;
+  const dir = src.where;
   const problems: string[] = [];
   const bad = (where: string, message: string) => void problems.push(`${where}: ${message}`);
   /** The regular files under `sub`, by path from it with forward slashes; a link or any other kind of entry is a
    *  problem (a package is read from disk, and a link would carry a file from outside it into an agent). */
   const files = (sub: string): string[] =>
-    readdirSync(join(dir, sub), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1)).flatMap((entry) => {
+    src.entries(sub).sort((a, b) => (a.name < b.name ? -1 : 1)).flatMap((entry) => {
       const path = sub ? `${sub}/${entry.name}` : entry.name;
       if (entry.isDirectory()) return files(path);
       if (!entry.isFile()) return bad(path, "is not a regular file or a folder (links are refused)"), [];
       return [path];
     });
-  const kind = (path: string) => {
-    const stat = lstatSync(join(dir, path), { throwIfNoEntry: false });
-    return stat?.isDirectory() ? "dir" : stat?.isFile() ? "file" : stat ? "other" : undefined;
-  };
-  const text = (path: string) => readFileSync(join(dir, path), "utf8");
+  const kind = (path: string) => src.kind(path);
+  const text = (path: string) => src.text(path);
   /** A file's YAML front matter and body. */
   const front = (path: string, required = true): { data: Json; body: string } | undefined => {
     const content = text(path);
@@ -413,10 +479,10 @@ export function readPackage(dir: string): Package {
   /** `path` is a regular file inside the package. */
   const inside = (path: unknown) => typeof path === "string" && !path.startsWith("/") && !path.split("/").some((part) => part === ".." || part === "." || part === "") && kind(path) === "file";
 
-  const name = basename(dir);
-  if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) throw new PackageError(dir, ["it is not a folder: a package is one"]);
+  const name = src.name;
+  if (src.kind("") !== "dir") throw new PackageError(dir, ["it is not a folder: a package is one"]);
   if (kind(MANIFEST) !== "file") throw new PackageError(dir, [`${MANIFEST}: missing: a package is a folder with agent.md (its manifest in the front matter, the agent's instructions in the body)`]);
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  for (const entry of src.entries("")) {
     if (entry.isDirectory() && !["skills", "rules", "evals"].includes(entry.name)) bad(`${entry.name}/`, "a package's folders are skills/, rules/ and evals/");
   }
   // Bounded before anything is read: a file, the files together, and how many there are.
@@ -426,10 +492,10 @@ export function readPackage(dir: string): Package {
   // instructions) keeps the agent's limits: checked once the manifest names it, before it is read.
   const listed = files("");
   const all = listed.filter((path) => !path.startsWith("evals/"));
-  const sizes = all.map((path) => [path, lstatSync(join(dir, path)).size] as const);
+  const sizes = all.map((path) => [path, src.size(path)] as const);
   const agentBytes = sizes.reduce((sum, [, size]) => sum + size, 0);
   const limits = [
-    ...listed.filter((path) => path.startsWith("evals/") && lstatSync(join(dir, path)).size > MAX_EVAL_FILE_BYTES).map((path) => `${path}: is over ${MAX_EVAL_FILE_BYTES} bytes, an eval file's limit`),
+    ...listed.filter((path) => path.startsWith("evals/") && src.size(path) > MAX_EVAL_FILE_BYTES).map((path) => `${path}: is over ${MAX_EVAL_FILE_BYTES} bytes, an eval file's limit`),
     ...sizes.filter(([, size]) => size > MAX_FILE_BYTES).map(([path]) => `${path}: is over ${MAX_FILE_BYTES} bytes, a package file's limit`),
     ...(agentBytes > MAX_PACKAGE_BYTES ? [`the package's files are over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit`] : []),
     ...(listed.length > MAX_PACKAGE_FILES ? [`the package holds over ${MAX_PACKAGE_FILES} files`] : []),
@@ -562,7 +628,7 @@ export function readPackage(dir: string): Package {
   let outputSchema: unknown;
   if (f.output !== undefined) {
     const at = isObject(f.output) ? f.output.schema : undefined;
-    const evalSize = typeof at === "string" && at.startsWith("evals/") && inside(at) ? lstatSync(join(dir, at)).size : 0;
+    const evalSize = typeof at === "string" && at.startsWith("evals/") && inside(at) ? src.size(at) : 0;
     if (!isObject(f.output) || unknownFields(f.output, ["schema"]).length || !inside(at)) bad(MANIFEST, "output is {schema: a JSON Schema file in the package}");
     else if (evalSize > MAX_FILE_BYTES || agentBytes + evalSize > MAX_PACKAGE_BYTES) {
       bad(at as string, evalSize > MAX_FILE_BYTES ? `is over ${MAX_FILE_BYTES} bytes, a package file's limit: the answer's schema is given to the agent, so it keeps an agent file's limits, under evals/ too` : `takes the agent's files over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit: the answer's schema is given to the agent, so it counts as an agent file, under evals/ too`);
@@ -582,22 +648,23 @@ export function readPackage(dir: string): Package {
     for (const [, used] of value.matchAll(PLACEHOLDER)) if (!Object.hasOwn(parameters, used!)) bad(MANIFEST, `\${parameters.${used}} names no parameter`);
   }
   // A placeholder fills text a run reads, a schedule's time (its cron and timezone, read as the schedule at apply), and a
-  // github trigger's where `in` values (the repository it takes, say); a trigger's other settings are the package's own,
-  // checked here. A parameter that sets a time has a default, so the schedule the package ships is checked here too; one
-  // a github trigger takes is required or has a default, so the trigger never fills empty and takes no event.
+  // github or webhook trigger's where `in` values (the repository it takes, say); a trigger's other settings are the
+  // package's own, checked here. A parameter that sets a time has a default, so the schedule the package ships is checked
+  // here too; one a github or webhook trigger's where takes is required or has a default, so the trigger never fills
+  // empty and takes no event.
   triggers.forEach((trigger, i) => {
     if (!isObject(trigger)) return;
     const timed = isObject(trigger.source) && trigger.source.kind === "schedule";
-    const github = isObject(trigger.source) && trigger.source.kind === "github";
+    const filtered = isObject(trigger.source) && FILTERED_KINDS.includes(trigger.source.kind as string);
     const fixed = Object.entries(trigger).flatMap(([key, value]) =>
       key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const)
       : key === "source" && timed && isObject(value) ? Object.entries(value).filter(([k]) => !SCHEDULE_FIELDS.includes(k)).map(([k, v]) => [`source.${k}`, v] as const)
-      : key === "source" && github && isObject(value) ? [[key, whereIns(value).rest] as const]
+      : key === "source" && filtered && isObject(value) ? [[key, whereIns(value).rest] as const]
       : [[key, value] as const]);
-    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github trigger's where in values, or an mcp pin's values`);
-    if (github) {
+    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github or webhook trigger's where in values, or an mcp pin's values`);
+    if (filtered) {
       for (const used of new Set(strings(whereIns(trigger.source as Json).ins).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
-        if (Object.hasOwn(parameters, used) && !parameters[used]!.required && parameters[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a github trigger filled empty takes no event`);
+        if (Object.hasOwn(parameters, used) && !parameters[used]!.required && parameters[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a ${(trigger.source as Json).kind as string} trigger filled empty takes no event`);
       }
     }
     if (!timed) return;
@@ -610,7 +677,7 @@ export function readPackage(dir: string): Package {
 
   // skills/<name>/SKILL.md, each named as its folder and described, as Agent Skills are; rules/*.md beside each.
   const skills: Record<string, string> = {};
-  const skillDirs = kind("skills") === "dir" ? readdirSync(join(dir, "skills"), { withFileTypes: true }) : [];
+  const skillDirs = kind("skills") === "dir" ? src.entries("skills") : [];
   for (const entry of skillDirs) {
     if (!entry.isDirectory() || !NAME.test(entry.name)) {
       bad(`skills/${entry.name}`, "skills/ holds only skill folders, each named in lowercase letters, digits and dashes");
@@ -625,7 +692,7 @@ export function readPackage(dir: string): Package {
     if (skill && (skill.data.name !== entry.name || typeof skill.data.description !== "string" || !skill.data.description.trim())) bad(`skills/${entry.name}/SKILL.md`, `its front matter names the skill (${entry.name}) and describes it`);
     for (const path of own) skills[`${entry.name}/${path}`] = text(`skills/${entry.name}/${path}`);
   }
-  const rules = kind("rules") === "dir" ? readdirSync(join(dir, "rules"), { withFileTypes: true }) : [];
+  const rules = kind("rules") === "dir" ? src.entries("rules") : [];
   if (rules.length && !skillDirs.length) bad("rules/", "rules ship beside each skill's SKILL.md, and the package has no skill");
   for (const entry of rules) {
     if (!entry.isFile() || !entry.name.endsWith(".md")) {
@@ -645,7 +712,7 @@ export function readPackage(dir: string): Package {
   // evals/<case>/: prompt.md (the run's input), graders/*.md (each its type in its front matter), case.yaml and
   // fixtures/ if it has them. The layout only: no eval runs here.
   const evals: string[] = [];
-  for (const entry of kind("evals") === "dir" ? readdirSync(join(dir, "evals"), { withFileTypes: true }) : []) {
+  for (const entry of kind("evals") === "dir" ? src.entries("evals") : []) {
     const at = `evals/${entry.name}`;
     if (!entry.isDirectory() || !NAME.test(entry.name)) {
       bad(at, "evals/ holds only case folders, each named in lowercase letters, digits and dashes");
@@ -669,7 +736,7 @@ export function readPackage(dir: string): Package {
 
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   const p: Package = {
-    name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
+    id: name, origin: null, name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as NonNullable<Package["model"]> } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
     ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { ...(typeof f.budget.per_run_usd === "number" ? { per_run_usd: f.budget.per_run_usd } : {}), ...(typeof f.budget.tool_calls === "number" ? { tool_calls: f.budget.tool_calls } : {}) } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
@@ -723,12 +790,44 @@ export function readPackages(dir: string = TEMPLATES_DIR): Package[] {
 /** A package as GET /v2/templates lists it: what an apply asks for and makes. */
 export function packageView(p: Package) {
   return {
+    id: p.id, bundled: p.origin === null, source: p.origin?.source ?? null, sha: p.origin?.sha ?? null, publisher: p.origin?.publisher ?? null,
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
     output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
     harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, checkout: p.checkout ?? null,
     mcp: p.mcp.map(({ server, tools, required, allow, pin }) => ({ server, required, tools: tools.map((name) => ({ name, tool: mcpToolName(server, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, input_schema: p.inputSchema ?? null, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, approvals_default: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
+}
+
+/** A package as an import answers it: its listing, and every text its agent would be given, the instructions and each
+ *  skill file by path (a rule and the answer's schema beside each SKILL.md among them), so a person reads what a third
+ *  party's package would tell their agent before it is installed. */
+export function packageDetail(p: Package) {
+  return { ...packageView(p), instructions: p.instructions, skill_files: { ...p.skills } };
+}
+
+/** The packages this server serves: the ones it ships, read at its start, and the ones imported here (the store keeps
+ *  them; the server loads them beside the bundled ones at its start). An id is one package; a bundled one is never
+ *  replaced or removed, and an imported id (`github:…`) is never a bundled one's name. */
+export class TemplateRegistry {
+  private readonly imported = new Map<string, Package>();
+  constructor(private readonly bundled: readonly Package[]) {}
+  /** The bundled packages by name, then the imported ones by id. */
+  list(): Package[] {
+    return [...this.bundled, ...[...this.imported.values()].sort((a, b) => a.id.localeCompare(b.id))];
+  }
+  get(id: string): Package | undefined {
+    return this.bundled.find((p) => p.id === id) ?? this.imported.get(id);
+  }
+  /** An imported package, in place of the one under its id. */
+  put(p: Package): void {
+    if (p.origin === null || this.bundled.some((one) => one.id === p.id)) throw new TypeError(`${p.id} is a bundled package's id`);
+    this.imported.set(p.id, p);
+  }
+  /** Whether an imported package of that id was there to remove. */
+  remove(id: string): boolean {
+    return this.imported.delete(id);
+  }
 }
 
 /** POST /v2/templates/{name}/apply's body (`{parameters, grants?, overrides?: {model}}`), checked against the package:

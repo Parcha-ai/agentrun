@@ -11,10 +11,10 @@ import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
 import { ALL, FLAGS, MAX_PAGES, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
 import { SECRETS, guarded, refusalExit } from "./login.mjs";
 import { SKILL_INSTALL } from "./skill.mjs";
-import { TEMPLATE_EVAL, TEMPLATE_VALIDATE } from "./template.mjs";
+import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from "./template.mjs";
 
 /** The hand-written commands that run as they are given (`run`), beside the table's. */
-const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL];
+const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL];
 export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
 const START = "start it with `npx @parcha/agentrun`, or pass --base-url (or set AGENTRUN_BASE_URL) to the address the server printed";

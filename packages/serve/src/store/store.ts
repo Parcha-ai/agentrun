@@ -67,14 +67,13 @@ export interface AgentRow {
   readonly externalRef: string | null;
 }
 
-/** A template's package, kept on the revision made from it. */
+/** The template package an agent was applied from, kept on the revision the apply made (its first): the package's id
+ *  (a bundled one's name, an imported one's `github:<owner>/<repo>[/<path>]`), its SemVer version, and the commit SHA it
+ *  was imported at (null for a bundled one, which is the server's own build). */
 export interface TemplatePackage {
-  readonly name: string;
+  readonly id: string;
   readonly version: string;
-  readonly source: "builtin" | "git";
-  readonly ref?: string;
-  readonly sha?: string;
-  readonly parameters?: unknown;
+  readonly sha: string | null;
 }
 
 export interface NewRevision {
@@ -1040,6 +1039,29 @@ export interface PairedComputers {
   revoke(id: string): Promise<boolean>;
 }
 
+/** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
+ *  (`github:<owner>/<repo>[/<path>]`), its source as given, the commit SHA read, its publisher (the GitHub account), and
+ *  its files as they were read, by path, base64. The server checks them again (templates.ts readPackage) as it loads them
+ *  at its start, so a package this build no longer takes is never served. */
+export interface ImportedTemplateRow {
+  readonly id: string;
+  readonly source: string;
+  readonly sha: string;
+  readonly publisher: string;
+  readonly files: Readonly<Record<string, string>>;
+  /** When it was last imported (stamped by the store). */
+  readonly importedAt: number;
+}
+
+export interface ImportedTemplates {
+  /** Every imported package, by id. */
+  list(): Promise<ImportedTemplateRow[]>;
+  /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it). */
+  put(row: Omit<ImportedTemplateRow, "importedAt">): Promise<void>;
+  /** Removes the package: false when none had that id. */
+  remove(id: string): Promise<boolean>;
+}
+
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one
  *  server-wide set, or a trigger's id for its own), field, and the value sealed (store/seal.ts) under AAD
  *  trigger_settings|<adapter>|<scope>|<field>: TEXT the store never opens. */
@@ -1220,6 +1242,8 @@ export interface Store {
   readonly computerLedger: ComputerLedger;
   /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
   readonly pairedComputers: PairedComputers;
+  /** The template packages imported from GitHub, their files kept as read. */
+  readonly importedTemplates: ImportedTemplates;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */
   readonly triggerSettings: TriggerSettings;
   /** The outbox of a channel the server sends itself, its tries and what it told each run. */
