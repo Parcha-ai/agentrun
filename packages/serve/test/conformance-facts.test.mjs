@@ -34,7 +34,7 @@ test("claude-agent's own facts rule out the eight cases: its CLI resumes a cut a
 });
 
 test("codex's own facts rule out the seven cases: a cut ends its turn, so no later step of the turn follows one; it runs scripts in its own code mode, so the host's codemode is not offered", () => {
-  assert.deepEqual(Object.keys(factsRuleOut(codexFacts)).sort(), ["fault-restarts-bounded", "length-mid-run", "meta-codemode-crash", "meta-codemode-park", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
+  assert.deepEqual(Object.keys(factsRuleOut(codexFacts)).sort(), ["fault-restarts-bounded", "length-mid-run", "meta-codemode-crash", "meta-codemode-park", "meta-codemode-stop", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
   assert.match(factsRuleOut(codexFacts)["meta-codemode-park"], /ownCodemode/);
 });
 
@@ -42,7 +42,7 @@ test("a loop with no host tools over its tools skips their cases, saying so", ()
   const registered = [];
   registerHarnessConformance({ name: "s", createLoop: () => undefined, metaTools: false }, { test: (name, options) => registered.push([name, options.skip]) });
   const skips = registered.filter(([name]) => /tools_search|tools_call|codemode/.test(name)).map(([, skip]) => skip);
-  assert.equal(skips.length, 5);
+  assert.equal(skips.length, 6);
   assert.ok(skips.every((skip) => /no tools_search, tools_call or codemode/.test(skip)), JSON.stringify(skips));
 });
 
