@@ -137,7 +137,7 @@ describe("the workflow card: standing, guards and where it is unsure", () => {
     { ...step("check", "Check the total."), guard: { signal: "both", threshold: 0.6 } },
   ] } });
   const REVS2: WorkflowRevision[] = [rev(1, guarded(0.7)), rev(2, guarded(0.82, { w: [1], b: 0, n: 40 }))];
-  const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sorter", digest: "1".repeat(16), at: "2026-11-02T10:00:00Z", decided: "promote", source: "replay", reason: "as good as the agent on its graded inputs", replay: { of: [], n: 20, agree: 19, agent_acc: 0.9, wf_acc: 0.95, delta: 0.05, handed_back: 2, alone: 18 }, ...over } as Promotion);
+  const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sorter", digest: "1".repeat(16), at: "2026-11-02T10:00:00Z", decided: "promote", source: "replay", reason: "as good as the agent on its graded inputs", replay: { of: [], n: 20, agree: 19, agent_acc: 0.9, wf_acc: 0.95, delta: 0.05, handed_back: 2 }, ...over } as Promotion);
   const point = (p: number | null, correct: boolean | null, i: number) => ({ run_id: `r${i}`, p, escalated: p === null || p < 0.7, correct });
   const loop: LearningLoop = { agent: "a", compiles: [], guards: [
     { workflow: "sorter", digest: "1".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 5, escalated: 2, right: 2, wrong: 1, grades_past: 0, replays: 0, points: [point(0.95, true, 1), point(0.91, true, 2), point(0.75, false, 3), point(0.4, null, 4), point(null, null, 5)] },
@@ -159,7 +159,7 @@ describe("the workflow card: standing, guards and where it is unsure", () => {
   // never green; one promoted on its replay says how many inputs it was decided on.
   it("says what serving was decided on: replayed n/of, or not replayed", () => {
     const of = Array.from({ length: 20 }, (_, i) => `g${i}`);
-    const replayed = mount(createElement(Steps, { data: read([rev(1, guarded(0.7))]), promotions: [record({ replay: { of, n: 18, agree: 17, agent_acc: 0.9, wf_acc: 0.9, delta: 0, handed_back: 1, alone: 17, skipped_write: 2 } })], serving: "1".repeat(16), loop }));
+    const replayed = mount(createElement(Steps, { data: read([rev(1, guarded(0.7))]), promotions: [record({ replay: { of, n: 18, agree: 17, agent_acc: 0.9, wf_acc: 0.9, delta: 0, handed_back: 1, skipped_write: 2 } })], serving: "1".repeat(16), loop }));
     const chip = (host: HTMLElement) => host.querySelector('[data-testid="standing"] span')!;
     expect(chip(replayed).textContent).toBe("Serving · replayed 18/20 · 17 alone");
     expect(chip(replayed).className).toMatch(/success/);

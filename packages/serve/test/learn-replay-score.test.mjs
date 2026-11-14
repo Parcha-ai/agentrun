@@ -45,7 +45,7 @@ test("a hand-back in replay is the agent's recorded answer, never a failure: esc
   assert.equal(escalates(rows[1], at), true);
   assert.equal(escalates(rows[0], at), false);
   const score = replayScore(rows, at);
-  assert.deepEqual(score, { n: 5, agree: 2, agent_acc: 0.8, wf_acc: 0.8, delta: 0, handed_back: 3, alone: 2 });
+  assert.deepEqual(score, { n: 5, agree: 2, agent_acc: 0.8, wf_acc: 0.8, delta: 0, handed_back: 3 });
   assert.equal(clears(score), true);
   // At threshold 0 the low-confidence wrong answer (r5) serves: 2 points under is the bar, 20 is not.
   const loose = replayScore(rows, new Map([["pick", 0]]));
@@ -186,7 +186,7 @@ test("a replay row its workflow failed on (a step failed: a credential or tool t
     ...Array.from({ length: 8 }, (_, i) => row(`f${i}`, { answer: "z", outcome: "failed" })),
   ];
   const score = replayScore(rows, new Map([["pick", 0.5]]));
-  assert.deepEqual(score, { n: 2, agree: 1, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 1, alone: 1 }, "the eight failed rows are left out");
+  assert.deepEqual(score, { n: 2, agree: 1, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 1 }, "the eight failed rows are left out");
 });
 
 test("a refit never brings a guard down past hand-backs whose answer nobody read: 20 graded hand-backs at p 0.2 keep a 0.5 guard", () => {

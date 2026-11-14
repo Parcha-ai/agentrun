@@ -47,8 +47,8 @@ export interface Grade {
 /** What a replay says, the shape the promotion record keeps (SPEC: replay {n, agree, agent_acc, wf_acc, delta}):
  *  `n` inputs; `agree`, how many the workflow answered alone with the agent's recorded answer; `agent_acc`, the agent's
  *  recorded answers' accuracy; `wf_acc`, the workflow's, a hand-back counting as the agent's answer; `delta` = wf_acc -
- *  agent_acc; `handed_back`, how many it handed back; `alone`, how many it answered alone (n - handed_back). Accuracies
- *  to 1e-4. */
+ *  agent_acc; `handed_back`, how many it handed back (it answered n - handed_back alone: answersAlone). Accuracies to
+ *  1e-4. */
 export interface ReplayScore {
   readonly n: number;
   readonly agree: number;
@@ -56,8 +56,11 @@ export interface ReplayScore {
   readonly wf_acc: number;
   readonly delta: number;
   readonly handed_back: number;
-  readonly alone: number;
 }
+
+/** Whether a replay or refit answered alone on at least one of its inputs: one that hands back every input would never
+ *  serve. The one spelling of it (clears, settle's hold, the compile's held line); the count is n - handed_back. */
+export const answersAlone = (score: Pick<ReplayScore, "n" | "handed_back">): boolean => score.handed_back < score.n;
 
 /** A learned workflow's promotion record at one digest. `decided`: `promote` (it serves first), `hold` (it does not: the
  *  champion, championOf, takes its runs, else the agent, until a new revision), `replaying` (its replay runs, `runs`,
@@ -533,12 +536,12 @@ export function replayScore(all: readonly ReplayRow[], thresholds: ReadonlyMap<s
   }
   const n = rows.length;
   const [agent_acc, wf_acc] = n ? [round(agentRight / n), round(wfRight / n)] : [0, 0];
-  return { n, agree, agent_acc, wf_acc, delta: round(wf_acc - agent_acc), handed_back: handed, alone: n - handed };
+  return { n, agree, agent_acc, wf_acc, delta: round(wf_acc - agent_acc), handed_back: handed };
 }
 
 /** Whether a score clears the bar: the workflow's accuracy at most PROMOTE_BAR under the agent path's, and it answered
  *  alone on at least one input (one that hands back every input scores the agent's own accuracy, and would never serve). */
-export const clears = (score: Pick<ReplayScore, "delta" | "n" | "handed_back">): boolean => score.delta >= -PROMOTE_BAR - 1e-9 && score.handed_back < score.n;
+export const clears = (score: Pick<ReplayScore, "delta" | "n" | "handed_back">): boolean => score.delta >= -PROMOTE_BAR - 1e-9 && answersAlone(score);
 
 /** A grade as the API answers it (PUT /runs/{id}/grade). */
 export const gradeView = (grade: Grade) => ({

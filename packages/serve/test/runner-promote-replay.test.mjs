@@ -185,7 +185,7 @@ test("a new digest with graded inputs replays before it serves: the agent takes 
   const records = await promotionsOf(server.settings, "agent-1");
   assert.deepEqual(records.map(({ decided, source }) => [decided, source]), [["replaying", "replay"], ["promote", "replay"]]);
   const { replay } = records[1];
-  assert.deepEqual({ ...replay, of: replay.of.length }, { n: 6, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 0, alone: 6, of: 6, cost_usd: replay.cost_usd, skipped_write: 0, skipped_tools: [] });
+  assert.deepEqual({ ...replay, of: replay.of.length }, { n: 6, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 0, of: 6, cost_usd: replay.cost_usd, skipped_write: 0, skipped_tools: [] });
   assert.ok(replay.cost_usd > 0, "what the replay cost is on its record");
   assert.equal(records[1].digest, DIGEST);
 });
@@ -207,7 +207,7 @@ test("a replay the workflow hands back on every input is held (it would never an
   const records = await promotionsOf(server.settings, "agent-1");
   assert.deepEqual(records.map(({ decided, source }) => [decided, source]), [["replaying", "replay"], ["hold", "replay"]]);
   const decided = records.at(-1);
-  assert.deepEqual({ wf_acc: decided.replay.wf_acc, agent_acc: decided.replay.agent_acc, handed_back: decided.replay.handed_back, alone: decided.replay.alone }, { wf_acc: 1, agent_acc: 1, handed_back: 6, alone: 0 });
+  assert.deepEqual({ wf_acc: decided.replay.wf_acc, agent_acc: decided.replay.agent_acc, n: decided.replay.n, handed_back: decided.replay.handed_back, alone: "alone" in decided.replay }, { wf_acc: 1, agent_acc: 1, n: 6, handed_back: 6, alone: false });
   assert.match(decided.reason, /^it handed back every one of its 6 replayed inputs: it would never answer alone/);
 });
 
@@ -241,11 +241,11 @@ test("a judge-driven escalate is recorded in the replay, not obeyed: held for ne
   const records = await promotionsOf(server.settings, "agent-1");
   const held = records.find((one) => one.decided === "hold");
   assert.equal(held.digest, workflowDigest({ workflow: JSON.stringify(judgedFlow) }));
-  assert.deepEqual({ handed_back: held.replay.handed_back, alone: held.replay.alone }, { handed_back: 6, alone: 0 });
+  assert.deepEqual({ n: held.replay.n, handed_back: held.replay.handed_back }, { n: 6, handed_back: 6 });
   assert.match(held.reason, /it would never answer alone/);
   const refit = records.at(-1);
   assert.deepEqual({ decided: refit.decided, source: refit.source, from: refit.refit.from, guards: refit.refit.guards }, { decided: "promote", source: "refit", from: held.digest, guards: [{ node: "unsupported", was: null, threshold: null, escalate: true }] });
-  assert.deepEqual({ wf_acc: refit.replay.wf_acc, delta: refit.replay.delta, handed_back: refit.replay.handed_back, alone: refit.replay.alone }, { wf_acc: 1, delta: 0, handed_back: 0, alone: 6 });
+  assert.deepEqual({ wf_acc: refit.replay.wf_acc, delta: refit.replay.delta, n: refit.replay.n, handed_back: refit.replay.handed_back, alone: "alone" in refit.replay }, { wf_acc: 1, delta: 0, n: 6, handed_back: 0, alone: false });
   assert.ok(logs.some((line) => /refit answer's guards over its replay held it \(6 rows\): unsupported escalate off/.test(line)), logs.join("\n"));
   // The refit serves this same run, alone: no escalate left to hand it back.
   assert.deepEqual([second.metrics?.path, second.metrics?.workflow_digest], ["workflow", refit.digest], JSON.stringify(second.metrics));

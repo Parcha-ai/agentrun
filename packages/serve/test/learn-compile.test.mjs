@@ -342,7 +342,7 @@ test("Jev by default: the worked example with Jev guards its judgment steps on b
 // A workflow its promotion holds (runner/promotion.ts: its replay on the agent's graded inputs fell under the bar) asks
 // the compile turn for a revision, with the replay's numbers.
 test("held by its replay: the revise ask says the replay's numbers and offers no 'No change.'", () => {
-  const held = { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "replayed ...", replay: { n: 20, agree: 14, agent_acc: 0.9, wf_acc: 0.75, delta: -0.15, handed_back: 3, alone: 17 } };
+  const held = { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "replayed ...", replay: { n: 20, agree: 14, agent_acc: 0.9, wf_acc: 0.75, delta: -0.15, handed_back: 3 } };
   const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held }));
   assert.match(prompt, /^One more turn: revise your learned workflow `answer`\.\nYour learned workflow `answer` does not run first: replayed on 20 of the agent's graded inputs, it was right 75\.0% of the time \(3 handed back, each scored on the agent's answer\), against the agent's 90\.0%: -15\.0 pts, more than 2 pts under\./);
   assert.match(prompt, /It stays held until a new revision of it\./);
@@ -351,7 +351,7 @@ test("held by its replay: the revise ask says the replay's numbers and offers no
   const graded = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{}", held: { workflow: "answer", digest: "0123456789abcdef", source: "graded", reason: "20 graded runs it served were right 70.0% of the time" } }));
   assert.match(graded, /Your learned workflow `answer` does not run first: it was held \(20 graded runs it served were right 70\.0% of the time\)\./);
   // Held for handing back every input: never "pts under" (its accuracy is the agent's own), but that it never answers alone.
-  const alone = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{}", held: { ...held, reason: "it handed back every one of its 20 replayed inputs", replay: { n: 20, agree: 0, agent_acc: 0.9, wf_acc: 0.9, delta: 0, handed_back: 20, alone: 0 } } }));
+  const alone = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{}", held: { ...held, reason: "it handed back every one of its 20 replayed inputs", replay: { n: 20, agree: 0, agent_acc: 0.9, wf_acc: 0.9, delta: 0, handed_back: 20 } } }));
   assert.match(alone, /does not run first: replayed on 20 of the agent's graded inputs, it handed back every one: it would never answer alone\. A check or an escalate that stops every draft, right or wrong, is the step to change\./);
   assert.doesNotMatch(alone, /pts under/);
 });

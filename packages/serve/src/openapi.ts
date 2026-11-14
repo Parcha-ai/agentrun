@@ -1196,8 +1196,7 @@ const REPLAY_SCORE = {
   agent_acc: { type: "number", minimum: 0, maximum: 1, description: "The agent's recorded answers' accuracy on them." },
   wf_acc: { type: "number", minimum: 0, maximum: 1, description: "The workflow's accuracy on them, at its serving thresholds: an input it handed back counts as the agent's recorded answer, never as a failure." },
   delta: { type: "number", description: `\`wf_acc\` - \`agent_acc\`; it serves at ${-PROMOTE_BAR} or more.` },
-  handed_back: { ...COUNT, description: "How many of them it handed back." },
-  alone: { ...COUNT, description: "How many of them it answered alone (`n` - `handed_back`). A revision that answered none alone is held: it would never serve." },
+  handed_back: { ...COUNT, description: "How many of them it handed back; it answered `n` - `handed_back` alone. A revision that answered none alone is held: it would never serve." },
 };
 const PROMOTION = closedWith({
   workflow: { type: "string" },
