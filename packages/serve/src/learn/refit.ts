@@ -105,7 +105,8 @@ function solve(a: number[][], b: number[]): number[] | undefined {
   return m.map((row, i) => row[n]! / row[i]!);
 }
 
-/** The rows' accuracies with p read through `pOf` and each step held to `thresholds`: a row any guard of hands back on
+/** The rows' score, unrounded (scoreRows rounds it; the refit's search compares it as it is), with p read through `pOf`
+ *  and each step held to `thresholds`: a row any guard of hands back on
  *  takes the agent's answer; one that answered alone, its grade. A row that did not answer alone because a guard handed
  *  it back (one of its guards escalated) and that no guard would hand back at `thresholds` would have answered with an
  *  answer nobody read: counted wrong, so a threshold never comes down past hand-backs with no evidence of what the
@@ -258,15 +259,5 @@ export function refitGuards(text: string, rows: readonly RefitRow[], now: string
     }
     for (const label of off) changed.push({ node: label, was: null, threshold: null, escalate: true });
   }
-  const score = scoreAt(rows, thresholds, pOf);
-  return {
-    ...(changed.length ? { text: JSON.stringify(doc) } : {}),
-    guards: changed,
-    n: rows.length,
-    agree: score.agree,
-    agent_acc: round(score.agent_acc),
-    wf_acc: round(score.wf_acc),
-    delta: round(score.wf_acc - score.agent_acc),
-    handed_back: score.handed_back,
-  };
+  return { ...(changed.length ? { text: JSON.stringify(doc) } : {}), guards: changed, ...scoreRows(rows, thresholds, pOf) };
 }
