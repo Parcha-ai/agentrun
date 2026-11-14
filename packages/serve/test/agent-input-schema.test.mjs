@@ -127,6 +127,24 @@ test("a pi run's first message is its content, then its typed fields as one json
   assert.deepEqual(await said(api, "kyb", { company: "Stripe, Inc." }), ['Input:\n```json\n{\n  "company": "Stripe, Inc."\n}\n```'], "no content: the block alone");
 });
 
+test("a run's read serves its input whole, a message longer than the timeline keeps and its typed fields, so starting it again sends the same task; a list's run carries none", { timeout: 90_000 }, async (t) => {
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("kyb", { input_schema: SUBJECT }))).status, 201);
+  const input = { content: `${"Check every filing this company made, line by line. ".repeat(50)}End.`, company: "Stripe, Inc.", topics: ["a ``` b"] };
+  assert.ok(input.content.length > 2000, `${input.content.length} characters`);
+  const first = await api("POST", "/agents/kyb/runs", { input });
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  await follow(api, first.body.run_id, ["completed"], { deadlineMs: 55_000 });
+  const read = (await api("GET", `/runs/${first.body.run_id}`)).body;
+  assert.deepEqual([read.input, read.file_ids], [input, []], "the input, whole, as the run was started with it");
+  const listed = (await api("GET", "/runs")).body.runs.find((r) => r.run_id === first.body.run_id);
+  assert.deepEqual([listed.input, listed.file_ids], [undefined, undefined], "a list's run carries no input");
+  // Run again: the read's input and files, sent as they are.
+  const again = await api("POST", "/agents/kyb/runs", { input: read.input, file_ids: read.file_ids });
+  assert.equal(again.status, 202, JSON.stringify(again.body));
+  assert.deepEqual((await api("GET", `/runs/${again.body.run_id}`)).body.input, input);
+});
+
 for (const harness of ["claude-agent", "codex"]) {
   test(`a ${harness} run's first message is its content, then its typed fields as one json block`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });

@@ -12,21 +12,15 @@ code-review/
   skills/<name>/SKILL.md   Agent Skills: front matter names the skill (= its folder) and describes it
   rules/*.md               rules each skill reads: apply puts a copy beside each SKILL.md
   evals/<case>/prompt.md   a case's run input (front matter: description, runs, max_cost_usd, ...)
-  evals/<case>/graders/*.md   front matter `type`: llm, regex, tool_used, file_exists or schema (with `schema: <file>`)
+  evals/<case>/graders/*.md   front matter `type`: llm, regex, tool_used or file_exists
   evals/<case>/case.yaml, evals/<case>/fixtures/   optional
-  examples/<name>/input.json, output.json, output.md?   a sample run, shown and never applied
   skills/review/findings.schema.json   any other file the manifest names (here the answer's schema, which the
                            reviewers' guides beside it read too)
 ```
 
-Links and other special files are refused anywhere in the folder, and its only folders are `skills/`, `rules/`,
-`evals/` and `examples/`. The server checks evals for their layout only and runs none; `agentrun template eval DIR`
-runs them ([Running the evals](#running-the-evals)).
-
-Each `examples/<name>/` shows what one run takes and gives, for a listing to show: `input.json`, the run's input (a
-JSON object, checked as a run's input is), `output.json`, its answer (checked against `output`'s schema when the
-package has one), and `output.md`, optional, the answer as a person reads it. Nothing else goes in it. Apply never
-reads it, and its files are not the agent's (they don't count toward the agent's 1 MiB).
+Links and other special files are refused anywhere in the folder, and its only folders are `skills/`, `rules/` and
+`evals/`. The server checks evals for their layout only and runs none; `agentrun template eval DIR` runs them
+([Running the evals](#running-the-evals)).
 
 ## The packages this server ships
 
@@ -119,7 +113,8 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   - `tool_used`: `tool` (or `tools`, a list), `expect: called` (the default) or `not_called`, and optionally `count` and
     `args` (the arguments a call must carry).
   - `file_exists`: `path` in the run's work folder.
-  - `schema`: `schema`, a JSON Schema file in the package, which the answer's last fenced `json` block meets.
+
+  The answer's shape needs no grader: every completed run of a package with `output` is held to its schema.
 
 ## Running the evals
 
@@ -141,8 +136,8 @@ A Ctrl-C cancels the run in progress and cleans up as the end does (a second one
 report.
 Before anything runs, every case named is read and checked whole: the prompt's front matter, `case.yaml` against the
 package (its parameters and grants as an apply checks them), each fake MCP server's fixture, each learned note as the
-learning API checks one, and each grader's fields (an unknown field, a pattern that does not compile, a schema that
-does not compile, a tool the package does not have).
+learning API checks one, and each grader's fields (an unknown field, a pattern that does not compile, a tool the
+package does not have).
 
 **Where it runs.** By default on a server of its own, started in the command's process over a temp data directory that
 holds a copy of the package alone and is removed at the end: the eval never touches your server, and needs the model
@@ -173,10 +168,12 @@ and runs on the eval's own server.
 
 A case passes when every grader passes on every run.
 
+**The output check.** A package with `output` holds every completed run to its schema with no grader file: the run
+fails when the server's own read of its answer sets `result.output_error` (its last fenced `json` block missing, not
+JSON, or refused by the schema, after the runner's one retry). The report lists it as the grader `output`.
+
 **The graders**, as the runner reads them:
 
-- `schema`: the answer's last fenced `json` block (```` ```json ```` or a longer fence), parsed and checked against the
-  schema, draft 2020-12 with `format` checked.
 - `regex`: `pattern` with `flags` (some of `i`, `m`, `s`, `u`, `v`) over the whole answer, or over `target`, a field of
   the last `json` block (`a.b` for a nested one; a string as it is, anything else as its JSON). An answer with no such
   field fails the grader, whatever `expect` says.
@@ -221,7 +218,6 @@ The report gives each run's cost and each `llm` grade's, as their run records sa
 | `approvals` | `ask` (the default: the agent asks its person before a tool runs) or `never` (it runs unattended). The package's recommendation, shown as `approvals_default` for the apply screen; a template whose job runs on triggers says `never`. `never` only skips asking for the tools the agent was granted: an MCP tool the owner left unticked at apply is not one. Deny settings and pins hold either way. |
 | `triggers` | `POST /v2/triggers` bodies with no `agent_id` (the target is a `start_run`), each with a `name`, unique in the package: the key an upgrade will match triggers by. |
 | `output` | `{schema: <file>}`: the JSON Schema of the agent's answer, a file in the package. It becomes the agent's `output_schema`: the runner puts it in the instructions on every harness and asks once more when an answer misses it. A string property with `contentMediaType: "text/markdown"` is a report the console renders as Markdown. A skill that reads the schema itself keeps the file in its own folder. |
-| `checks` | Names of structural checks of a run's answer; none runs yet. |
 
 The check is whole: the package is compiled with a sample of each parameter, and the agent body and each trigger body are
 checked as `POST /v2/agents` and `POST /v2/triggers` check theirs (all but the agent a trigger names, which apply makes).

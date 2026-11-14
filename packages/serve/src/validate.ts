@@ -9,7 +9,6 @@ import { settingsIssues } from "./tool-plane.js";
 import { CAP_MODES } from "./cap.js";
 import { APPROVALS } from "./approvals.js";
 import { schemaCheck } from "./answer-json.js";
-import { Compile } from "typebox/schema";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 /** An inline agent's source or kind in its external reference (POST /runs): no colon, which the reference's key splits on. */
@@ -230,18 +229,6 @@ export function inputSchemaOf(schema: unknown): Json {
   };
 }
 
-/** A compiled schema's checker, by the schema's JSON: an agent's runs check against the same few schemas over and over. */
-const compiledInputs = new Map<string, ReturnType<typeof Compile>>();
-const compiledInput = (schema: Json) => {
-  const key = stable(schema);
-  let validator = compiledInputs.get(key);
-  if (!validator) {
-    validator = Compile(schema as Parameters<typeof Compile>[0]);
-    if (compiledInputs.size >= 256) compiledInputs.delete(compiledInputs.keys().next().value!);
-    compiledInputs.set(key, validator);
-  }
-  return validator;
-};
 /** Each JSON Schema keyword's issue reason (InputIssue.reason): a keyword not named here is `invalid`. */
 const KEYWORD_REASON: Record<string, string> = {
   type: "wrong_type", enum: "not_an_option", const: "not_an_option", pattern: "bad_format", format: "bad_format",
@@ -261,7 +248,10 @@ export function inputIssues(input: Json, schema: Json, at = "input"): InputIssue
     seen.add(`${path}\n${reason}`);
     out.push(issue(path, reason, message, fix));
   };
-  for (const error of compiledInput(schema).Errors(input)[1]) {
+  // The schema in force compiles: a save checks it (inputSchemaIssues).
+  const compiled = schemaCheck(schema);
+  if ("why" in compiled) throw new Error(`the input schema ${compiled.why}`);
+  for (const error of compiled.validator.Errors(input)[1]) {
     const where = [at, ...error.instancePath.split("/").slice(1).map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"))].join(".");
     const params = error.params as Record<string, unknown>;
     if (error.keyword === "required") for (const key of (params.requiredProperties as string[] | undefined) ?? []) add(`${where}.${key}`, "missing", `${where}.${key} is required`);

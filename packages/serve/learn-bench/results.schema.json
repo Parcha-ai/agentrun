@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "learning-bench/2",
   "title": "Learning bench results",
-  "description": "One run of the learning bench (scripts/learn-bench.mjs) over learn-bench/<job>/ jobs: per job, harness and arm one series of the job's steps in order, each step's run graded by its own graders (the template eval's: schema, regex, tool_used, file_exists, llm), and the series' learning metrics. Arm on: ONE agent applied from the job's package with learning on, the steps in order, its learning settled between steps. Arm off: a fresh agent per step, learning off. Costs in USD as the server's run view reports them (cost.usd), null when unknown. A rate is a fraction 0..1, null when nothing was counted.",
+  "description": "One run of the learning bench (scripts/learn-bench.mjs) over learn-bench/<job>/ jobs: per job, harness and arm one series of the job's steps in order, each step's run graded by its own graders (the template eval's: output, the template's output schema held, then regex, tool_used, file_exists, llm), and the series' learning metrics. Arm on: ONE agent applied from the job's package with learning on, the steps in order, its learning settled between steps. Arm off: a fresh agent per step, learning off. Costs in USD as the server's run view reports them (cost.usd), null when unknown. A rate is a fraction 0..1, null when nothing was counted.",
   "type": "object",
   "required": ["schema", "bench", "series", "hard_stop"],
   "properties": {

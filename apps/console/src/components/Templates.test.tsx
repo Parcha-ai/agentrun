@@ -35,7 +35,7 @@ const REVIEWER: TemplateView = {
     { name: "get_pull_request", tool: "mcp:github/get_pull_request", asks: "allow" },
     { name: "create_review", tool: "mcp:github/create_review", asks: "ask" },
   ] }],
-  category: "engineering", tags: ["code-review", "github"], examples: [],
+  category: "engineering", tags: ["code-review", "github"],
   parameters: params(REVIEWER_PARAMS),
   input_schema: null, secrets: ["PARALLEL_API_KEY"], budget: { per_run_usd: 0.5 }, learning: false, approvals_default: "ask", triggers: [{ kind: "github", events: ["pull_request"] }], skills: [], evals: [],
 };

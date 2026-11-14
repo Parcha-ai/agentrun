@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { DaemonClient, ensureImage } from "../../dist/index.js";
 import { OWN_SOCKETS } from "../../dist/conformance/cases/isolation.js";
-import { desktopOf, startDisplay, WINDOW_MANAGER } from "../../dist/desktop.js";
+import { desktopOf, startDisplay } from "../../dist/desktop.js";
 import { DAEMON_IN_COMPUTER } from "../../dist/drift.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
@@ -54,7 +54,8 @@ describe("xfwm4 as E2B and Agent37 start it", { skip: LIVE ? false : "set AGENTR
 			if (Date.now() > until) assert.fail(`init did not answer hello within 30 s: ${JSON.stringify(hello)}; logs: ${spawnSync("docker", ["logs", name], { encoding: "utf8" }).stderr}`);
 			await sleep(300);
 		}
-		const started = await startDisplay(client, desktopOf({ windowManager: WINDOW_MANAGER }), { version: VERSION, vendor: "docker" });
+		// As a host whose facts say windowManager (E2B's, Agent37's): the display, then WINDOW_MANAGER on it.
+		const started = await startDisplay(client, desktopOf({}), { version: VERSION, vendor: "docker", windowManager: true });
 		assert.ok(started.ok, started.ok || started.error.message);
 	});
 
