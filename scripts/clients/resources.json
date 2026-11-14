@@ -100,6 +100,8 @@
     "rotateTriggerSecret": ["triggers", "rotate-secret"],
     "listTemplates": ["template", "list"],
     "applyTemplate": ["template", "apply"],
+    "importTemplate": ["template", "import"],
+    "deleteTemplate": ["template", "delete"],
     "listToolKeys": ["tool-keys", "list"],
     "saveToolKey": ["tool-keys", "save"],
     "deleteToolKey": ["tool-keys", "delete"],
