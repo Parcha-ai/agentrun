@@ -40,9 +40,9 @@ mcp:
       pull_request_review_write: { owner: "${parameters.owner}", repo: "${parameters.repo}", method: [create, submit_pending, delete_pending], event: [null, COMMENT] }
       add_comment_to_pending_review: { owner: "${parameters.owner}", repo: "${parameters.repo}" }
 parameters:
-  owner: { type: string, required: true, pattern: "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$", description: "the GitHub account that owns the repository to review, as GitHub spells it, like Parcha-ai" }
-  repo: { type: string, required: true, pattern: "^[A-Za-z0-9._-]{0,99}[A-Za-z0-9_-]$", description: "the repository's name alone, without its owner, as GitHub spells it, like agentrun" }
-  focus: { type: string, description: "optional: one line on what matters most here (\"auth and money paths\"), read before the repo's own rules" }
+  owner: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$", description: "the GitHub account that owns the repository to review, as GitHub spells it, like Parcha-ai" }
+  repo: { type: string, pattern: "^[A-Za-z0-9._-]{0,99}[A-Za-z0-9_-]$", description: "the repository's name alone, without its owner, as GitHub spells it, like agentrun" }
+  focus: { type: string, required: false, description: "optional: one line on what matters most here (\"auth and money paths\"), read before the repo's own rules" }
 # Each run's spend cap: the reviewers' tool calls are bounded by it and by the guides' own call counts.
 budget: { per_run_usd: 0.50 }
 learning: false

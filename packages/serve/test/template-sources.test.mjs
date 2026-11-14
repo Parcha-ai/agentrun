@@ -39,7 +39,7 @@ mcp:
     allow: [list_notes]
     pin: { send_note: { to: "\${parameters.to}" } }
 parameters:
-  to: { type: string, description: "where the digest goes" }
+  to: { type: string, required: false, description: "where the digest goes" }
 ---
 Call mcp:notes/list_notes, then mcp:notes/send_note once. The text xmcp:notes/list_notes is not a tool name. You hold mcp:notes/*.
 `;

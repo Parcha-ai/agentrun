@@ -38,8 +38,8 @@ mcp:
       get_label: { owner: "${parameters.owner}", repo: "${parameters.repo}" }
       issue_write: { owner: "${parameters.owner}", repo: "${parameters.repo}", method: create }
 parameters:
-  owner: { type: string, required: true, pattern: "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$", description: "the GitHub account that owns the repository whose releases you write notes for, as GitHub spells it, like Parcha-ai" }
-  repo: { type: string, required: true, pattern: "^[A-Za-z0-9._-]{0,99}[A-Za-z0-9_-]$", description: "the repository's name alone, without its owner, as GitHub spells it, like agentrun" }
+  owner: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$", description: "the GitHub account that owns the repository whose releases you write notes for, as GitHub spells it, like Parcha-ai" }
+  repo: { type: string, pattern: "^[A-Za-z0-9._-]{0,99}[A-Za-z0-9_-]$", description: "the repository's name alone, without its owner, as GitHub spells it, like agentrun" }
   groups: { type: string, required: false, description: "the section names under 'What you can do now', in order, comma separated (for example: Install, Harnesses, Learning); empty: the agent picks a few from the changes" }
   style: { type: string, required: false, description: "one short line on tone (for example: plain and short, second person); empty: the skill's default" }
   changes_dir: { type: string, required: false, pattern: "^(?!.*\\.\\.)[A-Za-z0-9_][A-Za-z0-9._/-]*$", description: "the folder where the repo keeps one change fragment per pull request (for example: changes); empty: the repo has none" }
