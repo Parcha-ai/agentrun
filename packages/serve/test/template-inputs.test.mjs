@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { compiled, PackageError, packageView, readPackage, TEMPLATES_DIR } from "../dist/templates.js";
 import { readCases } from "../dist/template-eval.js";
+import { schemaCheck } from "../dist/answer-json.js";
 import { inputIssues, inputSchemaOf } from "../dist/validate.js";
 import { follow, scratch, serve } from "./support.mjs";
 
@@ -121,7 +122,25 @@ test("kyb takes its subject as typed input matching its report's subject.input, 
     assert.deepEqual(inputIssues({ ...(one.input ? { content: one.input } : {}), ...one.fields }, inputSchemaOf(kyb.inputSchema)), [], one.name);
   }
   assert.match(kyb.instructions, /Input:/, "its instructions read the json block");
-  assert.match(readFileSync(join(TEMPLATES_DIR, "kyb", "skills", "kyb", "SKILL.md"), "utf8"), /`company`/, "its skill maps the typed fields to subject.input");
+});
+
+test("kyb's report keeps its typed input under the input's own names: subject.input is the block the run received", () => {
+  const report = JSON.parse(readFileSync(join(TEMPLATES_DIR, "kyb", "kyb.schema.json"), "utf8"));
+  const kyb = readPackage(join(TEMPLATES_DIR, "kyb"));
+  const subjectInput = report.properties.subject.properties.input;
+  assert.deepEqual(Object.keys(subjectInput.properties), Object.keys(kyb.inputSchema.properties), "the same names, in the same order");
+  assert.deepEqual(subjectInput.required, kyb.inputSchema.required);
+  const made = schemaCheck(subjectInput);
+  assert.ok("check" in made, JSON.stringify(made));
+  assert.deepEqual(made.check({ company: "Stripe, Inc.", website: "https://stripe.com", country: "US", reason: "vendor" }), [], "a run's input, copied whole");
+  assert.deepEqual(made.check({ company: "Quillmont Brightwater" }), [], "a field the run did not get is left out");
+  assert.notDeepEqual(made.check({ name: "Stripe, Inc.", domain: "stripe.com", reason: "unspecified" }), [], "the old names are refused");
+  // The skill copies the block as it is: no field-by-field mapping, and its example answer uses the input's names.
+  const skill = readFileSync(join(TEMPLATES_DIR, "kyb", "skills", "kyb", "SKILL.md"), "utf8");
+  assert.doesNotMatch(skill, /→ `subject\.input\./, "no mapping from the typed fields to other names");
+  const example = JSON.parse(skill.match(/"input": (\{[^}]*\})/)[1]);
+  assert.deepEqual(made.check(example), [], "the skill's example subject.input meets the schema");
+  assert.ok(Object.keys(example).every((name) => Object.hasOwn(kyb.inputSchema.properties, name)), JSON.stringify(example));
 });
 
 test("an applied kyb agent's runs take typed input and refuse an input its schema does not", { timeout: 90_000 }, async (t) => {
