@@ -763,7 +763,10 @@ function createProjector(options: TimelineOptions) {
       if (metered === "answer") answers.set(conv, entry.id);
       if (message.stopReason === "error") {
         const why = redactedWhy(str(message.errorMessage) ?? "unknown error");
-        add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}`, text: why }));
+        // One with no price of its own (a provider's refusal sends none) is a cost unknown, never $0: the provider may
+        // still bill it (run-adapters answeredUnpriced). Its row says so, as the usage row counts it "not priced".
+        const priced = Number.isFinite(obj(obj(message.usage)?.cost)?.total);
+        add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}${priced ? "" : UNPRICED_FAILURE}`, text: why }));
       } else if (message.stopReason !== "aborted") {
         const blocks = blocksOf(message);
         const settled = provisional.get(conv);
@@ -983,7 +986,7 @@ function createProjector(options: TimelineOptions) {
     const counted = meter.usage(options.settled === true || nothingInFlight);
     if (!counted || root === undefined) return undefined;
     const { usd, requests, charges, so_far_usd, unpriced, not_metered } = counted;
-    const paid = `${charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : ""}${not_metered ? `; ${not_metered} tool call${not_metered === 1 ? "" : "s"} not metered` : ""}`;
+    const paid = toolCallWords(charges, not_metered);
     const spent = usd !== null ? dollars(usd) : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
       // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
@@ -1010,6 +1013,12 @@ function createProjector(options: TimelineOptions) {
 export const COST_SO_FAR = "Cost so far";
 export const COST_ENDED = "Cost";
 export const costLabel = (ended: boolean): string => (ended ? COST_ENDED : COST_SO_FAR);
+/** What a failed model request's row adds when no price came back for it. */
+const UNPRICED_FAILURE = " (its cost is unknown: the provider sent no price and may still bill it)";
+/** The usage row's words after its model requests: its paid tool calls (`charges`) and its tool calls with no price
+ *  (`notMetered`), each said only when there is one, the same on every harness (store-reads/journal.ts bookedUsage). */
+export const toolCallWords = (charges: number, notMetered = 0): string =>
+  `${charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : ""}${notMetered ? `; ${notMetered} tool call${notMetered === 1 ? "" : "s"} not metered` : ""}`;
 /** `row` as an ended run's: a usage row made while it ran ("Cost so far: …") says its cost ("Cost: …"); any other row as
  *  it is. For a host that keeps rows read before the run ended. */
 export function endedUsage<T extends { kind: string; summary?: string | null }>(row: T): T {

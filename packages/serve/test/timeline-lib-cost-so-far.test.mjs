@@ -32,6 +32,16 @@ test("an ended run's usage row says its cost, never \"so far\": every cost known
   assert.equal(summaryOf(cut, { settled: true }), "Cost so far: $0.0100 known, 1 not priced, over 2 model requests");
 });
 
+test("a request the provider refused with no price (0 tokens, cost null) says on its row that its cost is unknown and the provider may bill it; one priced, even at $0, does not", () => {
+  const refused = (total) => assistant([], 0, { stopReason: "error", errorMessage: "This request was blocked.", usage: { input: 0, output: 0, cost: { total } } });
+  const errorOf = (entries) => timelineOf(entries, { settled: true, ended: true }).find((row) => row.kind === "error");
+  const unpriced = [user("go"), started(), priced("one", 0.01), started(), refused(null), ended()];
+  assert.equal(errorOf(unpriced).summary, "Model request failed: This request was blocked. (its cost is unknown: the provider sent no price and may still bill it)");
+  assert.equal(errorOf(unpriced).text, "This request was blocked.", "the provider's words as it sent them");
+  assert.equal(rowOf(unpriced).summary, "Cost so far: $0.0100 known, 1 not priced, over 2 model requests");
+  assert.equal(errorOf([user("go"), started(), refused(0), ended()]).summary, "Model request failed: This request was blocked.", "priced at $0: no note");
+});
+
 test("a request a crash cut (marked, no answer) is 1 not priced once the run is settled; live, it is in flight and the cost is the sum so far", () => {
   const entries = [user("go"), started(), priced("one", 0.01), started()];
   assert.deepEqual(usageOf(entries), { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 });
