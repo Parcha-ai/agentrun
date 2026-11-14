@@ -3,7 +3,8 @@
 // The runner carries it the same way, as a pi-native extension on the root agent (adapter-run-spec.ts, through the pi
 // adapter's PiAdapterOptions.extensions, which both offers and runs it), so pi keeps its terminate; the loop reads that
 // turn end (endedOnTurnEndingTool) and commits the run parked on a KINDS.personAsked entry, never ending it. A person's
-// message resumes it as the next user turn. pi only: CLI harnesses refuse ask_person (runnable.ts, no replay row).
+// message resumes it as the next user turn. The same run on claude-agent and codex, which get ask_person as a host tool,
+// is runner-ask-person-harnesses.test.mjs.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +19,6 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { viewOverStore } = await import("../dist/store-view.js");
-const { blockersOf } = await import("../dist/runnable.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -205,13 +205,6 @@ test("resume after a follow-up: a reopened run that parks on its question has it
     return now.state === "ended" && now.runner === null && now;
   }, "the answer ends the run");
   assert.equal(ended.summary, null);
-});
-
-test("CLI refused: a CLI-harness run that names ask_person is refused in main's words, never bound", async () => {
-  const blockers = await blockersOf({}, { kind: "agentic", instructions: "Ask the person.", tools: ["ask_person"], harness: "codex", model: "gpt-6.1-sol" });
-  const ask = blockers.find((blocker) => blocker.tool === "ask_person");
-  assert.ok(ask, `ask_person is refused on a CLI harness: ${JSON.stringify(blockers)}`);
-  assert.match(ask.message, /runs on pi here/, `refused in main's words: ${JSON.stringify(ask)}`);
 });
 
 /** A tool host's hold for the wait in the claim (HostLifecycle.personWait), as the browser's is: what it was asked, how
