@@ -268,6 +268,8 @@ export interface AskData {
   readonly requestedAt?: string;
   /** Its approval price (a catalog tool's, the spec's mcp priceOf); null when it has none. */
   readonly price?: ApprovalPrice | null;
+  /** An MCP tool its run's pin marks destructive (tool-gate.ts toolEffect): an allow of it needs confirm_destructive. */
+  readonly destructive?: true;
 }
 
 /** How an ask was answered: approved, denied, withdrawn (a stop while the call waited) or canceled (a cancel). */

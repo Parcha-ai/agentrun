@@ -19,6 +19,7 @@
 //   await gateway.close();
 // `path` is without its query string, which `query` holds ("" for none): Claude's CLI asks `/v1/messages?beta=true`.
 import { createServer } from "node:http";
+import { stranger } from "./stranger.mjs";
 
 /** The routes answered, by the end of the request's path. */
 export const ROUTES = Object.freeze({ responses: "/v1/responses", messages: "/v1/messages", chat: "/v1/chat/completions" });
@@ -56,8 +57,8 @@ export async function startFauxGateway(options = {}) {
       }
       const [path, ...rest] = (req.url ?? "/").split("?");
       // A request outside the API's own paths (none under /v1/) that is no POST is no client's: a stranger's probe of a
-      // loopback port (a bare `GET /`, F2/F3). Answered 404 and never recorded among a test's requests.
-      if (req.method !== "POST" && !path.includes("/v1/")) return void res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: `no ${req.method} ${path} here` } }));
+      // loopback port (a bare `GET /`, F2/F3). Answered 404 and never recorded among a test's requests (fixtures/stranger.mjs).
+      if (stranger(req, res, { own: (at, method) => method === "POST" || at.includes("/v1/") })) return;
       const request = { method: req.method ?? "", path, query: rest.join("?"), headers: Object.fromEntries(RECORDED_HEADERS.map((name) => [name, req.headers[name]])), body };
       requests.push(request);
       const stream = body?.stream === true;

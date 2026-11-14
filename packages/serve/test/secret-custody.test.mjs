@@ -26,6 +26,7 @@ import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { reported } from "./fixtures/custody-report.mjs";
 import { copyStandInSync } from "../../run-adapters-codex/test/stand-in.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 // A run's served answer has no held secret in it, so what a custody run's process reported is read as it wrote it
 // (fixtures/custody-report.mjs), never from the answer.
 process.env.CUSTODY_REPORT_DIR ??= mkdtempSync(join(tmpdir(), "custody-reports-"));
@@ -589,8 +590,8 @@ async function heldGateway(t) {
   const held = new Promise((resolve) => (release = resolve));
   t.after(() => release());
   const server = createServer(async (req, res) => {
-    // Only the API's own paths count: a host's loopback prober (a keyless GET /) is not a request of the run's.
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    // Only the API's own paths count (fixtures/stranger.mjs).
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     for await (const _ of req);
     seen.push({ path: req.url, authorization: req.headers.authorization });
     await held;

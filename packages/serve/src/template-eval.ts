@@ -725,6 +725,8 @@ export type Report = {
   package: { name: string; version: string; dir: string };
   server: { kind: "in_process" } | { kind: "remote"; base_url: string };
   grader_model: string | null;
+  /** The eval's agents run with approvals never (`measured`), whatever the package's own default (`package`). */
+  approvals: { measured: "never"; package: "ask" | "never" };
   started_at: string;
   finished_at: string;
   pass: boolean;
@@ -819,6 +821,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     package: { name: pkg.name, version: pkg.version, dir: options.dir },
     server: options.server ? { kind: "remote", base_url: v2Base(options.server.baseUrl) } : { kind: "in_process" },
     grader_model: options.graderModel ?? null,
+    approvals: { measured: "never", package: pkg.approvals ?? "ask" },
     started_at: started, finished_at: new Date().toISOString(),
     pass: exitCodeOf({ cases: results }) === 0, passed: results.filter((c) => c.pass).length, cases: results,
     cost_usd: { runs: runCost, graders: graderCost, total: sum([runCost, graderCost]), unknown: runs.filter((r) => r.run_id && r.cost_usd === null).length + graders.filter((g) => g.run_id && g.cost_usd === null).length },
@@ -881,7 +884,10 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   await serverPins(ctx, one);
   // Each faked toolkit on its fake, by name: never on a server of the same toolkit the owner saved.
   const servers = Object.fromEntries(fakes.map((fake) => [fake.name, fake.name]));
-  const applied = expectOk(`applying ${pkg.name}`, await api("POST", `/templates/${pkg.name}/apply`, { parameters: one.parameters, grants: one.grants, ...(fakes.length ? { servers } : {}) }));
+  // Approvals never, for the eval's own agent only: a run that stopped at its first ask would measure nothing. The
+  // package's default (ask, say, for a template whose tools cost money) is the owner's at install, and stays as it is;
+  // the report says how it was measured.
+  const applied = expectOk(`applying ${pkg.name}`, await api("POST", `/templates/${pkg.name}/apply`, { parameters: one.parameters, grants: one.grants, ...(fakes.length ? { servers } : {}), overrides: { approvals: "never" } }));
   const agentId = String(applied.agent_id);
   made.agents.push(agentId);
   // An eval's agent runs only the eval's runs: the package's triggers (a weekly schedule, say) would start paid runs of
@@ -1112,6 +1118,8 @@ export function markdownReport(report: Report): string {
     `# Evals: ${report.package.name} ${report.package.version}`,
     "",
     `${report.passed} of ${report.cases.length} case${report.cases.length === 1 ? "" : "s"} passed. Cost: ${usd(report.cost_usd.total)} (runs ${usd(report.cost_usd.runs)}, graders ${usd(report.cost_usd.graders)})${report.cost_usd.unknown ? `; ${report.cost_usd.unknown} run${report.cost_usd.unknown === 1 ? "" : "s"} with no known cost` : ""}.`,
+    "",
+    `Measured with approvals ${report.approvals.measured} (the package's own default is ${report.approvals.package}).`,
     "",
     "| Case | Runs passed | Result | Cost |",
     "|---|---|---|---|",

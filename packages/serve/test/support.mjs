@@ -29,6 +29,7 @@ import { routeOf } from "../dist/runner/model-route.js";
 import { withoutFaux } from "../dist/model.js";
 import { runLine } from "../dist/print.js";
 import { bootSealKey } from "../dist/seal-key.js";
+import { stranger } from "./fixtures/stranger.mjs";
 
 // Every test process has a config home of its own, never this machine's ~/.config: a test writes nothing outside its own
 // directories (a server keeps its seal key in its data directory, seal-key.ts).
@@ -781,6 +782,7 @@ export async function responsesEndpoint(t, text, tokens, { incomplete = false } 
   const models = [];
   const authorizations = [];
   const server = createServer((req, res) => {
+    if (stranger(req, res)) return;
     asked.push(`${req.method} ${req.url}`);
     if (req.method === "POST") authorizations.push(req.headers.authorization ?? null);
     const chunks = [];
