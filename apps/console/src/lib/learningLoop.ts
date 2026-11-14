@@ -194,8 +194,10 @@ export function storyOf(input: {
   /** The agent's learning: `notes` keeps notes and never compiles (the runner skips the compile turn), so the story
    *  promises no workflow, takeover or cheaper runs it will never get. */
   mode?: "full" | "notes";
+  /** Native runs learn notes/skills; SDK workflows run only through their backend-owned bridge. */
+  execution?: "hosted" | "native" | "sdk";
 }): Stage[] {
-  const { notes, compiledNotes, runs, workflows, cost, promotions, serving, loop, mode = "full" } = input;
+  const { notes, compiledNotes, runs, workflows, cost, promotions, serving, loop, mode = "full", execution = "hosted" } = input;
   const notesOnly = mode === "notes";
   const active = workflows.filter((w) => w.status === "active");
   const failedCompile = loop?.compiles.find((c) => c.digest === null && (c.draft_errors.length > 0 || c.attempts.length > 0));
@@ -218,6 +220,10 @@ export function storyOf(input: {
     detail: compiledNotes ? `${compiledNotes} compiled into a workflow` : notes ? "kept from its runs, read by every later run" : "none yet: a run keeps what it learns at its end",
     state: notes ? "done" : "now",
   });
+  if (execution === "native") {
+    stages.push({ key: "compiled", title: "Learning", value: "Notes and skills", detail: "Native runs receive accepted notes and skills; learned workflows are unavailable.", state: "later" });
+    return stages;
+  }
   if (active.length || (lastCompile && lastCompile.digest)) {
     const name = active[0]?.name ?? lastCompile?.workflow ?? "a workflow";
     stages.push({ key: "compiled", title: "Compiled", value: name, detail: lastCompile ? `from ${lastCompile.from_notes.length} ${lastCompile.from_notes.length === 1 ? "note" : "notes"}, ${lastCompile.attempts.length} ${lastCompile.attempts.length === 1 ? "attempt" : "attempts"}` : "a learned workflow", state: "done" });
@@ -226,7 +232,11 @@ export function storyOf(input: {
   } else if (notesOnly) {
     stages.push({ key: "compiled", title: "Compile", value: "Notes only", detail: `this agent learns notes only: no workflow compiles from them. Full learning compiles one at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs`, state: "later" });
   } else {
-    stages.push({ key: "compiled", title: "Compile", value: "Not yet", detail: `${notes} of ${COMPILE_AT_NOTES} notes, ${Math.min(runs, COMPILE_AT_RUNS)} of ${COMPILE_AT_RUNS} runs: a workflow compiles at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs`, state: notes || runs ? "now" : "later" });
+    stages.push({ key: "compiled", title: "Compile", value: "Not yet", detail: execution === "sdk" ? `With workflow learning and backend tool bindings, compilation starts at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs` : `${notes} of ${COMPILE_AT_NOTES} notes, ${Math.min(runs, COMPILE_AT_RUNS)} of ${COMPILE_AT_RUNS} runs: a workflow compiles at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs`, state: notes || runs ? "now" : "later" });
+  }
+  if (execution === "sdk") {
+    if (!notesOnly) stages.push({ key: "took_over", title: "Use workflow", value: "Backend decides", detail: "Your backend keeps launching each run. The SDK can call accepted workflows through MCP with explicitly bound tools.", state: active.length ? "now" : "later" });
+    return stages;
   }
   if (s?.takeover) {
     stages.push({ key: "took_over", title: "Took over", value: `Run ${s.takeover.n}`, detail: servingLine ?? (newest?.replay?.n ? replayLine(newest) : newest ? newest.reason : "the first run a learned workflow finished alone"), state: stopped || (newest?.decided === "hold" && !champion) ? "warn" : "done" });

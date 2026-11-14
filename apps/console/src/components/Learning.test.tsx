@@ -1620,3 +1620,28 @@ describe("the loop on the Learning tab", () => {
     expect(compiled).not.toContain("Held");
   });
 });
+
+
+describe("learning-loop integration with source-owned execution", () => {
+  it.each(["claude-code", "codex"] as const)("native %s learning never promises automatic compilation or takeover", async runtime => {
+    const native: NonNullable<Agent["definition"]["native"]> = { runtime, model: null, project: "/workspace/app", selector: { kind: "project" as const }, machine_id: "source", version: "1", fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready" as const, issues: [], connected: true, verified_at: "2026-11-12T00:00:00Z", capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "native" as const, usage: true } };
+    const t = await open(agent(true, { native }));
+    const story = t.host.querySelector('[data-testid="loop-story"]')!;
+    expect(story.textContent).toContain("Native runs receive accepted notes and skills");
+    expect(t.text()).toContain("Native run costs");
+    expect(t.text()).not.toContain("takes the job over");
+    expect(story.textContent).not.toContain("compiles at");
+    expect(story.querySelector('[data-testid="stage-took_over"]')).toBeNull();
+    expect(story.querySelector('[data-testid="stage-cheaper"]')).toBeNull();
+  });
+  it.each(["claude-agent-sdk", "codex-sdk"] as const)("%s keeps launches in the backend and workflows explicitly bound", async runtime => {
+    const t = await open(agent(true, { sdk: { runtime } }));
+    const story = t.host.querySelector('[data-testid="loop-story"]')!;
+    expect(story.textContent).toContain("Your backend keeps launching each run");
+    expect(t.text()).toContain("SDK run costs");
+    expect(t.text()).not.toContain("takes the job over");
+    expect(story.textContent).toContain("MCP with explicitly bound tools");
+    expect(story.textContent).not.toContain("serves first");
+    expect(story.querySelector('[data-testid="stage-cheaper"]')).toBeNull();
+  });
+});
