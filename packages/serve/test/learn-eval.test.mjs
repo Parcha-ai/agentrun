@@ -149,3 +149,59 @@ test("the live eval leaves a call that never judged out of every rate: a timeout
   const u = tally([...judged, ...failed], [inj], "grade");
   assert.deepEqual([u.injection, u.drops], [[2, 2], [2, 2]]);
 });
+
+test("the live eval's --max-usd is a hard stop: once its spend reaches the cap, no further model request is sent, the summary says so, and it exits 3; a request whose cost it cannot read stops it too", { timeout: 120_000 }, async (t) => {
+  const { startFauxGateway } = await import("./fixtures/faux-gateway.mjs");
+  const { spawn } = await import("node:child_process");
+  const { existsSync } = await import("node:fs");
+  const script = new URL("../scripts/learn-eval.mjs", import.meta.url).pathname;
+  const run = async (price, maxUsd) => {
+    const gateway = await startFauxGateway({ text: "not a verdict", usage: { input: 1_000, output: 200 } });
+    t.after(() => gateway.close());
+    const out = join(await scratch(t), "out");
+    const env = { PATH: process.env.PATH, AGENT_MODEL_BASE_URL: `${gateway.url}/v1`, AGENT_MODEL_API_KEY: ["fake", "test", "key"].join("-"), AGENT_MODEL: "gpt-test", ...(price ? { AGENT_MODEL_PRICE: price } : {}) };
+    // Not spawnSync: the gateway answers on this process's own event loop.
+    const done = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [script, "--out", out, "--set", "heldout", "--modes", "grade", "--models", "default", "--concurrency", "1", "--max-usd", maxUsd, "--label", "capped"], { env });
+      let stderr = "";
+      child.stderr.on("data", (chunk) => (stderr += chunk));
+      child.stdout.resume();
+      child.on("close", (status) => resolve({ status, stderr }));
+    });
+    const summary = existsSync(join(out, "capped.md")) ? readFileSync(join(out, "capped.md"), "utf8") : "";
+    return { done, summary, requests: gateway.requests.filter((r) => r.method === "POST").length };
+  };
+  // Priced: $1 a million in, $2 out, so each request is $0.0014; the cap is reached by the first.
+  const priced = await run("1,2,0.5", "0.001");
+  assert.equal(priced.done.status, 3, priced.done.stderr.slice(-2000));
+  assert.equal(priced.requests, 1, "one request, then none past the cap");
+  assert.match(priced.summary, /stopped at --max-usd 0\.001/);
+  // A model the run cannot price: its cost is unknown, so it stops at the first request as well.
+  const unpriced = await run(undefined, "5");
+  assert.equal(unpriced.done.status, 3, unpriced.done.stderr.slice(-2000));
+  assert.equal(unpriced.requests, 1);
+  assert.match(unpriced.summary, /cost of a request could not be read/);
+});
+
+test("the live eval keeps what a job spent when the cap stops it part way: an end-of-run turn cut between its requests books both, in its row and in the summary's total", { timeout: 120_000 }, async (t) => {
+  const { startFauxGateway } = await import("./fixtures/faux-gateway.mjs");
+  const { spawn } = await import("node:child_process");
+  const script = new URL("../scripts/learn-eval.mjs", import.meta.url).pathname;
+  // Every answer reads a note, so the turn asks again; $1 a million in, $2 out: $0.0014 a request, the cap past the second.
+  const gateway = await startFauxGateway({ call: () => ({ name: "read", input: { path: ".learning/MEMORY.md" } }), usage: { input: 1_000, output: 200 } });
+  t.after(() => gateway.close());
+  const out = join(await scratch(t), "out");
+  const env = { PATH: process.env.PATH, AGENT_MODEL_BASE_URL: `${gateway.url}/v1`, AGENT_MODEL_API_KEY: ["fake", "test", "key"].join("-"), AGENT_MODEL: "gpt-test", AGENT_MODEL_PRICE: "1,2,0.5" };
+  const done = await new Promise((resolve) => {
+    const child = spawn(process.execPath, [script, "--out", out, "--set", "heldout", "--only", heldOut[0].id, "--modes", "reflect", "--models", "default", "--concurrency", "1", "--max-usd", "0.002", "--label", "cut"], { env });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    child.stdout.resume();
+    child.on("close", (status) => resolve({ status, stderr }));
+  });
+  assert.equal(done.status, 3, done.stderr.slice(-2000));
+  assert.equal(gateway.requests.filter((r) => r.method === "POST").length, 2, "two requests, the cap reached by the second");
+  const [row] = readFileSync(join(out, "cut.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.ok(Math.abs(row.usd - 0.0028) < 1e-9, `the row books both requests: ${row.usd}`);
+  assert.match(readFileSync(join(out, "cut.md"), "utf8"), /spent \$0\.0028/);
+});

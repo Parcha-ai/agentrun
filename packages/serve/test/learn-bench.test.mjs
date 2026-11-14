@@ -217,6 +217,50 @@ test("a grader that could not grade says so: ungraded, from a run that did not f
   assert.equal((await bench.gradeLlm({ ...down, options: { deadline: Date.now() - 1, runTimeoutMs: 1000 } }, "x")).ungraded, true, "the deadline passed");
 });
 
+test("--max-usd holds: a step starts only when its worst case fits under the cap", async () => {
+  const bench = await import("../scripts/learn-bench.mjs");
+  const { GRADER_CAP_USD } = await import("../dist/template-eval.js");
+  const kase = { maxCostUsd: 0.4, graders: [{ type: "llm" }, { type: "llm" }, { type: "file_exists" }] };
+  assert.equal(bench.stepWorst(kase), 0.4 + 2 * GRADER_CAP_USD, "the run's cap and each llm grader's");
+  assert.equal(bench.stepWorst({ graders: [{ type: "llm" }] }), undefined, "a run with no cap has no worst case");
+  const worst = bench.stepWorst(kase);
+  assert.equal(bench.capStop(0, worst, 10, "01"), null);
+  assert.match(bench.capStop(10 - worst + 0.01, worst, 10, "02"), /step 02 could spend up to .*--max-usd 10/, "it would pass the cap");
+  assert.match(bench.capStop(10.5, worst, 10, "03"), /passed --max-usd 10 before step 03/);
+  assert.equal(bench.capStop(9.99, undefined, 10, "04"), null, "no worst case: the spend so far alone");
+});
+
+test("the bench's spend: every run's cost and learning's grades, which no run's cost holds", async () => {
+  const bench = await import("../scripts/learn-bench.mjs");
+  const asked = [];
+  const api = async (method, path) => {
+    asked.push(path);
+    if (path === "/stats") return { status: 200, body: { analytics: { totals: { cost_usd: 1.25 } } } };
+    if (path.startsWith("/usage?")) return { status: 200, body: { lines: [{ meter: "model", usd: 1.25 }, { meter: "learning", usd: 0.5 }] } };
+    return { status: 404, body: {} };
+  };
+  assert.equal(await bench.spentOf(api), 1.75);
+  assert.ok(asked.some((path) => /^\/usage\?.*from=1970/.test(path)), "learning's meter since the server began");
+});
+
+test("a cost the server could not price stops the bench: a grade that failed after a paid request is no $0", async () => {
+  const bench = await import("../scripts/learn-bench.mjs");
+  const api = (unpriced) => async (method, path) => {
+    if (path === "/stats") return { status: 200, body: { analytics: { totals: { cost_usd: 0.5 } } } };
+    if (path.startsWith("/usage?")) return { status: 200, body: { unpriced_runs: unpriced, lines: [{ meter: "learning", usd: 0.1, unpriced_runs: unpriced }] } };
+    return { status: 404, body: {} };
+  };
+  assert.equal(await bench.spentOf(api(0)), 0.6, "every cost known");
+  assert.equal(await bench.spentOf(api(1)), null, "one unknown: the spend is not known");
+  assert.match(bench.capStop(null, 0.1, 10, "05"), /could not be priced.*--max-usd 10 could not be held before step 05/);
+});
+
+test("a bench stopped at its cap exits 3, as learn-eval does", async () => {
+  const bench = await import("../scripts/learn-bench.mjs");
+  assert.equal(bench.exitCodeOf({ hard_stop: "the server's spend 3.1 passed --max-usd 3 before step 04", series: [] }), 3);
+  assert.equal(bench.exitCodeOf({ hard_stop: null, series: [] }), 0);
+});
+
 // C3: workflow reuse. The #2282 ask fires once a learned skill has served DRAFT_AFTER_RUNS earlier runs (learn/reflect.ts),
 // so a skill taught at the teach step is first asked for as a workflow at the step DRAFT_AFTER_RUNS + 1 after it, and a
 // workflow kept there is first callable at the step after that. A job that measures reuse (job.yaml `reuse: true`) runs at

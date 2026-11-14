@@ -1,0 +1,115 @@
+name: Learning live weekly
+
+# Learning's live checks, on real models, once a week and on demand (never on a pull request): the grader on the
+# held-out eval set over the grade models LEARNING_LIVE_GRADE_MODELS names (packages/serve/scripts/learn-eval.mjs --set
+# heldout --grade-models, LS-09), and one seed of the learning bench on pi (packages/serve/scripts/learn-bench.mjs, LS-01).
+# Each has a dollar cap (--max-usd) and exits 3 when it stops at it. The eval reads its spend before each model request
+# and a cost it can't read stops it too; the bench reads the server's spend before each step and starts one only when
+# that step's worst case (its run's cap and its graders') still fits, so only a step's learning grade, a fraction of a
+# cent, can pass it; a cost the server could not price stops it too. Model traffic goes only to the endpoint the
+# repository's secrets name, with the key they hold; neither is printed. Results are kept as an artifact, and the
+# summaries are this run's job summary.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      grade_models:
+        description: 'Grade models for the eval, comma separated (default: the repository variable LEARNING_LIVE_GRADE_MODELS)'
+        required: false
+      eval_max_usd:
+        description: 'The eval''s hard cap, in dollars'
+        required: false
+        default: '1.5'
+      bench_max_usd:
+        description: 'The bench seed''s hard cap, in dollars'
+        required: false
+        default: '3'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: learning-live-weekly
+  cancel-in-progress: false
+
+jobs:
+  learning-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      # The model endpoint and its key, from the repository's secrets: the only place model traffic goes. pi and the
+      # default grader read these (learn-eval.mjs, learn-bench.mjs); nothing here prints them.
+      AGENT_MODEL_BASE_URL: ${{ secrets.LEARNING_LIVE_MODEL_BASE_URL }}
+      AGENT_MODEL_API_KEY: ${{ secrets.LEARNING_LIVE_MODEL_API_KEY }}
+      AGENT_MODEL: ${{ vars.LEARNING_LIVE_MODEL }}
+      GRADE_MODELS: ${{ inputs.grade_models || vars.LEARNING_LIVE_GRADE_MODELS }}
+      EVAL_MAX_USD: ${{ inputs.eval_max_usd || '1.5' }}
+      BENCH_MAX_USD: ${{ inputs.bench_max_usd || '3' }}
+    steps:
+      - name: Check the model settings are there
+        id: ready
+        run: |
+          missing=""
+          [ -n "$AGENT_MODEL_BASE_URL" ] || missing="$missing LEARNING_LIVE_MODEL_BASE_URL (secret)"
+          [ -n "$AGENT_MODEL_API_KEY" ] || missing="$missing LEARNING_LIVE_MODEL_API_KEY (secret)"
+          [ -n "$AGENT_MODEL" ] || missing="$missing LEARNING_LIVE_MODEL (variable)"
+          [ -n "$GRADE_MODELS" ] || missing="$missing LEARNING_LIVE_GRADE_MODELS (variable)"
+          # Where the results go (the runner context is not a job env's to read).
+          echo "OUT=$RUNNER_TEMP/learning-live" >> "$GITHUB_ENV"
+          if [ -n "$missing" ]; then
+            echo "Learning's live run did not run: this repository has no$missing." >> "$GITHUB_STEP_SUMMARY"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.ready.outputs.ready == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.ready.outputs.ready == 'true'
+        with:
+          node-version: '24.21.0'
+          cache: npm
+      - if: steps.ready.outputs.ready == 'true'
+        run: npm ci --ignore-scripts
+      - if: steps.ready.outputs.ready == 'true'
+        run: npm run build
+      - name: The grader on the held-out set, over the grade models named
+        id: eval
+        if: steps.ready.outputs.ready == 'true'
+        continue-on-error: true
+        run: >-
+          node packages/serve/scripts/learn-eval.mjs --out "$OUT/eval" --label heldout --set heldout --modes grade
+          --models default --grade-models "$GRADE_MODELS" --concurrency 2 --max-usd "$EVAL_MAX_USD"
+      - name: One seed of the learning bench, on pi
+        id: bench
+        if: steps.ready.outputs.ready == 'true'
+        continue-on-error: true
+        run: >-
+          node packages/serve/scripts/learn-bench.mjs --out "$OUT/bench" --data "$RUNNER_TEMP/learning-live-data"
+          --harness pi --max-usd "$BENCH_MAX_USD" --deadline-s 5400
+      - name: Summaries
+        if: always() && steps.ready.outputs.ready == 'true'
+        run: |
+          {
+            echo "## Learning live, $(date -u +%Y-%m-%d)"
+            echo
+            echo "Eval: ${{ steps.eval.outcome }} (cap \$${EVAL_MAX_USD}); bench: ${{ steps.bench.outcome }} (cap \$${BENCH_MAX_USD})."
+            echo
+            if [ -f "$OUT/eval/heldout.md" ]; then cat "$OUT/eval/heldout.md"; else echo "The eval wrote no summary."; fi
+            echo
+            results=$(find "$OUT/bench" -name results.json -print -quit 2>/dev/null)
+            if [ -n "$results" ]; then node packages/serve/scripts/learn-bench.mjs --render "$results"; else echo "The bench wrote no results."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the results
+        if: always() && steps.ready.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: learning-live-${{ github.run_id }}
+          path: ${{ runner.temp }}/learning-live/
+          if-no-files-found: ignore
+      - name: Fail when a part failed or stopped at its cap
+        if: steps.ready.outputs.ready == 'true' && (steps.eval.outcome != 'success' || steps.bench.outcome != 'success')
+        run: |
+          echo "eval: ${{ steps.eval.outcome }}, bench: ${{ steps.bench.outcome }}: see the job summary and the artifact."
+          exit 1

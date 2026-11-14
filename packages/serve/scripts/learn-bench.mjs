@@ -24,8 +24,12 @@
 // The server is this process's own (startServe on a data directory of --data, accounts on, a runner beside it), as the
 // template eval starts one. Models come from this process's environment (AGENT_MODEL_BASE_URL with AGENT_MODEL_API_KEY
 // and AGENT_MODEL for pi and the default grader; ANTHROPIC_BASE_URL with ANTHROPIC_API_KEY for claude-agent): the bench
-// wrapper hands them placeholder keys and a broker. Hard stop: each step's run capped by its prompt's max_cost_usd; the
-// server's whole spend (GET /v2/stats) read before each step, the bench ending past --max-usd; --deadline-s for the whole.
+// wrapper hands them placeholder keys and a broker. Hard stop: each step's run capped by its prompt's max_cost_usd; before
+// each step the server's whole spend is read (spentOf: GET /v2/stats and /v2/usage's learning meter; a cost it could
+// not price stops the bench, as learn-eval stops at a cost it can't read), and the step starts
+// only when that plus its worst case (stepWorst: its run's cap and its llm graders') fits under --max-usd (capStop), else
+// the bench ends there and exits 3; only a step's learning grade, which has no cap of its own, can pass it. --deadline-s
+// for the whole.
 //
 //   node packages/serve/scripts/learn-bench.mjs --out DIR [--jobs DIR] [--job expense,...] [--harness pi,claude-agent]
 //     [--arms on,off] [--steps N] [--data DIR] [--max-usd 10] [--deadline-s 5400] [--no-approve]
@@ -270,6 +274,35 @@ export async function settled(api, runId, learns, deadline) {
 /** Why a series stops after `result`, a step whose learning had not settled by its deadline, or null: the next step
  *  would run without that step's lesson, and read as learning that did not help. */
 export const unsettledStop = (result) => (result.learning_unsettled ? `the learning of step ${result.id} had not settled by its deadline (--run-timeout-s): no later step runs without its lesson` : null);
+
+/** What the bench's own server has spent: every run's cost (GET /stats) and learning's grades, which no run's cost holds
+ *  (GET /usage's `learning` meter, since the server began: the bench's data directory is its own). Null when a cost the
+ *  server could not price is in it (/usage's `unpriced_runs`, a grade that failed after a paid request among them): the
+ *  spend is then not known, and no dollar total stands for it. */
+export async function spentOf(api) {
+  const runs = (await api("GET", "/stats")).body?.analytics?.totals?.cost_usd ?? 0;
+  const usage = (await api("GET", "/usage?from=1970-01-01T00%3A00%3A00Z&group_by=meter")).body;
+  if ((usage?.unpriced_runs ?? 0) > 0) return null;
+  const learning = (usage?.lines ?? []).find((line) => line.meter === "learning")?.usd ?? 0;
+  return runs + learning;
+}
+
+/** The most one step of case `kase` can spend: its run's cap and each llm grader's (a grader run's own cap); undefined
+ *  when its run has no cap. Its learning grade has no cap of its own and is not in it. */
+export const stepWorst = (kase) => (kase?.maxCostUsd === undefined ? undefined : kase.maxCostUsd + (kase.graders ?? []).filter((g) => g.type === "llm").length * TE.GRADER_CAP_USD);
+
+/** Why the bench stops before step `id`, or null: its spend so far is not known (spentOf's null), passed --max-usd, or
+ *  the step's worst case would take it past. */
+export function capStop(spent, worst, maxUsd, id) {
+  if (spent === null) return `its spend holds a cost that could not be priced, so --max-usd ${maxUsd} could not be held before step ${id}`;
+  if (spent > maxUsd) return `the server's spend ${spent} passed --max-usd ${maxUsd} before step ${id}`;
+  if (worst !== undefined && spent + worst > maxUsd) return `step ${id} could spend up to $${worst} (its run's cap and its graders'), past --max-usd ${maxUsd} with $${spent} spent`;
+  return null;
+}
+
+/** The bench's exit code: 3 when it stopped at a cap, its deadline or an unsettled lesson (as learn-eval exits 3 at its
+ *  cap), so a caller sees the stop; else 0. */
+export const exitCodeOf = (results) => (results.hard_stop ? 3 : 0);
 
 /** Run `runId`'s whole timeline, page by page (next_after while has_more), as the template eval reads one: its rows by
  *  id (a page may reset the view or drop rows), in seq order. */
@@ -558,8 +591,8 @@ async function seriesSteps(ctx, job, cases, harness, learns, steps, out) {
   let agentId = learns ? await agentFor(ctx, job, harness, true) : null;
   if (agentId) out.agents.push(agentId);
   for (const one of steps) {
-    const spent = (await api("GET", "/stats")).body?.analytics?.totals?.cost_usd ?? 0;
-    if (spent > options.maxUsd) { out.hard_stop = `the server's spend ${spent} passed --max-usd ${options.maxUsd} before step ${one.id}`; break; }
+    const capped = capStop(await spentOf(api), stepWorst(cases.get(one.id)), options.maxUsd, one.id);
+    if (capped) { out.hard_stop = capped; break; }
     if (Date.now() > options.deadline) { out.hard_stop = `the bench's deadline passed before step ${one.id}`; break; }
     const cap = options.harnessMaxRuns[harness];
     if (cap !== undefined && (options.runsBy[harness] ?? 0) >= cap) { out.hard_stop = `${harness}'s run cap (${cap} step runs, --harness-max-runs) reached before step ${one.id}`; break; }
@@ -639,6 +672,8 @@ async function main() {
       await server.close();
     }
     console.log(`${join(values.out, "results.json")}: ${results.series.length} series`);
+    if (results.hard_stop) console.error(`learn-bench: stopped: ${results.hard_stop}`);
+    process.exitCode = exitCodeOf(results);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
