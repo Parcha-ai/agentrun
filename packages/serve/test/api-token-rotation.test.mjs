@@ -222,3 +222,29 @@ test("a runner's loops are never handed the token list", () => {
   assert.equal(env.AGENTRUN_TOKEN, undefined);
   assert.equal(env.PATH, "/usr/bin");
 });
+
+test("a listed token met alone is cut by import's redaction and the host's, as AGENTRUN_TOKEN's is", async () => {
+  const { secretCut, REDACTED } = await import("../dist/secret-cut.js");
+  const { hostSecrets, SECRET_NAMES } = await import("../dist/secrets.js");
+  const { secretValues } = await import("../dist/api-token.js");
+  const list = `old:${OLD},new:${NEW}`;
+  const { text } = secretCut({ AGENTRUN_TOKENS: list }, SECRET_NAMES);
+  for (const pasted of [`Deploy with ${NEW}.`, `key=${OLD}`, `the list: ${list}`]) {
+    const out = text(pasted);
+    assert.ok(!out.includes(OLD) && !out.includes(NEW), out);
+    assert.ok(out.includes(REDACTED), out);
+  }
+  assert.deepEqual(secretValues("OTHER_KEY", OLD), [OLD], "any other variable is cut whole, as before");
+  assert.ok(secretValues("AGENTRUN_TOKENS", list).includes(NEW), "each listed secret is a value to cut");
+  assert.ok(secretValues("AGENTRUN_TOKENS", "no-colon-entry-but-long-enough-xx").includes("no-colon-entry-but-long-enough-xx"), "an entry that is not id:secret is cut whole");
+  // hostSecrets reads secret(name), which falls back to process.env when nothing was handed over a pipe.
+  const before = process.env.AGENTRUN_TOKENS;
+  process.env.AGENTRUN_TOKENS = list;
+  try {
+    const held = hostSecrets({});
+    assert.ok(held.includes(OLD) && held.includes(NEW), "the host's redaction holds each listed secret");
+  } finally {
+    if (before === undefined) delete process.env.AGENTRUN_TOKENS;
+    else process.env.AGENTRUN_TOKENS = before;
+  }
+});

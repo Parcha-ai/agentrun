@@ -57,6 +57,15 @@ export function acceptedTokens(token: string | undefined, list: readonly ApiToke
   return all;
 }
 
+/** The values a redaction cuts for the variable `name` holding `value`: the value whole, and for AGENTRUN_TOKENS each
+ *  entry's secret too, so a listed token met alone (pasted into a session, a file) is cut as AGENTRUN_TOKEN's would be.
+ *  Read leniently: an entry that is not id:secret is cut whole, never skipped, and nothing here throws. */
+export function secretValues(name: string, value: string): string[] {
+  if (name !== TOKENS_ENV) return [value];
+  const entries = value.split(/[\s,]+/).filter((entry) => entry !== "");
+  return [value, ...entries, ...entries.map((entry) => entry.slice(entry.indexOf(":") + 1))];
+}
+
 const digest = (text: string): Buffer => createHash("sha256").update(text).digest();
 
 /** A test of an Authorization header: the id of the token when it is exactly `Bearer <that token's secret>`, else
