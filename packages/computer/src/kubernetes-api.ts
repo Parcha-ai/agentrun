@@ -67,9 +67,9 @@ export interface KubeStream {
 	protocol: string;
 	/** Sends one message: a channel byte, then the bytes. Resolves once it is handed to the socket. */
 	send(channel: number, bytes: Uint8Array): Promise<void>;
-	/** Each message as it comes: its channel and bytes. */
+	/** Each message as it comes: its channel and bytes. Messages that came before the first listener are given to it first. */
 	onMessage(listener: (channel: number, bytes: Uint8Array) => void): void;
-	/** Once, when the stream ends: closed by either side, or failed (with words). */
+	/** Once, when the stream ends: closed by either side, or failed (with words); at once, with those words, if it has ended. */
 	onEnd(listener: (error?: Error) => void): void;
 	close(): void;
 }
@@ -293,12 +293,17 @@ export function webSocket(socket: Socket, head: Buffer, protocol: string): KubeS
 	let buffered: Buffer = head.length > 0 ? Buffer.from(head) : Buffer.alloc(0);
 	let fragments: Buffer[] = [];
 	let ended = false;
+	let endError: Error | undefined;
 	let closeSent = false;
+	// Messages and the end that come before the caller listens (the upgrade's head, or data read while the caller's
+	// await of the stream resolves) are kept, and given to the first listener when it attaches.
+	let early: Array<[number, Uint8Array]> | undefined = [];
 	socket.setNoDelay(true);
 
 	const end = (error?: Error) => {
 		if (ended) return;
 		ended = true;
+		endError = error;
 		for (const listener of endListeners) listener(error);
 		socket.destroy();
 	};
@@ -331,7 +336,8 @@ export function webSocket(socket: Socket, head: Buffer, protocol: string): KubeS
 		if (message.length === 0) return;
 		const channel = message[0] as number;
 		const bytes = new Uint8Array(message.subarray(1));
-		for (const listener of messageListeners) listener(channel, bytes);
+		if (early !== undefined) early.push([channel, bytes]);
+		else for (const listener of messageListeners) listener(channel, bytes);
 	};
 
 	const parse = () => {
@@ -395,15 +401,20 @@ export function webSocket(socket: Socket, head: Buffer, protocol: string): KubeS
 	socket.on("end", () => end());
 	socket.on("close", () => end());
 	socket.on("error", (error) => end(error));
-	// The head may already hold frames; parsed once the caller has had a turn to listen.
-	if (buffered.length > 0) queueMicrotask(parse);
+	// The head may already hold frames: parsed now, and kept until the caller listens.
+	if (buffered.length > 0) parse();
 
 	return {
 		protocol,
 		send: (channel, bytes) => write(frame(0x2, Buffer.concat([Buffer.from([channel]), Buffer.from(bytes)]))),
-		onMessage: (listener) => void messageListeners.push(listener),
+		onMessage: (listener) => {
+			messageListeners.push(listener);
+			const kept = early;
+			early = undefined;
+			for (const [channel, bytes] of kept ?? []) listener(channel, bytes);
+		},
 		onEnd: (listener) => {
-			if (ended) listener();
+			if (ended) listener(endError);
 			else endListeners.push(listener);
 		},
 		close() {

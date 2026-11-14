@@ -507,7 +507,7 @@ export class HostedProvider implements ComputerProvider {
 		const [kept, ...others] = holders.sort(oldestFirst(holders));
 		for (const other of others) {
 			const gone = await this.#discard(other, signal);
-			if (!gone.ok) return this.#fail(gone.error.code, `${holders.length} machines carry the name ${name}: ${kept?.id}, the oldest, is kept, and ${other.id} could not be deleted (${gone.error.message})`);
+			if (!gone.ok) return this.#failFrom(gone.error, `${holders.length} machines carry the name ${name}: ${kept?.id}, the oldest, is kept, and ${other.id} could not be deleted (${gone.error.message})`);
 		}
 		return ok(kept);
 	}
@@ -655,7 +655,7 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/** Deletes a machine create gives up on, then waits, under the caller's signal, until the vendor reads it gone. */
-	async #abandon(ref: ComputerRef, error: { code: ComputerError["code"]; message: string; vendor?: string }, signal?: AbortSignal, mounted = false): Promise<Result<never>> {
+	async #abandon(ref: ComputerRef, error: { code: ComputerError["code"]; message: string; vendor?: string; transient?: true }, signal?: AbortSignal, mounted = false): Promise<Result<never>> {
 		this.#end(ref.name);
 		// A computer create made whole (its Archil folder mounted) lets go of the folder first, as release does.
 		if (mounted) {
@@ -669,7 +669,16 @@ export class HostedProvider implements ComputerProvider {
 			: killed.ok && gone.error.code === "aborted"
 				? `was deleted, and the wait for it to go was aborted; ${this.#label} ends it at its deadline if the delete did not take`
 				: `could not be deleted (${gone.error.message}); it ends at its deadline`;
-		return this.#fail(error.code, `the computer ${ref.name} ${after}: ${error.message}`);
+		return this.#failFrom(error, `the computer ${ref.name} ${after}: ${error.message}`);
+	}
+
+	/**
+	 * A failure in new words that keeps the cause's code and its transient mark: an outage met after the machine was
+	 * made (a 503 on a readiness read, an upload timed out) stays one a caller may fail over on.
+	 */
+	#failFrom(cause: { code: ComputerError["code"]; transient?: true }, message: string): Result<never> {
+		const failed = this.#fail(cause.code, message);
+		return cause.transient === true && !failed.ok ? { ok: false, error: { ...failed.error, transient: true } } : failed;
 	}
 
 	/**
@@ -768,7 +777,7 @@ export class HostedProvider implements ComputerProvider {
 		const uploaded = upload
 			? await this.#call(`the daemon's upload into ${ref.name}`, (ctx) => upload(ref.id, staging, bytes, ctx), uploadMs, signal)
 			: await uploadThroughExec(this.host, ref.id, staging, bytes, uploadMs, signal);
-		if (!uploaded.ok) return this.#fail(uploaded.error.code, `the daemon's upload was refused: ${uploaded.error.message}`);
+		if (!uploaded.ok) return this.#failFrom(uploaded.error, `the daemon's upload was refused: ${uploaded.error.message}`);
 		const install = await runToExit(this.host, ref.id, commands.install, { ms: execMs, ...(signal ? { signal } : {}), what: `the daemon's install in ${ref.name}` });
 		if (!install.ok) return install;
 		const printed = `${install.value.stdout} ${install.value.stderr}`.trim();
@@ -820,7 +829,7 @@ export class HostedProvider implements ComputerProvider {
 		if (!opened.ok) {
 			if (opened.error.code === "aborted") return opened;
 			const why = await this.#initWords(ref);
-			return this.#fail(opened.error.code, `the daemon did not answer: ${opened.error.message}${why ? `; init wrote: ${why}` : ""}`);
+			return this.#failFrom(opened.error, `the daemon did not answer: ${opened.error.message}${why ? `; init wrote: ${why}` : ""}`);
 		}
 		let notes: string[];
 		try {
@@ -942,7 +951,7 @@ export class HostedProvider implements ComputerProvider {
 		if (!ran.ok) {
 			if (signal?.aborted) return this.#fail("aborted", `the probe in ${name} was aborted`);
 			if (ran.error.code === "aborted") return this.#fail("timeout", `the probe in ${name} did not answer within ${seconds(probeMs)}`);
-			return this.#fail(ran.error.code, `the probe in ${name} failed: ${ran.error.message}`);
+			return this.#failFrom(ran.error, `the probe in ${name} failed: ${ran.error.message}`);
 		}
 		const { exitCode, stdout, stderr, timedOut } = ran.value;
 		if (timedOut) return this.#fail("timeout", `the probe in ${name} did not end within ${seconds(probeMs)}`);

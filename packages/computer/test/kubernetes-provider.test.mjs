@@ -235,7 +235,7 @@ test("upload sends exactly the bytes to head -c in one exec, and fails in words 
 	const bytes = new Uint8Array(150_000).fill(7);
 	assert.deepEqual(await host.upload("p", "/tmp/computerd", bytes, ctx), ok(undefined));
 	const stream = api.calls.find((call) => call.method === "STREAM");
-	const argv = stream.query.filter(([key]) => key === "command").map(([, value]) => value);
+	const argv = stream.query.filter(([key]) => key === "command").map(([, value]) => value).slice(5);
 	assert.deepEqual([argv[0], argv[1], argv.at(-2), argv.at(-1)], ["sh", "-c", "150000", "/tmp/computerd"]);
 	assert.match(argv[2], /head -c "\$1"/);
 	assert.equal(Buffer.concat(fake.sent.filter(([channel]) => channel === 0).map(([, chunk]) => chunk)).length, 150_000);
@@ -249,6 +249,40 @@ test("upload sends exactly the bytes to head -c in one exec, and fails in words 
 	} }]));
 	const failed = await failing.upload("p", "/tmp/x", new Uint8Array(3), ctx);
 	assert.match(failed.error.message, /exited 1: the upload did not arrive whole/);
+});
+
+test("kill ends the command in the pod: each exec runs as its own group's leader under a pid file, and kill execs the group's kill on that file before it lets go", async () => {
+	const streams = [];
+	const api = fakeApi([{ method: "STREAM", answer: (query) => {
+		const one = fakeStream();
+		streams.push({ query, one });
+		// The kill's own exec ends at once, as KILL_SCRIPT does, and the killed command's stream then gives its status.
+		if (streams.length === 2) {
+			setTimeout(() => one.push(3, '{"status":"Success"}'), 5);
+			setTimeout(() => streams[0].one.push(3, JSON.stringify({ status: "Failure", details: { causes: [{ reason: "ExitCode", message: "137" }] } })), 10);
+		}
+		return ok(one.stream);
+	} }]);
+	const host = hostOf(api);
+	const started = await host.exec("p", ["sleep", "600"], { stdin: false }, ctx);
+	const argv = (query) => query.filter(([key]) => key === "command").map(([, value]) => value);
+	const [sh, c, leader, pidFile, wrapper, ...command] = argv(streams[0].query);
+	assert.deepEqual([sh, c, command], ["sh", "-c", ["sleep", "600"]]);
+	assert.match(leader, /exec setsid sh -c "\$w"/, "the command leads a process group of its own");
+	assert.match(pidFile, /^\/tmp\/\.agentrun-exec-[0-9a-f]{16}$/);
+	assert.match(wrapper, /echo \$\$ > "\$0"/);
+	await started.value.kill();
+	assert.equal(streams.length, 2, "kill opened a second exec");
+	const killer = argv(streams[1].query);
+	assert.deepEqual([killer[0], killer[1], killer[3]], ["sh", "-c", pidFile]);
+	assert.match(killer[2], /kill -KILL "-\$p"/, "the group is killed, not only the stream closed");
+	assert.equal(await started.value.wait(), 137, "wait answers the killed command's status");
+	// A command that has exited needs no kill in the pod.
+	const done = await host.exec("p", ["true"], { stdin: false }, ctx);
+	streams.at(-1).one.push(3, '{"status":"Success"}');
+	assert.equal(await done.value.wait(), 0);
+	await done.value.kill();
+	assert.equal(streams.length, 3);
 });
 
 /** A server-side WebSocket frame: unmasked, as a server sends one. */
@@ -317,6 +351,36 @@ test("the WebSocket client: masked binary frames out, fragments joined, a ping a
 	assert.equal(frames[0].payload.length, 70_001);
 	assert.deepEqual(frames.slice(1).map((frame) => frame.opcode), [0xa, 0x8]);
 	assert.equal(frames[1].payload.toString(), "p");
+});
+
+test("the WebSocket client keeps what comes before anyone listens: output, the exit status and the close in the upgrade's head or read while the caller awaits the stream reach the process", async () => {
+	let serverSide;
+	const server = createServer((socket) => {
+		serverSide = socket;
+		socket.on("data", () => {});
+	});
+	await new Promise((done) => server.listen(0, "127.0.0.1", done));
+	const { Socket } = await import("node:net");
+	const client = new Socket();
+	await new Promise((done) => client.connect(server.address().port, "127.0.0.1", done));
+	while (!serverSide) await new Promise((done) => setTimeout(done, 5));
+	try {
+		// stdout "hi" in the head; the exit status and the close follow on the socket before the process listens.
+		const ws = webSocket(client, serverFrame(0x2, Buffer.from([1, 104, 105])), "v5.channel.k8s.io");
+		serverSide.write(Buffer.concat([serverFrame(0x2, Buffer.concat([Buffer.from([3]), Buffer.from('{"status":"Success"}')])), serverFrame(0x8, Buffer.alloc(0))]));
+		// The caller's await of the transport's stream: several turns, and the socket's data, before processOf listens.
+		await new Promise((done) => setTimeout(done, 50));
+		const process = processOf(ws);
+		assert.equal(await process.wait(), 0);
+		assert.equal(Buffer.concat(await Array.fromAsync(process.stdout)).toString(), "hi");
+		// The stream has ended (the close came): a listener that comes now is told at once.
+		const told = await new Promise((done) => ws.onEnd((error) => done(error ?? "ended")));
+		assert.equal(told, "ended");
+	} finally {
+		client.destroy();
+		serverSide.destroy();
+		server.close();
+	}
 });
 
 test("auth: a JSON kubeconfig's context (token, client certificate, namespace); YAML, an exec plugin and skipped TLS are refused in words", () => {

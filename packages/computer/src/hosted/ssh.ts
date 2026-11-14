@@ -85,12 +85,12 @@ const IDLE_MS = 2_000;
  * instance's sshd starts each command as a session and group leader (seen live: sh's PID, PGID and SID are one), so
  * the pid names the group a kill ends; ssh2 sends no signal once stdin has ended, and a signal ends one process only.
  */
-const WRAPPER = '{ echo $$ > "$0"; } 2>/dev/null; "$@"; c=$?; rm -f "$0"; exit $c';
+export const WRAPPER = '{ echo $$ > "$0"; } 2>/dev/null; "$@"; c=$?; rm -f "$0"; exit $c';
 /**
  * The kill: waits up to a second for the pid file, then kills the group when the pid leads one (the process alone
  * otherwise, so a kill never reaches past what it started) and removes the file.
  */
-const KILL_SCRIPT = [
+export const KILL_SCRIPT = [
 	"i=0",
 	'while [ ! -s "$0" ] && [ $i -lt 10 ]; do sleep 0.1; i=$((i+1)); done',
 	'p=$(cat "$0" 2>/dev/null); rm -f "$0"',

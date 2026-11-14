@@ -449,6 +449,27 @@ test("a create whose answer is lost or broken is swept by its name: the machine 
 	await nothingLeft(lost.fake, "a lost create");
 });
 
+test("an outage met after the machine was made (a 503 on the first readiness read, on the daemon's upload) keeps its transient mark through the delete, so a caller may fail over", async () => {
+	for (const call of ["get", "upload"]) {
+		const { provider, fake } = setup();
+		const real = fake.host[call].bind(fake.host);
+		let failed = false;
+		fake.host[call] = async (...args) => {
+			if (failed) return real(...args);
+			failed = true;
+			return { ok: false, error: { code: "vendor", vendor: fake.host.id, message: `${call}: 503 upstream unavailable`, transient: true } };
+		};
+		const outage = await create(provider);
+		assert.equal(outage.ok, false, call);
+		assert.match(outage.error.message, /was deleted: .*503 upstream unavailable/, call);
+		assert.equal(outage.error.transient, true, `a 503 on ${call} stays transient`);
+		await nothingLeft(fake, `a 503 on ${call}`);
+	}
+	// A refusal after the machine was made carries no mark.
+	const refused = await create(setup({}, { install: 5 }).provider);
+	assert.equal(refused.error.transient, undefined);
+});
+
 test("a create that lands after an abort is deleted as it lands", async () => {
 	const { provider, fake } = setup({}, { create: "hold" });
 	const controller = new AbortController();

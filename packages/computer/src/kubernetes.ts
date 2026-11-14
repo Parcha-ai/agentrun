@@ -11,11 +11,13 @@
 //
 // The adapter's labels are kept in one annotation (agentrun.labels, JSON): a Kubernetes label value takes no colon, so
 // a deadline cannot be one. Two real labels let a listing select: agentrun.computer=1 and the request's name.
+import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { KUBERNETES as KUBERNETES_DESCRIPTOR, KUBERNETES_DEFAULT_IMAGE, KUBERNETES_NO_ARCHIL } from "./descriptors/kubernetes.js";
 import { COMPUTER_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, NAME_LABEL } from "./hosted/provider.js";
+import { KILL_SCRIPT, WRAPPER } from "./hosted/ssh.js";
 import type { KindCapabilities } from "./kinds.js";
 import { EXEC_PROTOCOLS, execStatus, KUBERNETES, type KubeAnswer, type KubeStream, type KubeTransport, kubeTransport } from "./kubernetes-api.js";
 import { type KubernetesConnectOptions, resolveEndpoint } from "./kubernetes-auth.js";
@@ -41,6 +43,16 @@ export const CONTAINER = "computer";
  * The pod's main process in the pod model: it only waits, and ends at once on SIGTERM, so a delete takes no grace.
  * POSIX sh: no `sleep infinity`, which not every BusyBox has.
  */
+/**
+ * Every exec's command runs under ssh.ts's WRAPPER, which writes its pid to a file a kill reads; this line first makes
+ * that sh lead a process group, so a kill ends what the command started too. An API server's exec is not one already
+ * (runc starts it in the container's group): setsid execs in place, with no fork, when the caller leads no group, and
+ * the image's setsid is the one the daemon's start needs anyway. $0 is the pid file, $1 the wrapper.
+ */
+const LEADER = 'w=$1; shift; g=$(cut -d" " -f5 "/proc/$$/stat" 2>/dev/null); if [ "$g" != "$$" ] && command -v setsid >/dev/null 2>&1; then exec setsid sh -c "$w" "$0" "$@"; fi; exec sh -c "$w" "$0" "$@"';
+/** How long a kill waits for its own exec (KILL_SCRIPT) to end the command's group before it lets go of the streams. */
+const KILL_GRACE_MS = 5_000;
+
 export const SLEEPER = ["sh", "-c", "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done"];
 
 /** Container waiting reasons that waiting will not mend: the image or the pod's configuration is wrong. */
@@ -220,7 +232,7 @@ function feed(): { push(bytes: Uint8Array): void; end(error?: Error): void; iter
  * whether or not the close follows: some API front ends never send the close after binary output). v5 ends stdin with
  * its close message (255, 0); v4 cannot, and end() says so.
  */
-export function processOf(stream: KubeStream): MachineProcess {
+export function processOf(stream: KubeStream, stop?: () => Promise<void>): MachineProcess {
 	const out = feed();
 	const err = feed();
 	let settle!: (code: number) => void;
@@ -274,8 +286,18 @@ export function processOf(stream: KubeStream): MachineProcess {
 			return writing;
 		},
 		wait: () => exited,
+		/**
+		 * Ends the command in the pod (stop: its process group, by a second exec), then lets go of the stream. wait()
+		 * answers the status the API server sends for the killed command (137 for SIGKILL), or -1 if none comes in time.
+		 */
 		async kill() {
-			finish(new Error("the command was killed"));
+			if (finished) return;
+			if (stop) {
+				await stop().catch(() => {});
+				const grace = new Promise<void>((done) => setTimeout(done, KILL_GRACE_MS).unref());
+				await Promise.race([exited.then(() => {}, () => {}), grace]);
+			}
+			finish(-1);
 		},
 	};
 }
@@ -572,8 +594,35 @@ export class KubernetesHost implements MachineHost {
 		return ok(target);
 	}
 
-	/** argv in the pod's container, as its user (root), over the API server's exec WebSocket; see processOf. */
+	/**
+	 * argv in the pod's container, as its user (root), over the API server's exec WebSocket; see processOf. It runs
+	 * under LEADER and WRAPPER, so kill ends its process group in the pod (KILL_SCRIPT, by a second exec), not only the
+	 * stream: closing an exec's stream does not stop the command.
+	 */
 	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
+		const pidFile = `/tmp/.agentrun-exec-${randomBytes(8).toString("hex")}`;
+		const opened = await this.#open(id, ["sh", "-c", LEADER, pidFile, WRAPPER, ...argv], stdin, ctx);
+		if (!opened.ok) return opened;
+		return ok(processOf(opened.value, () => this.#stop(id, pidFile)));
+	}
+
+	/** KILL_SCRIPT for one exec's pid file, waited for within KILL_GRACE_MS; best effort, as kill is. */
+	async #stop(id: string, pidFile: string): Promise<void> {
+		const opened = await this.#open(id, ["sh", "-c", KILL_SCRIPT, pidFile], false, { timeoutMs: KILL_GRACE_MS });
+		if (!opened.ok) return;
+		const killer = processOf(opened.value);
+		const drain = async (lines: AsyncIterable<Uint8Array>) => {
+			for await (const _ of lines);
+		};
+		void drain(killer.stdout).catch(() => {});
+		void drain(killer.stderr).catch(() => {});
+		const grace = new Promise<void>((done) => setTimeout(done, KILL_GRACE_MS).unref());
+		await Promise.race([killer.wait().then(() => {}, () => {}), grace]);
+		await killer.kill();
+	}
+
+	/** One exec stream of argv as it is, with stdout and stderr (and stdin when asked). */
+	async #open(id: string, argv: readonly string[], stdin: boolean, ctx: HostCall): Promise<Result<KubeStream>> {
 		const target = await this.#target(id, ctx);
 		if (!target.ok) return target;
 		const query: Array<[string, string]> = [["container", target.value.container], ["stdout", "true"], ["stderr", "true"], ...(stdin ? ([["stdin", "true"]] as Array<[string, string]>) : []), ...argv.map((word) => ["command", word] as [string, string])];
@@ -581,9 +630,8 @@ export class KubernetesHost implements MachineHost {
 		if (!opened.ok) {
 			if (opened.error.code === "not_found") this.#pods.delete(id);
 			if (opened.error.code === "denied") return failAs(opened.error, `${opened.error.message}: the provider's identity needs create on pods/exec in ${this.#namespace}`);
-			return opened;
 		}
-		return ok(processOf(opened.value));
+		return opened;
 	}
 
 	/**
