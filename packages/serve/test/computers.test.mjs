@@ -125,7 +125,7 @@ const NO_ARCHIL_IMAGE = (article, label, image) =>
   `${article} ${label} sandbox can't mount the owner's disk this server keeps run folders on yet: it would start from ${label}'s stock image (${image}), which has no Archil client, and this server can't name another: set this agent's computer to none (Settings → Computers)`;
 
 test("Mode 2 today: no sandbox is ready. Docker's can't mount the owner's disk, nor can Daytona's (saying why); Modal's, E2B's and Agent37's would start from a stock image with no Archil client, keys or not; a desktop, phone or browser is offered", async (t) => {
-  const env = { MODAL_TOKEN_ID: "good-id", MODAL_TOKEN_SECRET: "good-secret", E2B_API_KEY: "good-e2b", AGENT37_API_KEY: "good-a37" };
+  const env = { MODAL_TOKEN_ID: "good-id", MODAL_TOKEN_SECRET: "good-secret", E2B_API_KEY: "fake-test-key", AGENT37_API_KEY: "not-a-secret" };
   const { routes } = await setup(t, { mode: "disk", env });
   const view = await routes.view();
   assert.match(providerOf(view, "sandbox", "docker").why, /Docker can't mount the owner's disk/);
