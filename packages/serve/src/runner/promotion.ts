@@ -7,7 +7,7 @@
 // agent path and answers alone on at least one input, else holds it; a held digest gets one refit over the replay's rows
 // (learn/refit.ts: its guards' thresholds, and its guards and recorded escalates on or off), a new revision that serves
 // when the refit clears the bar. A replay records an escalate that reads a judge's field instead of obeying it
-// (learn/promote.ts softEscalatesOf): it scores as a hand-back where it fired, and the refit may switch it off. Fewer than
+// (the DSL's softEscalates): it scores as a hand-back where it fired, and the refit may switch it off. Fewer than
 // REPLAY_MIN graded inputs: the digest is promoted on its passing dry run, as before, and its record says so. A serving
 // digest is checked once per REFIT_EVERY more graded runs it served: its thresholds refit (a new revision when they move
 // and still clear the bar), and held when its graded runs fall below the bar. A hand-back is the agent's answer, never a
