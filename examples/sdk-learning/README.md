@@ -41,3 +41,43 @@ npm run codex --prefix examples/sdk-learning -- --live --mcp
 This configures a real stdio `release_status` service in the backend's native Codex `mcp_servers` settings. The service returns only the fixed fictional status and performs no filesystem or network operations. Codex keeps its read-only sandbox. The smoke test requires a completed tool call and the observed service/version/status/test facts; a failed shell invocation is not counted as successful tool use. A container must still have capacity to start the SDK and MCP processes.
 
 To adapt an existing backend, see the [Claude Agent SDK cookbook](../../docs/tutorials/claude-sdk-learning.md) or [Codex SDK cookbook](../../docs/tutorials/codex-sdk-learning.md). The example factories are also exported, so a test harness can pass an already-configured SDK client/query without replacing its credentials or provider configuration.
+
+## Learn an executable workflow
+
+The workflow variants add an explicit MCP bridge to each native SDK. Each example imports its own `@parcha/agentrun-dsl` engine and passes it through `createWorkflowMcpBridge({ engine, ... })`; the client does not install or select an interpreter. Your existing backend tools and the learned workflow call the same callback functions. See the [workflow MCP cookbook](../../docs/tutorials/sdk-workflow-learning.md) to adapt your own backend.
+
+Build the DSL and client before installing the standalone example dependencies:
+
+```sh
+npm run build -w @parcha/agentrun-dsl
+npm run build -w @parcha/agentrun-client
+npm install --prefix examples/sdk-learning --ignore-scripts --package-lock=false
+npm run claude:workflows --prefix examples/sdk-learning -- --live
+# Or test the other native SDK:
+npm run codex:workflows --prefix examples/sdk-learning -- --live
+```
+
+Use the same server, API key, server grading model and backend credentials described above. Each command can make seven native-model tasks plus the associated server reflection/grading calls. It creates an On agent and an Off control. These examples use local read-only tools with no metered tool cost; the model calls still incur usage. They do not require native shell execution.
+
+The sequence is:
+
+1. Teach a reusable two-tool procedure: read a fictional release's status, then pass that unchanged status to the existing formatter.
+2. Require an accepted run-generated skill. Make up to four fresh practice runs: teaching plus four completed practice runs reaches the ordinary five-run compile threshold. The host asks a separate compiler turn when there is no workflow and no recent compilation; three kept notes can also make a job eligible.
+3. Require an active workflow generated and checked by the normal learning pipeline. A pending proposal stops the demo for owner review; the script never approves it.
+4. Request a different service in a fresh native session. Require the accepted workflow revision, a successful `learned_workflow` MCP invocation, and both original tool callbacks executing inside that workflow with the new service/version.
+5. Give a learning-Off agent the same request. Verify its tools still work and no learned workflow was offered or executed.
+
+The formatter accepts only the exact fresh status object returned by the status callback, including a new observation identifier. A hardcoded answer, stale result, or direct-tool fallback cannot satisfy the workflow-reuse assertion. The evidence output includes the generated workflow, learning revision, console links, lifecycle events, and fictional tool observations. It deliberately excludes native prompts, run tokens and MCP capability values.
+
+The native SDK configuration has two MCP servers: the existing release tools and the learning bridge. The bridge is configured once, while each fresh run receives its own capability. Both demo callbacks declare `readOnly: true`, so the bridge can truthfully advertise read-only behavior to the native MCP approval policy. Claude uses its normal HTTP MCP options. Codex uses native `mcp_servers` constructor configuration and keeps its read-only sandbox. The wrapper never mutates a constructed Codex client's private options.
+Both factories bind `nativeMcpServerName: 'agentrun_workflows'` to that exact native server name. The wrapper correlates a duplicate native envelope only against an actual one-use bridge receipt with matching capability, arguments, status and result; unrelated tool work stays visible.
+
+The exported factories are `createClaudeWorkflowReleaseBackend(sdk, learning, existingOptions)` and `createCodexWorkflowReleaseBackend(createExistingCodex, learning, existingThreadOptions)`. For Codex, the construction callback receives the two demo MCP entries so your backend can merge them with its own configuration and retain its credentials. Both factories expose `report`, `flushLearning`, and `close`. The demo's tool policy allows only these fictional read-only callbacks; use your real tool policy in an application.
+
+Claude's three small demo MCP tools use `alwaysLoad: true` so a model can call them directly instead of spending its turn budget rediscovering deferred tools. Native filesystem settings are otherwise preserved. For a standalone fictional test, pass `settingSources: []` and an isolated temporary `cwd` to the Claude factory if personal/project instructions impose a different response style. That explicit demo configuration preserves SDK authentication and does not edit those files; do not strip an existing application's policy when integrating its real agent.
+
+Run the offline fixture, MCP transport and proof checks without making model calls:
+
+```sh
+node --test examples/sdk-workflow-learning.test.mjs
+```

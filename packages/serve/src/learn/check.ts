@@ -92,6 +92,8 @@ export type CheckInput = {
   /** False for a run of a revision that says `learning: "notes"`: a workflow draft it gives is left out (rule `workflow`,
    *  NOTES_ONLY), and its notes and skill go on. */
   readonly workflows?: false;
+  /** Explicit host adapter capabilities; absent keeps the managed runner defaults. */
+  readonly workflowAdapters?: readonly ("runNode" | "runJudge")[];
   /** The workflow DSL a draft is read with; a proposal that holds a draft is checked with it, never without. */
   readonly dsl?: DraftReader;
   /** The decision providers a draft's decision nodes may ask, and the gate's setting of each (learn/skills.ts
@@ -218,7 +220,7 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   if (text === undefined || decodedScanned(path, text, refused, add)) return;
   if (place.kind === "workflow") {
     if (!input.dsl) throw new TypeError(`${path}: a workflow draft is read with the workflow DSL, which was not given`);
-    const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy, input.ask, input.decisions);
+    const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy, input.ask, input.decisions, input.workflowAdapters);
     for (const { rule, detail } of problems) add(rule, detail, path);
     // A draft the checks pass whose dry run failed: its wiring breaks at run time, before any node is paid for.
     const dry = input.dryRuns?.[path];

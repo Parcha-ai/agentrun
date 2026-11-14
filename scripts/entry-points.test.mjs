@@ -71,6 +71,8 @@ const bare = new Map([
   ['examples/sdk-learning/claude.mjs', copiedOut],
   ['examples/sdk-learning/codex.mjs', copiedOut],
   ['examples/sdk-learning/release-mcp.mjs', copiedOut],
+  ['examples/sdk-learning/workflow-claude.mjs', copiedOut],
+  ['examples/sdk-learning/workflow-codex.mjs', copiedOut],
   ['packages/serve/src/native/remote-worker-bridge.ts', 'a package-local worker command, also imported by tests: its package requires Node >=24.22.3, which sets import.meta.main, and the installed bridge cannot import repository scripts/'],
   ['packages/dsl/test/fixtures/graph/generate.mjs', ownPackage],
   ['packages/dsl/test/fixtures/graph/record.mjs', ownPackage],
