@@ -227,7 +227,8 @@ async function keptFor(deps: PromotionDeps, workflow: LearnedWorkflow, digest: s
   const kept = deps.kept ? await deps.kept().catch(() => undefined) : undefined;
   if (!kept || kept.workflow !== workflow.name || !kept.digest) return undefined;
   if (kept.digest !== digest) {
-    const record = promotionOf(await promotionsOf(deps.store.settings, deps.agentId), workflow.name, kept.digest);
+    // Its newest record naming a commit: a graded hold since names none.
+    const record = (await promotionsOf(deps.store.settings, deps.agentId)).findLast((one) => one.workflow === workflow.name && one.digest === kept.digest && one.commit);
     const text = record?.commit && deps.champion ? await deps.champion(workflow.name, record.commit).catch(() => undefined) : undefined;
     if (text && workflowDigest(text) === kept.digest) {
       deps.log(`workflow-first: ${workflow.name} at ${kept.digest} served this run on an earlier claim; it keeps that revision`);
