@@ -77,6 +77,8 @@ describe("a revision's standing and numbers", () => {
     const none = record({ decided: "hold", replay: { ...REPLAY, of, n: 0, agree: 0, skipped_write: 20 } });
     const refit = record({ source: "refit", replay: { ...REPLAY, n: 25 } });
     expect([replayed, none, dry, refit, record({ decided: "replaying" }), record({ decided: "hold", source: "graded" })].map(proofOf)).toEqual(["replayed 18/20", "0 replays answered", "not replayed", "refit on 25 rows", null, null]);
+    // A record that names no replayed runs says the count alone, never "/0".
+    expect(proofOf(record({ replay: { ...REPLAY, of: [], n: 20 } }))).toBe("replayed 20");
     expect([replayed, dry, none, refit].map(proven)).toEqual([true, false, false, true]);
     expect(standingOf(replayed, { serving: "a".repeat(16) })).toEqual({ word: "Serving", tone: "success", proof: "replayed 18/20" });
     expect(standingOf(dry, { serving: "a".repeat(16) })).toEqual({ word: "Serving", tone: "plain", proof: "not replayed" });
