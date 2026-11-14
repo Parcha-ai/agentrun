@@ -624,8 +624,15 @@ test("connect checks hello against the provider: one that drifted is refused; a 
 	assert.equal(connected.hello.version, VERSION);
 	await connected.close();
 	const m = only(fake);
+	// Exact match: a daemon of another version, older or newer, and a daemon one protocol step ahead are each refused.
 	m.box.helloPatch = { version: "0.0.0-other" };
-	assert.equal((await provider.connect(ref)).error?.code, "refused");
+	const older = await provider.connect(ref);
+	assert.equal(older.error?.code, "refused");
+	assert.match(older.error.message, new RegExp(`hello: the daemon reports version "?0\\.0\\.0-other"?, expected ${VERSION.replaceAll(".", "\\.")}`));
+	m.box.helloPatch = { protocol: "0.3" };
+	const ahead = await provider.connect(ref);
+	assert.equal(ahead.error?.code, "refused");
+	assert.match(ahead.error.message, /hello: the daemon speaks protocol 0\.3, expected exactly 0\.2/);
 	m.state = "stopped";
 	assert.equal((await provider.connect(ref)).error?.code, "refused");
 });

@@ -15,7 +15,7 @@ import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { readBackOf } from "./fixtures/archil-readback.mjs";
 import { storeOn } from "./store-helpers.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
-import { ARCHIL_KINDS } from "./workspace-kinds-fixture.mjs";
+import { KINDS } from "./workspace-kinds-fixture.mjs";
 
 const SENTINEL = `sentinel-archil-mount-token-${randomBytes(12).toString("hex")}`;
 const SETTINGS = { diskId: "dsk-00000000000fa4e0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
@@ -78,7 +78,7 @@ async function mountedRun(t, { existing = [] } = {}) {
     release: async () => ({ ok: true, value: undefined }),
   };
   const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider: "daytona" } }, store, {
-    mode: 2, kinds: ARCHIL_KINDS, sealKey, providers: { daytona: () => provider },
+    mode: 2, kinds: KINDS, sealKey, providers: { daytona: () => provider },
     spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }),
     workspace, check: { readBackOf, epoch: 3 }, revokeMount: () => claim.revoke(),
   });
