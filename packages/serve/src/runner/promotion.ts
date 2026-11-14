@@ -551,8 +551,10 @@ async function stillServing(deps: PromotionDeps, workflow: LearnedWorkflow, dige
   }
   const replayed = record.source === "replay" && record.runs?.length ? (await replayRows(deps, record))?.scored ?? [] : [];
   const wrote = await refitAndWrite(deps, workflow, digest, [...rows, ...replayed], `${plural(served.length, "graded run")} it served`);
-  // The served runs at their serving thresholds: one the workflow answered, its grade; one it handed back, the agent's.
-  const servedAcc = scoreRows(rows, thresholdsOf(workflow.workflow)).wf_acc;
+  // What actually happened on the served runs: the recorded grades (a workflow-path grade is the workflow's answer, a
+  // handed-back one the agent's). Recorded, not rescored: the guards on a run may belong to other workflows the agent called
+  // after a hand-back, and rescoring over them would count a right answer as a hand-back at the agent's accuracy.
+  const servedAcc = served.filter((grade) => grade.correct).length / served.length;
   if (!wrote && servedAcc < agentAcc - PROMOTE_BAR - 1e-9) {
     const reason = `${plural(served.length, "graded run")} it served were right ${(servedAcc * 100).toFixed(1)}% of the time, more than ${PROMOTE_BAR * 100} pts under the agent's ${(agentAcc * 100).toFixed(1)}% by hand`;
     const held = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "hold", source: "graded", reason }, (was) => was?.decided === "promote");
