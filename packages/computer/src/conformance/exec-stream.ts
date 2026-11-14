@@ -267,6 +267,8 @@ class Session {
 			).catch((error: unknown) => {
 				throw new Problem(`write() of ${what} failed while the process ran: ${words(error)}`);
 			});
+			// within() answers LATE for an abort too: a stopped write names no bound that did not run out.
+			if (written === LATE && this.#signal?.aborted) throw new Problem(`writing ${what} was stopped, with ${at} bytes written`);
 			if (written === LATE) throw new Problem(by && (deadlineBound || by.passed()) ? `writing ${what} ran past ${secondsOf(by.ms)}, with ${at} bytes written` : `write() of ${what} did not answer within ${secondsOf(ms)}`);
 		}
 	}
