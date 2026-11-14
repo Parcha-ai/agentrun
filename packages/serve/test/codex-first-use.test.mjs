@@ -227,6 +227,9 @@ test("capabilities say codex installs on first use until it is installed, and th
   const before = await offer();
   assert.equal(before.installs, "on_first_use", JSON.stringify(before));
   assert.equal(before.available, true, JSON.stringify(before));
+  // A stand-in starts no install of its own. The save starts one asynchronously:
+  // wait until it reaches the held registry before asking this run to wait on it.
+  await until("the save-triggered Codex install reaches the held registry", () => registry.tarballs(CODEX).length > 0, 60_000);
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   await until("the run reads that it installs Codex", async () => (await api("GET", `/runs/${run.body.run_id}/timeline`)).body.rows?.some((r) => r.kind === "phase" && r.summary === INSTALLING), 60_000);
   registry.release(CODEX);

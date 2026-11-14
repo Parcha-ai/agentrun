@@ -63,7 +63,7 @@ test("a 410 while the store refuses the webhook's setting leaves the server up a
   const { api, data } = await serve(t, { ...PRIVATE_OK, webhookRetryMs: [100, 100], log: log.push });
   const set = (await api("PUT", "/settings/webhook", { url: hook.url })).body;
   // The store refuses the webhook's setting: its write fails, as on a full disk.
-  const release = refusing(t, data, "setting");
+  const release = await refusing(t, data, "setting");
   const first = await startRun(api, "gone", "hi");
   await follow(api, first.run_id, ["completed"]);
   await log.when("condition=webhook_disabled");
@@ -75,7 +75,7 @@ test("a 410 while the store refuses the webhook's setting leaves the server up a
   await follow(api, second.run_id, ["completed"]);
   assert.deepEqual(nothingPending(data).filter((m) => JSON.parse(m.body).data?.run_id === second.run_id), [], "off: nothing is queued");
   assert.equal(hook.got.length, 1, "off: nothing more is sent");
-  release();
+  await release();
   answer = 200;
   const again = (await api("PUT", "/settings/webhook", { url: hook.url })).body;
   assert.equal(again.disabled, null, "a PUT sets it on again");
@@ -376,14 +376,14 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const { api, data } = await serve(t, { ...PRIVATE_OK, log: log.push });
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     // The store refuses the webhook's messages, as on a full disk; the run's own rows are written as ever.
-    const release = refusing(t, data, "outbox");
+    const release = await refusing(t, data, "outbox");
     const run = await startRun(api, "unsaved", "hi");
     await follow(api, run.run_id, ["completed"]);
     // Its notice was tried as its end was read, and refused: not queued, so nothing is sent.
     await log.when("condition=outbox_unwritable");
     assert.equal(endNotice(data, run.run_id), undefined, "not in the ledger: the store took none of it");
     assert.equal(hook.got.length, 0, "nothing sent");
-    release();
+    await release();
     // Told again at the next read of the feed's runs left: queued, recorded, and sent once.
     await hook.when((got) => ofType(got, "run.ended").length === 1, `the run.ended of run ${run.run_id}, once the store takes it`, data);
     await settled(data);
@@ -418,12 +418,12 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const at = await endedInStore(writer, "asker", "unsaved-end");
     // The store refuses the webhook's messages, as on a full disk. A server in a process of its own tries the end, is
     // refused, and is killed.
-    const release = refusing(t, data, "outbox");
+    const release = await refusing(t, data, "outbox");
     const first = await processOn(t, data);
     await saidBy(first.child, "condition=outbox_unwritable");
     assert.equal(endNotice(data, "unsaved-end"), undefined, "not recorded: the store never held it");
     await killed(first.child);
-    release();
+    await release();
     assert.equal(ofType(hook.got, "run.ended").length, 0, "nothing was sent");
     const next = await startWithRunner(t, { data, runner: false });
     t.after(() => next.close());
@@ -439,12 +439,12 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await hadWebhook(t, data, hook);
     const writer = await askerStore(t, data);
     await parkedOnQuestion(writer, "asker", "asks-unsaved", "Which region?", { wake: false });
-    const release = refusing(t, data, "outbox");
+    const release = await refusing(t, data, "outbox");
     const first = await processOn(t, data);
     await saidBy(first.child, "condition=outbox_unwritable");
     assert.equal(waitNotice(data, "asks-unsaved"), undefined, "not recorded: the store never held it");
     await killed(first.child);
-    release();
+    await release();
     const next = await startWithRunner(t, { data, runner: false });
     t.after(() => next.close());
     await hook.when((got) => ofType(got, "run.needs_input").length === 1, "the run.needs_input of run asks-unsaved, from the next server", data);
@@ -706,9 +706,9 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const on = await webhookOn(t, dir);
     const webhooks = await on.open();
     const { secret } = await webhooks.save({ url: hook.url });
-    const release = refusing(t, dir, "setting");
+    const release = await refusing(t, dir, "setting");
     await assert.rejects(webhooks.save({ url: other.url }), /the test refuses this write/);
-    release();
+    await release();
     const tried = await webhooks.test();
     assert.equal(tried.status_code, 200, JSON.stringify(tried));
     assert.equal(other.got.length, 0, "nothing to the URL the refused PUT named");
@@ -723,12 +723,12 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const writer = await askerStore(t, data);
     const at = await endedInStore(writer, "asker", "caught-up");
     // The store refuses the webhook's messages as the next server starts: its catch-up's notice of the end is refused.
-    const release = refusing(t, data, "outbox");
+    const release = await refusing(t, data, "outbox");
     const log = logged();
     await startWithRunner(t, { data, runner: false, log: log.push });
     await log.when("condition=outbox_unwritable");
     assert.equal(endNotice(data, "caught-up"), undefined, "not recorded: the store took none of it");
-    release();
+    await release();
     await hook.when((got) => ofType(got, "run.ended").length === 1, "the run.ended of run caught-up, once the store takes it", data);
     await settled(data);
     assert.deepEqual(ofType(hook.got, "run.ended").map((r) => r.headers["webhook-id"]), [noticeId("caught-up", "run.ended", at)], "once, under its id");

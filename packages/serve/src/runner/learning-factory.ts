@@ -25,6 +25,9 @@ export interface LearningFactoryDeps extends Pick<LearningLoopDeps, "ask" | "now
   readonly store: Pick<Store, "runs" | "agents" | "learning">;
   /** The server's data directory: where each agent's learning folder is. */
   readonly data: string;
+  /** Optional immutable source-run policy snapshot (native jobs). This is quoted as task policy data by gradePrompt,
+   * never installed as the grader's own native instructions. */
+  readonly sourceInstructions?: (runId:string) => Promise<string>;
   /** Where the folder's script says what it did (learningWorkspace's log). */
   readonly log?: (line: string) => void;
 }
@@ -41,9 +44,14 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
       if (typeof runId !== "string") return undefined;
       const source = await store.runs.get(runId);
       if (!source) return undefined;
-      const instructions = objectOf((await store.agents.revision(source.revisionId))?.body).instructions;
       const round = Number.isSafeInteger(input.round) && (input.round as number) > 1 ? { round: input.round as number } : {};
-      return { runId, ...round, agentId: source.agentId, ...(typeof instructions === "string" ? { instructions } : {}) };
+      let instructions: unknown;
+      try {
+        instructions = deps.sourceInstructions ? await deps.sourceInstructions(runId) : objectOf((await store.agents.revision(source.revisionId))?.body).instructions;
+      } catch (error) {
+        return { runId, ...round, agentId: source.agentId, policyError: error instanceof Error ? error.message : String(error) };
+      }
+      return { runId, ...round, agentId: source.agentId, ...(typeof instructions === "string" ? { instructions } : {}), ...(deps.sourceInstructions ? { nativeInstructions: true as const } : {}) };
     },
     proposal: (runId, round) => store.learning.proposal(runId, round),
     ask: deps.ask,

@@ -217,6 +217,33 @@ test('a stop that lands while the host is still answering for the node ends the 
   await landed.harness.close(ctx);
 });
 
+test('a stopped node whose owner invocation ended keeps its stop reason and handles late cleanup', async (t) => {
+  const reached = Promise.withResolvers();
+  const released = Promise.withResolvers();
+  const { harness, nodes, requests } = await rig([say('never asked')], { onNodeOpen: async () => { reached.resolve(); await released.promise; } });
+  t.after(async () => { released.resolve(); await harness.close(ctx); });
+  const scope = hostScope(harness);
+  let ended = false, closedReads = 0;
+  const owner = { ...scope, conversation: async (...args) => {
+    if (ended) { closedReads++; throw new Error('The owner invocation has ended'); }
+    return scope.conversation(...args);
+  } };
+  const stop = new AbortController();
+  const reason = runStoppedError('cancel');
+  const pending = nodes.on(owner, ctx).runNode(verdict({ signal: stop.signal }));
+  pending.catch(() => undefined);
+  await reached.promise;
+  // The task is gone before its node gets the stop: its runtime no longer permits reads.
+  ended = true;
+  stop.abort(reason);
+  await assert.rejects(pending, (error) => error === reason);
+  released.resolve();
+  // The still-opening attempt now settles and makes the same best-effort cleanup lookup.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closedReads, 2, 'both immediate and late cleanup handle an already-ended owner');
+  assert.equal(requests.length, 0, 'the stopped attempt never asks a model');
+});
+
 test('no listener is left on the run\'s stop when a call ends, however it ends: a host that throws while the node is set up, or a delivery', async () => {
   const stop = new AbortController();
   for (const asked of ['agent', 'record', 'stance', 'digest']) {

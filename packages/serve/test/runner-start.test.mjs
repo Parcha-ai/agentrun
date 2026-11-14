@@ -415,14 +415,21 @@ test("a runner-placed run's agent under the started runner has no bash: it is no
   t.after(() => fake.close());
   const { dir, kind, plant } = await storePlant(t, { runs: [["run-env", "run-env", { mode: "runner" }]] });
   const child = runnerChild(t, ["--data", dir], { ...PLANT, ...plant, ANTHROPIC_BASE_URL: fake.url, AGENTRUN_RUNNER_NAME: "runner-env" });
-  await child.line(READY_ON(kind));
-  await until(() => fake.messages().length >= 2, "the run's agent called bash and its answer went back", 60_000);
-  assert.ok(!fake.messages()[0].tools.some((name) => name.startsWith("bash")), `no bash family offered: ${fake.messages()[0].tools}`);
-  const shown = Object.values(fake.messages()[1].results ?? {}).join("\n");
-  assert.match(shown, /bash is not available/, `the bash call answers that it is not available: ${shown.slice(0, 200)}`);
-  assert.ok(!/^PATH=/m.test(shown), "no command ran");
-  assert.deepEqual(plantedIn(JSON.stringify(fake.messages().map((one) => one.body)), plant), [], "no secret of the runner's reached the model");
-  assert.ok(!/AGENTRUN_STORE_|AGENTRUN_SEAL_KEY|AGENTRUN_TOKEN|AGENTRUN_API_KEY/.test(shown), "nor their names");
+  try {
+    await child.line(READY_ON(kind));
+    await until(() => fake.messages().length >= 2, "the run's agent called bash and its answer went back", 60_000);
+    assert.ok(!fake.messages()[0].tools.some((name) => name.startsWith("bash")), `no bash family offered: ${fake.messages()[0].tools}`);
+    const shown = Object.values(fake.messages()[1].results ?? {}).join("\n");
+    assert.match(shown, /bash is not available/, `the bash call answers that it is not available: ${shown.slice(0, 200)}`);
+    assert.ok(!/^PATH=/m.test(shown), "no command ran");
+    assert.deepEqual(plantedIn(JSON.stringify(fake.messages().map((one) => one.body)), plant), [], "no secret of the runner's reached the model");
+    assert.ok(!/AGENTRUN_STORE_|AGENTRUN_SEAL_KEY|AGENTRUN_TOKEN|AGENTRUN_API_KEY/.test(shown), "nor their names");
+  } finally {
+    // storePlant registered its schema drop before runnerChild registered its cleanup. Stop this still-polling
+    // child before either hook runs: DROP SCHEMA and a live runner can deadlock, skipping later cleanup hooks.
+    if (child.child.exitCode === null && child.child.signalCode === null) child.child.kill("SIGKILL");
+    await child.exited;
+  }
 });
 
 /** The runner's own secrets as it holds them: the store's connection (the real test Postgres's URL, its password in it, on

@@ -103,22 +103,31 @@ test("a commit answered Unanswered that lands after the first read-back is still
   await queue(server, "run-1");
   const store = observed(one, recorder());
   let late = 0;
+  let pending;
+  const readBacks = [];
   const wrapped = {
     ...store,
     runs: {
       ...store.runs,
       async claimMany(runner, k, options) {
-        // Answered Unanswered with nothing landed yet: the commit lands 100 ms later, after the first read-back. Polls
-        // between find nothing to claim (the pending commit holds the run); once it landed, claims are real again.
+        // The first read-back sees the old snapshot. Land the pending commit at that store boundary, so the next
+        // pass must recover it even on a loaded Postgres host. A timer can land after every recovery pass instead.
         if (late === 0) {
           late = -1;
-          setTimeout(() => {
-            void store.runs.claimMany(runner, k, options).then(() => (late = -2));
-          }, 100);
+          pending = () => store.runs.claimMany(runner, k, options);
           throw unanswered();
         }
         if (late === -1) return [];
         return store.runs.claimMany(runner, k, options);
+      },
+      async claimsOf(runner) {
+        const claims = await store.runs.claimsOf(runner);
+        readBacks.push(claims.map(claim => claim.epoch));
+        if (late === -1) {
+          await pending();
+          late = -2;
+        }
+        return claims;
       },
     },
   };
@@ -130,6 +139,8 @@ test("a commit answered Unanswered that lands after the first read-back is still
     return row.state === "ended" ? row : undefined;
   }, `run-1 ended in 3 s, long before the ${STEADY_LEASE.leaseMs} ms lease`, 3_000);
   assert.ok(run.epoch >= 2, `the late claim was given back and the run taken again: epoch ${run.epoch}`);
+  assert.deepEqual(readBacks[0], [], "the first read-back really missed the late claim");
+  assert.ok(readBacks.slice(1).some(epochs => epochs.includes(1)), "a later pass saw the landed first claim");
 });
 
 test("a claim ending a stopped queued run is not given back by a later poll's Unanswered sweep", { timeout: 30_000 }, async (t) => {

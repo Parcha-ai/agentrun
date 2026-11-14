@@ -109,7 +109,7 @@ test("a person's message declining the call and an approve, on two connections a
   let read = false;
   const approving = { command: (runId, input) => store.command(runId, input), async commands(...args) { const rows = await store.commands(...args); if (!read) { read = true; await gate(); } return rows; } };
   let wrote = false;
-  const messaging = { commands: (...args) => other.commands(...args), async command(runId, input) { if (!wrote) { wrote = true; await gate(); } return other.command(runId, input); } };
+  const messaging = { runs: other.runs, commands: (...args) => other.commands(...args), async command(runId, input) { if (!wrote) { wrote = true; await gate(); } return other.command(runId, input); } };
   const [approved, messaged] = await Promise.allSettled([approve(approving, waiting(), CALL, "allow"), message(messaging, waitingForMessage(), "Not that one.")]);
   const won = await answers(store);
   assert.equal(won.length, 1, `one answer row, never both: ${JSON.stringify(won)}`);
