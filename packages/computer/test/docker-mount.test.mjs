@@ -242,7 +242,7 @@ test("attach() refuses a computer whose /workspace is read-only, or that binds a
 test("drift(): a bind declared and made is no drift; one missing, extra, elsewhere, read-only or of another propagation is", () => {
 	const deadline = "2026-11-06T12:00:00.000Z";
 	const expected = { version: "1.2.3", kind: "linux", groups: ["exec", "files", "processes"], arch: "amd64", daemonPath: "/data/computerd", deadline, user: "1000:1000", apparmor: false, selinux: false };
-	const hello = { version: "1.2.3", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+	const hello = { protocol: computer.PROTOCOL_VERSION, version: "1.2.3", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 	const spec = { ...SPEC, mount: bind("/runs/r1") };
 	const made = (binds) =>
 		report({ id: "f".repeat(64), name: "computer-0123456789ab", labels: { "agentrun.computer": "1", "agentrun.computer.deadline": deadline }, cmd: ["init", "--deadline", deadline], daemonPath: "/data/computerd", binds });
