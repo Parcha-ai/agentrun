@@ -54,8 +54,8 @@ under:
   which lists every action of the toolkit; `POST /v2/settings/mcp-servers/composio/tools` lists them too. Composio's
   meta tools (`COMPOSIO_MULTI_EXECUTE_TOOL` and the like) are refused: name the direct actions. A save where Composio
   serves none of the picked actions is refused with 422 on `tools` (reason `not_served`), naming them: pick another
-  action. Deleting the server in Settings removes it from Composio too; when Composio can't be reached, the answer
-  says to remove it there yourself.
+  action. Deleting the server in Settings removes it from Composio too; when Composio refuses or doesn't answer, the
+  server is still deleted here, and the answer says to remove it in Composio yourself.
 - `source: github`, `toolkit: github`: GitHub's own MCP server on the server's GitHub App.
 - `source: url`, `toolkit: <name>`: any other MCP server, matched to the toolkit name its owner gives it in Settings.
 
@@ -67,14 +67,22 @@ and nothing is made.
 
 **Only what the owner ticks is granted.** The apply screen shows each entry's `reason` and a tick box for each of its
 tools, none ticked. `allow` lists the tools you ask the owner to tick; the owner's ticks (`grants` in the apply call)
-are the whole grant, and a tick grants a tool without allowing it (see [Ask](#ask)). A tool left unticked is not the agent's: no harness offers it, a
-call of it is refused, and `approvals: never` does not change that. Write the `reason` for the person deciding: what
-the tools read, what they write, and where the pins hold them.
+are the whole grant, and a tick grants a tool without allowing it (see [Ask](#ask)). A tool left unticked is not the
+agent's: no harness offers it, a call of it is refused, and `approvals: never` does not change that. Write the `reason`
+for the person deciding: what the tools read, what they write, and where the pins hold them.
 
-**monid** gives an agent paid data endpoints on one key. Today a template names the three catalog tools,
-`tools: [monid.discover, monid.inspect, monid.run]`, and `secrets: [MONID_API_KEY]`, so an apply on a server without
-the key is refused up front. The owner saves the key in Settings → Tool keys. Each `monid.run` is held at its price
-under the run's cap before it is sent, and its charge is its own line in the run's cost.
+**monid** gives an agent paid data endpoints on one key. A template grants each endpoint in `tools` by name:
+`monid:<provider>/<endpoint>` for one (`monid:apollo/people/match`), or `monid:<provider>/*` for every endpoint monid
+lists for that provider (at most 50). Add `secrets: [MONID_API_KEY]`, so an apply on a server without the key is
+refused up front; the owner saves the key in Settings → Tool keys. The apply's save reads each grant against monid's
+listing and pins the endpoint's description, input schema and price on the agent's revision. An endpoint monid prices
+by usage (per result, per unit, metered) can't be granted: named, the save is refused; under a provider's `*` it is
+left out and named in the save's warnings. Each pinned endpoint is a tool of its own (`monid__apollo__people__match` on
+the wire) that takes `{body, queryParams, pathParams}` and asks by default. A call is held at its pinned price under
+the run's cap before it is sent, and its charge is its own line in the run's cost. The old `monid.discover`,
+`monid.inspect` and `monid.run` are gone, and a package that names one is refused. An agent made through the API or
+the CLI grants the same names in its definition's `tools` (`POST /v2/agents`, or
+`agentrun agents create --body @agent.json`).
 
 **Finding and combining.** A run lists every tool until its MCP and monid tools pass 20; past that they are left
 unlisted, and the model finds them with `tools_search` and calls them with `tools_call` (Claude Code's own tool search
@@ -120,9 +128,16 @@ the same way: Gmail's `user_id` also picks the sender, so pin it to `[null, "me"
 ## Ask
 
 - Ticking grants a tool; it doesn't allow it. Under `approvals: ask` (the default) a ticked write asks the owner before
-  it runs. A ticked read runs unasked where the owner turned on Allow reads for that server, and asks otherwise. A
-  destructive tool (`destructiveHint`) takes a second confirm, and a tool granted later follows the same rule. The
+  it runs. A ticked read runs unasked where the owner turned on Allow reads for that server, and asks otherwise. The
   owner answers on the run's page or with `POST /v2/runs/{id}/approvals/{approval_id}`.
+- A tool's effect comes from its server's annotations, as the agent's save pinned them: `readOnlyHint: true` is a read,
+  `destructiveHint: true` a destructive write, anything else a write (no annotations included). Allow reads is one
+  switch per saved MCP server, the owner's in Settings → MCP servers (`allow_reads: true` on `mcp:<server>/*` in
+  `PUT /v2/settings/tools`); a package can't set it. It never lifts a deny, a tool's own setting, an ask in the
+  agent's own settings or a pin's refusal. A destructive call takes a second click: its approval carries
+  `destructive: true`, and an allow without `confirm_destructive: true` is refused with 422 while the call keeps
+  waiting. A tool granted later follows the same rules. A monid endpoint isn't an MCP tool, so Allow reads doesn't
+  reach it: it asks by default.
 - `approvals: never` is the owner's choice at apply, for runs nobody watches (triggers); the apply screen says so next
   to Never. Recommend it in your README when the template must act unattended, and don't promise both "writes ask"
   and unattended. It only lifts asks for granted tools: a deny and every pin still hold.
@@ -136,10 +151,10 @@ As of 2026-11-14, these have run end to end against the real service, through th
 
 | Tools | What ran | Harnesses |
 |---|---|---|
-| Composio `github` (a connected account) | reads; `GITHUB_CREATE_AN_ISSUE` pinned to one repository, asked and refused | pi, Claude Code, Codex |
+| Composio `github` (a connected account) | reads; `GITHUB_CREATE_AN_ISSUE` pinned to one repository, asked and refused; with Allow reads on, the reads ran unasked from `codemode` scripts and through `tools_call`, and the create still asked | pi, Claude Code, Codex |
 | Composio `github` poll trigger `GITHUB_ISSUE_CREATED_TRIGGER` | a new issue started a run; use poll triggers, as the webhook type `GITHUB_ISSUE_ADDED_EVENT` needs admin rights on the repository | one run (a trigger starts a run whatever the harness) |
 | Composio `hackernews` (no account) | reads; `HACKERNEWS_GET_FRONTPAGE` is not served even when allowed, and the preset names such a tool under `not_served` | pi, Claude Code, Codex |
-| monid, litescrape `/github/repository` | `monid.run` from a `codemode` script, a real charge of $0.00015 on its own cost line | pi, Claude Code, Codex |
+| monid, litescrape `/github/repository` | the old `monid.run` from a `codemode` script, a real charge of $0.00015 on its own cost line; a per-endpoint grant is not yet proven live | pi, Claude Code, Codex |
 
 Through `codemode`: proven on 2026-11-14, one script that read GitHub, ran a monid endpoint and was refused a pinned
 write, on all three harnesses (Codex in its own code mode). That template had fewer than 20 MCP and monid tools, so
