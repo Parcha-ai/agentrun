@@ -696,7 +696,7 @@ test("on pi, a monid endpoint's call at its default ask parks by its settings ke
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.match((await api("GET", `/runs/${runId}`)).body.result.final_answer, /"full_name":"Ada"/);
   const seen = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  assert.deepEqual(seen.map((call) => call.path), ["/v1/inspect", "/v1/inspect", "/v1/run"], "the save's one read of its listing, then the approved call's price read again and the call once");
+  assert.deepEqual(seen.map((call) => call.path), ["/v1/inspect", "/v1/inspect", "/v1/inspect", "/v1/run"], "the save's one read of its listing, its card's price read, then the approved call's price read again and the call once");
 });
 
 /** A held key for the cut cases, its words none a row says itself. */
