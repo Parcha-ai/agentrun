@@ -305,7 +305,8 @@ const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remo
  * process.start, which makes its log and the folders above it; process.write and signal; a process seen
  * ended, by process.wait or a process.read that says so) syncs before it answers, through mount.sync, coalesced: a
  * call during a sync in flight waits for it, then shares one more. A failed sync fails the call in words; a call that
- * failed still syncs, and answers its own error. A caller whose signal fires stops waiting, answered "aborted" in words
+ * failed still syncs, and answers its own error (one that timed out with no answer does so at once, not waiting for the
+ * sync, which rides the same transport). A caller whose signal fires stops waiting, answered "aborted" in words
  * (or its own error), while the shared sync goes on for every other caller. A tar.push.begin answered with such an error
  * instead of its id first ends the push it began, so no push slot is held by a push its caller cannot name.
  */
@@ -367,6 +368,9 @@ export function syncingClient(client: ComputerClient): ComputerClient {
 				return fail("aborted", `${method} ran, but its caller stopped waiting for the sync that makes the run's folder durable; the sync goes on`);
 			};
 			if (signal?.aborted) return result.ok ? stopped() : result;
+			// A call the client gave up on at its own timeoutMs got no answer over the transport, and a sync rides that same
+			// transport: the caller gets its timeout now, and the sync it asked for goes on for the others.
+			if (!result.ok && result.error.code === "timeout") return result;
 			const synced = signal === undefined ? await shared : await new Promise<Result<void> | "stopped">((resolve) => {
 				const onAbort = () => resolve("stopped");
 				signal.addEventListener("abort", onAbort, { once: true });
