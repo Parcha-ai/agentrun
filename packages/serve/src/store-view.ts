@@ -51,7 +51,7 @@ import { type BookedSpend, bookedSpend } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { notesReadOf, runLearningEnd, type RunLearning, usedOnly, withNotes } from "./store-reads/learning.js";
-import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
+import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { Turns } from "./turns.js";
@@ -122,8 +122,10 @@ const inputWhole = (store: Store, runId: string, input: Record<string, unknown>,
 /** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's, and
  *  never an earlier turn's: a final answer row before the person's last message belongs to the turn that message
  *  followed, so a follow-up whose own stop said nothing (no text block: a thinking-only stop) has no answer, null, not
- *  the answer before it. */
-export const answerOf = (rows: readonly TimelineEvent[]): string | null => {
+ *  the answer before it. Read on the job's turns (withoutFeedbackRounds): a grade's feedback round asks no turn of the
+ *  job's, so its words never cut the answer off. */
+export const answerOf = (timeline: readonly TimelineEvent[]): string | null => {
+  const rows = withoutFeedbackRounds(timeline);
   const asked = rows.findLastIndex((r) => isMessageRow(r) && r.agent_label === null && r.text !== null);
   const row = rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL);
   return row && rows.lastIndexOf(row) > asked ? row.text ?? null : null;

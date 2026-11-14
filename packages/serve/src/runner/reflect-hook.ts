@@ -55,8 +55,10 @@ export interface ReflectDeps {
    *  sign-in pointer among them; `unreadable` when what it was handed can't be read back, and the run learns nothing.
    *  Absent, none. */
   readonly refuse?: (runId: string) => Promise<readonly string[] | "unreadable">;
-  /** proposeRun's checks over the turn, against the seed the run started from, refusing `refuse`. */
-  readonly check: (input: { runId: string; agentId: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[] }) => Promise<Checked>;
+  /** proposeRun's checks over the turn, against the seed the run started from, refusing `refuse`. `revised`: in the
+   *  compile turn's checks, the workflow it revises from main's text and the commit of main it was first asked at (its
+   *  CompileAsk's `base`, as the turn's first ask kept it), that workflow's conflict base. */
+  readonly check: (input: { runId: string; agentId: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[]; revised?: { readonly workflow: string; readonly base: string } }) => Promise<Checked>;
   /** A new run's id, for the learning run. */
   readonly newRunId: () => string;
   /** The grade model the server names (learning.ts gradeModelOf: --grade-model, AGENTRUN_SERVE_GRADE_MODEL, else
@@ -168,9 +170,9 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     const ask = { origin: "reflect", ...(round > 1 ? { round } : {}) } as const;
     let heard: Awaited<ReturnType<ReflectDeps["asked"]>> = { asked: [] };
     const turnOf = (answer: string): ReflectTurn => ({ answer, asked: [...heard.asked], ...(heard.triggered?.length ? { triggered: heard.triggered } : {}) });
-    const checkOf = async (turn: ReflectTurn): Promise<Checked | undefined> => {
+    const checkOf = async (turn: ReflectTurn, revised?: { workflow: string; base: string }): Promise<Checked | undefined> => {
       try {
-        return await deps.check({ runId: input.runId, agentId: input.agentId, turn, outcome: input.outcome, refuse });
+        return await deps.check({ runId: input.runId, agentId: input.agentId, turn, outcome: input.outcome, refuse, ...(revised ? { revised } : {}) });
       } catch {
         return undefined;
       }
@@ -232,17 +234,25 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       // with its prompt as the look-back's does, and a turn an earlier claim asked first answers with that ask's (`kept`),
       // so a restart mid compile never moves what the earlier attempt spent compiling into the job's. Each attempt keeps
       // the figures as they stand once the attempts before it answered (an earlier claim's, when it asked first).
+      // A revision of main's text keeps the commit of main it was read at (`compile_base`) with each attempt the same way:
+      // an attempt an earlier claim asked answers with that claim's commit, never the one this claim read (main may have
+      // moved since: another run's change to the workflow), and the attempts after it keep that one too. It is the revised
+      // workflow's conflict base in every check of the turn, so an answer written over an older main never overwrites a
+      // change made after it.
+      let revised = compile.mode === "revise" && compile.base ? { workflow: compile.workflow, base: compile.base } : undefined;
       const result = await compileTurn<Checked>({
         ask: async (prompt, attempt, left) => {
-          const keep = workflowOnly ? { keep: { answered_at: answeredAt, job_cost_usd: job } } : {};
-          const said_ = await input.ask(prompt, { ...ask, deadlineMs: left, step: `compile-${attempt}`, ...keep });
+          const keep: Record<string, string | number | null> = { ...(workflowOnly ? { answered_at: answeredAt, job_cost_usd: job } : {}), ...(revised ? { compile_base: revised.base } : {}) };
+          const said_ = await input.ask(prompt, { ...ask, deadlineMs: left, step: `compile-${attempt}`, ...(Object.keys(keep).length ? { keep } : {}) });
           if (workflowOnly) firstAsk(said_.kept);
+          const base = said_.kept?.compile_base;
+          if (revised && typeof base === "string") revised = { ...revised, base };
           return "ended" in said_ ? { answer: said_.answer } : undefined;
         },
         compile,
         // The look-back's own answer, when the checks kept it: its notes and skills go on with the draft.
         answer: checked.state === "proposed" && turn ? turn.answer : "",
-        check: (answer) => checkOf(turnOf(answer)),
+        check: (answer) => checkOf(turnOf(answer), revised),
         ...(deps.compileDeadlineMs !== undefined ? { deadlineMs: deps.compileDeadlineMs } : {}),
         now,
       });
