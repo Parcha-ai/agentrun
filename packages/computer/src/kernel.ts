@@ -55,7 +55,6 @@ import {
 	withoutCreateLabel,
 } from "./browser.js";
 import type { KindCapabilities } from "./kinds.js";
-import type { MountKind } from "./mount.js";
 import {
 	type AttachedComputer,
 	type BrowserFeatures,
@@ -92,11 +91,6 @@ export const KERNEL_MAX_LIFETIME_MS = 259_200_000;
 /** The most pages a list reads before it fails rather than run on. */
 const MAX_PAGES = 100;
 
-/** A browser takes no mount. */
-export const MOUNT: readonly MountKind[] = KERNEL.mounts;
-
-/** The one configuration it offers, its descriptor's: a browser with a CDP target and a live view. */
-export const CAPABILITIES: readonly KindCapabilities[] = KERNEL.capabilities;
 
 /** A browser as Kernel answers it; only what the provider reads. */
 export interface KernelBrowser {
@@ -180,7 +174,7 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 			isolation: "vm",
 			os: "linux",
 			daemon: "none",
-			groups: [...(CAPABILITIES[0] as KindCapabilities).groups],
+			groups: [...(KERNEL.capabilities[0] as KindCapabilities).groups],
 			maxLifetimeMs: KERNEL_MAX_LIFETIME_MS,
 			release: ["delete"],
 			browser: KERNEL_BROWSER(),

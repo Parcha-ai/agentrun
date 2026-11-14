@@ -146,11 +146,11 @@ test("a kill() that lets go of the streams and leaves the process running fails 
 });
 
 test("an exec that refuses fails every check with its own words, and one that throws is read the same", async () => {
-	const refusing = { id: "refusing", exec: async () => ({ ok: false, error: { code: "vendor", message: "no such machine" } }) };
+	const refusing = { descriptor: { id: "refusing" }, exec: async () => ({ ok: false, error: { code: "vendor", message: "no such machine" } }) };
 	const refused = await checkExecStream(refusing, "m", QUICK);
 	assert.ok(refused.checks.every((check) => check.status === "fail" && /failed: no such machine/.test(check.words)));
 	const throwing = {
-		id: "throwing",
+		descriptor: { id: "throwing" },
 		exec: () => {
 			throw new Error("not written yet");
 		},
