@@ -256,6 +256,9 @@ class Session {
 	async write(run: Run, bytes: Uint8Array, what: string, by?: Deadline): Promise<void> {
 		for (let at = 0; at < bytes.length; at += WRITE_CHUNK) {
 			const ms = by ? by.left(this.#stepMs) : this.#stepMs;
+			// Whether the deadline, not the step, set this bound. Asking by.passed() after the timeout is not enough: a
+			// timer can fire a millisecond before Date.now() reads the deadline.
+			const deadlineBound = by !== undefined && ms < this.#stepMs;
 			const written = await within(
 				Promise.resolve().then(() => run.proc.write(bytes.subarray(at, at + WRITE_CHUNK))),
 				ms,
@@ -264,7 +267,9 @@ class Session {
 			).catch((error: unknown) => {
 				throw new Problem(`write() of ${what} failed while the process ran: ${words(error)}`);
 			});
-			if (written === LATE) throw new Problem(by?.passed() ? `writing ${what} ran past ${secondsOf(by.ms)}, with ${at} bytes written` : `write() of ${what} did not answer within ${secondsOf(ms)}`);
+			// within() answers LATE for an abort too: a stopped write names no bound that did not run out.
+			if (written === LATE && this.#signal?.aborted) throw new Problem(`writing ${what} was stopped, with ${at} bytes written`);
+			if (written === LATE) throw new Problem(by && (deadlineBound || by.passed()) ? `writing ${what} ran past ${secondsOf(by.ms)}, with ${at} bytes written` : `write() of ${what} did not answer within ${secondsOf(ms)}`);
 		}
 	}
 
