@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { freeName, McpServersPage } from "./McpServersPage";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
@@ -54,7 +54,7 @@ function server(lists: McpServer[][], answer: (call: Sent) => Response | Promise
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); });
 
 async function open(v2: ReturnType<typeof createClient>, props: Record<string, unknown> = {}) {
   const host = document.body.appendChild(document.createElement("div"));
@@ -81,6 +81,23 @@ async function open(v2: ReturnType<typeof createClient>, props: Record<string, u
 }
 
 describe("Settings → MCP servers, adding one", () => {
+  it.each(["bearer", "headers"] as const)("Replace pastes the %s credential without submitting or previewing it", async (type) => {
+    const readText = vi.fn().mockResolvedValue(VARS.token);
+    vi.stubGlobal("navigator", { clipboard: { readText } });
+    const s = server([[saved({ auth: type === "bearer" ? { type } : { type, headers: ["X-Api-Key"] }, secret: { name: "mcp:fake", set: true, source: "console", changed_at: null } })]]);
+    const p = await open(s.v2);
+    await p.click(/^Replace$/, p.row("fake"));
+    const input = p.input(type === "bearer" ? "mcp-token" : "mcp-header-value-0");
+    expect(input.value).toBe(VARS.token);
+    expect(document.activeElement).toBe(input);
+    expect(p.host.innerHTML).not.toContain(VARS.token);
+    expect(s.writes()).toEqual([]);
+    await p.click(/^Cancel$/);
+    await p.click(/^Change$/, p.row("fake"));
+    expect(readText).toHaveBeenCalledTimes(1);
+    expect(p.input(input.name).value).toBe("");
+  });
+
   it("previews the tools and the protocol, then saves: the exact requests, and the token gone from the page", async () => {
     const s = server([[], [saved()]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved()) : undefined));
     const p = await open(s.v2);

@@ -1,3 +1,4 @@
+import { pasteFromClipboard } from "@/lib/paste";
 import { Monitor, Smartphone } from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
@@ -299,10 +300,11 @@ type RowProps = {
 };
 
 function ProviderRow({ v2, kind, provider: p, writable, serves, tested, testing, open, problem, onOpen, onSave, onRemove, onTest }: RowProps) {
+  const row = useRef<HTMLLIElement>(null);
   const pasting = open && "paste" in open ? open.paste : null;
   const removing = open && "remove" in open ? open.remove : null;
   return (
-    <li className="border-b p-4 last:border-b-0">
+    <li ref={row} className="border-b p-4 last:border-b-0">
       <div className="flex flex-wrap items-start gap-3">
         <Monitor className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <div className="min-w-0 flex-1">
@@ -322,7 +324,7 @@ function ProviderRow({ v2, kind, provider: p, writable, serves, tested, testing,
                 // A picked key is chosen from the vendor's list below (KeyChoices), never pasted.
                 const picked = p.picked?.includes(secret.name) ?? false;
                 return <SecretRow key={secret.name} field={secret} required={p.required.includes(secret.name)} writable={writable && !open}
-                  {...(picked ? {} : { onPaste: () => onOpen({ paste: key }) })} onRemove={() => onOpen({ remove: key })} />;
+                  onPaste={picked ? undefined : () => void pasteFromClipboard(() => onOpen({ paste: key }), () => row.current?.querySelector("form")?.elements.namedItem(key) as HTMLInputElement | null)} onRemove={() => onOpen({ remove: key })} />;
               })}
             </ul>
           )}

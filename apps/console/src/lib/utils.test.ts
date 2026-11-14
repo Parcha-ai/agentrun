@@ -8,13 +8,15 @@ describe("cn", () => {
   it("keeps a size from the type scale beside a text colour", () => {
     for (const size of Object.keys(config.theme.fontSize)) expect(cn(`text-${size}`, "text-primary-text"), size).toBe(`text-${size} text-primary-text`);
   });
-  it("lets a later size, height, layer, shadow or duration replace an earlier one", () => {
+  it("lets a later size, height, radius, layer, shadow or duration replace an earlier one", () => {
     expect(cn("text-body", "text-small")).toBe("text-small");
     expect(cn("text-[13px]", "text-body")).toBe("text-body");
     expect(cn("h-control-md", "h-9")).toBe("h-9");
     expect(cn("h-10", "h-control-sm")).toBe("h-control-sm");
     expect(cn("w-full", "w-sidebar")).toBe("w-sidebar");
     expect(cn("max-w-page", "max-w-3xl")).toBe("max-w-3xl");
+    expect(cn("!rounded-action", "!rounded-none")).toBe("!rounded-none");
+    expect(cn("!rounded-none", "!rounded-action")).toBe("!rounded-action");
     expect(cn("z-raised", "z-popover")).toBe("z-popover");
     expect(cn("shadow-float", "shadow-none")).toBe("shadow-none");
     expect(cn("duration-fast", "duration-slow")).toBe("duration-slow");
