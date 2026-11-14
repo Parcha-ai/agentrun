@@ -84,3 +84,19 @@ test("a preset whose saved key does not open here: our row is forgotten, nothing
   assert.equal(deleted(s).length, 0, "no DELETE was sent");
   assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "our row is gone");
 });
+
+test("a preset row the owner edited to another service (same path shape, another address and key) is no longer Composio's: deleting it sends that key nowhere near Composio", async (t) => {
+  const s = await setup(t);
+  const other = await startFakeMcp({ path: "/v3/mcp/x/mcp" });
+  t.after(() => other.close());
+  const edited = await s.api("PUT", "/settings/mcp-servers/hn", { url: other.url, auth: { type: "headers", headers: { "x-api-key": "another-service-key" } } });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  const before = s.composio.calls.length;
+  const res = await s.api("DELETE", "/settings/mcp-servers/hn");
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.composio.removed, false);
+  assert.match(res.body.composio.note, /Remove hn in Composio yourself/);
+  assert.equal(s.composio.calls.length, before, "Composio got no call at all from the delete");
+  assert.equal(s.composio.calls.filter((call) => call.method === "DELETE").length, 0);
+  assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "our row is gone");
+});
