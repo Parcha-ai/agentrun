@@ -9,6 +9,11 @@ One gate, the same for every package and every author. It ends in a batch line t
 approves; nothing here approves. Main stays green because every merge goes through the merge queue,
 pinned to the head that was gated.
 
+The [ship lifecycle](../ship/SKILL.md) orchestrates this complete gate. Its explicit coordinator
+approval mode may submit a maintainer's authorized review using that maintainer's existing verified
+identity, independently of the PR author; it does not waive any gate here. This skill by itself
+never submits an approval or grants permission to use an identity.
+
 `AGENTS.md`, `CONTRIBUTING.md` and `changes/README.md` on `origin/main` are the authority. Where this
 file disagrees with them, they win: fix this file in the same session.
 
