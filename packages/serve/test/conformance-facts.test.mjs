@@ -42,7 +42,7 @@ test("a loop with no host tools over its tools skips their cases, saying so", ()
   const registered = [];
   registerHarnessConformance({ name: "s", createLoop: () => undefined, metaTools: false }, { test: (name, options) => registered.push([name, options.skip]) });
   const skips = registered.filter(([name]) => /tools_search|tools_call|codemode/.test(name)).map(([, skip]) => skip);
-  assert.equal(skips.length, 5);
+  assert.equal(skips.length, 6);
   assert.ok(skips.every((skip) => /no tools_search, tools_call or codemode/.test(skip)), JSON.stringify(skips));
 });
 
