@@ -490,12 +490,17 @@ test("R14: a github_app server's token is minted for the claim from the run's la
 test("R14b: a run of a revision saved with no pin that grants a github_app tool is pinned at its claim with a listing token the App mints for the run's repository, metadata read only, and the call answers", async (t) => {
   const lines = captureLines(t);
   const mints = [];
-  const githubAppAccess = async () => ({ mint: async (target, permissions) => (mints.push({ target, permissions }), { ok: true, token: GH_TOKEN, expires_at: Date.now() + 3_600_000 }), target: { repo: "acme/widgets" } });
+  // What the App was asked, in order: each mint, and each revoke.
+  const asked = [];
+  const githubAppAccess = async () => ({ mint: async (target, permissions) => (mints.push({ target, permissions }), asked.push("mint"), { ok: true, token: GH_TOKEN, expires_at: Date.now() + 3_600_000 }), revoke: async () => void asked.push("revoke"), target: { repo: "acme/widgets" } });
   const script = [{ call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
   const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "github_app", fakeToken: GH_TOKEN, githubAppAccess, launchInput: { content: "Fix https://github.com/acme/widgets" }, pin: () => undefined, revisionBody: { tools: ["mcp:fake/add"] } });
   assert.equal(run.row.state, "ended", JSON.stringify(run.row));
   assert.equal(lastResult(run.sent), "5");
   assert.deepEqual(mints[0], { target: { repo: "acme/widgets" }, permissions: { metadata: "read" } }, "the listing's token: the run's repository, metadata read");
+  // The listing's token is revoked once the listing is done, before the call's own token is minted: it is held by no
+  // one after the pin (the claim's cleanup revokes only the tokens githubTokens holds).
+  assert.deepEqual(asked.slice(0, 3), ["mint", "revoke", "mint"], `the listing's token was revoked once the listing was done: ${asked}`);
   assert.deepEqual((await run.server.agents.revision("rev-1"))?.mcpPin?.fake?.tools?.map((tool) => tool.name), ["add"], "the claim pinned the revision");
   await assertNowhere(GH_TOKEN, run, lines);
 });
