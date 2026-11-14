@@ -1023,18 +1023,25 @@ A run lists every tool to the model in full until its catalog tools (an MCP serv
 (`DEFER_CATALOG_OVER`, `defersCatalog` in the kernel). Then they are deferred: not listed, found with `tools_search` and
 run with `tools_call` (built-ins and pi's own tools are always listed). Under 20, there is no search or call: they
 would find tools the model already has, at about 640 tokens on every request. Claude Code defers MCP tools itself (its
-ToolSearch, on under the same test), so it is offered neither of the two; Codex has them and keeps its own code mode.
-`codemode` is offered on every run (not Codex). Each of the three has a tool-settings key of its own, allow by default:
-set to `deny`, it is not offered at all, and a call to it is refused. None of them goes around the run's tool settings:
+ToolSearch), so it is offered neither of the two; Codex has them and keeps its own code mode. The server makes one
+decision for every harness (`SessionSpec.deferCatalog`: past 20, with both `tools_search` and `tools_call` allowed), and
+Claude Code's adapter turns its ToolSearch on exactly then (`ENABLE_TOOL_SEARCH`, `claudeToolSearch`). `codemode` is
+offered on every run (not Codex). Each of the three has a tool-settings key of its own, allow by default: set to `deny`,
+it is not offered at all, and a call to it is refused. A deny of `tools_search` or `tools_call` therefore lists every
+tool in full, on Claude Code too, where its ToolSearch is off. Settings → Tools lists the three (in
+`capabilities.tools` with `meta: true`), each allow or deny; no agent grants them, so the agent editor does not offer
+them. None of them goes around the run's tool settings:
 
 - `tools_search {query, limit?}` ranks the run's tools by what they do and answers each match's name, description and
   input schema (8 by default, at most 25). It finds only tools the run may call: never one set to deny, and never these
   three.
 - `tools_call {name, args}` calls one of the run's tools by name. The call is the tool's own: it is asked about at the
-  gate by that tool's name, and recorded and booked under `<callId>/call`. An ask parks the run, a deny refuses it in the gate's words, and a name the run has no tool by (or one of these three)
-  is refused in words with nothing run.
+  gate by that tool's name, and recorded and booked under `<callId>/call`. An ask parks the run, a deny refuses it in
+  the gate's words, and a name the run has no tool by (or one of these three) is refused in words with nothing run.
 - `codemode {script}` runs a JavaScript script (the body of an async function) in a QuickJS sandbox. Its
-  `await tools.<name>(args)` calls are each the tool's own call, under `<callId>/s<n>`, answered one at a time. The
+  `await tools.<name>(args)` calls are each the tool's own call, under `<callId>/s<n>`, answered one at a time. A tool is
+  named as `ALL_TOOLS` gives it; the description shows the first three (`tools.<name>`) and says to leave off the prefix
+  a harness shows in the model's own tool list (`hands_`, `mcp__hands__`). The
   sandbox has the tools and nothing else of the run: no environment, key, file, network or timer. A script runs at most
   10 minutes in 256 MiB. A call that needs approval parks the run, and the script follows Codex's rule. Once a person
   answers, the script runs again from its start, and the calls it already made answer from their records. The parked
