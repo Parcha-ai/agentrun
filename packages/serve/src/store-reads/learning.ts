@@ -340,8 +340,8 @@ export async function runPathOverStore(store: Store, runId: string, started: Run
   const served = servedOf(entries);
   if (!served && !started?.workflows?.length) return { path: "agent", workflow: null };
   // The path is who wrote the run's final answer, read on the job's own rows: a grade's feedback round asks the agent no
-  // turn of the job's, so its words (a second message) and its rows never change it (withoutFeedbackRounds).
-  const rows = withoutFeedbackRounds(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false, caps: { text: Number.POSITIVE_INFINITY } }), entries);
+  // turn of the job's, so its words and its rows never change it (withoutFeedbackRounds).
+  const rows = withoutFeedbackRounds(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false, caps: { text: Number.POSITIVE_INFINITY } }));
   // One the workflow answered stays `workflow` while that answer is the run's last (servedAnswerStands): a follow-up that
   // ended with no new answer of the agent's keeps it; one the agent answered anew is `handed_back`.
   if (served) {

@@ -46,7 +46,7 @@ import { costOf, type SignInReader } from "../run-view.js";
 import type { LearningProposal, McpServerRow, Store } from "../store/store.js";
 import { getMcpServer, listMcpServers } from "../mcp-store.js";
 import { readApprovers } from "../server-approvers.js";
-import { runEntries, runReflect, runTimeline, withFeedback } from "../store-reads/journal.js";
+import { runEntries, runReflect, runTimeline, withFeedback, withoutFeedbackRounds } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
 import { fits, reviseOf, servedAnswerOf, servedOf, workflowDigest } from "./workflow-first.js";
 import { pendingFeedbackOf } from "./feedback-round.js";
@@ -107,7 +107,9 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       const beside = await deps.store.learning.spentBeside(runId);
       return { learns: true, costUsd, capUsd, capReached: costUsd !== null && (beside === null || costUsd + beside >= capUsd) };
     },
-    nothingNew: async (runId) => onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
+    // A grade's feedback round always has something new, the grade's words (feedback-round.ts: heard, never "nothing
+    // new"), whatever the job did: said here, never left to the words' row counting as a message of the job's.
+    nothingNew: async (runId) => !pendingFeedbackOf(await runEntries(deps.store, runId, BACKGROUND_CONTEXT)) && onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
     promptFacts: async () => ({ active: start.seedNotes ?? start.given.length }),
     // A notes run (`learning: "notes"`) compiles nothing.
     ...(start.notesOnly ? {} : { compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => compileAskOf(deps, { ...input, input: launch.input, ...(start.seedNotes !== undefined ? { seedNotes: start.seedNotes } : {}), seedWorkflows: start.workflows?.length ?? 0 }) }),
@@ -211,9 +213,10 @@ export const LEARNED_NAMES: ReadonlySet<string> = new Set([LEARNED_WORKFLOW_TOOL
 /** Whether a run's job, by its timeline `rows` (the end-of-run turn's own, labelled LEARNING_LABEL, left out), gave
  *  nothing new to look back on: it called tools, every one of them learned_workflow (a workflow's own nested calls are
  *  its), each answering; no tool result failed or was refused; no error, approval or wait; and one message, its first,
- *  came in. Anything else is asked its end-of-run turn. */
+ *  came in. Anything else is asked its end-of-run turn. Read on the job's turns (withoutFeedbackRounds): a grade's
+ *  feedback round is no message of the job's. */
 export function onlyLearnedWorkflows(rows: readonly TimelineEvent[]): boolean {
-  const own = rows.filter((row) => row.agent_label !== LEARNING_LABEL);
+  const own = withoutFeedbackRounds(rows).filter((row) => row.agent_label !== LEARNING_LABEL);
   if (own.some((row) => row.kind === "error" || row.kind === "tool_approval_requested" || row.kind === "waiting")) return false;
   if (own.filter(isMessageRow).length !== 1) return false;
   const calls = own.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id);
@@ -326,10 +329,11 @@ export async function traceOf(store: Store, runId: string, refuse: readonly stri
 /** A run's trace from its timeline rows, the end-of-run turn's (LEARNING_LABEL) left out: its first message (the
  *  person's, or a trigger's firing: what it was asked), each tool call its job made at the top level, its answer, and
  *  each message the person sent after the first (`user_message`: their feedback), never the server's words (an
- *  approval's resume, which can carry a call's result, a raised cap's follow-up, a hand-back) or a trigger's; every text
- *  cut of `refuse` and every secret's shape. */
+ *  approval's resume, which can carry a call's result, a raised cap's follow-up, a hand-back), a trigger's or a grade's
+ *  (its feedback round is no turn of the job's: withoutFeedbackRounds); every text cut of `refuse` and every secret's
+ *  shape. */
 export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly string[]): CompileTrace {
-  const rows = timeline.filter((row) => row.agent_label !== LEARNING_LABEL);
+  const rows = withoutFeedbackRounds(timeline).filter((row) => row.agent_label !== LEARNING_LABEL);
   const cut = (text: string | null | undefined) => redactSecrets(String(text ?? ""), refuse, Number.POSITIVE_INFINITY).replace(/\s+/g, " ").trim().slice(0, TRACE_TEXT);
   const messages = rows.filter(isMessageRow);
   const failed = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_status === "failed").map((row) => row.tool_use_id));

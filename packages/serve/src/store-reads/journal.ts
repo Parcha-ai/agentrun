@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
-import { CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, isMessageRow, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
+import { CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, FEEDBACK_SUFFIX, isFeedbackRow, isMessageRow, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -178,15 +178,24 @@ export function withFeedback(entries: readonly EntryLike[]): EntryLike[] {
   });
 }
 
-/** A run's timeline `rows` (runTimeline's, over its root `entries`) with every grade's feedback round left out: from its
- *  words' row (withFeedback, the row of its FEEDBACK entry) up to the run's next message of any other kind. A round asks
- *  the agent no turn of the job's, so what the job did is what is left (a follow-up's turns, a person's, included). */
-export function withoutFeedbackRounds<Row extends { readonly id: string; readonly kind: string; readonly origin?: string }>(rows: readonly Row[], entries: readonly EntryLike[]): Row[] {
+/** `rows` (rendered over `entries`) with each grade's words' row (withFeedback's: the row of a FEEDBACK entry) marked
+ *  FEEDBACK_SUFFIX: shown as the reviewer's message, and never a message a turn of the job's took (isMessageRow passes
+ *  over it), so no reader of the rows (the answer, the path, the messages a stop stands after) reads a grade as one. */
+function feedbackMarked(rows: readonly TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
   const words = new Set(entries.filter((entry) => entry.kind === KINDS.feedback && entry.id !== undefined).map((entry) => `:${entry.id}`));
   if (!words.size) return [...rows];
+  return rows.map((row) => (row.kind === "user_message" && words.has(row.id.slice(row.id.lastIndexOf(":"))) ? { ...row, id: `${row.id}${FEEDBACK_SUFFIX}` } : row));
+}
+
+/** The job's turns: a run's timeline `rows` (runTimeline's) with every grade's feedback round left out, from its words'
+ *  row (FEEDBACK_SUFFIX) up to the run's next message. A round asks the agent no turn of the job's, so what the job did is
+ *  what is left (a follow-up's turns, a person's, included). The one view every reader of what the job's turns said
+ *  reads (the answer, the path, nothing new, a run's trace). */
+export function withoutFeedbackRounds<Row extends { readonly id: string; readonly kind: string; readonly origin?: string }>(rows: readonly Row[]): Row[] {
   let inRound = false;
   return rows.filter((row) => {
-    if (isMessageRow(row)) inRound = words.has(row.id.slice(row.id.lastIndexOf(":")));
+    if (isFeedbackRow(row)) inRound = true;
+    else if (isMessageRow(row)) inRound = false;
     return !inRound;
   });
 }
@@ -212,8 +221,9 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // price, never one in flight: never the known sum as its cost while the run reads stopped.
   const read = { ...options, ...(cwd ? { path: inWorkspace(cwd.cwd) } : {}), ...(!options.settled && turnCutOf(records, reflect) ? { turnCut: true } : {}) };
   // Shaped on pi too: its own entries pass through as they are, and the calls its tools nested (on the loop's record) read
-  // as a CLI's calls do. A grade's feedback round's words read as the reviewer's message (withFeedback).
-  const rendered = timelineOf(withPaidCosts(withFeedback(piShaped(entries))), read);
+  // as a CLI's calls do. A grade's feedback round's words read as the reviewer's message (withFeedback), marked as no
+  // message of the job's (feedbackMarked).
+  const rendered = feedbackMarked(timelineOf(withPaidCosts(withFeedback(piShaped(entries))), read), entries);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
   return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries, options.redact));
 }
