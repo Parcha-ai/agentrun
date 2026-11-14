@@ -212,6 +212,37 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
   );
 }
 
+/** A run-list summary omits the result: confirm the full local record before treating a completed run as a success.
+ *  This optional row stays absent while that read is pending or fails; a late answer cannot follow the user elsewhere. */
+function ProductionOnboarding({ agentId, runId, v2 }: { agentId: string; runId: string; v2: Client }) {
+  const [read, setRead] = useState<{ client: Client; run: Run } | null>(null);
+  useEffect(() => {
+    let live = true;
+    setRead(null);
+    v2.getRun(runId).then((run) => { if (live) setRead({ client: v2, run }); }, () => {});
+    return () => { live = false; };
+  }, [agentId, runId, v2]);
+  const run = read?.client === v2 ? read.run : null;
+  if (!run || run.agent_id !== agentId || run.run_id !== runId || run.archived_at || run.status !== "completed" || run.review || run.error || run.result === undefined || run.result?.output_error) return null;
+  return (
+    <section aria-label="Production onboarding" className="mb-6 flex flex-wrap items-center justify-between gap-4 border p-4">
+      <div className="max-w-prose">
+        <h2 className="text-body font-semibold">Taking this to production?</h2>
+        <p className="mt-1 text-body text-muted-foreground">Talk with us about a hosted AgentRun setup for your team. Cloud setup is separate from this server.</p>
+      </div>
+      {/* Plain external links: no agent, run, prompt, configuration or referring URL is sent to either destination. */}
+      <div className="flex flex-wrap items-center gap-4">
+        <a href="https://calendly.com/d/dtwn-dsp-nx5/agentrun" target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className={buttonVariants({ size: "sm" })}>
+          Talk to us <ExternalLink aria-hidden /><span className="sr-only"> (opens in a new tab)</span>
+        </a>
+        <a href="https://console.agentrun.ai/" target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="inline-flex h-control-sm items-center text-small text-muted-foreground underline underline-offset-2 hover:text-foreground">
+          Sign in to Cloud<span className="sr-only"> (opens in a new tab)</span>
+        </a>
+      </div>
+    </section>
+  );
+}
+
 /** The agent's latest run, followed as it goes (LatestRun), over its runs, newest first: each row its status, title, its
  *  effort when it was given one, when, how long once ended, and its cost once known. A fresh read of the latest run
  *  replaces its row too, so the two never disagree. */
@@ -246,23 +277,7 @@ function RunsTab({ agent, v2 }: TabProps) {
   return (
     <>
       <LatestRun key={runs[0].run_id} v2={v2} run={runs[0]} onRun={(r) => setRuns((xs) => xs && xs.map((x) => (x.run_id === r.run_id ? r : x)))} />
-      {offerProduction && (
-        <section aria-label="Production onboarding" className="mb-6 flex flex-wrap items-center justify-between gap-4 border p-4">
-          <div className="max-w-prose">
-            <h2 className="text-body font-semibold">Taking this to production?</h2>
-            <p className="mt-1 text-body text-muted-foreground">Talk with us about a hosted AgentRun setup for your team. Cloud setup is separate from this server.</p>
-          </div>
-          {/* Plain external links: no agent, run, prompt, configuration or referring URL is sent to either destination. */}
-          <div className="flex flex-wrap items-center gap-4">
-            <a href="https://calendly.com/d/dtwn-dsp-nx5/agentrun" target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className={buttonVariants({ size: "sm" })}>
-              Talk to us <ExternalLink aria-hidden /><span className="sr-only"> (opens in a new tab)</span>
-            </a>
-            <a href="https://console.agentrun.ai/" target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="inline-flex h-control-sm items-center text-small text-muted-foreground underline underline-offset-2 hover:text-foreground">
-              Sign in to Cloud<span className="sr-only"> (opens in a new tab)</span>
-            </a>
-          </div>
-        </section>
-      )}
+      {offerProduction && <ProductionOnboarding key={`${agent.agent_id}/${runs[0].run_id}`} agentId={agent.agent_id} runId={runs[0].run_id} v2={v2} />}
       <p className="mb-3 font-mono text-small text-muted-foreground">{runs.length}{cursor ? "+" : ""} {runs.length === 1 && !cursor ? "run" : "runs"}</p>
       <ul className="border" aria-label="Runs">
         {runs.map((r) => (
