@@ -230,13 +230,13 @@ const STREAM_LOST = /the daemon's stream (ended|closed)/;
  */
 export function lostBeforeStop(steps: readonly Step[], stopAt: number | undefined): Step["error"] | undefined {
 	if (stopAt === undefined) return undefined;
-	const seen = steps.slice(0, stopAt);
-	const agent = steps.filter((step) => step.phase === "agent" && step.method !== "hello" && step.method !== "ping");
-	const at = agent.findLastIndex((step) => !step.ok && STREAM_LOST.test(step.error?.message ?? ""));
-	if (at < 0) return undefined;
-	if (agent.slice(at + 1).some((step) => step.ok)) return undefined;
-	const lost = agent[at] as Step;
-	return seen.includes(lost) ? lost.error : undefined;
+	const isAgentCall = (step: Step) => step.phase === "agent" && step.method !== "hello" && step.method !== "ping";
+	// The last loss the bench saw before the stop: later ones (the dead stream failing calls after it) don't hide it.
+	const lost = steps.slice(0, stopAt).findLast((step) => isAgentCall(step) && !step.ok && STREAM_LOST.test(step.error?.message ?? ""));
+	if (!lost) return undefined;
+	// A call that answered after it, before or after the stop, shows the computer was still there.
+	if (steps.slice(steps.indexOf(lost) + 1).some((step) => isAgentCall(step) && step.ok)) return undefined;
+	return lost.error;
 }
 
 /** A ping on the bench's channel, short: why the computer did not answer, or undefined when it did. */

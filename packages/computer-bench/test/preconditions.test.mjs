@@ -212,6 +212,9 @@ test("a loss counts as before the stop only when the bench saw it fail by then: 
 	assert.deepEqual(lostBeforeStop([ok, failed], 2), lost, "it failed, and the bench saw it, before the stop");
 	assert.equal(lostBeforeStop([ok, failed], 1), undefined, "sent before the stop, answered after it: the stop let the computer go");
 	assert.equal(lostBeforeStop([ok, failed], undefined), undefined, "a stop the bench can't place is no evidence of a death");
+	const again = { ...failed, n: 3 };
+	assert.deepEqual(lostBeforeStop([ok, failed, again], 2), lost, "a loss seen before the stop counts, though the dead stream failed another call after it");
+	assert.equal(lostBeforeStop([ok, failed, { ...ok, n: 3 }, again], 2), undefined, "a call that answered after the loss: the computer was not dead");
 });
 
 test("a driver's budget stop whose cancel cut the agent's last call is budget: the loss can't be shown to come first", async () => {
