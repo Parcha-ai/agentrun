@@ -140,8 +140,9 @@ let paidSeq = 0;
 export const paidLedger = (): PaidBooking | undefined => ledgers.getStore()?.paid;
 
 /** Stops the run the current call books in, in `words`: handed to its pause (Ledger.pause) as a cap refusal no raise
- *  could fix, so the run's next request is refused in them and the run ends failed in them, as a cap refusal for good
- *  ends it. Its code is the cap's, so the refused request reads as the cap's refusal (no model error row of its own). */
+ *  could fix, so the run's next request and every tool call after this one (a script's too) are refused in them, and the
+ *  run ends failed in them, past its cap too, as a cap refusal for good ends it. Its code is the cap's, so the refused
+ *  request reads as the cap's refusal (no model error row of its own). */
 export const stopRun = async (words: string): Promise<void> => {
   await ledgers.getStore()?.pause?.({ refuse: words, code: SPEND_CAP_REACHED, forGood: true });
 };
