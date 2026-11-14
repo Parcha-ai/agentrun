@@ -15,6 +15,7 @@ import { FINDINGS } from "./fixtures/faux-review.mjs";
 const keyedWarnings = (body) => body.warnings.filter((w) => w.reason === "not_set_up_here" && /^The tool \S+ needs /.test(w.message ?? ""));
 import { schemaProblems } from "./schema-support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { twoToolPackage } from "./fixtures/two-tool-template.mjs";
 import { asOwner, follow, scratch, SECRET_WRITE_PATHS, serve, withEnv } from "./support.mjs";
 
 const REVIEW = new URL("../templates/code-review/", import.meta.url).pathname;
@@ -382,6 +383,33 @@ test("code-review's GitHub tools: granted, never allowed by the package itself; 
   // bounded by the pinned review write it adds to.
   assert.deepEqual(await permissions(consented.body.agent_id), { pull_request_read: "allow", get_file_contents: "deny", search_code: "allow", get_repository_tree: "allow", pull_request_review_write: "allow", add_comment_to_pending_review: "allow" });
   assert.deepEqual(consented.body.warnings.filter((w) => w.field.startsWith("grants.")).map((w) => [w.field, w.reason]), [["grants.mcp:github/get_file_contents", "not_allowed"]]);
+});
+
+test("an apply grants only the MCP tools the owner ticked: under never an unticked tool is not the agent's at all, so it is never offered nor run; none ticked grants none", async (t) => {
+  const dir = join(await scratch(t), "templates");
+  const pkg = readPackage(twoToolPackage(dir, "two-tools"));
+  // The apply's own function: the tick is the agent's tool, set to allow; the tool left unticked is not in its tools.
+  const ticked = compiled(pkg, {}, { mcp: pkg.mcp, defaultTools: [], grants: ["mcp:fake/add"], approvals: "never" }).agent.definition;
+  assert.deepEqual([ticked.tools, ticked.tool_settings, ticked.approvals], [["mcp:fake/add"], { "mcp:fake/add": { permission: "allow" } }, "never"]);
+  const none = compiled(pkg, {}, { mcp: pkg.mcp, defaultTools: [], grants: [], approvals: "never" }).agent.definition;
+  assert.deepEqual((none.tools ?? []).filter((tool) => tool.startsWith("mcp:")), [], "none ticked: no MCP tool granted");
+
+  // Through the API, with the server saved: the agent's tools and its read hold the tick alone.
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { api } = await serve(t, { templates: dir });
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  const applied = await api("POST", "/templates/two-tools/apply", { grants: ["mcp:fake/add"] });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
+  assert.equal(agent.definition.approvals, "never");
+  assert.deepEqual(agent.definition.tools.filter((tool) => tool.startsWith("mcp:")), ["mcp:fake/add"], "only the ticked tool is granted");
+  assert.deepEqual(agent.tools.filter((x) => x.name.startsWith("mcp:")).map((x) => [x.name, x.permission]), [["mcp:fake/add", "allow"]], "the unticked tool is nowhere in the agent's tools, so never cannot lift it");
+  // Nothing ticked: the agent has no tool of the server at all.
+  const bare = await api("POST", "/templates/two-tools/apply", {});
+  assert.equal(bare.status, 201, JSON.stringify(bare.body));
+  assert.deepEqual((await api("GET", `/agents/${bare.body.agent_id}`)).body.tools.filter((x) => x.name.startsWith("mcp:")), [], "none ticked: none granted");
 });
 
 test("a parameter's enum is a closed set: the list shows it, apply refuses a value outside it, and the validator refuses a bad one", async (t) => {
