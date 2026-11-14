@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.0-beta.38 (2026-11-14)
+
+- web_fetch reads a site's feeds: a reply of type `application/<name>+xml` or `application/<name>+json` (`application/atom+xml`, `application/rss+xml`, `application/ld+json`) is text, read as it came.
+  - GitHub's `releases.atom` and `commits.atom` were refused as "not text", so an agent could not read a public repository's releases or commits that way. The rule is the same on every harness: claude-agent and codex run pi's web_fetch.
+  - Every other non-text type (a PDF, a zip, `application/octet-stream`, an `image/svg+xml`) is still refused.
+
 ## 0.1.0-beta.37 (2026-11-13)
 
 - A run's live view (its browser, desktop or phone, watched and taken over) works when its runner is on another host than the server, as in the compose stack's server and runners. Breaking for a SQLite store: its schema version moves to 9, so a server refuses a SQLite store an earlier version made; start it on a fresh data directory. A Postgres store migrates itself (migration 0007). A runner names the host the server reaches it at (`AGENTRUN_RUNNER_LIVE_HOST`, listening there or on `AGENTRUN_RUNNER_LIVE_BIND`), and each viewer's row in the store carries that host (a new nullable `computer_viewers.host`). The server dials a row's host only when it is one of its runners' (`AGENTRUN_RUNNER_HOSTS`), and signs each request it makes of the viewer with an HMAC under a key derived from the seal key; a runner's viewer off loopback refuses, before any WebSocket, a request with no good, fresh proof for its own viewer, and the viewer's token still decides who watches. The hop between server and runner is plain HTTP, for a private network. With neither setting, every viewer stays on loopback as before. `@parcha/pi-browser`'s `createLiveView` takes `listen` (the address its own server listens on and the host its links name) and `admit` (a host's own check of every page request and upgrade).
