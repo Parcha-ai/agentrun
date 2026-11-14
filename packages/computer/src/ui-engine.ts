@@ -689,7 +689,9 @@ export class UiEngine {
 			return "set" in step && result !== undefined && !("error" in result) && result.verified ? [index] : [];
 		});
 		if (sets.length > 0) {
-			await sleep(SET_HOLD_MS, signal);
+			// Waited out on the clock: a timer may fire a millisecond early, and the hold is a floor.
+			const heldUntil = Date.now() + SET_HOLD_MS;
+			for (let left = SET_HOLD_MS; left > 0 && !signal.aborted; left = heldUntil - Date.now()) await sleep(left, signal);
 			if (signal.aborted) return aborted("ui.act");
 			read = await final();
 			if (!read.ok) return read;

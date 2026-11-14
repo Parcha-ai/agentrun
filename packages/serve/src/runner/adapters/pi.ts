@@ -110,7 +110,6 @@ export function piAdapter(options: PiAdapterOptions): AgentAdapter {
   return {
     // pi is the default harness: its id is the harness table's, never a literal of its own.
     id: DEFAULT_HARNESS,
-    capabilities: () => ({}),
     check: () => [],
     open: (spec, io) => openPi(options, spec, io as PiSessionIO),
   };

@@ -96,6 +96,20 @@ try {
   // The token leaves the viewer's address at once: its fragment is gone after load.
   const viewerFrame = page.frames().find((f) => new URL(f.url()).pathname.includes("/computer/live/v/"));
   check("the viewer's location.hash is empty after load", (await viewerFrame.evaluate(() => location.hash)) === "");
+  // Framed as narrow as the Screen tab frames a phone (about 217 px), with a phone's three buttons shown, the bar keeps
+  // who drives in view: it wraps, never clipping the words at the frame's edge.
+  await until(async () => (await viewer.locator("#drive").innerText()) !== "", "the viewer says who drives");
+  await iframe.evaluate((frame) => { frame.style.width = "217px"; });
+  const narrow = await viewerFrame.evaluate(() => {
+    const phone = document.getElementById("phone");
+    phone.hidden = false;
+    const drive = document.getElementById("drive").getBoundingClientRect();
+    const said = { right: drive.right, left: drive.left, width: document.documentElement.clientWidth };
+    phone.hidden = true;
+    return said;
+  });
+  check("at a phone's width the viewer's bar keeps who drives in view", narrow.left >= 0 && narrow.right <= narrow.width + 0.5, JSON.stringify(narrow));
+  await iframe.evaluate((frame) => { frame.style.width = ""; });
 
   // The desktop's frame: drawn, and acked by the page once drawn.
   await until(() => desktop.record.acks === 1, "the page drew the frame and acked it").catch(() => {});
@@ -125,8 +139,8 @@ try {
 
   // Hand back: the agent drives again; let go, the run ends, which ends the view.
   await hands.click();
-  await viewer.locator("#notice", { hasText: "You handed the computer back" }).waitFor({ timeout: 20_000 }).catch(() => {});
-  check("the viewer says the computer went back", (await viewer.locator("#notice").innerText()).includes("You handed the computer back"));
+  await viewer.locator("#notice", { hasText: "You handed the desktop back" }).waitFor({ timeout: 20_000 }).catch(() => {});
+  check("the viewer says the desktop went back, once", (await viewer.locator("#notice").innerText()) === "You handed the desktop back.");
   letGo();
   await until(async () => (await api("GET", `/runs/${runId}`)).body?.status === "completed", "the run ends").catch(() => {});
   check("the run ends once the desktop is handed back", (await api("GET", `/runs/${runId}`)).body?.status === "completed");

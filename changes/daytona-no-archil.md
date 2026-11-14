@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-computer, @parcha/agentrun-serve
+kind: breaking
+---
+Daytona no longer takes an Archil mount: Archil's client hangs on its sandboxes (its FUSE session never answers a `statx` of the mountpoint), so a create that asks for one waited out its 120 s mount bound. Breaking: Daytona's descriptor declares `mounts: []` and its `capabilities().mount` is `[]`; `check()` and `create()` refuse an Archil mount up front, code `refused`, in the words "Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes", before anything is asked of Daytona. `DAYTONA_ARCHIL_EGRESS` is no longer a Daytona key, and `DaytonaProvider` refuses the `archilEgress` option at construction; drop both. In serve, a Mode 2 agent whose computer is a Daytona sandbox, with GPUs or without, is refused at its save and its run's start with those words: pick a Modal or E2B sandbox instead.
+A descriptor may now say why it takes none of a mount kind, `unmounted: { <kind>: "<one sentence>" }` (`Unmounted`, also a `HostFacts` field and `checkMount`'s third parameter); `check()` refuses a mount of that kind in those words, and `defineProvider` refuses an `unmounted` that names a kind `mounts` declares.

@@ -8,27 +8,7 @@
 import { create, type DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
 import { DAYTONA_DEFAULT_SNAPSHOT } from "../descriptors/daytona.js";
 import type { MachineHost } from "../host.js";
-import type { MountKind } from "../mount.js";
-import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
-import type { RunFolder } from "./types.js";
-
-/** The Archil disk's settings for the mount cases, by name (COMPUTER_ARCHIL_*: all five, or none). */
-export { ARCHIL_ENV } from "./archil.js";
-
-/**
- * A fresh run folder for the mount cases: an Archil one on the disk the COMPUTER_ARCHIL_* settings name (the shared
- * archilRunFolder; the run's snapshot is then one of box/Dockerfile, and COMPUTER_DAYTONA_USER is 2510:2510); none when
- * they name none, and none for a bind, which a remote computer cannot take.
- */
-export async function mountFor(
-	kind: MountKind,
-	{ env = process.env, archil = {} }: { env?: Record<string, string | undefined>; archil?: Pick<ArchilRunFolderOptions, "objects" | "Archil" | "baseUrl"> } = {},
-): Promise<RunFolder | undefined> {
-	if (kind !== "archil") return undefined;
-	const settings = archilSettings(env);
-	return settings === undefined ? undefined : archilRunFolder({ ...settings, ...archil });
-}
 
 /** The environment this module reads, by name, each for the option its comment names. */
 export const DAYTONA_ENV = {

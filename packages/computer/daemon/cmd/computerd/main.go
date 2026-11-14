@@ -167,6 +167,14 @@ func main() {
 // with args, init's own (daemon.InitInUserNamespace), and ends with that init.
 func runInit(opts initOptions, isolation daemon.Isolation, args []string, logger *log.Logger) int {
 	var dropped error
+	// A desktop's user gets a name first, while init is root, where the image has none for it: its programs look it up
+	// (daemon.NameUser). An init started again in a user namespace finds the name its first start gave.
+	if opts.user != nil && os.Getenv("DISPLAY") != "" && os.Geteuid() == 0 {
+		if err := daemon.NameUser("/etc", opts.user.uid, opts.user.gid, os.Getenv("HOME")); err != nil {
+			logger.Printf("init refuses to start: the desktop's user has no name, and %v", err)
+			return 1
+		}
+	}
 	if opts.user != nil {
 		dropped = daemon.Become(opts.user.uid, opts.user.gid, os.Getenv("HOME"), daemon.SocketPath(), isolation)
 	} else {

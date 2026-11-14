@@ -187,6 +187,17 @@ export function cutLast(entries: readonly EntryRecord[]): string | undefined {
   return message?.stopReason === PI_STOP.length ? cutAtLimit(message.usage?.output) : undefined;
 }
 
+/** The text of the answer the run would end on (cutLast's newest model answer: the root's last pi.assistant, its text
+ *  blocks joined as the Timeline joins them, or a CLI record's last model message), "" when it said none: what the output
+ *  contract's retry checks against the agent's output schema (adapter-loop.ts). */
+export function lastAnswerText(entries: readonly EntryRecord[]): string {
+  const last = [...entries].reverse().find((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
+  if (last?.kind === KINDS.message) return String((last.data as { text?: unknown }).text ?? "");
+  const content = (last as { model?: { content?: unknown }[] } | undefined)?.model?.[0]?.content;
+  if (typeof content === "string") return content;
+  return Array.isArray(content) ? content.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text as string).join("\n") : "";
+}
+
 /** A tool result pi wrote for a call it cut off at its restart limit, as its message, if any. */
 export function restartLimited(entries: readonly EntryRecord[]): string | undefined {
   for (const entry of entries) {
