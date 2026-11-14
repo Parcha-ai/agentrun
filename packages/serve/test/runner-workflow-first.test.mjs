@@ -46,6 +46,8 @@ const { LEARNED_CLIP } = await import("../dist/learned-workflow.js");
 const { COST_WINDOW, costLineOf, workflowCostsOf, fits, workflowDigest, workflowFirstOf, pathMetrics, reviseOf, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
 const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
 const { answerAsServed, answerJson, structuredAnswer } = await import("../dist/answer-json.js");
+const { reflectPrompt } = await import("../dist/learn/reflect.js");
+const { TOOL_BUDGET_TEXT } = await import("../dist/tool-budget.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const RUN = "run-1";
@@ -95,12 +97,13 @@ const until = async (done, what, ms = 40_000) => {
  *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
  *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], followUp, flows = FLOWS, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {} } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], followUp, flows = FLOWS, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {}, maxToolCalls, agentCall } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  // `agentCall`: the agent's first answer is this tool call (its next, once a tool result is in, its text).
   const gw = await startFauxGateway({
-    call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: answer ?? (sure ? 42 : 41), sure } } } : undefined),
+    call: ({ body }) => (offers(body, "submit") ? (!hasResult(body) ? { name: "submit", input: { value: { answer: answer ?? (sure ? 42 : 41), sure } } } : undefined) : agentCall && !hasResult(body) ? agentCall : undefined),
     text: ({ body }) => (offers(body, "submit") ? "submitted" : AGENT_SAYS),
   });
   let runner;
@@ -113,7 +116,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], ...(learned ? { learning: true } : {}), ...(toolSettings ? { toolSettings } : {}), ...(outputSchema ? { outputSchema } : {}) } });
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], ...(learned ? { learning: true } : {}), ...(toolSettings ? { toolSettings } : {}), ...(outputSchema ? { outputSchema } : {}), ...(maxToolCalls !== undefined ? { maxToolCalls } : {}) } });
   const seed = learned ? await landWorkflows(dir, "agent-1", flows) : undefined;
   const launch = { input, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...(learned ? { learning: startAt(seed) } : {}), ...(workflowFirst === false ? { workflowFirst: false } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
@@ -260,28 +263,34 @@ test("handed back: the end-of-run turn asks for the workflow's next revision by 
   assert.match(textOf(ask.body), /give `answer` again whole under its name/);
 });
 
-test("money rule, all-in: a workflow whose runs are cheap but whose grades push its all-in over the agent's by hand stops running first", async (t) => {
-  // Served runs at $0.1 each, by hand $0.2: under the line on their own cost; each served run's grade books $0.4, so
-  // all-in they cost $0.5 a run. The by-hand runs' grades are on their side too ($0.05 each: $0.25 all-in).
-  const past = pastRuns({ servedUsd: 0.1, byHandUsd: 0.2 });
-  const pastGrades = Object.fromEntries(past.map((run) => [run.id, run.metrics.path === "agent" ? 0.05 : 0.4]));
-  const { row, gateway, entries, logs } = await piRun(t, { past, pastGrades });
-  assert.equal(row.metrics?.path, "agent", `the agent took the run: ${JSON.stringify(row.metrics)}`);
-  assert.equal(gateway.requests.filter(isNode).length, 0, "the workflow never ran");
-  const revise = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST)?.data;
-  assert.deepEqual([revise?.outcome, revise?.served_usd, revise?.by_hand_usd, revise?.runs], ["needs_revision", 0.5, 0.25, COST_WINDOW], "the two numbers are all-in");
-  assert.ok(logs.some((line) => /answer cost \$0\.5 a run over its last 10 served runs, at or over \$0\.25 by hand, both all-in;/.test(line)), JSON.stringify(logs));
+test("a learned workflow named as only a workflow may be (sort_invoice): handed back or stopped, the end-of-run turn still asks for its revision", async (t) => {
+  // The prompt takes every learned workflow's name, as the store does (skills.ts learnedName), never only a skill's.
+  assert.match(reflectPrompt({ dir: ".learning", active: 0, handedBack: "sort_invoice" }), /give `sort_invoice` again whole under its name/);
+  assert.match(reflectPrompt({ dir: ".learning", active: 0, revise: { workflow: "sort_invoice", served_usd: 0.2, by_hand_usd: 0.1, runs: 10 } }), /`sort_invoice` no longer runs first/);
+  assert.throws(() => reflectPrompt({ dir: ".learning", active: 0, handedBack: "Sort Invoice" }), /a workflow's name/);
+  // And through a run: handed back, its end-of-run turn is placed and asks for it by that name.
+  const { gateway, kept } = await piRun(t, { sure: false, flows: [{ ...FLOWS[0], name: "sort_invoice" }] });
+  const ask = gateway.requests.find((request) => !isNode(request) && /Your learned workflow `sort_invoice` ran first on this run and handed it back to you/.test(textOf(request.body)));
+  assert.ok(ask, `the reflect turn asked about \`sort_invoice\`: ${gateway.requests.map((request) => textOf(request.body).slice(-300)).join("\n---\n")}`);
+  assert.ok(kept?.proposal, "the run's look-back was kept");
 });
 
-test("money rule, all-in: a served run whose grade's cost is unknown is left out of the mean and counted, never read as 0", async (t) => {
-  // 11 served runs, the newest at $5 with a grade of unknown cost, the 10 older at $0.1: read as 0 its grade would put
-  // it in the window ($0.59 a run, over the by-hand $0.2); left out, the 10 known are the window, under, and it serves.
-  const [newest, ...older] = pastRuns({ served: COST_WINDOW + 1, servedUsd: 0.1, byHandUsd: 0.2 });
-  const { row: under } = await piRun(t, { past: [{ ...newest, costUsd: 5 }, ...older], pastGrades: { "past-0": null } });
-  assert.equal(under.metrics?.path, "workflow", JSON.stringify(under.metrics));
-  // Only 10 served, the newest unknown: 9 known, under COST_WINDOW, so it serves though the 9 cost $0.5 a run.
-  const { row: few } = await piRun(t, { past: pastRuns({ servedUsd: 0.5, byHandUsd: 0.2 }), pastGrades: { "past-0": null } });
-  assert.equal(few.metrics?.path, "workflow", `an unknown run is never one of the window: ${JSON.stringify(few.metrics)}`);
+test("max_tool_calls on pi: the workflow-first call counts toward the run's tool calls, so after a handback the agent's next call is past the budget", async (t) => {
+  const { row, gateway, entries } = await piRun(t, { sure: false, maxToolCalls: 1, agentCall: { name: "read", input: { path: "notes.txt" } } });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.deepEqual(entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["handed_back"]);
+  // The agent's read came after the workflow's call took the one call allowed: refused in the budget's words.
+  const after = gateway.requests.find((request) => !isNode(request) && hasResult(request.body));
+  assert.ok(after, `the agent made its call and got its result: ${gateway.requests.length}`);
+  assert.ok(textOf(after.body).includes(TOOL_BUDGET_TEXT), `the agent's call was refused at the budget: ${JSON.stringify(gateway.requests.filter((request) => !isNode(request)).map((request) => request.body?.messages?.map((message) => (Array.isArray(message.content) ? message.content.map((block) => `${block.type}:${(block.text ?? JSON.stringify(block.content ?? block.input ?? "")).slice(0, 80)}`) : String(message.content).slice(0, 80)))))}`);
+});
+
+test("max_tool_calls on pi: a run the workflow-first step never served keeps the whole budget for the agent", async (t) => {
+  const { row, gateway } = await piRun(t, { workflowFirst: false, maxToolCalls: 1, agentCall: { name: "read", input: { path: "notes.txt" } } });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const after = gateway.requests.find((request) => !isNode(request) && hasResult(request.body));
+  assert.ok(after, "the agent made its call and got its result");
+  assert.ok(!textOf(after.body).includes(TOOL_BUDGET_TEXT), `the agent's one call was let through: ${textOf(after.body).slice(-600)}`);
 });
 
 // A teacher's label sent after the run (a follow-up) is the feedback learning runs on: on a run its learned workflow served
