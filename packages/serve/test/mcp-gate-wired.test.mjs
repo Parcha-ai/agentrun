@@ -4,7 +4,8 @@
 // refused and the fake MCP server sees nothing; with no setting it asks, parks, and the owner's allow runs it exactly
 // once (or, set to allow while it waits, the setting's allow, the flip waking the run); set to allow it runs once with
 // no one asked; with the server's allow_reads its read-only add runs once with no one asked, and (claude-agent and codex)
-// a destructive tool still parks, marked destructive, its allow refused without confirm_destructive. pi's rows are mcp-gate.test.mjs's (deny by key and by mcp:fake/*, the ask, allow by key and by mcp:fake/*).
+// a destructive tool still parks, marked destructive, its allow refused without confirm_destructive. The same holds
+// through tools_call (claude-agent, codex) and a codemode script (claude-agent). pi's rows are mcp-gate.test.mjs's (deny by key and by mcp:fake/*, the ask, allow by key and by mcp:fake/*).
 // claude-agent runs the pinned Agent SDK and Claude CLI against a scripted Messages endpoint; codex the stand-in for
 // Codex's app-server, its "model" the turn's text said through serve's gateway; opencode the stand-in for `opencode
 // serve`, its model a scripted Responses endpoint. No key, no network.
@@ -82,8 +83,10 @@ async function callingGateway(t) {
 }
 
 /** A server for `harness` with the fake MCP server saved, an owner who can answer approvals, and the run's prompt: its
- *  model calls the fake's `tool` (add by default; claude-agent and codex only for another) with `args`. */
-async function setup(t, harness, { tool = "add", args = { a: 2, b: 3 } } = {}) {
+ *  model calls the fake's `tool` (add by default; claude-agent and codex only for another) with `args`, directly or
+ *  `via` tools_call (claude-agent, codex) or a codemode script (claude-agent). */
+async function setup(t, harness, { tool = "add", args = { a: 2, b: 3 }, via } = {}) {
+  const viaInput = via === "tools_call" ? { name: `mcp__fake__${tool}`, args } : via === "codemode" ? { script: `return await tools.mcp__fake__${tool}(${JSON.stringify(args)});` } : args;
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   let extra;
   let content;
@@ -95,7 +98,8 @@ async function setup(t, harness, { tool = "add", args = { a: 2, b: 3 } } = {}) {
       reply: withToolSearch((request) => {
         const said = resultIn(request.messages);
         if (said !== undefined) return { text: `The tool said: ${said}` };
-        return request.tools.includes(`mcp__hands__mcp__fake__${tool}`) ? { tool: { name: `mcp__hands__mcp__fake__${tool}`, input: args } } : { text: "Noted." };
+        const name = via ? `mcp__hands__${via}` : `mcp__hands__mcp__fake__${tool}`;
+        return request.tools.includes(name) ? { tool: { name, input: viaInput } } : { text: "Noted." };
       }),
     });
     t.after(() => anthropic.close());
@@ -122,7 +126,7 @@ async function setup(t, harness, { tool = "add", args = { a: 2, b: 3 } } = {}) {
       AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
     }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
     extra = { harness: "codex" };
-    content = `call mcp_fake__${tool} ${JSON.stringify(args)}`;
+    content = via === "tools_call" ? `call tools_call ${JSON.stringify({ name: `mcp_fake__${tool}`, args })}` : `call mcp_fake__${tool} ${JSON.stringify(args)}`;
   }
   if (harness === "opencode") {
     const standIn = join(await scratch(t), "opencode-stand-in.mjs");
@@ -145,7 +149,7 @@ async function setup(t, harness, { tool = "add", args = { a: 2, b: 3 } } = {}) {
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   // The owner's session the test client holds (its one owner on this server), as the console sends an answer.
   const { cookie, origin } = await clientOwnerSession(server);
-  const answered = (runId, approvalId, body) => call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body });
+  const answered = (runId, approvalId, body) => call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${encodeURIComponent(approvalId)}`, headers: { ...json, cookie, origin }, body });
   const answer = async (runId, approvalId, body) => (await answered(runId, approvalId, body)).status;
   const run = async (id) => {
     const made = await whenFree(() => server.api("POST", "/agents", agent(id, { tools: [`mcp:fake/${tool}`], ...extra })));
@@ -244,6 +248,37 @@ for (const harness of HARNESSES) {
     assert.equal(last.status, "completed");
     assert.deepEqual(calls(fake).map((entry) => entry.tool), ["delete_thing"], "run exactly once");
   });
+
+  // Through tools_call (claude-agent, codex) and a codemode script (claude-agent; Codex keeps its own code mode): each
+  // nested call is held to its tool's mark as a direct call is.
+  if (harness !== "opencode") for (const via of harness === "claude-agent" ? ["tools_call", "codemode"] : ["tools_call"]) {
+    test(`${harness}: under allow_reads the read-only add called through ${via} runs once with no one asked`, { timeout: 240_000 }, async (t) => {
+      const { api, fake, run } = await setup(t, harness, { via });
+      assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { allow_reads: true } })).status, 200);
+      const runId = await run(`reads-${via}-${harness}`);
+      const { last, rows } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
+      assert.equal(last.status, "completed", "no one was asked");
+      assert.deepEqual(rows.filter((row) => row.kind === "tool_approval_requested"), [], "no approval row");
+      assert.match(await answerOf(api, runId), /5/);
+      assert.deepEqual(calls(fake).map((entry) => entry.tool), ["add"]);
+    });
+  }
+  if (harness !== "opencode") {
+    test(`${harness}: under allow_reads a write called through tools_call parks unmarked, and a destructive one parks with pending.destructive and refuses an allow without confirm_destructive; denied, neither is sent`, { timeout: 240_000 }, async (t) => {
+      for (const [tool, args, destructive] of [["slow_write", { line: "x", seconds: 0 }, undefined], ["delete_thing", { id: "x1" }, true]]) {
+        const { api, fake, answer, answered, run } = await setup(t, harness, { tool, args, via: "tools_call" });
+        assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { allow_reads: true } })).status, 200);
+        const runId = await run(`via-${tool}-${harness}`);
+        await follow(api, runId, ["input_required"], { deadlineMs: 180_000 });
+        const pending = (await api("GET", `/runs/${runId}`)).body.pending;
+        assert.deepEqual([pending?.kind, pending?.tool, pending?.destructive], ["approval", `mcp:fake/${tool}`, destructive], JSON.stringify(pending));
+        if (destructive) assert.equal((await answered(runId, pending.id, { decision: "allow" })).status, 422);
+        assert.equal(await answer(runId, pending.id, { decision: "deny" }), 204);
+        await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 });
+        assert.equal(calls(fake).length, 0, `${tool}: never sent`);
+      }
+    });
+  }
 
   test(`${harness}: mcp:fake/* set to allow runs the call once with no one asked`,{ timeout: 240_000 }, async (t) => {
     const { api, fake, run } = await setup(t, harness);

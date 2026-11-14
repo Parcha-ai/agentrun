@@ -37,11 +37,12 @@ async function started(api, id, tools, content) {
   return run.body.run_id;
 }
 
-/** The owner's answer to approval `approvalId` of run `runId`: its status and its body. */
+/** The owner's answer to approval `approvalId` of run `runId` (encoded, as the console sends it: a nested call's id holds
+ *  a slash): its status and its body. */
 async function owner(server) {
   const { cookie, origin } = await clientOwnerSession(server);
   return async (runId, approvalId, body) => {
-    const sent = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body });
+    const sent = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${encodeURIComponent(approvalId)}`, headers: { ...json, cookie, origin }, body });
     return { status: sent.status, body: sent.json };
   };
 }
@@ -176,6 +177,43 @@ test("pi: under allow_reads a read-only tool runs with no approval; a write park
   await follow(api, refused, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.match(await answerOf(api, refused), /denied|deny/i);
   assert.equal(calls(fake, "add").length, 1, "a deny wins over allow_reads: nothing more sent");
+});
+
+test("pi: through tools_call and a codemode script, as called directly: under allow_reads a read-only tool runs with no one asked; a write through tools_call parks; a destructive one through tools_call parks marked destructive and its allow needs confirm_destructive", { timeout: 180_000 }, async (t) => {
+  const server = await serve(t);
+  const { api } = server;
+  const answer = await owner(server);
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", READS)).status, 200);
+
+  const viaCall = await started(api, "read-call", ["mcp:fake/add"], 'Call tools_call with {"name":"mcp__fake__add","args":{"a":2,"b":3}}');
+  const called = await follow(api, viaCall, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  assert.equal(called.last.status, "completed", "no one was asked");
+  assert.match(await answerOf(api, viaCall), /5/);
+  assert.equal(calls(fake, "add").length, 1);
+
+  const viaScript = await started(api, "read-script", ["mcp:fake/add"], 'Call codemode with {"script":"return await tools.mcp__fake__add({ a: 2, b: 3 });"}');
+  const scripted = await follow(api, viaScript, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  assert.equal(scripted.last.status, "completed", "no one was asked");
+  assert.match(await answerOf(api, viaScript), /5/);
+  assert.equal(calls(fake, "add").length, 2);
+  for (const { rows } of [called, scripted]) assert.equal(rows.filter((row) => row.kind === "tool_approval_requested").length, 0, `no approval row: ${JSON.stringify(rows.map((row) => [row.kind, row.tool_name]))}`);
+
+  const write = await started(api, "write-call", ["mcp:fake/note"], 'Call tools_call with {"name":"mcp__fake__note","args":{"text":"hi"}}');
+  const asked = await parked(api, write);
+  assert.deepEqual([asked.tool, asked.destructive], ["mcp:fake/note", undefined], JSON.stringify(asked));
+  assert.equal((await answer(write, asked.id, { decision: "deny" })).status, 204);
+  await follow(api, write, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(calls(fake, "note").length, 0, "denied: never sent");
+
+  const wipe = await started(api, "wipe-call", ["mcp:fake/delete_thing"], 'Call tools_call with {"name":"mcp__fake__delete_thing","args":{"id":"t1"}}');
+  const destructive = await parked(api, wipe);
+  assert.deepEqual([destructive.tool, destructive.destructive], ["mcp:fake/delete_thing", true], JSON.stringify(destructive));
+  const unconfirmed = await answer(wipe, destructive.id, { decision: "allow" });
+  assert.equal(unconfirmed.status, 422, JSON.stringify(unconfirmed.body));
+  assert.equal((await answer(wipe, destructive.id, { decision: "deny" })).status, 204);
+  await follow(api, wipe, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(calls(fake, "delete_thing").length, 0, "denied: never sent");
 });
 
 test("pi: the gate reads the mark the run's pin holds: a tool its server marks read-only only after the run was pinned still asks in that run, while a run pinned after it runs unasked", { timeout: 180_000 }, async (t) => {
