@@ -137,7 +137,10 @@ saved by the same name, and the agents the eval made are archived at the end.
 1. Each `mcp` fixture is served as an MCP server on this machine's loopback and saved under its name with no
    credential; it records every call, with its arguments. It is removed after the case.
 2. The package is applied with the case's `parameters` and `grants`: a fresh agent for each run, so what one run
-   learns never reaches the next.
+   learns never reaches the next. An apply writes no permission for a grant, and no one is there to answer an ask, so
+   on a server of its own the eval first allows the case's grants (and sets the case's pins) in that server's tool
+   settings, as an owner who approves each granted call; with `--server` it writes none, and a grant runs as that
+   server's settings and the package's approvals say.
 3. The `learning` folder's notes are written to the agent's learning folder (`PUT .../learning/files/{file}`); the
    server builds `MEMORY.md` from them, so the folder's own `MEMORY.md` is not sent.
 4. A run starts with the prompt's body as its input's `content` and its `input` front matter as its typed fields, and
