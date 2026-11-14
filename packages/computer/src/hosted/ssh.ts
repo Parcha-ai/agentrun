@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { Duplex, PassThrough } from "node:stream";
 import type { HostCall, MachineProcess } from "../host.js";
 import { type Result, ok } from "../result.js";
-import { bounded } from "./process.js";
+import { boundOf } from "./process.js";
 import { shellLine } from "./scripts.js";
 
 /** A readable side of an ssh2 channel, as this provider uses it: piped, or drained. */
@@ -122,25 +122,7 @@ export type SshTunnelOf = (id: string) => SshTunnel;
 const TUNNEL_TRIES = 4;
 const TUNNEL_RETRY_MS = 500;
 
-/** A promise that rejects with the abort's or the bound's error once ms pass or signal aborts. */
-function deadline(ms: number, signal: AbortSignal | undefined, what: string): { promise: Promise<never>; clear: () => void } {
-	const bound = bounded(ms, signal);
-	let onAbort: () => void = () => {};
-	const promise = new Promise<never>((_, reject) => {
-		onAbort = () => {
-			const timedOut = !signal?.aborted;
-			const error = new Error(timedOut ? `${what} did not answer within ${ms / 1000} s` : `${what} was aborted`);
-			error.name = timedOut ? "TimeoutError" : "AbortError";
-			reject(error);
-		};
-		if (bound.aborted) onAbort();
-		else bound.addEventListener("abort", onAbort, { once: true });
-	});
-	promise.catch(() => {});
-	return { promise, clear: () => bound.removeEventListener("abort", onAbort) };
-}
-
-/** A bound's own error (deadline's): the call ran out of time or was aborted, so nothing is tried again. */
+/** A bound's own error (boundOf's): the call ran out of time or was aborted, so nothing is tried again. */
 const isBound = (error: unknown) => {
 	const name = (error as { name?: unknown } | null)?.name;
 	return name === "TimeoutError" || name === "AbortError";
@@ -202,7 +184,7 @@ export class SshExec {
 	 * run before a handshake, so a retry repeats nothing. A refused key or a handshake past its bound is not retried.
 	 */
 	async #ssh(id: string, ctx: HostCall): Promise<Ssh2Client> {
-		const bound = deadline(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
+		const bound = boundOf(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
 		// Ends the handshake in flight when this call gives up on it (its bound passed, or the caller aborted).
 		const givenUp = new AbortController();
 		try {
@@ -273,7 +255,7 @@ export class SshExec {
 	 * handshake is given up once none waits. A link that closed as its handshake ended is let go, and another taken.
 	 */
 	async #lease(id: string, ctx: HostCall): Promise<{ link: Link; client: Ssh2Client }> {
-		const bound = deadline(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
+		const bound = boundOf(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
 		const end = Date.now() + ctx.timeoutMs;
 		try {
 			for (;;) {
@@ -383,7 +365,7 @@ export class SshExec {
 	 * that opens after its bound passed is closed: the connection is shared, so nothing else would close it.
 	 */
 	async #channel(client: Ssh2Client, command: string, ms: number, signal: AbortSignal | undefined, what: string): Promise<{ channel: Ssh2Channel; closed: Promise<number> }> {
-		const bound = deadline(ms, signal, what);
+		const bound = boundOf(ms, signal, what);
 		let late = false;
 		try {
 			return await Promise.race([
@@ -482,7 +464,7 @@ export class SshExec {
 					killer.channel.resume();
 					killer.channel.stderr.resume();
 					killer.channel.eof();
-					const grace = deadline(KILL_GRACE_MS, undefined, `the kill in ${id}`);
+					const grace = boundOf(KILL_GRACE_MS, undefined, `the kill in ${id}`);
 					try {
 						await Promise.race([killer.closed, grace.promise]);
 					} catch {

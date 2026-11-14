@@ -14,10 +14,10 @@ import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
 import { WINDOW_MANAGER } from "./desktop.js";
 import { DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { bounded } from "./hosted/process.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, NAME_LABEL } from "./hosted/provider.js";
 import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh.js";
+import { dateOf, driftOf, isWhole, show, sizeOf } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import { type ArchilMount, archilLabels } from "./mount-archil.js";
@@ -136,9 +136,6 @@ export const MOUNT: readonly MountKind[] = AGENT37.mounts;
 /** The machine kind and groups of each configuration: kind linux (the default), and kind desktop on the box template. */
 export const CAPABILITIES: readonly KindCapabilities[] = AGENT37.capabilities;
 
-const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
-const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
-
 /** An answer of Agent37's REST API that is not a success, as the code its status and the envelope's stable code (docs: errors) make. */
 export class Agent37Error extends Error {
 	override name = "Agent37Error";
@@ -182,9 +179,7 @@ const CODES: Record<string, ComputerErrorCode> = {
 };
 
 function codeOf(error: unknown): ComputerErrorCode {
-	const { name, level } = (error ?? {}) as { name?: unknown; level?: unknown };
-	if (name === "AbortError") return "aborted";
-	if (name === "TimeoutError") return "timeout";
+	const { level } = (error ?? {}) as { level?: unknown };
 	if (error instanceof Agent37Error) return error.code;
 	// ssh2 names the stage that failed (lib/client.js): the instance's sshd refused the key, or the handshake timed out.
 	if (level === "client-authentication") return "denied";
@@ -226,8 +221,7 @@ interface Declared {
 /** An instance as the adapter reads a machine: its state, labels, network, template, size, and its create's drift. */
 function machineOf(instance: Agent37Instance, declared: Declared): Machine {
 	const labels = { ...(instance.metadata ?? {}) };
-	const drift: string[] = [];
-	const mismatch = (field: string, want: unknown, got: unknown) => drift.push(`${field}: declared ${show(want)}, read back ${show(got)}`);
+	const { found: drift, mismatch } = driftOf();
 	const asked = labels[IMAGE_LABEL];
 	if (asked !== undefined && instance.template !== asked) mismatch("template", asked, instance.template);
 	if (instance.type !== declared.type) mismatch("type", declared.type, instance.type);
@@ -236,15 +230,16 @@ function machineOf(instance: Agent37Instance, declared: Declared): Machine {
 	if (instance.auto_sleep !== false) mismatch("auto_sleep", false, instance.auto_sleep);
 	const state = stateOf(instance.status);
 	const why = instance.status_reason?.message ?? (state === undefined ? `Agent37 reads the status ${show(instance.status)}, which this provider does not know` : undefined);
-	const { cpu, memory } = instance.resources ?? {};
+	const created = dateOf(instance.created, "s");
+	const size = sizeOf(instance.resources?.cpu, instance.resources?.memory);
 	return {
 		id: instance.id,
 		labels,
 		state: state ?? "failed",
 		network: networkOf(instance),
 		image: { resolved: instance.image_digest ?? instance.template },
-		...(isWhole(instance.created) ? { createdAt: new Date(instance.created * 1000) } : {}),
-		...(isWhole(cpu) || isWhole(memory) ? { size: { ...(isWhole(cpu) ? { cpus: cpu } : {}), ...(isWhole(memory) ? { memoryMb: memory * 1024 } : {}) } } : {}),
+		...(created ? { createdAt: created } : {}),
+		...(size ? { size } : {}),
 		...(drift.length > 0 ? { drift } : {}),
 		...(why === undefined ? {} : { why }),
 	};
@@ -447,14 +442,9 @@ class Agent37Host implements MachineHost {
 		return ok({ id: made.id });
 	}
 
-	/** GET /v1/instances/{id}; 404 is none (docs: instances/get). */
+	/** GET /v1/instances/{id}; 404 is not_found, which the adapter reads as none (docs: instances/get). */
 	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
-		try {
-			return ok(machineOf(await this.#rest<Agent37Instance>("GET", this.#path(id), undefined, ctx), this.#declared));
-		} catch (error) {
-			if (codeOf(error) === "not_found") return ok(undefined);
-			throw error;
-		}
+		return ok(machineOf(await this.#rest<Agent37Instance>("GET", this.#path(id), undefined, ctx), this.#declared));
 	}
 
 	/**
@@ -478,14 +468,16 @@ class Agent37Host implements MachineHost {
 	}
 
 	/**
-	 * DELETE /v1/instances/{id}, never signalled; a repeat answers 404, read as done (docs: instances/delete). Once taken,
-	 * this host's SSH connections to the instance are ended, channels and all.
+	 * DELETE /v1/instances/{id}, never signalled; a repeat answers 404, which the adapter reads as done (docs:
+	 * instances/delete). Once taken, this host's SSH connections to the instance are ended, channels and all.
 	 */
 	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
 		try {
 			await this.#rest("DELETE", this.#path(id), undefined, { timeoutMs: ctx.timeoutMs });
 		} catch (error) {
-			if (codeOf(error) !== "not_found") throw error;
+			// A 404 means the instance is gone already: its connections end too, then the adapter reads not_found as done.
+			if (codeOf(error) === "not_found") this.#ssh.closeAll(id);
+			throw error;
 		}
 		this.#ssh.closeAll(id);
 		return ok(undefined);
