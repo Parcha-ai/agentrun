@@ -13,7 +13,7 @@ import { wireName } from "../catalog.js";
 import { fauxFetch } from "../decisions.js";
 import { chargeOf, FAUX_MONID_ENV, MONID_KEY_ENV, MONID_USAGE_CEILING_USD, type MonidAnswer, monidClient, type MonidPin, monidText } from "../monid.js";
 import { paidLedger, paidStep, unbookedRefusal } from "../paid-calls.js";
-import { monidNameOf } from "../tool-names.js";
+import { monidNameOf, parseToolName } from "../tool-names.js";
 import type { Json } from "../validate.js";
 import type { Workspace } from "../workspace/index.js";
 import type { ClaimMcp } from "./mcp-run.js";
@@ -76,4 +76,12 @@ export function withMonid(mcp: ClaimMcp | undefined, monid: ClaimMonid | undefin
     fresh: async () => mcp?.fresh(),
     release: () => mcp?.release(),
   };
+}
+
+/** What a subagent may be given for the grant `grant` (subagent.ts sessionNames): for a provider's wildcard, every endpoint
+ *  the revision's `pin` holds of that provider, by wire name; undefined for any other grant. */
+export function monidSessionNames(grant: string, pin: MonidPin | undefined): string[] | undefined {
+  const parsed = parseToolName(grant);
+  if (parsed?.kind !== "monid-provider") return undefined;
+  return Object.keys(pin ?? {}).filter((tool) => monidNameOf(tool)?.provider === parsed.provider).map(wireName);
 }

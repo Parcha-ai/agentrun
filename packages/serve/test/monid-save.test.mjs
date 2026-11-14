@@ -3,9 +3,11 @@
 // input and what one call is held at. A grant monid does not list, or one saved with no monid key, is refused in words;
 // the pin is never shown in the definition. Faux monid's listing (fixtures/faux-monid.mjs LISTING), no network.
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { test } from "node:test";
 import { KEY } from "./fixtures/faux-monid.mjs";
-import { agent, serve, withEnv } from "./support.mjs";
+import { agent, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const { MONID_USAGE_CEILING_USD } = await import("../dist/monid.js");
@@ -47,10 +49,27 @@ test("a grant monid does not list is refused at the save in words, nothing saved
   assert.equal((await api("GET", "/agents/nope")).status, 404);
 });
 
+test("an inline agent's version already run keeps the pin its first run stamped: monid is not read again, and the same definition runs", async (t) => {
+  const log = join(await scratch(t), "monid-calls.ndjson");
+  withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const { api } = await serve(t, { fauxMonid: FAUX_MONID });
+  const inline = { external: { source: "grep", kind: "expert", id: "7", version: 1 }, definition: { name: "Expert 7", instructions: "Answer.", skills: [], tools: ["monid:faux/person/enrich"] }, input: { content: "Hi" } };
+  const inspects = async () => (await readFile(log, "utf8").catch(() => "")).split("\n").filter((line) => line.includes("/v1/inspect")).length;
+  const first = await api("POST", "/runs", inline);
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  assert.equal(await inspects(), 1, "the version's first run pins it");
+  const again = await api("POST", "/runs", inline);
+  assert.equal(again.status, 202, JSON.stringify(again.body));
+  assert.equal(await inspects(), 1, "a later run of the version reads its stored pin, not monid's listing now");
+  const next = await api("POST", "/runs", { ...inline, external: { ...inline.external, version: 2 } });
+  assert.equal(next.status, 202, JSON.stringify(next.body));
+  assert.equal(await inspects(), 2, "a new version is pinned at its first run");
+});
+
 test("a monid grant saved with no monid key is refused: it cannot be pinned", async (t) => {
   withEnv(t, {}, ["MONID_API_KEY"]);
   const { api } = await serve(t, { fauxMonid: FAUX_MONID });
   const saved = await api("POST", "/agents", agent("keyless", { tools: ["monid:apollo/people/match"] }));
   assert.equal(saved.status, 422, JSON.stringify(saved.body));
-  assert.match(JSON.stringify(saved.body), /no monid key here to read it with: save the monid key in Settings → Keys first/);
+  assert.match(JSON.stringify(saved.body), /no monid key here to read it with: save the monid key in Settings → Tool keys first/);
 });

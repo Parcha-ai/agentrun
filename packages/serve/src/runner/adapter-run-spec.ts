@@ -83,7 +83,7 @@ import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
 import type { MonidPin } from "../monid.js";
-import { monidForClaim, withMonid } from "./monid-run.js";
+import { monidForClaim, monidSessionNames, withMonid } from "./monid-run.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -669,7 +669,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     const browserNames = native.filter((extension) => extension.name !== "ask_person").flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name));
     piTools.push(subagentTool({
       granted,
-      sessionNames: (catalog) => (catalog === BROWSER_TOOL ? browserNames : [wireName(catalog)]),
+      sessionNames: (catalog) => (catalog === BROWSER_TOOL ? browserNames : monidSessionNames(catalog, body.monidPin) ?? [wireName(catalog)]),
       tier: (tier) => {
         const why = tierWhy.get(tier);
         if (why !== undefined) return { why };

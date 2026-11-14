@@ -248,7 +248,7 @@ export async function pinMonid(grants: readonly string[], options: { key: string
     return parsed?.kind === "monid" || parsed?.kind === "monid-provider" ? [{ tool, parsed }] : [];
   });
   if (!named.length) return undefined;
-  if (!options.key) return { refused: named.map(({ tool }) => ({ tool, message: `${tool} is pinned to what monid lists when the agent is saved, and there is no monid key here to read it with: save the monid key in Settings → Keys first.` })) };
+  if (!options.key) return { refused: named.map(({ tool }) => ({ tool, message: `${tool} is pinned to what monid lists when the agent is saved, and there is no monid key here to read it with: save the monid key in Settings → Tool keys first.` })) };
   const client = monidClient({ key: options.key, ...(options.fetch ? { fetch: options.fetch } : {}), ...(options.sleep ? { sleep: options.sleep } : {}) });
   const refused: { tool: string; message: string }[] = [];
   // Each endpoint to pin, by catalog name: the grants' own, then each wildcard's provider's as monid lists them.

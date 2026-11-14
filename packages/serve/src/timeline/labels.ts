@@ -26,14 +26,9 @@ export function registerLabel(tool: string, label: LabelFn, fold?: FoldSpec, { n
 /** A remote MCP server's tool as the harnesses name it, `mcp__<server>__<tool>` (a server's name has no `_`; `hands` is a
  *  harness's own tools'), read `<server> · <tool>`. */
 const MCP_TOOL = /^mcp__([a-z][a-z0-9-]{0,31})__([A-Za-z0-9_-]{1,64})$/;
-/** A monid endpoint as the harnesses name it (catalog.ts wireName of `monid:<provider>/<endpoint>`), read
- *  `monid · <provider> · <endpoint>`, its path's `/` read back. */
-const MONID_TOOL = /^monid__([a-z0-9_-]+?)__(.+)$/;
 const mcpLabel = (tool: string): string | undefined => {
   const match = MCP_TOOL.exec(tool);
-  if (match) return match[1] !== "hands" ? `${match[1]} · ${match[2]}` : undefined;
-  const monid = MONID_TOOL.exec(tool);
-  return monid ? `monid · ${monid[1]} · ${monid[2]!.replace(/__/g, "/")}` : undefined;
+  return match && match[1] !== "hands" ? `${match[1]} · ${match[2]}` : undefined;
 };
 
 /** What a tool is called where its calls are counted, in plain words: its registered name, else the name it was called by. */

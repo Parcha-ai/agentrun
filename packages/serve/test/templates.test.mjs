@@ -534,7 +534,7 @@ test("a package granting a monid endpoint where there is no monid key is refused
   const { api } = await serve(t, { templates: dir });
   const applied = await api("POST", "/templates/keyed/apply", {});
   assert.notEqual(applied.status, 201, JSON.stringify(applied.body));
-  assert.match(JSON.stringify(applied.body), /no monid key here to read it with: save the monid key in Settings → Keys first/);
+  assert.match(JSON.stringify(applied.body), /no monid key here to read it with: save the monid key in Settings → Tool keys first/);
 });
 
 test("a package's writes are bounded: each MCP tool it lists is a known read or write, a write is never in its allow, and in a package that runs unattended every write is pinned or bounded by a stated rule", () => {

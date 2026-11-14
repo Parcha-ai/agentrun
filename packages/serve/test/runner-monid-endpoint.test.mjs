@@ -24,6 +24,9 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { bookedIn } = await import("../dist/paid-calls.js");
 const { FAUX_MONID_ENV, MONID_USAGE_CEILING_USD } = await import("../dist/monid.js");
 const { FAUX_ENV } = await import("../dist/model.js");
+const { monidSessionNames } = await import("../dist/runner/monid-run.js");
+const { chosenTools } = await import("../dist/runner/subagent.js");
+const { wireName } = await import("../dist/catalog.js");
 const { paidBookings, toolLedger } = await import("./support.mjs");
 after(closeOpenSessions);
 
@@ -157,6 +160,15 @@ test("tools_search finds a pinned endpoint by what it does, with its pinned inpu
   const found = JSON.parse([results.at(-1)?.content].flat().map((part) => (typeof part === "string" ? part : part?.text ?? "")).join(""));
   assert.equal(found[0]?.name, "monid__apollo__people__match", JSON.stringify(found));
   assert.deepEqual(found[0].input_schema, INPUT);
+});
+
+test("a subagent given a provider's wildcard gets every endpoint pinned under it, and one endpoint by its tool name; never another provider's", () => {
+  const sessionNames = (grant) => monidSessionNames(grant, PIN) ?? [wireName(grant)];
+  const granted = ["read", "monid:apollo/*"];
+  assert.deepEqual(chosenTools(["monid:apollo/*"], { granted, sessionNames }), { catalog: ["monid:apollo/*"], names: ["monid__apollo__people__match", "monid__apollo__news_articles__search"] });
+  assert.deepEqual(chosenTools(["monid__apollo__people__match"], { granted, sessionNames }), { catalog: ["monid:apollo/*"], names: ["monid__apollo__people__match"] });
+  assert.match(chosenTools(["monid__faux__person__enrich"], { granted, sessionNames }).refused, /is not one of this agent's tools/);
+  assert.deepEqual(chosenTools([ENRICH], { granted: [ENRICH], sessionNames }), { catalog: [ENRICH], names: ["monid__faux__person__enrich"] });
 });
 
 test("an endpoint the agent was not granted is no tool of its run: its call is refused and never sent", async (t) => {

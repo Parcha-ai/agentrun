@@ -15,7 +15,7 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
-import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, getAgent, listAgents, makeRevision, refuseExternal, revisionView, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, externalKey, getAgent, listAgents, makeRevision, refuseExternal, revisionView, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -1838,7 +1838,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. A
    *  revision that names no place is checked where it would run (fallbackPlace). */
-  async function saveable(revision: NewRevision): Promise<InputIssue[]> {
+  async function saveable(revision: NewRevision, kept?: { monidPin?: AgenticBody["monidPin"] }): Promise<InputIssue[]> {
     // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
     // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
     const body = revision.body as AgenticBody & Partial<WorkflowBody>;
@@ -1867,7 +1867,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (never.length) throw invalid(never.map(issueOf));
     // Its monid grants pinned against what monid lists now, on this server's monid key (monid.ts pinMonid): the pin is
     // stamped on the revision, and its runs read it, never monid's listing. A grant monid does not list is refused here.
-    if (revision.kind === "agentic") {
+    // A revision already stored (`kept`: an inline agent's version already run) keeps the pin it was stamped with.
+    if (revision.kind === "agentic" && kept) {
+      if (kept.monidPin) (revision.body as AgenticBody).monidPin = kept.monidPin;
+    } else if (revision.kind === "agentic") {
       const send = await checkFetch("monid");
       // The key as the server reads it (env: what it was started with, its handed secrets and its saved keys).
       const pinned = await pinMonid(body.tools ?? [], { key: env[MONID_KEY_ENV]?.trim(), fetch: send ?? (async () => { throw new Error("no fake of monid's API under faux"); }), signal: stopping.signal });
@@ -2153,8 +2156,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const revision = makeRevision(checked.definition, checked.skills ?? {}, checked.note);
     // Refused where POST /agents refuses the definition (one this host can never run); what this host still lacks for it
     // is the run's own refusal (prepareLaunch's runnable), as for a run of a stored agent.
-    await saveable(revision);
     const ref = external as { source: string; kind: string; id: string; version: string | number };
+    // A version already run keeps its revision's monid pin, not what monid lists now: its definition never changes here, so
+    // the same definition compares equal to the stored one (startInline), and monid's listing is not read again.
+    const mapped = await store.agents.byExternal(externalKey(ref));
+    const stored = mapped && (await store.agents.revisions(mapped.id)).find((row) => row.externalVersion === String(ref.version));
+    await saveable(revision, stored ? { monidPin: (stored.body as AgenticBody).monidPin } : undefined);
     const inline = {
       external: { source: ref.source, kind: ref.kind, id: ref.id, version: String(ref.version) },
       name: checked.definition.name as string,
