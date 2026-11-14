@@ -814,10 +814,13 @@ test("a computer the vendor reads as going once its stream ended (Agent37 reads 
 	await connected.close();
 });
 
+/** A request bound far past any test's own, so only an abort or a close can end a read the vendor holds. */
+const SLOW_READS = { timeouts: { ...TIMEOUTS, requestMs: 3_600_000 } };
+
 test("a caller that aborts while the machine is read back stops waiting on the read: the client's own words, at once", async () => {
 	const held = deferred();
 	let holdGets = false;
-	const { provider, fake } = setup({}, { onStep: (step) => (holdGets && step === "get" ? held.promise : undefined) });
+	const { provider, fake } = setup(SLOW_READS, { onStep: (step) => (holdGets && step === "get" ? held.promise : undefined) });
 	const ref = made(await create(provider));
 	const connected = made(await provider.connect(ref));
 	const controller = new AbortController();
@@ -839,7 +842,7 @@ test("a caller that aborts while the machine is read back stops waiting on the r
 test("a close while the machine is read back releases every call waiting on the read: the client's own words, at once", async () => {
 	const held = deferred();
 	let holdGets = false;
-	const { provider, fake } = setup({}, { onStep: (step) => (holdGets && step === "get" ? held.promise : undefined) });
+	const { provider, fake } = setup(SLOW_READS, { onStep: (step) => (holdGets && step === "get" ? held.promise : undefined) });
 	const ref = made(await create(provider));
 	const connected = made(await provider.connect(ref));
 	holdGets = true;
