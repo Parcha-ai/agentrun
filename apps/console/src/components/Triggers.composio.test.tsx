@@ -1,0 +1,307 @@
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { afterEach, describe, expect, it } from "vitest";
+import { SchedulesPage } from "./Schedules";
+import { route } from "@/App";
+import { createClient } from "@/lib/client";
+import type { Firing, Trigger } from "@/lib/v2";
+import { optionsOf, pick, picker } from "@/test/picker";
+
+// A trigger from an app (serve's composio source): it names a saved Composio server, one of its toolkit's events
+// (GET /v2/settings/mcp-servers/{name}/composio/events) and that event's config, drawn from the event's schema with the
+// required fields marked; an optional filter on the event's delivery; then the agent each event starts a capped run of.
+// The server makes the trigger instance (and the project's webhook subscription) on Composio, and says in its own words
+// what stops it: a subscription at another address (moved here only when the person says so), an account not connected
+// (with the link to connect it), no public address. The trigger's page shows the app, the event, its config, the filter,
+// the firings and whether its event is on at Composio; Pause and Delete say what Composio could not do.
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const ISSUE_ADDED = {
+  slug: "GITHUB_ISSUE_ADDED_EVENT", name: "Issue Added Event", description: "Triggered when a new issue is added to the repository.", polled: false,
+  config: { type: "object", required: ["owner", "repo"], properties: { owner: { type: "string", title: "Owner", description: "Owner of the repository" }, repo: { type: "string", title: "Repo", description: "Repository name" } } },
+};
+const STAR_ADDED = {
+  slug: "GITHUB_STAR_ADDED_EVENT", name: "Star Added", description: "Triggered when a star is added to the repository.", polled: true,
+  config: { type: "object", required: ["owner", "repo"], properties: { owner: { type: "string", title: "Owner" }, repo: { type: "string", title: "Repo" }, interval: { type: "number", default: 2, deprecated: true, title: "Interval" } } },
+};
+const SERVERS = [
+  { name: "docs", url: "https://docs.example.test/mcp", auth: { type: "none" }, source: "url", toolkit: null, credential: null, tools: [], protocol: "2026-07-28", listed_at: "2026-11-04T10:00:00Z", updated_at: "2026-11-04T10:00:00Z" },
+  { name: "gh", url: "https://backend.composio.test/v3/mcp/srv_1/mcp?user_id=agentrun-qa", auth: { type: "headers", headers: ["x-api-key"] }, source: "composio", toolkit: "github", credential: "sealed", tools: [], protocol: "2026-07-28", listed_at: "2026-11-04T10:00:00Z", updated_at: "2026-11-04T10:00:00Z" },
+];
+const NIGHTLY: Trigger = {
+  id: "trg_1", name: "nightly triage", enabled: true, source: { kind: "schedule", cron: "30 1 * * *", timezone: "UTC" },
+  target: { kind: "start_run", agent_id: "triage", input: { content: "Triage last night's issues." }, max_cost_usd: 2 },
+  catchup_window_s: 0, max_active_runs: 1, failures_in_a_row: 0, disabled: null, last_run_id: null,
+  created_at: "2026-11-04T00:00:00Z", updated_at: "2026-11-04T00:00:00Z", next_at: "2026-11-05T01:30:00Z", last_firing: null,
+};
+const HOOK_ID = "cph_0123456789abcdef01234567";
+const ISSUES: Trigger = {
+  ...NIGHTLY, id: "trg_c", name: "new issues", next_at: null, hook_url: `https://agents.example.test/v2/hooks/composio/${HOOK_ID}`,
+  source: { kind: "composio", server: "gh", event: "GITHUB_ISSUE_ADDED_EVENT", config: { owner: "many-drop", repo: "agentrun-scratch" }, accept: [{ event: "GITHUB_ISSUE_ADDED_EVENT", where: [{ pointer: "/data/title", prefix: "[agent]" }] }], instance_id: "ti_1", hook: HOOK_ID },
+  target: { kind: "start_run", agent_id: "triage", input: { content: "Triage this issue." }, max_cost_usd: 0.5 },
+} as Trigger;
+const fired = (over: Partial<Firing>): Firing => ({ key: "fir_1", by: "composio", nominal_at: "2026-11-04T09:30:00Z", status: "started", at: "2026-11-04T09:30:01Z", run_id: "01a1a88f-5f5c-7ce4-a912-fb765b62e88b", reason: null, error: null, ...over } as Firing);
+const AGENTS = [{ agent_id: "triage", kind: "agentic", definition: { name: "Triage" }, archived_at: null }];
+const ELSEWHERE = "https://elsewhere.example/hooks/composio";
+
+type Call = { method: string; path: string; body: unknown; key: string | null };
+const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const refusal = (status: number, code: string, message: string, extra: Record<string, unknown> = {}) => json(status, { error: { code, message, retryable: false, ...extra } });
+
+function server({ triggers = [NIGHTLY, ISSUES], servers = SERVERS, create, update, remove, onComposio = "on" }: {
+  triggers?: Trigger[]; servers?: unknown[]; create?: (call: Call, n: number) => Response; update?: (call: Call) => Response | undefined; remove?: () => Response; onComposio?: string;
+} = {}) {
+  const calls: Call[] = [];
+  triggers = triggers.map((t) => structuredClone(t));
+  let creates = 0;
+  const fetch = (async (url: string, init?: RequestInit) => {
+    const call = { method: init?.method ?? "GET", path: new URL(String(url), "http://serve.test").pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined, key: new Headers(init?.headers).get("idempotency-key") };
+    calls.push(call);
+    if (call.path === "/v2/agents") return json(200, { agents: AGENTS, next_cursor: null });
+    if (call.path === "/v2/settings/mcp-servers") return json(200, { servers });
+    if (call.path === "/v2/settings/mcp-servers/gh/composio/events") return json(200, { server: "gh", toolkit: "github", events: [ISSUE_ADDED, STAR_ADDED] });
+    if (call.path === "/v2/settings/mcp-servers/gh/composio/triggers") return json(200, { triggers: triggers.filter((t) => t.source.kind === "composio").map((t) => ({ id: t.id, name: t.name, enabled: t.enabled, event: (t.source as { event: string }).event, instance_id: (t.source as { instance_id: string }).instance_id, on_composio: onComposio })), subscription: { ours: true, webhook_url: ISSUES.hook_url } });
+    if (call.path === "/v2/triggers" && call.method === "GET") return json(200, { triggers });
+    if (call.path === "/v2/triggers" && call.method === "POST") return create ? create(call, ++creates) : json(201, { ...ISSUES, ...(call.body as object), id: "trg_new" });
+    const m = /^\/v2\/triggers\/([^/]+)(\/firings)?$/.exec(call.path);
+    const t = m && triggers.find((x) => x.id === decodeURIComponent(m[1]));
+    if (m && !t) return refusal(404, "not_found", "no trigger");
+    if (m?.[2] === "/firings") return json(200, { firings: [fired({})] });
+    if (m && call.method === "PATCH") { const own = update?.(call); if (own) return own; Object.assign(t!, call.body); return json(200, t); }
+    if (m && call.method === "DELETE") return remove ? remove() : new Response(null, { status: 204 });
+    if (m) return json(200, t);
+    return refusal(404, "not_found", call.path);
+  }) as typeof globalThis.fetch;
+  return { v2: createClient({ fetch }), calls, posts: () => calls.filter((c) => c.method === "POST" && c.path === "/v2/triggers") };
+}
+
+let root: ReturnType<typeof createRoot> | undefined;
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+
+async function open(v2: ReturnType<typeof createClient>, view: Parameters<typeof SchedulesPage>[0]["view"]) {
+  const host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  const went: string[] = [];
+  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName: (id: string) => (id === "triage" ? "Triage" : id) })));
+  const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+  await settle();
+  const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
+  const click = async (label: RegExp) => {
+    const b = button(label);
+    if (!b) throw new Error(`no button ${label}; buttons: ${[...host.querySelectorAll("button")].map((x) => JSON.stringify(x.textContent)).join(", ")}`);
+    await act(async () => { b.click(); });
+    await settle();
+  };
+  const set = async (name: string, value: string) => {
+    const el = host.querySelector(`[name="${name}"]`) as HTMLInputElement | HTMLTextAreaElement;
+    if (!el) throw new Error(`no field ${name}`);
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
+  };
+  const choose = async (label: string, value: string) => { await pick(picker(host, label)!, value); await settle(); };
+  /** The form filled for GitHub's new-issue event on many-drop/agentrun-scratch. */
+  const fill = async () => {
+    await choose("Composio server", "gh");
+    await choose("Event", "GITHUB_ISSUE_ADDED_EVENT");
+    await set("name", "new issues");
+    await set("config-owner", "many-drop");
+    await set("config-repo", "agentrun-scratch");
+    await choose("Agent", "triage");
+    await set("content", "Triage this issue.");
+    await set("maxCost", "0.5");
+  };
+  return { host, went, button, click, set, choose, fill, settle, text: () => host.textContent ?? "" };
+}
+
+const BODY = {
+  name: "new issues",
+  source: { kind: "composio", server: "gh", event: "GITHUB_ISSUE_ADDED_EVENT", config: { owner: "many-drop", repo: "agentrun-scratch" } },
+  target: { kind: "start_run", agent_id: "triage", input: { content: "Triage this issue." }, max_cost_usd: 0.5 },
+};
+
+describe("Triggers: from an app (Composio)", () => {
+  it("lists one by its event and server, and offers a new one at #/triggers/new-composio", async () => {
+    const t = await open(server().v2, {});
+    const row = t.host.querySelector('[data-trigger="trg_c"]')!;
+    expect(row.textContent).toContain("App");
+    expect(row.textContent).toContain("On GITHUB_ISSUE_ADDED_EVENT from gh");
+    await t.click(/^New app trigger$/);
+    expect(t.went).toEqual(["#/triggers/new-composio"]);
+    expect(route("#/triggers/new-composio")).toMatchObject({ section: "triggers", trigger: null, kind: "composio" });
+  });
+
+  it("with no trigger yet, the first-trigger panel offers one from an app too", async () => {
+    const t = await open(server({ triggers: [] }).v2, {});
+    expect(t.text()).toContain("From an app");
+    await t.click(/^New app trigger$/);
+    expect(t.went).toEqual(["#/triggers/new-composio"]);
+  });
+
+  it("offers the saved Composio servers, their events with each one's description, and its config's fields from the schema, the required ones marked", async () => {
+    const s = server();
+    const t = await open(s.v2, { trigger: null, kind: "composio" });
+    expect((await optionsOf(picker(t.host, "Composio server")!)).filter((o) => o.value).map((o) => o.value)).toEqual(["gh"]);
+    await t.choose("Composio server", "gh");
+    expect(s.calls.some((c) => c.path === "/v2/settings/mcp-servers/gh/composio/events")).toBe(true);
+    expect((await optionsOf(picker(t.host, "Event")!)).filter((o) => o.value).map((o) => [o.value, o.text])).toEqual([["GITHUB_ISSUE_ADDED_EVENT", "Issue Added Event"], ["GITHUB_STAR_ADDED_EVENT", "Star Added"]]);
+    await t.choose("Event", "GITHUB_ISSUE_ADDED_EVENT");
+    expect(t.text()).toContain("Triggered when a new issue is added to the repository.");
+    const owner = t.host.querySelector('[data-config-field="owner"]')!;
+    expect(owner.textContent).toContain("Owner");
+    expect(owner.textContent).toContain("Owner of the repository");
+    expect(owner.textContent).not.toMatch(/optional/i);
+    expect(t.host.querySelector('[name="config-repo"]')).not.toBeNull();
+    // A polled event says Composio checks for it; a deprecated field of its schema is left off.
+    await t.choose("Event", "GITHUB_STAR_ADDED_EVENT");
+    expect(t.text()).toMatch(/Composio checks for it every few minutes/);
+    expect(t.host.querySelector('[name="config-interval"]')).toBeNull();
+  });
+
+  it("makes one from the picked server, event and config, with a filter on the event's data, under an Idempotency-Key, and opens it", async () => {
+    const s = server();
+    const t = await open(s.v2, { trigger: null, kind: "composio" });
+    await t.fill();
+    await t.click(/^Add a condition$/);
+    await t.set("composio-where-0-pointer", "/data/title");
+    await act(async () => { (t.host.querySelector('[name="composio-where-0-op"][value="prefix"]') as HTMLInputElement).click(); });
+    await t.set("composio-where-0-value", "[agent]");
+    await t.click(/^Create trigger$/);
+    const [made] = s.posts();
+    expect(made!.key).toMatch(/.+/);
+    expect(made!.body).toEqual({ ...BODY, source: { ...BODY.source, accept: [{ event: "GITHUB_ISSUE_ADDED_EVENT", where: [{ pointer: "/data/title", prefix: "[agent]" }] }] } });
+    expect(t.went).toEqual(["#/triggers/trg_new"]);
+  });
+
+  it("a required config field left empty is said under it, and nothing is sent", async () => {
+    const s = server();
+    const t = await open(s.v2, { trigger: null, kind: "composio" });
+    await t.fill();
+    await t.set("config-repo", "");
+    await t.click(/^Create trigger$/);
+    expect(t.host.querySelector('[data-issue="source.config.repo"]')?.textContent).toMatch(/Repo is required/);
+    expect(s.posts()).toEqual([]);
+  });
+
+  it("with no saved Composio server, says to save one first and links Settings → MCP servers, with no form", async () => {
+    const t = await open(server({ servers: [SERVERS[0]] }).v2, { trigger: null, kind: "composio" });
+    expect(t.text()).toContain("Save a Composio server first");
+    expect(t.host.querySelector('a[href="#/settings/mcp"]')).not.toBeNull();
+    expect(t.button(/^Create trigger$/)).toBeUndefined();
+  });
+
+  it("a subscription at another address is named, and moved here only once the person says so", async () => {
+    const s = server({ create: (call, n) => (n === 1 ? refusal(409, "composio_subscription_elsewhere", `This Composio project's webhook subscription sends its events to ${ELSEWHERE}, not to this server.`, { details: { webhook_url: ELSEWHERE } }) : json(201, { ...ISSUES, ...(call.body as object), id: "trg_new" })) });
+    const t = await open(s.v2, { trigger: null, kind: "composio" });
+    await t.fill();
+    await t.click(/^Create trigger$/);
+    const ask = t.host.querySelector('[role="alertdialog"][aria-label="Move the subscription here?"]')!;
+    expect(ask.textContent).toContain(ELSEWHERE);
+    expect(ask.textContent).toMatch(/every event of the project/i);
+    expect(t.went).toEqual([]);
+    await t.click(/^Move it here$/);
+    const [, moved] = s.posts();
+    expect(moved!.body).toEqual({ ...BODY, source: { ...BODY.source, move_subscription: true } });
+    expect(moved!.key).not.toBe(s.posts()[0]!.key);
+    expect(t.went).toEqual(["#/triggers/trg_new"]);
+  });
+
+  it("Keep it there sends nothing more, and the form stays", async () => {
+    const s = server({ create: () => refusal(409, "composio_subscription_elsewhere", `Sends its events to ${ELSEWHERE}.`, { details: { webhook_url: ELSEWHERE } }) });
+    const t = await open(s.v2, { trigger: null, kind: "composio" });
+    await t.fill();
+    await t.click(/^Create trigger$/);
+    await t.click(/^Keep it there$/);
+    expect(s.posts()).toHaveLength(1);
+    expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(t.button(/^Create trigger$/)).toBeDefined();
+  });
+
+  it("an account not connected is said in the server's words, with the link to connect it", async () => {
+    const message = "gh's Composio user agentrun-qa has no connected github account: connect it at https://connect.composio.test/link/ac_1, then make the trigger again.";
+    const s = server({ create: () => refusal(409, "composio_not_connected", message, { details: { server: "gh", user_id: "agentrun-qa", connect_url: "https://connect.composio.test/link/ac_1" } }) });
+    const t = await open(s.v2, { trigger: null, kind: "composio" });
+    await t.fill();
+    await t.click(/^Create trigger$/);
+    expect(t.text()).toContain(message);
+    const link = [...t.host.querySelectorAll("a")].find((a) => /Connect the account/.test(a.textContent ?? ""));
+    expect(link?.getAttribute("href")).toBe("https://connect.composio.test/link/ac_1");
+    expect(link?.getAttribute("target")).toBe("_blank");
+  });
+
+  it("no public address, and a config Composio refuses, are said in the server's words", async () => {
+    const noUrl = server({ create: () => refusal(409, "composio_no_public_url", "Composio can't reach this server: set its public URL first (AGENTRUN_PUBLIC_URL), then make the trigger.") });
+    let t = await open(noUrl.v2, { trigger: null, kind: "composio" });
+    await t.fill();
+    await t.click(/^Create trigger$/);
+    expect(t.text()).toContain("Composio can't reach this server");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const bad = server({ create: () => refusal(422, "input_invalid", "invalid", { fields: [{ field: "source.config", reason: "refused", message: "Composio refused the request while turning on GITHUB_ISSUE_ADDED_EVENT on Composio (400): repo not found." }] }) });
+    t = await open(bad.v2, { trigger: null, kind: "composio" });
+    await t.fill();
+    await t.click(/^Create trigger$/);
+    expect(t.host.querySelector('[data-issue="source.config"]')?.textContent).toContain("repo not found");
+  });
+});
+
+describe("A trigger from an app: its page", () => {
+  it("shows the app, the event, its config, the filter, the firings and whether its event is on at Composio", async () => {
+    const s = server();
+    const t = await open(s.v2, { trigger: "trg_c" });
+    expect(t.text()).toContain("App · On GITHUB_ISSUE_ADDED_EVENT from gh");
+    const dl = t.host.querySelector("dl")!;
+    expect(dl.textContent).toContain("gh");
+    expect(dl.textContent).toContain("GITHUB_ISSUE_ADDED_EVENT");
+    expect(dl.textContent).toContain("owner: many-drop");
+    expect(dl.textContent).toContain("repo: agentrun-scratch");
+    expect(dl.textContent).toContain('GITHUB_ISSUE_ADDED_EVENT where /data/title starts with "[agent]"');
+    expect(t.host.querySelector("[data-on-composio]")?.getAttribute("data-on-composio")).toBe("on");
+    expect(t.host.querySelector("[data-on-composio]")?.textContent).toMatch(/On/);
+    expect(t.host.querySelector('[data-firing="fir_1"]')?.textContent).toContain("On an app event");
+    expect(t.button(/^Edit filter$/)).toBeDefined();
+  });
+
+  it("an event Composio no longer has is said", async () => {
+    const t = await open(server({ onComposio: "missing" }).v2, { trigger: "trg_c" });
+    expect(t.host.querySelector("[data-on-composio]")?.getAttribute("data-on-composio")).toBe("missing");
+    expect(t.host.querySelector("[data-on-composio]")?.textContent).toMatch(/Composio no longer has it/);
+  });
+
+  it("a pause Composio could not follow says what to do there by hand", async () => {
+    const note = "Composio didn't turn the trigger instance ti_1 off: turn it off there yourself: https://platform.composio.dev";
+    const s = server({ update: (call) => json(200, { ...ISSUES, ...(call.body as object), composio: { done: false, note } }) });
+    const t = await open(s.v2, { trigger: "trg_c" });
+    await t.click(/^Pause$/);
+    expect(s.calls.find((c) => c.method === "PATCH")?.body).toEqual({ enabled: false });
+    expect(t.host.querySelector("[data-composio-note]")?.textContent).toContain(note);
+  });
+
+  it("a delete Composio could not follow says what to remove there, and stays to say it", async () => {
+    const note = "Composio didn't delete the trigger instance ti_1: remove it there yourself: https://platform.composio.dev";
+    const t = await open(server({ remove: () => json(200, { deleted: true, composio: { done: false, note } }) }).v2, { trigger: "trg_c" });
+    await t.click(/^Delete$/);
+    await t.click(/^Yes, delete$/);
+    expect(t.host.querySelector("[data-composio-note]")?.textContent).toContain(note);
+    expect(t.went).toEqual([]);
+    expect(t.host.querySelector('a[href="#/triggers"]')).not.toBeNull();
+  });
+
+  it("Edit filter changes only its accept: the server, event, config and what was made on Composio are sent as they are", async () => {
+    const s = server();
+    const t = await open(s.v2, { trigger: "trg_c", edit: true });
+    expect((t.host.querySelector('[name="composio-where-0-pointer"]') as HTMLInputElement).value).toBe("/data/title");
+    await t.set("composio-where-0-value", "[bot]");
+    await t.click(/^Save filter$/);
+    const patch = s.calls.find((c) => c.method === "PATCH")!;
+    expect(patch.body).toEqual({ source: { ...ISSUES.source, accept: [{ event: "GITHUB_ISSUE_ADDED_EVENT", where: [{ pointer: "/data/title", prefix: "[bot]" }] }] } });
+    expect(t.went).toEqual(["#/triggers/trg_c"]);
+  });
+
+  it("a filter emptied takes every event of its instance again: the source is sent without accept", async () => {
+    const s = server();
+    const t = await open(s.v2, { trigger: "trg_c", edit: true });
+    await t.click(/^Remove condition 1$/);
+    await t.click(/^Save filter$/);
+    const { accept: _gone, ...rest } = ISSUES.source as Record<string, unknown>;
+    expect(s.calls.find((c) => c.method === "PATCH")!.body).toEqual({ source: rest });
+  });
+});
