@@ -180,8 +180,9 @@ function sameRevision(current: RevisionRow, next: NewRevision): boolean {
  *  them at this save), when it grants any. */
 export type SaveStamp = { readonly mcpPin?: unknown };
 /** A save's check (server.ts saveable): it sees the revision before anything is written, may refuse it, and answers what
- *  to stamp on it. */
-export type SaveCheck = (revision: NewRevision) => Promise<SaveStamp | void>;
+ *  to stamp on it. `on`: the revision this save is built on (an edit's: the agent's current one as this try read it, so a
+ *  retry on a newer one sees that one; null for a new agent), whose MCP pin a server that can't be listed keeps. */
+export type SaveCheck = (revision: NewRevision, on: RevisionRow | null) => Promise<SaveStamp | void>;
 /** `revision` with what its check stamped. */
 const stamped = <T extends NewRevision>(revision: T, stamp: SaveStamp | void): T => (stamp?.mcpPin === undefined ? revision : { ...revision, mcpPin: stamp.mcpPin });
 
@@ -234,7 +235,7 @@ export async function createAgent(
     : {};
   const made = makeRevision({ ...definition, ...placed }, skills, note);
   checkVersion(definition, 1);
-  const revision = stamped(made, await options.check?.(made));
+  const revision = stamped(made, await options.check?.(made, null));
   const id = given ?? uuidv7();
   const name = definition.name as string;
   try {
@@ -296,7 +297,7 @@ export async function commitAgent(
   for (let tries = 1; ; tries++) {
     if (tries > 1) entry = held((await getAgent(store, agent.id)) ?? entry);
     const edit = editOn(entry, definition, skills, note);
-    const revision = stamped(edit, await check?.(edit));
+    const revision = stamped(edit, await check?.(edit, entry.revision));
     const base = entry.revision?.id ?? null;
     const now = held((await getAgent(store, agent.id)) ?? entry);
     if ((now.revision?.id ?? null) === base) {

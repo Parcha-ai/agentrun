@@ -70,7 +70,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { runModelRef } from "./model.js";
@@ -2874,9 +2874,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The check above is a fast path; the store compares If-Match again inside the commit, so of two edits that read
         // the same revision exactly one lands.
         let warnings: InputIssue[] = [];
-        const check = async (revision: NewRevision) => {
-          // The pin the agent's current revision holds: a server down now keeps it when the edit grants nothing new from it.
-          const saved = await saveable(revision, entry.revision?.mcpPin);
+        const check = async (revision: NewRevision, on: RevisionRow | null) => {
+          // The pin of the revision this try builds on (commitAgent's read, a retry's newer one): a server down now keeps
+          // it when the edit grants nothing new from it.
+          const saved = await saveable(revision, on?.mcpPin);
           warnings = saved.warnings;
           return saved.stamp;
         };
