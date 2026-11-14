@@ -97,8 +97,12 @@ public protocol Accessibility: Sendable {
 	var incidentalActions: Set<String> { get }
 	/// The app and window a target names. Throws not_found for an app that is not running or a window it lacks.
 	func resolve(_ target: Target?) throws -> ResolvedTarget
-	/// The window's tree, at most maxNodes nodes.
-	func snapshot(_ target: ResolvedTarget, maxNodes: Int) throws -> Snapshot
+	/// The window's tree, at most maxNodes nodes. Without details each node's actions are empty and settable false: on a
+	/// Mac those two reads cost as much as the rest of a node, and an act's looks need them only for the elements its
+	/// steps act on, which details(_:) reads.
+	func snapshot(_ target: ResolvedTarget, maxNodes: Int, details: Bool) throws -> Snapshot
+	/// An element's actions and whether its value can be set, as a snapshot with details reads them.
+	func details(_ element: ElementHandle) -> (actions: [String], settable: Bool)
 	/// The element still exists.
 	func exists(_ element: ElementHandle) -> Bool
 	/// Its frame now, in screen points.
