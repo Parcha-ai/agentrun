@@ -285,8 +285,11 @@ test("a module's conformanceImage() is the run's image unless --image names one,
 	assert.equal(report.image, "module-image");
 	assert.deepEqual(report.notes, ["a stop deletes on this configuration: the provider declares stopDeletes"]);
 	const named = sink();
+	const { asked } = await import("./fixtures/noted-provider.mjs");
+	const before = asked.image;
 	assert.equal(await main(["--provider", "./fixtures/noted-provider.mjs", "--json", "--image", "alpine:3.20"], { stdout: named, cwd: HERE, cases: [pass("health.ping")] }), 0);
 	assert.equal(JSON.parse(named.text()).image, "alpine:3.20", "--image wins");
+	assert.equal(asked.image, before, "and the module's image is never asked for (Agent37's registers a template)");
 	const text = sink();
 	assert.equal(await main(["--provider", "./fixtures/noted-provider.mjs"], { stdout: text, cwd: HERE, cases: [pass("health.ping")] }), 0);
 	const lines = text.text().trimEnd().split("\n");

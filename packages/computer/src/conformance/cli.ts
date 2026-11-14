@@ -247,9 +247,10 @@ export function plantSecrets(names: readonly string[]): { values: string[]; secr
 
 /**
  * The provider a conformance module makes, its drifted twin and its run folders (mountFor) when it offers them, and what
- * it says of its run: conformanceImage(), the image when --image names none, and conformanceNotes, strings for the report.
+ * it says of its run: conformanceImage(), the image when --image names none (asked only then: a module's may make or
+ * register its image), and conformanceNotes, strings for the report.
  */
-async function load(label: string, module: Partial<ConformanceModule>, options: object, declared?: readonly KindCapabilities[]): Promise<Target> {
+async function load(label: string, module: Partial<ConformanceModule>, options: object, imageNamed: boolean, declared?: readonly KindCapabilities[]): Promise<Target> {
 	const { createProvider, createDriftedProvider, conformanceImage, mountFor } = module;
 	if (typeof createProvider !== "function") throw new Usage(`${label} does not export createProvider() or create()`);
 	const provider = (await createProvider(options)) as ComputerProvider;
@@ -272,7 +273,7 @@ async function load(label: string, module: Partial<ConformanceModule>, options: 
 		};
 	}
 	if (typeof mountFor === "function") target.mountFor = (kind) => mountFor(kind, options);
-	if (conformanceImage !== undefined) {
+	if (conformanceImage !== undefined && !imageNamed) {
 		const image = typeof conformanceImage === "function" ? await conformanceImage(options) : undefined;
 		if (typeof image !== "string" || image === "") throw new Usage(`${label}: conformanceImage() did not return an image`);
 		target.image = image;
@@ -339,7 +340,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 	let target: Target;
 	try {
 		const { label, module, declared } = await conformanceModule(args.provider, cwd);
-		target = await load(label, module, options, declared);
+		target = await load(label, module, options, args.image !== undefined, declared);
 	} catch (error) {
 		await write(stderr, `${(error as Error).message}\n`);
 		if (error instanceof Usage) {
