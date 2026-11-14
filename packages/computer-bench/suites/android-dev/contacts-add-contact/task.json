@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.contacts.add-contact",
-  "version": 1,
+  "version": 2,
   "title": "Add a contact with a mobile number in Contacts",
   "split": "dev",
   "tags": ["contacts", "create"],
@@ -37,6 +37,7 @@
     }
   ],
   "instruction": "In Contacts, add a new contact named \"{{who.first}} {{who.last}} {{nonce}}\" (first name {{who.first}}, last name \"{{who.last}} {{nonce}}\") with the mobile number {{phone.say}}. Save it.",
+  "exec": "deny",
   "budget": { "steps": 35, "usd": 1.5, "wall_s": 450 },
   "checks": [
     {
@@ -62,9 +63,8 @@
     }
   ],
   "oracle": [
-    {
-      "method": "exec.run",
-      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "add", "computer-bench-{{nonce}}", "{{who.first}} {{who.last}} {{nonce}}", "{{phone.say}}"], "timeoutMs": 30000 }
-    }
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Create new contact" } } } }], "expect": { "text": "First name", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "The three fields by their hints; the phone one is the first field named Phone (its type picker is a combobox).", "params": { "steps": [{ "set": { "find": { "role": "textbox", "name": { "equals": "First name" } } }, "value": "{{who.first}}" }, { "set": { "find": { "role": "textbox", "name": { "equals": "Last name" } } }, "value": "{{who.last}} {{nonce}}" }, { "set": { "find": { "role": "textbox", "name": { "equals": "Phone" } } }, "value": "{{phone.say}}" }], "expect": { "text": "{{phone.say}}", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "Saved: Contacts opens the new contact's page, titled with its name.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "SAVE" } } } }], "expect": { "text": "Create new contact", "gone": true, "timeoutMs": 8000 } } }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "mobileworld.bid-file-rename",
-  "version": 1,
+  "version": 2,
   "title": "Rename the bid_ files in Download by date, oldest first",
   "split": "dev",
   "source": {
@@ -35,6 +35,7 @@
     }
   ],
   "instruction": "In Download, rename the files whose names begin with bid_ in order of their creation date, earliest to latest, all in the form bid_{number}.{original extension}, numbered from 1.",
+  "exec": "deny",
   "budget": { "steps": 40, "usd": 2, "wall_s": 600 },
   "checks": [
     {
@@ -62,10 +63,38 @@
     }
   ],
   "oracle": [
-    {
-      "method": "exec.run",
-      "why": "Rename each bid file to its number by date; a rename keeps the file's date.",
-      "params": { "argv": ["sh", "-c", "cd /sdcard/Download && mv bid_restaurant_proposal.txt bid_{{o.pn}}.txt && mv bid_catering_menu_2024.doc bid_{{o.cn}}.doc && mv bid_menu_design_contract.pdf bid_{{o.dn}}.pdf && mv bid_food_supplier_quote.txt bid_{{o.sn}}.txt"], "timeoutMs": 30000 }
-    }
+    { "method": "ui.act", "why": "Open the search bar: Download holds more files than one screen shows, and a find sees only what is on screen.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Search" } } } }], "expect": { "text": "Search…", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "Search by part of the name, so the search bar doesn't hold the old name after the rename.", "params": { "steps": [{ "set": { "find": { "role": "searchbox" } }, "value": "restaurant_proposal" }], "expect": { "text": "restaurant_proposal", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "foreground": true, "steps": [{ "key": "enter" }], "expect": { "text": "bid_restaurant_proposal.txt", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "A long press selects the file.", "params": { "steps": [{ "perform": { "find": { "role": "button", "name": { "equals": "bid_restaurant_proposal.txt" } } }, "action": "ACTION_LONG_CLICK" }], "expect": { "text": "1 selected", "timeoutMs": 8000 } } },
+    { "method": "input.actions", "why": "Tap the selection bar's More options at the screen's top right (336,48 points), as in the Files tasks of android-dev.", "params": { "actions": [{ "type": "tap", "at": [672, 96] }] } },
+    { "method": "ui.act", "params": { "steps": [], "expect": { "text": "Rename", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Rename" } } } }], "expect": { "text": "New name", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "set": { "find": { "role": "textbox", "name": { "equals": "New name" } } }, "value": "bid_{{o.pn}}.txt" }], "expect": { "text": "bid_{{o.pn}}.txt", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "OK" } } } }], "expect": { "text": "bid_restaurant_proposal.txt", "gone": true, "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "set": { "find": { "role": "searchbox" } }, "value": "catering_menu" }], "expect": { "text": "catering_menu", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "foreground": true, "steps": [{ "key": "enter" }], "expect": { "text": "bid_catering_menu_2024.doc", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "perform": { "find": { "role": "button", "name": { "equals": "bid_catering_menu_2024.doc" } } }, "action": "ACTION_LONG_CLICK" }], "expect": { "text": "1 selected", "timeoutMs": 8000 } } },
+    { "method": "input.actions", "params": { "actions": [{ "type": "tap", "at": [672, 96] }] } },
+    { "method": "ui.act", "params": { "steps": [], "expect": { "text": "Rename", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Rename" } } } }], "expect": { "text": "New name", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "set": { "find": { "role": "textbox", "name": { "equals": "New name" } } }, "value": "bid_{{o.cn}}.doc" }], "expect": { "text": "bid_{{o.cn}}.doc", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "OK" } } } }], "expect": { "text": "bid_catering_menu_2024.doc", "gone": true, "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "set": { "find": { "role": "searchbox" } }, "value": "menu_design" }], "expect": { "text": "menu_design", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "foreground": true, "steps": [{ "key": "enter" }], "expect": { "text": "bid_menu_design_contract.pdf", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "perform": { "find": { "role": "button", "name": { "equals": "bid_menu_design_contract.pdf" } } }, "action": "ACTION_LONG_CLICK" }], "expect": { "text": "1 selected", "timeoutMs": 8000 } } },
+    { "method": "input.actions", "params": { "actions": [{ "type": "tap", "at": [672, 96] }] } },
+    { "method": "ui.act", "params": { "steps": [], "expect": { "text": "Rename", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Rename" } } } }], "expect": { "text": "New name", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "set": { "find": { "role": "textbox", "name": { "equals": "New name" } } }, "value": "bid_{{o.dn}}.pdf" }], "expect": { "text": "bid_{{o.dn}}.pdf", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "OK" } } } }], "expect": { "text": "bid_menu_design_contract.pdf", "gone": true, "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "set": { "find": { "role": "searchbox" } }, "value": "food_supplier" }], "expect": { "text": "food_supplier", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "foreground": true, "steps": [{ "key": "enter" }], "expect": { "text": "bid_food_supplier_quote.txt", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "perform": { "find": { "role": "button", "name": { "equals": "bid_food_supplier_quote.txt" } } }, "action": "ACTION_LONG_CLICK" }], "expect": { "text": "1 selected", "timeoutMs": 8000 } } },
+    { "method": "input.actions", "params": { "actions": [{ "type": "tap", "at": [672, 96] }] } },
+    { "method": "ui.act", "params": { "steps": [], "expect": { "text": "Rename", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Rename" } } } }], "expect": { "text": "New name", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "set": { "find": { "role": "textbox", "name": { "equals": "New name" } } }, "value": "bid_{{o.sn}}.txt" }], "expect": { "text": "bid_{{o.sn}}.txt", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "OK" } } } }], "expect": { "text": "bid_food_supplier_quote.txt", "gone": true, "timeoutMs": 8000 } } }
   ]
 }

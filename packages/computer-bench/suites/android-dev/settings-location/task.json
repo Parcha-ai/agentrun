@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.settings.location",
-  "version": 1,
+  "version": 2,
   "title": "Turn location on or off in Settings",
   "split": "heldout",
   "tags": ["settings", "toggle"],
@@ -9,8 +9,8 @@
   "params": {
     "mode": {
       "pick": [
-        { "say": "on", "start": "false", "want": "true" },
-        { "say": "off", "start": "true", "want": "false" }
+        { "say": "on", "start": "false", "want": "true", "shown": "ON" },
+        { "say": "off", "start": "true", "want": "false", "shown": "OFF" }
       ]
     }
   },
@@ -32,6 +32,7 @@
     }
   ],
   "instruction": "Using the Settings app, turn location {{mode.say}} for the whole phone.",
+  "exec": "deny",
   "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
   "checks": [
     {
@@ -50,6 +51,11 @@
     }
   ],
   "oracle": [
-    { "method": "exec.run", "params": { "argv": ["cmd", "location", "set-location-enabled", "{{mode.want}}"], "timeoutMs": 20000 } }
+    { "method": "apps.launch", "why": "Settings at its home page, scrolled to the top.", "params": { "id": "com.android.settings" } },
+    { "method": "ui.act", "why": "Scroll the home list to its end (About phone is last but one).", "params": { "foreground": true, "steps": [{ "scroll": { "find": { "role": "scrollarea" } }, "dy": 3000 }, { "scroll": { "find": { "role": "scrollarea" } }, "dy": 3000 }], "expect": { "text": "About phone", "timeoutMs": 5000 } } },
+    { "method": "input.actions", "why": "Swipe the list down 200 points (400 screen pixels), slowly (no fling): Location sits about 200 points above Passwords, the top row at the end.", "params": { "actions": [{ "type": "swipe", "path": [[360, 500], [360, 700], [360, 900]], "ms": 900 }] } },
+    { "method": "ui.act", "params": { "steps": [], "expect": { "text": "Location", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Location" } } } }], "expect": { "text": "Use location", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "The Use location row toggles the switch; the switch has no click of its own.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Use location" } } } }], "expect": { "text": "{{mode.shown}}", "timeoutMs": 8000 } } }
   ]
 }

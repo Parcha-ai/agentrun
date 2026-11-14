@@ -5,9 +5,11 @@ rawid() { content query --uri $u/raw_contacts --projection _id --where "$1" | se
 case "$1" in
 open)
 	# Grant the contacts apps their permissions (a no-op when granted or not installed), then open the one installed.
+	# Without POST_NOTIFICATIONS, AOSP Contacts opens on Android 13+ behind a notifications prompt.
 	for p in com.google.android.contacts com.android.contacts com.samsung.android.app.contacts; do
 		pm grant $p android.permission.READ_CONTACTS 2>/dev/null
 		pm grant $p android.permission.WRITE_CONTACTS 2>/dev/null
+		pm grant $p android.permission.POST_NOTIFICATIONS 2>/dev/null
 	done
 	am start -W --activity-clear-task -a android.intent.action.MAIN -c android.intent.category.APP_CONTACTS ;;
 add)
@@ -27,16 +29,6 @@ phones)
 emails)
 	# emails NAME: the email addresses of the contacts with this display name.
 	content query --uri $u/data --projection data1 --where "mimetype='vnd.android.cursor.item/email_v2' AND display_name='$2'" ;;
-set-phone)
-	# set-phone NAME NUMBER: the contact's phone numbers become NUMBER.
-	id=$(rawid "display_name='$2' AND deleted=0")
-	[ -n "$id" ] || exit 1
-	content update --uri $u/data --bind "data1:s:$3" --where "raw_contact_id=$id AND mimetype='vnd.android.cursor.item/phone_v2'" ;;
-add-email)
-	# add-email NAME ADDRESS: a home email address on the contact.
-	id=$(rawid "display_name='$2' AND deleted=0")
-	[ -n "$id" ] || exit 1
-	content insert --uri $u/data --bind raw_contact_id:i:$id --bind mimetype:s:vnd.android.cursor.item/email_v2 --bind "data1:s:$3" --bind data2:i:1 ;;
 purge)
 	# purge NONCE: every contact whose name holds the run's nonce. Phone-only contacts go at once; one the agent saved
 	# to an account is marked deleted, and its sync adapter removes it from the account. An empty NONCE would match

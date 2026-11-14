@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "mobileworld.invoice-receipt-copy",
-  "version": 1,
+  "version": 2,
   "title": "Copy November's invoice and receipt PDFs into Finance/invoice",
   "split": "heldout",
   "source": {
@@ -26,6 +26,7 @@
     }
   ],
   "instruction": "In Download, find the PDFs from November whose file names contain invoice or receipt, and copy them into the Finance/invoice folder.",
+  "exec": "deny",
   "budget": { "steps": 40, "usd": 2, "wall_s": 600 },
   "checks": [
     {
@@ -61,10 +62,20 @@
     }
   ],
   "oracle": [
-    {
-      "method": "exec.run",
-      "why": "Copy the November invoice into Finance/invoice.",
-      "params": { "argv": ["sh", "-c", "mkdir -p /sdcard/Finance/invoice && cp /sdcard/Download/invoice_2025_001.pdf /sdcard/Finance/invoice/"], "timeoutMs": 30000 }
-    }
+    { "method": "ui.act", "why": "Open the search bar: Download holds more files than one screen shows, and a find sees only what is on screen.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Search" } } } }], "expect": { "text": "Search…", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "invoice_2025_001.pdf is the November one (setup's dates).", "params": { "steps": [{ "set": { "find": { "role": "searchbox" } }, "value": "invoice_2025_001" }], "expect": { "text": "invoice_2025_001", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "foreground": true, "steps": [{ "key": "enter" }], "expect": { "text": "invoice_2025_001.pdf", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "A long press selects the file.", "params": { "steps": [{ "perform": { "find": { "role": "button", "name": { "equals": "invoice_2025_001.pdf" } } }, "action": "ACTION_LONG_CLICK" }], "expect": { "text": "1 selected", "timeoutMs": 8000 } } },
+    { "method": "input.actions", "why": "Tap the selection bar's More options at the screen's top right (336,48 points), as in the Files tasks of android-dev.", "params": { "actions": [{ "type": "tap", "at": [672, 96] }] } },
+    { "method": "ui.act", "params": { "steps": [], "expect": { "text": "Copy to…", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Copy to…" } } } }], "expect": { "text": "COPY", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "The picker opens on the Downloads root; Finance is on the phone's own storage root.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Show roots" } } } }], "expect": { "text": "redroid15_arm64", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "The storage root is named after the phone's model (this cloud phone's image).", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "redroid15_arm64" } } } }], "expect": { "text": "Files on redroid15_arm64", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Finance" } } } }], "expect": { "text": "Files in Finance", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "New folder" } } } }], "expect": { "text": "Folder name", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "set": { "find": { "role": "textbox", "name": { "equals": "Folder name" } } }, "value": "invoice" }], "expect": { "text": "invoice", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "The picker makes the folder and opens it.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "OK" } } } }], "expect": { "text": "Files in invoice", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "COPY" } } } }], "expect": { "text": "COPY", "gone": true, "timeoutMs": 8000 } } },
+    { "method": "input.actions", "why": "The copy runs in the background: give it a moment before the checks read the folder.", "params": { "actions": [{ "type": "wait", "ms": 2000 }] } }
   ]
 }

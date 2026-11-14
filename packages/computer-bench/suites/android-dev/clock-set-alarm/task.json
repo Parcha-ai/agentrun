@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.clock.set-alarm",
-  "version": 1,
+  "version": 2,
   "title": "Set a labelled alarm in Clock",
   "split": "dev",
   "tags": ["clock", "create"],
@@ -9,10 +9,10 @@
   "params": {
     "t": {
       "pick": [
-        { "say": "6:45 AM", "h": "6", "m": "45", "hh": "06", "mm": "45" },
-        { "say": "7:20 AM", "h": "7", "m": "20", "hh": "07", "mm": "20" },
-        { "say": "5:55 AM", "h": "5", "m": "55", "hh": "05", "mm": "55" },
-        { "say": "8:10 PM", "h": "20", "m": "10", "hh": "20", "mm": "10" }
+        { "say": "6:45 AM", "h": "6", "m": "45", "hh": "06", "mm": "45", "h12": "6", "ap": "AM" },
+        { "say": "7:20 AM", "h": "7", "m": "20", "hh": "07", "mm": "20", "h12": "7", "ap": "AM" },
+        { "say": "5:55 AM", "h": "5", "m": "55", "hh": "05", "mm": "55", "h12": "5", "ap": "AM" },
+        { "say": "8:10 PM", "h": "20", "m": "10", "hh": "20", "mm": "10", "h12": "8", "ap": "PM" }
       ]
     },
     "label": { "pick": ["Run", "Pills", "Call home", "Bins out"] }
@@ -30,6 +30,7 @@
     }
   ],
   "instruction": "In the Clock app, set an alarm for {{t.say}} with the label \"{{label}} {{nonce}}\".",
+  "exec": "deny",
   "budget": { "steps": 30, "usd": 1.5, "wall_s": 400 },
   "sufficient": false,
   "checks": [
@@ -54,9 +55,14 @@
     }
   ],
   "oracle": [
-    {
-      "method": "exec.run",
-      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.SET_ALARM", "--ei", "android.intent.extra.alarm.HOUR", "{{t.h}}", "--ei", "android.intent.extra.alarm.MINUTES", "{{t.m}}", "--es", "android.intent.extra.alarm.MESSAGE", "{{label}} {{nonce}}", "--ez", "android.intent.extra.alarm.SKIP_UI", "true"], "timeoutMs": 20000 }
-    }
+    { "method": "ui.act", "why": "Add alarm opens the time picker on its hour dial.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Add alarm" } } } }], "expect": { "text": "CANCEL", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "The hour on the dial (a text node; the picker's own hour field is a button). 12 first: the picker opens on the phone's current hour, and a press on the hour already shown changes nothing and can't be confirmed.", "params": { "steps": [{ "press": { "find": { "role": "text", "name": { "equals": "12" } } } }, { "press": { "find": { "role": "text", "name": { "equals": "{{t.h12}}" } } } }], "expect": { "text": "{{t.h12}}", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "The minutes field, the picker's two-digit button that is not the one-digit hour, turns the dial to minutes.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "matches": "^(?!{{t.h12}}$)\\d\\d$" } } } }], "expect": { "text": "55", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "30 first, for the same reason as the hour (no pick's minute is 30); AM or PM may already be the one asked.", "params": { "steps": [{ "press": { "find": { "role": "text", "name": { "equals": "30" } } } }, { "press": { "find": { "role": "text", "name": { "equals": "{{t.m}}" } } } }, { "press": { "find": { "role": "radio", "name": { "equals": "{{t.ap}}" } } } }], "expect": { "text": "{{t.ap}}", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "The new alarm's row is named by its time, which Clock writes with a hair space (U+200A) before AM or PM.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "OK" } } } }], "expect": { "text": "{{t.h12}}:{{t.mm}} {{t.ap}}", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "Open the new alarm's row (its name starts with its time), which shows its Label field.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "matches": "^{{t.h12}}:{{t.mm}}\\s{{t.ap}}\\s" } } } }], "expect": { "text": "Delete", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Label" } } } }], "expect": { "text": "CANCEL", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "set": { "find": { "role": "textbox" } }, "value": "{{label}} {{nonce}}" }], "expect": { "text": "{{label}} {{nonce}}", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "Saved: the row's name is now its time and the label.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "OK" } } } }], "expect": { "text": "{{t.h12}}:{{t.mm}} {{t.ap}} {{label}} {{nonce}}", "timeoutMs": 8000 } } }
   ]
 }
