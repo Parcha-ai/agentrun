@@ -86,6 +86,33 @@ test("large says its deadline ran out even when the timer the deadline cut short
 	}
 });
 
+test("large stopped by the caller during a write its deadline bounds says it was stopped, never that the deadline ran out", async () => {
+	const stop = new AbortController();
+	const host = fakeExecHost({ slowWriteMs: 400 });
+	const exec = host.exec.bind(host);
+	let largeWrites = 0;
+	host.exec = async (...args) => {
+		const answer = await exec(...args);
+		if (!answer.ok) return answer;
+		const write = answer.value.write.bind(answer.value);
+		answer.value.write = (bytes) => {
+			// The second 256 KiB chunk starts 400 ms in, so what is left of the 1 s deadline bounds it, not the step.
+			if (bytes.length === 256 * 1024 && ++largeWrites === 2) stop.abort();
+			return write(bytes);
+		};
+		return answer;
+	};
+	try {
+		const report = await checkExecStream(host, "machine-1", { ...QUICK, largeMs: 1_000, signal: stop.signal });
+		const large = report.checks.find((check) => check.id === "large");
+		assert.equal(large.status, "fail");
+		assert.match(large.words, /^aborted: writing 1048576 random bytes was stopped, with 262144 bytes written/);
+		assert.doesNotMatch(large.words, /ran past/);
+	} finally {
+		host.stopAll();
+	}
+});
+
 test("an exec that holds stdin until end() fails stdin-live, and names stdin since output streams", async () => {
 	const { byId } = await run({ holdStdin: true });
 	assert.equal(byId["stdout-live"].status, "pass");
