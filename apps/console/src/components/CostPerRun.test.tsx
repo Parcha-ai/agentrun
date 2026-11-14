@@ -5,7 +5,7 @@ import { CostChart, CostPerRun, HOW } from "./CostPerRun";
 import SAMPLE from "./CostPerRun.sample.json";
 import { ClientError, type Client } from "@/lib/client";
 import { blocksOf, blockSizeOf, level, nearest, niceTop, pct, plotted, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
-import type { CostRun, LearningCost } from "@/lib/v2";
+import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 
 // The cost per run chart (GET /v2/agents/{id}/learning/cost): the invented invoice-sorter agent's 80 runs, its cost
 // falling from about $0.89 by hand to about $0.13 once its learned workflow takes over at run 21.
@@ -15,15 +15,15 @@ const sample = SAMPLE as unknown as LearningCost;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-function draw(data: LearningCost, on = true, width = 900) {
+function draw(data: LearningCost, on = true, width = 900, promotions: Promotion[] = []) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(CostChart, { data, on, width })));
+  act(() => root!.render(createElement(CostChart, { data, on, width, promotions })));
   return host;
 }
 const text = (host: HTMLElement) => host.textContent ?? "";
 const run = (n: number, path: CostRun["path"], total: number | null): CostRun => ({ n, run_id: `run_${n}`, started_at: new Date(Date.UTC(2026, 9, 1, n)).toISOString(), path, workflow: path === "agent" ? null : "sort", learned_revision: "a".repeat(40), cost_usd: total, learning_usd: total === null ? null : 0, total_usd: total });
-const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, ...summary }, workflows: [] });
+const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, ...summary }, workflows: [] });
 
 describe("the chart's arithmetic", () => {
   it("plots only runs whose all-in cost is known", () => {
@@ -72,6 +72,8 @@ describe("the execution mix's arithmetic", () => {
     const blocks = blocksOf(sample.runs, 5);
     expect(blocks).toHaveLength(16);
     expect(blocks[4]).toEqual({ from: 21, to: 25, runs: 5, counts: { agent: 1, handed_back: 1, workflow: 3, replay: 0 } });
+    const mixed = blocksOf([run(1, "agent", 0.5), run(2, "replay", 0.1), run(3, "replay", 0.1)], 5);
+    expect(mixed[0]!.counts).toEqual({ agent: 1, handed_back: 0, workflow: 0, replay: 2 });
     const short = blocksOf(sample.runs.slice(0, 7), 5);
     expect(short.map((b) => [b.from, b.to, b.runs])).toEqual([[1, 5, 5], [6, 7, 2]]);
     expect([pct(3, 5), pct(1, 3), pct(0, 0)]).toEqual(["60%", "33%", "0%"]);
@@ -94,13 +96,18 @@ describe("the execution mix's arithmetic", () => {
 describe("CostChart", () => {
   it("shows the drop: the levels before and after, the takeover, and how many times cheaper", () => {
     const host = draw(sample);
-    expect(text(host)).toContain("$0.890 a run before learning, $0.128 after takeover: 7.0x cheaper");
+    expect(text(host)).toContain("$0.890 a run before takeover, $0.128 all-in after: 7.0x cheaper · 5% handed back since");
     expect(text(host)).toContain("Workflow took over, run 21");
     expect(text(host)).toContain("After takeover $0.128 · 7.0x cheaper");
-    expect(text(host)).toContain("Before learning $0.890");
+    expect(text(host)).toContain("Before takeover $0.890");
     expect(text(host)).toContain("Rolling mean of 5 runs");
     expect(text(host)).toContain("1 run costs more than");
     expect(text(host)).toContain("1 run's cost is not known: left out.");
+  });
+  it("the hand-back rate is the server's, over every run since the takeover, never the latest runs the chart read", () => {
+    // The chart read only runs it answered alone; the summary counts the hand-backs before them.
+    const host = draw(series([run(1, "agent", 0.9), run(2, "workflow", 0.1), run(3, "workflow", 0.1)], { takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.9 }, after: { runs: 2, mean_usd: 0.1 }, hand_backs: { ran: 40, back: 10 } }));
+    expect(text(host)).toContain("25% handed back since");
   });
   it("before any workflow has finished a run, the mix's last words say who did, not 0% by the workflow", () => {
     const host = draw(series([run(1, "agent", 0.002), run(2, "agent", 0.003), run(3, "handed_back", 0.002)]));
@@ -203,6 +210,13 @@ describe("CostChart", () => {
     expect(text(host)).toContain("No run with a known cost yet.");
     expect(text(host)).toContain("run the same job about 20 times");
   });
+  it("says how many runs were left out in the empty card too, when none has a known cost", () => {
+    const host = draw({ ...series([]), total_runs: 3, unknown_cost_runs: 1, unknown_path_runs: 2 });
+    expect(host.querySelector("svg[aria-hidden] path")).toBeNull();
+    expect(text(host)).toContain("No run with a known cost yet.");
+    expect(text(host)).toContain("2 runs' path and cost are not known: left out.");
+    expect(text(host)).toContain("1 run's cost is not known: left out.");
+  });
   it("draws the mix even when no run has a known cost: the chart says what is needed, the strip still shows who finished each run", () => {
     const host = draw(series([run(1, "agent", null), run(2, "workflow", null), run(3, "workflow", null)]));
     expect(text(host)).toContain("No run with a known cost yet.");
@@ -249,7 +263,7 @@ describe("CostPerRun", () => {
     expect(text(host)).toContain("Workflow took over, run 21");
   });
   it("shows nothing under the tab's empty state until two runs have a cost, then the chart", async () => {
-    const empty: LearningCost = { agent: "a", runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null }, workflows: [] };
+    const empty: LearningCost = { agent: "a", runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null }, workflows: [] };
     for (const [answer, shown] of [[empty, false], [sample, true]] as const) {
       const v2 = { learningCost: async () => answer } as unknown as Client;
       const host = document.body.appendChild(document.createElement("div"));
@@ -258,5 +272,37 @@ describe("CostPerRun", () => {
       expect(!!host.querySelector('[data-testid="cost-per-run"]'), `shown for ${answer.runs.length} runs`).toBe(shown);
       act(() => root!.unmount()); root = undefined; document.body.innerHTML = "";
     }
+  });
+});
+
+describe("the loop on the cost chart", () => {
+  const at = (n: number) => sample.runs.find((r) => r.n === n)!.started_at;
+  const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sort-invoice", digest: "a12596c0a12596c0", at: at(18), decided: "replaying", source: "replay", reason: "replaying on graded inputs", ...over } as Promotion);
+  const promotions = [
+    record({}),
+    record({ decided: "promote", at: at(21), replay: { of: [], n: 20, agree: 19, agent_acc: 0.9, wf_acc: 0.95, delta: 0.05, handed_back: 2 } }),
+    record({ decided: "promote", source: "refit", digest: "1a48d30c1a48d30c", at: at(51), refit: { from: "a12596c0a12596c0", guards: [{ node: "classify", was: 0.7, threshold: 0.8 }] } }),
+  ];
+  it("flags each promotion record on its run, lettered, with a key and a table", () => {
+    const host = draw(sample, true, 900, promotions);
+    expect([...host.querySelectorAll('[data-testid^="marker-"]:not([data-testid^="marker-key"]):not([data-testid="marker-table"])')].map((g) => g.getAttribute("data-testid"))).toEqual(["marker-revision", "marker-promote", "marker-refit"]);
+    expect(host.querySelector('[data-testid="marker-key-promote"]')?.textContent).toBe("PPromoted 1");
+    const rows = [...host.querySelectorAll('[data-testid="marker-table"] tbody tr')].map((r) => r.textContent);
+    expect(rows[1]).toContain("21P Promotedsort-invoicea12596cReplay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back");
+    expect(text(host)).toContain("Markers: New revision · run 18");
+  });
+  it("draws no marker lane without records", () => {
+    const host = draw(sample);
+    expect(host.querySelector('[data-testid="marker-promote"]')).toBeNull();
+    expect(host.querySelector('[data-testid="marker-table"]')).toBeNull();
+  });
+  it("draws a replay run as a hollow ring out of the mean, and counts the unknown runs", () => {
+    const runs = [run(1, "agent", 1), run(2, "agent", 1), run(3, "replay", 9), run(4, "workflow", 0.1), run(5, "agent", null)];
+    const host = draw({ ...series(runs), unknown_path_runs: 2 });
+    expect(host.querySelectorAll("circle.fill-none.stroke-muted-foreground")).toHaveLength(1);
+    expect(text(host)).toContain("replay runs (hollow) left out");
+    expect(text(host)).toContain("3 runs unknown");
+    const path = host.querySelector("svg path.stroke-foreground[fill='none']")?.getAttribute("d") ?? "";
+    expect(path.split(/[ML]/).filter(Boolean)).toHaveLength(3);
   });
 });

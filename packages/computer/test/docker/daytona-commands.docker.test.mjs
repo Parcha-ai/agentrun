@@ -119,7 +119,7 @@ describe("the Daytona provider's commands in a root container", { skip: LIVE ? f
 				assert.equal(each.Gid, "1000\t1000\t1000\t1000", `thread ${tid} Gid`);
 				assert.equal(each.Groups, "", `thread ${tid} Groups`);
 				assert.equal(each.NoNewPrivs, "1", `thread ${tid} NoNewPrivs`);
-				assert.equal(each.Seccomp, "2", `thread ${tid} Seccomp: the filter that refuses vsock, io_uring and setns`);
+				assert.equal(each.Seccomp, "2", `thread ${tid} Seccomp: the filter that refuses vsock and io_uring`);
 				for (const set of CAPS) assert.equal(each[set], "0000000000000000", `thread ${tid} ${set}`);
 			}
 

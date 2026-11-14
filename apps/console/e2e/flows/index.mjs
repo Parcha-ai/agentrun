@@ -38,6 +38,7 @@ import computerStep from "./computer-step.mjs";
 import agentCardFooter from "./agent-card-footer.mjs";
 import costPerRun from "./cost-per-run.mjs";
 import workflowReplay from "./workflow-replay.mjs";
+import learningLoop from "./learning-loop.mjs";
 import toolCards from "./tool-cards.mjs";
 import narrowLayouts from "./narrow-layouts.mjs";
 
@@ -69,6 +70,7 @@ export const flows = [
   agentCardFooter,
   costPerRun,
   workflowReplay,
+  learningLoop,
   toolCards,
   ...narrowLayouts,
 ];

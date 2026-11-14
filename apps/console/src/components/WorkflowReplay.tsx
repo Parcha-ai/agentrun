@@ -6,16 +6,22 @@ import { Button } from "@/components/ui/button";
 import { Picker } from "@/components/ui/picker";
 import { Slider } from "@/components/ui/slider";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
+import { guardVerdict, StepGuards } from "@/components/StepGuards";
+import { Chip } from "@/components/ui/chip";
+import { recordOf, refitOf, replayLine, standingOf, stoppedOf } from "@/lib/learningLoop";
 import type { Client } from "@/lib/client";
 import { runLabel, when } from "@/lib/format";
 import { replaySteps } from "@/lib/workflowReplay";
-import type { WorkflowRevisions } from "@/lib/v2";
+import type { LearningCost, LearningLoop, Promotion, Serving, WorkflowRevisions } from "@/lib/v2";
 
 // A learned workflow replayed across its revisions (GET /agents/{id}/learning/workflows/{name}/revisions): the workflow
 // the agent runs now, drawn as the console's workflow graph, with a step for each revision that changed it. A step shows
 // the graph as it was then, each node marked NEW (first in this revision) or EDITED (its prompt, code, inputs or tier
 // changed), one line saying what changed and the revision's date. Play steps through them; the slider and the arrows go
-// to any one. The marks are words on the nodes (NEW, EDITED), never colour alone.
+// to any one. The marks are words on the nodes (NEW, EDITED), never colour alone. Each revision says where it stands (its
+// newest promotion record: serving, held, replaying, with the replay's numbers in one line), each guarded step carries its
+// guard on its card ("jev ≥0.70"), and under the graph, the revision's guarded steps with how often each handed back and
+// its runs' p, right against wrong where graded (StepGuards).
 
 /** The latest revisions the replay reads: the server's most. */
 const LIMIT = 50;
@@ -24,15 +30,17 @@ export const STEP_MS = 1800;
 
 /** The learned workflows in use (`workflows`: the tab's list), one replay at a time, the first by default. Nothing when
  *  none is active. `v2` is read when it shows, and again on Try again. */
-export function WorkflowReplay({ v2, agentId, workflows }: { v2: Client; agentId: string; workflows: { name: string; status: string }[] }) {
+export function WorkflowReplay({ v2, agentId, workflows, promotions = [], serving = [], loop = null, cost = null }: { v2: Client; agentId: string; workflows: { name: string; status: string }[]; promotions?: readonly Promotion[]; serving?: readonly Serving[]; loop?: LearningLoop | null; cost?: Pick<LearningCost, "workflows"> | null }) {
   const active = workflows.filter((w) => w.status === "active").map((w) => w.name);
   const [picked, setPicked] = useState<string | null>(null);
   const name = picked !== null && active.includes(picked) ? picked : (active[0] ?? null);
   if (name === null) return null;
-  return <Replay key={name} v2={v2} agentId={agentId} name={name} choices={active} onPick={setPicked} />;
+  return <Replay key={name} v2={v2} agentId={agentId} name={name} choices={active} onPick={setPicked} promotions={promotions} serving={serving} loop={loop} stopped={stoppedOf(cost, name)} />;
 }
 
-function Replay({ v2, agentId, name, choices, onPick }: { v2: Client; agentId: string; name: string; choices: string[]; onPick: (name: string) => void }) {
+const TITLE = "Learned workflow";
+
+function Replay({ v2, agentId, name, choices, onPick, promotions, serving, loop, stopped }: { v2: Client; agentId: string; name: string; choices: string[]; onPick: (name: string) => void; promotions: readonly Promotion[]; serving: readonly Serving[]; loop: LearningLoop | null; stopped: string | null }) {
   const [data, setData] = useState<WorkflowRevisions | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [asked, setAsked] = useState(0);
@@ -45,19 +53,20 @@ function Replay({ v2, agentId, name, choices, onPick }: { v2: Client; agentId: s
   }, [v2, agentId, name, asked]);
   const heading = (
     <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-3">
-      <h2 className="caps min-w-0 flex-1 text-small font-semibold">How the workflow changed</h2>
+      <h2 className="min-w-0 flex-1"><span className="caps text-small font-semibold">{TITLE}</span> <span className="ml-1 break-all font-mono text-body font-semibold">{name}</span></h2>
       {choices.length > 1 && <Picker small className="w-56 max-w-full" label="Learned workflow" value={name} onChange={onPick} options={choices.map((c) => ({ value: c, label: c }))} />}
     </header>
   );
   if (error && !data) return (
-    <section className="border" aria-label="How the workflow changed">{heading}<div className="p-4"><ProblemCard problem={problem(error, "how the workflow changed")} onRetry={() => setAsked((n) => n + 1)} className="" /></div></section>
+    <section className="border" aria-label={TITLE}>{heading}<div className="p-4"><ProblemCard problem={problem(error, "the learned workflow")} onRetry={() => setAsked((n) => n + 1)} className="" /></div></section>
   );
-  if (!data) return <section className="border" aria-label="How the workflow changed" aria-busy>{heading}<div className="p-4"><Bone className="h-48 w-full" /></div></section>;
-  return <section className="border" aria-label="How the workflow changed">{heading}<Steps data={data} /></section>;
+  if (!data) return <section className="border" aria-label={TITLE} aria-busy>{heading}<div className="p-4"><Bone className="h-48 w-full" /></div></section>;
+  return <section className="border" aria-label={TITLE}>{heading}<Steps data={data} promotions={promotions} serving={serving.find((one) => one.workflow === data.name)?.digest ?? null} loop={loop} stopped={stopped} /></section>;
 }
 
-/** The replay of a read: the controls, the step's line and date, its graph. */
-export function Steps({ data, stepMs = STEP_MS }: { data: WorkflowRevisions; stepMs?: number }) {
+/** The replay of a read: the controls, the step's line and date, its graph. `stopped`: the digest the money rule stopped
+ *  running first (stoppedOf), which says Stopped where it would say Serving. */
+export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null, loop = null, stopped = null }: { data: WorkflowRevisions; stepMs?: number; promotions?: readonly Promotion[]; serving?: string | null; loop?: LearningLoop | null; stopped?: string | null }) {
   const { steps, unreadable } = useMemo(() => replaySteps(data.revisions), [data.revisions]);
   const [at, setAt] = useState(Math.max(0, steps.length - 1));
   const [playing, setPlaying] = useState(false);
@@ -77,6 +86,13 @@ export function Steps({ data, stepMs = STEP_MS }: { data: WorkflowRevisions; ste
   const go = (to: number) => { setPlaying(false); setAt(Math.max(0, Math.min(n - 1, to))); };
   const play = () => { if (playing) return setPlaying(false); if (at >= n - 1) setAt(0); setPlaying(true); };
   const shown = `Revision ${Math.min(at, n - 1) + 1} of ${n}, ${when(step.at)}`;
+  const record = recordOf(promotions, data.name, step.digest);
+  const replacedBy = refitOf(promotions, data.name, step.digest);
+  // Serving is the champion's (the server's `serving`): a newer revision replaying or held never takes it from it.
+  const standing = standingOf(record, { serving, refit: replacedBy, stopped });
+  // Each guarded step's guard on its card, as its verdict: what it reads and the line it hands back under.
+  const marks = step.guards.length ? { ...step.marks, verdict: Object.fromEntries(step.guards.flatMap((g) => (step.guardPaths[g.node] ? [[step.guardPaths[g.node]!, guardVerdict(g)]] : []))) } : step.marks;
+  const refit = record?.source === "refit" && record.refit ? record.refit : null;
   return (
     <div className="space-y-3 p-4">
       {n > 1 && (
@@ -94,15 +110,25 @@ export function Steps({ data, stepMs = STEP_MS }: { data: WorkflowRevisions; ste
         </p>
         <p className="mt-1 break-words text-lead" role="status" data-testid="replay-line">{step.line}</p>
         {step.reason && <p className="mt-0.5 line-clamp-2 break-words text-body text-muted-foreground">{step.reason}</p>}
+        <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-body" data-testid="standing">
+          <Chip tone={standing.tone}>{standing.word}</Chip>
+          <span className="min-w-0 break-words text-muted-foreground">{replacedBy ? `Its thresholds were refit: revision ${replacedBy.digest.slice(0, 7)} serves in its place.` : record ? replayLine(record) : step.digest ? "No replay yet: a new revision replays on the last graded inputs before it serves." : "Its file did not read: no standing."}</span>
+        </p>
+        {refit && (
+          <p className="mt-1 break-words font-mono text-small text-muted-foreground" data-testid="refit">
+            Thresholds refit from {refit.from.slice(0, 7)}: {refit.guards.map((g) => `${g.node} ${g.was.toFixed(2)} → ${g.threshold.toFixed(2)}`).join(", ")}
+          </p>
+        )}
       </div>
       {/* The graph takes the room: a short workflow is drawn up to 1.6x to the card's width, centred (by its margins, so a wide one still scrolls from its start) in a frame at least 280px tall. */}
       <div className="flex min-h-[280px] overflow-auto border bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] p-4">
-        <WorkflowGraph graph={step.graph} marks={step.marks} label={`The workflow at revision ${at + 1} of ${n}, as a graph`} minScale={0.5} maxScale={1.6} className="m-auto" />
+        <WorkflowGraph graph={step.graph} marks={marks} label={`The workflow at revision ${at + 1} of ${n}, as a graph`} minScale={0.5} maxScale={1.6} className="m-auto" />
       </div>
       <div className="space-y-1.5">
         <GraphLegend />
-        <p className="font-mono text-label text-muted-foreground"><span className="font-semibold text-foreground">NEW</span> first appears in this revision · <span className="font-semibold text-foreground">EDITED</span> its prompt, code, inputs or tier changed</p>
+        <p className="font-mono text-label text-muted-foreground"><span className="font-semibold text-foreground">NEW</span> first appears in this revision · <span className="font-semibold text-foreground">EDITED</span> its prompt, code, inputs or tier changed{step.guards.length ? <> · <span className="font-semibold text-foreground">jev ≥0.70</span> the step's guard: its signal and threshold</> : null}</p>
       </div>
+      <StepGuards guards={step.guards} workflow={data.name} digest={step.digest} loop={loop} />
       {(data.total > data.revisions.length || data.truncated || unreadable > 0) && (
         <p className="text-body text-muted-foreground">
           {data.total > data.revisions.length && `The latest ${data.revisions.length} of ${data.total} revisions. `}

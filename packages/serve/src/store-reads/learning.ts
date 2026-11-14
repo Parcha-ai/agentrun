@@ -29,7 +29,7 @@ import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type Kept
 import { promotedOf } from "../learn/compile.js";
 import { promotionsOf } from "../learn/promote.js";
 import { GENERAL_NO_BUDGET, GENERAL_NO_ROOM, GENERAL_UNCHECKED } from "../learn/general.js";
-import type { Store } from "../store/store.js";
+import type { LearningProposal, Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
 export type RunLearningEnd = Pick<Learning, "state" | "reason" | "detail" | "at" | "problems" | "verdict" | "graded" | "merged" | "cost_usd" | "tokens" | "learned" | "pending" | "skills" | "workflows" | "lost" | "answered_at" | "job_cost_usd" | "look_back_usd" | "compiled" | "draft_errors">;
@@ -237,16 +237,50 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, unknown_path_runs: unknownPath, workflows };
 }
 
-/** What run `runId`'s learning spent, as its cost per run counts it: what it kept as it answered (`looked`: answeredOf),
- *  and its grade's spend (`grade`): its learning run's cost once that run ended, stopped or failed (runner/learning-loop.ts
- *  keeps the grade's spend there, a paid grade a person stopped included; null when unknown), 0 while it runs or when the
- *  run queued none. */
-async function learningSpendOf(store: Store, runId: string): Promise<{ looked: ReturnType<typeof answeredOf> | null; grade: number | null }> {
-  const kept = await store.learning.proposal(runId);
-  if (!kept) return { looked: null, grade: 0 };
-  const looked = answeredOf((kept.proposal ?? {}) as KeptRow);
-  const learningRun = kept.learningRunId ? await store.runs.get(kept.learningRunId) : undefined;
-  return { looked, grade: learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0 };
+/** What run `runId`'s learning spent, as its cost per run counts it, over every round a follow-up opened (roundsOf): what
+ *  it kept as it answered (`looked`: answeredOf; for a run with more rounds, its first round's job figure and every
+ *  round's look-back, as roundsSpendOf adds them), and its grades' spend (`grade`): each round's learning run's cost once
+ *  that run ended, stopped or failed (runner/learning-loop.ts keeps the grade's spend there, a paid grade a person stopped
+ *  included; null when one is unknown), 0 while it runs or when the round queued none. */
+export async function learningSpendOf(store: Pick<Store, "learning" | "runs">, runId: string): Promise<{ looked: ReturnType<typeof answeredOf> | null; grade: number | null }> {
+  const rounds = await roundsOf(store, runId);
+  if (!rounds.length) return { looked: null, grade: 0 };
+  const spent = await roundsSpentOf(store, rounds);
+  if (rounds.length < 2) return { looked: answeredOf((rounds[0]!.proposal ?? {}) as KeptRow), grade: spent.grade };
+  return { looked: spent.first ? { answered_at: spent.first.answered_at, job_cost_usd: spent.first.job_cost_usd ?? null, look_back_usd: spent.look } : null, grade: spent.grade };
+}
+
+/** Every round run `runId` kept (one a follow-up opened again is a round past its first), oldest first: none when it kept
+ *  no learning. The store's proposal(runId) is the newest round alone; a read of what the run's learning did or spent
+ *  reads them all. */
+export async function roundsOf(store: Pick<Store, "learning">, runId: string): Promise<LearningProposal[]> {
+  const newest = await store.learning.proposal(runId);
+  if (!newest) return [];
+  const out: LearningProposal[] = [];
+  for (let round = 1; round < newest.round; round++) {
+    const kept = await store.learning.proposal(runId, round);
+    if (kept) out.push(kept);
+  }
+  out.push(newest);
+  return out;
+}
+
+/** Over a run's rounds (roundsOf): the first round that answered (its job's own figures), every round's look-back added
+ *  up and every round's grade (each null once one round's is unknown). */
+async function roundsSpentOf(store: Pick<Store, "runs">, rounds: readonly LearningProposal[]): Promise<{ first: ReturnType<typeof answeredOf> | undefined; look: number | null; grade: number | null }> {
+  let first: ReturnType<typeof answeredOf> | undefined;
+  let look: number | null = 0;
+  let grade: number | null = 0;
+  for (const kept of rounds) {
+    const answered = answeredOf((kept.proposal ?? {}) as KeptRow);
+    if (!first && answered.answered_at !== undefined) first = answered;
+    // A round that never looked back (no figures kept) added none.
+    look = look === null || answered.look_back_usd === null ? null : look + (answered.look_back_usd ?? 0);
+    const learningRun = kept.learningRunId ? await store.runs.get(kept.learningRunId) : undefined;
+    const spent = learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0;
+    grade = grade === null || spent === null ? null : grade + spent;
+  }
+  return { first, look, grade };
 }
 
 type RunRecord = NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>;
@@ -383,23 +417,10 @@ export function laidOf(entries: readonly EntryLike[]): Laid {
  *  round's job answered and what the job cost to then, the look-backs of every round added up, and every round's grade. A
  *  figure that is unknown in any round is unknown (null). */
 type RoundsSpend = { answered_at: string; job_cost_usd: number | null; look_back_usd: number | null; grade_usd: number | null };
-export async function roundsSpendOf(store: Store, runId: string): Promise<RoundsSpend | undefined> {
-  const newest = await store.learning.proposal(runId);
-  if (!newest || newest.round < 2) return undefined;
-  let first: ReturnType<typeof answeredOf> | undefined;
-  let look: number | null = 0;
-  let grade: number | null = 0;
-  for (let round = 1; round <= newest.round; round++) {
-    const kept = round === newest.round ? newest : await store.learning.proposal(runId, round);
-    if (!kept) continue;
-    const answered = answeredOf((kept.proposal ?? {}) as KeptRow);
-    if (!first && answered.answered_at !== undefined) first = answered;
-    // A round that never looked back (no figures kept) added none.
-    look = look === null || answered.look_back_usd === null ? null : look + (answered.look_back_usd ?? 0);
-    const learningRun = kept.learningRunId ? await store.runs.get(kept.learningRunId) : undefined;
-    const spent = learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0;
-    grade = grade === null || spent === null ? null : grade + spent;
-  }
+export async function roundsSpendOf(store: Pick<Store, "learning" | "runs">, runId: string): Promise<RoundsSpend | undefined> {
+  const rounds = await roundsOf(store, runId);
+  if (rounds.length < 2) return undefined;
+  const { first, look, grade } = await roundsSpentOf(store, rounds);
   if (!first || typeof first.answered_at !== "string") return undefined;
   return { answered_at: first.answered_at, job_cost_usd: first.job_cost_usd ?? null, look_back_usd: look, grade_usd: grade };
 }

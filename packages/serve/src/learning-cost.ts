@@ -73,12 +73,15 @@ export const COST_RUNS_MAX = 10_000;
  *  (learning left out) over its `agent` runs before the takeover (every one when there is none yet), whose cost is known;
  *  `after`, the mean all-in $ (learning included) of every run from the takeover on whose total is known; and
  *  `times_cheaper`, before over after to a tenth, once `after` counts CHEAPER_AFTER_RUNS runs or more, else null. The
- *  before side leaves learning out and the after side keeps it in, so the figure never flatters learning. */
+ *  before side leaves learning out and the after side keeps it in, so the figure never flatters learning. `hand_backs`:
+ *  of the runs a learned workflow ran first on from the takeover on (`workflow` or `handed_back`), how many handed back;
+ *  null before a takeover. Every one is over every run, never only the latest a read lists. */
 export type CostSummary = {
   takeover: { n: number; run_id: string } | null;
   before: { runs: number; mean_usd: number } | null;
   after: { runs: number; mean_usd: number } | null;
   times_cheaper: number | null;
+  hand_backs: { ran: number; back: number } | null;
 };
 
 export function costSummary(runs: readonly CostRun[]): CostSummary {
@@ -87,7 +90,9 @@ export function costSummary(runs: readonly CostRun[]): CostSummary {
   const before = mean((first < 0 ? runs : runs.slice(0, first)).flatMap((run) => (run.path === "agent" && run.cost_usd !== null ? [run.cost_usd] : [])));
   const after = first < 0 ? null : mean(runs.slice(first).flatMap((run) => (run.total_usd === null ? [] : [run.total_usd])));
   const times = before && after && after.runs >= CHEAPER_AFTER_RUNS && after.mean_usd > 0 ? Math.round((before.mean_usd / after.mean_usd) * 10) / 10 : null;
-  return { takeover: first < 0 ? null : { n: runs[first]!.n, run_id: runs[first]!.run_id }, before, after, times_cheaper: times };
+  const ranFirst = first < 0 ? [] : runs.slice(first).filter((run) => run.path === "workflow" || run.path === "handed_back");
+  const handBacks = first < 0 ? null : { ran: ranFirst.length, back: ranFirst.filter((run) => run.path === "handed_back").length };
+  return { takeover: first < 0 ? null : { n: runs[first]!.n, run_id: runs[first]!.run_id }, before, after, times_cheaper: times, hand_backs: handBacks };
 }
 
 /** The series as CSV (RFC 4180, a header line, `\r\n` line ends): one row a run, an unknown figure empty. A text cell that

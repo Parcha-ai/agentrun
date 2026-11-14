@@ -181,8 +181,10 @@ test("the run record keeps each guard's row as metrics.guards; a workflow whose 
     { kind: LEARNED_NODES, data: { call: "workflow-first", workflow: "answer", nodes: [{ label: "fetch", kind: "call", status: "ok", duration_ms: 3 }, { label: "answer", kind: "agent", status: "escalated", duration_ms: 9, guard: rows[0] }], guards: rows } },
     { kind: "other", data: {} },
   ];
-  assert.deepEqual(guardsOf(entries), rows);
-  assert.deepEqual(pathMetrics({ input: {}, learning: { seed: "abc" } }, undefined, entries).guards, rows);
+  // Each row names the workflow whose call made it (the entry's `workflow`): a run can call more than one.
+  const named = rows.map((row) => ({ ...row, workflow: "answer" }));
+  assert.deepEqual(guardsOf(entries), named);
+  assert.deepEqual(pathMetrics({ input: {}, learning: { seed: "abc" } }, undefined, entries).guards, named);
   assert.equal("guards" in pathMetrics({ input: {}, learning: { seed: "abc" } }, undefined, []), false, "no guard ran: no key");
   assert.deepEqual(providersNamed([{ node: "extract", guard: { signal: "jev", threshold: 0.5 } }]), ["jev"]);
   assert.deepEqual(providersNamed([{ node: "agent", guard: { signal: "both", threshold: 0.5 } }]), ["jev"]);
@@ -220,7 +222,7 @@ test("every guard check is kept past the trace's cap: a map of 70 guarded judges
   const rows = guardsOf(kept);
   assert.equal(rows.length, 71, "every check: 70 in the map, and the one that handed back");
   assert.equal(rows.filter((row) => row.node === "check" && !row.escalated).length, 70);
-  assert.deepEqual(rows.at(-1), { node: "answer", signal: "self", self: 0.84, p: 0.84, threshold: 0.9, escalated: true });
+  assert.deepEqual(rows.at(-1), { node: "answer", signal: "self", self: 0.84, p: 0.84, threshold: 0.9, escalated: true, workflow: "answer" });
   assert.deepEqual(pathMetrics({ input: {}, learning: { seed: "abc" } }, undefined, kept).guards, rows);
   assert.match(text, /guard on "answer" \(self\): p 0\.84 against threshold 0\.9 \(its own confidence 0\.84\); handed back/, "the hand-back names the check past the cap");
 });

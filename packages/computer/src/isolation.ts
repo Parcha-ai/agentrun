@@ -2,7 +2,7 @@
 // its own agent in the computer beside them (Daytona's toolbox, E2B's envd), one that runs commands as root or with sudo
 // for whoever reaches it. So every remote provider starts init with --own-network: init, still root, refuses to start
 // while another process holds the programs' uid, moves itself into a network namespace whose loopback alone is up or
-// addressed, and refuses vsock, io_uring and setns to every thread (daemon/internal/isolate). A kernel with the tunnel modules
+// addressed, and refuses vsock and io_uring to every thread (daemon/internal/isolate). A kernel with the tunnel modules
 // loaded also gives that namespace its fallback tunnels (tunl0, gre0, sit0, ...), down with no address; no program can
 // raise them, holding no CAP_NET_ADMIN, and the read-back here proves it through computerd's probe. Network "none" is
 // all such a computer takes until a proxy carries open and allowlists out of that namespace.

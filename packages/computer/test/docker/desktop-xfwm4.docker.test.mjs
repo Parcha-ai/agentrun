@@ -1,7 +1,7 @@
 // The window manager E2B's and Agent37's desktops run, started the way their providers start it, on the desktop of
 // test/fixtures/desktop-xfwm4/Dockerfile (Debian trixie, as the Agent37 box). A program of the computer's user then reaches
 // no unix socket but the computer's own: the isolation.vendor-agent check, run after create and again after
-// apps.launch. computerd is PID 1 as on E2B and Agent37: `init --user 2510:2510 --own-network`, as root with the two
+// apps.launch. A program of the user still makes namespaces of its own and joins them. computerd is PID 1 as on E2B and Agent37: `init --user 2510:2510 --own-network`, as root with the two
 // capabilities a network namespace needs, DISPLAY set, and no passwd entry for 2510. The container has no seccomp
 // profile, because Docker's default refuses a user namespace to a process with no capabilities, and E2B's and Agent37's
 // kernels allow one. AGENTRUN_COMPUTER_LIVE_DOCKER=1 only; needs `npm run build` and `npm run build:daemon`. The image is
@@ -82,16 +82,16 @@ describe("xfwm4 as E2B and Agent37 start it", { skip: LIVE ? false : "set AGENTR
 		assert.deepEqual(await stray(), [], "a program of the computer's user connects to no socket but the computer's own");
 	});
 
-	// Review (#2787, PRRT_kwDOUmdVMs63e4QM): the user owns the window manager's user namespace, so a program of the user's
-	// could join it, then its network namespace, and reach the bus by its abstract name. init's filter refuses setns.
-	it("a program of the user cannot join the window manager's namespaces to reach its bus", async () => {
+	// The user owns the window manager's user namespace, so a program of the user's that sets out to join it, then its
+	// network namespace, reaches the bus by its abstract name. That is the same uid's reach as a ptrace of xfwm4.
+	it("a program of the user reaches the window manager's bus only by joining its namespaces", async () => {
 		const script = [
 			'for p in /proc/[0-9]*; do case "$(tr "\\0" " " < $p/cmdline 2>/dev/null)" in "xfwm4 "*) wm=${p#/proc/};; esac; done',
 			'[ -n "$wm" ] || { echo "no xfwm4"; exit 9; }',
 			'[ "$(readlink /proc/$wm/ns/net)" != "$(readlink /proc/self/ns/net)" ] || { echo "xfwm4 shares the user\'s network"; exit 9; }',
 			"call='dbus-send --bus=unix:abstract=/agentrun/window-manager --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.GetId'",
-			'$call && echo "outside: reached"',
-			'nsenter --preserve-credentials -U -n -t "$wm" $call && echo "joined: reached"',
+			'$call > /dev/null && echo "outside: reached"',
+			'nsenter --preserve-credentials -U -n -t "$wm" $call > /dev/null && echo "joined: reached"',
 			"echo done",
 		].join("\n");
 		const ran = await client.call("exec.run", { argv: ["sh", "-c", script], timeoutMs: 20_000 });
@@ -99,8 +99,29 @@ describe("xfwm4 as E2B and Agent37 start it", { skip: LIVE ? false : "set AGENTR
 		const out = Buffer.from(ran.value.stdout, "base64").toString();
 		const err = Buffer.from(ran.value.stderr, "base64").toString();
 		assert.match(out, /^done$/m, `the script ran through: ${out} ${err}`);
-		assert.doesNotMatch(out, /reached/, `a program of the user reached the window manager's bus: ${out}`);
-		assert.match(err, /nsenter: .*Operation not permitted/, `nsenter is refused (setns, EPERM): ${err}`);
+		assert.doesNotMatch(out, /outside: reached/, `a program of the user reached the window manager's bus from its own namespace: ${out}`);
+		assert.match(out, /^joined: reached$/m, `nsenter into xfwm4's namespaces reached its bus: ${out} ${err}`);
+	});
+
+	// Rootless containers, nsenter and `ip netns exec` make namespaces of the user's and join them: init's filter lets
+	// setns through.
+	it("a program of the user makes a user and network namespace of its own (unshare -Urn) and joins them (nsenter)", async () => {
+		const script = String.raw`
+unshare -Urn sleep 30 & made=$!
+for i in $(seq 100); do [ "$(readlink /proc/$made/ns/net)" != "$(readlink /proc/self/ns/net)" ] && break; sleep 0.1; done
+echo "self $(readlink /proc/self/ns/user) $(readlink /proc/self/ns/net)"
+echo "made $(readlink /proc/$made/ns/user) $(readlink /proc/$made/ns/net)"
+nsenter --preserve-credentials -U -n -t "$made" sh -c 'echo "joined $(readlink /proc/self/ns/user) $(readlink /proc/self/ns/net)"'
+kill $made`;
+		const ran = await client.call("exec.run", { argv: ["sh", "-c", script], timeoutMs: 20_000 });
+		assert.ok(ran.ok, JSON.stringify(ran));
+		const out = Buffer.from(ran.value.stdout, "base64").toString();
+		const err = Buffer.from(ran.value.stderr, "base64").toString();
+		const line = (label) => out.match(new RegExp(`^${label} (.+)$`, "m"))?.[1];
+		assert.ok(line("made") && line("self"), `the script ran: ${out} ${err}`);
+		const [self, made] = [line("self").split(" "), line("made").split(" ")];
+		assert.ok(made[0] !== self[0] && made[1] !== self[1], `unshare -Urn made a user and a network namespace: ${out} ${err}`);
+		assert.equal(line("joined"), line("made"), `nsenter joined them: ${out} ${err}`);
 	});
 
 	it("after apps.launch of Mousepad, a program of the user still reaches none but the computer's own", async () => {
