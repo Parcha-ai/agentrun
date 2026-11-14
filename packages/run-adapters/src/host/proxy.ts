@@ -622,6 +622,34 @@ const UNSAFE_PATH = /[^A-Za-z0-9/_.\-?=&]|\.\.|\/\/|^[^/]|\?.*\?/;
 const MAX_BODY = 32 * 1024 * 1024;
 /** How much of a response's start and end the proxy keeps to read its usage from. */
 const USAGE_WINDOW = 64 * 1024;
+
+/** The last `"<key>": {...}` object in `text`, parsed: how a policy reads a field of an answer's terminal event when the
+ *  event's line was longer than USAGE_WINDOW, so the proxy kept only its end. JSON may put whitespace on either side of
+ *  the colon (a Python gateway's `json.dumps` writes `"usage": {`), and the client parses the event whatever its spacing,
+ *  so this reads it too: a usage the harness counted is never booked at an unknown cost for its spacing. A key's quoted
+ *  name inside a JSON string is escaped (`\"usage\"`), so it never reads as one. Undefined when there is none, or the
+ *  last one does not close in `text` or does not parse. */
+export function lastObjectOf(text: string, key: string): unknown {
+  const marks = new RegExp(`"${key.replace(/[^A-Za-z0-9_]/g, "")}"\\s*:\\s*\\{`, "g");
+  let open = -1;
+  for (let found = marks.exec(text); found; found = marks.exec(text)) open = found.index + found[0].length - 1;
+  if (open < 0) return undefined;
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\"") {
+      for (i++; i < text.length && text[i] !== "\""; i++) if (text[i] === "\\") i++;
+    } else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) {
+      try {
+        return JSON.parse(text.slice(open, i + 1)) as unknown;
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
 /** How long an answer the provider stopped on its content filter is still read after its client left, or the proxy began
  *  to close, so the request is booked at the usage its end reports; past it, it is cut off as any other. */
 const FILTERED_DRAIN_MS = 5_000;

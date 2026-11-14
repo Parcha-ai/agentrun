@@ -39,8 +39,10 @@ export interface ReflectDeps {
    *  asked its end-of-run turn (no model request, nothing spent looking back), and its learning is dropped `empty` in
    *  said.onlyWorkflow's words. Absent, or a read that throws: every run is asked. */
   readonly nothingNew?: (runId: string) => Promise<boolean>;
-  /** The run's facts for reflectSkip: whether it learns, a person's cancel, its cap reached, its cap and spend so far. */
-  readonly facts: (runId: string) => Promise<{ learns: boolean; cancelled?: boolean; capReached?: boolean; capUsd?: number; costUsd: number | null }>;
+  /** The run's facts for reflectSkip: whether it learns, a person's cancel, its cap reached, its cap, its cost so far as a
+   *  person is shown it (`costUsd`, kept as the job's), and under a cap its spend as the cap's gates read it (`spentUsd`,
+   *  learning-end.ts capSpendOf: a request with no price of its own at its held figure; null: unknown). */
+  readonly facts: (runId: string) => Promise<{ learns: boolean; cancelled?: boolean; capReached?: boolean; costUsd: number | null } & ({ capUsd?: undefined } | { capUsd: number; spentUsd: number | null })>;
   /** The prompt's facts: how many notes the run started from. */
   readonly promptFacts: (runId: string, agentId: string) => Promise<{ active: number }>;
   /** The compile turn's facts (learn/compile.ts CompileAsk), read once the look-back's answer is checked, `refuse` cut
@@ -68,8 +70,9 @@ export interface ReflectDeps {
   readonly now?: () => number;
   /** The cap the learning run's grade runs under, read once the turn closed (learning-end.ts gradeCapOf): what the run's
    *  cap leaves once everything the run spent is counted, carried on the learning run's launch as its own cap, so the
-   *  grade never takes the run past its cap. Undefined for an uncapped run: its grade is capped by nothing. */
-  readonly gradeCap?: (runId: string) => Promise<number | undefined>;
+   *  grade never takes the run past its cap. Null when what the run spent under its cap is unknown: the grade is not
+   *  run, said so (said.gradeUnknownSpend). Undefined for an uncapped run: its grade is capped by nothing. */
+  readonly gradeCap?: (runId: string) => Promise<number | null | undefined>;
   /** Which end of the run this is: 1, its first (the default); an end after a follow-up opened the run again is the next
    *  round, asked anew (its prompt says it looked back before), kept as a proposal of its own beside the earlier rounds'
    *  (every row the hook gives carries it), graded and merged by a learning run of its own. */
@@ -143,7 +146,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // cannot be kept within its cap.
     if (facts.cancelled) return unasked(droppedRow(null, "cancelled", said.stopped(STOPPED.cancelled)));
     if (facts.capReached) return unasked(droppedRow(null, "no_budget", said.noBudget));
-    if (facts.capUsd !== undefined && facts.costUsd === null) return unasked(droppedRow(null, "unknown_cost", said.unknownCost));
+    if (facts.capUsd !== undefined && facts.spentUsd === null) return unasked(droppedRow(null, "unknown_cost", said.unknownCost));
     // A job that only ran its learned workflows, each answering, with nothing said after its first message, gave nothing
     // new to learn: it is not asked its look-back (no model request), and unless a compile is due (a held revision of
     // its workflow, asked while its champion serves) looking back cost nothing, $0 whether or not the job's own cost is
@@ -269,9 +272,11 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       const detail = checked.reason === "empty" ? (workflowOnly ? said.onlyWorkflow : said.empty) : checked.reason === "unparsed" ? said.unparsed : said.checker(checked.problems as never);
       return close([droppedRow(turn, checked.reason, detail, { ...checked, ...compiledFields })]);
     }
-    // The learning run's cap: what the run's cap leaves now its look-back is spent, read after the checks (a read that
-    // fails is no room, never no cap: the grade is then skipped, never run past the cap).
-    const capUsd = deps.gradeCap ? await deps.gradeCap(input.runId).catch(() => 0) : undefined;
+    // The learning run's cap: what the run's cap leaves now its look-back is spent, read after the checks. A spend under
+    // the cap that is unknown (or a read that fails, never no cap) queues no grade: none could be kept within the cap, and
+    // the words say the spend is unknown, never that the cap has no room (learning-end.ts capSpendOf's rule).
+    const capUsd = deps.gradeCap ? await deps.gradeCap(input.runId).catch(() => null) : undefined;
+    if (capUsd === null) return close([droppedRow(turn, "unknown_cost", said.gradeUnknownSpend)]);
     return close([
       { table: "learning_proposals", row: { turn, proposal: { ...checked, ...compiledFields, detail: said.proposed(checked.notes, checked.skills, checked.workflows) } } },
       { table: "learning_run", row: { id: deps.newRunId(), ...(deps.gradeModel ? { model: deps.gradeModel } : {}), ...(capUsd !== undefined ? { capUsd } : {}) } },
