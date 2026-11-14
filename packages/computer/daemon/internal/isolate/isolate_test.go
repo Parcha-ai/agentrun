@@ -348,8 +348,8 @@ func errnoWords(err error) string {
 }
 
 // denySocketsChild sets no_new_privs on every thread, holds threads of its own, calls DenySockets, and prints what its
-// threads and a program it starts then see: each thread's Seccomp field, the errno a vsock socket and io_uring_setup
-// meet, whether an IPv4 and a unix socket open, and the program's vsock errno.
+// threads and a program it starts then see: each thread's Seccomp field, the errno a vsock socket, io_uring_setup and
+// setns meet, whether an IPv4 and a unix socket open, and the program's vsock errno.
 func denySocketsChild() int {
 	if _, _, errno := syscall.AllThreadsSyscall(syscall.SYS_PRCTL, prSetNoNewPriv, 1, 0); errno != 0 {
 		fmt.Fprintln(os.Stderr, "no_new_privs:", errno)
@@ -380,6 +380,9 @@ func denySocketsChild() int {
 	fmt.Println("vsock", errnoWords(socketErr(afVsock)))
 	_, _, errno := syscall.Syscall(sysIOURingSetup, 1, uintptr(unsafe.Pointer(nil)), 0)
 	fmt.Println("io_uring", errnoWords(errno))
+	// A descriptor of no namespace meets EBADF from the kernel; a filter that refused setns would answer EPERM first.
+	_, _, errno = syscall.Syscall(sysSetns, ^uintptr(0), 0, 0)
+	fmt.Println("setns", errnoWords(errno))
 	fmt.Println("inet", errnoWords(socketErr(syscall.AF_INET)))
 	fmt.Println("unix", errnoWords(socketErr(syscall.AF_UNIX)))
 	program, err := exec.Command(os.Args[0], vsockArg).Output()
@@ -401,7 +404,9 @@ func TestDenySocketsRefusesVsockAndIOURingOnEveryThreadAndInEveryProgram(t *test
 		t.Fatalf("the child: %v; stdout %q, stderr %s", err, out, stderr.String())
 	}
 	eperm := fmt.Sprintf("errno %d", int(syscall.EPERM))
-	want := map[string]string{"vsock": eperm, "io_uring": eperm, "inet": "opened", "unix": "opened", "program vsock": eperm}
+	// setns passes: nsenter, `ip netns exec` and rootless containers join namespaces their own user made.
+	ebadf := fmt.Sprintf("errno %d", int(syscall.EBADF))
+	want := map[string]string{"vsock": eperm, "io_uring": eperm, "setns": ebadf, "inet": "opened", "unix": "opened", "program vsock": eperm}
 	threads := 0
 	got := map[string]string{}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {

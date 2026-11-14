@@ -1004,13 +1004,13 @@ test("a desktop's window manager starts once the display answers, with DISPLAY, 
 	const missing = setup({ kind: "desktop" }, { facts: { windowManager: true }, display: "manager missing", lingers: { reads: 1, lists: 1 } });
 	const failed = await create(missing.provider);
 	assert.equal(failed.error?.code, "not_found");
-	assert.match(failed.error.message, /the window manager \(dbus-run-session .*xfwm4.*\) did not start on :0: dbus-run-session: executable file not found/);
+	assert.match(failed.error.message, /the window manager \(unshare .*dbus-run-session .*xfwm4 [^<]*\) did not start on :0: unshare: executable file not found/);
 	await nothingLeft(missing.fake, "a window manager that cannot start");
 
 	const ends = setup({ kind: "desktop" }, { facts: { windowManager: true }, display: "manager dies", lingers: { reads: 1, lists: 1 } });
 	const ended = await create(ends.provider);
 	assert.equal(ended.error?.code, "vendor");
-	assert.match(ended.error.message, /the window manager \(dbus-run-session .*xfwm4.*\) ended with exit code 1 within 1 s of starting on :0: Xfconf could not be initialized/);
+	assert.match(ended.error.message, /the window manager \(unshare .*dbus-run-session .*xfwm4 [^<]*\) ended with exit code 1 within 1 s of starting on :0: Xfconf could not be initialized/);
 	await nothingLeft(ends.fake, "a window manager that ends at once");
 	assert.ok(
 		managed.fake.requests.some(({ machine, method, params }) => machine === m.id && method === "process.wait" && params.timeoutMs === 1000),
