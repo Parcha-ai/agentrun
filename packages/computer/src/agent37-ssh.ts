@@ -7,7 +7,6 @@ import { Duplex, PassThrough } from "node:stream";
 import type { HostCall, MachineProcess } from "./host.js";
 import { boundOf } from "./hosted/process.js";
 import { shellLine } from "./hosted/scripts.js";
-import { type Result, ok } from "./result.js";
 
 /** A readable side of an ssh2 channel, as this provider uses it: piped, or drained. */
 export interface Ssh2Readable {
@@ -422,12 +421,12 @@ export class SshExec {
 
 	/**
 	 * argv as root over SSH, under WRAPPER, as one channel on the machine's shared connection (#start). stdout and
-	 * stderr are the channel's, piped; with no stdin, end of file is sent at once, and end sends it later. wait answers
-	 * once the channel closes, with the exit-status, or -1 for an exit by signal or none. kill ends the process group
-	 * over a channel of its own (on a connection with room), then closes the exec's channel, never a connection; if the
-	 * close does not come, wait answers -1 and the connection takes no new channel.
+	 * stderr are the channel's, piped; end sends end of file. wait answers once the channel closes, with the
+	 * exit-status, or -1 for an exit by signal or none. kill ends the process group over a channel of its own (on a
+	 * connection with room), then closes the exec's channel, never a connection; if the close does not come, wait
+	 * answers -1 and the connection takes no new channel.
 	 */
-	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
+	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		const pidFile = `/tmp/.agentrun-exec-${randomBytes(8).toString("hex")}`;
 		const opened = await this.#start(id, shellLine(["sh", "-c", WRAPPER, pidFile, ...argv]), ctx, `the exec in ${id}`);
 		const { link: held, channel } = opened;
@@ -435,8 +434,7 @@ export class SshExec {
 		const stderr = new PassThrough();
 		channel.pipe(stdout);
 		channel.stderr.pipe(stderr);
-		let ended = !stdin;
-		if (!stdin) channel.eof();
+		let ended = false;
 		let closed = false;
 		// ssh2 closes every channel when the connection goes (utils.js, ChannelManager.cleanup), so the close is enough.
 		let done: (code: number) => void = () => {};
@@ -449,7 +447,7 @@ export class SshExec {
 			};
 		});
 		void opened.closed.then(done);
-		return ok({
+		return {
 			stdout,
 			stderr,
 			write: (bytes) =>
@@ -501,7 +499,7 @@ export class SshExec {
 				dropped.unref();
 				void exited.then(() => clearTimeout(dropped));
 			},
-		});
+		};
 	}
 }
 

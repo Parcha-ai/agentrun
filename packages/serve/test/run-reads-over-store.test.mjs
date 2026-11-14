@@ -212,6 +212,31 @@ test("a new row after the cursor comes as a change, not a reset", async () => {
   assert.deepEqual(next.rows.map((r) => r.id), ["e2"]);
 });
 
+test("after a feedback round the live timeline and a fresh read agree: the round's rows, then its learning row, then the usage row", async () => {
+  const ended = { status: "completed", state: "idle", cost: { usd: 0.01 }, poll_after_ms: 1000 };
+  const typed = (id, kind, text) => ({ ...row(id, text), kind });
+  const job = [typed("1:15", "user_message", "You: What is six times seven?"), typed("1:21", "final_answer", "Job answer.")];
+  const state = { rows: [...job, typed("1:usage", "usage", "Cost: $0.01"), typed("learning", "learning", "Learned: answer as a number")], view: ended };
+  const live = timeline(state);
+  // A reader as the console reads: every row it was sent, by id, minus the drops, in seq order.
+  const seen = new Map();
+  const read = (page) => {
+    if (page.reset) seen.clear();
+    for (const id of page.drop) seen.delete(id);
+    for (const r of page.rows) seen.set(r.id, r);
+    return [...seen.values()].sort((a, b) => a.seq - b.seq).map((r) => r.id);
+  };
+  const first = await live.page({}, "run-1", 0, 0, 100);
+  assert.deepEqual(read(first), ["1:15", "1:21", "learning", "1:usage"]);
+  // The grade's round: the reviewer's words and the look-back after the job, its learning row changed by what it learned.
+  state.rows = [...job, typed("1:27:feedback", "user_message", "You: Review: x"), typed("1:29", "text_block", "Looking back on this run."), typed("1:usage", "usage", "Cost: $0.02"), typed("learning", "learning", "Learned: what the reviewer said")];
+  const after = await live.page({}, "run-1", first.next_after, 0, 100);
+  const order = ["1:15", "1:21", "1:27:feedback", "1:29", "learning", "1:usage"];
+  assert.deepEqual(read(after), order, "the live log: the round's rows, then what it learned");
+  const restarted = await timeline(state).page({}, "run-1", 0, 0, 100);
+  assert.deepEqual(restarted.rows.map((r) => r.id), order, "a fresh read (a restarted server) reads the same order");
+});
+
 test("a page never reads working without the message row the view read it from: the view is read first, then the rows (#2307)", async () => {
   // The run's message is committed between the page's two reads, whichever goes first: the first read sees the journal
   // before it, the second after. A page whose status says working holds the message row the status was read from.

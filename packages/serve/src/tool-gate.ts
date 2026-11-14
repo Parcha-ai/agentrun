@@ -143,7 +143,7 @@ export const MAX_PIN_CHOICES = 16;
 
 /** A layer of tool settings (the server's, PUT /v2/settings/tools, or an agent's own, definition.tool_settings) as the
  *  gate reads it: a permission by settings key, and an MCP tool's pin. */
-export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts checkToolSettings). Never shown. */ fallback?: true; pin?: Pin; /** A pin in the server's settings that does not read (tool-plane.ts checkToolSettings): every call of the tool is refused. Never shown. */ brokenPin?: true; /** bash's policy, in an agent's own settings only (bash-read-only.ts): what its commands may do. */ policy?: string } | undefined>>;
+export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** On an MCP server's wildcard in the server's settings: its read-only tools run with no approval (readsLift). */ allow_reads?: true; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts checkToolSettings). Never shown. */ fallback?: true; pin?: Pin; /** A pin in the server's settings that does not read (tool-plane.ts checkToolSettings): every call of the tool is refused. Never shown. */ brokenPin?: true; /** bash's policy, in an agent's own settings only (bash-read-only.ts): what its commands may do. */ policy?: string } | undefined>>;
 
 /** A one-of list in its one form: each value once, null first, then by its JSON text; a keys pin's keys each once,
  *  sorted; a scalar as it is. The same meaning is the same text (a revision's id) and the same words (a refusal). */
@@ -233,10 +233,44 @@ export function pinRefusal(name: string, args: unknown, server: PermissionSettin
  *  layer, nor an ask that stands in for a setting that does not read. Nor is anything RunGate.enter refuses before it
  *  decides between running and parking ever lifted (a template's pin, among them). Without never, the answer is as it
  *  always was. */
-export function permissionFrom(name: string, server: PermissionSettings, agent: PermissionSettings = {}, approvals: Approvals = "ask", where: ShellWhere = {}): { permission: Permission; from: SettingFrom } {
+export function permissionFrom(name: string, server: PermissionSettings, agent: PermissionSettings = {}, approvals: Approvals = "ask", where: ShellWhere = {}, effect?: ToolEffect): { permission: Permission; from: SettingFrom } {
   const { permission, from } = settingOf(name, server, agent, where);
+  if (permission === "ask" && effect === "read" && readsLift(name, server, agent, from)) return { permission: "allow", from: "server" };
   if (approvals !== "never" || permission !== "ask" || standsBehind(name, server, agent)) return { permission, from };
   return { permission: "allow", from: "unattended" };
+}
+
+/** What an MCP tool does, by its server's annotations (the MCP spec's hints, the server's word, never checked): "read"
+ *  where readOnlyHint is true; else "destructive" only where destructiveHint is true; else "write". Not the spec's
+ *  default (destructiveHint true when absent): under it every tool of a server that annotates nothing would read
+ *  destructive and each approval of one would need the second confirm. A write still asks. */
+export type ToolEffect = "read" | "write" | "destructive";
+export function toolEffect(annotations: unknown): ToolEffect {
+  const hints = typeof annotations === "object" && annotations !== null ? (annotations as { readOnlyHint?: unknown; destructiveHint?: unknown }) : {};
+  if (hints.readOnlyHint === true) return "read";
+  return hints.destructiveHint === true ? "destructive" : "write";
+}
+
+/** MCP tool `name`'s (`mcp:<server>/<tool>`) effect as a run's pin holds it (its annotations then, toolEffect): what the
+ *  run's gate (ClaimMcp.effectOf) and a settings save's wake (settings-wake.ts) read, never a live listing. Undefined for a
+ *  tool the pin does not hold. */
+export function pinnedEffect(pin: Readonly<Record<string, { readonly tools: readonly { readonly name: string; readonly annotations?: unknown }[] }>>, name: string): ToolEffect | undefined {
+  const parsed = mcpNameOf(name);
+  const pinned = parsed && Object.hasOwn(pin, parsed.server) ? pin[parsed.server] : undefined;
+  const tool = pinned?.tools.find((one) => one.name === parsed!.tool);
+  return tool ? toolEffect(tool.annotations) : undefined;
+}
+
+/** Whether "allow reads" lifts the ask of MCP tool `name`, one its run's pin marks read-only (permissionFrom's `effect`):
+ *  its server's wildcard in this server's settings carries `allow_reads`, the ask came from the server's settings or
+ *  the default (an agent's own ask holds), the tool's own key sets no permission on this server (an explicit setting
+ *  beats the rule), and nothing stands behind the ask (standsBehind: a deny in any layer, a value that does not read,
+ *  settings unread). A pin's refusal is RunGate.decide's, after this, so the rule never lifts one. */
+function readsLift(name: string, server: PermissionSettings, agent: PermissionSettings, from: SettingFrom): boolean {
+  if (!mcpNameOf(name) || from === "agent") return false;
+  const [own, wildcard] = permissionKeys(name);
+  if (server[own!]?.permission !== undefined || server[wildcard!]?.allow_reads !== true) return false;
+  return !standsBehind(name, server, agent);
 }
 
 /** Marks the server's settings map when its stored value does not read (tool-plane.ts loadToolSettings): every
@@ -300,7 +334,7 @@ function settingFrom(name: string, server: PermissionSettings, agent: Permission
 
 /** `name`'s permission in force (permissionFrom): the one rule every path reads, the gate's, the tool plane's and a
  *  workflow's call nodes'. */
-export const permissionOf = (name: string, server: PermissionSettings, agent: PermissionSettings = {}, approvals: Approvals = "ask"): Permission => permissionFrom(name, server, agent, approvals).permission;
+export const permissionOf = (name: string, server: PermissionSettings, agent: PermissionSettings = {}, approvals: Approvals = "ask", effect?: ToolEffect): Permission => permissionFrom(name, server, agent, approvals, {}, effect).permission;
 
 /** An approval's price for the person who answers it: USD where the tool declares one (booked through the spend cap's
  *  paidCall), else "not metered" (an unpriced MCP call, the owner's ruling of 11-04). */
@@ -317,6 +351,8 @@ export type PendingApproval = {
   args_preview: string;
   requested_at: string;
   price?: ApprovalPrice;
+  /** Present, true, when the run's pin marks the tool destructive (toolEffect): an allow of it needs confirm_destructive. */
+  destructive?: true;
 };
 
 
@@ -362,8 +398,8 @@ export function previewOf(text: string): string {
  *  settings as the runner read them from the one store at the claim (tool-plane.ts loadToolSettings), read at each call as
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
  *  claim). The gate reads nothing of the run's own files: they are the agent's to write. */
-export function runGate(where: { root: string; work: string; computer?: boolean; computerCodemode?: boolean; argumentsOf?: ArgumentsOf }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.computerCodemode ? { computerCodemode: true } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+export function runGate(where: { root: string; work: string; computer?: boolean; computerCodemode?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.computerCodemode ? { computerCodemode: true } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
 /** The top-level arguments the listing of the MCP tool `name` (`mcp:<server>/<tool>`) in the run's pin declares under
@@ -381,7 +417,9 @@ export class RunGate {
   /** `readServerSettings`: the server's tool settings, read at each call; `overrides`: the pinned revision's own;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on); `approvals`: the
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
-  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; /** The run's `codemode` is pi's on a desktop or a phone (runner/adapters/pi-computer.ts), not the host's. */ computerCodemode?: boolean; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf },private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  /** `where.effectOf`: an MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf), what "allow reads" reads;
+   *  never a live listing, so a server can't widen a run's access mid-run. */
+  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; /** The run's `codemode` is pi's on a desktop or a phone (runner/adapters/pi-computer.ts), not the host's. */ computerCodemode?: boolean; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
   private names?: NameMap;
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
@@ -464,7 +502,7 @@ export class RunGate {
     }
     // A shell tool under every harness's name for it is read as its own name, by bash's key (permissionFrom): a watcher's
     // ask is allow only where bash's ask is set as written. Its default is where the run's shell is (defaultPermission).
-    return permissionFrom(shellToolOf(tool) ?? key, server, this.overrides, this.approvals, where);
+    return permissionFrom(shellToolOf(tool) ?? key, server, this.overrides, this.approvals, where, mcpNameOf(key) ? this.where.effectOf?.(key) : undefined);
   }
 
   /** Why a pin refuses the call of `key` with `args` now (pinRefusal): the revision's own pins and the server's, read at

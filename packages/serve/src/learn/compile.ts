@@ -15,7 +15,7 @@ import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
 import { childNodes, LEARNED_MAX_TURNS, frontMatter, WORKFLOW_NAME, WORKFLOWS_DIR } from "./skills.js";
 import { NOTE_BLOCK, parseReflection, SKILL_BLOCK, WORKFLOW_BLOCK } from "./reflect.js";
 import { NOTE_FILE } from "./notes.js";
-import { championOf, PROMOTE_BAR, type PromotionRecord, promotionOf } from "./promote.js";
+import { answersAlone, championOf, PROMOTE_BAR, type PromotionRecord, promotionOf } from "./promote.js";
 
 /** How many active notes an agent keeps before its look-back compiles its job. */
 export const COMPILE_AFTER_NOTES = 3;
@@ -343,11 +343,14 @@ export function compilePrompt(ask: CompileAsk): string {
 }
 
 /** Why a held workflow does not run first, in the hold's numbers: its replay's (the workflow's accuracy, its hand-backs
- *  scored on the agent's recorded answer, against the agent's), else the hold's own reason (host-written). */
+ *  scored on the agent's recorded answer, against the agent's; or that it handed back every input, so it never answered
+ *  alone), else the hold's own reason (host-written). */
 function heldLine(workflow: string, held: HeldAsk): string {
   const pct = (value: number) => `${(value * 100).toFixed(1)}%`;
   const { replay } = held;
-  const why = replay
+  const why = replay && replay.n > 0 && !answersAlone(replay)
+    ? `replayed on ${replay.n} of the agent's graded inputs, it handed back every one: it would never answer alone. A check or an escalate that stops every draft, right or wrong, is the step to change.`
+    : replay
     ? `replayed on ${replay.n} of the agent's graded inputs, it was right ${pct(replay.wf_acc)} of the time (${replay.handed_back} handed back, each scored on the agent's answer), against the agent's ${pct(replay.agent_acc)}: ${replay.delta >= 0 ? "+" : ""}${(replay.delta * 100).toFixed(1)} pts, more than ${PROMOTE_BAR * 100} pts under.`
     : `it was held (${clean(held.reason, 400).replace(/\n/g, " ").replace(/\.$/, "")}).`;
   return `Your learned workflow \`${workflow}\` does not run first: ${why} It stays held until a new revision of it.`;

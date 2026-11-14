@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -40,7 +41,7 @@ const noSetpriv = !existsSync("/usr/bin/setpriv") && "no setpriv here";
 /** A loopback gateway answering OpenAI's Responses API with `text` (SSE). */
 async function gateway(t, text) {
   const server = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     for await (const _chunk of req) void _chunk;
     const events = [{ type: "response.output_text.delta", delta: text }, { type: "response.completed", response: { usage: { input_tokens: 1000, output_tokens: 100 } } }];
     res.writeHead(200, { "content-type": "text/event-stream" });

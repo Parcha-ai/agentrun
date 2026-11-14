@@ -1,7 +1,8 @@
 // A granted monid endpoint on the runner is one host tool of its own (runner/monid-run.ts), from its revision's pin (what
 // the save stamped, monid.ts pinMonid): named `monid:<provider>/<endpoint>`, its call a paid step on the run's one ledger
 // under that name, held at its pinned price, sent with it as monid's maxCost, and settled at what monid charged; its ask card shows that price; an
-// endpoint the pin does not hold is no tool, never sent; one over the cap parks the run unsent. Faux monid, a scripted
+// endpoint the pin does not hold is no tool, never sent; one over the cap parks the run unsent; one monid charges above
+// its hold is booked at that charge and stops the run, in words and in the log. Faux monid, a scripted
 // model origin, the real loop on a real store.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -201,6 +202,72 @@ test("an endpoint the agent was not granted is no tool of its run: its call is r
   assert.equal(run.row.state, "ended", JSON.stringify(run.row));
   assert.deepEqual(run.asks, [], "nothing asked");
   assert.deepEqual(sent(), [], "never sent");
+});
+
+/** The fake monid charges each run `usd` from here on in this test, past its estimate when `usd` is above it. */
+function charging(t, usd) {
+  const before = process.env.AGENTRUN_TEST_FAUX_MONID_CHARGE;
+  process.env.AGENTRUN_TEST_FAUX_MONID_CHARGE = String(usd);
+  t.after(() => {
+    if (before === undefined) delete process.env.AGENTRUN_TEST_FAUX_MONID_CHARGE; else process.env.AGENTRUN_TEST_FAUX_MONID_CHARGE = before;
+  });
+}
+/** A run whose model calls the endpoint twice, a turn each, then answers: allowed, under a $1 cap. */
+const twice = (t, requests) => monidRun(t, { tools: [MATCH], pin: { [MATCH]: PIN[MATCH] }, toolSettings: { [MATCH]: { permission: "allow" } }, launch: { max_cost_usd: 1 }, requests, script: [{ call: "monid__apollo__people__match", args: ARGS }, { call: "monid__apollo__people__match", args: ARGS }, { say: "done" }] });
+/** The error lines logged about a monid charge above its hold. */
+const overHoldLines = (errors) => errors.mock.calls.map((call) => call.arguments.join(" ")).filter((line) => line.includes("more than the"));
+
+test("a monid charge above its call's hold is booked at what monid charged, and the run stops at once in words that say so, logged", async (t) => {
+  const sent = callLog(t);
+  // Pinned (and held) at $0.026, its maxCost; monid re-priced it after the read and charges $0.05.
+  charging(t, 0.05);
+  const errors = t.mock.method(console, "error", () => {});
+  const requests = [];
+  const run = await twice(t, requests);
+  const WORDS = "monid charged $0.05, more than the $0.026 held; the run stopped";
+  const booked = paidBookings(run.records.entries).filter((row) => row.tool === MATCH);
+  assert.deepEqual(booked.map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", 0.026], ["agentrun.tool_cost", 0.05]], `the real charge, never the hold: ${JSON.stringify(booked)}`);
+  assert.deepEqual(sent().length, 1, "no further tool call after its result");
+  assert.equal(requests.length, 1, "no further model turn after its result");
+  assert.deepEqual([run.row.state, run.row.summary], ["failed", WORDS], JSON.stringify(run.row));
+  const lines = overHoldLines(errors);
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  for (const part of [RUN, MATCH, "$0.026", "$0.05"]) assert.ok(lines[0].includes(part), `${part} in ${lines[0]}`);
+});
+
+test("a monid charge above its hold inside a script stops the script's next call too: nothing runs after it", async (t) => {
+  const sent = callLog(t);
+  charging(t, 0.05);
+  t.mock.method(console, "error", () => {});
+  const requests = [];
+  const call = "await tools.monid__apollo__people__match({ body: { name: 'Ada' } });";
+  const run = await monidRun(t, { tools: [MATCH], pin: { [MATCH]: PIN[MATCH] }, toolSettings: { [MATCH]: { permission: "allow" } }, launch: { max_cost_usd: 1 }, requests, script: [{ call: "codemode", args: { script: `${call} ${call} return 'both ran';` } }, { say: "done" }] });
+  assert.equal(sent().length, 1, "the script's second call is never sent");
+  assert.equal(requests.length, 1, "no further model turn");
+  assert.deepEqual([run.row.state, run.row.summary], ["failed", "monid charged $0.05, more than the $0.026 held; the run stopped"], JSON.stringify(run.row));
+});
+
+test("a monid charge above both its hold and the run's cap ends the run in the charge's words, not the cap's", async (t) => {
+  callLog(t);
+  charging(t, 0.05);
+  t.mock.method(console, "error", () => {});
+  // Held at $0.026 under a $0.04 cap; charged $0.05, past both.
+  const run = await monidRun(t, { tools: [MATCH], pin: { [MATCH]: PIN[MATCH] }, toolSettings: { [MATCH]: { permission: "allow" } }, launch: { max_cost_usd: 0.04 }, script: [{ call: "monid__apollo__people__match", args: ARGS }, { say: "done" }] });
+  assert.deepEqual([run.row.state, run.row.summary], ["failed", "monid charged $0.05, more than the $0.026 held; the run stopped"], JSON.stringify(run.row));
+});
+
+test("a monid charge at its call's hold is booked and the run goes on, as before", async (t) => {
+  const sent = callLog(t);
+  charging(t, 0.026);
+  const errors = t.mock.method(console, "error", () => {});
+  const requests = [];
+  const run = await twice(t, requests);
+  const booked = paidBookings(run.records.entries).filter((row) => row.kind === "agentrun.tool_cost" && row.tool === MATCH);
+  assert.deepEqual(booked.map((row) => row.usd), [0.026, 0.026]);
+  assert.equal(sent().length, 2, "its second call is sent");
+  assert.equal(requests.length, 3, "and the model's turns after it are taken");
+  assert.equal(run.row.state, "ended", JSON.stringify(run.row));
+  assert.deepEqual(overHoldLines(errors), []);
 });
 
 test("a pinned endpoint's call over the run's cap parks the run on its cap, the call unsent", async (t) => {

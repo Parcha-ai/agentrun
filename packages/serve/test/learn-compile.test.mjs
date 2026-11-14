@@ -352,6 +352,10 @@ test("held by its replay: the revise ask says the replay's numbers and offers no
   assert.equal(compile.askedForCompile(prompt), true);
   const graded = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{}", held: { workflow: "answer", digest: "0123456789abcdef", source: "graded", reason: "20 graded runs it served were right 70.0% of the time" } }));
   assert.match(graded, /Your learned workflow `answer` does not run first: it was held \(20 graded runs it served were right 70\.0% of the time\)\./);
+  // Held for handing back every input: never "pts under" (its accuracy is the agent's own), but that it never answers alone.
+  const alone = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{}", held: { ...held, reason: "it handed back every one of its 20 replayed inputs", replay: { n: 20, agree: 0, agent_acc: 0.9, wf_acc: 0.9, delta: 0, handed_back: 20 } } }));
+  assert.match(alone, /does not run first: replayed on 20 of the agent's graded inputs, it handed back every one: it would never answer alone\. A check or an escalate that stops every draft, right or wrong, is the step to change\./);
+  assert.doesNotMatch(alone, /pts under/);
 });
 
 // CompiledRecord.promoted is the promotion step's (learn/promote.ts): the kept draft's digest, read against the agent's

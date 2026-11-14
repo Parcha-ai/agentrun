@@ -161,7 +161,7 @@ describe("the workflow card: standing, guards and where it is unsure", () => {
     const of = Array.from({ length: 20 }, (_, i) => `g${i}`);
     const replayed = mount(createElement(Steps, { data: read([rev(1, guarded(0.7))]), promotions: [record({ replay: { of, n: 18, agree: 17, agent_acc: 0.9, wf_acc: 0.9, delta: 0, handed_back: 1, skipped_write: 2 } })], serving: "1".repeat(16), loop }));
     const chip = (host: HTMLElement) => host.querySelector('[data-testid="standing"] span')!;
-    expect(chip(replayed).textContent).toBe("Serving · replayed 18/20");
+    expect(chip(replayed).textContent).toBe("Serving · replayed 18/20 · 17 alone");
     expect(chip(replayed).className).toMatch(/success/);
     const dry = mount(createElement(Steps, { data: read([rev(1, guarded(0.7))]), promotions: [record({ replay: undefined, source: "dry_run", reason: "no graded input it fits: promoted on its passing dry run" })], serving: "1".repeat(16), loop }));
     expect(chip(dry).textContent).toBe("Serving · not replayed");

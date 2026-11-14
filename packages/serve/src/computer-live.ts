@@ -133,6 +133,10 @@ export type OpenComputerView = {
   tag: string;
   watch: ComputerWatchOf;
   hold: ViewerHold;
+  /** Whether the computer is gone now: its provider no longer has it. Asked when its watch ends gone or does not start
+   *  for want of the computer (not found, gone); a gone one's view closes "released", so the run's Screen reads it
+   *  released. A stream that ended with the computer still there keeps its view. Absent: never asked. */
+  gone?: () => Promise<boolean>;
   /** The frames' width at most, and their JPEG quality (the computer's defaults when absent). */
   maxWidth?: number;
   quality?: number;
@@ -163,6 +167,7 @@ export type ClaimViewArgs = {
   readonly tag: string;
   readonly watch: ComputerWatchOf;
   readonly hold: unknown;
+  readonly gone?: () => Promise<boolean>;
 };
 
 /** The runner's opener for computerForClaim's openComputerView dep (runner/main.ts runnerComputers): the view of a run's
@@ -176,6 +181,7 @@ export const claimViewOpener = (at?: RunnerLive) => (args: ClaimViewArgs): Promi
   return openComputerView({
     store, sealKey: args.sealKey, claim, kind: args.kind, input: args.input, tag: args.tag, watch: args.watch,
     hold: viewerHoldOf(PLACES, store, claim.runId, args.hold as RunnersHold),
+    ...(args.gone ? { gone: args.gone } : {}),
     ...(at ? { at } : {}),
   });
 };
@@ -472,6 +478,13 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     }
   };
 
+  /** The watch ended (or never started) for want of its computer: a computer its provider no longer has (deleted under
+   *  the run) is released, and its view closes; one still there (its stream ended) keeps its view. */
+  const goneAsked = (): void => {
+    if (!input.gone || closed) return;
+    void input.gone().then((gone) => (gone ? view.close("released") : undefined), () => undefined);
+  };
+
   const startWatch = async (conn: WsConn): Promise<void> => {
     const current = viewer!;
     const handlers: ScreenWatchHandlers = {
@@ -482,6 +495,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
         if (viewer !== current) return;
         send(conn, { type: "ended", reason: error.code, message: redactWords(error.message) });
         conn.close(CLOSE_CODES.browser_closed, "ended");
+        if (error.code === "gone") goneAsked();
       },
     };
     const started = await watch(handlers, { signal: current.abort.signal, ...(input.maxWidth ? { maxWidth: input.maxWidth } : {}), ...(input.quality ? { quality: input.quality } : {}) }).catch((error: unknown) => ({ ok: false as const, error: { code: "unreachable" as const, message: (error as Error)?.message ?? String(error) } }));
@@ -490,6 +504,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
         const code = started.error.code === "gone" || started.error.code === "unsupported" || started.error.code === "refused" ? started.error.code : "unreachable";
         send(conn, { type: "ended", reason: code, message: redactWords(started.error.message) });
         conn.close(CLOSE_CODES.browser_closed, "ended");
+        if (started.error.code === "gone" || started.error.code === "not_found") goneAsked();
       }
       return;
     }

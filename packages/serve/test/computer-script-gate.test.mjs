@@ -8,7 +8,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { localWorkspace, runTools } from "../dist/workspace/index.js";
 import { stores } from "./runner-support.mjs";
+import { fakeComputer } from "./workspace-fake-computer.mjs";
 
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const root = () => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "computer-script-gate-"));
@@ -37,4 +40,28 @@ test("a script on a desktop that mounts no folder: bash's setting holds both, in
   }
   const asks = await adapterRunGate(runners[0], { runId: "run-2" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "ask" } } } }, root(), "none");
   assert.deepEqual([await asks.script("bash", { command: "id" }), await asks.script("bash_background", { command: "sleep 2" })], ["ask", "ask"]);
+});
+
+test("a desktop whose agent has exec off (no exec group: a bench exec-deny agent) refuses a script's shell.run and processes.start though this gate's script decision allows both: through computer.shell and computer.processes and through the isolate's host function alike, and nothing reaches the computer's exec", async () => {
+  const { runners } = await stores({ runners: 1 });
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "never" } }, root(), "none");
+  assert.deepEqual([await gate.script("bash", { command: "id" }), await gate.script("bash_background", { command: "xterm" })], ["allow", "allow"], "the gate alone would let both run");
+  const folder = root();
+  const computer = fakeComputer(folder);
+  const hello = { protocol: "0.2", version: "0", os: "linux", kind: "desktop", arch: "amd64", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] };
+  const run = await runTools(localWorkspace(folder), { kind: "desktop", computer, hello, exec: false }, { mode: 1, context: ctx });
+  run.computer.guard.install(gate.script);
+  const script = (code) => run.hostTools(run.kindTools).find((tool) => tool.name === "computer_script").call({ code }, { callId: `c-${Math.random()}`, signal: new AbortController().signal });
+  for (const code of ["await computer.shell.run('id');", "await computer.processes.start('xterm');"]) {
+    const refused = await script(code);
+    assert.equal(refused.isError, true, code);
+    assert.match(refused.text, /this agent's computer runs no programs: its exec setting is off/, code);
+  }
+  for (const [op, args] of [["shell.run", { command: "id" }], ["processes.start", { command: "xterm" }]]) {
+    const raw = await script(`try { await __computerCall(${JSON.stringify(op)}, ${JSON.stringify(args)}); return "ran"; } catch (error) { return String(error.message); }`);
+    assert.notEqual(raw.structured, "ran", `${op} by the host function`);
+    assert.match(raw.structured, new RegExp(`can't ${op.replace(".", "\\.")}`), `${op}: the surface refuses an op its card does not offer`);
+  }
+  assert.deepEqual(computer.calls.filter(([method]) => method === "exec.run" || method.startsWith("process.")), [], "nothing ran on the computer");
+  await run.end();
 });

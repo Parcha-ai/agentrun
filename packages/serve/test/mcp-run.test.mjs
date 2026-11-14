@@ -17,6 +17,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, asOwner, follow, retried, runDir, runRecordOf, scratch, serve as serveOf, startInProcessRunner, storeBytes, withEnv } from "./support.mjs";
 import { openSqliteStore, sealMcpCredential } from "../dist/store/index.js";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 /** The fake server's bearer token: no real one. */
@@ -445,7 +446,7 @@ test("pi: a saved header named unopened is a header like any other: the call is 
 /** serve's gateway on loopback: each Responses request answered with the text it carries, and its usage. */
 async function echoGateway(t) {
   const server = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     const text = JSON.parse(body || "{}").input?.[0]?.content?.[0]?.text ?? "";
