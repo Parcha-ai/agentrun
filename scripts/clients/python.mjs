@@ -227,7 +227,9 @@ export function pythonText(ops, map, commandOf) {
     };
     const keywords = [...params.map(kwarg), ...(rawBody ? ['body_type: str | None = None'] : [])];
     const plain = { none: 'None', json, text: 'str', bytes: 'bytes', 'json+text': `${json} | str`, 'json+bytes': `${json} | bytes`, 'text+bytes': 'str | bytes', 'json+text+bytes': `${json} | str | bytes` }[answer];
-    const result = tagged && !download ? `Tagged[${plain}]` : plain;
+    // A 204 beside a body: the transport answers nothing for it, so the type holds that.
+    const orNothing = op.noContent && answer !== 'none' ? `${plain} | None` : plain;
+    const result = tagged && !download ? `Tagged[${orNothing}]` : orNothing;
     // Path parameters and the body by position; every other argument by name, so a call reads as the route it sends.
     const signature = (stream) => ['self', ...positional, '*', ...keywords, ...(stream ? [stream] : []), 'timeout: float | None = None'].join(', ');
     const call = [

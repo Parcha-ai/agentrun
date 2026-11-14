@@ -331,11 +331,11 @@ test("a call to a server that never answers ends at the call's deadline: an erro
   assert.deepEqual(await gateway.call("fake", "add", { a: 2, b: 3 }, { signal: signal(), callId: "c2" }), { content: [{ type: "text", text: "5" }] }, "the next call goes on");
 });
 
-test("a grant whose server is no longer saved, or whose tool a refresh removed, refuses the pin in words naming it", () => {
+test("a grant whose server is not saved, or whose tool the save's listing does not hold, refuses the pin in words naming it", () => {
   const listed = [{ name: "add", inputSchema: schema }];
   const saved = { server: (name) => (name === "fake" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined) };
-  assert.throws(() => mcpPinOf(["mcp:gone/add"], saved), /^Error: The MCP tool mcp:gone\/add cannot be pinned: the MCP server gone is no longer saved\.$/);
-  assert.throws(() => mcpPinOf(["mcp:fake/add", "mcp:fake/sub"], saved), /^Error: The MCP tool mcp:fake\/sub cannot be pinned: sub is no longer one of its tools since the last refresh\.$/);
+  assert.throws(() => mcpPinOf(["mcp:gone/add"], saved), /^Error: The MCP tool mcp:gone\/add cannot be pinned: no MCP server gone is saved\.$/);
+  assert.throws(() => mcpPinOf(["mcp:fake/add", "mcp:fake/sub"], saved), /^Error: The MCP tool mcp:fake\/sub cannot be pinned: the MCP server fake does not list sub\.$/);
   assert.deepEqual(Object.keys(mcpPinOf(["mcp:fake/add", "read"], saved)), ["fake"], "a name that is no MCP tool's is not the pin's");
 });
 

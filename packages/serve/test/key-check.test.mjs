@@ -14,6 +14,7 @@ import { setImmediate as turn } from "node:timers/promises";
 import { calls as monidCalls, KEY as MONID_KEY, release as releaseMonid, stalled as monidStalled } from "./fixtures/faux-monid.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, FAUX, scratch, serve, startServe, storeBytes, withEnv } from "./support.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_TEST_FAUX_MONID_CALLS", "AGENTRUN_TEST_FAUX_MONID_KEY", "AGENTRUN_TEST_FAUX_MONID_DOWN", "AGENTRUN_TEST_FAUX_MONID_STATUS", "AGENTRUN_TEST_FAUX_MONID_STALL"];
@@ -181,12 +182,13 @@ test("a 401 refuses the key whatever its body does: a provider that sends its he
 
 test("a check never follows a redirect: a provider that answers 302 to another origin reads not checked, and nothing, the key's header least of all, reaches where it points", async (t) => {
   const { checkKey } = await import("../dist/key-check.js");
-  // Where the redirect points: it files the headers of each request it gets.
+  // Where the redirect points (a path of its own, so a stranger's bare GET / is not taken for a followed redirect): it
+  // files the headers of each request it gets.
   const landed = [];
-  const elsewhere = createServer((req, res) => (landed.push(req.headers), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
+  const elsewhere = createServer((req, res) => (stranger(req, res) || (landed.push(req.headers), res.writeHead(200, { "content-type": "application/json" }).end("{}"))));
   await new Promise((listening) => elsewhere.listen(0, "127.0.0.1", listening));
   t.after(() => new Promise((closed) => (elsewhere.closeAllConnections(), elsewhere.close(closed))));
-  const redirecting = await onLoopback(t, (res) => res.writeHead(302, { location: `http://127.0.0.1:${elsewhere.address().port}/` }).end());
+  const redirecting = await onLoopback(t, (res) => res.writeHead(302, { location: `http://127.0.0.1:${elsewhere.address().port}/landed` }).end());
   for (const [id, label, header] of [["parallel", "Parallel", "x-api-key"], ["browserbase", "Browserbase", "x-bb-api-key"], ["monid", "Monid", "authorization"]]) {
     const { at, ...outcome } = await checkKey({ id, label }, fake(), {}, redirecting);
     assert.deepEqual(landed.map((headers) => Object.hasOwn(headers, header)), [], `${label}: no request reached the redirect's target (true: one did, with the key's ${header} header)`);
