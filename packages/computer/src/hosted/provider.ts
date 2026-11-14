@@ -1143,6 +1143,8 @@ export class HostedProvider implements ComputerProvider {
 			if (this.host.facts.networkReadBack && machine.network === undefined) {
 				if (Date.now() >= until) return late(`${infos.length} computers were read back, ${machine.id} and any after it were not`);
 				const read = await this.#call(`the read of ${machine.id}`, (ctx) => this.host.get(item.id, ctx), Math.max(1, Math.min(requestMs, until - Date.now())), signal);
+				// A machine the vendor no longer has, between the listing and the read, is left out.
+				if (!read.ok && read.error.code === "not_found") continue;
 				if (!read.ok) return read.error.code === "timeout" ? late(read.error.message) : read;
 				machine = read.value;
 				// The listing may be older than get: the machine is held to every label again, as get reads them.

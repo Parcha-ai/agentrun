@@ -789,6 +789,12 @@ test("a listing as the vendor reads it (no network, more machines than carry the
 	stale.set(a.id, { ...fake.machines.get(a.id).labels });
 	fake.machines.get(a.id).labels.team = "c";
 	assert.deepEqual(made(await provider.list({ team: "a" })), [], "relabelled since the listing: not team a");
+	// A machine the vendor lost between the listing and the read (get is not_found) is left out, not a failed list.
+	stale.delete(a.id);
+	fake.machines.get(a.id).labels.team = "a";
+	const read = fake.host.get;
+	fake.host.get = async (id, ctx) => (id === a.id ? { ok: false, error: { code: "not_found", message: `${id} is gone` } } : read(id, ctx));
+	assert.deepEqual(made(await provider.list({ team: "a" })), [], "gone since the listing: left out");
 });
 
 // --- Archil ---
