@@ -7,7 +7,10 @@
 // their area after it resizes them, not by their bytes. An image is counted at what the routed model's provider bills it
 // as by its size (Anthropic's, OpenAI's or Google's rule; the most of the three for another provider), in place of the
 // bytes its data takes in the body: a screenshot's base64 is a megabyte, and Claude bills it as some 1,200 tokens. Each
-// figure is the largest the provider documents for any current model, so no model is undercounted.
+// figure is the largest the provider documents for any current model, so no model is undercounted. On the Responses API
+// the text a body carries for the model to read as it is counts at its own bytes, not its JSON-escaped ones
+// (`responsesEscapedBytes`), and OpenAI's own count bounds a request sent straight to it (`OPENAI_INPUT_COUNTER`).
+import type { InputCounter } from "./proxy.js";
 
 /** One image a request carries: the bytes its data takes in the body (its base64, or its data URL; 0 for an image the
  *  provider fetches by URL), which are counted at the image's billed size instead, and its pixel size when its data's own
@@ -269,6 +272,86 @@ export function responsesImagesIn(input: unknown): ImageInput[] {
   }
   return out;
 }
+
+/** The items of `type` in `value`, at any depth (a tool's output holds them). */
+function itemsIn(value: unknown, type: string): number {
+  if (Array.isArray(value)) return value.reduce((n: number, item) => n + itemsIn(item, type), 0);
+  if (!plain(value)) return 0;
+  return (value.type === type ? 1 : 0) + Object.values(value).reduce((n: number, item) => n + itemsIn(item, type), 0);
+}
+
+/**
+ * The bytes JSON's escapes add to the text a Responses body carries for the model to read as it is, beyond that text's
+ * own UTF-8 bytes: in `instructions`, and in each `input` item, a message's text, a function call's arguments, a custom
+ * tool call's input, a tool's output (a string, or its text parts) and a reasoning summary's text.
+ *
+ * Why the input bound may count that text at its own bytes: the model reads it as the string itself, never as its JSON
+ * spelling in the body. OpenAI's counting recipe encodes each message's decoded value and adds a fixed few tokens a
+ * message (num_tokens_from_messages,
+ * https://github.com/openai/openai-cookbook/blob/db3144982aa26b87a9bdfb692b4fbedfdf8a14d5/examples/How_to_count_tokens_with_tiktoken.ipynb),
+ * and the harmony format OpenAI published for its models puts a message's content, a call's arguments and a tool's
+ * output between its special tokens as raw text (`<|message|>{"location":"San Francisco"}<|call|>`,
+ * https://github.com/openai/harmony/blob/e0ce87d1c3b9f59dec2e27de4770c769f03ebbd3/docs/format.md#receiving-tool-calls).
+ * A byte-level BPE token covers at least one byte of the text it encodes, so that text is at most its UTF-8 bytes in
+ * tokens; the escape characters JSON adds around it (`\"`, `\\`, `\n`, `\t`, `\u0000`) are bytes the body spends that no
+ * token of it is billed for. Every other byte is counted as sent, as before: the keys, ids and structure of each item
+ * still cover the framing the provider puts around it (a role, a recipient, a few special tokens: fewer than the bytes
+ * of the keys the item spends); the tool definitions (`tools`, and code mode's `additional_tools` item) are counted
+ * whole, since a template renders them into a prompt of its own that may quote their strings again (harmony's
+ * TypeScript namespace); and encrypted reasoning is base64, which JSON never escapes, so it keeps its own bytes.
+ */
+export function responsesEscapedBytes(body: Record<string, unknown>): number {
+  // What the proxy sends is JSON.stringify's spelling, so the escapes are measured by the same spelling.
+  const escaped = (text: unknown) => (typeof text === "string" ? Buffer.byteLength(JSON.stringify(text), "utf8") - 2 - Buffer.byteLength(text, "utf8") : 0);
+  const textOf = (content: unknown) => (typeof content === "string" ? escaped(content) : list(content).reduce((n: number, part) => n + (plain(part) && (part.type === "input_text" || part.type === "output_text" || part.type === "summary_text" || part.type === "reasoning_text") ? escaped(part.text) : 0), 0));
+  let sum = escaped(body.instructions);
+  for (const item of list(body.input)) {
+    if (!plain(item)) continue;
+    if (item.type === "message" || (item.type === undefined && typeof item.role === "string")) sum += textOf(item.content);
+    else if (item.type === "function_call") sum += escaped(item.arguments);
+    else if (item.type === "custom_tool_call") sum += escaped(item.input);
+    else if (item.type === "function_call_output" || item.type === "custom_tool_call_output") sum += textOf(item.output);
+    else if (item.type === "reasoning") sum += textOf(item.summary) + textOf(item.content);
+  }
+  return sum;
+}
+
+/**
+ * The input tokens the provider bills for a Responses `body` beyond its bytes (`providerInputOverhead`, with its
+ * sources), less the escapes in the text it carries (`responsesEscapedBytes`, with the argument for it). The Responses
+ * API documents no prompt of its own that it adds on these routes, and the framing it puts around each input item and
+ * tool definition is a few tokens each, fewer than the bytes of the JSON keys that item already spends in the body. An
+ * image is billed by its area, not its bytes: each counts at the most it can be billed as, in place of the bytes its
+ * data URL takes in the body. A file input (a PDF, billed by its pages) has no stated bound, so a body with one cannot
+ * be measured: this throws, and the request's input is unknown. Codex's and OpenCode's policies both use it.
+ */
+export function responsesInputOverhead(body: Record<string, unknown>): number {
+  if (itemsIn(body.input, "input_file") > 0) throw new Error("a file input's billed size has no stated bound");
+  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: responsesImagesIn(body.input), ...(typeof body.model === "string" ? { model: body.model } : {}) }) - responsesEscapedBytes(body);
+}
+
+/** The fields of a Responses body the input-token count takes (the rest, such as stream, store, include and
+ *  max_output_tokens, change nothing it counts). */
+const RESPONSES_COUNTED_FIELDS = ["model", "input", "instructions", "tools", "tool_choice", "parallel_tool_calls", "reasoning", "text"] as const;
+/** The request headers the count is sent with: the credential's and the account's, nothing else. */
+const OPENAI_COUNT_HEADERS = new Set(["authorization", "openai-organization", "openai-project"]);
+
+/**
+ * OpenAI's own count of a Responses request's input tokens: POST /v1/responses/input_tokens on api.openai.com only, which
+ * "accepts the same input format as the Responses API" and answers `{object: "response.input_tokens", input_tokens}`,
+ * "the exact count the model will receive", formatting tokens, tools and images included ("Counting tokens",
+ * https://developers.openai.com/api/docs/guides/token-counting; the SDK's `responses.inputTokens.count`,
+ * https://github.com/openai/openai-node/blob/543ed94e6451d2eaf43f1a4a16a0fc8c8f42eade/src/resources/responses/input-tokens.ts).
+ * The model proxy asks it before each answer request on that origin (never through a gateway), as Anthropic's count is
+ * asked (ProviderPolicy.countInput): a count that fails, times out, or answers anything else leaves the byte bound.
+ */
+export const OPENAI_INPUT_COUNTER: InputCounter = Object.freeze({
+  origin: "https://api.openai.com",
+  path: "/v1/responses/input_tokens",
+  body: (body: Record<string, unknown>) => Object.fromEntries(RESPONSES_COUNTED_FIELDS.filter((field) => body[field] !== undefined).map((field) => [field, body[field]])),
+  headers: (sent: Record<string, string>) => Object.fromEntries(Object.entries(sent).filter(([name]) => OPENAI_COUNT_HEADERS.has(name.toLowerCase()))),
+  tokensOf: (answer: unknown) => (plain(answer) && answer.object === "response.input_tokens" && typeof answer.input_tokens === "number" ? answer.input_tokens : undefined),
+});
 
 /** The image a body's `data` (base64, or a data URL) carries: the bytes it takes, and its size when its header says it.
  *  Anything else (an http URL, a file id): no bytes, no size. */
