@@ -44,3 +44,50 @@ test("generate-clients --check passes on the committed file and fails on a hand-
   assert.ok(hash(GENERATED));
   assert.equal(hash(GENERATED), hash(join(ROOT, "packages", "agentrun", "lib", "commands.generated.mjs")));
 });
+
+// Two pull requests that change two different operations each regenerate every output. Git merges each output's two
+// sides over their base with no conflict, and the merge is what the generator makes from the document with both changes:
+// no line of any output changes with every change to the document.
+test("two changes to different operations regenerate without a shared changed line: every output merges clean, into the output of both changes", { timeout: 240_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-client-merge-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { servedDocument } = await import(GENERATOR);
+  const served = await servedDocument();
+  const OUTPUTS = { out: "commands.generated.mjs", client: "operations.generated.ts", python: "_generated.py", types: "api.generated.ts" };
+  const FILES = [...Object.values(OUTPUTS), join("skill", "SKILL.md"), join("skill", "references", "commands.md")];
+  const generate = (name, doc) => {
+    const document = join(dir, `${name}.json`);
+    writeFileSync(document, JSON.stringify(doc));
+    const flags = Object.entries(OUTPUTS).flatMap(([flag, file]) => [`--${flag}`, join(dir, name, file)]);
+    const made = spawnSync(process.execPath, [GENERATOR, "--document", document, ...flags, "--skill", join(dir, name, "skill")], { cwd: ROOT, encoding: "utf8", timeout: 60_000 });
+    assert.equal(made.status, 0, made.stderr);
+    return (file) => join(dir, name, file);
+  };
+  // The first and the last operation that takes a JSON body: a new summary, and a new optional field in its body.
+  const ops = Object.values(served.paths).flatMap((item) => Object.values(item)).filter((op) => op?.operationId && op.requestBody?.content?.["application/json"]?.schema);
+  const [x, y] = [ops.at(0).operationId, ops.at(-1).operationId].sort();
+  assert.notEqual(x, y);
+  const change = (doc, id) => {
+    const op = Object.values(doc.paths).flatMap((item) => Object.values(item)).find((o) => o?.operationId === id);
+    op.summary = `${op.summary ?? id}, changed`;
+    let schema = op.requestBody.content["application/json"].schema;
+    while (schema.$ref) schema = schema.$ref.slice(2).split("/").reduce((at, key) => at[key], doc);
+    schema.properties = { ...schema.properties, [`${id}_probe`]: { type: "string" } };
+    return doc;
+  };
+  const base = generate("base", served);
+  const a = generate("a", change(structuredClone(served), x));
+  const b = generate("b", change(structuredClone(served), y));
+  const both = generate("both", change(change(structuredClone(served), x), y));
+  for (const file of FILES) {
+    const merged = spawnSync("git", ["merge-file", "-p", "-L", "a", "-L", "base", "-L", "b", a(file), base(file), b(file)], { encoding: "utf8" });
+    const conflict = merged.stdout.slice(merged.stdout.indexOf("<<<<<<< a"), merged.stdout.indexOf(">>>>>>> b") + 9);
+    assert.equal(merged.status, 0, `${file}: ${merged.status} conflicting hunk(s) merging ${x}'s change with ${y}'s, the first:\n${conflict}`);
+    assert.equal(merged.stdout, readFileSync(both(file), "utf8"), `${file}: the merge is not the output of both changes`);
+  }
+  // Each change reached every output but the skill's SKILL.md, which names a group's commands and not their fields.
+  for (const file of FILES.filter((f) => !f.endsWith("SKILL.md"))) {
+    assert.notEqual(readFileSync(a(file), "utf8"), readFileSync(base(file), "utf8"), `${x}'s change reaches ${file}`);
+    assert.notEqual(readFileSync(b(file), "utf8"), readFileSync(base(file), "utf8"), `${y}'s change reaches ${file}`);
+  }
+});
