@@ -34,7 +34,7 @@ import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signa
 import { HOOK_BODY_MS } from "./push-handler.js";
 import { CATCHUP_WINDOW_S, DUE_KEPT, MAX_ACTIVE_RUNS, SEEN_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
 import { DEFINITION_FIELDS, EXTERNAL_NAME, MODEL_REF } from "./validate.js";
-import { CATEGORIES, COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
+import { CATEGORIES, COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS } from "./templates.js";
 import { MCP_SOURCES } from "./mcp-sources.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
@@ -936,7 +936,6 @@ const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
 /** template-computer/1: a package's computer preference list, and what this server would pick of it. */
 const TEMPLATE_COMPUTER_MARK = { "x-agentrun-serve": "template-computer/1" };
 const NULLABLE_STRING = { type: ["string", "null"] };
-const TEMPLATE_PARAMETER = closedWith({ type: { enum: [...PARAMETER_TYPES, "array"] }, required: { type: "boolean" }, description: { type: "string" } }, { items: { type: "object", additionalProperties: true, description: "A list parameter's items (type: array): the JSON Schema of one scalar (type, and its pattern, enum, format, minimum/maximum, minLength/maxLength), as an input's list. A trigger's target.input value that is its placeholder alone takes the list; in text it fills as its items joined by \", \"." }, pattern: { type: "string", description: "A regular expression (Unicode) a string's value matches." }, enum: { type: "array", minItems: 1, items: { type: ["string", "number", "boolean"] }, description: "The values it may take, a closed set (a form shows a choice); never beside a pattern." }, format: { enum: ["cron", "timezone"], description: "What a string's value is, for a form to ask for it as such: `cron`, a schedule's cron line (a schedule picker); `timezone`, an IANA time zone. The value is the same text either way." }, default: { type: ["string", "number", "boolean", "array"], items: { type: ["string", "number", "boolean"] }, description: "Its value when apply leaves it out (of its type, a list for a list; never on a required one). A parameter that sets a schedule's cron or timezone has one, and the package's own schedule is checked with it." } });
 const TEMPLATE_ORIGIN_MARK = { "x-agentrun-serve": "template-import/1" };
 const TEMPLATE = closed({
   id: { type: "string", description: "Its id here, the one apply and delete take: a bundled package's name (`kyb`), or an imported one's source without its ref (`github:<owner>/<repo>[/<path>]`), so a bundled package and an imported one of the same name are two packages.", ...TEMPLATE_ORIGIN_MARK },
@@ -984,7 +983,7 @@ const TEMPLATE = closed({
     }),
     description: "The MCP servers it uses, by source and toolkit, and the tools of each it may be granted: apply maps each to a saved server whose `source` and `toolkit` match (`servers` picks when several do) and grants there only those the apply's `grants` name, each set to allow; a tool left out of `grants` is not the agent's at all, whatever its approvals, and the owner can grant it later in the agent's tools. One no saved server matches is skipped with an `mcp.<toolkit>` warning saying how to set it up, or, `required`, refuses the apply (409, nothing made).",
   },
-  parameters: { type: "object", additionalProperties: TEMPLATE_PARAMETER, description: "What apply takes in `parameters`, by name, put where the package writes `${parameters.<name>}`." },
+  parameters: { type: "object", description: "What apply takes in `parameters`, put where the package writes `${parameters.<name>}`: the package's `parameters`, compiled as `inputs` are, a closed JSON Schema object (no properties when it names none). Apply fills a blank one with its `default` and checks them as a run's input is checked." },
   input_schema: { type: ["object", "null"], description: "What each run of its agent takes as `input`: the package's `inputs`, compiled to the JSON Schema apply sets as the agent's `input_schema`. Null: the package names none, and a run takes `{content}`." },
   secrets: { type: "array", items: { type: "string" }, description: "The keys this server must have, by variable name (a saved key counts), before apply makes anything." },
   budget: { type: ["object", "null"], additionalProperties: false, required: ["per_run_usd"], properties: { per_run_usd: { type: "number" } }, description: "Each run's limit: per_run_usd, its spend cap (the agent's max_cost_usd), required of a package with triggers." },

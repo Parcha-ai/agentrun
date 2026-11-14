@@ -17,9 +17,9 @@ display_name: "Watch on \${parameters.companies}"
 version: 0.1.0
 description: Watches companies for news.
 parameters:
-  companies: { type: array, items: { type: string, minLength: 1 }, required: true, description: The companies to watch. }
-  limit: { type: integer, default: 5, description: How many items at most. }
-  focus: { type: string, description: "What to look for, if anything." }
+  companies: { type: array, items: { type: string, minLength: 1 }, description: The companies to watch. }
+  limit: { type: integer, required: false, default: 5, description: How many items at most. }
+  focus: { type: string, required: false, description: "What to look for, if anything." }
 inputs:
   companies: { type: array, items: { type: string } }
   limit: { type: integer, minimum: 1, maximum: 10, required: false }
@@ -43,10 +43,11 @@ const OPTIONS = { mcp: [], defaultTools: [], grants: [] };
 
 test("an array parameter reads in the inputs' vocabulary, and a list of a list or a stray key is refused", async (t) => {
   const p = readPackage(join(await watchDir(t), "watch"));
-  assert.deepEqual(packageView(p).parameters.companies, { type: "array", items: { type: "string", minLength: 1 }, required: true, description: "The companies to watch." });
+  assert.deepEqual(packageView(p).parameters.properties.companies, { type: "array", items: { type: "string", minLength: 1 }, description: "The companies to watch." });
+  assert.deepEqual(packageView(p).parameters.required, ["companies"]);
   const root = join(await scratch(t), "bad");
   mkdirSync(root, { recursive: true });
-  writeFileSync(join(root, "agent.md"), WATCH.replace("items: { type: string, minLength: 1 }", "items: { type: array }").replace("limit: { type: integer, default: 5,", "limit: { type: integer, items: { type: string }, default: 5,"));
+  writeFileSync(join(root, "agent.md"), WATCH.replace("items: { type: string, minLength: 1 }", "items: { type: array }").replace("limit: { type: integer,", "limit: { type: integer, items: { type: string },"));
   assert.throws(() => readPackage(root), (error) => error instanceof PackageError && error.problems.some((one) => /parameters\.companies/.test(one)) && error.problems.some((one) => /parameters\.limit/.test(one)), "each is named");
 });
 
@@ -79,7 +80,7 @@ test("an applied watch template's schedule stores a real list its agent's input 
   assert.deepEqual(text.body.error.fields.map((f) => [f.field, f.reason]), [["parameters.companies", "wrong_type"]]);
   const blank = await api("POST", "/templates/watch/apply", { parameters: { companies: ["Stripe", ""] } });
   assert.equal(blank.status, 422, JSON.stringify(blank.body));
-  assert.deepEqual(blank.body.error.fields.map((f) => f.field), ["parameters.companies"]);
+  assert.deepEqual(blank.body.error.fields.map((f) => f.field), ["parameters.companies.1"], "at the item, as a run's input is");
   const over = await api("POST", "/templates/watch/apply", { parameters: { companies: ["Stripe"], limit: 50 } });
   assert.equal(over.status, 422, JSON.stringify(over.body));
   assert.deepEqual(over.body.error.fields.map((f) => f.field), ["triggers.0.target.input.limit"]);
@@ -100,11 +101,11 @@ test("the package check fills a parameter with no default from a sample: at a fi
     writeFileSync(join(root, "agent.md"), `---\nname: sampled\nversion: 0.1.0\ndescription: Sampled.\nparameters:\n  country: ${parameter}\ninputs:\n  country: { type: string, pattern: "^[A-Z]{2}$" }\nbudget: { per_run_usd: 1 }\ntriggers:\n  - name: daily\n    source: { kind: schedule, cron: "0 9 * * *", timezone: UTC }\n    target: { kind: start_run, input: { content: Go., country: "\${parameters.country}" } }\n---\nGo.\n`);
     return root;
   };
-  readPackage(await write("{ type: string, required: true, description: The country. }"));
-  const integer = await write("{ type: integer, required: true, description: The country. }");
+  readPackage(await write("{ type: string, description: The country. }"));
+  const integer = await write("{ type: integer, description: The country. }");
   assert.throws(() => readPackage(integer), (error) => error instanceof PackageError && error.problems.some((one) => /triggers\[0\]\.target\.input\.country/.test(one)));
   // A field the inputs don't name is refused whatever the sample: a typo never waits for the apply.
-  const typo = await write("{ type: string, required: true, description: The country. }");
+  const typo = await write("{ type: string, description: The country. }");
   writeFileSync(join(typo, "agent.md"), readFileSync(join(typo, "agent.md"), "utf8").replace('country: "${parameters.country}"', 'countri: "${parameters.country}"'));
   assert.throws(() => readPackage(typo), (error) => error instanceof PackageError && error.problems.some((one) => /triggers\[0\]\.target\.input.*countri/.test(one)));
 });

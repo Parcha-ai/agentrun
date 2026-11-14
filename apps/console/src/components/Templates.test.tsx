@@ -14,6 +14,19 @@ import { firstPicker, optionsOf, pick, picker, valueOf } from "@/test/picker";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllEnvs(); });
 
+// A package's parameters as GET /v2/templates serves them, from its manifest's: compiled as inputs are, a closed object
+// schema whose `required` lists each one not marked `required: false`.
+type Declared = Record<string, unknown> & { required?: boolean };
+const params = (declared: Record<string, Declared>): TemplateView["parameters"] => ({
+  type: "object", additionalProperties: false,
+  required: Object.entries(declared).filter(([, p]) => p.required !== false).map(([key]) => key),
+  properties: Object.fromEntries(Object.entries(declared).map(([key, { required: _, ...p }]) => [key, p])),
+});
+const REVIEWER_PARAMS: Record<string, Declared> = {
+  repo: { type: "string", description: "The repository, as owner/name", pattern: "^[^/]+/[^/]+$" },
+  max_files: { type: "integer", required: false, description: "How many files it reads at most" },
+};
+
 const REVIEWER: TemplateView = {
   id: "pr-reviewer", bundled: true, source: null, sha: null, publisher: null,
   name: "pr-reviewer", display_name: "PR reviewer", version: "1.0.0", description: "Reviews a pull request and leaves one review.",
@@ -23,13 +36,10 @@ const REVIEWER: TemplateView = {
     { name: "create_review", tool: "mcp:github/create_review", asks: "ask" },
   ] }],
   category: "engineering", tags: ["code-review", "github"],
-  parameters: {
-    repo: { type: "string", required: true, description: "The repository, as owner/name", pattern: "^[^/]+/[^/]+$" },
-    max_files: { type: "integer", required: false, description: "How many files it reads at most" },
-  },
+  parameters: params(REVIEWER_PARAMS),
   input_schema: null, secrets: ["PARALLEL_API_KEY"], budget: { per_run_usd: 0.5 }, learning: false, approvals_default: "ask", triggers: [{ kind: "github", events: ["pull_request"] }], skills: [], evals: [],
 };
-const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: {}, secrets: [], budget: null, triggers: [], category: null, tags: [] };
+const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: params({}), secrets: [], budget: null, triggers: [], category: null, tags: [] };
 
 // A saved MCP server as the list reads it: its name, and the source and toolkit a need is matched on.
 type Saved = { name: string; source: "composio" | "github" | "url"; toolkit: string | null };
@@ -115,7 +125,7 @@ describe("the Templates page", () => {
   });
 
   it("reads a placeholder named like an object's own property (constructor) as … too, and the list still shows", async () => {
-    const ODD: TemplateView = { ...REVIEWER, name: "odd", display_name: "Odd: ${parameters.constructor}", parameters: { constructor: { type: "string" as const, required: true, description: "x" } } };
+    const ODD: TemplateView = { ...REVIEWER, name: "odd", display_name: "Odd: ${parameters.constructor}", parameters: params({ constructor: { type: "string", description: "x" } }) };
     const list = await open(undefined, { templates: [ODD, NOTES] });
     expect([...list.host.querySelectorAll("article h2")].map((h) => h.textContent)).toEqual(["Odd: …", "meeting-notes"]);
   });
@@ -339,10 +349,10 @@ describe("applying a template", () => {
   });
 
   it("asks a list parameter one item a line, as a run's list input, titles it with its items joined, and sends a list", async () => {
-    const WATCH: TemplateView = { ...REVIEWER, name: "watch", display_name: "Watch on ${parameters.companies}", mcp: [], parameters: {
-      companies: { type: "array", items: { type: "string", minLength: 1 }, required: true, description: "The companies to watch." },
+    const WATCH: TemplateView = { ...REVIEWER, name: "watch", display_name: "Watch on ${parameters.companies}", mcp: [], parameters: params({
+      companies: { type: "array", items: { type: "string", minLength: 1 }, description: "The companies to watch." },
       limits: { type: "array", items: { type: "integer" }, required: false, description: "Item caps." },
-    } };
+    }) };
     const t = await open("watch", { templates: [WATCH] });
     const box = t.host.querySelector<HTMLTextAreaElement>('[data-field="parameters.companies"] textarea');
     expect(box).toBeTruthy();
@@ -357,32 +367,34 @@ describe("applying a template", () => {
   });
 
   it("sends a required list left empty as [], for the server to take or refuse; an optional one left empty is not sent", async () => {
-    const WATCH: TemplateView = { ...REVIEWER, name: "watch", display_name: null, mcp: [], parameters: {
-      companies: { type: "array", items: { type: "string" }, required: true, description: "The companies to watch." },
+    const WATCH: TemplateView = { ...REVIEWER, name: "watch", display_name: null, mcp: [], parameters: params({
+      companies: { type: "array", items: { type: "string" }, description: "The companies to watch." },
       limits: { type: "array", items: { type: "integer" }, required: false, description: "Item caps." },
-    } };
+    }) };
     const t = await open("watch", { templates: [WATCH] });
     await t.click(t.button(/^Apply/));
     expect(t.sent[0].body.parameters).toEqual({ companies: [] });
   });
 
-  it("sends a boolean parameter as its checkbox shows it: false untouched, true once ticked", async () => {
-    const FLAGGED: TemplateView = { ...REVIEWER, name: "flagged", parameters: { ...REVIEWER.parameters, strict: { type: "boolean", required: true, description: "Fail on any finding" } } };
+  // An optional one too: a parameter may fill a trigger's input whole, where a boolean left out would be missing.
+  it("sends a boolean parameter as its checkbox shows it, required or not: false untouched, true once ticked", async () => {
+    const FLAGGED: TemplateView = { ...REVIEWER, name: "flagged", parameters: params({ ...REVIEWER_PARAMS, strict: { type: "boolean", description: "Fail on any finding" }, quiet: { type: "boolean", required: false, description: "Post nothing" } }) };
     const t = await open("flagged", { templates: [FLAGGED] });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     const box = t.host.querySelector<HTMLInputElement>('[data-field="parameters.strict"] input[type="checkbox"]')!;
     expect(box.checked).toBe(false);
+    expect(t.host.querySelector<HTMLInputElement>('[data-field="parameters.quiet"] input[type="checkbox"]')!.checked).toBe(false);
     await t.click(t.button(/^Apply/));
-    expect(t.sent[0].body.parameters).toEqual({ repo: "acme/web", strict: false });
+    expect(t.sent[0].body.parameters).toEqual({ repo: "acme/web", strict: false, quiet: false });
     await t.click(box);
     await t.click(t.button(/^Apply/));
-    expect(t.sent[1].body.parameters).toEqual({ repo: "acme/web", strict: true });
+    expect(t.sent[1].body.parameters).toEqual({ repo: "acme/web", strict: true, quiet: false });
   });
 
   it("starts a boolean with a default at that default, sends it as shown, and shows a text parameter's default as its hint", async () => {
-    const DEFAULTED: TemplateView = { ...REVIEWER, name: "defaulted", parameters: { ...REVIEWER.parameters,
+    const DEFAULTED: TemplateView = { ...REVIEWER, name: "defaulted", parameters: params({ ...REVIEWER_PARAMS,
       comment: { type: "boolean", required: false, description: "Comment on the pull request", default: true },
-      cron: { type: "string", required: false, description: "When it runs", default: "0 8 * * 1" } } };
+      cron: { type: "string", required: false, description: "When it runs", default: "0 8 * * 1" } }) };
     const t = await open("defaulted", { templates: [DEFAULTED] });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     expect(t.host.querySelector<HTMLInputElement>('[data-field="parameters.comment"] input[type="checkbox"]')!.checked).toBe(true);
@@ -390,6 +402,33 @@ describe("applying a template", () => {
     await t.click(t.button(/^Apply/));
     // The boolean as shown (its default); the untouched text left out, for the server to apply its own default.
     expect(t.sent[0].body.parameters).toEqual({ repo: "acme/web", comment: true });
+  });
+
+  // The Apply form is the run form (lib/inputForm.ts) over the served schema: a field's title is its label, in its issues
+  // too; a required field is starred; an optional one left blank is not sent, for the server to fill its default.
+  it("draws the served parameters as a run's input form: titled, starred when required, a blank optional one not sent", async () => {
+    const NIGHTLY: TemplateView = { ...REVIEWER, name: "nightly", mcp: [], parameters: params({
+      topic: { type: "string", title: "Topic", description: "what the brief is about" },
+      words: { type: "integer", required: false, minimum: 50, default: 200, description: "how long the brief is" },
+    }) };
+    const refusal = Object.assign(new ClientError(422, "input_invalid", "The template's input is not valid."), { fields: [
+      { field: "parameters.topic", reason: "missing", message: "parameters.topic is required" },
+    ] });
+    let calls = 0;
+    const t = await open("nightly", { templates: [NIGHTLY], apply: async () => { if (calls++ === 0) throw refusal; return { template: "nightly", version: "1.0.0", agent_id: "nightly-1", trigger_ids: [], warnings: [] }; } });
+    const topic = t.host.querySelector('[data-field="parameters.topic"]')!;
+    expect(topic.querySelector("label > span")!.textContent).toBe("Topic *");
+    const words = t.host.querySelector('[data-field="parameters.words"]')!;
+    expect(words.querySelector("label > span")!.textContent).toBe("words");
+    expect([words.querySelector("input")!.placeholder, words.querySelector("input")!.min]).toEqual(["200", "50"]);
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ topic: "" });
+    expect(topic.textContent).toContain("Topic is required.");
+    expect(t.host.textContent).not.toContain("parameters.topic");
+    await t.type(topic.querySelector("input"), "payments");
+    expect(topic.textContent).not.toContain("is required");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[1].body.parameters).toEqual({ topic: "payments" });
   });
 
   it("places a 422's issues at their fields: a parameter under its input, a grant at its tool", async () => {
@@ -512,10 +551,10 @@ describe("applying a template", () => {
   });
 
   it("offers a parameter whose pattern is a plain alternation as a choice of its values, and never prints a raw pattern", async () => {
-    const LEAD: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: {
-      post_to: { type: "string", required: true, description: "where each brief goes", pattern: "^(crm|slack|none)$" },
+    const LEAD: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: params({
+      post_to: { type: "string", description: "where each brief goes", pattern: "^(crm|slack|none)$" },
       slack_channel: { type: "string", required: false, description: "the Slack channel's id", pattern: "^[CG][A-Z0-9]{8,12}$" },
-    } };
+    }) };
     const t = await open("inbound-lead", { templates: [LEAD] });
     const field = t.host.querySelector('[data-field="parameters.post_to"]')!;
     const select = firstPicker(field)!;
@@ -533,47 +572,47 @@ describe("applying a template", () => {
     expect(t.sent[0].body.parameters).toEqual({ post_to: "slack" });
   });
 
-  it("keeps a pattern with a wildcard as a text field, and names an optional choice's default in its empty option", async () => {
-    const T: TemplateView = { ...REVIEWER, name: "mixed", parameters: {
-      host: { type: "string", required: true, description: "a host", pattern: "^(foo.bar|other)$" },
+  it("keeps a pattern with a wildcard as a text field, and starts an optional choice at its default, named as such", async () => {
+    const T: TemplateView = { ...REVIEWER, name: "mixed", parameters: params({
+      host: { type: "string", description: "a host", pattern: "^(foo.bar|other)$" },
       post_to: { type: "string", required: false, description: "where it goes", pattern: "^(crm|slack|none)$", default: "crm" },
-    } };
+    }) };
     const t = await open("mixed", { templates: [T] });
     // "." matches any character for the server: not a fixed list, so it stays a text field.
     expect(firstPicker(t.host.querySelector('[data-field="parameters.host"]')!)).toBeNull();
     expect(t.host.querySelector('[data-field="parameters.host"] input[type="text"]')).toBeTruthy();
-    // Left on its empty option, the server applies the default: the option says so.
-    const empty = (await optionsOf(firstPicker(t.host.querySelector('[data-field="parameters.post_to"]')!)!)).find((o) => o.value === "")!;
-    expect(empty.text).toBe("crm (default)");
+    const post = firstPicker(t.host.querySelector('[data-field="parameters.post_to"]')!)!;
+    expect(valueOf(post)).toBe("crm");
+    expect((await optionsOf(post)).map((o) => o.text)).toEqual(["None chosen", "crm (default)", "slack", "none"]);
   });
 
   // Manuel #76: inbound-lead's post_to listed "none (default)" first and then "none" again. Each value is listed once, the
-  // default marked on its own entry; that entry leaves the parameter out, so the server applies its default.
+  // default marked on its own entry. The form is a run's: it starts at the default and sends what it shows.
   it("lists an optional enum's values once each, its default marked on its own entry, with no duplicate", async () => {
-    const LEAD: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: {
+    const LEAD: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: params({
       post_to: { type: "string", required: false, description: "where each brief goes", enum: ["crm", "slack", "none"], default: "none" },
-    } };
+    }) };
     const t = await open("inbound-lead", { templates: [LEAD] });
     const post = firstPicker(t.host.querySelector('[data-field="parameters.post_to"]')!)!;
     const options = await optionsOf(post);
-    expect(options.map((o) => o.text)).toEqual(["crm", "slack", "none (default)"]);
+    expect(options.map((o) => o.text)).toEqual(["None chosen", "crm", "slack", "none (default)"]);
     expect(options.filter((o) => o.text.startsWith("none"))).toHaveLength(1);
-    expect(options.map((o) => o.value)).toEqual(["crm", "slack", ""]);
-    // It starts on its default.
-    expect(valueOf(post)).toBe("");
-    expect(post.textContent).toContain("none (default)");
-    // Picked away and back: the default's entry sends nothing, for the server to apply.
-    await pick(post, "slack");
+    expect(options.map((o) => o.value)).toEqual(["", "crm", "slack", "none"]);
+    // It starts on its default, and sends it as shown.
+    expect(valueOf(post)).toBe("none");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ post_to: "none" });
+    // Picked to None chosen: nothing is sent, and the server fills the default.
     await pick(post, "");
     await t.click(t.button(/^Apply/));
-    expect(t.sent[0].body.parameters).toEqual({});
+    expect(t.sent[1].body.parameters).toEqual({});
   });
 
   it("offers a parameter's enum as a choice of its values, sends an integer one as a number, and shows not_an_option under it", async () => {
-    const T: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: {
-      post_to: { type: "string", required: true, description: "where each brief goes", enum: ["crm", "slack", "none"] },
+    const T: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: params({
+      post_to: { type: "string", description: "where each brief goes", enum: ["crm", "slack", "none"] },
       depth: { type: "integer", required: false, description: "how many pages to read", enum: [1, 3, 7], default: 3 },
-    } };
+    }) };
     const refusal = Object.assign(new ClientError(422, "input_invalid", "The template's input is not valid."), { fields: [
       { field: "parameters.post_to", reason: "not_an_option", message: "parameters.post_to is one of crm, slack, none: where each brief goes" },
     ] });
@@ -584,9 +623,9 @@ describe("applying a template", () => {
     expect((await optionsOf(post)).map((o) => o.value).filter(Boolean)).toEqual(["crm", "slack", "none"]);
     const depth = firstPicker(t.host.querySelector('[data-field="parameters.depth"]')!)!;
     const depths = await optionsOf(depth);
-    // Its default once, marked on its own entry, which leaves it out for the server to apply.
-    expect(depths.map((o) => o.text)).toEqual(["1", "3 (default)", "7"]);
-    expect(depths.find((o) => o.value === "")!.text).toBe("3 (default)");
+    // Its default once, marked on its own entry, and picked to start.
+    expect(depths.map((o) => o.text)).toEqual(["None chosen", "1", "3 (default)", "7"]);
+    expect(valueOf(depth)).toBe("3");
     await pick(post, "slack");
     await pick(depth, "7");
     await t.click(t.button(/^Apply/));
@@ -599,40 +638,40 @@ describe("applying a template", () => {
   // never the parameter's name: a parameter named cron with no format is a text field.
   it("asks a format: cron parameter in words and a format: timezone one from a zone picker at the browser's zone", async () => {
     vi.stubEnv("TZ", "America/New_York");
-    const MONITOR: TemplateView = { ...REVIEWER, name: "market-monitor", parameters: {
+    const MONITOR: TemplateView = { ...REVIEWER, name: "market-monitor", parameters: params({
       when: { type: "string", required: false, description: "when the digest runs", format: "cron", default: "0 8 * * 1" },
       zone: { type: "string", required: false, description: "the zone it runs in", format: "timezone", default: "UTC" },
       cron: { type: "string", required: false, description: "a word that only looks like a schedule" },
-    } };
+    }) };
     const t = await open("market-monitor", { templates: [MONITOR] });
     const when = t.host.querySelector('[data-field="parameters.when"]')!;
     // The package's default, said as its shape: every week, on Monday, at 08:00. No raw cron line to type.
-    expect(valueOf(picker(when, "Schedule")!)).toBe("weekly");
+    expect(valueOf(picker(when, "when")!)).toBe("weekly");
     expect(valueOf(picker(when, "Day of the week")!)).toBe("1");
     expect(when.querySelector<HTMLInputElement>('input[type="time"]')!.value).toBe("08:00");
     expect(when.querySelector('input[aria-label="Custom schedule"]')).toBeNull();
     const zone = t.host.querySelector('[data-field="parameters.zone"]')!;
-    expect(valueOf(picker(zone, "Time zone")!)).toBe("America/New_York");
-    expect((await optionsOf(picker(zone, "Time zone")!)).map((o) => o.value)).toContain("Europe/Madrid");
+    expect(valueOf(picker(zone, "zone")!)).toBe("America/New_York");
+    expect((await optionsOf(picker(zone, "zone")!)).map((o) => o.value)).toContain("Europe/Madrid");
     // No format: the text field it always was, whatever its name.
     expect(t.host.querySelector('[data-field="parameters.cron"] input[type="text"]')).toBeTruthy();
-    await pick(picker(when, "Schedule")!, "weekdays");
+    await pick(picker(when, "when")!, "weekdays");
     await t.type(when.querySelector('input[type="time"]'), "07:30");
-    await pick(picker(zone, "Time zone")!, "Europe/Madrid");
+    await pick(picker(zone, "zone")!, "Europe/Madrid");
     await t.click(t.button(/^Apply/));
     expect(t.sent[0].body.parameters).toEqual({ when: "30 7 * * 1-5", zone: "Europe/Madrid" });
   });
 
   // Manuel #92: market-monitor's schedule read CRON and TIMEZONE with the format's syntax as help ("as a cron line (minute
-  // hour day-of-month month day-of-week)", "the IANA time zone …"). They read "Schedule" and "Time zone", with only the
-  // description's words after its format (its default, a note on another parameter); the pickers say the format.
-  it("labels a cron parameter Schedule and a timezone one Time zone, without the format's raw help", async () => {
+  // hour day-of-month month day-of-week)", "the IANA time zone …"). They read their titles, "Schedule" and "Time zone", with
+  // only the description's words after its format (its default, a note on another parameter); the pickers say the format.
+  it("labels a parameter by its title (market-monitor's Schedule and Time zone), without the format's raw help", async () => {
     vi.stubEnv("TZ", "America/New_York");
-    const MONITOR: TemplateView = { ...REVIEWER, name: "market-monitor", parameters: {
-      cron: { type: "string", required: false, format: "cron", default: "0 8 * * 1", description: "when the digest runs, as a cron line (minute hour day-of-month month day-of-week): Monday 08:00 unless you set it; set lookback_days to its gap" },
-      timezone: { type: "string", required: false, format: "timezone", default: "UTC", description: "the IANA time zone the cron line is read in (Europe/Madrid, America/New_York): UTC unless you set it" },
+    const MONITOR: TemplateView = { ...REVIEWER, name: "market-monitor", parameters: params({
+      cron: { type: "string", title: "Schedule", required: false, format: "cron", default: "0 8 * * 1", description: "when the digest runs, as a cron line (minute hour day-of-month month day-of-week): Monday 08:00 unless you set it; set lookback_days to its gap" },
+      timezone: { type: "string", title: "Time zone", required: false, format: "timezone", default: "UTC", description: "the IANA time zone the cron line is read in (Europe/Madrid, America/New_York): UTC unless you set it" },
       topics: { type: "string", required: false, description: "optional market keywords (\"payments orchestration, KYB\"): news on them is in scope too" },
-    } };
+    }) };
     const t = await open("market-monitor", { templates: [MONITOR] });
     const cron = t.host.querySelector('[data-field="parameters.cron"]')!;
     const zone = t.host.querySelector('[data-field="parameters.timezone"]')!;
@@ -682,9 +721,9 @@ describe("applying a template", () => {
   // zone picker of every zone (or a schedule picker) would offer values Apply refuses. It starts at none of them.
   it("a format parameter with its own choices offers just those, starting at none, never every zone or the browser's", async () => {
     vi.stubEnv("TZ", "America/New_York");
-    const LIMITED: TemplateView = { ...REVIEWER, name: "market-monitor", parameters: {
-      zone: { type: "string", required: true, description: "the zone it runs in", format: "timezone", enum: ["UTC", "Europe/Madrid"] },
-    } };
+    const LIMITED: TemplateView = { ...REVIEWER, name: "market-monitor", parameters: params({
+      zone: { type: "string", title: "Time zone", description: "the zone it runs in", format: "timezone", enum: ["UTC", "Europe/Madrid"] },
+    }) };
     const t = await open("market-monitor", { templates: [LIMITED] });
     const zone = t.host.querySelector('[data-field="parameters.zone"]')!;
     expect(valueOf(picker(zone, "Time zone")!)).toBe("");

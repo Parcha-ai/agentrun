@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, computerNameFor as nameOf } from "../dist/index.js";
-import { DAEMON, DESKTOP_GROUPS, deferred, fakeHost, LINUX_GROUPS, VERSION } from "./fake-host.mjs";
+import { DAEMON, DESKTOP_GROUPS, deferred, fakeHost, LINUX_GROUPS, NotFound, VERSION } from "./fake-host.mjs";
 
 const { hostedProvider } = await import("../dist/hosted/provider.js");
 const { hostedCommands } = await import("../dist/hosted/scripts.js");
@@ -844,7 +844,7 @@ test("a desktop's window manager starts once the display answers, with DISPLAY; 
 	const m = only(managed.fake);
 	const [server, manager, ...more] = starts(managed.fake, m.id);
 	assert.equal(server.argv[0], "Xvfb", "the X server first");
-	assert.deepEqual(manager, { argv: ["xfwm4", "--compositor=off"], env: { DISPLAY: ":0" } }, "then the window manager, on the display");
+	assert.deepEqual(manager, { argv: ["xfwm4", "--compositor=off"], env: { DISPLAY: ":0", NO_AT_BRIDGE: "1" } }, "then the window manager, on the display, with no accessibility bus");
 	assert.deepEqual(more, []);
 	const order = managed.fake.requests.filter(({ machine }) => machine === m.id).map(({ method, params }) => (method === "process.start" ? params.argv[0] : method));
 	const between = order.slice(order.indexOf("Xvfb") + 1, order.indexOf("xfwm4"));
@@ -1101,4 +1101,35 @@ test("a conformance run of a hosted provider sweeps its label through the host a
 	assert.deepEqual(report.cleanup.sweep, { swept: 0, gone: 0, stillThere: [], leftAlone: 0 });
 	assert.deepEqual(report.cleanup.errors, []);
 	assert.deepEqual(report.cleanup.left, []);
+});
+
+test("a host's get that answers not_found, by a throw or by a result, is a machine that is gone", async () => {
+	for (const style of ["throw", "result"]) {
+		const { provider, fake } = setup({}, { starting: 2 });
+		const made = fake.host.create;
+		fake.host.create = async (...args) => {
+			const result = await made(...args);
+			fake.host.get = async () => {
+				if (style === "throw") throw new NotFound("no such machine");
+				return { ok: false, error: { code: "not_found", vendor: "fakehost", message: "no such machine" } };
+			};
+			return result;
+		};
+		const result = await create(provider);
+		assert.equal(result.error?.code, "gone", style);
+		assert.match(result.error.message, /was gone before it ran/, style);
+	}
+});
+
+test("the adapter reads AbortError and TimeoutError by name; a host with no errorCode answers vendor for the rest", async () => {
+	for (const [name, code] of [["TimeoutError", "timeout"], ["AbortError", "aborted"], ["Whatever", "vendor"]]) {
+		const { provider, fake } = setup();
+		const ref = made(await create(provider));
+		delete fake.host.errorCode;
+		fake.host.get = async () => {
+			throw Object.assign(new Error("boom"), { name });
+		};
+		const result = await provider.connect(ref);
+		assert.equal(result.error?.code, code, name);
+	}
 });
