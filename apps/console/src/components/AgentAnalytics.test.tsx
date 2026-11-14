@@ -97,6 +97,20 @@ describe("AnalyticsTab", () => {
     expect(tab.days("Runs per day").length).toBe(7);
   });
 
+  it("keeps each focused day's readout in the chart caption, outside clipped bar overlays", async () => {
+    const tab = await open();
+    const bars = [...tab.host.querySelectorAll<HTMLElement>('[aria-label="Runs per day"] [role="listitem"]')];
+    await act(async () => bars.at(-1)!.focus());
+    const readout = tab.host.querySelector('[aria-label="Runs per day readout"]');
+    expect(readout?.textContent).toContain("2026-10-15");
+    expect(readout?.textContent).toContain("2 runs");
+    expect(readout?.textContent).toContain("1 completed · 0 failed · 1 other");
+    expect(readout?.closest('[role="listitem"]')).toBeNull();
+    await act(async () => bars[0]!.focus());
+    expect(readout?.textContent).toContain("2026-09-16");
+    expect(readout?.textContent).toContain("0 runs");
+  });
+
   it("latest wins: 30 days, then 7, then 30 again before the 7-day answer comes: the late answer never replaces the 30-day one", async () => {
     let release!: (s: unknown) => void;
     const reads: (string | undefined)[] = [];

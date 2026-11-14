@@ -124,7 +124,7 @@ start new jobs with that setup and show their activity and results in the consol
 reviewed checkout. The published observation-only CLI does not include this remote execution mode. Follow the
 [source connector setup](connector/README.md) for installation and the matching Node bridge.
 
-1. **Choose your coding agent.** In Connected agents, open the **Connect agent** dropdown and
+1. **Choose your coding agent.** In Mission Control or Connected agents, open the **Connect agent** dropdown and
    select your coding agent. The button remembers your choice and provides a prompt that reads the skill from
    this server's build.
 2. **Choose what to bring.** Choose **a live connection**, **past history**, or **both**,

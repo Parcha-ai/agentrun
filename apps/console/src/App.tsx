@@ -1,14 +1,14 @@
-import { ConnectExistingAgents, NativeConnections } from "@/components/NativeConnections";
 import { backendSdkOf } from "@/lib/backendSdk";
-import { Picker } from "@/components/ui";
-import { Code } from "lucide-react";
-import { BuildAgent } from "@/components/BuildAgent";
-import { RunsRequest } from "@/components/RunsRequest";
-import { AgentRequest, type AgentOperation } from "@/components/AgentRequest";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Picker } from "@/components/ui";
+import { Code, RefreshCw } from "lucide-react";
 import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
+import { BuildAgent } from "@/components/BuildAgent";
+import { RunsRequest } from "@/components/RunsRequest";
+import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
+import { AgentRequest, type AgentOperation } from "@/components/AgentRequest";
 import { KeysPage } from "@/components/KeysPage";
 import { ConnectionProvider, Unreached, useLink, useResumed } from "@/components/Connection";
 import { Settings, type SettingsPage } from "@/components/Settings";
@@ -25,7 +25,10 @@ import { SchedulesPage } from "@/components/Schedules";
 import { TemplatesPage } from "@/components/Templates";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
+import { CodingAgentAction } from "@/components/CodingAgentAction";
+import { queryRunsPrompt } from "@/lib/codingAgentPrompts";
 import { NeedsYouStrip } from "@/components/NeedsYouStrip";
+import { ConnectExistingAgents, NativeConnections } from "@/components/NativeConnections";
 import { StartHere } from "@/components/StartHere";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
 import { Playground, type StartResult, startFailure } from "@/components/Playground";
@@ -53,7 +56,7 @@ import { addOf, signInOf } from "@/lib/mcp";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { HandBackOutcome, Run, RunStatus } from "@/lib/v2";
 
-/** How often the console reads the capabilities again while no model is ready (NoModelBanner, ModelKeyCard). */
+/** How often the console reads capabilities again while no model is ready for execution. */
 const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
@@ -328,6 +331,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const [statsRange, setStatsRange] = useState<StatsRange>("30d");
   const [statsAgent, setStatsAgent] = useState<string | null>(null);
   const [missionReading, setMissionReading] = useState(false);
+  // Automatic refresh must not invalidate a valid slow stats/recent-runs answer. User scope changes still replace it.
+  const missionPending = useRef(false);
   // What needs a person on Mission Control: the runs asking a question, the failures of the last day, the runs at work;
   // read with the page, and again every 10 seconds while it is open. `ownRun`: whether anything of the owner's has run.
   const [needs, setNeeds] = useState<Needs | null>(null);
@@ -496,6 +501,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   useEffect(() => {
     if (where.section !== "mission") return;
     let live = true;
+    missionPending.current = true;
     setMissionError(null); setMissionReading(true);
     const from = rangeFrom(statsRange);
     // An agent picked: its own latest runs, as every figure below the picker follows it.
@@ -503,16 +509,25 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
       .then(([s, r]) => {
         if (!live) return;
         setMission(missionFrom(s, r.runs));
-        // Whether anything of the owner's has run, decided by a read of every agent; once it has, it stays so. The range
-        // and agent filters show only once it has, so a filter never brings the start-here panel back.
+        // Whether anything of the owner's has run; once it has, it stays so. This controls only the optional
+        // introduction; imported history and analytics are always visible.
         if (!statsAgent) setOwnRun((held) => held || hasOwnRun(r.runs, s.analytics.by_source));
       })
       .catch((e) => { if (live) setMissionError(problem(e, "Mission Control")); })
-      .finally(() => { if (live) setMissionReading(false); });
-    return () => { live = false; };
+      .finally(() => { if (live) { missionPending.current = false; setMissionReading(false); } });
+    return () => { live = false; missionPending.current = false; };
   }, [v2, where.section, missionTry, statsRange, statsAgent, refreshed]);
   // Back after the server was away: Mission Control reads again what may have moved meanwhile, keeping the page.
   useResumed(() => setMissionTry((n) => n + 1));
+  // Coding-agent actions happen outside this tab. Read their results on return, and keep visible counts current.
+  useEffect(() => {
+    if (where.section !== "mission") return;
+    const refresh = () => { if (!document.hidden && !missionPending.current) setMissionTry((n) => n + 1); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    const timer = setInterval(refresh, 15_000);
+    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); clearInterval(timer); };
+  }, [where.section]);
   useEffect(() => {
     // Left Mission Control: its counts are read afresh on the way back, so the failed runs seen start over.
     if (where.section !== "mission") { failedSeenRef.current = null; return; }
@@ -617,9 +632,9 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   // The server's learning switch: undefined until its capabilities are read, null on a server without learning.
   const learningCap = caps ? ((caps as unknown as { features?: { learning?: "on" | "off" } }).features?.learning ?? null) : undefined;
   editorCaps.learning = learningCap ?? undefined;
-  // While no model is ready, the capabilities are read again every MODEL_CHECK_MS and whenever the page comes back into
-  // view, so the bar (and the first screen's card) goes by itself once a key is set where the server starts, or saved.
-  const modelsReady = caps?.models.ready;
+  // While no managed model is ready, read capabilities again every MODEL_CHECK_MS and when the page returns to view,
+  // so execution setup clears once a model is configured. Native connections use their own authentication.
+  const modelsReady = caps?.models?.ready;
   useEffect(() => {
     if (modelsReady !== false) return;
     // Through the one guarded reader, so an older answer never undoes a newer one. The timer starts no read while its last
@@ -640,7 +655,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const playgroundTarget = where.operation ? where.playgroundAgent : pick ?? where.playgroundAgent;
   return (
     <ScheduleNames.Provider value={scheduleNames}>
-    <Shell active={where.section} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
+    <Shell active={where.section} building={where.section === "agents" && where.agent === null} onBuild={() => go("#/agents/new")} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
       // A sign-out leaves the page as a move does: a page with unsaved changes asks first, and Leave signs out.
       const out = () => void v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
@@ -653,7 +668,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
       {imported && (
         <p className="flex items-center gap-3 border-b bg-card px-5 py-3 font-mono text-body md:px-8" role="status">
           <span className="flex-1">{importLine(imported)}</span>
-          {imported.state !== "running" && <Button type="button" size="xs" onClick={() => setImported(null)}>Dismiss</Button>}
+          {imported.state !== "running" && <Button size="xs" type="button" onClick={() => setImported(null)}>Dismiss</Button>}
         </p>
       )}
     </>}>
@@ -668,10 +683,11 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
               : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
           </Settings>
         : where.section === "mission"
-        // The first screen asks for a model key while the server says no agent that names no model runs here yet.
+        // Observation never requires a provider key or a run started on this server.
         ? <div className="flex h-full flex-col">
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
+                actions={<><Button size="icon" aria-label="Refresh Mission Control" disabled={missionReading} onClick={() => { setMissionTry((n) => n + 1); setNeedsTry((n) => n + 1); }}><RefreshCw className="size-4" aria-hidden /></Button><CodingAgentAction label="Query" prompt={queryRunsPrompt(location.origin, statsAgent ?? undefined)} playgroundHref={queryPlaygroundHref(statsAgent ?? undefined)} /><ConnectExistingAgents variant="primary" /></>}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
                 asking={needs && askingRead ? needs.asking.length : null} failed={needs && failedRead ? failureCount(needs.failed) : null} live={needs && liveRead ? needs.live.length : null}
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} failedAll={mission?.runs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
@@ -713,7 +729,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
           : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
-        : <RunsList runs={runs} agentName={agentName} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
+        : <RunsList runs={runs} agentName={agentName} agentId={where.runsOf} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
             onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); setError(null); } }).catch((e) => setError(problem(e, "more runs"))).finally(() => setMore(false)); } : undefined} />}
     </Shell>
