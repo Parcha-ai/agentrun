@@ -97,7 +97,7 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
   const gw = await gateway(t);
   const { api, standIn, data } = await codexServe(t, gw);
   // How many fit at once is this host's memory (admission.test.mjs).
-  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
+  const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
   assert.deepEqual(offer, { id: "codex", available: true, steer: false, default_model: "agent-model/gpt-test", run_memory_mib: 192 });
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -137,7 +137,7 @@ test("through a gateway, codex sends the model id the revision names whole, as p
 test("behind a gateway, a codex agent naming no model runs on AGENT_MODEL as the gateway's own string, a namespaced one (team/model) included", { timeout: 90_000 }, async (t) => {
   const gw = await gateway(t);
   const { api } = await codexServe(t, gw, "team/model");
-  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
+  const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
   assert.equal(offer.available, true, JSON.stringify(offer));
   assert.equal(offer.default_model, "agent-model/team/model");
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });

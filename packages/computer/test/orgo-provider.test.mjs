@@ -64,7 +64,7 @@ test("Orgo: the provider takes its key and workspace as options, reads no enviro
 	assert.deepEqual(MOUNT, []);
 	assert.deepEqual(
 		CAPABILITIES,
-		[{ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"], image: "linux", options: {}, persistence: { keepsState: true, resume: true } }],
+		[{ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"], image: "linux", options: {}, persistence: { keepsState: true, resume: true } }],
 		"what a built provider declares, known without building one: the Linux desktop alone, by its image, keeping an agent's own computer; Windows and macOS are parked",
 	);
 	assert.equal(orgo.ENV, undefined, "the library names no environment variable");
@@ -97,7 +97,7 @@ test("Orgo: a Linux desktop with computerd as a child of Orgo's own agent, netwo
 		isolation: "vm",
 		os: "linux",
 		daemon: "child",
-		groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"],
+		groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"],
 		maxLifetimeMs: 720 * HOUR,
 		release: ["delete"],
 		mount: [],

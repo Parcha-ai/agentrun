@@ -73,6 +73,10 @@ const about = page.elements.find((node) => node.name === "About phone");
 screenshot pixels, for what the app's window can't reach: a swipe from the screen's top edge opens the notification
 shade (`{ type: "swipe", path: [[540, 5], [540, 1200]] }`), and anything outside the app.
 
+**Only the tools you were given.** An agent's computer setting may leave some out: a code-only agent has its script
+tool and no `computer_observe`, `computer_act` or `computer_screenshot`; a tools-only agent has those and no script
+tool; an agent whose exec is off has no shell of any kind. Use what your tool list shows.
+
 ## How to work: observe, then act by ref, then check
 
 1. **Observe** first. Find your target by its name, role or id, and note its ref. A list row is often an unnamed

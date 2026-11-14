@@ -7,7 +7,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { BROWSER_CHARGED, browserSpend } from "../dist/browser-cost.js";
-import { paidHolds, useSpend } from "../dist/cap.js";
 
 const cap = await import("../../run-adapters/dist/kernel/cap/index.js");
 const T0 = Date.parse("2026-11-09T05:00:00Z");
@@ -54,18 +53,12 @@ test("a take-over past the cap is refused in the cap's words, and holds nothing"
   near((await claimOn(store)).spentUsd(), 0, "nothing held");
 });
 
-test("on the run's one ledger a session's reserve and charges are the ledger's alone: nothing is held in, or added to, this process's spend; its charge is spent, its reserve only held", async (t) => {
-  // This process's own spend, as a run of main's process would have it (cap.ts): it must see none of the runner's.
-  let processSpent = 0;
-  useSpend({ cap: 1, spent: () => processSpent, add: (usd) => void (processSpent += usd ?? 0) });
-  t.after(() => useSpend(undefined));
+test("on the run's one ledger a session's charge is spent and its reserve only held", async () => {
   const store = memorySessionStore();
   const { spend, paid, commit } = await browserOn(store);
   // The session's first charge, as its commit publishes it (watch): booked on the ledger, its reserve held from here.
   commit({ call: "c1", usd: 0.0003, seconds: 9 });
   await spend.ledgerIdle?.();
-  assert.equal(paidHolds(), 0, "no hold in this process's paid holds");
-  assert.equal(processSpent, 0, "nothing added to this process's spend");
   near(paid.spentUsd(), 0.0003, "its charge is spent on the ledger");
   near(paid.heldUsd(), spend.stretch, "its reserve is held there");
   near((await claimOn(store)).spentUsd(), 0.0003, "a later claim counts the charge, and gives the lost claim's reserve back");

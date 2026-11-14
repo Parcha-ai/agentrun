@@ -8,7 +8,7 @@
 // - the store refuses any write under an epoch another claim moved past (Fenced): the backstop for a runner that froze.
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, StorageWrite } from "@earendil-works/pi-durable";
 import { COMMAND_KINDS, endedReason } from "./commands.js";

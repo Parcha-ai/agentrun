@@ -101,7 +101,7 @@ test("kind desktop declares the screen and input besides the shell, as its descr
 	const { PROVIDERS } = await import("../dist/index.js");
 	const desktop = restOnly({ kind: "desktop" }).provider.capabilities();
 	assert.equal(desktop.kind, "desktop");
-	assert.deepEqual(desktop.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys"]);
+	assert.deepEqual(desktop.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"]);
 	assert.equal(desktop.daemon, "child");
 	assert.deepEqual(desktop.mount, ["archil"]);
 	const entry = PROVIDERS.find((one) => one.id === "agent37");

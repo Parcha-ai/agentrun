@@ -20,15 +20,13 @@
 //     has no room for never sent, the run paused on the cap's refusal (ledger.pause). A run handed none runs no
 //     decision node: the check refuses it before any node runs.
 // Each model request is a request on the run's one route, so what the workflow spends is the run's cost, under its cap:
-// on pi the run's models, as a side request (request-start.ts, cap.ts: marked, and costed on the run's timeline as
-// `learned_workflow`); on another harness the session's model proxy, under a side key (port-models.ts): the harness's
+// the session's model proxy, under a side key (port-models.ts): the harness's
 // own policy, provider, key and price, booked on the session's records labelled `learned_workflow`. A call a crash cut
 // off is never run again (`replay: "never"`): it is answered interrupted.
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { TSchema } from "typebox";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { registerLabel, registerOutcome } from "./timeline/index.js";
-import { sideRequests } from "./cap.js";
 import { type GuardRow, LEARNED_NODES, LEARNED_NODES_MAX, type LearnedNode } from "./learned-nodes.js";
 import { guardJevOn, guardLine, rowOf, stepGuard } from "./runner/step-guard.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
@@ -43,6 +41,7 @@ import type { Plane } from "./tool-plane.js";
 import { ARGS_PREVIEW_BYTES, deniedText, type SettingFrom } from "./tool-gate.js";
 import type { DenyFrom } from "./refusal-words.js";
 import { allows, CALL_TOOLS, learnedDraftTools, toolOf, workflowTools } from "./tools.js";
+import { isMcpName } from "./tool-names.js";
 import type { Complete } from "./llm.js";
 import type { SearchOn } from "./web-search.js";
 import type { Workspace } from "./workspace/workspace.js";
@@ -75,9 +74,6 @@ export const learnedAskFits = (asks: readonly string[]): boolean => Buffer.byteL
 export const learnedApprovedTools = (card: Readonly<Record<string, unknown>> | undefined): ReadonlySet<string> =>
   new Set(Array.isArray(card?.mcp_calls) ? card.mcp_calls.filter((name): name is string => typeof name === "string") : []);
 
-/** An MCP tool's catalog name, `mcp:<server>/<tool>`: a call node that names one runs it through the run's own MCP. */
-const MCP_TOOL = /^mcp:[^/]+\/.+$/;
-
 /** The MCP tools a learned workflow's call nodes name (`via: "tool"`, `tool: "mcp:<server>/<tool>"`), each once; none for
  *  one that does not read. The run's gate asks about them before the workflow's call runs (adapter-run-spec.ts). */
 export async function learnedMcpTools(workflow: string): Promise<string[]> {
@@ -89,7 +85,7 @@ export async function learnedMcpTools(workflow: string): Promise<string[]> {
   }
   const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
   try {
-    return workflowTools(workflowNodes(doc, inspectWorkflow(doc as never))).calls.filter((tool) => MCP_TOOL.test(tool));
+    return workflowTools(workflowNodes(doc, inspectWorkflow(doc as never))).calls.filter((tool) => isMcpName(tool));
   } catch {
     return [];
   }
@@ -259,12 +255,10 @@ export function learnedOutput(output: unknown): string {
 }
 
 /** One model request as a pi-ai event stream, sent through `models.completeSimple` as the run's own request, under its
- *  cap: on pi marked and costed on the run's timeline under `learned_workflow` (sideRequests), on another harness booked
- *  by the session's proxy, labelled by the side key it goes under. */
+ *  cap: booked by the session's proxy, labelled by the side key it goes under. */
 async function sideStream(models: RunModels, model: unknown, context: object, options: object | undefined) {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   const stream = createAssistantMessageEventStream();
-  sideRequests.set(context, { label: LEARNED_WORKFLOW_TOOL, extraInputTokens: 0, maxFeeUsd: 0, feeUsd: () => 0 });
   void (async () => {
     try {
       const message = (await models.completeSimple(model as never, context as never, options as never)) as { stopReason?: string; errorMessage?: string };
@@ -312,7 +306,7 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
   return defineTool({
     name: LEARNED_WORKFLOW_TOOL,
     description: learnedWorkflowDescription(run.workflows),
-    // Never run again after a crash (pi-durable's "unsafe"; a HostTool's "never": host-tools.ts REPLAY).
+    // Never run again after a crash (pi-durable's "unsafe"; a HostTool's "never": tool-list.ts `replay`).
     replay: "unsafe",
     parameters: {
       type: "object",
@@ -328,7 +322,7 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       const { name, input } = (args ?? {}) as { name?: unknown; input?: unknown };
       const flow = run.workflows.find((workflow) => workflow.name === name);
       if (!flow) return forModel(`No learned workflow of this agent is named ${JSON.stringify(name)}. Its workflows: ${names.join(", ")}.`, { isError: true });
-      const ledger = ledgerOf(api, context);
+      const ledger = ledgerOf(api.callId);
       // Which of its nodes ran, kept beside the call in the run's journal (LEARNED_NODES), for its timeline row, and every
       // guard check it made (`guards`, uncapped: the run's metrics, B4's replay and refit read each); a trace that can't
       // be kept never fails the call. A call stopped part way keeps the nodes and checks that ended before it stopped,
@@ -412,7 +406,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     // Its call id under the workflow's call: the node, its execution path, its item in a map. Its paid requests are booked
     // under it, as a call of its own.
     const callId = `${ledger?.call ?? LEARNED_WORKFLOW_TOOL}/${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`;
-    if (tool && MCP_TOOL.test(tool)) {
+    if (tool && isMcpName(tool)) {
       // An MCP tool of the run, through the run's own MCP as the loop wrapped it (its flush, its booking on the run's one
       // ledger, a CLI's record, the stop's abort), after the gate's rule read again now, as the harness's own call is.
       const send = (run.mcpTools ?? []).includes(tool) && run.decide ? hostCalls()?.mcp(tool) : undefined;
@@ -442,7 +436,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     if (permission === "deny") throw new Error(deniedText(tool!, undefined, run.denyFrom(tool!)));
     if (permission === "ask") throw new Error(`This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
     // Its paid requests booked under the tool's call, as a call of its own: the node, its execution path, its item in a map.
-    const booked = ledger ? { ledger: { call: callId, record: ledger.record } } : {};
+    const booked = ledger ? { ledger: { ...ledger, call: callId } } : {};
     return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...(run.search ? { search: run.search } : {}), ...booked });
   };
   // Its step guards (runner/step-guard.ts): a guard's Jev is a decision of the call, on the run's decisions (its judge,

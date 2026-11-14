@@ -439,7 +439,8 @@ test("the composer builds every provider through the one provider builder, and g
   const store = memoryStore();
   const { computerDeps } = computerDepsFrom({ env: {}, store, sealKey: undefined, kinds: KINDS, load: async () => { throw new Error("not built here"); } });
   assert.equal(computerDeps.kinds, KINDS);
-  for (const id of ["docker", "daytona", "modal", "e2b", "orgo", "phone-harness", "browserbase", "kernel"]) assert.equal(typeof computerDeps.providers[id], "function", `${id} is built by the provider builder`);
+  assert.deepEqual(Object.keys(computerDeps.providers), PROVIDERS.map(({ id }) => id), "one builder per registry provider");
+  for (const { id } of PROVIDERS) assert.equal(typeof computerDeps.providers[id], "function", `${id} is built by the provider builder`);
   assert.equal(typeof computerDeps.check?.readBackOf, "function", "the mount check the claim's attach runs");
   assert.equal(typeof computerDeps.spec, "function");
 });

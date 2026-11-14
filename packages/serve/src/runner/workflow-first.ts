@@ -134,7 +134,9 @@ export interface FirstChoice {
 
 /** A workflow the money rule stopped, with the learned revision the run was laid from: what the run's WORKFLOW_FIRST
  *  entry keeps (outcome needs_revision). */
-export type WorkflowRevise = Revise & { readonly revision: string | null };
+/** `outputSchema`: the agent's, as WorkflowFirst carries it, so a claim that recovers this run's handback (the rule
+ *  stopping the workflow only after it ran) rebuilds it in the words it was first given. */
+export type WorkflowRevise = Revise & { readonly revision: string | null; readonly outputSchema?: unknown };
 
 /** A workflow's input schema, resolved as the DSL resolves a schema reference, or undefined when it names none. */
 function inputSchemaOf(text: string, resolve: (doc: { schemas: Record<string, Record<string, unknown>> }, schema: Record<string, unknown>) => Record<string, unknown>): Record<string, unknown> | undefined {
@@ -193,7 +195,7 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
     return serve;
   }
   if (!overLine(line)) return serve;
-  const revise = { workflow: chosen.name, digest, served_usd: line.served.mean_usd!, by_hand_usd: line.by_hand.mean_usd, runs: line.served.runs, revision: launch.learning.seed };
+  const revise = { workflow: chosen.name, digest, served_usd: line.served.mean_usd!, by_hand_usd: line.by_hand.mean_usd, runs: line.served.runs, revision: launch.learning.seed, ...(outputSchema !== undefined ? { outputSchema } : {}) };
   const unknown = line.unknown_runs ? ` (${line.unknown_runs} run${line.unknown_runs === 1 ? "" : "s"} of unknown cost left out)` : "";
   log?.(`workflow-first: ${chosen.name} cost $${revise.served_usd} a run over its last ${revise.runs} served runs, at or over $${revise.by_hand_usd} by hand, both all-in${unknown}; it does not run first until a new revision of it, and this run asks for one`);
   return { revise };

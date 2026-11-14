@@ -1422,7 +1422,7 @@
           "title": "screen"
         },
         "features": {
-          "description": "What this computer's groups can and cannot do here, by the names in FEATURES. A feature that is off says why, in\nwords a person can act on. A feature not listed is not offered. A caller ignores a name it does not know.",
+          "description": "What this computer's groups can and cannot do here, by the names in FEATURES. A feature that is off says why, in\nwords a person can act on. A feature not listed is not offered, but for screen.capture, which a computer of the\nscreen group lists when it can be off. A caller ignores a name it does not know.",
           "$ref": "#/definitions/Features",
           "title": "features"
         },

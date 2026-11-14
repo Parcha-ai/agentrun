@@ -12,7 +12,7 @@ import { bookedIn, PARALLEL_EXTRACT_USD } from "../dist/paid-calls.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { TOOLS } from "../dist/tools.js";
-import { follow, scratch, serve, withEnv } from "./support.mjs";
+import { follow, paidBookings, scratch, serve, toolLedger, withEnv } from "./support.mjs";
 
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
@@ -32,9 +32,9 @@ function parallel(mode = "") {
 
 const withoutText = ({ text, ...rest }) => rest;
 
-/** Runs a test as a tool call does: inside a call its requests to Parallel are booked under, as paid-calls.ts requires
- *  (a request outside one is refused unsent). */
-const inCall = (fn) => (t) => bookedIn({ call: "test-call", record: async () => undefined }, () => fn(t));
+/** Runs a test as a tool call does: inside a call whose run's ledger (an uncapped RunTools) its requests to Parallel book
+ *  on, as paid-calls.ts requires (a request with none is refused unsent). */
+const inCall = (fn) => async (t) => bookedIn({ call: "test-call", paid: await toolLedger() }, () => fn(t));
 
 test("with a key, a public page is read through Parallel's extract: via parallel, sent once as Parallel documents it, nothing dialled", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
@@ -470,10 +470,10 @@ test("a page's links are read in one pass: a page of unclosed `](` takes no long
 }));
 
 
-/** A call's ledger that keeps what it books: [kind, call, the held or charged USD]. */
-function recording(call) {
-  const rows = [];
-  return { rows, ledger: { call, record: async (kind, data) => void rows.push([kind, data.call, data.heldUsd ?? data.usd]) } };
+/** Call `call`'s ledger on the run's one ledger `paid` (capped, so a hold is held at its price), and what it booked
+ *  there: [kind, call, the held or charged USD]. */
+function recording(paid, call) {
+  return { ledger: { call, paid }, rows: async () => paidBookings(await paid.records()).filter((row) => row.call === call).map((row) => [row.kind, row.call, row.heldUsd ?? row.usd]) };
 }
 const BOOKED = (call) => [["agentrun.tool_started", call, PARALLEL_EXTRACT_USD], ["agentrun.tool_cost", call, PARALLEL_EXTRACT_USD]];
 
@@ -482,12 +482,13 @@ test("a page through Parallel is one booked extract a run, at $0.001: three part
   const { asked, send } = paging(() => ({ text: long }));
   const extract = parallelExtract(CANARY, send);
   const held = new Map();
-  const calls = ["c1", "c2", "c3"].map(recording);
+  const paid = await toolLedger(1);
+  const calls = ["c1", "c2", "c3"].map((call) => recording(paid, call));
   const parts = [];
   for (const [n, { ledger }] of calls.entries()) parts.push(await bookedIn(ledger, () => webFetch(PUBLIC, { ...network(), parallel: extract, pages: held, offset: n * 20_000 })));
   assert.deepEqual(parts.map((page) => page.via), ["parallel", "parallel", "parallel"]);
   assert.deepEqual(asked, [1_000_001], "one extract");
-  assert.deepEqual(calls.map((call) => call.rows), [BOOKED("c1"), [], []], "booked once, at Parallel's price for one URL, in the first call");
+  assert.deepEqual(await Promise.all(calls.map((call) => call.rows())), [BOOKED("c1"), [], []], "booked once, at Parallel's price for one URL, in the first call");
 });
 
 test("two calls for one page at once: one extract, booked once, in the call whose read the other shares; and so when the first call stops before the page is read", async () => {
@@ -502,7 +503,8 @@ test("two calls for one page at once: one extract, booked once, in the call whos
     };
     const extract = parallelExtract(CANARY, send);
     const held = new Map();
-    const [first, second] = ["c1", "c2"].map(recording);
+    const paid = await toolLedger(1);
+    const [first, second] = ["c1", "c2"].map((call) => recording(paid, call));
     const soon = new AbortController();
     const [a, b] = await Promise.all([
       bookedIn(first.ledger, () => webFetch(PUBLIC, { ...network(), parallel: extract, pages: held, ...(stopFirst ? { signal: soon.signal } : {}) })),
@@ -514,7 +516,7 @@ test("two calls for one page at once: one extract, booked once, in the call whos
     const what = stopFirst ? "the first call stopped" : "both waited";
     assert.deepEqual([a.ok, b.ok], [!stopFirst, true], what);
     assert.deepEqual(asked, [1_000_001], `${what}: one extract`);
-    assert.deepEqual([first.rows, second.rows], [BOOKED("c1"), []], `${what}: booked once, in the call that started the read`);
+    assert.deepEqual([await first.rows(), await second.rows()], [BOOKED("c1"), []], `${what}: booked once, in the call that started the read`);
   }
 });
 
@@ -579,3 +581,36 @@ test("only reads that have ended count toward the run's pages: one page done whi
   await Promise.all(slow);
   assert.equal(asked.length, urls.length, "one extract a page");
 }));
+
+// Moved from cap-models.test.mjs, onto the run's one ledger: the extract's hold is the run's RunTools step, and the model
+// request beside it is judged by the same run's rule (kernel runCap.before).
+test("under a cap, a page's one Parallel extract is held on the run's ledger as any Parallel request: a model request that fits only without its $0.001 is refused while the read is under way, and the page's later parts hold and ask nothing", async (t) => {
+  // A model at $1 a million input tokens: 1,000 tokens in is $0.001, which a $0.0015 cap holds beside nothing else.
+  const paid = await toolLedger(0.0015, { model: { id: "m", api: "anthropic", price: { input: 1, output: 0 }, outputCeiling: 100 } });
+  let arrived, release;
+  const reached = new Promise((resolve) => (arrived = resolve));
+  const held = new Promise((resolve) => (release = resolve));
+  t.after(() => release());
+  const asked = [];
+  const text = `${"capped ".repeat(6_000)}end`;
+  const send = async (_url, init) => {
+    asked.push(JSON.parse(init.body).advanced_settings.full_content.max_chars_per_result);
+    arrived();
+    await held;
+    return new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Capped", full_content: text }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const ledger = { call: "c1", paid };
+  const extract = parallelExtract(CANARY, send);
+  const pages = new Map();
+  const net = network();
+  const first = bookedIn(ledger, () => webFetch(PUBLIC, { ...net, parallel: extract, pages: pages }));
+  await reached;
+  const beside = await paid.modelRequest(1_000);
+  assert.ok(beside && "refuse" in beside, `refused while the extract is under way: ${JSON.stringify(beside)}`);
+  assert.ok(Math.abs(paid.heldUsd() - PARALLEL_EXTRACT_USD) < 1e-12, `the extract held at its fee: ${paid.heldUsd()}`);
+  release();
+  assert.equal((await first).via, "parallel");
+  const later = await bookedIn(ledger, () => webFetch(PUBLIC, { ...net, parallel: extract, pages: pages, offset: 20_000 }));
+  assert.deepEqual([later.via, later.offset, asked], ["parallel", 20_000, [1_000_001]], "a later part from what the run read: no request");
+  assert.deepEqual(paidBookings(await paid.records()).map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", PARALLEL_EXTRACT_USD], ["agentrun.tool_cost", PARALLEL_EXTRACT_USD]], "held and charged once");
+});
