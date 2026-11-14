@@ -160,7 +160,9 @@ async function gateParkedExec(gate, repair = 'note') {
   // The tie the request handler wrote as the call came, with the call's tool (Codex's name for it) and arguments.
   const ties = [{ callId: 'exec-1', exec: EXEC, since, tool: 'mcp_fake__add', args: { a: 2, b: 3 } }];
   const next = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
-  const journal = { append() {}, flush: async () => {}, read: async (stream) => (stream === NESTED_STREAM ? ties.map((data) => ({ data })) : []) };
+  // What the session's journal keeps beside the ties (appended, as the harness's does), read back by a later recovery.
+  const kept = [];
+  const journal = { append: (stream, data) => kept.push([stream, data]), flush: async () => {}, read: async (stream) => [...(stream === NESTED_STREAM ? ties : []), ...kept.filter(([s]) => s === stream).map(([, data]) => data)].map((data) => ({ data })) };
   const asked = [];
   const bridge = toolBridge(next, [kernelTool(host)], { live: false, gate: async (call) => (asked.push(call.callId), gate(call)) });
   const injected = [];
@@ -176,7 +178,16 @@ async function gateParkedExec(gate, repair = 'note') {
     const wait = { callId: 'call_wait_1', name: 'wait', type: 'function_call', arguments: JSON.stringify({ cell_id: '1' }) };
     const items = [{ type: 'function_call_output', call_id: wait.callId, output: '' }];
     const recovered = mode.recoverItems(items, [wait], [], since, true);
-    return { ran, asked, recovered, items, state: () => next.state() };
+    // The process stops before the wait's output reaches Codex: the next drive recovers the same turn again.
+    const again = async () => {
+      const later = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
+      const laterBridge = toolBridge(later, [kernelTool(host)], { live: false, gate: async (call) => (asked.push(call.callId), gate(call)) });
+      const laterMode = codeMode({ ctx: later, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge: laterBridge, log() {}, lines: [], rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
+      const laterItems = [{ type: 'function_call_output', call_id: wait.callId, output: '' }];
+      await laterMode.recoverItems(laterItems, [wait], [], since, true);
+      return laterItems;
+    };
+    return { ran, asked, recovered, items, again, state: () => next.state() };
   }
   const items = [{ type: 'custom_tool_call_output', call_id: EXEC, output: '' }];
   const recovered = mode.recoverItems(items, [{ callId: EXEC, name: 'exec', type: 'custom_tool_call' }], [], since, true);
@@ -214,6 +225,15 @@ test("a nested call the gate parked after its exec yielded and the person denied
   await recovered;
   assert.deepEqual(ran, []);
   assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then: "Denied: not now\."\. It did not run\./);
+});
+
+test("a yielded exec's parked call that ran on an earlier recovery cut before its wait was answered is told again from its record, never run again", async () => {
+  const { ran, asked, recovered, again } = await gateParkedExec(async () => 'allow', 'yielded');
+  await recovered;
+  const items = await again();
+  assert.deepEqual(ran, [{ a: 2, b: 3 }], 'it ran once, on the first recovery');
+  assert.deepEqual(asked, ['exec-1'], 'not asked again');
+  assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then ran: "5"\. Its effect is done; it was not run again\./);
 });
 
 test("a turn ended without a recovery note never runs a nested call its cut-off exec left parked: the repair only tells the exec's output", async () => {
