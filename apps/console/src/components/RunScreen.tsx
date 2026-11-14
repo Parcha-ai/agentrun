@@ -1,10 +1,29 @@
 import { Globe, Maximize2, Minimize2, Monitor, Smartphone, Terminal } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ClientError } from "@/lib/client";
 import { METERED } from "@/lib/computers";
 import { httpHref } from "@/lib/safeUrl";
+import { cn } from "@/lib/utils";
 import type { ComputerHold, RunComputer, RunMachine } from "@/lib/v2";
+
+/** The run page's tab body keeps this much padding below its content (its py-8). */
+const PANE_BELOW = 32;
+/** A phone's frame is never shorter than this (a short page scrolls instead) nor taller than 70% of the window. */
+const PHONE_MIN = 360;
+const PHONE_MOST = 0.7;
+
+/** The height a page's scroll pane shows below `el`, as if scrolled to its top: the pane's visible height less where
+ *  `el` starts in it and the padding under it. Without a pane, the window's. */
+export function roomBelow(el: HTMLElement, pane: HTMLElement | null): number {
+  const top = el.getBoundingClientRect().top;
+  if (!pane) return window.innerHeight - (top + window.scrollY) - PANE_BELOW;
+  const at = top - pane.getBoundingClientRect().top + pane.scrollTop;
+  return pane.clientHeight - at - PANE_BELOW;
+}
+
+/** A phone frame's height for `room` px of page below it, in a window `viewport` px tall. */
+export const phoneHeight = (room: number, viewport: number): number => Math.round(Math.max(PHONE_MIN, Math.min(room, viewport * PHONE_MOST)));
 
 /** The run's screen as the page shows it: the server's answer (never `off`: that is no screen), or signed out (a read
  *  refused 401), said in the tab. */
@@ -151,6 +170,21 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   const wasFull = useRef(false);
   const showing = Boolean(live && src);
   useEffect(() => { if (!showing) setFull(false); }, [showing]);
+  // A phone is tall: its frame takes the height the run page shows below it (phoneHeight), so the whole phone is on
+  // screen at once, its bottom (the keyboard, the nav bar) never under the composer.
+  const [phoneH, setPhoneH] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    const el = frame.current;
+    if (kind !== "phone" || full || !showing || !el) return;
+    const pane = el.closest<HTMLElement>("[data-scroll-pane]");
+    const fit = () => setPhoneH(phoneHeight(roomBelow(el, pane), window.innerHeight));
+    fit();
+    // The pane's size, and its content's: a card that comes or goes above the frame moves it, the pane staying as it was.
+    const watch = typeof ResizeObserver === "function" && pane ? new ResizeObserver(fit) : undefined;
+    if (pane) for (const box of [pane, ...pane.children]) watch?.observe(box);
+    window.addEventListener("resize", fit);
+    return () => { watch?.disconnect(); window.removeEventListener("resize", fit); };
+  }, [kind, full, showing, said, metered, session.current.n]);
   // While it fills the window it is a modal dialog: focus moves into its bar, Tab stays among its bar and the viewer, and
   // closing puts the focus back on the button that opened it (when the screen is still up).
   useEffect(() => {
@@ -224,7 +258,7 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
             )}
             {/* A refused Take over or Hand back, said where the person is looking. */}
             {full && said && <p className="border-b px-4 py-2 text-small text-warning-text" role="alert">{said}</p>}
-            <iframe ref={frame} key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={full ? "block min-h-0 w-full flex-1 bg-background" : kind === "phone" ? "mx-auto block aspect-[9/19] h-[70vh] max-w-full bg-background" : "block aspect-[16/10] w-full bg-background"} />
+            <iframe ref={frame} key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={full ? "block min-h-0 w-full flex-1 bg-background" : kind === "phone" ? cn("mx-auto block aspect-[9/19] max-w-full bg-background", phoneH === undefined && "h-[70vh]") : "block aspect-[16/10] w-full bg-background"} style={!full && kind === "phone" && phoneH !== undefined ? { height: `${phoneH}px` } : undefined} />
           </div>
         : <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">{words(kind, screen, machine, opens, followUp)}</p>}
     </section>
