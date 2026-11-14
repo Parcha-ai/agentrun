@@ -13,7 +13,7 @@ import { type HarnessRead, messageOffer, readHarness } from "@/lib/liveRun";
 import { costOf, type RunGraph, usd } from "@/lib/runGraph";
 import { latest } from "@/lib/viewing";
 import { useLearningSettle } from "@/lib/useLearningSettle";
-import type { ApiError, Run, RunFile, TimelineRow } from "@/lib/v2";
+import type { ApiError, GradeBody, Run, RunFile, TimelineRow } from "@/lib/v2";
 
 // An ended workflow run's record carries its final cost (its graph's totals agree); while it goes, only the graph has it.
 const FINAL_RUN = new Set(["completed", "failed", "cancelled"]);
@@ -110,6 +110,13 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     await refresh(); setFollows((n) => n + 1);
     return answer;
   };
+  // A grade's answer goes back to the Grade control (what round it opened, or the refusal it throws); the run and its
+  // timeline are read again after it, since a round opens the run again.
+  const grade = async (body: GradeBody) => {
+    const answer = await v2.gradeRun(runId, body);
+    await refresh(); setFollows((n) => n + 1);
+    return answer;
+  };
   const message = async (text: string) => {
     let ok = true;
     // The same text sent again after a lost or refused answer goes under the same key: the server never takes it twice.
@@ -154,7 +161,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
         outputSchema={harness.state === "read" ? harness.outputSchema : undefined}
-        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} readLearning={() => v2.runLearning(runId)} readComputer={() => v2.runComputer(runId)} onTakeOver={() => computerMove(() => v2.takeOverComputer(runId))} onHandBack={(outcome) => computerMove(() => v2.handBackComputer(runId, outcome))} readComputers={() => v2.computers()} onMessage={message} onApprove={approve}
+        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} readLearning={() => v2.runLearning(runId)} readComputer={() => v2.runComputer(runId)} onTakeOver={() => computerMove(() => v2.takeOverComputer(runId))} onHandBack={(outcome) => computerMove(() => v2.handBackComputer(runId, outcome))} readComputers={() => v2.computers()} onMessage={message} onApprove={approve} onGrade={grade}
         actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), onRaiseCap: raiseCap, busy }} />
     </div>
   );
