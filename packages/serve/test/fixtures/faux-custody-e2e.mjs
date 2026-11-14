@@ -14,7 +14,7 @@ export default function reply(context, faux) {
     try { environ = readFileSync("/proc/self/environ", "latin1"); } catch {}
     writeFileSync(process.env.CUSTODY_E2E_ENV_REPORT, JSON.stringify({ env: process.env, environ }));
   }
-  if (results.length === 0) return faux.message(faux.toolCall("monid_inspect", { provider: "faux", endpoint: "/person/enrich" }), { stopReason: "toolUse" });
+  if (results.length === 0) return faux.message(faux.toolCall("monid__faux__person__enrich", { body: { name: "Ada" } }), { stopReason: "toolUse" });
   if (results.length === 1) return faux.message(faux.toolCall("mcp__docs__add", { a: 2, b: 3 }), { stopReason: "toolUse" });
   const saw = results.map(textOf).join(" | ");
   if (results.length === 2) return faux.message(faux.toolCall("write", { path: "notes.txt", content: `What I saw: ${saw}` }), { stopReason: "toolUse" });

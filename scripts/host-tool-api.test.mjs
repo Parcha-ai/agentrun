@@ -14,7 +14,7 @@ const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const HOST_TOOLS = join(repo, "packages/serve/src/host-tools.ts");
 /** pi's tools a host tool runs (CodingTools, pi-durable dist/tools), and serve's own host tools. */
 const PI_TOOLS = join(repo, "node_modules/@earendil-works/pi-durable/dist/tools");
-const SERVE_TOOLS = ["background.ts", "learned-workflow.ts", "monid.ts", "paid-calls.ts", "web-fetch.ts", "web-search.ts"].map((file) => join(repo, "packages/serve/src", file));
+const SERVE_TOOLS = ["background.ts", "learned-workflow.ts", "monid.ts", "runner/monid-run.ts", "paid-calls.ts", "web-fetch.ts", "web-search.ts"].map((file) => join(repo, "packages/serve/src", file));
 /** The browser's durable tools (pi-browser), which the runner binds as a host tool. */
 const BROWSER_TOOLS = [join(repo, "packages/pi-browser/src/durable.ts")];
 /** Members a tool reads that a host tool's hand-built api does not give, each with why. */

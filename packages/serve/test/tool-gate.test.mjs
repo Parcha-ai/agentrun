@@ -5,8 +5,8 @@
 // refusal; a second, conflicting answer is 409. Only the owner's password session answers: a token is 403. An ask
 // answered after the server restarted while the run was parked still runs the call once. A deny refuses a call at once;
 // a workflow's call node calling a denied tool refuses its run. capabilities.tools and GET /v2/agents/{id}.tools show
-// each tool's permission, its default and where it came from; a catalog tool (monid.*, mcp:<server>/<tool>) asks by
-// default; an MCP server's wildcard key mcp:<server>/* is kept and applied. The reflect carve-out holds under ask,
+// each tool's permission, its default and where it came from; a catalog tool (monid:<provider>/<endpoint>,
+// mcp:<server>/<tool>) asks by default; an MCP server's wildcard key mcp:<server>/* is kept and applied. The reflect carve-out holds under ask,
 // never under deny. No socket leaves this machine and no real key is used.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
@@ -38,7 +38,9 @@ const HARNESSES = ["pi", "claude-agent", "codex"];
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const json = { "content-type": "application/json" };
 const quoted = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const isCatalog = (name) => name.startsWith("monid.") || name.startsWith("mcp:");
+const isCatalog = (name) => name.startsWith("monid:") || name.startsWith("mcp:");
+/** A monid endpoint, as a grant and a setting name it. */
+const ENRICH = "monid:faux/person/enrich";
 
 /** A scratch file the fake network appends each URL it dials to, for test `t`, and a reader of it. */
 async function network(t) {
@@ -143,9 +145,9 @@ test("the gate's settings: ask offered where the kernel runs the approved call i
   // would ask them twice.
   for (const name of hostToolNames().filter((name) => name !== "ask_person")) assert.ok(permissionsOf(name).includes("ask"), `${name}: the kernel runs its approved call`);
   for (const name of ["browser", "ask_person", "pdf_pages", "llm"]) assert.deepEqual([...permissionsOf(name)], ["allow", "deny"], name);
-  for (const name of ["monid.run", "mcp:srv/echo"]) assert.deepEqual([...permissionsOf(name)], ["allow", "ask", "deny"], name);
+  for (const name of [ENRICH, "mcp:srv/echo"]) assert.deepEqual([...permissionsOf(name)], ["allow", "ask", "deny"], name);
   for (const name of Object.keys(TOOLS).filter((name) => !isCatalog(name))) assert.ok(!isCatalog(name), name);
-  assert.deepEqual(settingsIssues({ web_fetch: { provider: "parallel", permission: "ask" }, read: { permission: "deny" }, "monid.run": { permission: "allow" }, "mcp:srv/*": { permission: "deny" }, "mcp:srv/echo": { permission: "allow" } }), []);
+  assert.deepEqual(settingsIssues({ web_fetch: { provider: "parallel", permission: "ask" }, read: { permission: "deny" }, [ENRICH]: { permission: "allow" }, "monid:faux/*": { permission: "deny" }, "mcp:srv/*": { permission: "deny" }, "mcp:srv/echo": { permission: "allow" } }), []);
   assert.deepEqual(settingsIssues({ web_fetch: { permission: "maybe" }, browser: { permission: "ask" }, read: { provider: "native" }, nothing: { permission: "deny" }, "mcp:srv": { permission: "deny" } }).map((i) => [i.field, i.reason]), [
     ["web_fetch.permission", "not_an_option"], ["browser.permission", "not_an_option"], ["read.provider", "not_allowed"], ["nothing", "not_allowed"], ["mcp:srv", "not_allowed"],
   ]);
@@ -187,11 +189,13 @@ test("capabilities and an agent's tools show each tool's permission, its default
   for (const name of Object.keys(TOOLS)) {
     assert.deepEqual([view[name].permission, view[name].default_permission, view[name].permissions], [isCatalog(name) ? "ask" : "allow", isCatalog(name) ? "ask" : "allow", [...permissionsOf(name)]], name);
   }
-  const put = await api("PUT", "/settings/tools", { "monid.run": { permission: "allow" }, web_fetch: { permission: "ask" }, read: { permission: "deny" }, "mcp:srv/*": { permission: "deny" }, "mcp:srv/echo": { permission: "allow" } });
+  const put = await api("PUT", "/settings/tools", { [ENRICH]: { permission: "allow" }, "monid:faux/*": { permission: "deny" }, web_fetch: { permission: "ask" }, read: { permission: "deny" }, "mcp:srv/*": { permission: "deny" }, "mcp:srv/echo": { permission: "allow" } });
   assert.equal(put.status, 200, JSON.stringify(put.body));
-  assert.deepEqual([put.body["monid.run"], put.body.web_fetch.permission, put.body.read, put.body["mcp:srv/*"], put.body["mcp:srv/echo"]], [{ permission: "allow" }, "ask", { permission: "deny" }, { permission: "deny" }, { permission: "allow" }]);
+  assert.deepEqual([put.body[ENRICH], put.body["monid:faux/*"], put.body.web_fetch.permission, put.body.read, put.body["mcp:srv/*"], put.body["mcp:srv/echo"]], [{ permission: "allow" }, { permission: "deny" }, "ask", { permission: "deny" }, { permission: "deny" }, { permission: "allow" }]);
+  // A monid endpoint, as an MCP server's tool, is granted by name and is no capability row of its own.
   const after = byName((await api("GET", "/capabilities")).body.tools);
-  assert.deepEqual([after["monid.run"].permission, after["monid.run"].default_permission, after.web_fetch.permission, after.web_fetch.default_permission, after.read.permission], ["allow", "ask", "ask", "allow", "deny"]);
+  assert.equal(after[ENRICH], undefined);
+  assert.deepEqual([after.web_fetch.permission, after.web_fetch.default_permission, after.read.permission], ["ask", "allow", "deny"]);
   // Every harness the server has (main's opencode among them), each as before: pi's native, claude-agent's keyless Exa.
   assert.deepEqual(after.web_search.resolves, { ...after.web_search.resolves, pi: "native", "claude-agent": "exa-keyless" }, "web_search allowed: as before");
 
@@ -479,8 +483,8 @@ test("a deny refuses the call at once and the run goes on, on every harness; a w
   assert.match(asked.body.error.message, new RegExp(quoted(ASKS("web_fetch"))));
   // A catalog tool (default ask) is no call node's tool here: a workflow whose call node names one is refused at its save,
   // so none runs unapproved.
-  const monidFlow = { ...flow, name: "monid-call", root: { node: "chain", steps: [{ node: "call", label: "Run monid", via: "tool", tool: "monid.run", args: { endpoint: "/x" }, out: "Page", as: "home", deadline_s: 60 }] } };
-  const catalog = await retried(api)("POST", "/agents",{ definition: { id: "monid-call", name: "monid-call", workflow: monidFlow, tools: ["monid.run"] } });
+  const monidFlow = { ...flow, name: "monid-call", root: { node: "chain", steps: [{ node: "call", label: "Run monid", via: "tool", tool: ENRICH, args: { body: { name: "Ada" } }, out: "Page", as: "home", deadline_s: 60 }] } };
+  const catalog = await retried(api)("POST", "/agents",{ definition: { id: "monid-call", name: "monid-call", workflow: monidFlow, tools: [ENRICH] } });
   assert.deepEqual([catalog.status, catalog.body.error?.code, catalog.body.error?.fields?.[0]?.reason], [422, "input_invalid", "not_an_option"], JSON.stringify(catalog.body));
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "allow" } })).status, 200);
   const allowed = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
@@ -600,8 +604,8 @@ const NO_APPROVER = (tool) => `Permission denied: ${tool} needs the owner's appr
 
 test("with accounts off no one can approve: an ask, a catalog tool's default or a setting, is refused with words saying so, never parked, and capabilities say an ask needs the password sign-in; with accounts on it parks", { timeout: 120_000 }, async (t) => {
   // The run's gate, told no one can approve here: a catalog tool at its default ask is refused, never asked.
-  assert.deepEqual(await runnerGate({ approvers: false }).decide("monid.run", { path: "/person/enrich" }), { deny: NO_APPROVER("monid.run") }, "a catalog tool's default ask");
-  assert.equal(await runnerGate({ approvers: true }).decide("monid.run", { path: "/person/enrich" }), "ask", "where someone can approve, it asks");
+  assert.deepEqual(await runnerGate({ approvers: false }).decide(ENRICH, { body: { name: "Ada" } }), { deny: NO_APPROVER(ENRICH) }, "a catalog tool's default ask");
+  assert.equal(await runnerGate({ approvers: true }).decide(ENRICH, { body: { name: "Ada" } }), "ask", "where someone can approve, it asks");
 
   // A server with accounts off: web_fetch set to ask is refused on every harness, and the run goes on.
   const dialled = await network(t);
@@ -609,7 +613,7 @@ test("with accounts off no one can approve: an ask, a catalog tool's default or 
   assert.equal((await off.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
   const caps = (await off.api("GET", "/capabilities")).body;
   const doc = (await off.api("GET", "/openapi.json")).body;
-  assert.deepEqual(Object.fromEntries(caps.tools.filter((tool) => ["web_fetch", "monid.run", "browser"].includes(tool.name)).map((tool) => [tool.name, tool.ask_needs])), { web_fetch: "password", "monid.run": "password", browser: undefined }, "every tool ask is offered for, none other");
+  assert.deepEqual(Object.fromEntries(caps.tools.filter((tool) => ["web_fetch", "bash", "browser"].includes(tool.name)).map((tool) => [tool.name, tool.ask_needs])), { web_fetch: "password", bash: "password", browser: undefined }, "every tool ask is offered for, none other");
   assert.deepEqual(schemaProblems(doc, doc.components.schemas.Capabilities, caps), [], "capabilities as documented");
   await refusedOn(off.api, ["pi"]);
   assert.deepEqual(await dialled(), [], "nothing ran");
@@ -662,27 +666,25 @@ test("a parked call whose arguments hold a held key shows no 8 characters of it 
   assert.equal(holdsPiece(JSON.stringify(summary.pending), HELD), false, "the run's summary in the list");
 });
 
-test("on pi, monid's calls at their default ask park by their settings keys, and each approved one runs once through the kernel", { timeout: 120_000 }, async (t) => {
+test("on pi, a monid endpoint's call at its default ask parks by its settings key, and the approved call runs once through the kernel", { timeout: 120_000 }, async (t) => {
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const server = await serve(t, { accounts: true, openSetup: true, fauxMonid: fixture("faux-monid.mjs") });
   const answer = await owner(server);
   const { api } = server;
-  assert.equal((await retried(api)("POST", "/agents",agent("enrich-asks", { tools: ["monid.discover", "monid.inspect", "monid.run"] }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("enrich-asks", { tools: [ENRICH] }))).status, 201);
   const started = await api("POST", "/agents/enrich-asks/runs", { input: { content: "Enrich with monid: Ada at Example." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
-  for (const tool of ["monid.discover", "monid.inspect", "monid.run"]) {
-    await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
-    const { pending } = (await api("GET", `/runs/${runId}`)).body;
-    assert.equal(pending?.tool, tool, "parked by its settings key");
-    assert.equal((await answer(runId, pending.id, { decision: "allow" })).status, 204);
-    await pastApproval(api, runId, pending.id);
-  }
+  await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
+  const { pending } = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(pending?.tool, ENRICH, "parked by its settings key");
+  assert.equal((await answer(runId, pending.id, { decision: "allow" })).status, 204);
+  await pastApproval(api, runId, pending.id);
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.match((await api("GET", `/runs/${runId}`)).body.result.final_answer, /"full_name":"Ada"/);
   const seen = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  assert.deepEqual(seen.map((call) => call.path), ["/v1/discover", "/v1/inspect", "/v1/run"], "each approved call once");
+  assert.deepEqual(seen.map((call) => call.path), ["/v1/inspect", "/v1/run"], "the save's one read of its listing, then the approved call once");
 });
 
 /** A held key for the cut cases, its words none a row says itself. */
@@ -979,8 +981,8 @@ test("a stop or a cancel cuts an approved call in flight: the tool sees the abor
   const { api } = server;
   const calls = async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
   for (const [end, said] of [["stop", "stopped"], ["cancel", "cancelled"]]) {
-    // monid.run asks by default: the call parks; monid's /slow then runs until its caller stops it.
-    assert.equal((await retried(api)("POST", "/agents",agent(`slow-${end}`, { tools: ["monid.run"] }))).status, 201);
+    // A monid endpoint asks by default: the call parks; monid's /slow then runs until its caller stops it.
+    assert.equal((await retried(api)("POST", "/agents",agent(`slow-${end}`, { tools: ["monid:faux/slow"] }))).status, 201);
     const runId = (await retried(api)("POST", `/agents/slow-${end}/runs`, { input: { content: "Run monid's /slow." } })).body.run_id;
     const { view } = await parked(api, runId);
     const before = (await calls()).length;

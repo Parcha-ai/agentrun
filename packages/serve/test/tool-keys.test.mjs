@@ -13,6 +13,7 @@ import { readingOf } from "../dist/server.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
+import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { agent, call, client, cookieOf, FAUX, follow, harnessData, printed, scratch, serve, startServe, storeBytes, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
@@ -63,18 +64,18 @@ async function meetsDocument(api, view) {
 test("a tool key saved then removed in Settings: the refusal names Settings → Tool keys first, then the variable, for Monid and for Parallel; the structured fields are unchanged", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_SERVE_CODEX_STANDIN: await codexStandIn(t) }, [...KEYS, ...HARNESS_VARS]);
   withMemory(t, ROOMY_MIB);
-  const { api } = await serve(t);
-  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: made() } })).status, 204);
-  assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
-  const monid = "monid.discover needs a Monid key: save one in Settings → Tool keys (or set MONID_API_KEY where the server starts)";
-  const saved = await api("POST", "/agents", agent("finder", { tools: ["monid.discover"] }));
+  const { api } = await serve(t, { fauxMonid: FAUX_MONID });
+  // A monid endpoint is pinned at the save on the saved key (faux monid's); the key removed after, its run is refused.
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: MONID_KEY } })).status, 204);
+  const saved = await api("POST", "/agents", agent("finder", { tools: ["monid:faux/person/enrich"] }));
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
-  assert.deepEqual(saved.body.warnings.map((w) => w.message), [`The tool ${monid}.`], "the save's warning");
+  assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
+  const monid = "monid:faux/person/enrich needs a Monid key: save one in Settings → Tool keys (or set MONID_API_KEY where the server starts)";
   const run = await api("POST", "/agents/finder/runs", { input: { content: "hi" } });
   assert.equal(run.status, 409, JSON.stringify(run.body));
   assert.ok(run.body.error.message.includes(monid), run.body.error.message);
   assert.ok(!/environment does not set/.test(run.body.error.message), run.body.error.message);
-  assert.deepEqual(run.body.error.details.missing, { "monid.discover": ["MONID_API_KEY"] }, "the structured fields are unchanged");
+  assert.deepEqual(run.body.error.details.missing, { "monid:faux/person/enrich": ["MONID_API_KEY"] }, "the structured fields are unchanged");
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "parallel" } })).status, 200);
   assert.equal((await api("POST", "/agents", agent("searcher", { tools: ["web_search"] }))).status, 201);
   const search = await api("POST", "/agents/searcher/runs", { input: { content: "hi" } });
@@ -97,14 +98,14 @@ test("a key saved by name is kept sealed over the store: GET says which fields a
   // A model key's harnesses: pi and its provider's own, every one installed and with room here, none saved yet.
   assert.deepEqual(listed.body.keys.map((k) => [k.id, k.kind, k.unlocks, k.harnesses]), [
     ["parallel", "tool", ["web_fetch", "web_search", "decisions.parallel"], ["pi", "claude-agent", "codex", "opencode"]],
-    ["monid", "tool", ["monid.discover", "monid.inspect", "monid.run"], ["pi", "claude-agent", "codex", "opencode"]],
+    ["monid", "tool", ["monid:*"], ["pi", "claude-agent", "codex", "opencode"]],
     ["browserbase", "tool", ["browser"], ["pi"]],
     ["kernel", "tool", ["browser"], ["pi"]],
     ["typesafe", "tool", ["decisions.jev"], []],
     ["anthropic", "model", [], ["pi", "claude-agent"]],
     ["openai", "model", [], ["pi", "codex", "opencode"]],
     ["openrouter", "model", [], ["pi", "claude-agent", "codex", "opencode"]],
-  ], "only what this server binds: web_fetch and web_search on every harness; the monid tools on every harness, as capabilities run them");
+  ], "only what this server binds: web_fetch and web_search on every harness; monid's endpoints, granted by name, on every harness, as host tools run");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
   // Sealed at rest: no answer and no store byte (the DB and its WAL/shm) holds a saved value or the seal key in the clear.
@@ -128,11 +129,14 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
       const view = (await api("GET", "/settings/tool-keys")).body;
       const tools = new Map(caps.tools.map((tool) => [tool.name, tool]));
       const bound = new Set([...tools.keys(), ...caps.workflows.decisions.providers.map((provider) => `decisions.${provider.id}`)]);
+      // A catalog source's tools (monid:*, each endpoint granted by name) are no capability rows: the source is shown as
+      // it is, and runs where the host tools do (web_fetch's harnesses).
+      const source = (name) => name.endsWith(":*");
       assert.deepEqual(view.keys.map((key) => key.id), TOOL_KEYS.map((row) => row.id), "every key lists, one that unlocks nothing too");
       for (const [i, key] of view.keys.entries()) {
-        assert.deepEqual(key.unlocks, TOOL_KEYS[i].unlocks.filter((name) => bound.has(name)), `${key.id}: its names capabilities bind, and only those`);
+        assert.deepEqual(key.unlocks, TOOL_KEYS[i].unlocks.filter((name) => bound.has(name) || source(name)), `${key.id}: its names capabilities bind, and only those`);
         // A model key unlocks no tool: its harnesses are pi and its provider's own, each installed and with room here.
-        const run = new Set(TOOL_KEYS[i].kind === "tool" ? key.unlocks.flatMap((name) => tools.get(name)?.harnesses ?? []) : OWN[key.id]);
+        const run = new Set(TOOL_KEYS[i].kind === "tool" ? key.unlocks.flatMap((name) => (source(name) ? tools.get("web_fetch").harnesses : tools.get(name)?.harnesses ?? [])) : OWN[key.id]);
         assert.deepEqual([...key.harnesses].sort(), [...run].sort(), `${key.id}: the harnesses of the tools it unlocks, or that run on its model key`);
       }
       for (const tool of caps.tools) if (tool.key !== undefined) assert.ok(view.keys.find((key) => key.id === tool.key)?.unlocks.includes(tool.name), `${tool.name} names the key ${tool.key}, which unlocks it`);
@@ -381,7 +385,7 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
   const reason = "it needs a Browserbase key: save one in Settings → Tool keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts), or a Kernel key: save one in Settings → Tool keys (or set KERNEL_API_KEY where the server starts)";
   const unset = { name: "browser", nodes: false, calls: false, available: false, reason, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: STORED_NO_BROWSER_KEY, key: "browserbase" };
   assert.deepEqual(await browser(), unset);
-  assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.key).map((tool) => [tool.name, tool.key]), [["web_fetch", "parallel"], ["web_search", "parallel"], ["browser", "browserbase"], ["monid.discover", "monid"], ["monid.inspect", "monid"], ["monid.run", "monid"]], "only a tool a key unlocks names one");
+  assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.key).map((tool) => [tool.name, tool.key]), [["web_fetch", "parallel"], ["web_search", "parallel"], ["browser", "browserbase"]], "only a tool a key unlocks names one");
   assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
   assert.deepEqual(await refused(), [409, "agent_not_runnable", {}]);
 
@@ -590,10 +594,12 @@ test("a tool-settings PUT and a tool key's PUT and DELETE answer without probing
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: made() } })).status, 204);
   const picked = await tool("web_search");
   assert.deepEqual([picked.available, picked.missing, [...new Set(Object.values(picked.resolves))], await parallel()], [true, undefined, ["parallel"], true], "the key saved: Parallel resolves, and its decisions run, at once");
+  // monid's endpoints are granted by name, no capability row: its key's own row shows the change.
+  const monid = async () => fieldsOf((await api("GET", "/settings/tool-keys")).body).MONID_API_KEY;
   assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: made() } })).status, 204);
-  assert.deepEqual([(await tool("monid.run")).available, (await tool("monid.run")).missing], [true, undefined], "monid at once");
+  assert.deepEqual(await monid(), STORED, "monid at once");
   assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
-  assert.deepEqual([(await tool("monid.run")).available, (await tool("monid.run")).missing], [false, ["MONID_API_KEY"]], "deleted: missing at once");
+  assert.deepEqual(await monid(), UNSET, "deleted: missing at once");
   assert.equal((await api("DELETE", "/settings/tool-keys/parallel")).status, 204);
   assert.deepEqual([(await tool("web_search")).missing, await parallel()], [["PARALLEL_API_KEY"], false], "deleted: Parallel missing at once");
   assert.deepEqual((await caps()).harnesses, harnesses, "no tool key and no tool setting changes what the harnesses offer");

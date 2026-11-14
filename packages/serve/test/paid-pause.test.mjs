@@ -18,12 +18,14 @@ const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathnam
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SETTLED = ["input_required", "completed", "failed", "cancelled"];
 const ENDED = ["completed", "failed", "cancelled"];
-const ASK = "Run monid's /person/enrich, called again after a raise.";
-/** monid's run allowed: a catalog tool asks by default (tool-gate.ts), and these runs are about the cap, not the gate. */
-const ALLOWED = { "monid.run": { permission: "allow" } };
-/** The paid call's refusal, held at monid's run allowance ($1, no inspect quoted it), of a $0.5 cap: what the run has
- *  spent (the faux harness's requests cost $0.001 each, pi's faux model nothing) and any model request still held. */
-const WORDS = /^Not sent: this run has spent (?:\$[\d.]+|less than a cent)( and holds \$[\d.]+ for steps still running,)? of its \$0\.50 cap, and the next step, monid_run, could cost up to \$1 \(no price was quoted for it in this run, so it counts at the \$1 allowance; monid_inspect gives its price\)\. Raise the cap to at least \$1\.\d\d to continue\.$/;
+/** A faux endpoint priced by usage: held at the usage ceiling ($1) until monid says what it charged ($0.004). */
+const SEARCH = "monid:faux/person/search";
+const ASK = "Run monid's /person/search, called again after a raise.";
+/** The endpoint allowed: a catalog tool asks by default (tool-gate.ts), and these runs are about the cap, not the gate. */
+const ALLOWED = { [SEARCH]: { permission: "allow" } };
+/** The paid call's refusal, held at the usage ceiling ($1), of a $0.5 cap: what the run has spent (the faux harness's
+ *  requests cost $0.001 each, pi's faux model nothing) and any model request still held. */
+const WORDS = /^Not sent: this run has spent (?:\$[\d.]+|less than a cent)( and holds \$[\d.]+ for steps still running,)? of its \$0\.50 cap, and the next step, monid:faux\/person\/search, could cost up to \$1 \(monid prices monid:faux\/person\/search by usage, so a call counts at the \$1 ceiling until monid says what it charged\)\. Raise the cap to at least \$1\.\d\d to continue\.$/;
 const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
 const monidRuns = async (log) => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((call) => call.path === "/v1/run").length;
 
@@ -33,7 +35,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
     const { api } = await serve(t, { fauxMonid: FAUX_MONID, ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS) }) });
     const id = `paid-${harness}`;
-    assert.equal((await api("POST", "/agents", agent(id, { ...(harness === "pi" ? {} : { harness, instructions: ASK }), tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
+    assert.equal((await api("POST", "/agents", agent(id, { ...(harness === "pi" ? {} : { harness, instructions: ASK }), tools: [SEARCH], tool_settings: ALLOWED }))).status, 201);
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: ASK }, max_cost_usd: 0.5 });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     const runId = started.body.run_id;
@@ -48,7 +50,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.equal(await monidRuns(log), 0, "the refused call was not sent");
     const result = rows.find((row) => row.kind === "tool_result");
     const now = (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((row) => row.kind === "tool_result");
-    assert.match(result?.text ?? result?.summary ?? "", /Not sent: .*the next step, monid_run, could cost up to \$1/, `${JSON.stringify(result)} pages ${JSON.stringify(pages.map((page) => [page.status, page.state, page.has_more, page.rows.map((row) => [row.kind, row.id, (row.text ?? row.summary ?? "").slice(0, 40)])]))} read again ${JSON.stringify(now.map((row) => [row.id, (row.text ?? "").slice(0, 60)]))}`);
+    assert.match(result?.text ?? result?.summary ?? "", /Not sent: .*the next step, monid:faux\/person\/search, could cost up to \$1/, `${JSON.stringify(result)} pages ${JSON.stringify(pages.map((page) => [page.status, page.state, page.has_more, page.rows.map((row) => [row.kind, row.id, (row.text ?? row.summary ?? "").slice(0, 40)])]))} read again ${JSON.stringify(now.map((row) => [row.id, (row.text ?? "").slice(0, 60)]))}`);
     // The suggested raise sends the run on, and the model calls again: that call is made, once.
     const raised = await api("PATCH", `/runs/${runId}`, { max_cost_usd: paused.pending.suggested_cap_usd });
     assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
@@ -63,8 +65,8 @@ test("pi: after a raise, a model that calls twice makes two calls: none is added
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api } = await serve(t, { fauxMonid: FAUX_MONID });
-  assert.equal((await api("POST", "/agents", agent("paid-twice", { tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
-  const started = await api("POST", "/agents/paid-twice/runs", { input: { content: "Run monid's /person/enrich, called again after a raise, twice." }, max_cost_usd: 0.5 });
+  assert.equal((await api("POST", "/agents", agent("paid-twice", { tools: [SEARCH], tool_settings: ALLOWED }))).status, 201);
+  const started = await api("POST", "/agents/paid-twice/runs", { input: { content: "Run monid's /person/search, called again after a raise, twice." }, max_cost_usd: 0.5 });
   const runId = started.body.run_id;
   await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
   assert.equal((await view(api, runId)).pending?.kind, "budget", "paused at its refused call");
@@ -86,7 +88,7 @@ async function gateway(t, answers) {
     outputs.push((JSON.parse(body).input ?? []).filter((item) => item.type === "function_call_output").map((item) => item.output));
     const answer = answers[Math.min(seen.length, answers.length - 1)];
     seen.push(req.url);
-    const item = answer === "call" ? { type: "function_call", call_id: `call_${seen.length}`, name: "hands_monid_run", arguments: JSON.stringify({ provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }) } : undefined;
+    const item = answer === "call" ? { type: "function_call", call_id: `call_${seen.length}`, name: "hands_monid__faux__person__search", arguments: JSON.stringify({ body: { name: "Ada" } }) } : undefined;
     const events = [...(item ? [{ type: "response.output_item.done", item }] : [{ type: "response.output_text.delta", delta: answer }]), { type: "response.completed", response: { usage: { input_tokens: 100, output_tokens: 10 } } }];
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.end(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`);
@@ -108,8 +110,10 @@ test("opencode: a paid call the cap refuses for room pauses the run, its result 
     AGENTRUN_OPENCODE_STANDIN: "1", AGENTRUN_SERVE_OPENCODE_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn] }),
     AGENT_MODEL_BASE_URL: gw.origin, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, AGENT_MODEL_PRICE: "1,2,0.5",
   });
-  const { api } = await serve(t, { faux: undefined });
-  assert.equal((await api("POST", "/agents", agent("paid-opencode", { harness: "opencode", tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
+  const { api, store } = await serve(t, { faux: undefined });
+  // Saved through the store with its pin as a save would make it: a save here would read monid's listing on the network.
+  const pin = { [SEARCH]: { description: "Search for a person.", input: { type: "object", properties: { body: { type: "object" } } }, usd: 1, usage: true } };
+  await store.agents.create({ id: "paid-opencode", name: "paid-opencode" }, { id: "rev-paid-opencode", kind: "agentic", body: { instructions: "Answer briefly.", skills: {}, tools: [SEARCH], harness: "opencode", toolSettings: ALLOWED, monidPin: pin } });
   const started = await api("POST", "/agents/paid-opencode/runs", { input: { content: ASK }, max_cost_usd: 0.5 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
@@ -137,7 +141,7 @@ test.skip("claude-agent: a turn stopped between a refused paid call and its next
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api } = await serve(t, { fauxMonid: FAUX_MONID, harnessTable: fauxTable(FAUX_HARNESS) });
   const held = `Run monid's /person/enrich, then hold the turn (signal ${signal}).`;
-  assert.equal((await api("POST", "/agents", agent("paid-stopped", { harness: "claude-agent", instructions: held, tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("paid-stopped", { harness: "claude-agent", instructions: held, tools: ["monid:faux/person/enrich"], tool_settings: { "monid:faux/person/enrich": { permission: "allow" } } }))).status, 201);
   const started = await api("POST", "/agents/paid-stopped/runs", { input: { content: "go" }, max_cost_usd: 0.5 });
   const runId = started.body.run_id;
   // The call refused (its result says so), the turn holding with no request open: the person stops it there.

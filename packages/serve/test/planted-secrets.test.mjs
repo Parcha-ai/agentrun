@@ -126,17 +126,17 @@ test("a stored tool key a vendor echoes back in an error shows in none of the ru
   withEnv(t, {
     AGENTRUN_TEST_FAUX_MONID_CALLS: calls,
     AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"),
-    // Faux monid takes the planted key at its save's check (a discover), and answers a run's inspect with an error that
-    // holds the key it was sent.
+    // Faux monid takes the planted key at the save's pin (an inspect), and answers a run's call of the endpoint with an
+    // error that holds the key it was sent.
     AGENTRUN_TEST_FAUX_MONID_ACCEPTS: createHash("sha256").update(planted).digest("hex"),
-    AGENTRUN_TEST_FAUX_MONID_ECHO: "/v1/inspect",
+    AGENTRUN_TEST_FAUX_MONID_ECHO: "/v1/run",
   }, ["MONID_API_KEY", "AGENTRUN_TEST_FAUX_MONID_ACCEPTS", "AGENTRUN_TEST_FAUX_MONID_ECHO", "AGENTRUN_TEST_FAUX_MONID_CALLS"]);
   const logs = [];
   const { api, data } = await serve(t, { faux: FAUX_CALL, fauxMonid: FAUX_MONID, log: (line) => logs.push(line) });
   // Saved from the owner's session (support.mjs sends a secret write so).
   assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: planted } })).status, 204);
-  assert.equal((await api("POST", "/agents", agent("echoed", { tools: ["monid.inspect"], tool_settings: { "monid.inspect": { permission: "allow" } } }))).status, 201);
-  const run = await api("POST", "/agents/echoed/runs", { input: { content: 'Call monid_inspect with {"provider":"faux","endpoint":"/person/enrich"}.' } });
+  assert.equal((await api("POST", "/agents", agent("echoed", { tools: ["monid:faux/person/enrich"], tool_settings: { "monid:faux/person/enrich": { permission: "allow" } } }))).status, 201);
+  const run = await api("POST", "/agents/echoed/runs", { input: { content: 'Call monid__faux__person__enrich with {"body":{"name":"Ada"}}.' } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { rows } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
@@ -144,7 +144,7 @@ test("a stored tool key a vendor echoes back in an error shows in none of the ru
   // error, which echoes that key, came back to the run: never a run with no such tool.
   const sent = existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
   const digest = createHash("sha256").update(planted).digest("hex").slice(0, 16);
-  assert.ok(sent.some((call) => call.path === "/v1/inspect" && call.key === digest), `the run's inspect reached monid on the stored key: ${JSON.stringify(rows.map((row) => `${row.kind}: ${row.summary}`))}`);
+  assert.ok(sent.some((call) => call.path === "/v1/run" && call.key === digest), `the run's call reached monid on the stored key: ${JSON.stringify(rows.map((row) => `${row.kind}: ${row.summary}`))}`);
   const sources = [
     { where: "the run's timeline", text: JSON.stringify(rows) },
     { where: "the run's view and answer", text: JSON.stringify(view) },

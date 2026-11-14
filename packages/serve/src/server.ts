@@ -19,7 +19,7 @@ import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent,
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
-import { FAUX_MONID_ENV } from "./monid.js";
+import { FAUX_MONID_ENV, MONID_KEY_ENV, pinMonid } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
@@ -1831,6 +1831,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
+    // Its monid grants pinned against what monid lists now, on this server's monid key (monid.ts pinMonid): the pin is
+    // stamped on the revision, and its runs read it, never monid's listing. A grant monid does not list is refused here.
+    if (revision.kind === "agentic") {
+      const send = await checkFetch("monid");
+      const pinned = await pinMonid(body.tools ?? [], { key: (base as NodeJS.ProcessEnv)[MONID_KEY_ENV]?.trim() || storedKeys(MONID_KEY_ENV), fetch: send ?? (async () => { throw new Error("no fake of monid's API under faux"); }), signal: stopping.signal });
+      if (pinned && "refused" in pinned) throw invalid(pinned.refused.map(({ tool, message }) => ({ field: (body.tools ?? []).includes(tool) ? `definition.tools[${body.tools.indexOf(tool)}]` : "definition.tools", reason: "not_an_option", message })));
+      if (pinned) (revision.body as AgenticBody).monidPin = pinned.pin;
+    }
     return blockers.map(issueOf);
   }
 

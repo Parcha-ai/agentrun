@@ -14,7 +14,7 @@ import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
 import type { PinScalar, PinValue } from "./tool-gate.js";
-import { isMcpName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName } from "./tool-names.js";
+import { isMcpName, isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName, MONID_NAME_WORDS, parseToolName } from "./tool-names.js";
 import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { BOUND_TOOLS, toolOf } from "./tools.js";
@@ -453,7 +453,8 @@ export function readPackage(dir: string): Package {
   if (f.effort !== undefined && !(THINKING_LEVELS as readonly unknown[]).includes(f.effort)) bad(MANIFEST, `effort is one of ${THINKING_LEVELS.join(", ")}`);
   const tools = f.tools === undefined ? undefined : list(f.tools, "tools");
   if (tools?.some(isMcpName)) bad(MANIFEST, "tools grants no MCP tool: mcp lists them, by server");
-  for (const tool of tools?.filter((tool) => !isMcpName(tool) && !BOUND_TOOLS.includes(tool)) ?? []) bad(MANIFEST, `tools: ${tool} is not a tool this server binds (${BOUND_TOOLS.join(", ")})`);
+  // A monid endpoint (monid:<provider>/<endpoint> or monid:<provider>/*) is granted as written and pinned at the apply's save.
+  for (const tool of tools?.filter((tool) => !isMcpName(tool) && !(isMonidName(tool) && parseToolName(tool)) && !BOUND_TOOLS.includes(tool)) ?? []) bad(MANIFEST, isMonidName(tool) ? `tools: ${MONID_NAME_WORDS(tool)}` : `tools: ${tool} is not a tool this server binds (${BOUND_TOOLS.join(", ")})`);
   const mcp: McpNeed[] = [];
   for (const [i, need] of (f.mcp === undefined ? [] : Array.isArray(f.mcp) ? f.mcp : (bad(MANIFEST, "mcp is a list of {server, tools, required?}"), [])).entries()) {
     const names = isObject(need) && Array.isArray(need.tools) ? need.tools : [];

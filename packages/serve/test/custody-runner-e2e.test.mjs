@@ -82,7 +82,7 @@ async function usedKeys(t, { harness }) {
   withEnv(t, {
     AGENTRUN_SEAL_KEY: SEAL,
     AGENTRUN_TEST_FAUX_MONID_ACCEPTS: createHash("sha256").update(TOOL_KEY).digest("hex"),
-    AGENTRUN_TEST_FAUX_MONID_ECHO: "/v1/inspect",
+    AGENTRUN_TEST_FAUX_MONID_ECHO: "/v1/run",
     AGENTRUN_TEST_FAUX_MONID_CALLS: join(dir, "monid-calls.jsonl"),
     CUSTODY_E2E_ENV_REPORT: envReport,
   }, ["AGENTRUN_SEAL_KEY", "AGENTRUN_TEST_FAUX_MONID_ACCEPTS", "AGENTRUN_TEST_FAUX_MONID_ECHO", "AGENTRUN_TEST_FAUX_MONID_CALLS", "CUSTODY_E2E_ENV_REPORT", "MONID_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]);
@@ -107,8 +107,8 @@ async function usedKeys(t, { harness }) {
   assert.ok(as.issued.length > 0, "the sign-in issued a token set");
   const tokens = [...as.issued];
 
-  const tools = ["monid.inspect", "mcp:docs/add", "write"];
-  const saved = await api("POST", "/agents", agent("custody", { ...(harness === "pi" ? {} : { harness }), instructions: "Use the keys.", tools, tool_settings: { "monid.inspect": { permission: "allow" }, "mcp:docs/*": { permission: "allow" }, write: { permission: "allow" } } }));
+  const tools = ["monid:faux/person/enrich", "mcp:docs/add", "write"];
+  const saved = await api("POST", "/agents", agent("custody", { ...(harness === "pi" ? {} : { harness }), instructions: "Use the keys.", tools, tool_settings: { "monid:faux/person/enrich": { permission: "allow" }, "mcp:docs/*": { permission: "allow" }, write: { permission: "allow" } } }));
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   const started = await api("POST", "/agents/custody/runs", { input: { content: "Use the keys." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -119,7 +119,7 @@ async function usedKeys(t, { harness }) {
   // The run really used what was planted: monid took the stored key and the MCP server a bearer.
   const calls = existsSync(join(dir, "monid-calls.jsonl")) ? readFileSync(join(dir, "monid-calls.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
   const digest = createHash("sha256").update(TOOL_KEY).digest("hex").slice(0, 16);
-  assert.ok(calls.some((call) => call.path === "/v1/inspect" && call.key === digest), `the run reached monid on the stored key: ${JSON.stringify(calls)}`);
+  assert.ok(calls.some((call) => call.path === "/v1/run" && call.key === digest), `the run reached monid on the stored key: ${JSON.stringify(calls)}`);
   assert.ok(mcp.log.some((entry) => entry.tool === "add" && entry.authorization), "the run called the MCP server with its sign-in's token");
 
   // Everything a person or the agent can read.

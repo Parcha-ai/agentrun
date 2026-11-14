@@ -39,7 +39,8 @@ import { isMcpName, mcpNameOf, parseToolName } from "./tool-names.js";
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
  * table (tools.ts) and named the same on every harness that runs them. `web_search` and `web_fetch` resolve to a
  * provider (PROVIDERS); the rest are the kernel's own. Not capabilities: the workflow call nodes' `pdf_pages` and `llm` (a workflow's call node names them, a grant
- * never does), and a catalog's tools (`monid.*`, `mcp:<server>/<tool>`: catalog tools, which their catalog grants).
+ * never does), and a catalog's tools (`mcp:<server>/<tool>`, `monid:<provider>/<endpoint>`: catalog tools, which their
+ * catalog grants).
  */
 export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"] as const;
 /** The providers a user may pick for each capability that has a choice, its default first: `auto`, the native search
@@ -76,8 +77,8 @@ export const DECISION_PROVIDER_KEYS: readonly string[] = ["jev", "parallel", "op
 
 /** A settings key: a tool of the table, one of the run's own tools (SERVE_OWN_TOOLS), a computer kind's (KIND_KEYS), a
  *  decision provider's (DECISION_PROVIDER_KEYS), a
- *  catalog tool (`monid.<tool>`, `mcp:<server>/<tool>`), or an MCP server's wildcard (`mcp:<server>/*`), which sets each
- *  of its tools. */
+ *  catalog tool (`mcp:<server>/<tool>`, `monid:<provider>/<endpoint>`), or a group's wildcard (`mcp:<server>/*`,
+ *  `monid:<provider>/*`), which sets each of its tools. */
 const isSettingsKey = (name: string): boolean => parseToolName(name) !== undefined && (isTableTool(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name) || isCatalogTool(name));
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
@@ -412,7 +413,7 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
   if (!isPlain(value)) return [{ field: at || "body", reason: "wrong_type", message: `${at || "the body"} is an object of tools to their settings` }];
   return Object.entries(value).flatMap(([name, setting]): InputIssue[] => {
     const pickable = Object.hasOwn(PROVIDERS, name);
-    if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...tableTools(), ...SERVE_OWN_TOOLS, ...KIND_KEYS, ...DECISION_PROVIDER_KEYS].join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
+    if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...tableTools(), ...SERVE_OWN_TOOLS, ...KIND_KEYS, ...DECISION_PROVIDER_KEYS].join(", ")}), catalog tools (mcp:<server>/<tool>, monid:<provider>/<endpoint>) and a group's tools (mcp:<server>/*, monid:<provider>/*); ${name} is none of them.` }];
     if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpName(name) ? ", pin" : ""}${layer === "agent" && name === "bash" ? ", policy" : ""}}` }];
     return Object.entries(setting).flatMap(([key, given]): InputIssue[] => {
       if (key === "pin") return pinIssues(given, field(name, key), name);

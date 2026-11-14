@@ -295,19 +295,19 @@ for (const harness of ["claude-agent", "codex"]) {
 }
 
 for (const harness of ["claude-agent", "codex"]) {
-  test(`monid.run runs on ${harness} as monid_run: it saves with no warning, reaches monid on the run's key, and is journaled and shown under its wire name`, { timeout: 60_000 }, async (t) => {
+  test(`a granted monid endpoint runs on ${harness} as monid__faux__person__enrich: it saves with no warning, reaches monid on the run's key, and is journaled and shown under its wire name`, { timeout: 60_000 }, async (t) => {
     const log = join(await scratch(t), "monid-calls.jsonl");
     withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
-    const saved = await api("POST", "/agents", agent(`monid-${harness}`, { harness, instructions: "Run monid's /person/enrich on Ada.", tools: ["monid.discover", "monid.inspect", "monid.run"], tool_settings: { "monid.discover": { permission: "allow" }, "monid.inspect": { permission: "allow" }, "monid.run": { permission: "allow" } } }));
+    const saved = await api("POST", "/agents", agent(`monid-${harness}`, { harness, instructions: "Run monid's /person/enrich on Ada.", tools: ["monid:faux/person/enrich"], tool_settings: { "monid:faux/person/enrich": { permission: "allow" } } }));
     assert.deepEqual([saved.status, saved.body.warnings], [201, []], JSON.stringify(saved.body));
     const run = await api("POST", `/agents/monid-${harness}/runs`, { input: { content: "hi" } });
     assert.equal(run.status, 202, JSON.stringify(run.body));
     const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
     const seen = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-    assert.deepEqual(seen.map((call) => [call.method, call.path, call.authorized]), [["POST", "/v1/run", true]], "sent once, on the key");
-    assert.deepEqual(storeRecords(data, run.body.run_id, "faux.call").map((record) => record.data?.name), ["monid_run"], "the harness's journal names the wire name");
-    assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => r.tool_name), ["monid_run"]);
+    assert.deepEqual(seen.filter((call) => call.path === "/v1/run").map((call) => [call.method, call.path, call.authorized]), [["POST", "/v1/run", true]], "sent once, on the key");
+    assert.deepEqual(storeRecords(data, run.body.run_id, "faux.call").map((record) => record.data?.name), ["monid__faux__person__enrich"], "the harness's journal names the wire name");
+    assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => r.tool_name), ["monid__faux__person__enrich"]);
     const results = toolResults(rows);
     assert.equal(results.length, 1, JSON.stringify(results));
     assert.match(results[0][0], /"full_name":"Ada"/, "the run's output reaches the timeline");
@@ -315,11 +315,11 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
-test("capabilities say which harnesses run each tool: the file tools, bash and the background tools (in a box), ask_person, the web tools and monid's three on every harness, the rest on pi", async (t) => {
+test("capabilities say which harnesses run each tool: the file tools, bash and the background tools (in a box), ask_person, and the web tools on every harness, the rest on pi", async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
   const every = ["pi", "claude-agent", "codex", "opencode"];
-  const hosted = ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "ask_person", "web_fetch", "web_search", "monid.discover", "monid.inspect", "monid.run"];
+  const hosted = ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "ask_person", "web_fetch", "web_search"];
   for (const name of hosted) assert.deepEqual(tools[name], every, name);
   for (const [name, harnesses] of Object.entries(tools)) if (!hosted.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });

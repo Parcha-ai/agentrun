@@ -471,7 +471,7 @@ test("the environment a claimed run's host tools are handed holds none of the ru
   const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
   const runs = main.runEnv({ PATH: "/usr/bin:/bin", LANG: "C.UTF-8", AGENTRUN_RUNNER_NAME: "runner-tools", ...RUNNER_OWN });
   const store = { sealedKeys: { get: async () => undefined } };
-  const tools = await claimSecrets({ store, sealKey: Buffer.from(SEAL, "base64"), env: runs }, { kind: "agentic", body: { tools: ["bash", "web_search", "monid.run"] } }, {});
+  const tools = await claimSecrets({ store, sealKey: Buffer.from(SEAL, "base64"), env: runs }, { kind: "agentic", body: { tools: ["bash", "web_search", "monid:faux/person/enrich"] } }, {});
   assert.equal(tools.LANG, "C.UTF-8", "the run environment's other names reach the tools");
   assert.deepEqual(runnerOwnIn(tools), { names: [], values: [] }, "none of the runner's own names, nor their values under another name");
 });
@@ -481,7 +481,7 @@ test("a claimed run's host tools are cut of the server's secrets even from an en
   // withoutSecrets) from whatever environment it is given, so a run environment that kept one still hands the tools none.
   const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
   const store = { sealedKeys: { get: async () => undefined } };
-  const tools = await claimSecrets({ store, sealKey: Buffer.from(SEAL, "base64"), env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", ...RUNNER_OWN } }, { kind: "agentic", body: { tools: ["bash", "web_search", "monid.run"] } }, {});
+  const tools = await claimSecrets({ store, sealKey: Buffer.from(SEAL, "base64"), env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", ...RUNNER_OWN } }, { kind: "agentic", body: { tools: ["bash", "web_search", "monid:faux/person/enrich"] } }, {});
   assert.equal(tools.LANG, "C.UTF-8", "the environment's other names reach the tools");
   const listed = ["AGENTRUN_STORE_URL", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN", "AGENTRUN_API_KEY"];
   const names = Object.getOwnPropertyNames(tools);

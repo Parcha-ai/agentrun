@@ -357,7 +357,7 @@ link, and write through a temporary file renamed over the old one, keeping its m
 says so and names the box's path; `bash`, in the container, can still reach the file. Where this server reaches
 directories by path (no `/proc/self/fd`, as on macOS), or a box binds nothing, all four run in the container, made on
 the first of them.
-`web_fetch`, `web_search` and the `monid.*` tools stay on this server, and so do
+`web_fetch`, `web_search` and monid's endpoints stay on this server, and so do
 the run's loop, its log, its model calls and every key. What the server itself files in `work/` (monid's long answers,
 the browser's evidence) never goes through a link a box's command planted there: each directory is held open on the
 way (`/proc/self/fd`). On a host without it (macOS), where a link swapped in mid-walk could still turn a write, a sandbox run's `work/` gets none of
@@ -961,9 +961,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
-| `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
-| `monid.inspect` | One monid endpoint before it runs: `{provider, endpoint}` in, the JSON Schemas of its input (`pathParams`, `queryParams`, `body`), its price, notes and documentation out | `MONID_API_KEY` | no, no |
-| `monid.run` | Run one monid endpoint, paid per call from the monid wallet: `{provider, endpoint, input}` in, the run's `output`, `price` and `cost` out | `MONID_API_KEY` | no, no |
+| `monid:<provider>/<endpoint>`, `monid:<provider>/*` | One monid endpoint, or every endpoint monid lists for a provider (at most 50), each pinned at the save and run as a tool of its own, paid per call from the monid wallet: `{body?, queryParams?, pathParams?}` in, the run's `output`, `price` and `cost` out ([monid](#monid)) | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`; a tier the state fills in, such as `"{requestedTier}"`, may be any of the three, and a tier with no model fails the call), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
 | `subagent` | pi only: `{prompt, tools?, model?, max_tool_calls?, effort?}` in, the child's last text out, bounded like a host tool's result. Runs a fresh conversation whose whole task is `prompt`, with `tools` a subset of the agent's own (by catalog or session name, MCP tools and `bash` included; absent, none), on the agent's own model or the tier `model` names (`fast` or `strong`: the definition's `model_tiers`, else `AGENT_MODEL_FAST` / `AGENT_MODEL_STRONG`, else the agent's own model) ([subagents](#subagents)) | a pi run | no, no |
@@ -1115,7 +1113,7 @@ A workflow's tools are those its revision lists and those its model and call nod
 
 Upgrading to the tool gate: a workflow whose call node's tool is set to ask, by a setting or a default, now refuses its
 run (`409` with `details.asks`); set that tool to allow for the agent (`definition.tool_settings`). Built-in tools are
-allowed by default; catalog (`monid.*`) and MCP tools, which ask by default, are no call node's tools here.
+allowed by default; catalog (`monid:<provider>/<endpoint>`) and MCP tools, which ask by default, are no call node's tools here.
 
 Upgrading: a server holding `PARALLEL_API_KEY` used to read every `web_fetch` page through Parallel's extract on its own.
 Now `web_fetch` is the guarded direct fetch unless Parallel is picked; to keep the old behaviour, set
@@ -1376,36 +1374,41 @@ picks which one a run gets, never the model.
   sign-in a forget finds. It is kept only so a later server still cuts it from what a run that was handed it said: one
   that ended before the forget, or one opened again since on a new sign-in. Archiving an agent keeps its sign-ins; this server has no route that deletes an agent.
 
-`monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
-endpoints on one key, `MONID_API_KEY`: it finds an endpoint in plain words, reads its input schemas and price, and runs
-it. Each run is paid per call from the monid workspace's wallet, and is sent once, never retried. An async provider's
+<a id="monid"></a>
+An agent is granted [monid](https://monid.ai)'s data endpoints on one key, `MONID_API_KEY`, by name:
+`monid:<provider>/<endpoint>` (one, such as `monid:apollo/people/match`) or `monid:<provider>/*` (every endpoint monid
+lists for the provider, at most 50). Each grant is read against monid's listing when the agent is saved, and pinned on
+that revision with the endpoint's description, its input schema (`pathParams`, `queryParams`, `body`) and its price; a
+provider or endpoint monid does not list, or a grant saved with no monid key, is refused at the save in words. An edit
+pins again. A workflow's nodes do not bind monid endpoints yet. Each pinned endpoint is a tool of its own on every
+harness, named on the wire with `__` for `:` and `/` (`monid__apollo__people__match`), asked about by default, and set by
+its own name or its provider's wildcard in tool settings.
+Each run is paid per call from the monid workspace's wallet, and is sent once, never retried. An async provider's
 run is read until it ends, about two minutes at most, and asked to stop at monid when the run stops or it outlasts that.
 A refusal comes back as `{error, status?}` in words: the wallet too low (402), a workspace control such as its budget
 (`BLOCKED`), `FAILED`, `TIMED_OUT`, the provider's own error (not charged). The model reads each answer as JSON cut at
 60,000 characters, the whole of it then filed under the run's `work/evidence/monid/`. An answer carries what monid
 charged (`cost`, in dollars), and that charge is the run's spend: booked once in the run's own records as a tool cost
-(`agentrun.tool_cost`: `tool` `monid.run`, `charged_by` `"monid"`, `usd`), shown in its timeline on a line of its own
-(`Tool cost: monid charged $0.0030 for monid.run`) and summed into its cost, the total its [spend cap](#spend-cap)
-reads, and `/usage` grouped by meter shows it as its own meter, `tools`, apart from `tokens`. Each run is marked in the
-run's records before it is sent, held at the price an earlier `monid.inspect` of the run quoted for that endpoint, else
-at an allowance of $1; its charge settles the mark. A mark a crash left unsettled leaves the run's cost unknown, as a
+(`agentrun.tool_cost`: `tool` the endpoint's name, `charged_by` `"monid"`, `usd`), shown in its timeline on a line of its
+own (`Tool cost: monid charged $0.0260 for monid:apollo/people/match`) and summed into its cost, the total its
+[spend cap](#spend-cap) reads, and `/usage` grouped by meter shows it as its own meter, `tools`, apart from `tokens`.
+Each run is marked in the run's records before it is sent, held at its pinned price (a per-call price; the dearest
+variant of a matrix; a tiered price's default and every tier), or, for an endpoint monid prices by usage, at a ceiling
+of $1, and its approval card shows that hold; its charge settles the mark. A usage-priced call monid charges more than
+the ceiling for is booked at its charge. A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
 never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as
 a crash-cut mark does, so the run goes on while its cap allows, in its process and in one opened again from its store;
 one monid says it did not charge (refused as sent, `BLOCKED`, `STOPPED`, the provider's error) books nothing. Under a
-cap, each `monid.run` is held as a model request is: unless what the run has spent plus what the run is held at (the
-price an inspect quoted, else the $1 allowance) fits its `max_cost_usd`, or when the spend is unknown, the call is
-refused with a `spend_cap_reached` error the model reads, naming its price and the cap (and, when the allowance was
-used, that `monid.inspect` gives a quote), and monid is never called. Runs go one at a time under a cap, and on
+cap, each endpoint's call is held as a model request is: unless what the run has spent plus what the call is held at
+fits its `max_cost_usd`, or when the spend is unknown, the call is refused with a `spend_cap_reached` error the model
+reads, naming the endpoint, its hold and the cap, the run pauses on its cap, and monid is never called. Runs go one at a time under a cap, and on
 claude-agent and codex the check holds each model request still in flight at its worst case. A run sent holds its
 figure until its charge is in, on every harness: a model request checked meanwhile counts it beside what the run has
-spent, and a run that fails without an answer counts at it. `discover` and `inspect`
-cost nothing and are never refused. They run on every harness: pi binds them, and claude-agent and codex call them as
-host tools in the run's process, where a `monid.run` call a crash cut off is answered interrupted, never sent again
-(`discover` and `inspect` may run again). On each, the model, the call's journal and the run's timeline name them
-`monid_discover`, `monid_inspect` and `monid_run`: a model API takes no dot in a tool's name. The key is a secret like
-the model keys: a run's process gets it over its pipe, never in its environment.
+spent, and a run that fails without an answer counts at it. Every harness calls an endpoint as a host tool in the run's
+process, where a call a crash cut off is answered interrupted, never sent again. The key is a secret like the model
+keys: a run's process gets it over its pipe, never in its environment.
 
 ## Tool keys
 
@@ -3008,8 +3011,8 @@ CLI's measured 6,926 bytes with five tools: $0.04 for its first request through 
 once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. (In `strict` mode through a gateway, a run a cent under the five-step figure is not parked before its last step: the cap's wrap-up refuses its last screenshot, and the run answers from what it has.)
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
-survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself
-refused once the spend reaches the cap; see [monid](#tools)).
+survives a restart, plus each response since, and with them each charge a paid tool booked (a monid endpoint's call, which is itself
+refused once the spend reaches the cap; see [monid](#monid)).
 
 The `browser` tool's session time is held the same way, before it runs, so no browser minute passes the cap. Its next
 stretch is the most a session can run before the run can check again: the provider's minimum (what its release may top

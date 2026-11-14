@@ -181,7 +181,7 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   const granted = new Set(tools);
   const offered = choices.filter((c) => granted.has(c.name) || !c.available);
   // Each granted tool's permission, the server's in force its default: as capabilities list it, else as the agent's read
-  // gave it (a catalog tool, monid.<tool> or mcp:<server>/<tool>, which capabilities don't list), else, for an MCP tool
+  // gave it (a catalog tool, monid:<provider>/<endpoint> or mcp:<server>/<tool>, which capabilities don't list), else, for an MCP tool
   // granted and not saved yet, as its server's read gives it.
   const accountsOff = gates.some((g) => g.ask_needs === "password");
   const read = (name: string) => agent?.tools?.find((x) => x.name === name);

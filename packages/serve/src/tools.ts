@@ -20,7 +20,6 @@ import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { localFolderOf } from "./workspace/local.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
-import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
 import { bookedIn, booking, type Ledger, type PaidBooking } from "./paid-calls.js";
 import type { Refusal } from "@parcha/agentrun-kernel";
@@ -662,10 +661,6 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
   },
   browser: browserTool,
-  // monid's catalog on one key (monid.ts): every harness calls each by its wire name, `monid_discover` and the rest.
-  "monid.discover": monidTool("discover"),
-  "monid.inspect": monidTool("inspect"),
-  "monid.run": monidTool("run"),
   // A pi run's subagent (runner/subagent.ts): a native tool of the run's root agent, bound by the runner's pi spec
   // (adapter-run-spec.ts), never by this table; not a host tool (tool-list.ts `replay`), so another harness refuses it.
   subagent: {

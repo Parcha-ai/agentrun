@@ -1,0 +1,56 @@
+// A monid grant is read against monid's listing at the save and pinned on the revision (monid.ts pinMonid, server.ts
+// saveable): a provider's wildcard as every endpoint monid lists for it, one endpoint as monid inspects it, each with its
+// input and what one call is held at. A grant monid does not list, or one saved with no monid key, is refused in words;
+// the pin is never shown in the definition. Faux monid's listing (fixtures/faux-monid.mjs LISTING), no network.
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { KEY } from "./fixtures/faux-monid.mjs";
+import { agent, serve, withEnv } from "./support.mjs";
+
+const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
+const { MONID_USAGE_CEILING_USD } = await import("../dist/monid.js");
+
+/** The pin the agent `id`'s current revision holds, as its runs read it. */
+const pinOf = async (store, id) => {
+  const [current] = (await store.agents.revisions(id)).slice(-1);
+  return current.body.monidPin;
+};
+
+test("monid:apollo/* resolves at the save to the endpoints monid lists for apollo, each pinned with its input and price", async (t) => {
+  withEnv(t, { MONID_API_KEY: KEY });
+  const { api, store } = await serve(t, { fauxMonid: FAUX_MONID });
+  const saved = await api("POST", "/agents", agent("apollo", { tools: ["monid:apollo/*", "monid:faux/person/enrich"] }));
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  assert.deepEqual(saved.body.tools ?? saved.body.definition?.tools, ["monid:apollo/*", "monid:faux/person/enrich"], "the grants as given");
+  assert.doesNotMatch(JSON.stringify(saved.body), /monidPin|monid_pin/, "the pin is never shown");
+  const pin = await pinOf(store, "apollo");
+  assert.deepEqual(Object.keys(pin), ["monid:apollo/news_articles/search", "monid:apollo/people/match", "monid:faux/person/enrich"]);
+  assert.deepEqual(Object.fromEntries(Object.entries(pin).map(([name, one]) => [name, [one.usd, one.usage ?? false]])), {
+    "monid:apollo/news_articles/search": [MONID_USAGE_CEILING_USD, true],
+    "monid:apollo/people/match": [0.026, false],
+    "monid:faux/person/enrich": [0.003, false],
+  });
+  assert.deepEqual(pin["monid:apollo/people/match"].input, { type: "object", additionalProperties: false, properties: { body: { type: "object", required: ["name"], properties: { name: { type: "string" } } } }, required: ["body"] }, "its input, monid's $schema left out");
+});
+
+test("a grant monid does not list is refused at the save in words, nothing saved", async (t) => {
+  withEnv(t, { MONID_API_KEY: KEY });
+  const { api } = await serve(t, { fauxMonid: FAUX_MONID });
+  const endpoint = await api("POST", "/agents", agent("nope", { tools: ["monid:apollo/people/nowhere"] }));
+  assert.equal(endpoint.status, 422, JSON.stringify(endpoint.body));
+  assert.match(JSON.stringify(endpoint.body), /monid lists no endpoint \/people\/nowhere of a provider apollo/);
+  const provider = await api("POST", "/agents", agent("nope2", { tools: ["monid:nobody/*"] }));
+  assert.equal(provider.status, 422, JSON.stringify(provider.body));
+  assert.match(JSON.stringify(provider.body), /monid lists no endpoint of a provider nobody/);
+  const grammar = await api("POST", "/agents", agent("nope3", { tools: ["monid.run"] }));
+  assert.equal(grammar.status, 422, "monid's old tools are no tools");
+  assert.equal((await api("GET", "/agents/nope")).status, 404);
+});
+
+test("a monid grant saved with no monid key is refused: it cannot be pinned", async (t) => {
+  withEnv(t, {}, ["MONID_API_KEY"]);
+  const { api } = await serve(t, { fauxMonid: FAUX_MONID });
+  const saved = await api("POST", "/agents", agent("keyless", { tools: ["monid:apollo/people/match"] }));
+  assert.equal(saved.status, 422, JSON.stringify(saved.body));
+  assert.match(JSON.stringify(saved.body), /no monid key here to read it with: save the monid key in Settings → Keys first/);
+});

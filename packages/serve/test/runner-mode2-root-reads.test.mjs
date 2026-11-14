@@ -34,6 +34,8 @@ const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { CLIP, MONID_KEY_ENV } = await import("../dist/monid.js");
+const { bookedIn } = await import("../dist/paid-calls.js");
+const { toolLedger } = await import("./support.mjs");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
 const { archilControlFetch } = await import("./archil-control-fake.mjs");
 
@@ -44,6 +46,9 @@ const RUN = "run-1";
 const AGENT = "agent-1";
 const ARCHIL_SETTINGS = { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 const KEY = runKey(AGENT, RUN);
+/** The monid endpoint a test that fakes monid grants, and the pin its save would have stamped (monid.ts pinMonid). */
+const ENRICH = "monid:faux/person/enrich";
+const MONID_PIN = { [ENRICH]: { description: "faux /person/enrich: enrich a person.", input: { type: "object", properties: {} }, usd: 0.003 } };
 const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" } });
 
 /** Every node:fs read under `folder`, recorded while the watch is on: the CommonJS fs and fs.promises functions that read
@@ -105,7 +110,8 @@ const mountingComputer = async (_launch, _store, given) => {
  *  decoys, and `build`'s spec for its claim. `watch`: every read under the run's local folder path while the spec is built
  *  and used (`use`) is recorded. `computer`: the run's computerForClaim (none by default). The control plane is the
  *  fake as a fetch function (`control`: no port), and every other outbound fetch is refused (`outbound`). `tools`: the
- *  revision's grant; `monid`: the answer monid's faked API gives (its key then in the runner's environment). `routeOf`: the
+ *  revision's grant; `monid`: the answer monid's faked API gives (its key then in the runner's environment, and the
+ *  revision's pin MONID_PIN, which `tools` grants as ENRICH). `routeOf`: the
  *  run's model route (the stub by default). `fails`: the build is expected to throw, and its error is answered.
  *  `controlFetch`: the claim's fetch to the control fake, given the fake's own (a test that loses an answer wraps it).
  *  `controlOptions`: the control fake's own (its users before the claim, `existing`; a forced answer; a lagging list).
@@ -126,7 +132,7 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", ...(harness ? { harness } : {}), tools } });
+  await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", ...(harness ? { harness } : {}), tools, ...(monid ? { monidPin: MONID_PIN } : {}) } });
   const launch = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, ...(harness ? { harness, model: { provider: "openai", modelId: "gpt-5" } } : { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } }) };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });
   // Mode 2: the server's Archil settings, and its account key sealed under the runner's seal key, as the server saves them.
@@ -200,13 +206,18 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
   });
 
   test(`${name} in Mode 2: a monid answer too long for the model is filed on the run's disk, where the run's read finds it, never in the local folder`, async (t) => {
-    // A monid discover answer past CLIP: the model reads it cut, and the whole goes to the run's evidence/monid/.
-    const long = { results: [{ slug: "widgets", note: `${"w".repeat(CLIP)}-the-end` }] };
-    const { spec, disk, local, outbound } = await mode2Spec(t, { harness, build, tools: ["read", "monid.discover"], monid: long });
-    const toolOf = (name) => spec.session.tools.find((one) => one.name === name);
+    // A monid endpoint's answer past CLIP: the model reads it cut, and the whole goes to the run's evidence/monid/. The
+    // call is a paid step, so it is made on a run's ledger, as the loop makes it.
+    const long = { status: "COMPLETED", output: { results: [{ slug: "widgets", note: `${"w".repeat(CLIP)}-the-end` }] } };
+    const { spec, disk, local, outbound } = await mode2Spec(t, { harness, build, tools: ["read", ENRICH], monid: long });
+    // A monid endpoint is a catalog tool: it rides the spec's catalog seam (spec.mcp) beside the session's own tools.
+    const tools = [...spec.session.tools, ...(spec.mcp?.tools ?? [])];
+    const toolOf = (name) => tools.find((one) => one.name === name);
     const call = (name, args) => toolOf(name).call(args, { callId: `c-${name}`, signal: new AbortController().signal });
-    assert.ok(toolOf("monid_discover"), `monid's discover is the run's tool: ${spec.session.tools.map((one) => one.name)}`);
-    const answer = await call("monid_discover", { query: "widgets" });
+    assert.ok(toolOf("monid__faux__person__enrich"), `the monid endpoint is the run's tool: ${tools.map((one) => one.name)}`);
+    assert.equal(spec.mcp.catalogOf("monid__faux__person__enrich"), ENRICH, "asked about by its catalog name");
+    const paid = await toolLedger(1);
+    const answer = await bookedIn({ call: "c-monid", paid }, () => call("monid__faux__person__enrich", { body: { name: "Ada" } }));
     const saved = /the whole answer is in the run's files at (evidence\/monid\/\S+\.json)\]$/.exec(answer.text)?.[1];
     assert.ok(saved, `the cut answer names where the whole is: ${answer.text.slice(-200)}`);
     const filed = disk.files.get(`${KEY}/${saved}`);
@@ -215,7 +226,7 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     // The run's read opens the file (one line past its page, so it shows the line's start and says how to read on).
     const back = await call("read", { path: saved });
     assert.notEqual(back.isError, true, `the run's read finds it: ${back.text.slice(0, 200)}`);
-    assert.match(back.text, /^\{"results":\[\{"slug":"widgets"/, `the run's read finds it: ${back.text.slice(0, 120)}`);
+    assert.match(back.text, /^\{"status":"COMPLETED","output":\{"results":\[\{"slug":"widgets"/, `the run's read finds it: ${back.text.slice(0, 120)}`);
     assert.deepEqual(outbound, [], "nothing left this machine");
   });
 

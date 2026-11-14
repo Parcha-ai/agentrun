@@ -18,8 +18,9 @@ import { denyPlace, permissionFrom, permissionOf } from "./tool-gate.js";
 import { approvalsOf } from "./approvals.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
+import { MONID_KEY_ENV } from "./monid.js";
 import { mcpHeaderProblem } from "./mcp-gateway.js";
-import { isMcpName, mcpDroppedWords, MCP_HANDS_WORDS, mcpNameOf, mcpWireProblem } from "./tool-names.js";
+import { isMcpName, isMonidName, mcpDroppedWords, MCP_HANDS_WORDS, mcpNameOf, mcpWireProblem, MONID_NAME_WORDS, parseToolName } from "./tool-names.js";
 import type { McpTool } from "@parcha/agentrun-kernel";
 import type { ShellPlace } from "@parcha/agentrun-kernel/kernel";
 
@@ -165,6 +166,13 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     const browserComputer = revision.computer?.kind === "browser";
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {
+      // A monid endpoint is a host tool on every harness; whether monid lists it is read at the save, as it is pinned
+      // (monid.ts pinMonid). Its run needs the monid key.
+      if (isMonidName(tool)) {
+        if (!parseToolName(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: MONID_NAME_WORDS(tool), host: false, tool });
+        else if (!env[MONID_KEY_ENV]?.trim()) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `The tool ${tool} needs ${keyNeeded([MONID_KEY_ENV])}.`, host: true, missing: { tool, vars: [MONID_KEY_ENV] } });
+        return;
+      }
       if (isMcpName(tool)) {
         const blocker = mcpGrant(`definition.tools[${index}]`, tool);
         if (blocker) out.push(blocker);
@@ -175,8 +183,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner" && !runnerShell.has(tool)) out.push(shellOnRunner(tool, `definition.tools[${index}]`, !!place && !revision.unnamed));
       // Its writes into work/ go by path from this machine, and a box's command could swap a link in on their way.
       else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
-      // Another harness gets the host tools only (host-tools.ts: the file tools, ask_person, web_fetch, web_search and
-      // monid's): any other tool this host binds (the browser, subagent, pdf_pages, llm) is pi's here and refuses the
+      // Another harness gets the host tools only (host-tools.ts: the file tools, ask_person, web_fetch and web_search):
+      // any other tool this host binds (the browser, subagent, pdf_pages, llm) is pi's here and refuses the
       // run, never runs without it.
       else if (onAdapter(env, harness) && !isHostTool(tool)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
       else {
@@ -214,6 +222,11 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     const index = (revision.tools ?? []).indexOf(tool);
     const blocker = mcpGrant(index >= 0 ? `definition.tools[${index}]` : "definition.workflow", tool);
     if (blocker) out.push(blocker);
+  }
+  // Nor does a workflow's node bind a monid endpoint.
+  for (const tool of granted.filter(isMonidName)) {
+    const index = (revision.tools ?? []).indexOf(tool);
+    out.push({ field: index >= 0 ? `definition.tools[${index}]` : "definition.workflow", reason: "not_an_option", message: `${tool}: a workflow's nodes don't bind monid endpoints yet; grant it to an agentic agent.`, host: false, tool });
   }
   // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.
   if (onAdapter(env, harness)) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `A workflow runs on pi here; on ${harness} its model nodes are not bound yet.`, host: true, harness });

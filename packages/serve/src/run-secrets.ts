@@ -9,7 +9,7 @@ import { harnessOfBody } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
 import { GATEWAY_KEY_ENV, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, type Tier, workflowNodes } from "./model.js";
 import { DECISION_KEYS, SECRET_NAMES } from "./secrets.js";
-import { TOOL_KEYS } from "./tool-keys.js";
+import { TOOL_KEYS, unlocksTool } from "./tool-keys.js";
 import { workflowTools } from "./tools.js";
 
 /** The server's own secrets, which a run never gets: the API token, by name or by value, the seal key the tool keys are
@@ -55,8 +55,7 @@ export async function needsOf(revision: Revision): Promise<RunNeeds> {
  *  sends for the revision's model (adapters.ts' harnessModelKeys). Read at each claim, so a key saved with no restart
  *  counts at the next. */
 export function keysFor(needs: RunNeeds, env: NodeJS.ProcessEnv, rows: readonly KeyRow[] = TOOL_KEYS): string[] {
-  const named = new Set(needs.tools);
-  const unlocked = new Set<string>(rows.filter((row) => row.unlocks.some((name) => named.has(name))).flatMap((row) => row.fields));
+  const unlocked = new Set<string>(rows.filter((row) => row.unlocks.some((unlock) => needs.tools.some((name) => unlocksTool(unlock, name)))).flatMap((row) => row.fields));
   const scoped = scopedOf(rows);
   const entry = harnessOf(env, needs.harness);
   const model = new Set(!entry || entry.facts ? harnessModelKeys(needs.harness, env, needs.model) : needs.tiers ? modelKeys(env, undefined, needs.tiers) : modelKeys(env, needs.model));

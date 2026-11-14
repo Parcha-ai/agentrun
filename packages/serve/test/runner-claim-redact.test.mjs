@@ -1,7 +1,7 @@
 // A key saved on the server reaches a run as its claim opens it from the store (claim-secrets.ts), never from the runner's
 // environment; the runner's one redactor (runner.ts, LoopDeps.redact) holds what the claim opened (redact.ts holdClaimed),
 // so it is cut wherever a key of the runner's environment is. A pi run through the runner and its dispatch (the real spec
-// builder) calls a host tool (monid's inspect) whose vendor answers with an error that echoes the stored key it was sent,
+// builder) calls a host tool (a pinned monid endpoint) whose vendor answers with an error that echoes the stored key it was sent,
 // and then its provider answers with an error that echoes the stored key too: the run's journal, its row and summary, the
 // store's files and the runner's log hold none of it, and the tool's error is in the journal, cut.
 import assert from "node:assert/strict";
@@ -29,6 +29,7 @@ const RUN = "run-1";
 const ECHO_MONID = fileURLToPath(new URL("./fixtures/faux-monid-echo.mjs", import.meta.url));
 /** The key saved on the server, sealed in the store: in no environment, built for the test, not a real one. */
 const STORED = `storedmonid${"s8".repeat(12)}`;
+const ENRICH = "monid:faux/person/enrich";
 
 const until = async (done, what, ms = 60_000) => {
   const end = Date.now() + ms;
@@ -70,14 +71,16 @@ test("a key a claim opens from the store is cut by the runner's one redactor: a 
     rmSync(dir, { recursive: true, force: true });
   });
   await putSealedKey(server, SEAL_KEY, "MONID_API_KEY", STORED);
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer briefly.", tools: ["monid.inspect"], toolSettings: { "monid.inspect": { permission: "allow" } } } });
-  const launch = { input: { content: "Inspect it." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } };
+  // A monid endpoint, pinned as a save pins it (monid.ts pinMonid).
+  const monidPin = { [ENRICH]: { description: "Enrich a person.", input: { type: "object", properties: { body: { type: "object" } } }, usd: 0.003 } };
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer briefly.", tools: [ENRICH], toolSettings: { [ENRICH]: { permission: "allow" } }, monidPin } });
+  const launch = { input: { content: "Enrich it." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
 
-  // The model calls monid's inspect, then its provider refuses the next request with an error that echoes the stored key.
+  // The model calls the monid endpoint, then its provider refuses the next request with an error that echoes the stored key.
   const requests = [];
-  const first = scriptedOrigin([{ call: "monid_inspect", args: { provider: "faux", endpoint: "/person/enrich" } }], requests);
+  const first = scriptedOrigin([{ call: "monid__faux__person__enrich", args: { body: { name: "Ada" } } }], requests);
   const fetch = async (url, init) => requests.length === 0
     ? first(url, init)
     : (requests.push(JSON.parse(String(init.body ?? "{}"))), new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: `the key ${STORED} may not call this model` } }), { status: 400, headers: { "content-type": "application/json" } }));
@@ -97,7 +100,7 @@ test("a key a claim opens from the store is cut by the runner's one redactor: a 
   const { entries } = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
   const journal = JSON.stringify(entries);
 
-  assert.ok(monidCalls.includes("/v1/inspect"), `the run's inspect reached monid: ${JSON.stringify(monidCalls)}`);
+  assert.ok(monidCalls.includes("/v1/run"), `the run's call reached monid: ${JSON.stringify(monidCalls)}`);
   assert.ok(requests.length >= 2, `the provider was asked again after the tool, and refused: ${requests.length}`);
   assert.match(journal, /Invalid API key: \[redacted\]/, "the tool's error is in the journal, its key cut");
   assert.ok(!journal.includes(STORED), "the journal holds no stored key");

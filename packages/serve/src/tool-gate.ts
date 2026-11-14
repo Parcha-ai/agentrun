@@ -36,7 +36,7 @@ import { isTableTool, isToolRow, tableTools } from "./tool-list.js";
 import { deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
-import { formatToolName, isMcpName, mcpNameOf, mcpServerOf, mcpToolName } from "./tool-names.js";
+import { formatToolName, isCatalogName, mcpNameOf, mcpServerOf, mcpToolName, monidNameOf } from "./tool-names.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -48,9 +48,10 @@ export { mcpToolName };
  *  once: what a harness that names a session's MCP tool its own way (its facts' toolAlias: OpenCode's `<server>_<tool>`) is
  *  matched against, so its call is held to that tool's settings and never to a table tool's of the same shape. */
 export const mcpServersOf = (granted: readonly string[]): string[] => [...new Set(granted.flatMap((name) => mcpServerOf(name) ?? []))];
-/** A third-party catalog tool, by its name: monid's (`monid.<tool>`) or any in MCP's namespace (`mcp:<server>/<tool>`, a
- *  server's wildcard; one that does not parse too, so the default for it is a catalog tool's ask). */
-export const isCatalogTool = (name: string): boolean => name.startsWith("monid.") || isMcpName(name);
+/** A third-party catalog tool, by its name: any in MCP's namespace (`mcp:<server>/<tool>`) or monid's
+ *  (`monid:<provider>/<endpoint>`), a group's wildcard too; one that does not parse too, so the default for it is a
+ *  catalog tool's ask. */
+export const isCatalogTool = isCatalogName;
 /** Where a run's shell is, as its default permissions read it: `computer` false for a run with no computer (its bash, where
  *  it has one, runs on the run's folder's own exec: Archil's in Mode 2); undefined where no run is in view (the server's
  *  settings page, capabilities), which reads the computer's defaults. */
@@ -85,10 +86,12 @@ export const SHELL_WATCHERS: ReadonlySet<string> = new Set(["bash_output", "bash
 const shellPermission = (name: string, bash: Permission): Permission => (bash === "ask" && SHELL_WATCHERS.has(name) ? "allow" : bash);
 
 /** The settings keys that may set `name`'s permission, most specific first: the tool's own name, then, for an MCP
- *  tool, its server's wildcard `mcp:<server>/*`. */
+ *  tool, its server's wildcard `mcp:<server>/*`, and for a monid endpoint, its provider's `monid:<provider>/*`. */
 export function permissionKeys(name: string): string[] {
   const mcp = mcpNameOf(name);
-  return mcp ? [name, formatToolName({ kind: "mcp-server", server: mcp.server })] : [name];
+  if (mcp) return [name, formatToolName({ kind: "mcp-server", server: mcp.server })];
+  const monid = monidNameOf(name);
+  return monid ? [name, formatToolName({ kind: "monid-provider", provider: monid.provider })] : [name];
 }
 
 /** The browser's registrations on pi (pi-browser's BROWSER_TOOL_NAMES, which a test holds this list to): each is a call
@@ -131,16 +134,15 @@ export function nameMapOf(harness: string, mcpServers: readonly string[] = []): 
 }
 
 /** The settings key a call named `name` on `harness` is held to: a lookup in the session's names (`names`), then the open
- *  families no list holds (`monid.<tool>`, `mcp:<server>/<tool>`, `mcp__<server>__<tool>`, `monid_<kind>`, and a harness's
- *  own `<server>_<tool>` for a server of `mcpServers` only). Undefined: nothing maps it, and the gate asks. */
+ *  families no list holds (a catalog name, `mcp:<server>/<tool>` or `monid:<provider>/<endpoint>`, `mcp__<server>__<tool>`,
+ *  and a harness's own `<server>_<tool>` for a server of `mcpServers` only). Undefined: nothing maps it, and the gate asks
+ *  (a monid endpoint's wire name is read back by the loop, ClaimMcp.catalogOf, before the gate is asked). */
 export function settingsKeyOf(harness: string, name: string, mcpServers: readonly string[] = [], names: NameMap = nameMapOf(harness, mcpServers)): string | undefined {
   const own = names.get(name);
   if (own !== undefined) return own;
   if (isCatalogTool(name)) return name;
   const mcp = /^mcp__([a-z][a-z0-9-]*)__(.+)$/.exec(name);
   if (mcp) return mcp[1] === HOST_TOOLS_SERVER ? settingsKeyOf(harness, mcp[2]!, mcpServers, names) : mcpToolName(mcp[1]!, mcp[2]!);
-  const monid = /^monid_([a-z]+)$/.exec(name);
-  if (monid) return `monid.${monid[1]}`;
   const alias = builtinHarness(harness)?.facts?.toolAlias?.exec(name) ?? null;
   return alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : undefined;
 }

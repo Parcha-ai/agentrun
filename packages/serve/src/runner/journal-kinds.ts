@@ -248,7 +248,7 @@ export interface AskData {
   readonly args?: unknown;
   /** When it was asked (ISO), from the loop's clock; a re-ask on a resume keeps the first. */
   readonly requestedAt?: string;
-  /** Its approval price (the spec's approvalPrice); null when it has none. */
+  /** Its approval price (a catalog tool's, the spec's mcp priceOf); null when it has none. */
   readonly price?: ApprovalPrice | null;
 }
 

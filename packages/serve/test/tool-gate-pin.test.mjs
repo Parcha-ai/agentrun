@@ -63,7 +63,7 @@ test("settings validate a pin: on an MCP tool's own key only, 1 to 8 top-level a
   assert.deepEqual(settingsIssues({ [SEND]: { pin: { channel_id: "C0123" } } }), [], "a pin with no permission of its own");
   const reasons = (value) => settingsIssues(value).map((issue) => [issue.field, issue.reason]);
   assert.deepEqual(reasons({ bash: { pin: { command: "ls" } } }), [["bash.pin", "not_allowed"]]);
-  assert.deepEqual(reasons({ "monid.run": { pin: { query: "x" } } }), [["monid.run.pin", "not_allowed"]]);
+  assert.deepEqual(reasons({ "monid:faux/person/enrich": { pin: { body: "x" } } }), [["monid:faux/person/enrich.pin", "not_allowed"]]);
   assert.deepEqual(reasons({ "mcp:slack/*": { pin: { channel_id: "C0123" } } }), [["mcp:slack/*.pin", "not_allowed"]]);
   assert.deepEqual(reasons({ [SEND]: { pin: {} } }), [[`${SEND}.pin`, "wrong_type"]]);
   assert.deepEqual(reasons({ [SEND]: { pin: ["channel_id"] } }), [[`${SEND}.pin`, "wrong_type"]]);

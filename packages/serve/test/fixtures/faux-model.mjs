@@ -182,7 +182,7 @@ function replyTo(context, faux) {
     return since === 0 ? faux.message(faux.toolCall("web_fetch", { url: "http://public.example/" }), { stopReason: "toolUse" }) : faux.message("Fetched again.");
   }
   // Runs monid's /slow, which holds until it is stopped; then, or on a follow-up (the run stopped), says so.
-  if (first.includes("Run monid's /slow.")) return results === 0 && users.length === 1 ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/slow" }), { stopReason: "toolUse" }) : faux.message("Ran.");
+  if (first.includes("Run monid's /slow.")) return results === 0 && users.length === 1 ? faux.message(faux.toolCall("monid__faux__slow", { body: { name: "Ada" } }), { stopReason: "toolUse" }) : faux.message("Ran.");
   // Searches the web once for what follows "Search the web for ", then answers with the search's answer.
   if (first.includes("Search the web for ")) {
     const query = first.slice(first.indexOf("Search the web for ") + "Search the web for ".length).replace(/\.$/, "");
@@ -233,19 +233,20 @@ function replyTo(context, faux) {
   }
   // Runs monid's /person/enrich (priced at once), then /slow (held until stopped, or cut by a crash), then answers.
   if (first.includes("Run monid's /person/enrich, then its slow endpoint.")) {
-    const steps = [["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }], ["monid_run", { provider: "faux", endpoint: "/slow", input: {} }]];
+    const steps = [["monid__faux__person__enrich", { body: { name: "Ada" } }], ["monid__faux__slow", { body: { name: "Ada" } }]];
     return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message("Ran.");
   }
-  // Runs monid's /person/enrich with no inspect first (held at the run allowance): one call in the first turn, then, in
-  // each turn after it (a raised cap's follow-up), one more call, or two with "twice"; then answers with the last result.
-  if (first.includes("Run monid's /person/enrich, called again after a raise")) {
+  // Runs the faux endpoint of monid's it names (monid:faux/person/search is monid__faux__person__search): one call in the
+  // first turn, then, in each turn after it (a raised cap's follow-up), one more call, or two with "twice"; then answers
+  // with the last result.
+  const again = /Run monid's \/(\S+), called again after a raise/.exec(first)?.[1];
+  if (again) {
     const calls = first.includes("twice") ? 2 * users.length - 1 : users.length;
-    return results < calls ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+    return results < calls ? faux.message(faux.toolCall(`monid__faux__${again.replaceAll("/", "__")}`, { body: { name: "Ada" } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
   }
-  // Finds, reads and runs a monid endpoint, a call per turn, under the tools' wire names; then answers with the run's result.
+  // Runs monid's /person/enrich under its wire name; then answers with the run's result.
   if (first.includes("Enrich with monid")) {
-    const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];
-    return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+    return results === 0 ? faux.message(faux.toolCall("monid__faux__person__enrich", { body: { name: "Ada" } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
   }
   // Uses the skill that fits, as a run told of its skills on demand does: reads the SKILL.md whose path its system prompt
   // names, then answers with the skill's FORMAT-LINE as the file has it. A prompt that already holds the skill's text says

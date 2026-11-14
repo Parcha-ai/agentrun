@@ -37,9 +37,11 @@ export const TOOL_FIELDS: readonly string[] = TOOL_KEYS.filter((row) => row.kind
  *  that run those tools. A name neither holds is left out; a key that unlocks none of its names lists nothing. */
 export function unlockedBy(candidates: readonly string[], tools: readonly { name: string; harnesses: readonly string[] }[], providers: readonly { id: string }[]) {
   const bound = new Set([...tools.map((tool) => tool.name), ...providers.map((provider) => `decisions.${provider.id}`)]);
-  const unlocks = candidates.filter((name) => bound.has(name));
+  // A catalog source's tools (`monid:*`) are granted by name, never listed: the source is shown as it is, and its tools are
+  // host tools, run on every harness.
+  const unlocks = candidates.filter((name) => bound.has(name) || name.endsWith(":*"));
   const run = new Set(tools.filter((tool) => unlocks.includes(tool.name)).flatMap((tool) => tool.harnesses));
-  return { unlocks, harnesses: HARNESSES.filter((harness) => run.has(harness)) };
+  return { unlocks, harnesses: HARNESSES.filter((harness) => run.has(harness) || unlocks.some((name) => name.endsWith(":*"))) };
 }
 
 /** What a row unlocks here: a `tool` row's, its tools and providers as capabilities bind them (unlockedBy); any other
@@ -57,8 +59,12 @@ export function rowUnlocks(row: { kind: string; unlocks: readonly string[]; harn
   return { unlocks: [] as string[], harnesses: HARNESSES.filter((harness) => (row.harnesses ?? HARNESSES).includes(harness) && runs(harness)) };
 }
 
+/** Whether a key row's `unlock` unlocks the tool `name`: by its name, or `<source>:*` for every tool of a catalog source
+ *  (`monid:*`: `monid:apollo/people/match`, `monid:apollo/*`). */
+export const unlocksTool = (unlock: string, name: string): boolean => unlock === name || (unlock.endsWith(":*") && name.startsWith(unlock.slice(0, -1)));
+
 /** The key that unlocks the tool `name` (capabilities' `tools[].key`, so a page links "needs the X key" to it), if any. */
-export const keyOf = (name: string): string | undefined => TOOL_KEYS.find((row) => (row.unlocks as readonly string[]).includes(name))?.id;
+export const keyOf = (name: string): string | undefined => TOOL_KEYS.find((row) => (row.unlocks as readonly string[]).some((unlock) => unlocksTool(unlock, name)))?.id;
 
 /** Why a stored value does not open, in the order a re-entry names one: sealed under another key than the server's, or
  *  its row damaged. */
