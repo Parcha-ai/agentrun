@@ -239,7 +239,8 @@ edits and copies it: an issue. You make at most one write per run.
    or when the person running you asks for the notes only.
 2. Look for the draft first: `list_issues` with `state: OPEN`, `orderBy: CREATED_AT`, `direction: DESC`, `perPage:
    100` (and `labels: ["release-notes"]` when `get_label` finds that label), for an issue titled exactly `Release notes
-   draft: <tag>`. When one is open, don't write: answer with it (`action: "exists"`), because a person may already be editing
+   draft: <tag>`, page by page (`after: <pageInfo.endCursor>`) while `pageInfo.hasNextPage`, up to 5 pages; when the
+   5th still has a next page, say in `questions` that older open issues were not checked. When one is open, don't write: answer with it (`action: "exists"`), because a person may already be editing
    it. Only when the person running you asks to redo it ("regenerate", "update the draft"), `issue_write` with
    `method: update` on that issue, with the new body (GitHub keeps the old one in the issue's edit history).
 3. Otherwise `issue_write` with `method: create`:

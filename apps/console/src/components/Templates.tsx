@@ -167,7 +167,12 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       setSchedules(scheduled);
       setMade(done);
     } catch (e) {
-      if (e instanceof ClientError && e.fields?.length) { setIssues(e.fields); setSaid({ text: e.message, withIssues: true }); }
+      if (e instanceof ClientError && e.fields?.length) {
+        setIssues(e.fields); setSaid({ text: e.message, withIssues: true });
+        // A server choice refused (one deleted or changed while the page was open): the saved servers are read again, so
+        // the screen and the next Apply show what is saved now.
+        if (e.fields.some((i) => i.field.startsWith("servers.") || i.field.startsWith("mcp."))) setServersTries((n) => n + 1);
+      }
       else setSaid({ text: e instanceof Error ? e.message : String(e), withIssues: false });
     } finally { setApplying(false); }
   };
