@@ -718,6 +718,119 @@ test("connect to a machine the vendor reads as going (past its deadline or relea
 	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
 });
 
+// --- a computer deleted out from under a connection (by the vendor's own API, mid-run) ---
+
+/** The client's slack for the daemon's answer to a call's own timeout (client.test.mjs holds it to 5 s). */
+const ANSWER_SLACK_MS = (await import("../dist/client.js")).ANSWER_SLACK_MS ?? 5_000;
+/** The adapter's words for a computer that was deleted, never the stream's. */
+const DELETED = /^the computer computer-[0-9a-f]{12} \(m\d{8}\) was deleted/;
+/** Every setImmediate turn up to n: the stream's end, the fake's replies and the read-back, without a clock. */
+const turns = async (n = 50) => {
+	for (let i = 0; i < n; i++) await new Promise((done) => setImmediate(done));
+};
+
+test("a computer deleted while its connection is idle: the next call answers not_found in the adapter's words, after one read of the machine", async () => {
+	const { provider, fake } = setup();
+	const ref = made(await create(provider));
+	const connected = made(await provider.connect(ref));
+	fake.vanish(ref.id, "end");
+	await turns();
+	const gets = () => fake.calls.filter(([name, id]) => name === "get" && id === ref.id).length;
+	const before = gets();
+	const shot = await connected.client.call("exec.run", { argv: ["true"], timeoutMs: 5_000 });
+	assert.equal(shot.error?.code, "not_found", JSON.stringify(shot));
+	assert.match(shot.error.message, DELETED);
+	assert.doesNotMatch(shot.error.message, /stream/);
+	// Every later call says the same, with no second read: the stream ended once.
+	const again = await connected.client.call("files.stat", { path: "/proc/self/cwd" });
+	assert.deepEqual(again, shot);
+	assert.equal(gets() - before, 1, "the machine is read once");
+	await connected.close();
+});
+
+test("a computer deleted during a call in flight: that call and every other in flight settle not_found in the adapter's words, before their timeouts", async () => {
+	const { provider, fake } = setup();
+	const ref = made(await create(provider));
+	const connected = made(await provider.connect(ref));
+	const running = [connected.client.call("exec.run", { argv: ["sleep", "600"], timeoutMs: 600_000 }), connected.client.call("exec.run", { argv: ["sleep", "60"], timeoutMs: 60_000 })];
+	await turns();
+	fake.vanish(ref.id, "end");
+	const settled = await Promise.all(running);
+	for (const one of settled) {
+		assert.equal(one.error?.code, "not_found", JSON.stringify(one));
+		assert.match(one.error.message, DELETED);
+	}
+	assert.deepEqual(settled[0], settled[1], "one answer for every call in flight");
+	await connected.close();
+});
+
+test("a call in flight whose transport hangs ends at its own timeoutMs (and the answer's slack), not at the transport's death; a deleted computer then says so", async (t) => {
+	for (const deleted of [true, false]) {
+		const { provider, fake } = setup();
+		const ref = made(await create(provider));
+		const connected = made(await provider.connect(ref));
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		let answer;
+		connected.client.call("exec.run", { argv: ["sleep", "120"], timeoutMs: 70_000 }).then((result) => (answer = result));
+		await turns();
+		if (deleted) fake.vanish(ref.id, "hang");
+		else only(fake).hung = true;
+		t.mock.timers.tick(70_000 + ANSWER_SLACK_MS - 1);
+		await turns();
+		assert.equal(answer, undefined, "still waiting just short of its bound");
+		t.mock.timers.tick(1);
+		await turns();
+		assert.ok(answer, "settled at its bound, while the transport still hangs");
+		if (deleted) {
+			assert.equal(answer.error?.code, "not_found", JSON.stringify(answer));
+			assert.match(answer.error.message, DELETED);
+		} else {
+			assert.equal(answer.error?.code, "timeout", JSON.stringify(answer));
+			assert.match(answer.error.message, /exec\.run had no answer within 75 s \(its own timeout of 70 s, and 5 s for the answer to come\)/);
+		}
+		t.mock.timers.reset();
+		await connected.close();
+	}
+});
+
+test("a computer the vendor reads as going once its stream ended (Agent37 reads a deleted instance so) is deleted too: not_found in the adapter's words", async () => {
+	const { provider, fake } = setup();
+	const ref = made(await create(provider));
+	const connected = made(await provider.connect(ref));
+	const m = only(fake);
+	m.state = "going";
+	for (const bridge of m.bridges) bridge.exit(255);
+	await turns();
+	const after = await connected.client.call("exec.run", { argv: ["true"], timeoutMs: 1_000 });
+	assert.equal(after.error?.code, "not_found", JSON.stringify(after));
+	assert.match(after.error.message, DELETED);
+	await connected.close();
+});
+
+test("a connection closed by its caller is not a deleted computer: no read-back, the client's own words", async () => {
+	const { provider, fake } = setup();
+	const ref = made(await create(provider));
+	const connected = made(await provider.connect(ref));
+	await connected.close();
+	const gets = fake.calls.filter(([name]) => name === "get").length;
+	const after = await connected.client.call("exec.run", { argv: ["true"], timeoutMs: 1_000 });
+	assert.equal(after.error?.code, "gone");
+	assert.match(after.error.message, /the connection was closed/);
+	assert.equal(fake.calls.filter(([name]) => name === "get").length, gets, "no read of the machine");
+});
+
+test("a stream that ends on a computer still running keeps the stream's words: only a deleted computer is not_found", async () => {
+	const { provider, fake } = setup();
+	const ref = made(await create(provider));
+	const connected = made(await provider.connect(ref));
+	for (const bridge of only(fake).bridges) bridge.exit(255);
+	await turns();
+	const after = await connected.client.call("exec.run", { argv: ["true"], timeoutMs: 1_000 });
+	assert.equal(after.error?.code, "gone");
+	assert.match(after.error.message, /the daemon's stream (ended|closed)/);
+	await connected.close();
+});
+
 test("list finds this provider's machines by labels; attach by id or labels reads the spec back; one that drifted is refused and left running", async () => {
 	const { provider, fake } = setup();
 	const a = made(await create(provider, { ...SPEC, labels: { team: "a" } }));
