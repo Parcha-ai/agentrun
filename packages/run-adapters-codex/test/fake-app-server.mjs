@@ -244,7 +244,9 @@ async function modelTurn(turnId) {
     };
     const decoder = new TextDecoder();
     let buffer = '';
-    for await (const chunk of res.body) {
+    // As Codex does, the answer is done at its completion event: Codex reads no further and goes on (runs its call), while
+    // the provider may still hold the stream open.
+    read: for await (const chunk of res.body) {
       buffer += decoder.decode(chunk, { stream: true });
       for (let at = buffer.indexOf('\n\n'); at >= 0; at = buffer.indexOf('\n\n')) {
         const data = buffer.slice(0, at).split('\n').filter((line) => line.startsWith('data:')).map((line) => line.replace(/^data: ?/, '')).join('\n');
@@ -255,8 +257,10 @@ async function modelTurn(turnId) {
           text += event.delta ?? '';
           piece(event.delta ?? '');
         } else if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') call = event.item;
-        else if (event.type === 'response.completed') completed = true;
-        else if (event.type === 'response.incomplete') incomplete = event.response?.incomplete_details?.reason ?? 'unknown';
+        else if (event.type === 'response.completed') {
+          completed = true;
+          break read;
+        } else if (event.type === 'response.incomplete') incomplete = event.response?.incomplete_details?.reason ?? 'unknown';
       }
     }
     if (incomplete) {
