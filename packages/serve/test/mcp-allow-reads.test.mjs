@@ -136,6 +136,25 @@ test("a saved server's read marks each tool read, write or destructive, gives a 
   assert.deepEqual([denied.permission, denied.allow_reads], ["deny", undefined]);
 });
 
+test("a saved server's read says when Allow reads is what a tool falls back to with no setting of its own (fallback_allow_reads), even while its own setting asks; never on a write or a destructive tool, under a deny, or with the switch off", async (t) => {
+  const { api } = await serve(t);
+  await addFake(t, api);
+  const read = async () => (await api("GET", "/settings/mcp-servers/fake")).body.tools;
+  const of = (tools, name) => tools.find((tool) => tool.name === name);
+  const marks = (tools) => ["add", "note", "delete_thing"].map((name) => of(tools, name).fallback_allow_reads);
+  assert.deepEqual(marks(await read()), [undefined, undefined, undefined], "the switch off: no tool falls back to it");
+  assert.equal((await api("PUT", "/settings/tools", READS)).status, 200);
+  assert.deepEqual(marks(await read()), [true, undefined, undefined], "on: the read-only tool falls back to it, a write and a destructive tool never");
+  // Its own setting decides it now (ask, no allow_reads), yet with that setting removed Allow reads would let it run: the
+  // console's "(allow reads)" fallback, which a choice of allow restores by removing the tool's own setting.
+  assert.equal((await api("PUT", "/settings/tools", { ...READS, "mcp:fake/add": { permission: "ask" } })).status, 200);
+  const asked = of(await read(), "add");
+  assert.deepEqual([asked.permission, asked.allow_reads, asked.fallback_allow_reads], ["ask", undefined, true]);
+  // A deny on the wildcard holds over the switch: no fallback to it.
+  assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { permission: "deny", allow_reads: true }, "mcp:fake/add": { permission: "ask" } })).status, 200);
+  assert.equal(of(await read(), "add").fallback_allow_reads, undefined);
+});
+
 test("pi: under allow_reads a read-only tool runs with no approval; a write parks; a destructive call parks marked destructive and its allow needs confirm_destructive; a deny on the server's wildcard still refuses the read", { timeout: 180_000 }, async (t) => {
   const server = await serve(t);
   const { api } = server;

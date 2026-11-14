@@ -219,8 +219,9 @@ function AllowReads({ server: s, settings, busy, onSettings }: { server: McpServ
 
 /** A saved server's tools, each with its effect's mark and what a call costs; and, where this server's tool settings
  *  read, its permission here (`mcp:<server>/<tool>`), saved at once. A row's fallback is what applies with no setting of
- *  its own: allow where the server's read says Allow reads lets it run (`allow_reads`, the server's word: never worked
- *  out here), named "allow reads"; else the server's wildcard, else the owner's default. A destructive tool's allow takes
+ *  its own: allow where the server's read says Allow reads would let it run with no setting of its own
+ *  (`fallback_allow_reads`, the server's word: never worked out here), named "allow reads", even while its own setting
+ *  asks, so a choice of allow removes that setting; else the server's wildcard, else the owner's default. A destructive tool's allow takes
  *  a second click. */
 function ServerTools({ server: s, settings, busy, onSettings }: { server: McpServer; settings: ToolSettings | null; busy: boolean; onSettings: (edit: (current: ToolSettings) => ToolSettings) => void }) {
   const wildcard = settings?.[keyOf(s.name, "*")];
@@ -241,8 +242,8 @@ function ServerTools({ server: s, settings, busy, onSettings }: { server: McpSer
       effectOf={(name) => byKey.get(name)?.effect}
       confirmAllowOf={(name) => byKey.get(name)?.effect === "destructive"}
       refused={(_, permission) => permission === "deny"}
-      fallbackWordOf={(name) => (byKey.get(name)?.allow_reads ? "allow reads" : undefined)}
-      permissionFallbackOf={(g) => (byKey.get(g.name)?.allow_reads ? "allow" : wildcard?.permission ?? g.default_permission)} />
+      fallbackWordOf={(name) => (byKey.get(name)?.fallback_allow_reads ? "allow reads" : undefined)}
+      permissionFallbackOf={(g) => (byKey.get(g.name)?.fallback_allow_reads ? "allow" : wildcard?.permission ?? g.default_permission)} />
   );
 }
 

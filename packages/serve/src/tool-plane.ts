@@ -66,7 +66,19 @@ export const serverGate = (name: string, settings: ToolSettingsMap, effect?: Too
   const permission = permissionOf(name, settings as never, {}, "ask", effect);
   // `allow_reads`: the allow is its server's "allow reads" (a read-only tool's ask lifted), not a setting or a default.
   const lifted = effect === "read" && permission === "allow" && permissionOf(name, settings as never) === "ask";
-  return { permission, ...(lifted ? { allow_reads: true as const } : {}), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)] };
+  // `fallback_allow_reads`: with no permission on the tool's own key, its server's "allow reads" would lift its ask, so
+  // allow is what applies once that setting goes, whatever the setting says now (the console's "allow reads" fallback).
+  const unset = effect === "read" ? withoutOwnPermission(name, settings) : undefined;
+  const falls = unset !== undefined && permissionOf(name, unset as never, {}, "ask", effect) === "allow" && permissionOf(name, unset as never) === "ask";
+  return { permission, ...(lifted ? { allow_reads: true as const } : {}), ...(falls ? { fallback_allow_reads: true as const } : {}), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)] };
+};
+/** `settings` with no permission on `name`'s own key (its other fields kept), a copy that keeps the map's marks
+ *  (SETTINGS_UNREAD, carried by the spread). */
+const withoutOwnPermission = (name: string, settings: ToolSettingsMap): ToolSettingsMap => {
+  const own = settings[name];
+  if (own?.permission === undefined) return settings;
+  const { permission: _gone, ...kept } = own;
+  return { ...settings, [name]: kept };
 };
 /** The run's own tools beyond the table, each its own settings key, allowed by default like a table tool: the learned
  *  workflow a run's pin names runs as `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL), and the host's

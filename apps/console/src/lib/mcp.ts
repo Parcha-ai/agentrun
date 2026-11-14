@@ -10,6 +10,9 @@ export type ToolEffect = "read" | "write" | "destructive";
 export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[]; effect?: ToolEffect;
   /** On a saved server's read: its permission is allow because of its server's Allow reads (the server's word). */
   allow_reads?: true;
+  /** On a saved server's read: with no setting of its own, its server's Allow reads lets it run (the server's word), so
+   *  allow is its fallback, whatever its own setting says now. */
+  fallback_allow_reads?: true;
   /** A known meta tool (`grantable: false`, with the server's `reason`): never granted. */
   grantable?: false; reason?: string;
   /** Why a grant of it is refused where it would run, as the server says it (`*`: on every harness; else by harness id). */

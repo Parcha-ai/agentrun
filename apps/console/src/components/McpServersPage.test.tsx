@@ -800,13 +800,18 @@ describe("Settings → MCP servers, a server's tool settings", () => {
     { name: "delete_repo", input_schema: { type: "object" }, effect: "destructive", ...gate() },
   ] as unknown as McpServer["tools"];
   /** A server whose tool settings are `settings`, kept as each PUT replaces them. Its read of gh marks each read-only
-   *  tool `allow_reads` while gh's wildcard carries it, as the server does (`marks: false`: a read that marks none). */
+   *  tool `fallback_allow_reads` while gh's wildcard carries it, and `allow_reads` (its permission allow) where no setting
+   *  of its own decides it, as the server does (`marks: false`: a read that marks none). */
   function withSettings(settings: Record<string, unknown>, { marks = true } = {}) {
     let now = settings;
     const s = server([[saved({ name: "gh", tools: MARKED })]], (c) => {
       if (c.method === "GET" && c.path === "/v2/settings/mcp-servers") {
         const on = marks && (now["mcp:gh/*"] as { allow_reads?: true } | undefined)?.allow_reads === true;
-        const tools = MARKED.map((t) => (on && t.effect === "read" && !now[`mcp:gh/${t.name}`] ? { ...t, permission: "allow", allow_reads: true } : t));
+        const tools = MARKED.map((t) => {
+          if (!on || t.effect !== "read") return t;
+          const own = (now[`mcp:gh/${t.name}`] as { permission?: string } | undefined)?.permission;
+          return own ? { ...t, permission: own, fallback_allow_reads: true } : { ...t, permission: "allow", allow_reads: true, fallback_allow_reads: true };
+        });
         return json(200, { servers: [saved({ name: "gh", tools: tools as McpServer["tools"] })] });
       }
       if (c.path !== "/v2/settings/tools") return undefined;
@@ -844,6 +849,23 @@ describe("Settings → MCP servers, a server's tool settings", () => {
     await act(async () => { p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!.click(); });
     await p.settle();
     expect(s.settings()).toEqual({ "mcp:other/*": { permission: "deny" }, "mcp:gh/*": { permission: "ask" } });
+  });
+
+  it("a read-only tool set to ask under Allow reads falls back to allow (allow reads), as the server's read says: allow again removes its own setting, so turning the switch off leaves it asking", async () => {
+    const s = withSettings({ "mcp:gh/*": { allow_reads: true }, "mcp:gh/get_repo": { permission: "ask" } });
+    const p = await open(s.v2, { choices: CHOICES });
+    expect(valueOf(permission(p, "get_repo"))).toBe("ask");
+    // Ask is its own setting, not the default: with it removed, Allow reads lets the tool run.
+    expect(permission(p, "get_repo").textContent).toBe("ask");
+    expect(table(p).querySelector('tr[data-tool="mcp:gh/get_repo"]')!.textContent).toContain("default: allow (allow reads)");
+    await pick(permission(p, "get_repo"), "allow");
+    await p.settle();
+    expect(s.settings()).toEqual({ "mcp:gh/*": { allow_reads: true } });
+    expect(permission(p, "get_repo").textContent).toBe("allow (allow reads)");
+    await act(async () => { p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!.click(); });
+    await p.settle();
+    expect(s.settings()).toEqual({});
+    expect(valueOf(permission(p, "get_repo"))).toBe("ask");
   });
 
   it("the switch and its label are one line: the label beside the switch, which it names", async () => {
