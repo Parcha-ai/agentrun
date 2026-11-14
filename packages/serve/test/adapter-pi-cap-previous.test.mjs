@@ -1,6 +1,6 @@
 // The cap's `expected` pricing on the runner (kernel cap price.ts expectedInput): a request is priced from a recent
-// request of its session (here its previous one), its cache read at the cache-read price and only what the body grew by since at full price, as
-// main's in-process cap priced it from the conversation's last answer (cap.ts capModels previousIn). `strict` prices
+// request of its session (here its previous one), its cache read at the cache-read price and only what the body grew by
+// since at full price, as main's in-process cap priced it from the conversation's last answer. `strict` prices
 // every token uncached, a previous request or not, and is never loosened by it. Through the adapter loop on a real store:
 // pi's two requests of one turn (a tool call, then its answer), each judged by the run's one cap.
 import assert from "node:assert/strict";

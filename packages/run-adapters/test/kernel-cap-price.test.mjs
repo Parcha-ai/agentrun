@@ -2,8 +2,9 @@
 // is sent, plus what its provider adds and its hosted tools read) at the dearer of the input and cache-write prices; under
 // "expected" (the default) the cache of a recent request of the session read at the cache-read price (one that ended under
 // 4 minutes ago on the same model, the biggest no bigger than this one), so only a cache miss can pass the cap, by at most
-// the request's bound; under "strict" every token uncached. Its output held at what it is sent with, its thinking budget included. A model with no price, and a priced
-// model with no output ceiling, cannot be kept within a cap: under one they are refused for good.
+// the request's bound; under "strict" every token uncached. Its output held at what it is sent with, its thinking budget
+// included. A model with no price, and a priced model with no output ceiling, cannot be kept within a cap: under one they
+// are refused for good.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CACHE_WARM_MS, CapRefused, RECENT_REQUESTS_KEPT, recentAfter, warmFrom } from "../dist/kernel/cap/index.js";

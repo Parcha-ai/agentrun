@@ -50,6 +50,13 @@ function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd
   // left - keepUsd <= left. The second is the rule as it was. So every hold is at most what is left, as before; the
   // hold, its bound, what a stop counts and what is booked are priced by the same p at the output sent, unchanged.
   // (The keep-back is kept with a float's tail to spare, so the host's sum of the same figures never reads it as passed.)
+  // When the warm guess is wrong (expected mode prices the bound's head as cached from a recent request, and the cache
+  // is gone): the hold is too low, and three things still bound the spend. The output is limited to what is sent
+  // here, so the request's real cost is at most its worst: its whole bound uncached at the dearer input price plus
+  // that output. The first branch admits only a worst that leaves the keep-back free, so a full miss still lands under
+  // the cap. Its real cost is then booked at the turn, so the next request is judged on what this one cost, never on
+  // its hold. Only the second branch (no keep-back, or a run wrapping up) admits on the hold, and there a miss passes
+  // the cap by at most its bound, the overshoot expected mode states; strict mode reads no cache and has none.
   const kept = isFigure(keepUsd) && keepUsd > 0 ? mostOutput(p.worst, p.least, p.asked ?? 0, left - keepUsd - 2 * FIT_TOLERANCE) : undefined;
   const output = kept ?? mostOutput(p.cost, p.least, p.asked ?? 0, left);
   if (output === undefined) {
