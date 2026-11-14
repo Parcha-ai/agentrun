@@ -32,13 +32,16 @@ const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: 
 
 // A saved MCP server as the list reads it: its name, and the source and toolkit a need is matched on.
 type Saved = { name: string; source: "composio" | "github" | "url"; toolkit: string | null };
-type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: Saved[]; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void> };
+type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: Saved[]; serversDown?: { now: boolean }; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void> };
 async function open(name?: string, fake: Fake = {}) {
   const went: string[] = [];
   const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[]; servers?: Record<string, string>; overrides?: Record<string, unknown> }; key: string }[] = [];
   const v2 = {
     listTemplates: async () => ({ templates: fake.templates ?? [REVIEWER, NOTES] }),
-    listMcpServers: async () => ({ servers: (fake.servers ?? [{ name: "github", source: "github", toolkit: "github" }]).map((s) => ({ ...s, url: `https://${s.name}.example/mcp`, auth: { type: "none" }, tools: [], credential: null })) }),
+    listMcpServers: async () => {
+      if (fake.serversDown?.now) throw new ClientError(503, "unavailable", "The store is not answering.");
+      return { servers: (fake.servers ?? [{ name: "github", source: "github", toolkit: "github" }]).map((s) => ({ ...s, url: `https://${s.name}.example/mcp`, auth: { type: "none" }, tools: [], credential: null })) };
+    },
     // A trigger the apply made, read back (GET /triggers/{id}); one the fake doesn't have is a 404.
     getTrigger: async (id: string) => {
       if (fake.stallTriggers) return new Promise(() => {});
@@ -154,7 +157,7 @@ describe("applying a template", () => {
       .toEqual({ name: "slack", preset: "composio", toolkit: "slack", tools: ["SLACK_SEND_MESSAGE", "SLACK_FIND_CHANNELS"] });
   });
 
-  it("a need one saved server matches says Uses it, whatever its name, with the need's reason; Apply sends no servers", async () => {
+  it("a need one saved server matches says Uses it, whatever its name, with the need's reason; Apply sends it as servers", async () => {
     const t = await open("inbound-lead", { templates: [LEAD_MCP], servers: [{ name: "crm", source: "url", toolkit: "hubspot" }, { name: "hubspot", source: "url", toolkit: null }] });
     const row = t.host.querySelector('[data-mcp="hubspot"]')!;
     expect(row.textContent).toContain("URL");
@@ -166,7 +169,22 @@ describe("applying a template", () => {
     await t.click(t.button(/^Apply/));
     // Grants name the package's tool; the server moves it onto crm.
     expect(t.sent[0].body.grants).toEqual(["mcp:hubspot/create_note"]);
-    expect(t.sent[0].body.servers).toBeUndefined();
+    // The server shown is sent, so one deleted and replaced by another match before Apply is refused, never swapped in.
+    expect(t.sent[0].body.servers).toEqual({ hubspot: "crm" });
+  });
+
+  it("saved servers that can't be read: said with Try again, and Apply waits for them; read, the need maps", async () => {
+    const down = { now: true };
+    const t = await open("inbound-lead", { templates: [LEAD_MCP], servers: [{ name: "crm", source: "url", toolkit: "hubspot" }], serversDown: down });
+    const alert = t.host.querySelector('[data-servers-unread] [role="alert"]')!;
+    expect(alert.textContent).toContain("saved MCP servers");
+    expect(t.button(/^Apply/)!.disabled).toBe(true);
+    expect(t.host.querySelector('[data-mcp="hubspot"]')!.textContent).not.toContain("Not set up here");
+    down.now = false;
+    await t.click(t.button(/^Try again/));
+    expect(t.host.querySelector("[data-servers-unread]")).toBeNull();
+    expect(t.host.querySelector('[data-mcp="hubspot"]')!.textContent).toContain("Uses crm");
+    expect(t.button(/^Apply/)!.disabled).toBe(false);
   });
 
   it("a need several saved servers match: none picked for the owner, even the one named as the toolkit; Apply waits for the pick, then sends it as servers", async () => {
