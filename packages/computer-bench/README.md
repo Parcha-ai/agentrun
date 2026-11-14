@@ -171,7 +171,7 @@ per task.
 | [ui-fixture](suites/ui-fixture) | 4 | the protocol's ui fixture app (`ai.agentrun.uifixture`; its canvas counts the clicks that reach it), run by its fake ui driver (`@parcha/agentrun-computer/fake-ui-driver`) in the tests, and by a real driver wherever the fixture app is installed |
 | [mac-dev](suites/mac-dev/README.md) | 20 (10 dev, 10 held out) | Notes, Calendar, Finder, Safari, TextEdit, System Settings, Reminders on macOS 26; four tasks cross two apps |
 | [android-dev](suites/android-dev/README.md) | 20 (10 dev, 10 held out) | Settings, Clock, Contacts, Files, Chrome, and two tasks through Chrome's share sheet, on an unrooted phone, checked through `settings get`, `content query` and the ui tree |
-| [linux-desktop](suites/linux-desktop/README.md) | 10 (5 dev, 5 held out) | Mousepad, xfce4-terminal, Thunar, Firefox, and two tasks across two apps, on a Linux desktop, with or without a window manager; all ten verified live on E2B Desktop for seeds 1-3 |
+| [linux-desktop](suites/linux-desktop/README.md) | 10 (5 dev, 5 held out) | Mousepad, xfce4-terminal, Thunar, Firefox, and two tasks across two apps, on a Linux desktop, with or without a window manager; all ten verified live on E2B Desktop for seeds 1-3, and the eight without Thunar on Agent37 |
 | [macosworld](suites/macosworld/PORT.md) | 10 | ported from macOSWorld (CC BY-NC 4.0: by reference, none of its text) |
 | [mobileworld](suites/mobileworld/PORT.md) | 8 | ported from MobileWorld (Apache-2.0): the 8 of its 201 that port faithfully to an unrooted phone |
 

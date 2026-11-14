@@ -26,26 +26,27 @@ A task's capability probe asks for its apps and xdotool (`command -v`); a deskto
 
 ## Proven live
 
-`computer-bench verify` on E2B Desktop, seeds 1, 2 and 3, on 2026-11-14: after setup alone every check fails, and after
-setup and the oracle every check passes, each episode on its own desktop. Two runs, 60 desktops each, 30 of 30 right in
-both:
+`computer-bench verify`, seeds 1, 2 and 3, on 2026-11-14: after setup alone every check fails, and after setup and the
+oracle every check passes, each episode on its own desktop.
 
-- on main at 9deeebf662 (after #2735), where E2B's desktop runs xfwm4;
-- on main before #2735, where E2B's desktop ran no window manager (the tasks then lacked setup's `windowactivate`, which
-  does nothing there).
+- E2B Desktop, these tasks as they are here, serve and the bench built at main 9deeebf662 plus this suite (after #2735,
+  where E2B's desktop runs xfwm4): 60 desktops, 30 of 30 right. Two earlier runs of the tasks before their teardowns kept pids were 30 of 30 too, one of
+  them before #2735, where E2B's desktop ran no window manager.
+- Agent37 (its `agentrun-box` template, revision 2, with xfwm4): the eight tasks without Thunar, 48 desktops, 24 of 24
+  right. The template has no Thunar, so the two `files` tasks' capability probe refuses it.
 
-| task | seed 1 | seed 2 | seed 3 |
-|---|---|---|---|
-| linux.editor.new-note | right | right | right |
-| linux.editor.edit-config | right | right | right |
-| linux.editor.replace-word | right | right | right |
-| linux.terminal.count-errors | right | right | right |
-| linux.terminal.git-email | right | right | right |
-| linux.files.rename | right | right | right |
-| linux.files.move | right | right | right |
-| linux.browser.sign-form | right | right | right |
-| linux.cross.terminal-to-note | right | right | right |
-| linux.cross.page-to-note | right | right | right |
+| task | E2B seed 1 | E2B seed 2 | E2B seed 3 | Agent37 seeds 1-3 |
+|---|---|---|---|---|
+| linux.editor.new-note | right | right | right | right x3 |
+| linux.editor.edit-config | right | right | right | right x3 |
+| linux.editor.replace-word | right | right | right | right x3 |
+| linux.terminal.count-errors | right | right | right | right x3 |
+| linux.terminal.git-email | right | right | right | right x3 |
+| linux.files.rename | right | right | right | no Thunar |
+| linux.files.move | right | right | right | no Thunar |
+| linux.browser.sign-form | right | right | right | right x3 |
+| linux.cross.terminal-to-note | right | right | right | right x3 |
+| linux.cross.page-to-note | right | right | right | right x3 |
 
 The runs came from a frozen kit outside the repository that builds `serve` and the bench at a pinned commit and runs
 `computer-bench verify --backend serve`: verify holds a run and never starts its agent, so no model is called.
