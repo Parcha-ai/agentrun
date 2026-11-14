@@ -51,6 +51,65 @@ test("softEscalatesOf: an escalate whose `when` reads a judge's field, its `not`
   assert.deepEqual([...softEscalatesOf(parent)], ["inner/unsupported"]);
 });
 
+/** A workflow whose root is `steps`, each escalate reading `check.unsupported` unless it says otherwise. */
+const chainOf = (...steps) => ({ v: 2, name: "answer", schemas, input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "chain", steps } });
+const JUDGE_CHECK = { node: "judge", label: "check", state: { question: "{question}" }, out: "Check", as: "check" };
+const EXTRACT_CHECK = { node: "extract", label: "recheck", instructions: "Say whether it is unsupported.", out: "Check", as: "check" };
+const ON_CHECK = { node: "escalate", label: "unsupported", when: { predicate: "field_true", path: "check.unsupported" }, kind: "k", stage: "s", summary: "x" };
+
+test("softEscalatesOf: the step that last wrote the path, at the escalate, decides; a judge overwritten by an extract stays hard", () => {
+  assert.deepEqual([...softEscalatesOf(chainOf(JUDGE_CHECK, EXTRACT_CHECK, ON_CHECK))], []);
+  assert.deepEqual([...softEscalatesOf(chainOf(EXTRACT_CHECK, JUDGE_CHECK, ON_CHECK))], ["unsupported"]);
+  // An escalate before the judge reads the extract's `check`, one after it the judge's.
+  assert.deepEqual([...softEscalatesOf(chainOf(EXTRACT_CHECK, { ...ON_CHECK, label: "early" }, JUDGE_CHECK, ON_CHECK))], ["unsupported"]);
+  // A code node with no `as` may write any key: what it leaves is not a judge's.
+  assert.deepEqual([...softEscalatesOf(chainOf(JUDGE_CHECK, { node: "code", label: "patch", code: "return {}" }, ON_CHECK))], []);
+  assert.deepEqual([...softEscalatesOf(chainOf(JUDGE_CHECK, { node: "code", label: "patch", code: "return 1", as: "other" }, ON_CHECK))], ["unsupported"]);
+});
+
+test("softEscalatesOf: soft past a route or a parallel only when every path to the escalate leaves a judge's write last", () => {
+  const route = (a, b) => ({ node: "route", label: "which", valuePath: "question", branches: { a: { body: a }, b: { body: b } } });
+  assert.deepEqual([...softEscalatesOf(chainOf(route(JUDGE_CHECK, EXTRACT_CHECK), ON_CHECK))], []);
+  assert.deepEqual([...softEscalatesOf(chainOf(EXTRACT_CHECK, route(JUDGE_CHECK, { node: "code", label: "noop", code: "return 1", as: "n" }), ON_CHECK))], []);
+  assert.deepEqual([...softEscalatesOf(chainOf(route(JUDGE_CHECK, { ...JUDGE_CHECK, label: "check-b" }), ON_CHECK))], ["unsupported"]);
+  assert.deepEqual([...softEscalatesOf(chainOf(EXTRACT_CHECK, route(JUDGE_CHECK, { ...JUDGE_CHECK, label: "check-b" }), ON_CHECK))], ["unsupported"]);
+  // Inside one arm, the arm's own writes decide.
+  assert.deepEqual([...softEscalatesOf(chainOf(route({ node: "chain", steps: [JUDGE_CHECK, ON_CHECK] }, EXTRACT_CHECK)))], ["unsupported"]);
+  // A route's `as` is its choice, never a judge's field.
+  assert.deepEqual([...softEscalatesOf(chainOf(JUDGE_CHECK, { ...route({ node: "code", label: "c1", code: "1", as: "x" }, { node: "code", label: "c2", code: "1", as: "y" }), as: "check" }, ON_CHECK))], []);
+  // A parallel: the branch that writes the key decides; one that leaves it keeps what came before.
+  const parallel = (...branches) => ({ node: "parallel", label: "both", branches });
+  assert.deepEqual([...softEscalatesOf(chainOf(EXTRACT_CHECK, parallel(JUDGE_CHECK, { node: "code", label: "side", code: "1", as: "side" }), ON_CHECK))], ["unsupported"]);
+  assert.deepEqual([...softEscalatesOf(chainOf(JUDGE_CHECK, parallel(EXTRACT_CHECK, { node: "code", label: "side", code: "1", as: "side" }), ON_CHECK))], []);
+});
+
+test("softEscalatesOf: a loop's body sees what an earlier pass left; a map's body and a child workflow keep their own state", () => {
+  const loop = (...steps) => ({ node: "loop", label: "again", maxIters: 3, until: { predicate: "field_true", path: "done" }, body: { node: "chain", steps } });
+  // On the second pass the escalate reads the extract's `check`, written at the end of the first.
+  assert.deepEqual([...softEscalatesOf(chainOf(JUDGE_CHECK, loop(ON_CHECK, EXTRACT_CHECK)))], []);
+  assert.deepEqual([...softEscalatesOf(chainOf(EXTRACT_CHECK, loop(ON_CHECK, JUDGE_CHECK)))], []);
+  assert.deepEqual([...softEscalatesOf(chainOf(JUDGE_CHECK, loop(ON_CHECK, { ...JUDGE_CHECK, label: "recheck" })))], ["unsupported"]);
+  assert.deepEqual([...softEscalatesOf(chainOf(EXTRACT_CHECK, loop(JUDGE_CHECK, ON_CHECK, EXTRACT_CHECK)))], ["unsupported"]);
+  // A map's body writes stay in its items: the escalate after it reads the outer `check`.
+  const map = (body) => ({ node: "map", label: "each", itemsPath: "items", body, as: "results" });
+  assert.deepEqual([...softEscalatesOf(chainOf(JUDGE_CHECK, map(EXTRACT_CHECK), ON_CHECK))], ["unsupported"]);
+  assert.deepEqual([...softEscalatesOf(chainOf(EXTRACT_CHECK, map({ node: "chain", steps: [JUDGE_CHECK, { ...ON_CHECK, label: "in-item" }] })))], ["in-item"]);
+  // A map's item is its own: an escalate on `item` reads no judge.
+  assert.deepEqual([...softEscalatesOf(chainOf({ ...JUDGE_CHECK, as: "item" }, map({ ...ON_CHECK, label: "on-item", when: { predicate: "field_true", path: "item.unsupported" } })))], []);
+  // A child workflow's state starts from its input: a parent's judge is not the child's.
+  const child = { v: 2, name: "inner", schemas, input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "chain", steps: [EXTRACT_CHECK, ON_CHECK] } };
+  assert.deepEqual([...softEscalatesOf(chainOf(JUDGE_CHECK, { node: "workflow", label: "inner", workflow: child, input: {}, out: "Answer", as: "out" }))], []);
+  // Its `as` is the child's output, never a judge's field.
+  assert.deepEqual([...softEscalatesOf(chainOf(JUDGE_CHECK, { node: "workflow", label: "inner", workflow: child, input: {}, out: "Answer", as: "check" }, { ...ON_CHECK, label: "after" }))], []);
+});
+
+test("softEscalatesOf: every `not` level unwraps to the predicate that reads the path", () => {
+  const twice = { ...ON_CHECK, when: { predicate: "not", of: { predicate: "not", of: { predicate: "field_true", path: "check.unsupported" } } } };
+  assert.deepEqual([...softEscalatesOf(chainOf(JUDGE_CHECK, twice))], ["unsupported"]);
+  const thrice = { ...ON_CHECK, when: { predicate: "not", of: twice.when } };
+  assert.deepEqual([...softEscalatesOf(chainOf(JUDGE_CHECK, thrice))], ["unsupported"]);
+});
+
 /** The run's decisions on the faux Jev (every yes 0.92: `unsupported` true, so the escalate fires). */
 async function decisionsOf(t) {
   const calls = join(await scratch(t), "jev.jsonl");
