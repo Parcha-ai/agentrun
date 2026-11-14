@@ -20,7 +20,7 @@ import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
 import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
-import { MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName } from "./tool-names.js";
+import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf } from "./tool-names.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { applyBodyOf, compiled, filledPins, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
@@ -193,8 +193,19 @@ function graderOf(p: Package, file: string, text: string, mcp: Record<string, un
       const tools = data.tool !== undefined && data.tools === undefined ? [data.tool] : data.tools;
       if (!Array.isArray(tools) || !tools.length || !tools.every((t) => typeof t === "string") || (data.tool !== undefined && data.tools !== undefined)) return bad(`${file}: a tool_used grader names tool (one gate name) or tools (a list), not both`), undefined;
       const listed = p.mcp.flatMap(({ toolkit, tools: names }) => names.map((name) => mcpToolName(toolkit, name)));
+      // A monid endpoint by the name the package grants it, as its calls are named on the timeline. A provider's wildcard
+      // is filled from monid's listing when the agent is saved, which is not read here: its endpoints are not known, and
+      // a misspelt one would pass not_called unseen, so a grader names an endpoint the package grants by name.
+      const endpoints = (p.tools ?? []).filter((tool) => monidNameOf(tool));
       for (const tool of tools as string[]) {
-        if (mcpNameOf(tool) ? !listed.includes(tool) : !(BOUND_TOOLS.includes(tool) || tool === ASK_TOOL)) bad(`${file}: ${tool} is neither a tool this server binds nor an MCP tool the package lists (mcp:<toolkit>/<tool>)`);
+        if (isMonidName(tool)) {
+          if (endpoints.includes(tool)) continue;
+          const provider = monidNameOf(tool)?.provider;
+          const wildcard = provider !== undefined && p.tools?.includes(`monid:${provider}/*`) ? `; monid:${provider}/* grants its endpoints by monid's listing when the agent is saved, which is not read here: grant ${tool} by name` : "";
+          bad(`${file}: ${tool} is not a monid endpoint the package grants by name (it grants ${endpoints.join(", ") || "none"})${wildcard}`);
+        } else if (mcpNameOf(tool) ? !listed.includes(tool) : !(BOUND_TOOLS.includes(tool) || tool === ASK_TOOL)) {
+          bad(`${file}: ${tool} is neither a tool this server binds, an MCP tool the package lists (mcp:<toolkit>/<tool>) nor a monid endpoint it grants by name (monid:<provider>/<endpoint>)`);
+        }
       }
       const expect = data.expect ?? "called";
       if (expect !== "called" && expect !== "not_called") return bad(`${file}: expect is called or not_called`), undefined;
