@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { compiled, PackageError, packageView, readPackage } from "../dist/templates.js";
+import { compiled, filledPins, PackageError, packageView, readPackage } from "../dist/templates.js";
 import { inputIssues, inputSchemaOf } from "../dist/validate.js";
 import { scratch, serve } from "./support.mjs";
 
@@ -84,4 +84,23 @@ test("an applied watch template's schedule stores a real list its agent's input 
   assert.equal(over.status, 422, JSON.stringify(over.body));
   assert.deepEqual(over.body.error.fields.map((f) => f.field), ["triggers.0.target.input.limit"]);
   assert.match(over.body.error.fields[0].message, /10/, "the schema's maximum, said");
+});
+
+test("a pin that is a list parameter's placeholder alone pins the list as a one-of; an empty list pins nothing, so the tool is denied", async () => {
+  const need = [{ server: "slack", tools: ["send"], required: true, allow: [], pin: { send: { channel: "${parameters.channels}" } } }];
+  const [listed] = filledPins(need, { channels: ["C1", "C2"] });
+  assert.deepEqual([listed.pin, listed.empty], [{ channel: ["C1", "C2"] }, []]);
+  assert.deepEqual(filledPins(need, { channels: [] })[0].empty, ["channels"]);
+});
+
+test("the package check fills a parameter with no default from a sample: at a field it fills whole only its type is checked, a pattern is the apply's", async (t) => {
+  const write = async (parameter) => {
+    const root = join(await scratch(t), "sampled");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "agent.md"), `---\nname: sampled\nversion: 0.1.0\ndescription: Sampled.\nparameters:\n  country: ${parameter}\ninputs:\n  country: { type: string, pattern: "^[A-Z]{2}$" }\nbudget: { per_run_usd: 1 }\ntriggers:\n  - name: daily\n    source: { kind: schedule, cron: "0 9 * * *", timezone: UTC }\n    target: { kind: start_run, input: { content: Go., country: "\${parameters.country}" } }\n---\nGo.\n`);
+    return root;
+  };
+  readPackage(await write("{ type: string, required: true, description: The country. }"));
+  const integer = await write("{ type: integer, required: true, description: The country. }");
+  assert.throws(() => readPackage(integer), (error) => error instanceof PackageError && error.problems.some((one) => /triggers\[0\]\.target\.input\.country/.test(one)));
 });
