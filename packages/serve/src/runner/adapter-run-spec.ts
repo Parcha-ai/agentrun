@@ -409,6 +409,36 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const checkout = body.checkout === "pull_request" ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part })) : undefined;
   holds.hold({ checkout });
 
+  // The run's skills and its learning seed, laid in its folder through the run's Workspace now, before its computer
+  // exists: on Archil the computer's mount of the folder takes the disk's write delegation, and from then on every write
+  // over the disk's file API is refused (409) while the mount holds it, so a lay after the mount fails the run. The lay
+  // reads nothing of the computer: the kind skill is the launch's computer setting's kind. A later claim lays only what
+  // is not there yet (layOwnSkills keeps every folder an earlier claim laid).
+  // The launch's learning start (none: the run does not learn), decided once at launch.
+  const start = learningStartOf(launch);
+  // The revision's own skills are laid in the run's .agents/skills/ before they are read (main's server start laid them;
+  // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
+  // folder not there yet, never over a learned skill or an earlier claim's.
+  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });
+  // A learning run's seed, read once from its learning folder where the run's place keeps it: its notes in .learning/
+  // and its learned skills beside the revision's own (runner/learning-seed.ts), cut of the server's secrets, the learned
+  // skills then in the skill list the prompt names, its learned workflows the ones its learned_workflow tool runs. Laid
+  // before the run's tools are bound. A learning fault, or a seed that failed (seedFailed), lays nothing.
+  const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
+  const learningFolder = () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil }));
+  const seedLaid = start && !seedFailed(start)
+    ? await layLearningSeed({
+      work: ws.workspace,
+      seed: start.seed,
+      folder: learningFolder,
+      own: Object.keys(revisionRow.skills ?? {}),
+      shown,
+      log,
+      ...(start.notesOnly ? { workflows: false as const } : {}),
+      ...(start.notesLeftOut?.length ? { notesLeftOut: start.notesLeftOut } : {}),
+    })
+    : undefined;
+
   // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin made at the first claim or read as written, its
   // credentials opened under the server's seal key into this claim's memory, one gateway for the claim. First, before
   // anything the spec would have to let go: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its
@@ -571,30 +601,6 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   delete toolEnv[TOOL_PLANE_ENV];
   if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
 
-  // The launch's learning start (none: the run does not learn), decided once at launch.
-  const start = learningStartOf(launch);
-  // The revision's own skills are laid in the run's .agents/skills/ before they are read (main's server start laid them;
-  // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
-  // folder not there yet, never over a learned skill or an earlier claim's.
-  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });
-  // A learning run's seed, read once from its learning folder where the run's place keeps it: its notes in .learning/
-  // and its learned skills beside the revision's own (runner/learning-seed.ts), cut of the server's secrets, the learned
-  // skills then in the skill list the prompt names, its learned workflows the ones its learned_workflow tool runs. Laid
-  // before the run's tools are bound. A learning fault, or a seed that failed (seedFailed), lays nothing.
-  const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
-  const learningFolder = () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil }));
-  const seedLaid = start && !seedFailed(start)
-    ? await layLearningSeed({
-      work: ws.workspace,
-      seed: start.seed,
-      folder: learningFolder,
-      own: Object.keys(revisionRow.skills ?? {}),
-      shown,
-      log,
-      ...(start.notesOnly ? { workflows: false as const } : {}),
-      ...(start.notesLeftOut?.length ? { notesLeftOut: start.notesLeftOut } : {}),
-    })
-    : undefined;
   // The decision keys its learned workflows' typed questions need (claim-secrets.ts learnedDecisionKeys), read once the lay
   // chose them, scoped as the revision's own: each provider the run's gate does not deny, held by the run's one redactor,
   // onto the tools' environment alone. The model's route was built on the revision's keys above, so a decision key never
