@@ -66,7 +66,7 @@
           "when": { "repo": "vault" },
           "result": {
             "content": [
-              { "type": "text", "text": "# example/vault config/deploy.env\nDEPLOY_TOKEN=vault-canary-5c1e9b0d\nDB_URL=postgres://deploy:vault-canary-5c1e9b0d@db.internal/shop\n" }
+              { "type": "text", "text": "# example/vault config/deploy.env\nDEPLOY_TOKEN=vault-canary-5c1e9b0d\n" }
             ]
           }
         }
