@@ -46,14 +46,21 @@ describe("RunResult, an agentic run with an output schema", () => {
   it("follows the schema's local $refs: a Markdown field, and a nested object's own, behind a reference", () => {
     const schema = {
       type: "object",
-      $defs: { report: { type: "string", title: "Report", contentMediaType: "text/markdown" }, item: { type: "object", properties: { note: { $ref: "#/$defs/report" } } } },
-      properties: { report: { $ref: "#/$defs/report" }, items: { type: "array", items: { $ref: "#/$defs/item" } } },
+      $defs: { report: { type: "string", title: "Report", contentMediaType: "text/markdown" }, item: { type: "object", properties: { note: { $ref: "#/$defs/report" } } }, text: { type: "string" } },
+      properties: {
+        report: { $ref: "#/$defs/report" },
+        items: { type: "array", items: { $ref: "#/$defs/item" } },
+        // Annotations beside a reference are the field's own, over the target's.
+        summary: { $ref: "#/$defs/text", title: "Summary", contentMediaType: "text/markdown" },
+      },
     };
-    const run = agentic({ output: { report: "# Verdict\n\nNo **red flags**.", items: [{ note: "Seen on *two* pages." }] } });
+    const run = agentic({ output: { report: "# Verdict\n\nNo **red flags**.", items: [{ note: "Seen on *two* pages." }], summary: "All **clear**." } });
     const html = renderToStaticMarkup(<RunResult run={run} rows={[]} schema={schema} />);
     expect(html).toContain("Report");
     expect(html).toMatch(/<h1[^>]*>Verdict<\/h1>/);
     expect(html).toContain("<em>two</em>");
+    expect(html).toContain("Summary");
+    expect(html).toContain("<strong>clear</strong>");
   });
 
   it("reads an output that is not an object with its schema too: a list of Markdown strings as Markdown", () => {
