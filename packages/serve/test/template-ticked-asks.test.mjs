@@ -1,7 +1,7 @@
 // A tool the owner ticks at a template's apply is granted, never allowed: the apply writes no permission for it, so the
 // gate's default decides. Under approvals ask a ticked write waits for the owner (and is never sent when they deny it);
-// under never, the owner's own choice at apply, it runs unasked. A ticked read is granted the same way (the server's
-// reads rule decides it). A deny the owner set on the server still holds, and a pin is written as before. No socket
+// under never, the owner's own choice at apply, it runs unasked. A ticked read is granted the same way: it runs with no
+// approval row only where the owner turned on Allow reads for its server, and Allow reads never reaches a tool left unticked. A deny the owner set on the server still holds, and a pin is written as before. No socket
 // leaves this machine and no real key is used.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -9,11 +9,14 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { compiled, readPackage } from "../dist/templates.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { harnessSetup } from "./fixtures/mcp-harness-setup.mjs";
 import { twoToolPackage } from "./fixtures/two-tool-template.mjs";
 import { call, clientOwnerSession, follow, scratch, serve, whenFree, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const BOTH = ["mcp:fake/add", "mcp:fake/delete_thing"];
+// The owner's Allow reads for the fake's server: its read-only tools (add) run with no one asked, where the agent holds them.
+const READS = { "mcp:fake/*": { allow_reads: true } };
 const callsOf = (fake, tool) => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === tool);
 
 test("a ticked tool is granted with no permission written, a read and a write alike, under ask and never: the gate's default decides", async (t) => {
@@ -56,4 +59,59 @@ test("pi: under approvals ask a ticked write parks for the owner, and their deny
   assert.equal(answered.status, 204);
   await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
   assert.deepEqual(callsOf(fake, "delete_thing"), [], "denied: never sent");
+});
+
+test("pi: under approvals ask, a ticked read runs with no approval row where the owner turned on Allow reads for its server; the ticked write beside it still parks", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const dir = join(await scratch(t), "templates");
+  twoToolPackage(dir, "two-tools-reads", "pi", "ask");
+  const server = await serve(t, { faux: FAUX_MCP, templates: dir, accounts: true, openSetup: true });
+  const { api } = server;
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" }, toolkit: "fake" })).status, 200);
+  assert.equal((await api("PUT", "/settings/tools", READS)).status, 200, "the owner's Allow reads for the server");
+  const applied = await whenFree(() => api("POST", "/templates/two-tools-reads/apply", { grants: BOTH }));
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const id = applied.body.agent_id;
+  assert.equal((await api("GET", `/agents/${id}`)).body.definition.tool_settings, undefined, "the apply wrote no permission: Allow reads alone lets the read run");
+
+  const read = await whenFree(() => api("POST", `/agents/${id}/runs`, { input: { content: 'Call mcp__fake__add with {"a":2,"b":3}' } }));
+  assert.equal(read.status, 202, JSON.stringify(read.body));
+  const { last, rows } = await follow(api, read.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: 120_000 });
+  assert.equal(last.status, "completed", "no one was asked");
+  assert.equal(rows.filter((row) => row.kind === "tool_approval_requested").length, 0, `no approval row: ${JSON.stringify(rows.map((row) => [row.kind, row.tool_name]))}`);
+  assert.equal(callsOf(fake, "add").length, 1);
+
+  const write = await whenFree(() => api("POST", `/agents/${id}/runs`, { input: { content: 'Call mcp__fake__delete_thing with {"id":"x1"}' } }));
+  assert.equal(write.status, 202, JSON.stringify(write.body));
+  const parked = await follow(api, write.body.run_id, ["input_required", "completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(parked.last.status, "input_required", "Allow reads lifts no write");
+  assert.deepEqual(callsOf(fake, "delete_thing"), [], "the ticked write was not sent unasked");
+});
+
+test("pi: under approvals never, a read-only tool left unticked stays refused though its server's Allow reads is on, called directly, through tools_call or from a codemode script: Allow reads widens nothing past the ticks", { timeout: 240_000 }, async (t) => {
+  const dir = join(await scratch(t), "templates");
+  twoToolPackage(dir, "two-tools-never-reads", "pi", "never");
+  const { api, fake, prompt, host, offered, wire } = await harnessSetup(t, "pi", dir);
+  assert.equal((await api("PUT", "/settings/tools", READS)).status, 200, "the owner's Allow reads for the server");
+  const applied = await whenFree(() => api("POST", "/templates/two-tools-never-reads/apply", { grants: ["mcp:fake/delete_thing"] }));
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const id = applied.body.agent_id;
+  const { definition } = (await api("GET", `/agents/${id}`)).body;
+  assert.equal(definition.approvals, "never");
+  assert.ok(!definition.tools.includes("mcp:fake/add"), `the unticked read is not the agent's: ${JSON.stringify(definition.tools)}`);
+  const asks = [
+    ["direct", prompt("add", { a: 2, b: 3 })],
+    ["tools_call", host("tools_call", { name: "mcp__fake__add", args: { a: 2, b: 3 } })],
+    ["codemode", host("codemode", { script: "return await tools.mcp__fake__add({ a: 2, b: 3 });" })],
+  ];
+  for (const [how, content] of asks) {
+    const run = await whenFree(() => api("POST", `/agents/${id}/runs`, { input: { content } }));
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    const { last } = await follow(api, run.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: 120_000 });
+    assert.notEqual(last.status, "input_required", `${how}: nothing asks, the call is refused outright`);
+    assert.deepEqual(callsOf(fake, "add"), [], `${how}: the unticked read never reached the MCP server`);
+  }
+  for (const tools of offered()) assert.ok(!tools.includes(wire("add")), `the unticked read was offered: ${JSON.stringify(tools)}`);
 });
