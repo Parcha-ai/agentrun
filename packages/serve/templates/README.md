@@ -196,6 +196,11 @@ JSON, or refused by the schema, after the runner's one retry). The report lists 
 
 The report gives each run's cost and each `llm` grade's, as their run records say, and the total.
 
+An eval applies its agents with approvals `never` (the apply's `overrides.approvals`), whatever the package's own
+`approvals`: a run that stopped at its first ask would measure nothing. Deny settings and pins hold as at any apply.
+The package's default is unchanged, and the report says how it was measured (`approvals: {measured: "never",
+package}`, and a line in the markdown).
+
 ## agent.md
 
 | Field | |
