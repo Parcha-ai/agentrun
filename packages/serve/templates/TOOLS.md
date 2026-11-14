@@ -34,9 +34,8 @@ inputs:
 approvals: ask
 budget: { per_run_usd: 0.50 }
 ---
-Read the project's releases with web_fetch (https://github.com/<project>/releases.atom). Find your other tools with
-tools_search. Before you open an issue with mcp:github/GITHUB_CREATE_AN_ISSUE, list the open ones and skip a release
-that already has one. ...
+Read the project's releases with web_fetch (https://github.com/<project>/releases.atom). Before you open an issue with
+mcp:github/GITHUB_CREATE_AN_ISSUE, list the open ones and skip a release that already has one. ...
 ```
 
 ## Declare
@@ -53,7 +52,10 @@ under:
   `hackernews`, ...). `tools` are its action slugs exactly as Composio lists them (`GITHUB_CREATE_AN_ISSUE`). The owner
   saves it with the Composio preset in Settings → MCP servers ([walk-through](../../../docs/tutorials/composio.md)),
   which lists every action of the toolkit; `POST /v2/settings/mcp-servers/composio/tools` lists them too. Composio's
-  meta tools (`COMPOSIO_MULTI_EXECUTE_TOOL` and the like) are refused: name the direct actions.
+  meta tools (`COMPOSIO_MULTI_EXECUTE_TOOL` and the like) are refused: name the direct actions. A save where Composio
+  serves none of the picked actions is refused with 422 on `tools` (reason `not_served`), naming them: pick another
+  action. Deleting the server in Settings removes it from Composio too; when Composio can't be reached, the answer
+  says to remove it there yourself.
 - `source: github`, `toolkit: github`: GitHub's own MCP server on the server's GitHub App.
 - `source: url`, `toolkit: <name>`: any other MCP server, matched to the toolkit name its owner gives it in Settings.
 
@@ -74,12 +76,14 @@ the tools read, what they write, and where the pins hold them.
 the key is refused up front. The owner saves the key in Settings → Tool keys. Each `monid.run` is held at its price
 under the run's cap before it is sent, and its charge is its own line in the run's cost.
 
-**Finding and combining.** Every run has `tools_search`, which finds the run's tools by what they do, and
-`codemode`, which runs a short JavaScript script that calls several of them in one step (`await tools.<name>(args)`;
-Codex uses its own code mode). You don't declare either. A call made through them is the tool's own call: asked about,
-pinned and priced exactly as a direct call is. An MCP tool's result reaches a script as the server's text (Composio's
-is JSON in a string), so parse it before reading its fields. With many MCP tools, tell the model to search for what
-it needs rather than listing every tool in the instructions.
+**Finding and combining.** A run lists every tool until its MCP and monid tools pass 20; past that they are left
+unlisted, and the model finds them with `tools_search` and calls them with `tools_call` (Claude Code's own tool search
+does this there, so it gets neither). `codemode` runs a short JavaScript script that calls several tools in one step
+(`await tools.<name>(args)`), on every harness but Codex, which uses its own code mode. You don't declare any of them.
+A call made through them is the tool's own call: asked about, pinned and priced exactly as a direct call is. An MCP
+tool's result reaches a script as the server's text (Composio's is JSON in a string), so parse it before reading its
+fields. With more than 20 such tools, tell the model to search for what it needs rather than listing every tool in the
+instructions.
 
 ## Pin
 
@@ -97,13 +101,15 @@ A tool you can't pin to a scope (a free-text search across everything the creden
 | a list | one of these (1 to 16) | `event: [null, COMMENT]` |
 | `null` | the argument must be left out | `cc: null`, `bcc: null` |
 | `${parameters.x}` | filled from the owner's answer at apply; a placeholder alone keeps the parameter's type, and a list parameter pins a one-of | `owner: "${parameters.owner}"` |
+| `{keys: [...]}` | the argument, when given, is an object with only these keys, any values | `properties: {keys: ["${parameters.score_field}"]}` |
 
-When an action takes the same destination under two names (Slack's `channel` and `channel_id`, Gmail's
-`recipient_email` and `to`), pin one and pin the other `null`. A pin whose parameter the owner leaves empty (absent,
-`""` or an empty list) sets that tool to deny, ticked or not, and the apply's `pins.<tool>` warning names the
-parameter: a send with no destination never runs. A pin compares each top-level argument whole, so an argument that is
-an object (a CRM record's `properties`) can't be bounded field by field yet: leave out a write whose object argument
-could change any field, and write somewhere narrower instead (a note on the record rather than an update to it).
+A pinned tool takes only the arguments its listing declares, so a destination's other spellings (Slack's `channel_id`,
+Gmail's `to`) are refused; you don't pin them. A pin whose parameter the owner leaves empty (absent, `""` or an empty
+list) sets that tool to deny, ticked or not, and the apply's `pins.<tool>` warning names the parameter: a send with no
+destination never runs; a keys pin whose parameter is empty does the same. A keys pin bounds one argument: pin `null`
+any other declared argument that can set the same fields (HubSpot's `custom_properties` beside `properties`). Fence
+every other argument that reaches the same place the same way: Gmail's `user_id` also picks the sender, so pin it to
+`[null, "me"]` beside `from_email: null`.
 
 ## Ask
 
@@ -129,8 +135,9 @@ As of 2026-11-14, these have run end to end against the real service, through th
 | Composio `hackernews` (no account) | reads; `HACKERNEWS_GET_FRONTPAGE` is not served even when allowed, and the preset names such a tool under `not_served` | pi, Claude Code, Codex |
 | monid, litescrape `/github/repository` | `monid.run` from a `codemode` script, a real charge of $0.00015 on its own cost line | pi, Claude Code, Codex |
 
-Through `tools_search` and `codemode`: proven on 2026-11-14, one script that read GitHub, ran a monid endpoint and was
-refused a pinned write, on all three harnesses (Codex in its own code mode).
+Through `codemode`: proven on 2026-11-14, one script that read GitHub, ran a monid endpoint and was refused a pinned
+write, on all three harnesses (Codex in its own code mode). That template had fewer than 20 MCP and monid tools, so
+no run was offered `tools_search` or `tools_call`.
 
 Listing only: `slack`, `gmail`, `googlecalendar`, `linear`, `hubspot`, `stripe` (actions checked against Composio's
 listing). Listing-only toolkits work the same way; their live proof is pending a test account. Run your eval set
