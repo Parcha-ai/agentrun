@@ -16,7 +16,7 @@
 // `input_tokens`; they are booked apart. The watch reads each `function_call` item of an answer before OpenCode has it:
 // its call id, name and arguments, which tie the MCP call OpenCode makes next (it carries no call id) to the model's own.
 import type { IncomingHttpHeaders } from "node:http";
-import { OPENAI_INPUT_COUNTER, ProxyRefusal, responsesInputOverhead, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { lastObjectOf, OPENAI_INPUT_COUNTER, ProxyRefusal, responsesInputOverhead, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix OpenCode gives the adapter's MCP tools: the server is `hands`. */
 export const TOOL_PREFIX = "hands_";
@@ -195,8 +195,8 @@ function startOfResponse(data: string): Record<string, unknown> | undefined {
 }
 
 /** The usage of the response an answer ends with: its `response.completed` (or `response.incomplete`) event, each `data:`
- *  line parsed on its own, or a whole JSON body's; for a line the proxy's 64 KiB window cut, the last `"usage":{` object
- *  in the text. Undefined, an unknown cost, when there is none. */
+ *  line parsed on its own, or a whole JSON body's; for a line the proxy's 64 KiB window cut, the last `"usage": {` object
+ *  in the text, whatever its spacing (the kernel's `lastObjectOf`). Undefined, an unknown cost, when there is none. */
 export function usageOf(text: string): ProxyUsage | undefined {
   let found: unknown;
   let ended = false;
@@ -223,16 +223,7 @@ export function usageOf(text: string): ProxyUsage | undefined {
       if (isPlain(body) && body.object === "response") return usageFrom(body.usage);
     } catch {}
   }
-  const mark = "\"usage\":{";
-  const at = text.lastIndexOf(mark);
-  if (at < 0) return undefined;
-  const json = objectAt(text, at + mark.length - 1);
-  if (json === undefined) return undefined;
-  try {
-    return usageFrom(JSON.parse(json));
-  } catch {
-    return undefined;
-  }
+  return usageFrom(lastObjectOf(text, "usage"));
 }
 
 /** An event that is not whole by this many characters is not read. */
