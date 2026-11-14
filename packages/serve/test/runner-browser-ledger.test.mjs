@@ -1,6 +1,6 @@
 // The browser's money on the runner: bound with the run's ledger on its ToolHost (host.ledger, its one-ledger booking
 // `paid`), tools.ts hands the booking to browserSpend, so a browser call is held and settled on THAT booking and its session's release settles there too,
-// before the run's release returns; the process's own spend (cap.ts paidCall, the old per-run process's) is never asked.
+// before the run's release returns.
 // An unpriced provider under the run's cap is refused before any session is made. The booking is the kernel cap's own
 // (runCap over a memory session store, as paid-calls-run-ledger.test.mjs opens it), recorded as it is called; the
 // browser runs on a pi-durable Harness with a faux model that opens a session (snapshot), on the faux browser.
@@ -20,7 +20,6 @@ const { FAUX_ENV } = await import("../dist/model.js");
 const { TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
 const { hostLifecycle } = await import("../dist/runner/adapter-loop.js");
 const { priceEnvOf } = await import("../dist/browser-cost.js");
-const { useSpend } = await import("../dist/cap.js");
 const kernelCap = await import("../../run-adapters/dist/kernel/cap/index.js");
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
@@ -49,14 +48,6 @@ async function runLedger(capUsd = 1) {
     },
   };
   return { ledger: { paid }, seen, spent: () => tools.spentUsd(), released: () => void ((released = true), seen.push({ op: "released" })) };
-}
-
-/** The process's own spend (the old per-run path's, cap.ts useSpend), noting every read and charge: a runner never uses it. */
-function processSpend(t) {
-  const asked = [];
-  useSpend({ cap: 100, spent: () => (asked.push("spent"), 0), held: () => 0, add: (usd) => void asked.push(`add ${usd}`) });
-  t.after(() => useSpend(undefined));
-  return asked;
 }
 
 /** The browser bound as the runner binds it, with the run's `ledger` on its ToolHost, on a Harness; one turn that opens a
@@ -90,8 +81,7 @@ async function browse(t, { ledger, env = {} }) {
   return { results, ops, release: async () => { for (const stop of lifecycle.beforeRelease) await stop(harness); } };
 }
 
-test("a priced browser call is held and settled on the claim's own booking, its session's release settles there before the run's release returns, and the process's own spend is never asked", { timeout: 120_000 }, async (t) => {
-  const asked = processSpend(t);
+test("a priced browser call is held and settled on the claim's own booking, its session's release settles there before the run's release returns", { timeout: 120_000 }, async (t) => {
   const booking = await runLedger();
   const run = await browse(t, { ledger: booking.ledger });
   assert.equal(run.results.at(-1)?.isError, false, `the call ran: ${JSON.stringify(run.results.at(-1)?.content).slice(0, 200)}`);
@@ -110,7 +100,6 @@ test("a priced browser call is held and settled on the claim's own booking, its 
   const settledAt = booking.seen.findIndex((step) => step.op === "settle" && step.id === times.at(-1).id);
   assert.ok(settledAt >= 0 && settledAt < booking.seen.findIndex((step) => step.op === "released"), `settled before the run's release returned: ${JSON.stringify(booking.seen)}`);
   assert.ok(booking.spent() > 0, "the booking counts the session's time");
-  assert.ok(!asked.includes("spent"), `the process's own spend was never asked (no paidCall): ${JSON.stringify(asked)}`);
 });
 
 test("an unpriced provider under the run's cap is refused on the claim's booking before any session is made", { timeout: 120_000 }, async (t) => {

@@ -10,7 +10,6 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ANSWER_TOKENS_LEAST } from "../dist/cap.js";
 import { agentFolderOf } from "../dist/files.js";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, keptProposal, LEARN, learnedOnMain, learner, learningRows, made, onMain, reflectRows, repoOf, savedOf, settled, started } from "./learn-support.mjs";
