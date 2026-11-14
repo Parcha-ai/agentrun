@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { registryPin } from "./store-helpers.mjs";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
 const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index.js");
@@ -85,7 +86,7 @@ async function realGateRun(t, { harness, agentSettings = {}, serverSettings }) {
   });
   await server.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools: [listed(ADD)], sealed: sealMcpCredential(KEY, "fake", { type: "headers", headers: { authorization: `Bearer ${TOKEN}` } }, fake.url) });
   if (serverSettings) await saveToolSettings(server, serverSettings);
-  await server.agents.create({ id: "agent-1", name: "Gate" }, { id: "rev-1", kind: "agentic", body: {} });
+  await server.agents.create({ id: "agent-1", name: "Gate" }, { id: "rev-1", kind: "agentic", body: {}, mcpPin: await registryPin(server) });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const revision = { kind: "agentic", body: { toolSettings: agentSettings, harness } };
   const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-real-gate-work-"));

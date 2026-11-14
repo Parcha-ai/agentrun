@@ -111,7 +111,7 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
         <p className="mt-1 break-words text-lead" role="status" data-testid="replay-line">{step.line}</p>
         {step.reason && <p className="mt-0.5 line-clamp-2 break-words text-body text-muted-foreground">{step.reason}</p>}
         <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-body" data-testid="standing">
-          <Chip tone={standing.tone}>{standing.word}</Chip>
+          <Chip tone={standing.tone}>{standing.word}{standing.proof ? ` · ${standing.proof}` : ""}</Chip>
           <span className="min-w-0 break-words text-muted-foreground">{replacedBy ? `Its thresholds were refit: revision ${replacedBy.digest.slice(0, 7)} serves in its place.` : record ? replayLine(record) : step.digest ? "No replay yet: a new revision replays on the last graded inputs before it serves." : "Its file did not read: no standing."}</span>
         </p>
         {refit && (

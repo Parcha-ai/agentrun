@@ -108,7 +108,7 @@ test("the run's cost with a request that has no answer is unknown, with the know
 test("the cap's admission gives a request's bound: for a request priced from the session's cache, what a miss adds to its hold", async () => {
   const warm = { model: SONNET.id, cachedTokens: 90_000, inputTokens: 10_000, boundTokens: 100_000, endedAt: T0 - 1_000 };
   const ask = { key, label: key, model: SONNET.id, turn: 1, maxTurns: null, spentUsd: 0, inFlight: [], inputTokensMax: 100_000, outputTokensAsked: 1_024, outputTokensLeast: 1_024 };
-  const cached = await beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, previousOf: () => warm })(ask);
+  const cached = await beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, recentOf: () => [warm] })(ask);
   const cold = await beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 })(ask);
   assert.ok(typeof cached.boundUsd === "number" && cached.boundUsd > 0, `a bound above $0: ${JSON.stringify(cached)}`);
   near(cached.holdUsd + cached.boundUsd, cold.holdUsd, "its hold and bound are the request priced uncached");

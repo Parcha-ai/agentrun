@@ -69,7 +69,7 @@ test("Orgo desktops: create({ os }) builds the Windows or the macOS provider, da
 	assert.ok(create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: fakeOrgoDesktop().fetch }) instanceof orgo.OrgoProvider, "no os is the Linux desktop with computerd");
 	assert.throws(() => create({ os: "beos", apiKey: KEY, workspaceId: WORKSPACE }), /linux.*windows.*macos/);
 	assert.throws(() => create({ os: "windows", workspaceId: WORKSPACE }), /apiKey/);
-	assert.deepEqual(orgo.CAPABILITIES.slice(1), [], "Orgo offers its Linux desktop alone: Windows and macOS are parked");
+	assert.deepEqual(descriptor.ORGO.capabilities.slice(1), [], "Orgo offers its Linux desktop alone: Windows and macOS are parked");
 	assert.deepEqual(descriptor.ORGO.parked.map(({ why: _why, ...configuration }) => configuration), [
 		{ kind: "desktop", groups: ["exec", "files", "screen", "input.pointer", "input.keys"], image: "windows", options: { os: "windows" } },
 		{ kind: "desktop", groups: ["exec", "screen", "input.pointer", "input.keys"], image: "macos", options: { os: "macos" } },

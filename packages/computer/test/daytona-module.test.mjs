@@ -244,7 +244,7 @@ test("createHost(): the live sweep's host, from the same COMPUTER_DAYTONA_* name
 	await assert.rejects(daytonaModule.createHost({ env: { DAYTONA_API_KEY: PROD_KEY } }), /set COMPUTER_DAYTONA_API_KEY to a Daytona API key/);
 	const fake = recorder();
 	const host = await daytonaModule.createHost({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, DAYTONA_API_KEY: PROD_KEY }, fetch: fake.fetch });
-	assert.equal(host.id, "daytona");
+	assert.equal(host.descriptor.id, "daytona");
 	assert.deepEqual(fake.requests, []);
 	assert.deepEqual(await host.list({ "agentrun.computer": "1" }, { timeoutMs: 1_000 }), { ok: true, value: [] });
 	assert.deepEqual(fake.requests.map((r) => `${r.method} ${r.host}${r.path}`), ["GET api.daytona.test/api/sandbox"]);

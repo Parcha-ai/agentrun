@@ -44,7 +44,9 @@ const WINDOW_MANAGER_BUS = `<busconfig>
  * without one ("Xfconf could not be initialized"). So it runs in a session bus of its own (dbus-run-session, WINDOW_MANAGER_BUS, written to a file of
  * its own under /tmp), in a user namespace (the same uid) and a network namespace of its own: a program of the
  * computer's user reaches no socket of that bus, unless it joins those namespaces (nsenter), as the same uid may
- * ptrace xfwm4. xfwm4 reaches the display as any program does, by its path.
+ * ptrace xfwm4. xfwm4 reaches the display as any program does, by its path. First, xsetroot paints the screen behind
+ * every window one slate colour, so a desktop with no window open is not a black screen a person reads as broken; a
+ * paint that fails starts xfwm4 all the same.
  */
 export const WINDOW_MANAGER: readonly string[] = [
 	"unshare",
@@ -54,7 +56,7 @@ export const WINDOW_MANAGER: readonly string[] = [
 	"--",
 	"sh",
 	"-c",
-	'bus=$(mktemp) && printf "%s" "$1" > "$bus" && exec dbus-run-session --config-file="$bus" -- xfwm4 --compositor=off --sm-client-disable',
+	'xsetroot -solid "#3b4b5c"; bus=$(mktemp) && printf "%s" "$1" > "$bus" && exec dbus-run-session --config-file="$bus" -- xfwm4 --compositor=off --sm-client-disable',
 	"sh",
 	WINDOW_MANAGER_BUS,
 ];

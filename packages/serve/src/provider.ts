@@ -4,13 +4,13 @@
 //   anthropic-messages: ANTHROPIC_BASE_URL's base (an Anthropic-compatible endpoint) or api.anthropic.com, with
 //     ANTHROPIC_API_KEY as `x-api-key`, priced as Anthropic's; or OpenRouter's Messages endpoint (openRouterOnly, or a
 //     model the run names on it, `openrouter/anthropic/<model-id>`), with OPENROUTER_API_KEY as a bearer token, priced
-//     as OpenRouter's. Either way the wire carries Anthropic's own id (`claude-sonnet-5-5`). Its own settings only:
-//     AGENT_MODEL_BASE_URL is the other wire's gateway.
+//     as OpenRouter's. Either way the wire carries Anthropic's own id (`claude-sonnet-5-5`). Its own settings only, but
+//     for a Claude model of serve's gateway (pi's, model.ts gatewayWire), which goes to the gateway as on Responses.
 //   openai-responses: the gateway at AGENT_MODEL_BASE_URL's base with its key (AGENT_MODEL_API_KEY, or none), the model
 //     as model.ts chose it; OpenAI with its key, OpenAI's id; or OpenRouter's Responses API (openRouterOnly, or a model
 //     the run names on it, `openrouter/openai/<model-id>`), the model's whole id. Each key goes as a bearer token.
 import type { Wire } from "@parcha/agentrun-kernel";
-import { chooseModel, FAUX_ENV, hostModel, type ModelNeeds, type ModelRef } from "./model.js";
+import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef } from "./model.js";
 import { WIRES } from "./wires.js";
 import { modelFormWhy } from "./model-form.js";
 
@@ -112,9 +112,16 @@ function openRouterKey(env: NodeJS.ProcessEnv, who: string, named: string): () =
   return () => env.OPENROUTER_API_KEY ?? "";
 }
 
+/** Serve's gateway (AGENT_MODEL_BASE_URL) on either wire: its base, its key (AGENT_MODEL_API_KEY, or none) as a bearer
+ *  token, the model id as model.ts chose it, priced as runModels prices it. */
+const gatewayProvider = (env: NodeJS.ProcessEnv, model: ModelRef): Provider => ({ origin: gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL!), credential: () => env.AGENT_MODEL_API_KEY || "none", auth: "bearer", modelId: model.modelId, priceModel: model });
+
 export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef, who: string): Provider {
   const named = `${model.provider}/${model.modelId}`;
   if (wire === "anthropic-messages") {
+    // A model of serve's gateway that the gateway takes on Messages (a Claude model, model.ts gatewayWire): the gateway's
+    // own route, as on Responses. No harness of this wire chooses one (claude-agent's model is never the gateway's).
+    if (model.provider === MODEL_PROVIDER && env.AGENT_MODEL_BASE_URL) return gatewayProvider(env, model);
     if (model.provider === "openrouter" && model.modelId.startsWith("anthropic/")) {
       const own = anthropicModelId({ provider: "anthropic", modelId: model.modelId.slice("anthropic/".length) });
       return { origin: OPENROUTER_BASE, credential: openRouterKey(env, who, named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", modelId: `anthropic/${openRouterName(own)}` } };
@@ -128,7 +135,7 @@ export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef,
     if (!env.ANTHROPIC_API_KEY) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY.`, undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.`, undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
     return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", modelId: own } };
   }
-  if (env.AGENT_MODEL_BASE_URL) return { origin: gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL), credential: () => env.AGENT_MODEL_API_KEY || "none", auth: "bearer", modelId: model.modelId, priceModel: model };
+  if (env.AGENT_MODEL_BASE_URL) return gatewayProvider(env, model);
   if (model.provider === "openrouter" && model.modelId.startsWith("openai/")) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, who, named), auth: "bearer", modelId: model.modelId, priceModel: model };
   if (model.provider !== "openai") throw new HarnessUnavailable(`${who} runs OpenAI models; the run's model is ${named}.`);
   if (openRouterOnly(wire, env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, who, named), auth: "bearer", modelId: named, priceModel: model };
