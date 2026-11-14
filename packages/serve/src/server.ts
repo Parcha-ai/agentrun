@@ -99,7 +99,7 @@ import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
-import { type ComposioControl, composioSave, composioTools } from "./composio-preset.js";
+import { type ComposioControl, composioForget, composioSave, composioTools } from "./composio-preset.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
@@ -3286,10 +3286,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await privateHostsRoute(mcpServers, { method: "GET" }), { "cache-control": "no-store" });
       case "putMcpPrivateHosts":
         return send(res, 200, await privateHostsRoute(mcpServers, { method: "PUT", body: () => bodyOf(req) }), { "cache-control": "no-store" });
-      case "deleteMcpServer":
+      case "deleteMcpServer": {
+        // A Composio preset server: the MCP server it made in the owner's Composio account goes first, with the saved key.
+        // Composio refusing or not answering never keeps our row: the answer says what to remove there by hand.
+        const made = await mcpServers.composioHandle(id);
+        const forgotten = made ? await composioForget(options.composioControl ?? {}, made.key, made.id, id, stopping.signal) : undefined;
         await mcpServers.remove(id, secretSeen as McpCredentialMark | undefined);
         await refreshMcpMeta();
+        if (forgotten && !forgotten.removed) return send(res, 200, { deleted: true, composio: forgotten }, { "cache-control": "no-store" });
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      }
       case "getToolSettings":
         return send(res, 200, withDefaults(settings.get()));
       case "putToolSettings": {

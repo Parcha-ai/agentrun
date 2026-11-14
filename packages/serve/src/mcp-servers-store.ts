@@ -18,6 +18,7 @@ import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./m
 import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
+import { composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
@@ -471,6 +472,20 @@ export class McpServersOverStore {
     if (row.auth !== "oauth") return undefined;
     const open = await openServerCredential(this.store, this.sealKey, name);
     return open && "credential" in open && open.credential.type === "oauth" ? (open.credential.set as TokenSet) : undefined;
+  }
+
+  /** The Composio MCP server a saved preset server stands for and the key it was made with, to delete it on Composio as
+   *  the server is forgotten: from the server's own record (source composio), its saved address (which names the Composio
+   *  server) and its sealed x-api-key header. Undefined for any other server, so nothing else is ever sent to Composio.
+   *  The key is read for the one call, never kept or answered. */
+  async composioHandle(name: string): Promise<{ id: string; key: string } | undefined> {
+    const row = await this.store.mcp.server(name);
+    if (!row || row.auth !== "headers" || (await this.sourceOf(row)).source !== "composio") return undefined;
+    const id = composioServerId(row.url);
+    const open = id ? await openServerCredential(this.store, this.sealKey, name) : undefined;
+    const headers = open && "credential" in open && open.credential.type === "headers" ? (open.credential.headers as HeaderMap) : undefined;
+    const key = headers ? Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1] : undefined;
+    return id && key ? { id, key } : undefined;
   }
 
   /** What the saved server `row` is, for a template's apply to match (mcp-sources.ts sourceOf): github on the GitHub App's

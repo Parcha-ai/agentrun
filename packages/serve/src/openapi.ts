@@ -1884,9 +1884,13 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     delete: {
       operationId: "deleteMcpServer", tags: ["local"], summary: "Forget a saved MCP server and its credential",
-      description: "403 forbidden to the API token when the server holds a credential: removing it drops a secret, the owner's signed-in session's alone. A server saved with none is the token's to remove. 412 precondition_failed when the server's credential changed between that check and the removal (a save or a sign-in landed): nothing is removed.",
+      description: "A server the Composio preset made also has its MCP server deleted in the owner's Composio account, with the saved key, before the row goes: Composio's 404 means it is already gone. 403 forbidden to the API token when the server holds a credential: removing it drops a secret, the owner's signed-in session's alone. A server saved with none is the token's to remove. 412 precondition_failed when the server's credential changed between that check and the removal (a save or a sign-in landed): nothing is removed.",
       parameters: [MCP_NAME],
-      responses: { "204": { description: "Forgotten." }, ...errors(401, 403, 404, 409, 412, 429, 500) },
+      responses: {
+        "204": { description: "Forgotten (and, for a Composio preset server, its Composio MCP server deleted, or already gone there)." },
+        "200": json(closed({ deleted: { type: "boolean", enum: [true] }, composio: closed({ removed: { type: "boolean", enum: [false] }, note: { type: "string", description: "What to do by hand: remove the server in Composio yourself, with the dashboard's address." } }) }), "Forgotten here, but the Composio MCP server a preset made could not be deleted (Composio refused or did not answer): it stays in the owner's Composio account until removed there. The row is gone either way."),
+        ...errors(401, 403, 404, 409, 412, 429, 500),
+      },
       "x-agentrun-serve": "mcpservers/1",
     },
   },

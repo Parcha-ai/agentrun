@@ -52,6 +52,8 @@ function asking(control: ComposioControl, key: string, signal: AbortSignal | und
     try { json = JSON.parse(raw); } catch { /* not JSON: said below */ }
     if (res.ok) {
       if (isObject(json)) return json;
+      // A delete may answer nothing at all.
+      if (!raw.trim()) return {};
       throw new ApiError("upstream_failed", `Composio's answer while ${step} was not JSON: nothing was saved.`);
     }
     const said = isObject(json) && isObject(json.error) ? text(json.error.message) : isObject(json) ? text(json.message) : "";
@@ -169,5 +171,25 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     if (url && savedUrl && (await savedUrl().catch(() => undefined)) === url) throw error;
     await ask("deleting the MCP server it made", "DELETE", `/api/v3.1/mcp/${encodeURIComponent(id)}`).catch(() => undefined);
     throw error;
+  }
+}
+
+/** Where the owner removes a Composio MCP server by hand, said when this server could not. */
+const DASHBOARD = "https://platform.composio.dev";
+/** The Composio MCP server a saved preset address names (`/v3/mcp/<id>/mcp`, composioAddress): its id, or undefined. */
+export const composioServerId = (address: string): string | undefined => {
+  try { return /^\/v3\/mcp\/([^/]+)\/mcp$/.exec(new URL(address).pathname)?.[1]; } catch { return undefined; }
+};
+
+/** Deleting a preset server: the Composio MCP server `id` it made is deleted as `key` (the saved credential, held for this
+ *  call only). Composio's 404 is "already gone"; a refusal, or no answer, is `removed: false` with what to do by hand, for
+ *  the delete of our own row to go on regardless. */
+export async function composioForget(control: ComposioControl, key: string, id: string, name: string, signal?: AbortSignal): Promise<{ removed: boolean; note?: string }> {
+  try {
+    await asking(control, key, signal)("deleting the MCP server it made", "DELETE", `/api/v3.1/mcp/${encodeURIComponent(id)}`, undefined, "gone");
+    return { removed: true };
+  } catch (error) {
+    if (error instanceof ApiError && error.extra.fields?.[0]?.reason === "not_found") return { removed: true };
+    return { removed: false, note: `Remove ${name} in Composio yourself: ${DASHBOARD}` };
   }
 }

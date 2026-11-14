@@ -37,6 +37,8 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
   const [form, setForm] = useState<{ saved?: McpServer; problem?: Problem; add?: Add } | null>(add && !composioAdd ? { add } : null);
   // The Composio form, open (true), open filled from a template's need (its `add`), or closed.
   const [composio, setComposio] = useState<boolean | Add>(composioAdd && writable ? composioAdd : false);
+  // What a delete says after its row is gone: a Composio server that could not be removed there is the owner's to remove.
+  const [removedNote, setRemovedNote] = useState<string | null>(null);
   // The forms follow the `add` param on every location change: Back to a setup URL opens one again, with its fields reset.
   const addKey = add ? JSON.stringify(add) : "";
   const seenAdd = useRef(addKey);
@@ -87,6 +89,7 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
           </p>
         )}
         {!writable && <p className="border bg-card p-4 text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
+        {removedNote && <p className="border border-warning/50 p-4 text-body text-warning-text" role="status">{removedNote}</p>}
         {loadError && (
           <Banner tone="error" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}>
             <p className="font-mono">The MCP servers could not be read. {loadError.text}</p>
@@ -96,7 +99,7 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
         {form && (!form.add || listed) && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}`} v2={v2} saved={form.saved} add={form.add && filled(form.add)} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {composio && (typeof composio !== "object" || listed) && <ComposioForm key={typeof composio === "object" ? addKey : "new"} v2={v2} add={typeof composio === "object" ? filled(composio) : undefined} onClose={() => setComposio(false)} onSaved={load} />}
         {servers && (servers.length
-          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} />)}</ul>
+          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} onDeleted={(note) => { setRemovedNote(note ?? null); load(); }} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
         <PrivateHosts v2={v2} />
       </div>
@@ -108,7 +111,7 @@ const Said = ({ problem }: { problem: Problem }) => (
   <div role="alert"><p className="font-mono text-body text-destructive-text">{problem.text}</p>{problem.detail && <p className="mt-1 text-small text-muted-foreground">{problem.detail}</p>}</div>
 );
 
-function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: (problem?: Problem) => void; onChanged: () => void }) {
+function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged, onDeleted }: { v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: (problem?: Problem) => void; onChanged: () => void; onDeleted: (note?: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [note, setNote] = useState<McpRefresh | null>(null);
@@ -150,7 +153,7 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
       {confirm && (
         <div role="alertdialog" aria-label={`Delete ${s.name}`} className="mt-4 flex flex-wrap items-center gap-3 border bg-card p-3">
           <p className="min-w-0 flex-1 text-body">Delete {s.name}? Its credential goes with it, and an agent that grants its tools can't call them.</p>
-          <Button size="sm" variant="destructive" disabled={busy} onClick={() => void run(async () => { await v2.deleteMcpServer(s.name); onChanged(); })}>Delete</Button>
+          <Button size="sm" variant="destructive" disabled={busy} onClick={() => void run(async () => { onDeleted((await v2.deleteMcpServer(s.name))?.composio?.note); })}>Delete</Button>
           <Button size="sm" onClick={() => setConfirm(false)}>Keep</Button>
         </div>
       )}

@@ -337,7 +337,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  toolkit needs the person's account connected; `not_served` names chosen actions Composio's server left out. */
     saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string; not_served?: string[] }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
-    deleteMcpServer: (name: string) => call<unknown>("DELETE", mcpServer(name)),
+    /** 204 when it is gone; 200 with a note when a Composio server it made could not be removed there (the row is gone either way). */
+    deleteMcpServer: (name: string) => call<{ deleted: true; composio?: { removed: false; note: string } } | undefined>("DELETE", mcpServer(name)),
     /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */
     startMcpSignIn: (name: string, body: { url: string; scopes?: string[]; client_id?: string; client_secret?: string; toolkit?: string | null }) => call<{ authorization_url: string }>("POST", `${mcpServer(name)}/oauth/start`, { body }),
     /** The private-network hosts an MCP server's authorization server may be on; none by default. */
