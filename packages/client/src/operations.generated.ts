@@ -2948,7 +2948,9 @@ export type ImportTemplateResponse = {
         name: string;
         tool: string;
         asks: "allow" | "ask";
-        pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null>>;
+        pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | {
+          keys: Array<string>;
+        }>;
       }>;
     }>;
     parameters: Record<string, unknown>;
@@ -3027,7 +3029,9 @@ export type ListTemplatesResponse = {
         name: string;
         tool: string;
         asks: "allow" | "ask";
-        pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null>>;
+        pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | {
+          keys: Array<string>;
+        }>;
       }>;
     }>;
     parameters: Record<string, unknown>;

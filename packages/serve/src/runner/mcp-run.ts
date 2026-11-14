@@ -74,6 +74,11 @@ export interface ClaimMcp {
   readonly tools: readonly HostTool[];
   /** A pinned tool's catalog name (`mcp:<server>/<tool>`) by its wire name; undefined for any other tool. */
   catalogOf(tool: string): string | undefined;
+  /** The top-level arguments a pinned tool's listing declares (its inputSchema's `properties`, as the run's pin holds it
+   *  and offers it to the model), by its catalog name (`mcp:<server>/<tool>`): what the gate closes a call of a tool with
+   *  a pin in any layer to (tool-gate.ts pinRefusal). Undefined for a listing with no `properties` object, and for any
+   *  other tool. */
+  argumentsOf(name: string): ReadonlySet<string> | undefined;
   /** What an asked call of a pinned tool costs on its card (main's: its price, else "not metered"); undefined otherwise. */
   priceOf(name: string): ApprovalPrice | undefined;
   /** The claim step's credentials opened again on the same pin (an expired OAuth token refreshed), then the claim
@@ -137,12 +142,15 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     ...(options.callBounds ? { bounds: options.callBounds } : {}),
   });
   const catalog = new Map<string, string>();
+  const declared = new Map<string, ReadonlySet<string>>();
   const tools: HostTool[] = [];
   for (const [server, pinned] of Object.entries(pin)) {
     for (const tool of pinned.tools) {
       const name = mcpToolName(server, tool.name);
       const wire = wireName(name);
       catalog.set(wire, name);
+      const properties = (tool.inputSchema as { properties?: unknown } | undefined)?.properties;
+      if (typeof properties === "object" && properties !== null && !Array.isArray(properties)) declared.set(name, new Set(Object.keys(properties)));
       tools.push({
         name: wire,
         description: tool.description || tool.title || `${tool.name}, a tool of the MCP server ${server}.`,
@@ -159,6 +167,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
   return {
     tools,
     catalogOf: (tool) => catalog.get(tool),
+    argumentsOf: (name) => declared.get(name),
     priceOf(name) {
       const parsed = /^mcp:([^/]+)\/(.+)$/.exec(name);
       const pinned = parsed && Object.hasOwn(pin, parsed[1]!) ? pin[parsed[1]!] : undefined;

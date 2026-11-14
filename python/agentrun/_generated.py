@@ -355,6 +355,7 @@ __all__ = [
     "ImportTemplateResponseTemplateComputerHereComputer",
     "ImportTemplateResponseTemplateMcpItem",
     "ImportTemplateResponseTemplateMcpItemToolsItem",
+    "ImportTemplateResponseTemplateMcpItemToolsItemPinValue",
     "ImportTemplateResponseTemplateModel",
     "ImportTemplateResponseTemplateOutput",
     "ImportTemplateResponseTemplateToolPolicy",
@@ -432,6 +433,7 @@ __all__ = [
     "ListTemplatesResponseTemplatesItemComputerHereComputer",
     "ListTemplatesResponseTemplatesItemMcpItem",
     "ListTemplatesResponseTemplatesItemMcpItemToolsItem",
+    "ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue",
     "ListTemplatesResponseTemplatesItemModel",
     "ListTemplatesResponseTemplatesItemOutput",
     "ListTemplatesResponseTemplatesItemToolPolicy",
@@ -4713,7 +4715,11 @@ class _ImportTemplateResponseTemplateMcpItemToolsItemRequired(TypedDict):
 
 
 class ImportTemplateResponseTemplateMcpItemToolsItem(_ImportTemplateResponseTemplateMcpItemToolsItemRequired, total=False):
-    pin: dict[str, str | float | bool | None | list[str | float | bool | None]]
+    pin: dict[str, str | float | bool | None | list[str | float | bool | None] | ImportTemplateResponseTemplateMcpItemToolsItemPinValue]
+
+
+class ImportTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
+    keys: list[str]
 
 
 class ImportTemplateResponseTemplateBudget(TypedDict):
@@ -4817,7 +4823,11 @@ class _ListTemplatesResponseTemplatesItemMcpItemToolsItemRequired(TypedDict):
 
 
 class ListTemplatesResponseTemplatesItemMcpItemToolsItem(_ListTemplatesResponseTemplatesItemMcpItemToolsItemRequired, total=False):
-    pin: dict[str, str | float | bool | None | list[str | float | bool | None]]
+    pin: dict[str, str | float | bool | None | list[str | float | bool | None] | ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue]
+
+
+class ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue(TypedDict):
+    keys: list[str]
 
 
 class ListTemplatesResponseTemplatesItemBudget(TypedDict):
