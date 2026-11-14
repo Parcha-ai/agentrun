@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { queued, registryPin, storeOn } from "./store-helpers.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const { githubAppAccess } = await import("../dist/runner/github-app.js");
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
@@ -34,6 +35,7 @@ async function fakeGitHub(t) {
   /** The installation tokens revoked (DELETE /installation/token, each by itself). */
   const revoked = [];
   const server = createServer((req, res) => {
+    if (stranger(req, res)) return;
     let body = "";
     req.on("data", (c) => (body += c)).on("end", () => {
       asked.push({ method: req.method, url: req.url, body, iss: JSON.parse(Buffer.from(String(req.headers.authorization).split(".")[1] ?? "", "base64url").toString() || "{}").iss });

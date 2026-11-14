@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { KEY } from "./fixtures/faux-monid.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -80,7 +81,7 @@ async function gateway(t, answers) {
   const seen = [];
   const outputs = [];
   const server = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     outputs.push((JSON.parse(body).input ?? []).filter((item) => item.type === "function_call_output").map((item) => item.output));

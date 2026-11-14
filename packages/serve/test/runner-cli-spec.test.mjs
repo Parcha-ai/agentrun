@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -52,18 +53,14 @@ const until = async (done, what, ms = 30_000) => {
 /** A gateway on loopback that answers OpenAI's Responses API with `text`, and records each model request's body
  *  (`seen`: every POST to /responses). Anything else that reaches its port is no model request: a host's loopback prober
  *  (a keyless `GET /`, as codex-run's and opencode-run's gateways pass over) is kept apart (`stray`), answered 404, and
- *  never counted as one. */
+ *  never counted as one (fixtures/stranger.mjs). */
 async function responsesGateway(t, text) {
   const seen = [];
   const stray = [];
   const server = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
-    if (req.method !== "POST" || !new URL(req.url, "http://gateway").pathname.endsWith("/responses")) {
-      stray.push(`${req.method} ${req.url} (${req.headers["user-agent"] ?? "no user agent"})`);
-      res.writeHead(404).end();
-      return;
-    }
+    if (stranger(req, res, { own: (path, method) => method === "POST" && path.endsWith("/responses"), strays: stray })) return;
     seen.push({ path: req.url, at: Date.now(), body: JSON.parse(body || "{}") });
     const events = [
       { type: "response.output_text.delta", item_id: "m_0", output_index: 0, content_index: 0, delta: text },

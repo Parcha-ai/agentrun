@@ -13,6 +13,7 @@ import { withToolSearch } from "./claude-tool-search.mjs";
 import { startFakeMcp } from "./fake-mcp-server.mjs";
 import { OFFERED_ENV } from "./faux-mcp-offered.mjs";
 import { scratch, serve, withEnv } from "../support.mjs";
+import { stranger } from "./stranger.mjs";
 
 /** The harnesses these tests run on: claude-agent where its sandbox can start (setpriv). */
 export const HARNESSES = ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : []), "codex"];
@@ -29,7 +30,7 @@ export const callsOf = (fake, tool) => fake.log.filter((entry) => entry.method =
 /** serve's gateway on loopback for codex's stand-in: each Responses request answered with the text it carries. */
 async function echoGateway(t) {
   const server = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     const text = JSON.parse(body || "{}").input?.[0]?.content?.[0]?.text ?? "";
