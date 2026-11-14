@@ -367,3 +367,14 @@ describe("places in the definition", () => {
     expect(toolOffers([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box", harnesses: ["pi"] }])).toEqual([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box", harnesses: ["pi"] }]);
   });
 });
+
+describe("toolOffers, a host tool over the run's own tools (capabilities' `meta`)", () => {
+  it("is no grant: tools_search, tools_call and codemode are not offered to an agent, Settings → Tools sets them", () => {
+    const offered = toolOffers([
+      { name: "read", available: true, harnesses: ["pi"] },
+      { name: "tools_search", available: true, meta: true, harnesses: ["pi"] },
+      { name: "codemode", available: true, meta: true, harnesses: ["pi"] },
+    ]);
+    expect(offered.map((t) => t.name)).toEqual(["read"]);
+  });
+});

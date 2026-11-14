@@ -412,7 +412,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(builtins.length ? { builtins } : {}),
           ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
           // What the CLI sends with its own tool search on, which the harness turns on as this does (claudeToolSearch).
-          ...(claudeToolSearch(tools.map((t) => t.name)) === "true" ? { toolSearch: true } : {}),
+          ...(claudeToolSearch(tools.map((t) => t.name), spec.deferCatalog) === "true" ? { toolSearch: true } : {}),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(options.provider.auth ? { auth: options.provider.auth } : {}),
@@ -433,6 +433,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           network: "deny-all",
         },
         tools: tools.map((tool) => kernelTool(tool, io, maxImageBytes, calls)),
+        ...(spec.deferCatalog === undefined ? {} : { deferCatalog: spec.deferCatalog }),
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists), but WebSearch when it is on.

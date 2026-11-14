@@ -1996,14 +1996,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const allowed = async (name: string) => !settingOf || (await settingOf(name).catch(() => "deny" as const)) !== "deny";
         // Deferred only when the model can both find and run what it hid: with either helper denied every tool stays listed,
         // so denying a helper never takes an otherwise allowed tool out of reach.
-        const deferred = !facts?.ownToolSearch && defersCatalog(own.map((one) => one.name)) && (await allowed(TOOLS_SEARCH)) && (await allowed(TOOLS_CALL));
+        // The one verdict for every harness: one with a tool search of its own (Claude Code's) follows it too, handed it as
+        // `deferCatalog` below, and so lists every tool when either helper is set to deny.
+        const deferred = defersCatalog(own.map((one) => one.name)) && (await allowed(TOOLS_SEARCH)) && (await allowed(TOOLS_CALL));
+        const offered = deferred && !facts?.ownToolSearch;
         const metas = metaTools({
           tools: () => [...own, ...native],
           granted: async (name) => !settingOf || (await settingOf(mcp?.catalogOf(name) ?? name).catch(() => "deny" as const)) !== "deny",
           codemode: facts?.ownCodemode !== true && (await allowed(CODEMODE)),
-          discovery: { search: deferred, call: deferred },
+          discovery: { search: offered, call: offered },
         }).filter((meta) => ![...own, ...native].some((one) => one.name === meta.name));
-        const tools: HostTool[] = [...own.map((one): HostTool => (deferred && isCatalogName(one.name) ? { ...one, deferred: true } : one)), ...metas.map(hosted)];
+        const tools: HostTool[] = [...own.map((one): HostTool => (offered && isCatalogName(one.name) ? { ...one, deferred: true } : one)), ...metas.map(hosted)];
         // An MCP tool of the run by its catalog name, as wrapped above: what a learned workflow's MCP node calls.
         mcpHosted = (catalog) => {
           const wire = mcp?.tools.find((one) => mcp?.catalogOf(one.name) === catalog);
@@ -2150,7 +2153,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? onEvent(record) : () => {}, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };
         // The MCP tools are host tools like any other (mcp.tools, wrapped above): every harness gets them on its own channel
         // for host tools, each call through the gate before its intent.
-        session = await spec.adapter.open({ ...spec.session, tools }, io);
+        session = await spec.adapter.open({ ...spec.session, tools, deferCatalog: deferred }, io);
         root = await harness.root(context);
         // The root as the claim found it, before this pass writes anything of its own there (the computer's show-up, a
         // takeover's note): what the reopen check below reads, so a fresh reopen is told by the run's own last entry.

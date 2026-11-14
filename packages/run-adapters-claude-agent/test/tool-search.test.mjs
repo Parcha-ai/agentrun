@@ -36,6 +36,8 @@ test("tool search is on exactly when the session's catalog tools pass the kernel
   assert.equal(claudeToolSearch(mcp(21)), 'true', 'past it: on');
   assert.equal(claudeToolSearch(['monid_discover', 'monid_inspect', ...mcp(19)]), 'true', 'monid tools count toward it');
   assert.equal(claudeToolSearch(Array.from({ length: 40 }, (_, index) => `tool_${index}`)), 'false', 'built-in tools never defer');
+  assert.equal(claudeToolSearch(mcp(21), false), 'false', "the host's verdict wins: a helper set to deny lists every tool");
+  assert.equal(claudeToolSearch(mcp(3), true), 'true', 'and the other way: the host says deferred');
   const listed = listedTools([{ name: 'lookup', description: 'd', inputSchema: { type: 'object' } }, { name: 'mcp__github__get_issue', description: 'd', inputSchema: { type: 'object' } }]);
   assert.equal(listed[0]._meta[ALWAYS_LOAD_KEY], true, 'a tool of the session\'s own is never deferred');
   assert.equal(listed[1]._meta[ALWAYS_LOAD_KEY], undefined, 'an MCP server\'s tool is deferred');

@@ -147,6 +147,10 @@ export interface SessionSpec {
   /** Exactly these tools (a run's remote MCP tools among them, as host tools); the harness's own stay off. */
   tools: HostTool[];
   context: "fresh" | "fork";
+  /** The host's one verdict on whether the run's catalog tools are deferred (tool-deferral.ts defersCatalog, and both
+   *  tools_search and tools_call allowed). A harness with a tool search of its own (`ownToolSearch`) turns it on exactly
+   *  when this is true; absent, it decides by the names alone. */
+  deferCatalog?: boolean;
   tier?: NodeRequest["tier"];
   effort?: NodeRequest["effort"];
   thinking?: NodeRequest["thinking"];
