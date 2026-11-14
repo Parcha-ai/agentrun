@@ -226,17 +226,12 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 		kAXSelectedAttribute, kAXChildrenAttribute, kAXPlaceholderValueAttribute, kAXHelpAttribute,
 	]
 
-	func snapshot(_ target: ResolvedTarget, maxNodes: Int) throws -> Snapshot {
+	func snapshot(_ target: ResolvedTarget, maxNodes: Int, details: Bool) throws -> Snapshot {
 		let root = try window(target)
 		let until = Date().addingTimeInterval(walkSeconds)
 		let bounds = target.window.bounds
 		var nodes: [RawNode] = []
 		var truncated = false
-		// DIAG: where a look's time goes.
-		func ms() -> Double { Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000 }
-		let diagStart = ms()
-		var tCopy = 0.0, tActions = 0.0, tSettable = 0.0
-		var maxDepth = 0
 		// Depth first, a parent before its children, children in the app's order.
 		var stack: [(element: AXUIElement, parent: Int?, depth: Int)] = [(root, nil, 0)]
 		while case let (element, parent, depth)? = stack.popLast() {
@@ -244,10 +239,7 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 				truncated = true
 				break
 			}
-			maxDepth = max(maxDepth, depth)
-			var t0 = ms()
 			let v = AX.copy(element, Self.walked)
-			tCopy += ms() - t0
 			let axRole = AX.string(v[0])
 			let subrole = AX.string(v[1])
 			let parentRole = parent.map { nodes[$0].role }
@@ -277,14 +269,9 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 			// desc: what it says beside its name. A description that is not already the name, else its help tag.
 			let desc = [description, AX.string(v[13])].compactMap { $0 }.first { !$0.isEmpty && $0 != name }
 			let textInput = axRole.map { Roles.textInput.contains($0) } == true || subrole == "AXSearchField"
-			t0 = ms()
-			let actions = AX.actions(element)
-			tActions += ms() - t0
-			t0 = ms()
-			// An item that opens (a Finder file's name in a list) says its value is settable, takes a set value into the
-			// field and renames nothing: on the mini, three runs. Its name changes only by its own rename, by keys.
-			let settable = !actions.contains("AXOpen") && AX.settable(element, kAXValueAttribute)
-			tSettable += ms() - t0
+			// Each is one more call to the app, as long as the attributes' (System Settings on CI: 168 nodes, 300 ms a
+			// walk, half of it on these two): read only when asked.
+			let (actions, settable) = details ? self.details(ElementHandle(ax: element)) : ([], false)
 			nodes.append(RawNode(
 				handle: ElementHandle(ax: element), role: role, name: name, value: value, desc: desc, identifier: AX.string(v[5]), frame: frame,
 				parent: parent, flags: flags, actions: actions, settable: settable, textInput: textInput,
@@ -295,30 +282,14 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 			for child in AX.elements(v[11]).reversed() { stack.append((child, me, depth + 1)) }
 		}
 		if !stack.isEmpty { truncated = true }
-		let total = ms() - diagStart
-		var line = "DIAG look \(target.app.id): \(nodes.count) nodes, depth \(maxDepth), \(Int(total)) ms: copy \(Int(tCopy)), actions \(Int(tActions)), settable \(Int(tSettable))"
-		if total > 200 {
-			// DIAG: the same attribute reads again, eight at a time.
-			let handles = nodes.map(\.handle.ax)
-			let refs = handles.map { AXRef(element: $0) }
-			let t0 = ms()
-			DispatchQueue.concurrentPerform(iterations: refs.count) { i in _ = AX.copy(refs[i].element, Self.walked) }
-			let par = ms() - t0
-			let t1 = ms()
-			for h in handles { _ = AX.copy(h, [kAXRoleAttribute, kAXChildrenAttribute]) }
-			let thin = ms() - t1
-			let t2 = ms()
-			for h in handles { _ = AX.copy(h, [kAXPositionAttribute, kAXSizeAttribute]) }
-			let frames = ms() - t2
-			let pids = Set(handles.map { e -> pid_t in
-				var p: pid_t = 0
-				AXUIElementGetPid(e, &p)
-				return p
-			})
-			line += "; parallel copy \(Int(par)) ms, role+children \(Int(thin)) ms, frames \(Int(frames)) ms, pids \(pids.sorted())"
-		}
-		log(line)
 		return Snapshot(nodes: nodes, truncated: truncated)
+	}
+
+	func details(_ element: ElementHandle) -> (actions: [String], settable: Bool) {
+		let actions = AX.actions(element.ax)
+		// An item that opens (a Finder file's name in a list) says its value is settable, takes a set value into the
+		// field and renames nothing: on the mini, three runs. Its name changes only by its own rename, by keys.
+		return (actions, !actions.contains(openAction) && AX.settable(element.ax, kAXValueAttribute))
 	}
 
 	func exists(_ element: ElementHandle) -> Bool {

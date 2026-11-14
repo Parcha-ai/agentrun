@@ -34,20 +34,27 @@ struct View: Sendable {
 		return [node.role, node.name ?? "", value, node.desc ?? "", "\(b.x),\(b.y),\(b.w),\(b.h)", node.flags.sorted().map(\.rawValue).joined(separator: ",")].joined(separator: "\u{1f}")
 	}
 
-	/// What a person would see of the whole window: its id and size and every node; with no nodes (ui.tree off), the
-	/// image's hash. Not the image when there is a tree: a blinking caret or a spinner redraws the window every half
-	/// second, which held every settle to maxSettleMs and counted as a step's effect.
+	/// What a person would see of the whole window: its id and size and every node on it; with no nodes (ui.tree off),
+	/// the image's hash. Not the image when there is a tree: a blinking caret or a spinner redraws the window every half
+	/// second, which held every settle to maxSettleMs and counted as a step's effect. Not a node wholly outside the
+	/// window: System Settings rebuilds its sidebar rows scrolled out of view each time its tree is read, and Finder's
+	/// status bar below the window counts the free disk space, which held every settle there to maxSettleMs too.
 	var fingerprint: Int {
 		var h = Hasher()
 		h.combine(target.window.id)
 		h.combine(target.window.bounds.w)
 		h.combine(target.window.bounds.h)
-		for node in nodes {
+		for node in nodes where onWindow(node) {
 			h.combine(node.handle)
 			h.combine(looks(node))
 		}
 		if nodes.isEmpty { h.combine(frame) }
 		return h.finalize()
+	}
+
+	/// The node's frame reaches into the window; a node with no frame counts as on it.
+	func onWindow(_ node: RawNode) -> Bool {
+		node.frame.map { $0.intersects(target.window.bounds) } ?? true
 	}
 }
 

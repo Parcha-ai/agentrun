@@ -78,7 +78,9 @@ public actor UIEngine {
 	/// A look at the target's window, under the policy. With ui.tree off it is the window alone, found in the window
 	/// server's list, with no nodes; with ui.image off as well there is nothing to look with. The image's hash is read
 	/// when there are no nodes, or when framed (a look kept as a state): reading it is a window capture, the slow part.
-	func look(_ target: Target?, framed: Bool = false) async throws -> View {
+	/// Only an observe's look reads every node's actions and settable (details): an act reads them for the elements its
+	/// steps act on, when each step runs.
+	func look(_ target: Target?, framed: Bool = false, details: Bool = false) async throws -> View {
 		let start = clock.now()
 		defer {
 			looks += 1
@@ -92,13 +94,13 @@ public actor UIEngine {
 			var found = try ax.resolve(target)
 			try policy.check(found.app.id)
 			do {
-				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes)
+				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes, details: details)
 			} catch let gone as RPCError where gone.kind == .notFound && target?.window == nil {
 				// A target that names no window is the app's main one: when the app swapped it between finding and
 				// reading it (a first-run window giving way to the real one), the look follows the new main window.
 				found = try ax.resolve(target)
 				try policy.check(found.app.id)
-				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes)
+				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes, details: details)
 			}
 			resolved = found
 		case (.off, .on):
@@ -147,7 +149,7 @@ public actor UIEngine {
 			empty = "ui.tree is off here: \(reason)"
 			edge = edge ?? Limits.defaultImageEdge
 		}
-		let view = try await look(params.target, framed: true)
+		let view = try await look(params.target, framed: true, details: true)
 		var image: UiImage?
 		if let edge {
 			let shot = try await platform.capture.window(view.target, maxEdge: edge, maxBytes: Limits.maxChunkBytes)
@@ -755,14 +757,16 @@ public actor UIEngine {
 
 	// MARK: elements and points
 
-	/// The element a step's ref names, and its node, if the element is still in the window. A look capped short of it
-	/// asks the tree whether it still exists.
+	/// The element a step's ref names, and its node with its actions and settable read now, if the element is still in
+	/// the window. A look capped short of it asks the tree whether it still exists.
 	func element(_ ref: String?, in view: View) throws -> (RawNode?, ElementHandle?) {
 		guard let ref else { return (nil, nil) }
 		let handle = store.handle(ref)!
-		if let seen = view.node(handle) { return (seen, handle) }
-		if view.truncated, ax.exists(handle), let seen = store.lastSeen(ref) { return (seen, handle) }
-		throw RPCError.stale("\(ref) is gone: its element is no longer in the window. Observe again for fresh refs")
+		guard var node = view.node(handle) ?? (view.truncated && ax.exists(handle) ? store.lastSeen(ref) : nil) else {
+			throw RPCError.stale("\(ref) is gone: its element is no longer in the window. Observe again for fresh refs")
+		}
+		(node.actions, node.settable) = ax.details(handle)
+		return (node, handle)
 	}
 
 	/// Marks the step's place for the live view (Marks): its element, else its point, else (a key or text to the window's
@@ -888,34 +892,10 @@ public actor UIEngine {
 			try await sleep(min(timing.quietMs, max(0, until - clock.now())))
 			let next = try await look(target)
 			let quiet = next.fingerprint == last.fingerprint
-			if !quiet, let trace = timing.trace { trace("DIAG unquiet \(next.target.app.id): \(Self.whyNot(last, next))") }
 			last = next
 			if quiet { break }
 		}
 		return last
-	}
-
-	/// DIAG: what differs between two looks.
-	static func whyNot(_ a: View, _ b: View) -> String {
-		let ha = Set(a.nodes.map(\.handle))
-		let hb = Set(b.nodes.map(\.handle))
-		var out = "nodes \(a.nodes.count)->\(b.nodes.count), \(hb.subtracting(ha).count) new handles, \(ha.subtracting(hb).count) gone; window \(a.target.window.id) \(a.target.window.bounds) -> \(b.target.window.id) \(b.target.window.bounds)"
-		var shown = 0
-		for node in b.nodes where shown < 4 {
-			guard let old = a.node(node.handle) else {
-				if hb.subtracting(ha).contains(node.handle) && shown < 4 {
-					out += "; new [\(b.looks(node).replacingOccurrences(of: "\u{1f}", with: "|").prefix(140))]"
-					shown += 1
-				}
-				continue
-			}
-			let (was, now) = (a.looks(old), b.looks(node))
-			if was != now {
-				out += "; [\(was.replacingOccurrences(of: "\u{1f}", with: "|").prefix(140))] -> [\(now.replacingOccurrences(of: "\u{1f}", with: "|").prefix(140))]"
-				shown += 1
-			}
-		}
-		return out
 	}
 
 	/// The expect holds in this look. text: some node's name, value or desc holds it (never a secure field's value). ref:
