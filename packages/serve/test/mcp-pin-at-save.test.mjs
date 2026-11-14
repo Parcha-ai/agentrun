@@ -310,3 +310,26 @@ test("a follow-up to a run that ended before the upgrade pins its revision at th
   await completes(api, runId);
   assert.deepEqual((await store.agents.revision(started.body.revision))?.mcpPin?.fake?.tools?.map((tool) => tool.name), ["add"], "the follow-up's claim pinned the revision");
 });
+
+test("through tools_search and tools_call a run keeps its revision's pin: the tool as saved, and a value its setting does not pin refused unsent", { timeout: 240_000 }, async (t) => {
+  const { api, fake } = await setup(t);
+  // Its setting pins add's `a` to 2 (tool-gate.ts pinRefusal), and its save pins the tool as the fake listed it then.
+  assert.equal((await retried(api)("POST", "/agents", agent("through", { tools: [ADD], tool_settings: { [ADD]: { permission: "allow", pin: { a: 2 } } } }))).status, 201);
+  fake.tools.add.description = "Add two numbers, then some.";
+  await refresh(api);
+  const calls = () => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === "add").length;
+  const run = async (content) => {
+    const started = await api("POST", "/agents/through/runs", { input: { content } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    assert.equal((await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 180_000 })).last.status, "completed");
+    return answerOf(api, started.body.run_id);
+  };
+  const found = await run('Call tools_search with {"query":"add two numbers"}');
+  assert.match(found, /Add two numbers\./, `the search answers the tool as pinned: ${found}`);
+  assert.doesNotMatch(found, /then some/, "never as the server lists it now");
+  const refused = await run('Call tools_call with {"name":"mcp__fake__add","args":{"a":5,"b":3}}');
+  assert.match(refused, /a = 2/, `refused in the pin's words: ${refused}`);
+  assert.equal(calls(), 0, "the call with a = 5 was never sent");
+  assert.match(await run('Call tools_call with {"name":"mcp__fake__add","args":{"a":2,"b":3}}'), /5/);
+  assert.equal(calls(), 1, "the call as pinned was sent once");
+});
