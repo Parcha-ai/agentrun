@@ -964,6 +964,55 @@ final class EngineTests: XCTestCase {
 		XCTAssertFalse(result.changed)
 	}
 
+	/// System Settings rebuilds its sidebar rows scrolled out of the window every time its tree is read: new elements,
+	/// at other heights, and Finder's status bar below the window counts the free disk space down. Nothing wholly
+	/// outside the window is what a person sees, so it holds no settle (on CI each settle there ran out its 3 s over 4
+	/// looks) and is no step's effect.
+	func testWhatChangesOutsideTheWindowNeitherHoldsASettleNorVerifiesAStep() async throws {
+		os.onSnapshot = { os in
+			let old = os.order.last { os.elements[$0]?.name == "Sound" } ?? 99
+			os.remove(old)
+			os.add(old + 1, "row", name: "Sound", frame: Rect(108, 700 + Double(old % 2) * 19, 198, 19), parent: 2)
+			os.remove(old + 1000)
+			os.add(old + 1001, "text", name: "Focus", frame: Rect(-50, 700, 0, 0), parent: 2)
+		}
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let (start, walks) = (os.now, os.snapshots)
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(os.snapshots - walks, 3, "the act's first look, then two a quiet apart")
+		XCTAssertLessThan(os.now - start, 500)
+		XCTAssertEqual(ran(result, 0)?.1, false, "a row rebuilt outside the window is not the step's effect")
+		XCTAssertFalse(result.changed)
+		// What changes on the window still does both.
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.after(100) { $0.elements[5]!.name = "Saved" } }
+		}
+		let shown = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(ran(shown, 0)?.1, true)
+		XCTAssertTrue(shown.changed)
+	}
+
+	/// A node's actions and whether its value can be set cost a Mac two reads more, as much as the rest of the node
+	/// (System Settings on CI: 168 nodes, 300 ms a walk, half of it on those two). An observe shows them for every node;
+	/// an act's looks need them only for the elements its steps act on, read when the step runs.
+	func testAnActReadsActionsAndSettableOnlyForTheElementsItsStepsActOn() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		XCTAssertEqual(os.detailReads, os.order.count, "an observe reads every node's")
+		XCTAssertEqual(node(r, "Save")?.actions, ["AXPress", "AXShowMenu"])
+		os.detailReads = 0
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.with { $0.elements[5]!.name = "Saved" } }
+		}
+		let steps: [Step] = [.press(ref(r, "Save")), .set(ref(r, "Title"), value: "Hi")]
+		let result = try await engine.act(UiActParams(steps: steps, expect: Expect(text: "Saved")))
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertEqual(ran(result, 1)?.1, true)
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertEqual(os.detailReads, 2, "one read for each step's element")
+	}
+
 	func testCallsRunOneAtATime() async throws {
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())

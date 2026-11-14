@@ -51,6 +51,13 @@ final class FakeOS: @unchecked Sendable {
 	var front = "com.apple.Safari"
 	var frameHash = 0
 	var maxNodes: Int?
+	/// Walks of the tree, and the elements whose actions and settable were read: on a Mac, those two reads cost as much
+	/// as the rest of a node.
+	var snapshots = 0
+	var detailReads = 0
+	/// Run at the start of every walk, as an app that rebuilds part of its tree each time it is read (System Settings'
+	/// sidebar rows scrolled out of view).
+	var onSnapshot: ((FakeOS) -> Void)?
 	/// Called on every perform, set and post, so a test makes the UI react.
 	var react: ((String, FakeOS) -> Void)?
 	var log: [String] = []
@@ -126,6 +133,8 @@ struct FakeAX: Accessibility {
 	func snapshot(_ target: ResolvedTarget, maxNodes: Int) throws -> Snapshot {
 		try os.with { os in
 			if target.window.id != os.window.id { throw RPCError.notFound("\(os.app.id) has no window \(target.window.id) any more: observe again") }
+			os.snapshots += 1
+			os.onSnapshot?(os)
 			let cap = min(maxNodes, os.maxNodes ?? maxNodes)
 			var index: [Int: Int] = [:]
 			var nodes: [RawNode] = []
@@ -136,6 +145,7 @@ struct FakeAX: Accessibility {
 				index[id] = nodes.count
 				nodes.append(RawNode(handle: ElementHandle(id), role: e.role, name: e.name, value: e.value, desc: e.desc, frame: e.frame, parent: e.parent.flatMap { index[$0] }, flags: flags, actions: e.actions, settable: e.settable, textInput: e.textInput, keysFirst: e.keysFirst))
 			}
+			os.detailReads += nodes.count
 			return Snapshot(nodes: nodes, truncated: os.order.count > cap)
 		}
 	}
