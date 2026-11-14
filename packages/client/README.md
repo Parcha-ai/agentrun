@@ -68,6 +68,27 @@ ends, or the body is cut before its length) rejects with `AgentRunUnreachable` a
 Only the server's silence counts as a dropped connection (`idleMs`, default 45000), never the time your loop spends on a
 page.
 
+## Learning for existing backend SDK agents
+
+The development build includes `withClaudeAgentLearning` from `@parcha/agentrun-client/claude` and
+`withCodexAgentLearning` from `@parcha/agentrun-client/codex`. Use the client and server from the same reviewed
+checkout; these new exports are not a guarantee about the current npm release.
+
+| Existing backend | Cookbook |
+| --- | --- |
+| Claude Agent SDK `query` and custom tools | [Preserve the native query, add checked learning](../../docs/tutorials/claude-sdk-learning.md) |
+| Codex SDK client, project and tools | [Preserve native threads, add checked learning](../../docs/tutorials/codex-sdk-learning.md) |
+
+Your backend still starts and cancels tasks. The wrapper records original source policy/input, assistant text,
+tool names/status and usage; raw tool arguments/results and SDK credentials are not sent. AgentRun reflects
+without tools, independently grades proposals, and supplies accepted context to the next fresh task.
+`learning: true` opts in on first registration only; existing agents keep their console setting.
+
+Both wrappers expose `flushLearning()`. Await it before shutdown or before testing a fresh run's use of newly
+accepted learning. Errors in persistence or grading surface there without replacing the original SDK result/error.
+The first integration supports fresh, single-task sessions/threads only. See the cookbooks for cancellation,
+policy snapshots and multimodal limits, or run the [opt-in live examples](../../examples/sdk-learning/README.md).
+
 ## Errors
 
 Every error is an `AgentRunError`, and its `kind` says which one:
