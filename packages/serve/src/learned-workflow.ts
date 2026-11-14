@@ -20,15 +20,13 @@
 //     has no room for never sent, the run paused on the cap's refusal (ledger.pause). A run handed none runs no
 //     decision node: the check refuses it before any node runs.
 // Each model request is a request on the run's one route, so what the workflow spends is the run's cost, under its cap:
-// on pi the run's models, as a side request (request-start.ts, cap.ts: marked, and costed on the run's timeline as
-// `learned_workflow`); on another harness the session's model proxy, under a side key (port-models.ts): the harness's
+// the session's model proxy, under a side key (port-models.ts): the harness's
 // own policy, provider, key and price, booked on the session's records labelled `learned_workflow`. A call a crash cut
 // off is never run again (`replay: "never"`): it is answered interrupted.
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { TSchema } from "typebox";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { registerLabel, registerOutcome } from "./timeline/index.js";
-import { sideRequests } from "./cap.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX, type LearnedNode } from "./learned-nodes.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { decisionsAsked, deniedDecisionWords } from "./learn/skills.js";
@@ -256,12 +254,10 @@ export function learnedOutput(output: unknown): string {
 }
 
 /** One model request as a pi-ai event stream, sent through `models.completeSimple` as the run's own request, under its
- *  cap: on pi marked and costed on the run's timeline under `learned_workflow` (sideRequests), on another harness booked
- *  by the session's proxy, labelled by the side key it goes under. */
+ *  cap: booked by the session's proxy, labelled by the side key it goes under. */
 async function sideStream(models: RunModels, model: unknown, context: object, options: object | undefined) {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   const stream = createAssistantMessageEventStream();
-  sideRequests.set(context, { label: LEARNED_WORKFLOW_TOOL, extraInputTokens: 0, maxFeeUsd: 0, feeUsd: () => 0 });
   void (async () => {
     try {
       const message = (await models.completeSimple(model as never, context as never, options as never)) as { stopReason?: string; errorMessage?: string };

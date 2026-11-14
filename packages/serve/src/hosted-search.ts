@@ -1,19 +1,16 @@
 // pi's native web_search: ONE standalone request to the run's own model provider with its hosted search tool, as
 // Claude's CLI runs its WebSearch. The request is one user turn carrying the query and a short instruction to answer
-// with sources, on the run's model and key, sent through the run's models (marked and capped as each of its requests is:
-// request-start.ts, cap.ts), with the provider's hosted tool added to the body (pi-ai's onPayload) and nothing else:
+// with sources, on the run's model and key, sent through the run's models (the session's port under a side key labelled
+// web_search, booked on the run's ledger), with the provider's hosted tool added to the body (pi-ai's onPayload) and nothing else:
 // Anthropic's `web_search_20250305` with at most 5 searches, or OpenAI's Responses `web_search`. pi-ai keeps none of the
-// provider's search blocks, so the results, their citations and the search count are read from the provider's own
+// provider's search blocks, so the results and their citations are read from the provider's own
 // events (onProviderStreamEvent). Nothing of it enters the run's conversation but the tool's answer, so nothing needs
 // replaying. A `pause_turn` (Anthropic pausing a long search turn) answers what it has; nothing is retried.
 //
-// It is booked through the run's request-cost path as a side request labelled web_search: its tokens at the model's
-// price plus each search at $10 per 1,000 (Anthropic's per search, OpenAI's per call). Under the run's cap its input is
-// held at its context plus HOSTED_SEARCH_ALLOWANCE_TOKENS.
+// Its price and search fee are the session proxy's to book: the pi runner's policy (runner/adapters/pi.ts) holds its input at its
+// context plus HOSTED_SEARCH_ALLOWANCE_TOKENS and its fee at the searches the body allows.
 import type { AssistantMessage, Context, Models } from "@earendil-works/pi-ai";
 import { clip, TITLE_CAP } from "./web-fetch-direct.js";
-import { NATIVE_SEARCH_USD } from "@parcha/agentrun-kernel/host";
-import { sideRequests } from "./cap.js";
 import { ANSWER_MAX, type Hit, type Search, snippetOf } from "./web-search.js";
 
 export const HOSTED_MAX_USES = 5;
@@ -28,9 +25,6 @@ export const OPENAI_SEARCH_TOOL = Object.freeze({ type: "web_search", external_w
 /** OpenAI's hosted search has no per-tool limit: the Responses API's `max_tool_calls` caps the built-in tool calls of the
  *  request at the HOSTED_MAX_USES its fee is reserved for, as Anthropic's tool's `max_uses` does. */
 export const OPENAI_SEARCH_LIMIT = Object.freeze({ max_tool_calls: HOSTED_MAX_USES });
-/** OpenAI's models that bill each call's search content as a fixed block of 8,000 input tokens apart from the response's
- *  usage: the block is added to the fee at the model's input price. */
-const BLOCK_BILLED = /^gpt-(?:4o|4\.1)-mini(?:-|$)/;
 const ANSWER_TOKENS = 2_048;
 /** As Exa's and Parallel's searches stop. */
 const TIMEOUT_MS = 60_000;
@@ -51,25 +45,19 @@ function reader(anthropic: boolean) {
     const hit = hits.get(url) ?? {};
     hits.set(url, { ...found, ...Object.fromEntries(Object.entries(hit).filter(([, value]) => value)) });
   };
-  let reported: number | undefined;
-  let calls = 0;
   let failed: string | undefined;
   const anthropicEvent = (event: Event) => {
     const block = event.content_block;
-    if (event.type === "content_block_start" && block?.type === "server_tool_use" && block.name === "web_search") calls += 1;
     if (event.type === "content_block_start" && block?.type === "web_search_tool_result") {
       if (!Array.isArray(block.content)) failed = text((block.content as { error_code?: unknown } | undefined)?.error_code) ?? "the search failed";
       for (const result of list(block.content)) if (result.type === "web_search_result") add(result.url, { title: text(result.title), published: text(result.page_age) });
     }
     const citation = event.delta?.type === "citations_delta" ? (event.delta.citation as Record<string, unknown> | undefined) : undefined;
     if (citation) add(citation.url, { title: text(citation.title), snippet: text(citation.cited_text) });
-    const used = (event.usage?.server_tool_use as { web_search_requests?: unknown } | undefined)?.web_search_requests;
-    if (event.type === "message_delta" && typeof used === "number") reported = used;
   };
   const openaiEvent = (event: Event) => {
     const item = event.item;
     if (event.type === "response.output_item.done" && item?.type === "web_search_call") {
-      calls += 1;
       for (const source of list((item.action as { sources?: unknown } | undefined)?.sources)) add(source.url, {});
     }
     if (event.type === "response.output_item.done" && item?.type === "message") {
@@ -83,13 +71,9 @@ function reader(anthropic: boolean) {
         }
       }
     }
-    const used = ((event.response?.tool_usage as { web_search?: { num_requests?: unknown } } | undefined)?.web_search)?.num_requests;
-    if ((event.type === "response.completed" || event.type === "response.incomplete") && typeof used === "number") reported = used;
   };
   return {
     event: (event: unknown) => (anthropic ? anthropicEvent : openaiEvent)((event ?? {}) as Event),
-    /** The searches the provider reported, else the search calls its answer held. */
-    searches: () => reported ?? calls,
     failed: () => (hits.size ? undefined : failed),
     hits: (): Hit[] => [...hits].map(([url, hit]) => ({ url, title: clip(hit.title ?? "", TITLE_CAP), snippet: snippetOf(hit.snippet ?? ""), ...(hit.published ? { published: hit.published } : {}) })),
   };
@@ -109,8 +93,6 @@ export async function hostedSearch(query: string, n: number, ref: string | undef
   if (!anthropic && model.api !== "openai-responses") return { error: `web_search: ${ref} has no hosted web search here` };
   const read = reader(anthropic);
   const context: Context = { messages: [{ role: "user", content: [{ type: "text", text: `Search the web for: ${query}\n\nAnswer briefly from what the search finds, and name each source by its URL.` }], timestamp: Date.now() }] };
-  const block = BLOCK_BILLED.test(model.id) ? (8_000 * (model.cost?.input ?? 0)) / 1e6 : 0;
-  sideRequests.set(context, { label: "web_search", extraInputTokens: HOSTED_SEARCH_ALLOWANCE_TOKENS, maxFeeUsd: HOSTED_MAX_USES * (NATIVE_SEARCH_USD + block), feeUsd: () => read.searches() * (NATIVE_SEARCH_USD + block) });
   let answer: AssistantMessage;
   try {
     answer = await models.completeSimple(model, context, {

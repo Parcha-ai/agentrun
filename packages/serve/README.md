@@ -3175,13 +3175,13 @@ its held worst case.
 
 ### A workflow run under its cap
 
-A workflow run is capped by the same checks, in its own process, each before the paid step is sent:
+A workflow run is capped by the same checks, on the run's one ledger (the kernel cap), each before the paid step is sent:
 
 | Step | Held at | Where |
 |---|---|---|
-| A model node's request | its expected cost, as an agentic run's request | the run's models (`cap.ts` capModels) |
+| A model node's request | its expected cost, as an agentic run's request | the run's ledger |
 | A call node's `llm` call | the same | the same, as a side request |
-| A call node's paid tool call (Parallel's search or extract) | its fee | `paidCall`, as an agentic run's |
+| A call node's paid tool call (Parallel's search or extract) | its fee | the run's ledger, as an agentic run's |
 | A decision on Parallel | its list price for one request, $0.001 | before the driver admits it (`decision-cap.ts`) |
 | A decision on Jev | TypeSafe's published price, $0.042 a million input tokens, one token a byte of its state and questions | the same |
 | A decision on an OpenRouter Decisions model | its catalog price: per request, per image, per input token, and per output token for 256 a question (`expected`) or the catalog's most (`strict`) | the same |

@@ -2,6 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunDetail } from "./RunDetail";
+import { useRunScreen, type ScreenView } from "./RunScreen";
 import { messageFeatures, runFixture } from "@/fixtures";
 import { ClientError } from "@/lib/client";
 import type { Run, RunComputer } from "@/lib/v2";
@@ -538,6 +539,11 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
       await act(async () => { release(); });
       await settle();
       expect(outcomes).toEqual(["done"]);
+      // Taken: the card's answers stay off until the run's next read takes the ask away (the answer comes back before it).
+      expect(done.disabled).toBe(true);
+      await act(async () => { done.click(); });
+      await settle();
+      expect(outcomes).toEqual(["done"]);
     });
   }
 
@@ -689,5 +695,69 @@ describe("the live view fills the window", () => {
     await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
     expect(filling(p.host)).toBe(false);
     expect(document.activeElement, "focus back on Fill the window").toBe(fillButton(p.host));
+  });
+});
+
+// The reads come every `every` ms while nothing is changing, and `soon` while a change is on its way: the screen opening
+// (none, opening), a take-over waiting for the agent's step (pending), and a moment after the page's own take-over or
+// hand-back, whose answer the next reads catch up with. So the first frame and who drives show when they happen, not
+// up to a whole `every` later.
+describe("the screen is read again soon while a change is on its way", () => {
+  const OPENING: RunComputer = { state: "none", kind: "desktop", hold: "agent", session: "opening" } as RunComputer;
+  const LIVE = (hold: "agent" | "pending" | "person"): RunComputer => ({ state: "live", kind: "desktop", viewer: VIEWER, hold });
+  async function hook(read: () => Promise<RunComputer>) {
+    const seen: { view: ScreenView | null; held: (hold: "agent" | "pending" | "person") => void }[] = [];
+    function Probe() {
+      const got = useRunScreen(read, true, 5_000, 20);
+      seen.push(got);
+      return null;
+    }
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(Probe)); });
+    return () => seen[seen.length - 1]!;
+  }
+
+  it("a screen being opened is read soon, so it shows once it is up", async () => {
+    let reads = 0;
+    const now = await hook(async () => (++reads >= 3 ? LIVE("agent") : OPENING));
+    await settle(150);
+    expect(now().view?.state).toBe("live");
+  });
+
+  it("a pending take-over is read soon, so 'You drive' follows the agent's step", async () => {
+    let reads = 0;
+    const now = await hook(async () => LIVE(++reads >= 3 ? "person" : "pending"));
+    await settle(150);
+    expect(now().view?.state === "live" && now().view).toMatchObject({ hold: "person" });
+  });
+
+  it("a failed read while a take-over is pending keeps the reads soon", async () => {
+    let reads = 0;
+    // pending, then one read that fails (a blip), then the person has it.
+    const now = await hook(async () => { reads += 1; if (reads === 2) throw new Error("a blip"); return LIVE(reads >= 3 ? "person" : "pending"); });
+    await settle(150);
+    expect(now().view?.state === "live" && now().view).toMatchObject({ hold: "person" });
+  });
+
+  it("after the page's hand-back, the reads catch up soon though its answer still said the person's", async () => {
+    let hold: "agent" | "person" = "person";
+    let reads = 0;
+    const now = await hook(async () => { reads += 1; return LIVE(hold); });
+    await settle(60);
+    const before = reads;
+    // The hand-back's answer, read right after its row was written: the runner hasn't applied it yet.
+    await act(async () => { now().held("person"); });
+    hold = "agent";
+    await settle(150);
+    expect(reads - before).toBeGreaterThan(1);
+    expect(now().view).toMatchObject({ hold: "agent" });
+  });
+
+  it("nothing on its way: the reads keep to every", async () => {
+    let reads = 0;
+    await hook(async () => { reads += 1; return LIVE("agent"); });
+    await settle(200);
+    expect(reads).toBe(1);
   });
 });
