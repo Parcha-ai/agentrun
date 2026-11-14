@@ -8,6 +8,7 @@ import { agentFixture, agentsList, archivedAgents, editorCaps, recorded, revisio
 import { saveError } from "@/lib/agentForm";
 import { ANALYTICS, statsWith } from "@/components/AgentAnalytics.sample";
 import { ClientError } from "@/lib/client";
+import type { Run } from "@/lib/v2";
 
 // The agents surface on agents and refusals AgentRun Server returned (src/fixtures), in the shell.
 const meta: Meta = { title: "Agents" };
@@ -47,6 +48,20 @@ export const ListLoading: Story = { render: () => page(<AgentsList agents={null}
 export const ListError: Story = { render: () => page(<AgentsList agents={null} error={`${recorded<{ error: { code: string; message: string } }>("error.unauthenticated").body.error.code}: ${recorded<{ error: { message: string } }>("error.unauthenticated").body.error.message}`} />) };
 export const AgentRuns: Story = { render: () => agentPage("invoice-checker") };
 export const AgentNoRuns: Story = { render: () => agentPage("invoice-checker", { runs: false }) };
+export const AgentProductionOnboarding: Story = {
+  render: () => {
+    const done = runFixture("run.completed.idle.4");
+    const summary = recorded<{ runs: Run[] }>("agent.support-triage.runs").body.runs.find((r) => r.run_id === done.run.run_id)!;
+    const v2 = {
+      getAgent: async () => ({ agent: agentFixture("support-triage"), etag: null }),
+      listAgentRuns: async () => ({ runs: [summary], next_cursor: null }),
+      statsOver: async () => statsWith(ANALYTICS),
+      getTimeline: async () => done.page,
+      getRun: async () => done.run,
+    };
+    return page(<AgentPage v2={v2 as never} agentId="support-triage" go={noop} />);
+  },
+};
 export const AgentWorkflowGraph: Story = { render: () => agentPage("support-triage", { tab: "workflow" }) };
 export const AgentAnalytics: Story = { render: () => agentPage("invoice-checker", { tab: "analytics" }) };
 export const NewAgent: Story = { render: () => page(<AgentEditor agent={null} caps={editorCaps} onSave={async () => null} onBack={noop} />) };

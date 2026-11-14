@@ -92,10 +92,168 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
     });
   };
   const effort = () => bar()!.querySelector('button[aria-haspopup=listbox][aria-label="Effort"]') as HTMLButtonElement;
-  return { host, went, asked, followed, statsAsked, starts, click, button, tabs, fact, bar, input, set, effort };
+  const rerender = async (next: Partial<Parameters<typeof AgentPage>[0]>) => {
+    act(() => root!.render(createElement(AgentPage, { ...props, ...next })));
+    await settle();
+  };
+  return { host, went, asked, followed, statsAsked, starts, click, button, tabs, fact, bar, input, set, effort, rerender, v2 };
 }
 
 describe("AgentPage", () => {
+  it("offers separate production onboarding after success without sending local context or changing local Run and Edit", async () => {
+    const agent = agentFixture("invoice-checker");
+    const before = structuredClone(agent);
+    const run: Run = { ...runFixture("run.completed.idle.1").run, agent_id: agent.agent_id, run_id: "private-run-id", title: "Private customer task" };
+    const fetch = vi.spyOn(globalThis, "fetch");
+    const beacon = vi.fn();
+    const originalBeacon = Object.getOwnPropertyDescriptor(navigator, "sendBeacon");
+    Object.defineProperty(navigator, "sendBeacon", { configurable: true, value: beacon });
+    try {
+      const page = await open(agent, { runs: [run] });
+      await page.set(page.input(), "Private prompt with a secret token");
+      const row = page.host.querySelector('section[aria-label="Production onboarding"]')!;
+      expect(row.textContent).toContain("Cloud setup is separate from this server.");
+      const links = [...row.querySelectorAll<HTMLAnchorElement>("a")];
+      expect(links.map((a) => a.href)).toEqual(["https://calendly.com/d/dtwn-dsp-nx5/agentrun", "https://console.agentrun.ai/"]);
+      for (const link of links) {
+        expect(new URL(link.href).search).toBe("");
+        expect(new URL(link.href).hash).toBe("");
+        expect(link.target).toBe("_blank");
+        expect(link.relList.contains("noopener")).toBe(true);
+        expect(link.relList.contains("noreferrer")).toBe(true);
+        expect(link.getAttribute("referrerpolicy")).toBe("no-referrer");
+        expect(link.textContent).toContain("opens in a new tab");
+        // JSDOM does not navigate: let the native link remain the only action, with no app-side send on click.
+        link.addEventListener("click", (event) => event.preventDefault());
+        await act(async () => link.click());
+      }
+      expect(fetch).not.toHaveBeenCalled();
+      expect(beacon).not.toHaveBeenCalled();
+      expect(page.starts).toEqual([]);
+      expect(page.went).toEqual([]);
+      expect(agent).toEqual(before);
+      expect(page.input().value).toBe("Private prompt with a secret token");
+      await page.click(/^Run$/);
+      expect(page.starts.map(({ id, body }) => ({ id, body }))).toEqual([{ id: agent.agent_id, body: { input: { content: "Private prompt with a secret token" } } }]);
+      await page.click(/^Edit$/);
+      expect(page.went.at(-1)).toBe("#/agents/invoice-checker/edit");
+    } finally {
+      fetch.mockRestore();
+      if (originalBeacon) Object.defineProperty(navigator, "sendBeacon", originalBeacon);
+      else Reflect.deleteProperty(navigator, "sendBeacon");
+    }
+  });
+
+  it.each(["queued", "working", "input_required", "paused", "failed", "cancelled"] as const)("does not interrupt a %s run with production onboarding", async (status) => {
+    const run: Run = { ...runFixture("run.completed.idle.1").run, agent_id: "invoice-checker", run_id: "local-run", status };
+    const page = await open(agentFixture("invoice-checker"), { runs: [run] });
+    expect(page.host.querySelector('[aria-label="Production onboarding"]')).toBeNull();
+  });
+
+  it("does not offer production onboarding for missing runs, archived agents, or completed runs that still have a problem", async () => {
+    const agent = agentFixture("invoice-checker");
+    const done: Run = { ...runFixture("run.completed.idle.1").run, agent_id: agent.agent_id, run_id: "local-run" };
+    const cases: { agent: Agent; runs: Run[] }[] = [
+      { agent, runs: [] },
+      { agent: { ...agent, archived_at: "2026-11-01T00:00:00Z" }, runs: [done] },
+      { agent, runs: [{ ...done, archived_at: "2026-11-01T00:00:00Z" }] },
+      { agent, runs: [{ ...done, review: { kind: "needs_evidence", node: "verify", reason: "Check this result", at: "2026-11-01T00:00:00Z" } }] },
+      { agent, runs: [{ ...done, error: { code: "run_failed", message: "Needs investigation", retryable: false } }] },
+      { agent, runs: [{ ...done, result: { output: null, final_answer: "An invalid answer", output_error: "Answer does not meet the schema" } }] },
+      { agent, runs: [{ ...done, agent_id: "another-agent" }] },
+    ];
+    for (const example of cases) {
+      const page = await open(example.agent, { runs: example.runs });
+      expect(page.host.querySelector('[aria-label="Production onboarding"]')).toBeNull();
+      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    }
+  });
+
+  it("offers production onboarding when the latest live run finishes successfully", async () => {
+    const page = await splitRun();
+    expect(page.host.querySelector('[aria-label="Production onboarding"]')).toBeNull();
+    page.release();
+    await until(() => !!page.host.querySelector('[aria-label="Production onboarding"]'));
+  });
+
+  it.each(["queued", "working", "input_required", "paused", "review"] as const)("keeps onboarding out of the way when an older run is %s despite a newer success", async (state) => {
+    const done: Run = { ...runFixture("run.completed.idle.1").run, agent_id: "invoice-checker", run_id: "newer-success" };
+    const older: Run = { ...done, run_id: "older-unfinished", status: state === "review" ? "completed" : state,
+      review: state === "review" ? { kind: "needs_evidence", node: "verify", reason: "Check this result", at: "2026-11-01T00:00:00Z" } : null };
+    const page = await open(agentFixture("invoice-checker"), { runs: [done, older] });
+    expect(page.host.querySelector('[aria-label="Production onboarding"]')).toBeNull();
+  });
+
+  it("allows a later success to offer onboarding despite a historical failed run", async () => {
+    const done: Run = { ...runFixture("run.completed.idle.1").run, agent_id: "invoice-checker", run_id: "newer-success" };
+    const page = await open(agentFixture("invoice-checker"), { runs: [done, { ...done, run_id: "older-failure", status: "failed", error: { code: "run_failed", message: "Previous failure", retryable: false } }] });
+    expect(page.host.querySelector('[aria-label="Production onboarding"]')).not.toBeNull();
+  });
+
+  it("never offers onboarding for an invalid answer hidden by the actual run-list summary", async () => {
+    const done = runFixture("run.completed.idle.4").run;
+    const summary = runsOf("support-triage").find((r) => r.run_id === done.run_id)!;
+    expect(summary).not.toHaveProperty("result");
+    let finish!: (r: Run) => void;
+    const full = new Promise<Run>((resolve) => { finish = resolve; });
+    const page = await open(agentFixture("support-triage"), { runs: [summary], reread: () => full });
+    expect(page.host.querySelector('[aria-label="Production onboarding"]')).toBeNull();
+    await act(async () => { finish({ ...done, result: { output: null, final_answer: "Invalid answer", output_error: "Answer does not meet the schema" } }); });
+    expect(page.host.querySelector('[aria-label="Production onboarding"]')).toBeNull();
+    expect(page.followed.filter((s) => s === `run ${done.run_id}`)).toHaveLength(1);
+  });
+
+  it("waits for a successful full run record before offering onboarding", async () => {
+    const done = runFixture("run.completed.idle.4").run;
+    const summary = runsOf("support-triage").find((r) => r.run_id === done.run_id)!;
+    let finish!: (r: Run) => void;
+    const full = new Promise<Run>((resolve) => { finish = resolve; });
+    const page = await open(agentFixture("support-triage"), { runs: [summary], reread: () => full });
+    expect(page.host.querySelector('[aria-label="Production onboarding"]')).toBeNull();
+    await act(async () => { finish(done); });
+    expect(page.host.querySelector('[aria-label="Production onboarding"]')).not.toBeNull();
+    expect(page.followed.filter((s) => s === `run ${done.run_id}`)).toHaveLength(1);
+  });
+
+  it.each(["failed", "review", "error", "archived", "wrong-agent", "wrong-run", "summary", "read-error"] as const)("keeps onboarding hidden when the full run confirmation returns %s", async (condition) => {
+    const done = runFixture("run.completed.idle.4").run;
+    const summary = runsOf("support-triage").find((r) => r.run_id === done.run_id)!;
+    const full: Run = condition === "summary" ? summary : { ...done,
+      ...(condition === "failed" ? { status: "failed" as const } : {}),
+      ...(condition === "review" ? { review: { kind: "needs_evidence", node: "verify", reason: "Check this result", at: "2026-11-01T00:00:00Z" } } : {}),
+      ...(condition === "error" ? { error: { code: "run_failed", message: "Needs investigation", retryable: false } } : {}),
+      ...(condition === "archived" ? { archived_at: "2026-11-01T00:00:00Z" } : {}),
+      ...(condition === "wrong-agent" ? { agent_id: "another-agent" } : {}),
+      ...(condition === "wrong-run" ? { run_id: "another-run" } : {}),
+    };
+    const page = await open(agentFixture("support-triage"), { runs: [summary], reread: async () => { if (condition === "read-error") throw new Error("Run not available"); return full; } });
+    expect(page.host.querySelector('[aria-label="Production onboarding"]')).toBeNull();
+    expect(page.button(/^Run$/)).toBeTruthy();
+    expect(page.button(/^Edit$/)).toBeTruthy();
+    expect(page.followed.filter((s) => s === `run ${done.run_id}`)).toHaveLength(1);
+  });
+
+  it.each(["agent", "run", "tab"] as const)("ignores a late onboarding confirmation after switching %s", async (where) => {
+    const done = runFixture("run.completed.idle.4").run;
+    const summary = runsOf("support-triage").find((r) => r.run_id === done.run_id)!;
+    let finish!: (r: Run) => void;
+    const full = new Promise<Run>((resolve) => { finish = resolve; });
+    const page = await open(agentFixture("support-triage"), { runs: [summary], reread: () => full });
+    expect(page.host.querySelector('[aria-label="Production onboarding"]')).toBeNull();
+    if (where === "tab") await page.rerender({ tab: "workflow" });
+    else {
+      const agent = where === "agent" ? agentFixture("invoice-checker") : agentFixture("support-triage");
+      const newer: Run = { ...summary, agent_id: agent.agent_id, run_id: "newer-run", status: "working", state: "working" };
+      await page.rerender({ agentId: agent.agent_id, v2: { ...page.v2,
+        getAgent: async () => ({ agent, etag: null }),
+        listAgentRuns: async () => ({ runs: [newer], next_cursor: null }),
+        getTimeline: async () => endedPage(newer),
+      } as never });
+    }
+    await act(async () => { finish(done); });
+    expect(page.host.querySelector('[aria-label="Production onboarding"]')).toBeNull();
+  });
+
   it("a held sign-in's poll never lands over a newer read: a slow answer that began first is dropped", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
@@ -236,7 +394,9 @@ describe("AgentPage", () => {
     expect(latest().textContent).toContain(done.page.rows[6].summary);
     expect(latest().textContent).not.toContain("Steps appear as the agent takes them.");
     expect(row().textContent).toContain("Completed");
-    expect(page.followed).toEqual([`timeline ${id}`, `timeline ${id} after 3`, `run ${id}`]);
+    // The timeline refresh reads the completed record; the optional onboarding row confirms it independently.
+    await until(() => !!page.host.querySelector('[aria-label="Production onboarding"]'));
+    expect(page.followed).toEqual([`timeline ${id}`, `timeline ${id} after 3`, `run ${id}`, `run ${id}`]);
   });
 
   it("reads an ended run again when the first read fails, though no page follows the last: the badge and row end Completed", async () => {
@@ -246,7 +406,8 @@ describe("AgentPage", () => {
     await until(() => latest().textContent!.includes("Completed"));
     expect(row().textContent).toContain("Completed");
     expect(latest().textContent).not.toContain("could not be refreshed");
-    expect(page.followed).toEqual([`timeline ${id}`, `timeline ${id} after 3`, `run ${id}`, `run ${id}`]);
+    await until(() => !!page.host.querySelector('[aria-label="Production onboarding"]'));
+    expect(page.followed).toEqual([`timeline ${id}`, `timeline ${id} after 3`, `run ${id}`, `run ${id}`, `run ${id}`]);
   });
 
   it("a read begun for a status the run has since left never lands: paused, resumed, paused again stays Paused", async () => {
@@ -288,7 +449,8 @@ describe("AgentPage", () => {
     await until(() => latest().textContent!.includes("Completed"));
     expect(latest().textContent).not.toMatch(/could not be refreshed|Not refreshed/);
     expect(row().textContent).toContain("Completed");
-    expect(page.followed.filter((r) => r === `run ${id}`)).toHaveLength(4);
+    await until(() => !!page.host.querySelector('[aria-label="Production onboarding"]'));
+    expect(page.followed.filter((r) => r === `run ${id}`)).toHaveLength(5);
   });
 
   it("reads the next page with Load more, and a failed one keeps the runs already read", async () => {
