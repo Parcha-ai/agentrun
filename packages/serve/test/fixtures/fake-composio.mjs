@@ -5,16 +5,37 @@
 // no_auth only as `auth_config_details[].mode` "NO_AUTH" (only the toolkit list has a `no_auth` field). `authConfigs`: by toolkit slug, the auth configs
 // it already has. `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
 // call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config }` (an ACTIVE one under another
-// config, say); as the real one, `auth_config_ids` narrows the list to those under it. `fail`: `{ path, status }`
+// config, say); as the real one, `auth_config_ids` narrows the list to those under it. `noTools`: its MCP endpoint serves no tool at all. `fail`: `{ path, status }`
 // makes the call whose path ends in `path` answer that status.
 import { createServer } from "node:http";
 import { startFakeMcp } from "./fake-mcp-server.mjs";
 
-export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail } = {}) {
+/** An MCP endpoint that serves no tools, as Composio's does when none of the allowed actions is one it serves: it agrees a
+ *  protocol and answers every other method "Method not found". */
+async function startEmptyMcp(path, inspect) {
+  const http = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    inspect(req.headers);
+    let message = {};
+    try { message = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch {}
+    if (new URL(req.url, "http://x").pathname !== path) return void res.writeHead(404).end();
+    if (message.id === undefined) return void res.writeHead(202).end();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(message.method === "initialize"
+      ? { jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "composio", version: "1" } } }
+      : { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } }));
+  });
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  return { url: `http://127.0.0.1:${http.address().port}${path}`, log: [], close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())) };
+}
+
+export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false } = {}) {
   const calls = [];
   const mcpKeys = [];
   const id = "srv_fake1";
-  const mcp = await startFakeMcp({ path: `/v3/mcp/${id}/mcp`, inspect: (headers) => mcpKeys.push(headers["x-api-key"]) });
+  const inspect = (headers) => mcpKeys.push(headers["x-api-key"]);
+  const mcp = noTools ? await startEmptyMcp(`/v3/mcp/${id}/mcp`, inspect) : await startFakeMcp({ path: `/v3/mcp/${id}/mcp`, inspect });
   const mcpOrigin = new URL(mcp.url).origin;
   let made = 0;
   const http = createServer(async (req, res) => {

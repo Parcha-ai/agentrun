@@ -173,3 +173,14 @@ test("a save that wrote its entry and then failed keeps the Composio server its 
   await assert.rejects(refused, /refused/);
   assert.equal(composio.to(`/api/v3.1/mcp/${composio.mcpId}`, "DELETE").length, 1, "a server no entry points to is deleted");
 });
+
+test("picked actions Composio serves none of: 422 in words naming them, never a bare 'Method not found', and the Composio server it made is deleted", async (t) => {
+  const s = await setup(t, { noTools: true });
+  const res = await s.api("PUT", "/settings/mcp-servers/hn/composio", { api_key: s.composio.apiKey, toolkit: "hackernews", tools: ["GITHUB_STAR_REPO", "GITHUB_LIST_ISSUES"] });
+  assert.equal(res.status, 422, JSON.stringify(res.body));
+  assert.match(res.body.error.message, /Composio's hackernews server doesn't serve GITHUB_STAR_REPO, GITHUB_LIST_ISSUES: pick another action/);
+  assert.equal(res.body.error.fields[0].field, "tools");
+  assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "nothing is saved");
+  assert.equal(s.composio.to(`/api/v3.1/mcp/${s.composio.mcpId}`, "DELETE").length, 1, "the server Composio made is deleted");
+  holdsNoKey(s, res.body);
+});
