@@ -1,3 +1,5 @@
+import { ObservedSessions } from "@/components/ObservedSessions";
+import type { ObservationRead } from "@/lib/observations";
 import { Archive, ArchiveRestore, Bot, History, Pencil, Play, Search, Workflow } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { ListSkeleton } from "@/components/Skeleton";
@@ -17,7 +19,7 @@ export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: s
 
 /** The hosted console's agent grid: a search box, the count, and a card per agent (name, kind, harness, what it does,
  *  its revision and runs, and its actions). Archived agents are their own view. */
-export function AgentsList({ agents, archived = false, onArchivedChange, actions = {}, error, handoff }: { agents: Agent[] | null; archived?: boolean; onArchivedChange?: (archived: boolean) => void; actions?: AgentsListActions; error?: string | null; handoff?: ReactNode }) {
+export function AgentsList({ agents, archived = false, onArchivedChange, actions = {}, error, handoff, observations }: { agents: Agent[] | null; archived?: boolean; onArchivedChange?: (archived: boolean) => void; actions?: AgentsListActions; error?: string | null; handoff?: ReactNode; observations?: ObservationRead }) {
   const [q, setQ] = useState("");
   const shown = (agents ?? []).filter((a) => `${a.definition.name} ${a.definition.description ?? ""}`.toLowerCase().includes(q.toLowerCase()));
   return (
@@ -38,7 +40,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
       </div>
       {error ? <p className="border p-4 font-mono text-body text-destructive-text" role="alert">{error}</p>
         : !agents ? <ListSkeleton label="Loading the agents" rows={6} />
-        : !shown.length ? (
+        : !shown.length && !observations?.data?.sessions.length ? (
           <div className="border px-4 py-16 text-center">
             <p className="font-mono text-body text-muted-foreground">{q ? "No agent matches." : archived ? "No archived agents." : "No agents yet."}</p>
             {!q && !archived && <a className="mt-4 inline-block text-lead text-primary-text hover:underline" href="#/agents/new">Describe your agent or start from a template</a>}
@@ -51,6 +53,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
             </ul>
           </>
         )}
+      {observations && <div className="mt-6"><ObservedSessions read={observations} view="cards" query={q} /></div>}
       </div>
     </section>
   );

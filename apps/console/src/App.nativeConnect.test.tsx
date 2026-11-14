@@ -3,6 +3,8 @@ import { route } from "./App";
 it("opens the native connection flow from its own address rather than treating connect as an agent id", () => {
   expect(route("#/agents/connect")).toEqual({ section: "agents", nativeConnect: true });
   expect(route("#/agents/connect?source=remote")).toEqual({ section: "agents", nativeConnect: true, connectionSource: "remote" });
+  expect(route("#/agents/connect?source=observe")).toEqual({ section: "agents", nativeConnect: true, connectionSource: "observe" });
+  expect(route("#/observations/session%2Fa")).toEqual({ section: "agents", observation: "session/a" });
   expect(route("#/agents/connect/runs")).toEqual({ section: "agents", agent: "connect", tab: "runs" });
 });
 

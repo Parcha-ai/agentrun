@@ -31,9 +31,14 @@ function MissionFrame({ actions, children }: { actions?: React.ReactNode; childr
  *  or failed (each count a link to its list), what they cost (said with its basis, never $0 for a cost not known), runs
  *  per agent, and the latest runs with their agent, duration and cost, with the runs' tokens, time, success and tools
  *  over the range picked (MissionAnalytics). Before the owner's first run, `startHere` sits above the data; it never replaces it. */
-export function MissionControl({ view, error, onRetry, scope, needsYou, asking, failed, live, startHere, actions }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; asking?: number | null; failed?: number | null; live?: number | null; startHere?: React.ReactNode; actions?: React.ReactNode }) {
-  if (error) return <MissionFrame actions={actions}><ProblemCard problem={error} onRetry={onRetry} /></MissionFrame>;
-  if (!view) return <MissionFrame actions={actions}><MissionSkeleton /></MissionFrame>;
+export function MissionControl({ view, error, onRetry, scope, needsYou, asking, failed, live, startHere, actions, observations, hasObservedSessions = false }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; asking?: number | null; failed?: number | null; live?: number | null; startHere?: React.ReactNode; actions?: React.ReactNode; observations?: React.ReactNode; hasObservedSessions?: boolean }) {
+  // Observations have their own read and refresh lifecycle; a registered-run failure must not hide them.
+  if (error || !view) return <MissionFrame actions={actions}>
+    <div className="mx-auto w-full max-w-page-wide space-y-8 px-5 pb-16 pt-8 md:px-8 md:pt-10">
+      {error ? <ProblemCard problem={error} onRetry={onRetry} /> : <MissionSkeleton />}
+      {observations}
+    </div>
+  </MissionFrame>;
   const name = (id: string) => view.perAgent.find((a) => a.agentId === id)?.name ?? id;
   // An agent picked over the analytics: Runs per agent shows its row alone. The picker still offers every agent.
   const perAgent = scope?.agent ? view.perAgent.filter((a) => a.agentId === scope.agent) : view.perAgent;
@@ -61,7 +66,8 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
       <div className="mx-auto w-full max-w-page-wide space-y-8 px-5 pb-16 pt-8 md:px-8 md:pt-10">
         {startHere}
         {needsYou}
-        <section className="space-y-4">
+        <section className="space-y-4" aria-label={hasObservedSessions ? "Registered agents and runs" : undefined}>
+        {hasObservedSessions && <h2 className="text-lead font-semibold">Registered agents &amp; runs</h2>}
         <ul className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
           {tiles.map(([label, value, href, tone, note]) => {
             const body = <><p className="caps text-label text-muted-foreground">{label}</p><p className={cn("mt-3 font-mono text-display leading-none", tone)}>{value}</p>{note && <p className="mt-2 text-label text-muted-foreground">{note}</p>}</>;
@@ -69,6 +75,7 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
           })}
         </ul>
         </section>
+        {observations}
         <section className="space-y-4" aria-label="Analytics">
           <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
             <div><h2 className="text-lead font-semibold">Activity &amp; usage</h2><p className="mt-1 text-small text-muted-foreground">{scopeTitle(view)}</p></div>

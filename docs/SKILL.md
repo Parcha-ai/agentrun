@@ -17,9 +17,10 @@ the handoff. Do not make them answer the same questions again.
 
 - **New:** ask what job it should do and what a useful first result looks like. Offer a suitable template or a
   custom agent, then follow the new-agent path below.
-- **Existing:** ask about **live connection**, **past history**, or **both**. Confirm the source machine,
-  project/runtime and intended destination. No model key is required to connect; native jobs retain the source
-  runtime's existing sign-in.
+- **Existing:** establish who starts work. For an agent already running in a backend, deployment or terminal,
+  choose **observe existing agents**. If AgentRun should start future jobs, ask about **live connection**,
+  **past history**, or **both**. Confirm the source machine, project/runtime and intended destination. No model
+  key is required to connect or observe; native jobs retain the source runtime's existing sign-in.
 
 Work within the setup and actions already requested. Explain any missing decision before acting. Do not enable
 learning, transfer history or install a persistent service just because the user asked to connect.
@@ -63,6 +64,15 @@ instructions instead of the published quickstart. Do not silently downgrade it t
 Use the console's single **Connect agent** dropdown, which remembers the coding agent, or follow the same flow in
 the deployed server skill. Confirm whether the selected project is on **This server** or **Another machine**;
 the browser's location does not tell you where its files or native sign-in live.
+
+For **observation**, follow the deployed skill's existing CLI/Collector path. The OSS server accepts the hosted
+metadata protocol at `/api/v2/control`, using OSS owner API-key enrollment and workspace `local`. Existing
+applications keep starting their jobs; the console shows reported sessions, activity and token usage. Apply
+native telemetry in the actual execution environment, preserve the application's options and tracing, and
+verify a destination receipt. No agent definition, transcript import or model key is required. Observation alone
+does not inject accepted learning into a later run; that requires the supported backend SDK integration.
+
+For **future jobs or history**, use the following native connection flow:
 
 1. Discover only the chosen project and runtime. Present its project default, Claude Code named agents or Codex
    profiles, and connect only the selected setup. Preserve its instructions, tools, skills, MCP, model, permissions

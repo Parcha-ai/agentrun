@@ -117,6 +117,12 @@ Want your own server with a URL? [Deploy it to Render](#deploy-it) in one click.
 
 ## Connect your existing agent
 
+Already have agents running in a backend, Docker deployment or terminal? **Connect agent** can observe them
+through the same CLI and OpenTelemetry Collector used by hosted AgentRun. The OSS console shows their reported
+activity and token usage while your application keeps starting the work. Follow
+[Observe agents that already run elsewhere](connector/README.md#observe-agents-that-already-run-elsewhere).
+Observation needs no model key and does not automatically enable learning or import transcripts.
+
 Keep the project, instructions, skills, MCP tools and sign-in you already use in Claude Code or Codex. AgentRun can
 start new jobs with that setup and show their activity and results in the console.
 
@@ -127,8 +133,9 @@ reviewed checkout. The published observation-only CLI does not include this remo
 1. **Choose your coding agent.** In Mission Control or Connected agents, open the **Connect agent** dropdown and
    select your coding agent. The button remembers your choice and provides a prompt that reads the skill from
    this server's build.
-2. **Choose what to bring.** Choose **a live connection**, **past history**, or **both**,
-   then confirm the source machine, project and runtime. For a laptop, VM or container separate from the server,
+2. **Choose what to bring.** The skill first distinguishes **observing existing sessions** from letting AgentRun
+   **start future jobs**. For future jobs, choose **a live connection**, **past history**, or **both**,
+   then confirms the source machine, project and runtime. For a laptop, VM or container separate from the server,
    use **Connection setup → Another machine** and create a code with the chosen scope. Enter it directly in the
    source CLI's secure prompt. Your native credentials stay on that machine; the worker connects outbound.
 3. **See the result.** For **History only**, open Runs and check the imported conversations and counts; no worker
