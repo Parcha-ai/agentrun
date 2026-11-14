@@ -32,7 +32,7 @@ const FLOW = {
     Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } },
   },
   input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
-  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer" }] },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer", guard: { signal: "self", threshold: 0.8 } }] },
 };
 const DIGEST = workflowDigest({ workflow: JSON.stringify(FLOW) });
 const T0 = Date.parse("2026-11-14T12:00:00.000Z");
@@ -53,15 +53,16 @@ async function world(t, { graded = 5, agentCorrect = true } = {}) {
   const old = new Map(gradedRuns.map((run, i) => [run, launchOf(`Question ${i}`)]));
   for (const run of gradedRuns) await putGrade(store.settings, "agent-1", { run, correct: agentCorrect, source: "eval", at: new Date(T0).toISOString(), path: "agent" });
   const fake = new Map();
-  /** Replay run `id` of graded run `of`: `state` (ended: its `outcome`), what it cost (`costUsd`, null: unknown). */
-  const replayRun = (id, of, { state = "ended", outcome = "answered", costUsd = 0.01 } = {}) => fake.set(id, { of, state, outcome, costUsd });
+  /** Replay run `id` of graded run `of`: `state` (ended: its `outcome`), what it cost (`costUsd`, null: unknown), its
+   *  answer step's guard p, read record-only (`p`; none: no guard row). */
+  const replayRun = (id, of, { state = "ended", outcome = "answered", costUsd = 0.01, p } = {}) => fake.set(id, { of, state, outcome, costUsd, guards: p === undefined ? [] : [{ node: "answer", signal: "self", self: p, p, threshold: 0.8, escalated: false }] });
   const runsOf = (inner) => {
     const runs = Object.create(inner.runs);
     for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(inner.runs) ?? {})) if (typeof inner.runs[key] === "function" && key !== "constructor") runs[key] = inner.runs[key].bind(inner.runs);
     runs.get = async (id) => {
       if (old.has(id)) return { id, agentId: "agent-1", revisionId: "rev-1", state: "ended", metrics: { path: "agent" }, archivedAt: null, importedFrom: null, costUsd: 0.01, startedAt: 1, endedAt: 2 };
       const one = fake.get(id);
-      return one ? { id, agentId: "agent-1", revisionId: "rev-1", state: one.state, metrics: { path: "replay", replay: { outcome: one.outcome }, guards: [] }, archivedAt: null, importedFrom: null, costUsd: one.costUsd, startedAt: 1, endedAt: 2 } : inner.runs.get(id);
+      return one ? { id, agentId: "agent-1", revisionId: "rev-1", state: one.state, metrics: { path: "replay", replay: { outcome: one.outcome }, guards: one.guards }, archivedAt: null, importedFrom: null, costUsd: one.costUsd, startedAt: 1, endedAt: 2 } : inner.runs.get(id);
     };
     runs.launch = async (id) => {
       if (old.has(id)) return { runId: id, body: old.get(id), sealed: null, createdAt: 1 };
@@ -238,4 +239,22 @@ test("a replay's counts never shrink as newer grades roll its graded runs out of
   await roll();
   const later = await w.read("replay-a");
   assert.deepEqual([later.answered, later.handed_back, later.failed, later.skipped_write, later.score.n], [5, 0, 0, 0, 5], `read again after the grades rolled: ${JSON.stringify(later)}`);
+});
+
+test("a run answered under its guard's threshold counts answered while the replay runs and once it is decided; alone and the score hand it back", async (t) => {
+  // #2823 review: the decided counts were derived from the score, so a run moved from answered to handed_back as it was
+  // decided. The record keeps its runs' outcomes; the thresholds' reading stays in `score` and `alone`.
+  const w = await world(t);
+  const low = w.gradedRuns.length - 1;
+  w.gradedRuns.forEach((of, i) => w.replayRun(`g-${i}`, of, { p: i === low ? 0.2 : 0.9, state: i === low ? "running" : "ended" }));
+  await w.reserve("replay-g", w.gradedRuns.map((_, i) => `g-${i}`));
+  const running = await w.read("replay-g");
+  assert.deepEqual([running.status, running.answered, running.handed_back], ["running", 4, 0], JSON.stringify(running));
+  w.replayRun(`g-${low}`, w.gradedRuns[low], { p: 0.2 });
+  const seen = await w.read("replay-g");
+  assert.equal(seen.status, "done", JSON.stringify(seen));
+  assert.deepEqual([seen.answered, seen.handed_back, seen.failed, seen.skipped_write], [5, 0, 0, 0], `each run as it ended: ${JSON.stringify(seen)}`);
+  assert.deepEqual([seen.score.n, seen.score.handed_back, seen.alone], [5, 1, 4], `the threshold reads the low one as handed back: ${JSON.stringify(seen)}`);
+  const record = (await w.records()).findLast((one) => one.replay_id === "replay-g");
+  assert.deepEqual(record.replay.outcomes, { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, "kept with the decision");
 });
