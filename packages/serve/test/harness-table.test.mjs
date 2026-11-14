@@ -19,17 +19,20 @@ const EXCLUDED = new Set(["import.ts", "import-sources.ts", "harness-table.ts"])
 const NAMES = "pi|claude-agent|codex|opencode";
 const BRANCH = new RegExp(`(===|!==)\\s*"(${NAMES})"|"(${NAMES})"\\s*(===|!==)|\\bcase\\s+"(${NAMES})"|(===|!==)\\s*DEFAULT_HARNESS\\b|\\bDEFAULT_HARNESS\\s*(===|!==)`);
 
+const branchHits = (entries) => entries.filter(([file]) => !EXCLUDED.has(file))
+  .flatMap(([file, source]) => source.split("\n").flatMap((line, index) => (BRANCH.test(line) ? [`${file}:${index + 1}: ${line.trim().slice(0, 140)}`] : [])));
+const sourceEntries = () => sources().map(file => [file, readFileSync(join(SRC, file), "utf8")]);
+
 test("serve/src outside the harness table compares no harness name: no ===/!== against pi, claude-agent, codex or opencode, no case on one, and no comparison with DEFAULT_HARNESS", () => {
-  const hits = sources()
-    .filter((file) => !EXCLUDED.has(file))
-    .flatMap((file) => readFileSync(join(SRC, file), "utf8").split("\n").flatMap((line, index) => (BRANCH.test(line) ? [`${file}:${index + 1}: ${line.trim().slice(0, 140)}`] : [])));
+  const hits = branchHits(sourceEntries());
   assert.deepEqual(hits, [], `harness-name branches:\n${hits.join("\n")}`);
 });
 
-test("serve/src keys no data by a harness's name outside the harness table: no default, list, keyed row, install id or path names pi, claude-agent, codex or opencode by its literal (each comes from DEFAULT_HARNESS, HARNESSES, an entry or its facts)", () => {
+const keyedHits = (entries) => {
   // The registry (harness.ts) and the table name them; the transcript formats' sources (import*.ts, and openapi.ts's
   // `source` enums) are the formats' own words; the OpenCode adapter (harness-opencode/) names itself.
-  const outside = (file) => !EXCLUDED.has(file) && !["harness.ts", "import-summary.ts", "openapi.ts"].includes(file) && !file.startsWith("harness-opencode/");
+  // The separate native registry names installed CLI protocols, never managed harness dispatch. Only its facts table is exempt.
+  const outside = (file) => !EXCLUDED.has(file) && !["harness.ts", "import-summary.ts", "openapi.ts", "native/runtimes.ts"].includes(file) && !file.startsWith("harness-opencode/");
   const ID = `"(?:${NAMES})"`;
   const KEYED = [
     new RegExp(`\\?\\?\\s*${ID}`), // a default
@@ -38,11 +41,25 @@ test("serve/src keys no data by a harness's name outside the harness table: no d
     new RegExp(`\\bid:\\s*${ID}`), // an id field
     new RegExp(`installDirOf\\(.*,\\s*${ID}\\)`), // an install's path
   ];
-  const hits = sources().filter(outside).flatMap((file) => readFileSync(join(SRC, file), "utf8").split("\n").flatMap((line, i) => {
+  return entries.filter(([file]) => outside(file)).flatMap(([file, source]) => source.split("\n").flatMap((line, i) => {
     const code = line.replace(/\/\/.*$/, "");
     return /^\s*(\*|\/\*\*?)/.test(line) || !KEYED.some((pattern) => pattern.test(code)) ? [] : [`${file}:${i + 1}: ${line.trim().slice(0, 160)}`];
   }));
+};
+
+test("serve/src keys no data by a harness's name outside the harness table: no default, list, keyed row, install id or path names pi, claude-agent, codex or opencode by its literal (each comes from DEFAULT_HARNESS, HARNESSES, an entry or its facts)", () => {
+  const hits = keyedHits(sourceEntries());
   assert.deepEqual(hits, [], `harness-keyed data:\n${hits.join("\n")}`);
+});
+
+test("native protocol facts exempt only their own table: managed harness branches and keyed dispatch still fail in discovery, runtime and server", () => {
+  for (const file of ["native/discovery.ts", "native/runtime.ts", "server.ts"]) {
+    assert.equal(branchHits([[file, 'if (harness === "codex") managedRun();']]).length, 1, file);
+    assert.equal(keyedHits([[file, 'const managed = { codex: { run: managedRun } };']]).length, 1, file);
+  }
+  assert.deepEqual(keyedHits([["native/runtimes.ts", 'const facts = { codex: { binary: "codex" } };']]), []);
+  assert.equal(branchHits([["native/runtimes.ts", 'if (harness === "codex") managedRun();']]).length, 1,
+    "even the native facts table may not branch on managed harness names");
 });
 
 test("production code never builds a stand-in harness: serve/src imports no @parcha/agentrun-kernel/testing and names no faux harness", () => {

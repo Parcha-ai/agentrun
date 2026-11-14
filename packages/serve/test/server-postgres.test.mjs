@@ -231,9 +231,23 @@ test("a least-privilege deployment (a host's three roles): the server as the sch
   await assert.rejects(openPostgresStore({ url: reader.url, schema, role: "runner" }), "and opens no store");
 });
 
-test("a server on Postgres whose store stops reading (its schema dropped under it) answers /v2/health 503 does_not_open, within the health bound", { ...postgresOnly("a deployment's Postgres store"), timeout: 120_000 }, async (t) => {
+test("a server on Postgres whose store stops reading (its schema renamed under it) answers /v2/health 503 does_not_open, within the health bound", { ...postgresOnly("a deployment's Postgres store"), timeout: 120_000 }, async (t) => {
   const schema = await freshSchema();
-  t.after(() => dropSchema(schema));
+  const unavailable = await freshSchema();
+  let server, reader;
+  t.after(async () => {
+    // Stop the child before dropping either namespace: background reads must not race cleanup DDL either.
+    if (server && server.exitCode === null && server.signalCode === null) {
+      const exited = new Promise(resolve => server.once("exit", resolve));
+      server.kill("SIGTERM");
+      await exited;
+    }
+    if (reader) {
+      try { await reader.query("ROLLBACK"); } finally { await reader.end(); }
+    }
+    await dropSchema(schema);
+    await dropSchema(unavailable);
+  });
   const root = await scratch(t);
   const env = {
     PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
@@ -246,11 +260,16 @@ test("a server on Postgres whose store stops reading (its schema dropped under i
     AGENTRUN_STORE_URL: PG_URL,
     AGENTRUN_STORE_SCHEMA: schema,
   };
-  const server = cli(t, ["--data", join(root, "agents"), "--port", "0", "--faux", FAUX, "--no-runner"], env);
+  server = cli(t, ["--data", join(root, "agents"), "--port", "0", "--faux", FAUX, "--no-runner"], env);
   const out = await printed(server, /^Open /m);
   const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)[1]);
   assert.equal((await fetch(`http://127.0.0.1:${port}/v2/health`)).status, 200, "healthy on its store");
-  await dropSchema(schema);
+  // Keep a normal reader in flight. Dropping all tables acquires conflicting locks in an unspecified order and
+  // can deadlock with the server; renaming makes its configured schema unavailable without taking table locks.
+  reader = await pgClient(schema);
+  await reader.query("BEGIN");
+  await reader.query(`SELECT id FROM ${schema}.agents LIMIT 1`);
+  await admin(`ALTER SCHEMA ${schema} RENAME TO ${unavailable}`);
   const startedAt = Date.now();
   const broken = await fetch(`http://127.0.0.1:${port}/v2/health`);
   assert.deepEqual({ status: broken.status, body: await broken.json() }, { status: 503, body: { status: "failing", checks: { store: "does_not_open", disk: "ok" } } });

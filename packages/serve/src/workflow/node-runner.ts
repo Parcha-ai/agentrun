@@ -277,7 +277,14 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
           if (!signal?.aborted) throw error;
           // A pause keeps the node's work for the process that resumes it; any other stop ends that work, and a
           // request submitted as the stop landed is withdrawn once it is known.
-          const end = async () => { if (opened) await (await scope.conversation(opened.conversationId, base))?.abort(base).catch(() => undefined); };
+          const end = async () => {
+            try {
+              if (opened) await (await scope.conversation(opened.conversationId, base))?.abort(base);
+            } catch {
+              // The owner may already have ended its invocation, making even the lookup
+              // unavailable. Cleanup must preserve the stop, including a late attempt.
+            }
+          };
           if (runStopOf(signal.reason)?.stop !== "pause") { await end(); void attempt.then(end, end); }
           throw signal.reason ?? error;
         } finally {

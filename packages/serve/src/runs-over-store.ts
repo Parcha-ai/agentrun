@@ -1,3 +1,5 @@
+import { nativeOf } from "./native/binding.js";
+import { launchNative } from "./native/connection.js";
 // The write half of the run's server cut (design 2.1, "the runner takes every run"): the functions the v2 routes call to
 // start a run and to act on one (message, stop, raise, approve, archive), over the one store (A). The old per-run-process
 // model (runs.ts: a child process, an HTTP door, serve.json, carry-back) is gone; the server only writes rows. A start is an
@@ -27,7 +29,7 @@ import { type RepoBinding, repoOf } from "./run-repo.js";
 import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
-import { AnswerTaken, ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
+import { AnswerTaken, ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
 import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
@@ -121,6 +123,17 @@ export async function cancel(store: RunsStore, moment: RunMoment): Promise<boole
   }
 }
 
+/** Older rows can lack launch metadata. Only that typed absence leaves their controls unchanged; a failed read
+ * must still fail the command, since it could be hiding native or SDK execution constraints. */
+async function controlLaunchBody(store: RunsStore, runId: string): Promise<unknown> {
+  try {
+    return (await store.runs.launch(runId)).body;
+  } catch (error) {
+    if (error instanceof StoreLaunchMissing) return undefined;
+    throw error;
+  }
+}
+
 /** Pauses a workflow run, or resumes it (pauseRun/resumeRun): a pause or resume command the run's runner reads and applies.
  *  Verbatim from runs.ts pause: an agentic run has no pause here (501, a turn is stopped instead), an ended or cancelling one
  *  takes none (409). Returns the run id and whether it is paused; the route adds the run's status from its view. The runner
@@ -157,6 +170,8 @@ export async function message(
   { requestId, answers = true, origin, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: Uint8Array; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
+  const launchBody = await controlLaunchBody(store, moment.id);
+  if (nativeOf(launchBody)) throw new ApiError("input_invalid", "Native jobs do not support in-session steering or follow-up messages. Start a new native run.");
   // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished).
   if (moment.archived !== undefined) throw archivedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
@@ -473,7 +488,7 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
   // (no grade model: nothing is graded); the server's learning off still gives it nothing.
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && (learnsOf(rbody.learning) || use);
   // `learning: "notes"`: its notes and skills, never a learned workflow (none offered, none asked for at its end).
-  const notesOnly = rbody.learning === "notes" ? { notesOnly: true as const } : {};
+  const notesOnly = rbody.learning === "notes" || nativeOf(revision.body) ? { notesOnly: true as const } : {};
   if (!learns || !deps.seedFor) return undefined;
   const grade = use ? { use: true as const } : deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
   const seeded = await deps.seedFor(entry.agent.id);
@@ -613,10 +628,13 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // Each a ready file, before anything starts: checked ready here, then named in the launch (in order) for the runner to
   // copy into the run's work/inputs/ at its claim.
   const fileIds = Array.isArray(body.file_ids) ? (body.file_ids as string[]) : [];
-  if (fileIds.length) await deps.readyFiles(fileIds);
   const pinned = await pinnedOf();
   if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
   const { revision } = pinned;
+  const native = nativeOf(revision.body);
+  if (native && !nativeOf(entry.revision?.body)?.connected) throw new ApiError("agent_not_runnable", "This native connection is disconnected. Reconnect its source project before starting any revision.");
+  if(native && (body.effort!==undefined || fileIds.length || body.archil_disk!==undefined))throw new ApiError("input_invalid","Native jobs use their original effort and project files. Run effort overrides, uploaded file_ids and Archil disks are unavailable; edit the native configuration or source project instead.");
+  if (fileIds.length) await deps.readyFiles(fileIds);
   const rbody = revision.body as StartBody;
   const input = body.input as Json;
   const wrong = await deps.inputIssuesOf(revision, input);
@@ -659,7 +677,8 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // The run's effort: its own, else its revision's saved thinking, else the host's AGENT_THINKING (each a thinking level,
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.
-  const effort = typeof body.effort === "string" ? body.effort : (thinkingLevel(rbody.thinking) ?? thinkingLevel(deps.planeEnv().AGENT_THINKING));
+  const effort = native ? undefined : typeof body.effort === "string" ? body.effort : (thinkingLevel(rbody.thinking) ?? thinkingLevel(deps.planeEnv().AGENT_THINKING));
+  const nativeLaunch = native ? await launchNative(native) : undefined;
   // The repository a person's run reaches (run-repo.ts): the one the body names when the agent is bound to it, else the
   // agent's one repository when the first message names none. A trigger's run takes its repository from its event.
   const namedRepo = typeof body.repo === "string" ? body.repo : undefined;
@@ -667,6 +686,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   const picked = trigger ? {} : repoOf(await (deps.boundRepos?.(entry.agent.id) ?? { repos: [], open: false }), namedRepo, githubTargetOf(typeof input.content === "string" ? input.content : undefined) !== undefined);
   if (picked.refused) throw invalid([{ field: "repo", reason: "not_allowed", message: picked.refused }]);
   const launch: RunLaunch = {
+    ...(nativeLaunch ? { native: nativeLaunch } : {}),
     input,
     ...(picked.repo !== undefined ? { repo: picked.repo } : {}),
     title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),

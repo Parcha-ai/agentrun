@@ -27,6 +27,7 @@ const reviewed = new Map([
   ['packages/serve/test/launcher-worker.test.mjs', childScript],
   ['spec/lean/sweep/capture-dsl.mjs', label],
   ['packages/serve/test/store-target.mjs', label],
+  ['packages/serve/test/native-fixtures/cli.mjs', 'reads argv[1] only to label the native CLI fixture and select its canned protocol; it never decides whether this module is the command'],
 ]);
 
 const suspect = (source) => source.includes('process.argv[1]');
