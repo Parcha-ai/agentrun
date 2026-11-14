@@ -91,6 +91,15 @@ test("an endpoint's input values are data, not schema: a $ref inside const, enum
   };
   const pinned = await pinMonid([ENRICH], { key: KEY, fetch: withValues });
   assert.deepEqual(pinned.pin[ENRICH].input.properties.body, { ...body, properties: { ...body.properties, who: { $ref: "#/properties/body/$defs/P" } } }, "only the schema's own reference is rebased");
+  // A property named as a value keyword is a property: its schema's reference is rebased.
+  const named = { type: "object", properties: { default: { $ref: "#/$defs/P" }, enum: { type: "string", enum: [literal] } }, $defs: { P: { type: "string" } } };
+  const withNames = async (url, init) => {
+    const res = await fakeMonid(url, init);
+    if (new URL(url).pathname !== "/v1/inspect") return res;
+    return new Response(JSON.stringify({ ...(await res.json()), input: { body: named } }), { status: 200 });
+  };
+  const byName = await pinMonid([ENRICH], { key: KEY, fetch: withNames });
+  assert.deepEqual(byName.pin[ENRICH].input.properties.body, { ...named, properties: { default: { $ref: "#/properties/body/$defs/P" }, enum: named.properties.enum } });
 });
 
 test("a run: a sync provider's output with its cost in dollars; an async one read until COMPLETED; each sent once", async () => {

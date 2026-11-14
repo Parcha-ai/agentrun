@@ -243,12 +243,24 @@ export const unboundedWords = (tool: string, price: unknown) =>
 
 /** `schema` moved from a document's root to the JSON pointer `at`: each local reference to a place in it (`#`, `#/…`)
  *  rebased onto `at`, so `#/$defs/Person` reads `#/properties/body/$defs/Person`. A schema with its own `$id` is a
- *  resource of its own, whose local references resolve inside it: it and all under it are left as they are. */
+ *  resource of its own, whose local references resolve inside it: it and all under it are left as they are. A keyword
+ *  whose value is data (VALUE_KEYWORDS: `const`, `enum`, ...) is left as it is, a `$ref` in it being part of a value the
+ *  endpoint takes; under a keyword that maps names to schemas (NAMED_SCHEMAS: `properties`, `$defs`, ...), each name is
+ *  a name, never a keyword, and each schema under it is walked. */
 const rebased = (schema: unknown, at: string): unknown => {
   if (Array.isArray(schema)) return schema.map((item) => rebased(item, at));
   if (!isObject(schema) || typeof schema.$id === "string") return schema;
-  return Object.fromEntries(Object.entries(schema).map(([key, value]) => [key, key === "$ref" && typeof value === "string" && (value === "#" || value.startsWith("#/")) ? `#${at}${value.slice(1)}` : rebased(value, at)]));
+  return Object.fromEntries(Object.entries(schema).map(([key, value]) => {
+    if (key === "$ref" && typeof value === "string" && (value === "#" || value.startsWith("#/"))) return [key, `#${at}${value.slice(1)}`];
+    if (VALUE_KEYWORDS.has(key)) return [key, value];
+    if (NAMED_SCHEMAS.has(key) && isObject(value)) return [key, Object.fromEntries(Object.entries(value).map(([name, sub]) => [name, rebased(sub, at)]))];
+    return [key, rebased(value, at)];
+  }));
 };
+/** JSON Schema keywords whose value is data, not a schema. */
+const VALUE_KEYWORDS = new Set(["const", "enum", "default", "examples", "example"]);
+/** JSON Schema keywords whose value maps names to schemas. */
+const NAMED_SCHEMAS = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);
 
 /** An endpoint's input schema as one tool's (inspect's `input`: `pathParams`, `queryParams`, `body`, each a JSON
  *  Schema): an object of those parts, each required that requires a field, its local references rebased. */
