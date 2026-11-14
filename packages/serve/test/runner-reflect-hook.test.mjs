@@ -317,3 +317,25 @@ test("a run only its learned workflows answered, with a held revision due, is as
   assert.deepEqual(await none.hook(none.input()), { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "empty", detail: said.onlyWorkflow, ...ANSWERED } } }] });
   assert.deepEqual(none.calls.asked, []);
 });
+
+// #2641 review r5 (P2): a run only its learned workflows answered asks its compile turn alone, with no look-back, so the
+// compile turn's first ask is the round's first: it keeps the job's cost and answer time with its prompt (the look-back's
+// own `keep`, #2668), and a claim that asks it again after a restart reads that ask's figures (`kept`). What the earlier
+// claim spent compiling is the learning's, never the job's.
+test("a compile-only turn keeps the job's figures with its first ask; asked again after a restart mid compile, the earlier ask's figures stand and the compile spend is the look-back's", async () => {
+  const flow = JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } });
+  const held = { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "r" };
+  const compileFacts = async () => ({ mode: "revise", workflow: "answer", current: flow, held, reference: "REF", notes: [], traces: [], tools: [], judges: false });
+  const block = `\`\`\`\`workflow answer\n---\ndescription: d\n---\n${flow}\n\`\`\`\``;
+  const check = ({ turn }) => ({ state: "proposed", notes: 0, skills: 0, workflows: 1, proposal: { seed: "abc", files: [{ file: "workflows/answer/workflow.json", text: flow }], asked: turn.asked } });
+  // This claim: the first to ask. Its compile ask keeps the job's cost and answer time.
+  const first = hookWith({ nothingNew: async () => true, compileFacts, answer: { ended: true, answer: block }, check });
+  await first.hook(first.input());
+  assert.deepEqual(first.calls.asked.map(({ opts }) => [opts.step, opts.keep]), [["compile-1", { answered_at: ANSWERED.answered_at, job_cost_usd: 0.01 }]]);
+  // A later claim: the earlier one answered the job at $0.002 and was lost mid compile; the run reads $0.01 now.
+  const kept = { answered_at: "2026-11-09T04:00:00.000Z", job_cost_usd: 0.002 };
+  const again = hookWith({ nothingNew: async () => true, compileFacts, answer: { ended: true, answer: block, kept }, check });
+  const rows = await again.hook(again.input());
+  const proposal = rows.also.find((row) => row.table === "learning_proposals").row.proposal;
+  assert.deepEqual([proposal.state, proposal.answered_at, proposal.job_cost_usd, proposal.look_back_usd], ["proposed", kept.answered_at, 0.002, 0.008], JSON.stringify(proposal));
+});

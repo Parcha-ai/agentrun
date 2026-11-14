@@ -37,12 +37,14 @@ export function answerJson(answer: string): { value: unknown } | { why: string }
 /** A JSON Schema's checker: each problem of a value against it, by path, none for a value that meets it. */
 export type SchemaCheck = (value: unknown) => string[];
 
-/** `schema` compiled to its checker, or why it does not compile. */
-export function schemaCheck(schema: unknown): { check: SchemaCheck } | { why: string } {
+/** `schema` compiled to its checker, or why it does not compile. `misses`: the same problems, each with the JSON Pointer
+ *  of the value it is about apart from its words (`check` joins them). */
+export function schemaCheck(schema: unknown): { check: SchemaCheck; misses: (value: unknown) => { path: string; words: string }[] } | { why: string } {
   if (!isObject(schema)) return { why: "it is not a JSON object" };
   try {
     const validator = Compile(schema as Parameters<typeof Compile>[0]);
-    return { check: (value) => validator.Errors(value)[1].map((e) => `${e.instancePath || "/"} ${e.message}`) };
+    const misses = (value: unknown) => validator.Errors(value)[1].map((e) => ({ path: e.instancePath, words: `${e.instancePath || "/"} ${e.message}` }));
+    return { check: (value) => misses(value).map((miss) => miss.words), misses };
   } catch (error) {
     return { why: `it does not compile as a JSON Schema: ${(error as Error).message}` };
   }

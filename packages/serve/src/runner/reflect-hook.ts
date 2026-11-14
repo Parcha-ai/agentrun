@@ -228,9 +228,15 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     const compile = workflowOnly ? early : await compileOf();
     let compiled: { record: CompiledRecord; draft_errors?: string[] } | undefined;
     if (compile) {
+      // A compile turn asked alone (a workflow-only run: no look-back) is the round's first ask: it keeps the job's figures
+      // with its prompt as the look-back's does, and a turn an earlier claim asked first answers with that ask's (`kept`),
+      // so a restart mid compile never moves what the earlier attempt spent compiling into the job's. Each attempt keeps
+      // the figures as they stand once the attempts before it answered (an earlier claim's, when it asked first).
       const result = await compileTurn<Checked>({
         ask: async (prompt, attempt, left) => {
-          const said_ = await input.ask(prompt, { ...ask, deadlineMs: left, step: `compile-${attempt}` });
+          const keep = workflowOnly ? { keep: { answered_at: answeredAt, job_cost_usd: job } } : {};
+          const said_ = await input.ask(prompt, { ...ask, deadlineMs: left, step: `compile-${attempt}`, ...keep });
+          if (workflowOnly) firstAsk(said_.kept);
           return "ended" in said_ ? { answer: said_.answer } : undefined;
         },
         compile,
