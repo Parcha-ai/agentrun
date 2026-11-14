@@ -194,7 +194,7 @@ registerLabel("request_sign_in", () => "Asked you to sign in", undefined, { name
 
 // A desktop's or a phone's tools (the computer surface's), as what the agent did there. An act's steps come from its
 // arguments, and each element's name from its answer: the answer's step line names the element it acted on as the
-// outline does (`2. press @e31 generic "Display": semantic, verified`, the surface's actWords). Before the answer is in,
+// outline does (`2. press @e31 generic "Display": semantic, verified`, the surface's stepWords). Before the answer is in,
 // an element is "an element". Once it is in, only the steps that ran are said.
 
 /** An act's answer, line by line: whether each step names its element, the element's name, whether it is secure, and
@@ -252,7 +252,7 @@ function stepSaid(step: Obj, line: ActLine | undefined): Said {
     return said(did, act, ` ${point(step.click)}`);
   }
   if ("type" in step) {
-    // The field it went to: the one it named, else the focused one, as its line names it; before the answer, the one it named.
+    // The field it named, as its line names it (a type with no element names none: where it went is unknown).
     const into = (line ? line.element : step.into !== undefined) ? ` into ${element}` : "";
     return said("Typed", "type", secure ? (into || " text") : ` ${typed(str(step.type) ?? "")}${into}`);
   }

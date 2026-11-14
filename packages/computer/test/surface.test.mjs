@@ -104,14 +104,13 @@ test("an element with no name of its own is named by its first named element ins
 	const surface = createSurface(fake.client, fake.hello);
 	await surface.call("observe", {});
 	const answer = await surface.call("act", { steps: [{ press: "@e2" }, { type: "1234", into: "@e4" }, { type: "5" }, { press: "@e9" }] });
-	assert.deepEqual(answer.text.split("\n").slice(0, 3), ['1. press @e2 generic "Display": background', '2. type into @e4 textbox "PIN" [secure]: background', '3. type into @e4 textbox "PIN" [secure]: background'], "a type with no element goes to the focused one, here secure");
+	assert.deepEqual(answer.text.split("\n").slice(0, 3), ['1. press @e2 generic "Display": background', '2. type into @e4 textbox "PIN" [secure]: background', "3. type: background"], "a type with no element names none");
 	assert.match(answer.text.split("\n")[3], /^4\. press: refused \(stale\)/, "a ref never observed is named by its step alone");
 });
 
-test("a type with no element names the field the focus is in, followed through the act and the acts after it; where the focus went is unknown, it names none", async () => {
+test("a type with no element names no field, whatever the last observation had focused: where it goes when it runs is not known (another app, a click before it, a person)", async () => {
 	const fake = fakeComputer();
 	const call = fake.client.call.bind(fake.client);
-	let refuse = false;
 	fake.client.call = async (method, params, options) => {
 		if (method === "ui.observe")
 			return {
@@ -129,26 +128,16 @@ test("a type with no element names the field the focus is in, followed through t
 					truncated: false,
 				},
 			};
-		if (method === "ui.act") {
-			const steps = params.steps.map(() => ({ route: "background", verified: false }));
-			return { ok: true, value: { steps: refuse ? [{ error: { kind: "stale", message: "the window changed" } }] : steps, changed: true, state: "s2" } };
-		}
+		if (method === "ui.act") return { ok: true, value: { steps: params.steps.map(() => ({ route: "background", verified: false })), changed: true, state: "s2" } };
 		return call(method, params, options);
 	};
 	const surface = createSurface(fake.client, fake.hello);
 	const first = (answer) => answer.text.split("\n").slice(0, 2);
-	assert.deepEqual(first(await surface.call("act", { steps: [{ type: "dark" }] })), ["1. type: background", "changed · state s2"], "before any observation, where the focus is is unknown");
 	await surface.call("observe", {});
-	assert.deepEqual(first(await surface.call("act", { steps: [{ type: "dark" }] })), ['1. type into @e2 textbox "Search": background', "changed · state s2"], "the observed focus");
-	assert.deepEqual(first(await surface.call("act", { steps: [{ click: "@e3" }, { type: "hunter2" }] })), ['1. click @e3 textbox "Password" [secure]: background', '2. type into @e3 textbox "Password" [secure]: background'], "a click on a field moves the focus into it");
-	assert.deepEqual(first(await surface.call("act", { steps: [{ type: "hunter2" }] })), ['1. type into @e3 textbox "Password" [secure]: background', "changed · state s2"], "the focus an act left is where the next act's type goes");
-	assert.deepEqual(first(await surface.call("act", { steps: [{ press: "@e4" }, { type: "hunter2" }] })), ['1. press @e4 button "Show sign-in": background', "2. type: background"], "a press on a button may move the focus anywhere");
-	assert.deepEqual(first(await surface.call("act", { steps: [{ type: "hunter2" }] })), ["1. type: background", "changed · state s2"], "and it stays unknown");
-	await surface.call("observe", {});
-	refuse = true;
-	await surface.call("act", { steps: [{ click: "@e3" }, { type: "x", into: "@e2" }] });
-	refuse = false;
-	assert.deepEqual(first(await surface.call("act", { steps: [{ type: "hunter2" }] })), ["1. type: background", "changed · state s2"], "after a refused step, where the focus is is unknown");
+	assert.deepEqual(first(await surface.call("act", { steps: [{ type: "dark" }] })), ["1. type: background", "changed · state s2"], "the observed focus was an ordinary field: still none named");
+	assert.deepEqual(first(await surface.call("act", { app: "com.example.bank", steps: [{ type: "hunter2" }] })), ["1. type: background", "changed · state s2"], "another app's focus is none of this observation's");
+	assert.deepEqual(first(await surface.call("act", { steps: [{ press: "@e4" }, { type: "hunter2" }] })), ['1. press @e4 button "Show sign-in": background', "2. type: background"]);
+	assert.deepEqual(first(await surface.call("act", { steps: [{ type: "hunter2", into: "@e3" }, { type: "dark", into: "@e2" }] })), ['1. type into @e3 textbox "Password" [secure]: background', '2. type into @e2 textbox "Search": background'], "a type that names its field names it, secure by the field's own flag");
 });
 
 test("an empty act with an expect is a wait, and gone waits for the opposite", async () => {

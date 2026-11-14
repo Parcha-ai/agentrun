@@ -39,12 +39,12 @@ test("each kind of step in words; past three steps, the rest are counted", () =>
 test("a typed or set text shows whole or not at all, and never for a secure field", () => {
   const long = "x".repeat(41);
   const notes = '1. type into @e2 textbox "Notes": semantic, verified';
-  assert.equal(labelOf("computer_act", { steps: [{ type: long }] }, view(notes)), "Typed 41 characters into “Notes”");
-  assert.equal(labelOf("computer_act", { steps: [{ type: "dark" }] }, view(notes)), "Typed “dark” into “Notes”", "a type with no element of its own goes to the field its line names, the focused one");
-  assert.equal(labelOf("computer_act", { steps: [{ type: "dark" }] }, view("1. type: semantic, verified")), "Typed text", "where the text went is unknown, so it may be a secure field: no text shows");
+  assert.equal(labelOf("computer_act", { steps: [{ type: long, into: "@e2" }] }, view(notes)), "Typed 41 characters into “Notes”");
+  assert.equal(labelOf("computer_act", { steps: [{ type: "dark", into: "@e2" }] }, view(notes)), "Typed “dark” into “Notes”");
+  assert.equal(labelOf("computer_act", { steps: [{ type: "dark" }] }, view("1. type: semantic, verified")), "Typed text", "a type with no element: where the text went is unknown, so it may be a secure field, and no text shows");
   const steps = [{ type: "1234", into: "@e6" }, { set: "@e7", value: "hunter2" }, { type: "5678" }];
-  const answer = ['1. type into @e6 textbox "PIN" [secure]: semantic, verified', '2. set @e7 textbox "Password" [secure]: semantic, verified', '3. type into @e6 textbox "PIN" [secure]: semantic, verified'].join("\n");
-  assert.equal(labelOf("computer_act", { steps }, view(answer)), "Typed into “PIN”, set “Password”, typed into “PIN”");
+  const answer = ['1. type into @e6 textbox "PIN" [secure]: semantic, verified', '2. set @e7 textbox "Password" [secure]: semantic, verified', "3. type: semantic, verified"].join("\n");
+  assert.equal(labelOf("computer_act", { steps }, view(answer)), "Typed into “PIN”, set “Password”, typed text");
   for (const text of ["1234", "hunter2", "5678"]) assert.ok(!labelOf("computer_act", { steps }, view(answer)).includes(text));
 });
 
