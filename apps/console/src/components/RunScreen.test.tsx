@@ -539,6 +539,11 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
       await act(async () => { release(); });
       await settle();
       expect(outcomes).toEqual(["done"]);
+      // Taken: the card's answers stay off until the run's next read takes the ask away (the answer comes back before it).
+      expect(done.disabled).toBe(true);
+      await act(async () => { done.click(); });
+      await settle();
+      expect(outcomes).toEqual(["done"]);
     });
   }
 
