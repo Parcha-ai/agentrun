@@ -113,13 +113,14 @@ test("two claims checking the same 20 graded runs at once: one refit, never two"
   assert.equal(commits.length, 1, `one refit for the window: ${logs.join("\n")}`);
 });
 
-const { launchBody } = await import("../dist/run-launch.js");
+const { launchBody, readLaunchBody } = await import("../dist/run-launch.js");
+const { StoreConstraint } = await import("../dist/store/store.js");
 /** A launch's learning start as a run that learns is launched with (its seed commit "s"). */
 const LEARNING = { given: [], seed: "s", section: "" };
 
 /** A store of `graded` graded agent runs the workflow fits (each with its launch), runs created and commands sent kept, and
  *  `replaying`: a promotion record already replaying with its runs (rows given). For the challenger and deadline checks. */
-async function replayStoreOf({ graded = 6, rows: given = [], records = [], newest } = {}) {
+async function replayStoreOf({ graded = 6, rows: given = [], records = [], newest, raced = [], creating } = {}) {
   const kv = new Map();
   const settings = {
     get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
@@ -142,9 +143,15 @@ async function replayStoreOf({ graded = 6, rows: given = [], records = [], newes
     runs: {
       get: async (id) => rows.get(id),
       launch: async (id) => (launches.has(id) ? { runId: id, body: launchBody(launches.get(id)), sealed: null } : Promise.reject(new Error(`no run ${id}`))),
+      // A run id is the row's key: a second create under it is refused, as the store's primary key does. `raced`: ids
+      // another claim creates at the same moment, its row written first.
       create: async (row, launch) => {
+        await creating?.();
+        if (raced.includes(row.id) && !rows.has(row.id)) rows.set(row.id, { id: row.id, state: "queued", metrics: null, archivedAt: null });
+        if (rows.has(row.id)) throw new StoreConstraint(`run ${row.id} exists`, { rule: "unique", unique: { table: "runs", columns: ["id"] } });
         created.push(row.id);
         rows.set(row.id, { id: row.id, state: "queued", metrics: null, archivedAt: null });
+        if (launch) launches.set(row.id, readLaunchBody(launch.body));
         return { id: row.id };
       },
     },
@@ -153,7 +160,7 @@ async function replayStoreOf({ graded = 6, rows: given = [], records = [], newes
   };
   const logs = [];
   const gateOf = (now = Date.now) => promotionGate({ store, agentId: "a", runId: "now", revisionId: "rev", launch: { input: { question: "Now" }, title: "", place: { mode: "runner" }, learning: LEARNING }, context: ctx, log: (line) => logs.push(line), now, ...(newest ? { newest: async () => newest } : {}) });
-  return { settings, created, commands, logs, gateOf, rows };
+  return { settings, created, commands, logs, gateOf, rows, launches };
 }
 
 // Review on #2644 (two challengers): two claims of different revisions of one workflow at once both read no revision
@@ -187,4 +194,57 @@ test("a replay decided past its deadline cancels its runs still at work", async 
   const decided = (await promotionsOf(settings, "a")).at(-1);
   assert.notEqual(decided.decided, "replaying", logs.join("\n"));
   assert.deepEqual(commands, [["replay-5", "cancel"]], "the run still at work is cancelled once the decision is kept");
+});
+
+// Review on #2644 r3 (replay held before it starts): the challenger's record is reserved before its runs are created. A
+// claim of the same digest that reads the record in between finds runs that do not exist yet: they are not ended, so it
+// decides nothing; the runs, once created, replay and are scored.
+test("a second claim between the reservation and its runs' creation decides nothing: the reserved runs are pending", async () => {
+  const text = flowOf(undefined);
+  const digest = workflowDigest({ workflow: text });
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let first = true;
+  const { settings, created, logs, gateOf } = await replayStoreOf({ creating: async () => { if (first) { first = false; await held; } } });
+  const gate = gateOf();
+  const launching = gate({ name: "answer", workflow: text }, digest);
+  // The first claim reserved and is creating its first run; the second claim reads the record now.
+  while ((await promotionsOf(settings, "a")).length === 0) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await gate({ name: "answer", workflow: text }, digest), undefined, "the second claim does not serve it");
+  release();
+  assert.equal(await launching, undefined);
+  const record = (await promotionsOf(settings, "a")).at(-1);
+  assert.equal(record.decided, "replaying", `never held on zero inputs: ${JSON.stringify(record)}\n${logs.join("\n")}`);
+  assert.deepEqual([...created].sort(), [...record.runs].sort(), "every reserved run was created");
+});
+
+/** A replaying record reserved at time 0 for six replay runs on graded-0..5, `made` of them created (ended, answered). */
+async function reservedOf({ made = 0, raced = [] } = {}) {
+  const text = flowOf(undefined);
+  const digest = workflowDigest({ workflow: text });
+  const ids = Array.from({ length: 6 }, (_, i) => `replay-${i}`);
+  const given = ids.slice(0, made).map((id, i) => ({ id, state: "ended", metrics: { path: "replay", replay: { of: `graded-${i}`, outcome: "answered" } }, archivedAt: null, costUsd: 0.01,
+    launch: { input: { question: `Question ${i}` }, title: "", place: { mode: "runner" }, learning: LEARNING, replay: { of: `graded-${i}`, workflow: "answer", digest } } }));
+  const record = { workflow: "answer", digest, at: new Date(0).toISOString(), decided: "replaying", source: "replay", reason: "replaying", runs: ids, inputs: ids.map((_, i) => `graded-${i}`), commit: "s" };
+  return { text, digest, ids, ...(await replayStoreOf({ rows: given, records: [record], raced })) };
+}
+
+test("reserved replay runs not created yet are pending until their launch grace: nothing decided, nothing started", async () => {
+  const { text, digest, settings, created, logs, gateOf } = await reservedOf({ made: 2 });
+  assert.equal(await gateOf(() => 1_000)({ name: "answer", workflow: text }, digest), undefined);
+  assert.equal((await promotionsOf(settings, "a")).at(-1).decided, "replaying", logs.join("\n"));
+  assert.deepEqual(created, [], "the claim that reserved them is still creating them");
+});
+
+// An interrupted launch (the reserving claim crashed, or a create failed) is recovered: a claim past the launch grace
+// creates each reserved run still missing, under its reserved id, on the graded input the record names for it. A run
+// another claim created at once is left to it.
+test("an interrupted launch is recovered: a later claim creates the reserved runs still missing, under their ids", async () => {
+  const { REPLAY_LAUNCH_GRACE_MS } = await import("../dist/runner/promotion.js");
+  const { text, digest, ids, settings, created, logs, gateOf, launches } = await reservedOf({ made: 2, raced: ["replay-3"] });
+  assert.equal(await gateOf(() => REPLAY_LAUNCH_GRACE_MS + 1_000)({ name: "answer", workflow: text }, digest), undefined, logs.join("\n"));
+  assert.deepEqual(created, [ids[2], ids[4], ids[5]], "the missing ones, the raced one left to the claim that made it");
+  for (const id of created) assert.deepEqual(launches.get(id).replay, { of: `graded-${id.at(-1)}`, workflow: "answer", digest }, "on the input the record names for it");
+  assert.equal((await promotionsOf(settings, "a")).at(-1).decided, "replaying");
+  assert.ok(!logs.some((line) => line.includes("could not be read")), logs.join("\n"));
 });
