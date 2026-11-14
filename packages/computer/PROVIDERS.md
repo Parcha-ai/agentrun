@@ -75,7 +75,7 @@ AgentRun polls `get`. Store `req.labels` on the machine, since `list` finds mach
 
 **`get(id, ctx)`** reads one machine as your API sees it now. It returns a `Machine` with its labels, its `state`
 (`starting`, `running`, `stopped`, `going` or `failed`), and the network and image you read back. A machine that no
-longer exists is `undefined`, not an error.
+longer exists is `undefined`, or an error that maps to `not_found`; neither is a failure.
 
 ```ts
 	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
