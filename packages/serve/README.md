@@ -77,6 +77,16 @@ link carries a launch code this start made at random (`?launch=<code>`), never t
 address people open (a container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL`
 use it.
 
+`AGENTRUN_TOKENS`, when set, is a list of more tokens, each with an id: `id:secret` entries separated by commas or
+whitespace (each secret follows the token's rules, and holds no comma). `AGENTRUN_TOKEN`'s token is the entry `default`;
+set alone, the list takes `DIR/.token`'s place, and its first entry is the server's token. Any token on the list opens
+every route the token opens (`/v2`, `/mcp`, the setup code's field), and each presented token is compared against every
+entry in constant time. Each request line names the id of the token used (`token=<id>`), or `session=owner` or
+`session=console` for the console's own requests, never a secret. The banner lists the ids when there is more than one.
+An id or a secret given twice, or an entry that is not `id:secret`, stops the start. The list is a secret like the token:
+the launcher hands it over its pipe, and no run's process or runner loop gets it. A rotation adds the new token, moves
+callers, then removes the old one ([deploy/README.md](../../deploy/README.md#rotating-the-api-token)).
+
 ## Sandbox in 60 seconds
 
 An agent with a shell, in a Docker container of its own: on a machine with Docker, in a checkout built as above, with
@@ -3307,7 +3317,7 @@ carries no cost at all, as from a provider that does not price the model. The te
 - A run has no door of its own. The server and a run's runner meet in the store: a message, stop or approval is a
   command row the runner reads, so no port a run listens on takes a token.
 - A run's tools run under the runner's environment (the `AGENT_MODEL` variables among it) without the server's token or
-  any key: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, no variable whose value is the token, and no variable named like a key
+  any key: no `AGENTRUN_TOKEN`, no `AGENTRUN_TOKENS`, no `AGENTRUN_API_KEY`, no variable whose value is a token, and no variable named like a key
   (one of its `_`-separated segments, in any case, is `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASS`, `PAT`,
   `CREDENTIAL`, `CREDENTIALS` or `DSN`, or its last is `PWD` after another: `SERVICE_KEY`, `GITHUB_TOKEN_RO`, `DB_PASS`,
   `SENTRY_DSN`, `DB_PWD`; never `PWD` or `OLDPWD`), whether the launcher's list names it or not. The rule is

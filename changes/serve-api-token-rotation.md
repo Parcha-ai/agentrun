@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+The server takes a list of API tokens, each with an id, so a token rotates with no caller refused: add the new token, move every caller to it, then remove the old one. `AGENTRUN_TOKENS` holds the list as `id:secret` entries separated by commas or whitespace; `AGENTRUN_TOKEN` (or `DIR/.token`) keeps working as the one entry `default`, so a server with a single token needs no change. Any listed token opens every route the token opens (`/v2`, `/mcp`, the setup code's field); every presented token is compared against every entry in constant time, with no early return. Each request log line names the id of the token used (`token=<id>`), never the secret, and the banner lists the ids when there is more than one. An entry that is not `id:secret`, a secret under 32 characters or with whitespace or a comma, or an id or secret given twice stops the start. Set alone, `AGENTRUN_TOKENS` takes `DIR/.token`'s place (the file is neither read nor made). The list is a secret on the launcher's list, and never reaches a run's process or a runner's loops. `deploy/README.md` gives the three steps.
