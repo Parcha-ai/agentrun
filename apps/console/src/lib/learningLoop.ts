@@ -24,12 +24,13 @@ export const kindOf = (record: Promotion): MarkerKind => (record.source === "ref
 
 /** Each promotion record on the run axis: at the first run (of `runs`, in order) that started at or after it, the run it
  *  first bore on. One newer than the last run is left out (no run of the axis is its), and so is one older than the first
- *  run read. Two records of one kind on one run read as one, the newest. */
+ *  run read. Every record keeps its own marker, even two of one kind on one run (two workflows promoted between two
+ *  runs): the chart stacks their flags in rows. */
 export function markersOf(runs: readonly CostRun[], records: readonly Promotion[]): Marker[] {
   if (!runs.length) return [];
   const starts = runs.map((r) => Date.parse(r.started_at));
   const first = starts[0]!;
-  const out = new Map<string, Marker>();
+  const out: Marker[] = [];
   for (const record of records) {
     const t = Date.parse(record.at);
     if (!Number.isFinite(t) || t < first - 1) continue;
@@ -37,9 +38,9 @@ export function markersOf(runs: readonly CostRun[], records: readonly Promotion[
     if (i < 0) continue;
     const kind = kindOf(record);
     const n = runs[i]!.n;
-    out.set(`${kind}:${n}`, { kind, n, at: record.at, workflow: record.workflow, digest: record.digest, reason: record.reason, record });
+    out.push({ kind, n, at: record.at, workflow: record.workflow, digest: record.digest, reason: record.reason, record });
   }
-  return [...out.values()].sort((a, b) => a.n - b.n);
+  return out.sort((a, b) => a.n - b.n);
 }
 
 /** A run that counts in what a job costs: every run but a replay (a revision run alone on a graded input before it serves). */

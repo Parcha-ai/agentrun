@@ -22,6 +22,13 @@ describe("markers on the run axis", () => {
     ];
     expect(markersOf(runs, records).map((m) => [m.kind, m.n])).toEqual([["revision", 2], ["promote", 3], ["refit", 5], ["hold", 6]]);
   });
+  it("keeps two records of one kind on one run, each its own marker", () => {
+    const records = [
+      record({ decided: "promote", workflow: "sort-invoice", at: at(2.2) }),
+      record({ decided: "promote", workflow: "tag-vendor", digest: "c".repeat(16), at: at(2.6) }),
+    ];
+    expect(markersOf(runs, records).map((m) => [m.kind, m.n, m.workflow])).toEqual([["promote", 3, "sort-invoice"], ["promote", 3, "tag-vendor"]]);
+  });
   it("leaves out a record older than the runs read, and draws nothing without runs", () => {
     expect(markersOf(runs, [record({ at: at(-5) })])).toEqual([]);
     expect(markersOf([], [record({})])).toEqual([]);

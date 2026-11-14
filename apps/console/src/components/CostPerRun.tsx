@@ -223,7 +223,7 @@ export function CostChart({ data, on, width: fixed, promotions = [] }: { data: L
             <text x={M.left - 8} y={T + H + 18} textAnchor="end" className="caps fill-muted-foreground text-label">Run</text>
             {/* The loop's markers: a thin line down the plot at the left edge of the run each first bore on, its flag in the lane. */}
             {markers.map((m, i) => (
-              <g key={`${m.kind}:${m.n}`} data-testid={`marker-${m.kind}`} opacity={flag === null || flag === i ? 1 : 0.55}>
+              <g key={`${m.kind}:${m.n}:${m.workflow}:${m.digest}:${m.at}`} data-testid={`marker-${m.kind}`} opacity={flag === null || flag === i ? 1 : 0.55}>
                 <path d={`M${x(m.n) - slot / 2},${M.top + rowOf[i]! * FLAG_ROW + 15}V${T + H}`} className={FLAG_STROKE[m.kind]} strokeWidth={1} strokeDasharray="2 3" />
                 <Flag x={x(m.n) - slot / 2 - 7} y={M.top + rowOf[i]! * FLAG_ROW + 1} kind={m.kind} />
               </g>
@@ -302,7 +302,7 @@ export function CostChart({ data, on, width: fixed, promotions = [] }: { data: L
           <table className="mt-3 w-full border-collapse font-mono text-small" data-testid="marker-table">
             <thead><tr className="caps text-label text-muted-foreground">{["Run", "Marker", "Workflow", "Revision", "Numbers"].map((h) => <th key={h} className="py-1 pr-4 text-left font-normal">{h}</th>)}</tr></thead>
             <tbody>{markers.map((m) => (
-              <tr key={`${m.kind}:${m.n}`}>
+              <tr key={`${m.kind}:${m.n}:${m.workflow}:${m.digest}:${m.at}`}>
                 <td className="py-0.5 pr-4">{m.n}</td>
                 <td className="pr-4">{MARKER_LETTER[m.kind]} {MARKER_WORDS[m.kind]}</td>
                 <td className="pr-4">{m.workflow}</td>
