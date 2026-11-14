@@ -42,6 +42,10 @@ const TERMINAL = ["COMPLETED", "FAILED", "BLOCKED", "STOPPED", "TIMED_OUT"];
 const MIN_READ_MS = 100;
 /** How many inspects a save has out at once. */
 const INSPECTS_AT_ONCE = 8;
+/** A save's read of the listing or an inspect, refused for the rate (429) or failed by monid (5xx), is read again after
+ *  what monid says to wait (Retry-After, 2 s when it says nothing, at most READ_WAIT_MS), READ_TRIES times in all. */
+const READ_TRIES = 4;
+const READ_WAIT_MS = 10_000;
 
 /** monid's answer, or `error` saying why there is none, with the HTTP `status` when one came. */
 export type MonidAnswer = Json & { error?: string };
@@ -114,26 +118,35 @@ export function chargeOf(answer: MonidAnswer): number | null | undefined {
 export function monidClient(options: MonidOptions) {
   const { key, requestMs = 30_000, pollMs = 2_000, waitMs = 150_000, sleep = pause } = options;
   const send = options.fetch ?? fetch;
-  const call = async (method: string, path: string, body: Json | undefined, signal?: AbortSignal, ms = requestMs): Promise<{ status: number; body: Json }> => {
+  const call = async (method: string, path: string, body: Json | undefined, signal?: AbortSignal, ms = requestMs): Promise<{ status: number; body: Json; retryAfter?: number }> => {
     const limit = AbortSignal.timeout(ms);
     try {
       const res = await send(`${MONID_API}${path}`, { method, headers: { authorization: `Bearer ${key}`, ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: signal ? AbortSignal.any([signal, limit]) : limit });
       const text = await res.text();
       const json: unknown = (() => { try { return JSON.parse(text); } catch { return undefined; } })();
-      return { status: res.status, body: isObject(json) ? json : { message: text.slice(0, 500) } };
+      const retryAfter = Number(res.headers?.get?.("retry-after") ?? NaN);
+      return { status: res.status, body: isObject(json) ? json : { message: text.slice(0, 500) }, ...(retryAfter >= 0 ? { retryAfter } : {}) };
     } catch (error) {
       return { status: 0, body: { message: signal?.aborted ? "stopped by the caller" : limit.aborted ? `no answer in ${ms / 1000} s` : String((error as Error)?.message ?? error) } };
     }
   };
   const answer = (res: { status: number; body: Json }): MonidAnswer => (res.status >= 200 && res.status < 300 ? res.body : failure(res.status, res.body));
+  /** A save's read, safe to repeat (READ_TRIES). */
+  const read = async (method: string, path: string, body: Json | undefined, signal?: AbortSignal) => {
+    for (let tries = 1; ; tries++) {
+      const res = await call(method, path, body, signal);
+      if ((res.status !== 429 && res.status < 500) || tries >= READ_TRIES || signal?.aborted) return res;
+      await sleep(Math.min(READ_WAIT_MS, (res.retryAfter ?? 2) * 1000), signal);
+    }
+  };
   const stop = async (runId: string, why: string): Promise<MonidAnswer> => {
     const res = await call("POST", `/v1/runs/${encodeURIComponent(runId)}/stop`, undefined, undefined, 10_000);
     return { error: `the run ${why}; ${res.status === 202 ? "monid was asked to stop it" : `monid refused to stop it (${res.status || "no answer"})`}, and a metered endpoint bills what it used before the stop`, runId };
   };
   return {
     /** One page of monid's listing (GET /v1/endpoints): `items`, and `cursor` for the next page when there is one. */
-    endpoints: async (cursor: string | undefined, signal?: AbortSignal) => answer(await call("GET", `/v1/endpoints?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, undefined, signal)),
-    inspect: async (args: { provider: string; endpoint: string }, signal?: AbortSignal) => answer(await call("POST", "/v1/inspect", args, signal)),
+    endpoints: async (cursor: string | undefined, signal?: AbortSignal) => answer(await read("GET", `/v1/endpoints?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, undefined, signal)),
+    inspect: async (args: { provider: string; endpoint: string }, signal?: AbortSignal) => answer(await read("POST", "/v1/inspect", args, signal)),
     async run(args: { provider: string; endpoint: string; input?: Json }, signal?: AbortSignal): Promise<MonidAnswer> {
       const deadline = Date.now() + waitMs;
       const first = await call("POST", "/v1/run", { provider: args.provider, endpoint: args.endpoint, input: args.input ?? {} }, signal, waitMs);
@@ -229,14 +242,14 @@ export type MonidPinOutcome = { pin: MonidPin } | { refused: { tool: string; mes
  *  provider's wildcard read as the endpoints monid lists for it now (at most MONID_WILDCARD_MAX), each endpoint inspected
  *  for its description, input and price. A grant monid lists nothing for is refused, as is every grant when there is no
  *  key or monid cannot be read. Undefined when no grant is monid's. */
-export async function pinMonid(grants: readonly string[], options: { key: string | undefined; fetch?: typeof fetch; signal?: AbortSignal }): Promise<MonidPinOutcome | undefined> {
+export async function pinMonid(grants: readonly string[], options: { key: string | undefined; fetch?: typeof fetch; signal?: AbortSignal; sleep?: MonidOptions["sleep"] }): Promise<MonidPinOutcome | undefined> {
   const named = grants.flatMap((tool) => {
     const parsed = parseToolName(tool);
     return parsed?.kind === "monid" || parsed?.kind === "monid-provider" ? [{ tool, parsed }] : [];
   });
   if (!named.length) return undefined;
   if (!options.key) return { refused: named.map(({ tool }) => ({ tool, message: `${tool} is pinned to what monid lists when the agent is saved, and there is no monid key here to read it with: save the monid key in Settings → Keys first.` })) };
-  const client = monidClient({ key: options.key, ...(options.fetch ? { fetch: options.fetch } : {}) });
+  const client = monidClient({ key: options.key, ...(options.fetch ? { fetch: options.fetch } : {}), ...(options.sleep ? { sleep: options.sleep } : {}) });
   const refused: { tool: string; message: string }[] = [];
   // Each endpoint to pin, by catalog name: the grants' own, then each wildcard's provider's as monid lists them.
   const wanted = new Map<string, { provider: string; endpoint: string }>();

@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { FAUX_ENV } from "../dist/model.js";
-import { chargeOf, CLIP, FAUX_MONID_ENV, heldOf, MONID_KEY_ENV, MONID_USAGE_CEILING_USD, monidClient, monidText } from "../dist/monid.js";
+import { chargeOf, CLIP, FAUX_MONID_ENV, heldOf, MONID_KEY_ENV, MONID_USAGE_CEILING_USD, monidClient, monidText, pinMonid } from "../dist/monid.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { monidForClaim } from "../dist/runner/monid-run.js";
 import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
@@ -35,6 +35,26 @@ test("the listing is read page by page and an endpoint inspected as monid answer
   assert.deepEqual(shown.input.body.required, ["name"]);
   assert.equal(await monidText(shown, localWorkspace(work), "inspect"), JSON.stringify(shown));
   assert.match((await monid().inspect({ provider: "faux", endpoint: "/nowhere" })).error, /not found for provider 'faux'/);
+});
+
+test("a save's read of the listing or an inspect refused for the rate (429) is read again after monid's Retry-After; a run never is", async () => {
+  // monid answers each first listing page, first inspect and first run with a 429.
+  const limited = new Set();
+  const rated = async (url, init) => {
+    const path = new URL(url).pathname;
+    if (!limited.has(path)) {
+      limited.add(path);
+      return new Response(JSON.stringify({ message: "Rate limited. Retry after 3s." }), { status: 429, headers: { "retry-after": "3" } });
+    }
+    return fakeMonid(url, init);
+  };
+  const waits = [];
+  const pinned = await pinMonid(["monid:faux/*"], { key: KEY, fetch: rated, sleep: async (ms) => void waits.push(ms) });
+  assert.ok(pinned && "pin" in pinned, JSON.stringify(pinned));
+  assert.ok(pinned.pin[ENRICH], "pinned once monid answered");
+  assert.deepEqual(waits, [3000, 3000], "the listing's page and the first inspect, each waited out once");
+  const ran = await monidClient({ key: KEY, fetch: rated, sleep: async (ms) => void waits.push(ms) }).run({ provider: "faux", endpoint: "/person/enrich", input: { body: { name: "Ada" } } });
+  assert.equal(ran.status, 429, "a run, which may charge, is not sent again");
 });
 
 test("a run: a sync provider's output with its cost in dollars; an async one read until COMPLETED; each sent once", async () => {
