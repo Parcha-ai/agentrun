@@ -54,7 +54,7 @@
       "id": "saved-in-mousepad",
       "kind": "exec",
       "why": "Mousepad saved it: one of Mousepad's windows is titled with the file's name. The agent keeps the files group, so it could write the file with files.write and never touch Mousepad; that leaves Mousepad's window titled Untitled, and this fails.",
-      "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); xdotool search --all --onlyvisible --class mousepad --name '{{note.name}}-{{nonce}}\\.txt' | grep -q ."],
+      "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); m=$(xdotool search --onlyvisible --class mousepad); for w in $(xdotool search --onlyvisible --name '{{note.name}}-{{nonce}}\\.txt'); do printf '%s\\n' \"$m\" | grep -qx \"$w\" && exit 0; done; exit 1"],
       "timeoutMs": 20000
     }
   ],

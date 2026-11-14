@@ -88,7 +88,11 @@ test("an exec-deny task's agent keeps the files group, so count-errors and new-n
 	const [note] = loadSuite(join(SUITES, "linux-desktop")).filter((task) => task.spec.id === "linux.editor.new-note");
 	const shown = note.spec.checks.find((check) => check.kind === "exec");
 	assert.ok(shown, "new-note passes a note written with files.write, Mousepad untouched");
-	assert.match(shown.argv.join(" "), /xdotool search --all --onlyvisible --class mousepad --name.*\{\{note\.name\}\}-\{\{nonce\}\}\\?\.txt/);
+	// xdotool search takes one pattern; --class and --name say which of a window's fields it matches, so Mousepad's windows
+	// and the windows titled with the name are two searches, and a window in both passes.
+	const script = shown.argv.join(" ");
+	assert.match(script, /m=\$\(xdotool search --onlyvisible --class mousepad\)/);
+	assert.match(script, /for w in \$\(xdotool search --onlyvisible --name '\{\{note\.name\}\}-\{\{nonce\}\}\\\.txt'\); do printf '%s\\n' "\$m" \| grep -qx "\$w" && exit 0; done; exit 1/);
 });
 
 test("a linux-desktop teardown stops only the apps its run started, and git-email checks the global config is kept", () => {
