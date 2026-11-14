@@ -218,7 +218,7 @@ test("verify: the fake suite's checks fail every untouched state and pass every 
 		assert.equal(proof.solved, proof.task === "fake.settings.device-name" ? "no oracle" : "passes", `${proof.task}: ${proof.why ?? ""}`);
 		assert.deepEqual(proof.wrong, []);
 	}
-	assert.match(proofMarkdown(proofs), /12 task × seed proofs; 0 not right/);
+	assert.match(proofMarkdown(proofs), /12 task × seed proofs: 12 right, 0 skipped, 0 not right\./);
 });
 
 test("verify names a broken check: one that passes the untouched state, or fails the solved one", async () => {

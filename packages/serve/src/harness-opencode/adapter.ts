@@ -142,7 +142,6 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
 
   return {
     id: "opencode",
-    capabilities: () => ({}),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("OpenCode sessions cannot fork another session's transcript; declare context: \"fresh\"");

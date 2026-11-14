@@ -7,7 +7,7 @@ through the computer protocol before it is released; one grader judges what the 
 ```
 computer-bench validate suites/mac-dev suites/android-dev
 computer-bench verify --suite suites/fake --out /tmp/cb/verify --seeds 1,2
-computer-bench run --suite suites/fake --arms arms.json --out /tmp/cb/run --seeds 1,2,3 --grade never
+computer-bench run --suite suites/fake --arms arms.json --out /tmp/cb/run --seeds 1,2,3 --grade never [--verified /tmp/cb/verify/verify.json]
 computer-bench report /tmp/cb/run [--split heldout]
 ```
 
@@ -25,7 +25,10 @@ check ids are unique, regexes compile, `exit` only on `exec.run`, a task whose c
 | field | what it is |
 | --- | --- |
 | `id`, `version`, `title`, `split` | `split` is `dev` (tune on it) or `heldout` (report on it, never tune on it) |
-| `needs` | `os`, `kind` (`desktop`, `phone`, `sandbox`, `browser`: serve's kinds), `osVersion` (a prefix of hello's), `groups` the computer must have only when the task can't be done without them (a drag needs `input.pointer`), `apps`. A task never says which tools the agent uses: the agent is given what the computer offers, so one suite compares code-mode, tools and vendor computer-tool agents |
+| `needs` | `os`, `kind` (`desktop`, `phone`, `sandbox`, `browser`: serve's kinds), `osVersion` (a prefix of hello's), `groups` the computer must have only when the task can't be done without them (a drag needs `input.pointer`), `apps` and `capabilities` (below). A task never says which tools the agent uses: the agent is given what the computer offers, so one suite compares code-mode, tools and vendor computer-tool agents |
+| `needs.apps` | the apps the task can't be done without, by bundle id or package. Each entry is required; an entry that is a list is alternatives, any one of which will do (`[["com.google.android.deskclock", "com.android.deskclock", "com.sec.android.app.clockpackage"]]`: one clock, whoever made the phone). Read through `apps.list`, which lists the apps a person can open, so never a system service such as `com.android.systemui` |
+| `needs.capabilities` | probes, each written as a check (not `answer`) whose `id` names what it proves the computer can do (`camera`): `take-selfie`'s reads `dumpsys media.camera` for a camera device. Same for every seed, so no placeholders |
+| `exec` | `allow` (default) or `deny`: the task is done through the UI, so the agent is given no exec or processes group, and the oracle may use only `ui`, `input`, `screen` and `apps` (not `apps.install`), the path the agent must take. `loadTask` names the oracle call that breaks this |
 | `params` | per-seed perturbations: `{pick: [...]}` (scalars, or objects read as `{{name.field}}`) or `{int: [lo, hi]}`; each param is picked from sha256(task, seed, name), so every arm sees the same values |
 | `setup`, `teardown`, `oracle` | protocol calls: `{method, params, why, allow (error kinds that count as done), exit (exec.run's good exit codes)}` |
 | `instruction` | what the agent is told |
@@ -67,19 +70,42 @@ under the same conditions):
 1. opens an episode: a computer claimed for the run, its bench channel, and the agent that will drive it;
 2. reads `hello` and refuses a computer that is not what the task needs (os, kind, osVersion, a group the task can't
    be done without, the groups setup and checks need) before setup touches it, in one sentence naming what is missing;
-3. runs setup; a setup that fails is infra;
-4. runs the agent under its budget: the step budget answers `limit` past it and stops the agent, the wall budget aborts
+3. reads the preconditions (record phase `precondition`): `needs.apps` through one `apps.list`, then each
+   `needs.capabilities` probe. A missing app or a failing probe refuses the run as `skipped: needs com.android.chrome`
+   (`needs one of a, b` for alternatives; `needs camera: <why>` for a probe), and a computer with no apps group is
+   refused in words. A skip is never retried, and it is remembered for the bench run: the task's other runs are
+   refused without opening a computer. An `apps.list` or a probe that could not run is infra;
+4. runs setup; a setup that fails is infra;
+5. runs the agent under its budget: the step budget answers `limit` past it and stops the agent, the wall budget aborts
    it, and a run that spent more than `usd`, or made more computer calls than `steps` (on serve, which runs a script's
    calls before the bench reads them), counts as `budget` whatever its checks say;
-5. runs the checks on the computer as the agent left it, then reads the tree and a last frame;
-6. tears down and releases (always, once setup began);
-7. grades, after the release: no computer waits on a model.
+6. pings the computer on the bench's channel (phase `ping`, 15 s). No answer means it died during the agent's turn: the
+   run is infra ("the computer stopped answering during the agent's turn") and runs again, before any check can
+   score a dead computer as wrong. After a stop the bench made (the step or wall budget) a failed ping is expected,
+   since serve's cancel lets the computer go, so the run stays `budget`, unless the bench saw the agent's calls lose
+   the computer's stream before it stopped them (ordered by when the bench saw each answer, never by a driver's
+   clock): then it is infra too;
+7. runs the checks on the computer as the agent left it, then reads the tree and a last frame;
+8. tears down and releases (always, once setup began);
+9. grades, after the release: no computer waits on a model.
 
-Outcomes: `pass`, `fail` and `budget` are scored; `infra` (the platform failed: no computer, a lost connection, a check
-that could not run) is run again, up to `retries` (default 2), and never scored; `refused` (the computer or the agent
-can't take the task) is neither. A run stopped for its budget stays `budget` even when its checks can't run after the
-stop (serve's cancel lets the computer go). `--mode null` runs no agent and `--mode oracle` runs the task's oracle on the bench's
+Outcomes: `pass`, `fail` and `budget` are scored; `infra` (the platform failed: no computer, a lost connection, a
+computer that stopped answering, a check that could not run) is run again, up to `retries` (default 2), and never
+scored; `refused` (the computer or the agent can't take the task, and `skipped: ` when a precondition failed) is
+neither. A run stopped for its budget stays `budget` even when its checks can't run after the stop (serve's cancel lets
+the computer go). `--mode null` runs no agent and `--mode oracle` runs the task's oracle on the bench's
 channel: `verify` runs both and names every check that passes an untouched state or fails a solved one.
+
+An `answer` check reads the agent's final answer without markdown emphasis (`**`, `__`, `*`, `_`, backticks) and
+without thousands separators (a comma before exactly three digits: `103,190.70` reads `103190.70`), and so does its
+`equals`, `contains` or `oneOf`. Nothing else: no fuzzy matching, no rounding.
+
+`verify` writes `verify.md` and `verify.json`: a skipped task × seed is a proof of its own (`untouched` and `solved`
+are `skipped`, `skipped_because` says why), counted apart: "N task × seed proofs: X right, Y skipped, Z not right".
+Each proof names the task's version and folder sha256. `computer-bench run --verified <verify.json>` runs only the
+pairs that file proves right for the task's folder as it is now. Every other pair is refused without opening a
+computer, as `not verified for seed N` (with what verify found, or that it proved another version) or as its skip, and
+the CLI says how many it left out.
 
 The agent's calls go through a tap (`src/tap.ts`) that records them, keeps the budget, and denies a method outside the
 groups the agent is given (exec on a phone is the bench's, not the agent's; on a task that says `exec: "deny"`, exec and
@@ -105,7 +131,7 @@ move into a run's journal once serve writes computer steps itself:
 | kind | data |
 | --- | --- |
 | `agentrun.bench.run` | the header: task (id, version, sha256, split, seed, nonce, params, instruction), arm, attempt, budget, what the agent was given (`agent`: its surface, exec allow or deny, the groups it may use, and on serve its agent id; `given`: sha256s), the computer's identity and its whole hello |
-| `agentrun.computer.step` | one protocol call: `n`, phase (setup, agent, tool, frame, check, observe, teardown, oracle), method, params without bytes (`{bytes, sha256}` in their place), timings, ok or error, routes and verified (ui.act), changed, expect, state before and after, stale, images (`got`, `pre`, `post`) by sha256, and on an agent step its `turn` and `tool`. Phase `tool` is a tool call that made no computer call |
+| `agentrun.computer.step` | one protocol call: `n`, phase (precondition, setup, agent, tool, frame, ping, check, observe, teardown, oracle), method, params without bytes (`{bytes, sha256}` in their place), timings, ok or error, routes and verified (ui.act), changed, expect, state before and after, stale, images (`got`, `pre`, `post`) by sha256, and on an agent step its `turn` and `tool`. Phase `tool` is a tool call that made no computer call |
 | `agentrun.bench.checks` | stage 1: each check's status, what it read, and why it failed |
 | `agentrun.bench.grade` | stage 2's verdict and the judge's id, or its error |
 | `agentrun.bench.verdict` | the result line (below) |

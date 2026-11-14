@@ -11,6 +11,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/apps"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/archilsync"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/desktop"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
@@ -133,6 +134,7 @@ func Handlers(version string, table *process.Table, options Options) map[string]
 	maps.Copy(handlers, fileHandlers())
 	maps.Copy(handlers, processHandlers(table))
 	maps.Copy(handlers, display.Handlers())
+	maps.Copy(handlers, apps.Handlers(display, table, apps.Options{}))
 	return handlers
 }
 

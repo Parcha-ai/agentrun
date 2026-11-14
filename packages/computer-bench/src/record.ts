@@ -23,10 +23,11 @@ export const ENTRY = {
 	cleanup: "agentrun.bench.cleanup",
 } as const;
 
-/** Who made a call: the bench setting up, the agent, the bench's frame after an act, a check, teardown, or the oracle.
- *  "tool" is no computer call: a tool call of the agent's that made none (a search, a shell on the runner), recorded as
- *  one of its turns, never counted as a step. */
-export type Phase = "setup" | "agent" | "tool" | "frame" | "check" | "observe" | "teardown" | "oracle";
+/** Who made a call: the bench reading the task's preconditions (apps, capability probes), setting up, the agent, the
+ *  bench's frame after an act, the bench's ping after the agent's turn, a check, teardown, or the oracle. "tool" is no
+ *  computer call: a tool call of the agent's that made none (a search, a shell on the runner), recorded as one of its
+ *  turns, never counted as a step. */
+export type Phase = "precondition" | "setup" | "agent" | "tool" | "frame" | "ping" | "check" | "observe" | "teardown" | "oracle";
 
 /** One protocol call, as the record keeps it. */
 export interface Step {

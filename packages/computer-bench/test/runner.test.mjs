@@ -53,7 +53,9 @@ test("a run's record: the header first, then every call in order, the checks, an
 	const byN = [...steps].sort((a, b) => a.n - b.n);
 	for (let i = 1; i < byN.length; i += 1) assert.ok(byN[i].t_ms >= byN[i - 1].t_ms, "numbers follow the time each call was sent");
 	const phases = [...new Set(steps.map((step) => step.phase))];
-	assert.deepEqual(phases, ["setup", "frame", "agent", "check", "observe", "teardown"]);
+	// The preconditions (needs.apps through apps.list) come before setup; the ping that tells a dead computer from a
+	// wrong one comes after the agent's part and before the checks.
+	assert.deepEqual(phases, ["precondition", "setup", "frame", "agent", "ping", "check", "observe", "teardown"]);
 	const acts = steps.filter((step) => step.method === "ui.act");
 	assert.equal(acts.length, 2);
 	for (const act of acts) {
