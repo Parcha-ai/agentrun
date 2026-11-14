@@ -5,8 +5,10 @@ package desktop_test
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"image/jpeg"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,6 +53,390 @@ func shaded(t *testing.T) (*client, *atomic.Int32) {
 	d := desktop.New(name)
 	t.Cleanup(d.Close)
 	return serve(t, d), shade
+}
+
+// damaged is shaded on a fake with DAMAGE: the screen is read only where f.Damaged says it changed.
+func damaged(t *testing.T) (*client, *atomic.Int32, *x11fake.Server) {
+	t.Helper()
+	d, shade, f := damagedDisplay(t)
+	return serve(t, d), shade, f
+}
+
+// damagedDisplay is damaged's display, for a test that serves it more than one connection.
+func damagedDisplay(t *testing.T) (*desktop.Display, *atomic.Int32, *x11fake.Server) {
+	t.Helper()
+	t.Setenv("XAUTHORITY", "")
+	shade := &atomic.Int32{}
+	shade.Store(0x80)
+	f, name := x11fake.Listen(t, func(f *x11fake.Server) {
+		f.Damage = true
+		f.Image = func(x, y, w, h int) []byte {
+			out := make([]byte, w*h*4)
+			v := byte(shade.Load())
+			for i := range out {
+				out[i] = v
+			}
+			return out
+		}
+		f.Pointer = [2]int{12, 34}
+	})
+	d := desktop.New(name)
+	t.Cleanup(d.Close)
+	return d, shade, f
+}
+
+// reads is every GetImage the fake answered, as [x, y, width, height].
+func reads(f *x11fake.Server) [][4]int {
+	var out [][4]int
+	for _, r := range f.Got() {
+		if r.Opcode == 73 {
+			out = append(out, [4]int{int(int16(le.Uint16(r.Body[4:]))), int(int16(le.Uint16(r.Body[6:]))), int(le.Uint16(r.Body[8:])), int(le.Uint16(r.Body[10:]))})
+		}
+	}
+	return out
+}
+
+var le = binary.LittleEndian
+
+func TestOnTheFakeWithDamageAnUnchangedScreenIsNotReadAgain(t *testing.T) {
+	c, _, f := damaged(t)
+	var first, idle watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &first)
+	c.ok("screen.watch", map[string]any{"after": first.Seq, "waitMs": 700}, &idle)
+	if idle.Changed {
+		t.Fatalf("an unchanged screen gave a frame: %+v", idle)
+	}
+	if got := reads(f); len(got) != 1 {
+		t.Fatalf("the screen was read %d times (%v); want once, for the first frame: nothing changed after it", len(got), got)
+	}
+}
+
+func TestOnTheFakeWithDamageOnlyTheRectangleThatChangedIsRead(t *testing.T) {
+	c, shade, f := damaged(t)
+	var first, next watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &first)
+	id := c.send("screen.watch", map[string]any{"after": first.Seq, "waitMs": 10_000})
+	time.Sleep(150 * time.Millisecond)
+	shade.Store(0x10) // the fake's every pixel is darker now; only this rectangle is said to have changed
+	f.Damaged(40, 32, 64, 48)
+	r := c.wait(id)
+	if r.Error != nil {
+		t.Fatal(r.Error.Message)
+	}
+	if err := json.Unmarshal(r.Result, &next); err != nil {
+		t.Fatal(err)
+	}
+	if !next.Changed || next.Seq != first.Seq+1 {
+		t.Fatalf("after damage: %+v; want frame %d", next, first.Seq+1)
+	}
+	got := reads(f)
+	if len(got) != 2 || got[0] != [4]int{0, 0, x11fake.Width, x11fake.Height} || got[1] != [4]int{40, 32, 64, 48} {
+		t.Fatalf("reads %v; want the whole screen once, then the damaged rectangle alone", got)
+	}
+	img, err := jpeg.Decode(bytes.NewReader(frameOf(t, c, next)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in, _, _, _ := img.At(70, 55).RGBA(); in>>8 > 0x30 {
+		t.Fatalf("inside the damaged rectangle the frame is %#x; want the new, darker shade", in>>8)
+	}
+	if out, _, _, _ := img.At(200, 200).RGBA(); out>>8 < 0x60 {
+		t.Fatalf("outside the damaged rectangle the frame is %#x; want the screen as it was last read", out>>8)
+	}
+}
+
+// A watch whose read of a damaged rectangle failed (or that was cancelled before it read it) has taken the damage but
+// not read it: the next watch still reads it.
+func TestOnTheFakeWithDamageARectangleAWatchFailedToReadIsReadByTheNext(t *testing.T) {
+	t.Setenv("XAUTHORITY", "")
+	shade := &atomic.Int32{}
+	shade.Store(0x80)
+	var fail atomic.Bool
+	f, name := x11fake.Listen(t, func(f *x11fake.Server) {
+		f.Damage = true
+		f.Image = func(x, y, w, h int) []byte {
+			out := make([]byte, w*h*4)
+			v := byte(shade.Load())
+			for i := range out {
+				out[i] = v
+			}
+			return out
+		}
+		f.Pointer = [2]int{12, 34}
+		f.ErrorFor = func(r x11fake.Request) (byte, bool) {
+			return 8, r.Opcode == 73 && fail.CompareAndSwap(true, false) // one GetImage answered BadMatch
+		}
+	})
+	d := desktop.New(name)
+	t.Cleanup(d.Close)
+	c := serve(t, d)
+	var first watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &first)
+	fail.Store(true)
+	shade.Store(0x10)
+	f.Damaged(40, 32, 64, 48)
+	if r := c.wait(c.send("screen.watch", map[string]any{"after": first.Seq, "waitMs": 2000})); r.Error == nil {
+		t.Fatalf("the watch whose read failed: %s; want its error", r.Result)
+	}
+	var next watchResult
+	c.ok("screen.watch", map[string]any{"after": first.Seq, "waitMs": 1000}, &next)
+	if !next.Changed {
+		t.Fatalf("the watch after the failed read: %+v; want the frame of the damage the failed one never read", next)
+	}
+	if got := reads(f); len(got) != 3 || got[1] != [4]int{40, 32, 64, 48} || got[2] != got[1] {
+		t.Fatalf("reads %v; want the whole screen, then the damaged rectangle twice: failed, then read", got)
+	}
+}
+
+// The last watch to go ends the display's damage, so the X server stops sending what it draws; the next watch starts it
+// again and reads the whole screen.
+func TestOnTheFakeWithDamageTheLastWatchToGoEndsTheDamageAndTheNextStartsIt(t *testing.T) {
+	d, _, f := damagedDisplay(t)
+	c := serve(t, d)
+	var first watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &first)
+	if n := f.DamageClients(); n != 1 {
+		t.Fatalf("%d connections hold a DAMAGE object while one watch watches; want 1", n)
+	}
+	_ = c.w.Close() // the watch's connection ends
+	deadline := time.Now().Add(5 * time.Second)
+	for f.DamageClients() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d connections still hold a DAMAGE object after the last watch went; want 0", f.DamageClients())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	again := serve(t, d)
+	var next watchResult
+	again.ok("screen.watch", map[string]any{"after": 0}, &next)
+	if !next.Changed || f.DamageClients() != 1 {
+		t.Fatalf("the next watch: %+v, %d DAMAGE connections; want a frame and 1", next, f.DamageClients())
+	}
+}
+
+// Close does not wait for a watch starting the damage on an X server that stopped answering.
+func TestOnTheFakeWithDamageCloseDoesNotWaitForADamageThatIsStarting(t *testing.T) {
+	t.Setenv("XAUTHORITY", "")
+	release := make(chan struct{})
+	var once sync.Once
+	f, name := x11fake.Listen(t, func(f *x11fake.Server) {
+		f.Damage = true
+		f.Image = func(x, y, w, h int) []byte { return make([]byte, w*h*4) }
+		f.Hold = func(r x11fake.Request) {
+			if r.Opcode == x11fake.DamageMajor && r.Data == 0 { // DAMAGE's QueryVersion: no answer until the test ends
+				<-release
+			}
+		}
+	})
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	d := desktop.New(name)
+	c := serve(t, d)
+	c.send("screen.watch", map[string]any{"after": 0, "waitMs": 1000})
+	deadline := time.Now().Add(5 * time.Second)
+	for !asked(f, x11fake.DamageMajor) {
+		if time.Now().After(deadline) {
+			t.Fatal("the watch never asked for DAMAGE")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	start := time.Now()
+	d.Close()
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("Close took %v while a watch started the damage; want it at once", took)
+	}
+}
+
+// asked says whether the fake got a request of the major opcode.
+func asked(f *x11fake.Server, major byte) bool {
+	for _, r := range f.Got() {
+		if r.Opcode == major {
+			return true
+		}
+	}
+	return false
+}
+
+// A screen damaged all the time (a video, a scroll) gives frames at the cap, 15 a second: well past the old 5, never
+// faster than one each 66 ms.
+func TestOnTheFakeWithDamageAnAnimatedScreenGivesFramesAtFifteenASecond(t *testing.T) {
+	c, shade, f := damaged(t)
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Millisecond):
+				shade.Add(1)
+				f.Damaged(0, 0, 8, 8)
+			}
+		}
+	}()
+	var r watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &r)
+	start := time.Now()
+	for range 9 {
+		after := r.Seq
+		c.ok("screen.watch", map[string]any{"after": after}, &r)
+		if !r.Changed || r.Seq != after+1 {
+			t.Fatalf("an animated screen: %+v; want frame %d", r, after+1)
+		}
+	}
+	took := time.Since(start)
+	// Frame 0 came after its read; frames 1 to 9 were read at least a gap apart: 8 gaps at the least.
+	if took < 8*desktop.FrameGapForTest {
+		t.Fatalf("9 frames in %v: faster than one each %v", took, desktop.FrameGapForTest)
+	}
+	if took > 9*120*time.Millisecond {
+		t.Fatalf("9 frames of an animated screen in %v: want about %v, 15 a second", took, 9*desktop.FrameGapForTest)
+	}
+}
+
+// The cap counts from the start of a frame's read: a read and an encode that take part of the gap do not make it longer.
+// On a VM the encode of a 1280x800 JPEG takes 20 to 30 ms; counted after it, 15 a second was 10 to 11.
+func TestOnTheFakeWithDamageASlowReadDoesNotLengthenTheGap(t *testing.T) {
+	t.Setenv("XAUTHORITY", "")
+	shade := &atomic.Int32{}
+	shade.Store(0x80)
+	f, name := x11fake.Listen(t, func(f *x11fake.Server) {
+		f.Damage = true
+		f.Image = func(x, y, w, h int) []byte {
+			out := make([]byte, w*h*4)
+			v := byte(shade.Load())
+			for i := range out {
+				out[i] = v
+			}
+			return out
+		}
+		f.Pointer = [2]int{12, 34}
+		f.Hold = func(r x11fake.Request) {
+			if r.Opcode == 73 { // GetImage: each read takes 30 ms
+				time.Sleep(30 * time.Millisecond)
+			}
+		}
+	})
+	d := desktop.New(name)
+	t.Cleanup(d.Close)
+	c := serve(t, d)
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Millisecond):
+				shade.Add(1)
+				f.Damaged(0, 0, 8, 8)
+			}
+		}
+	}()
+	var r watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &r)
+	start := time.Now()
+	for range 9 {
+		after := r.Seq
+		c.ok("screen.watch", map[string]any{"after": after}, &r)
+		if !r.Changed || r.Seq != after+1 {
+			t.Fatalf("an animated screen: %+v; want frame %d", r, after+1)
+		}
+	}
+	if took := time.Since(start); took > 9*desktop.FrameGapForTest+120*time.Millisecond {
+		t.Fatalf("9 frames with a 30 ms read in %v: want about %v, the read inside each gap", took, 9*desktop.FrameGapForTest)
+	}
+}
+
+// The pointer is not in the screen's pixels and draws no damage: a move alone is still a frame, soon.
+func TestOnTheFakeWithDamageAPointerMoveIsAFrameWithTheCursorWhereItWent(t *testing.T) {
+	c, _, f := damaged(t)
+	var first, moved watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &first)
+	id := c.send("screen.watch", map[string]any{"after": first.Seq, "waitMs": 10_000})
+	time.Sleep(150 * time.Millisecond)
+	start := time.Now()
+	f.MovePointer(201, 99)
+	r := c.wait(id)
+	if r.Error != nil {
+		t.Fatal(r.Error.Message)
+	}
+	if err := json.Unmarshal(r.Result, &moved); err != nil {
+		t.Fatal(err)
+	}
+	if !moved.Changed || moved.Cursor == nil || *moved.Cursor != [2]int{201, 99} || time.Since(start) > time.Second {
+		t.Fatalf("after a pointer move: %+v after %v; want a frame with the cursor at 201,99", moved, time.Since(start))
+	}
+	if got := reads(f); len(got) != 1 {
+		t.Fatalf("reads %v: a pointer move alone reads no pixels", got)
+	}
+}
+
+// A pointer that moves all the time reads no pixels, but each frame is a whole JPEG: its frames keep the cap too.
+func TestOnTheFakeWithDamageAPointerMovingAllTheTimeGivesFramesAtTheCap(t *testing.T) {
+	c, _, f := damaged(t)
+	var r watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &r)
+	start := time.Now()
+	for i := range 9 {
+		f.MovePointer(20+i, 40)
+		after := r.Seq
+		c.ok("screen.watch", map[string]any{"after": after}, &r)
+		if !r.Changed || r.Seq != after+1 {
+			t.Fatalf("a moved pointer: %+v; want frame %d", r, after+1)
+		}
+	}
+	if took := time.Since(start); took < 8*desktop.FrameGapForTest {
+		t.Fatalf("9 pointer frames in %v: faster than one each %v", took, desktop.FrameGapForTest)
+	}
+}
+
+// screen.ahead: a caller keeps a second ask waiting while the first answers, with after one past the newest frame;
+// it waits as an ask for the newest does, so frames come at the computer's pace, not one each round trip.
+func TestOnTheFakeAWatchAheadByOneWaitsForTheNextFrame(t *testing.T) {
+	c, shade, f := damaged(t)
+	var first, second, third watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &first)
+	// An ask ahead whose ask before it answered no change: it waits for the next frame, as an ask for the newest does.
+	c.ok("screen.watch", map[string]any{"after": first.Seq + 1, "waitMs": 300}, &second)
+	if second.Changed || second.Seq != first.Seq {
+		t.Fatalf("an ask ahead on an unchanged screen: %+v; want no change, seq %d", second, first.Seq)
+	}
+	a := c.send("screen.watch", map[string]any{"after": first.Seq, "waitMs": 10_000})
+	time.Sleep(100 * time.Millisecond) // a has the watch's turn; b waits for it, as a caller's ask ahead does
+	b := c.send("screen.watch", map[string]any{"after": first.Seq + 1, "waitMs": 10_000})
+	time.Sleep(100 * time.Millisecond)
+	shade.Store(0x20)
+	f.Damaged(0, 0, 4, 4)
+	ra := c.awaitEither(a, b)
+	if ra.Error != nil || json.Unmarshal(ra.Result, &second) != nil || !second.Changed || second.Seq != first.Seq+1 {
+		t.Fatalf("the first answer: %+v %s; want frame %d", ra.Error, ra.Result, first.Seq+1)
+	}
+	time.Sleep(150 * time.Millisecond)
+	shade.Store(0x40)
+	f.Damaged(0, 0, 4, 4)
+	rb := c.awaitEither(a, b)
+	if rb.ID == ra.ID || rb.Error != nil || json.Unmarshal(rb.Result, &third) != nil || !third.Changed || third.Seq != first.Seq+2 {
+		t.Fatalf("the second answer: %+v %s; want frame %d, after the second change", rb.Error, rb.Result, first.Seq+2)
+	}
+}
+
+// With asks ahead, two frames are on their way at once: the older one's rest is still read after the newer is made.
+func TestOnTheFakeTheLastTwoFramesOverAChunkAreBothHeld(t *testing.T) {
+	defer desktop.SetChunkForTest(100)()
+	c, shade, f := damaged(t)
+	var first, second watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &first)
+	shade.Store(0x20)
+	f.Damaged(0, 0, x11fake.Width, x11fake.Height)
+	c.ok("screen.watch", map[string]any{"after": first.Seq}, &second)
+	if first.EOF || second.EOF || second.Seq != first.Seq+1 {
+		t.Fatalf("want two frames over a chunk; got %+v and %+v", first, second)
+	}
+	for _, r := range []watchResult{first, second} {
+		if _, err := jpeg.Decode(bytes.NewReader(frameOf(t, c, r))); err != nil {
+			t.Fatalf("frame %d: %v", r.Seq, err)
+		}
+	}
 }
 
 // frameOf is the whole JPEG of a changed frame, read on with screen.read when the first chunk was not all of it.
@@ -230,7 +616,7 @@ func TestOnTheFakeAWatchRefusesParamsItCannotTakeInWords(t *testing.T) {
 	for _, params := range []map[string]any{
 		{},
 		{"after": -1},
-		{"after": first.Seq + 1},
+		{"after": first.Seq + 2},
 		{"after": 0, "waitMs": 10_001},
 		{"after": 0, "waitMs": -1},
 		{"after": 0, "quality": 0},
@@ -307,9 +693,9 @@ func TestOnTheFakeAShotDoesNotEvictAWatchFrame(t *testing.T) {
 	}
 }
 
-// An animated screen is read no faster than the poll interval: frames are at least 200 ms apart, however soon each is
-// acked.
-func TestOnTheFakeAnAnimatedScreenGivesFramesNoFasterThanThePollInterval(t *testing.T) {
+// With no DAMAGE (the fake without it), the screen is read whole each 200 ms while a watch waits: an animated screen
+// gives frames at least 200 ms apart, however soon each is acked.
+func TestOnTheFakeWithNoDamageAnAnimatedScreenIsPolledEach200Ms(t *testing.T) {
 	t.Setenv("XAUTHORITY", "")
 	var reads atomic.Int32
 	_, name := x11fake.Listen(t, func(f *x11fake.Server) {

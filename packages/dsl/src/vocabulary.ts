@@ -17,12 +17,25 @@ export const DECISION_TIMEOUT_MAX_MS = 120_000;
 /** Typed-question kinds: one judge request each, no tools and no session. */
 export const JUDGMENT_NODE_KINDS = ["judge", "pick", "sift", "route"] as const satisfies readonly WorkflowNodeKind[];
 
-const GENERATIVE_FIELDS = ["node", "label", "state", "instructions", "sopSection", "out", "as", "requires", "tools", "effort", "thinking", "verify", "tier"] as const;
+const GENERATIVE_FIELDS = ["node", "label", "state", "instructions", "sopSection", "out", "as", "requires", "tools", "effort", "thinking", "verify", "tier", "guard"] as const;
+
+/** A step guard's signals: `self`, the step's own confidence; `jev`, one Jev question over the step's input and output;
+ *  `both`, the two combined. */
+export const GUARD_SIGNALS = ["self", "jev", "both"] as const;
+export type GuardSignal = typeof GUARD_SIGNALS[number];
+/** The fields a step guard takes. */
+export const GUARD_FIELDS = ["signal", "threshold", "question", "fit"] as const;
+/** The kinds a guard may sit on: the steps that write a value. */
+export const GUARDED_NODE_KINDS = ["agent", "decide", "extract", "code", "call", "workflow", "judge", "pick", "sift"] as const satisfies readonly WorkflowNodeKind[];
+/** The kinds that report a confidence of their own, so a guard on one may read `self`: agent and decide nodes submit one
+ *  beside their record, judge, pick and sift nodes take their answers' weakest. The others (extract, code, call,
+ *  workflow) have none: their guard reads jev only. */
+export const SELF_CONFIDENCE_KINDS = ["agent", "decide", "judge", "pick", "sift"] as const satisfies readonly WorkflowNodeKind[];
 
 /** The fields each node kind accepts. Any other key is an authoring error. */
 export const NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]: readonly string[] } = {
   chain: ["node", "steps"],
-  code: ["node", "label", "code", "as"],
+  code: ["node", "label", "code", "as", "guard"],
   agent: [...GENERATIVE_FIELDS, "budget_usd", "max_turns", "context"],
   decide: GENERATIVE_FIELDS,
   extract: GENERATIVE_FIELDS,
@@ -32,11 +45,11 @@ export const NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]: readonly string
   parallel: ["node", "label", "branches"],
   loop: ["node", "label", "body", "until", "maxIters", "expect_iters"],
   escalate: ["node", "label", "when", "kind", "stage", "summary"],
-  call: ["node", "label", "via", "tool", "args", "code", "input", "command", "env", "where", "out", "as", "produces", "deadline_s", "retry", "poll", "requires"],
-  workflow: ["node", "label", "workflow", "input", "out", "as"],
-  judge: ["node", "label", "state", "out", "as", "requires", ...DECISION_NODE_FIELDS],
-  pick: ["node", "label", "itemsPath", "describe", "instructions", "state", "allowNone", "as", "requires", ...DECISION_NODE_FIELDS],
-  sift: ["node", "label", "itemsPath", "describe", "state", "out", "as", "keep", "requires", ...DECISION_NODE_FIELDS],
+  call: ["node", "label", "via", "tool", "args", "code", "input", "command", "env", "where", "out", "as", "produces", "deadline_s", "retry", "poll", "requires", "guard"],
+  workflow: ["node", "label", "workflow", "input", "out", "as", "guard"],
+  judge: ["node", "label", "state", "out", "as", "requires", ...DECISION_NODE_FIELDS, "guard"],
+  pick: ["node", "label", "itemsPath", "describe", "instructions", "state", "allowNone", "as", "requires", ...DECISION_NODE_FIELDS, "guard"],
+  sift: ["node", "label", "itemsPath", "describe", "state", "out", "as", "keep", "requires", ...DECISION_NODE_FIELDS, "guard"],
   route: ["node", "label", "state", "instructions", "branches", "unsure", "valuePath", "otherwise", "as", "requires", ...DECISION_NODE_FIELDS],
 };
 

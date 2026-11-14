@@ -11,6 +11,9 @@
 // (commands.answer). An agent's MCP tools are pinned on its revision when it is saved (revisions.mcp_pin, REVISIONS_MCP_PIN),
 // in place of each run's pin at its first claim (the mcp_pins table): a server open adds the column to a store an earlier
 // build of this version made and drops the table, so a revision saved before has no pin until its first run pins it.
+// The template packages imported from GitHub (imported_templates) are a table of their own that nothing
+// else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
+// (IMPORTED_TEMPLATES), as it does the one-answer index.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -37,6 +40,20 @@ const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "
 /** A revision's MCP pin, as its save listed the tools (JSON, null when it grants no MCP tool). In STORE_DDL, and added at a
  *  server open to a store an earlier build of this version made (one that pinned each run in mcp_pins, dropped at that open). */
 export const REVISIONS_MCP_PIN = `ALTER TABLE revisions ADD COLUMN ${json("mcp_pin", true)}`;
+
+/** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
+ *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read
+ *  (`files`, a JSON object of path to base64). A re-import of the id replaces the row. The server checks the files again
+ *  as it loads them at its start (templates.ts readPackage); nothing in them runs. In STORE_DDL, and added at a server
+ *  open to a store an earlier build of this version made. */
+export const IMPORTED_TEMPLATES = `CREATE TABLE IF NOT EXISTS imported_templates (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    sha TEXT NOT NULL,
+    publisher TEXT NOT NULL,
+    ${json("files")},
+    imported_at INTEGER NOT NULL
+  ) STRICT`;
 
 export const STORE_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS store_meta (
@@ -363,6 +380,7 @@ export const STORE_DDL: readonly string[] = [
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (agent_id, key)
   ) STRICT`,
+  IMPORTED_TEMPLATES,
 
   // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD
