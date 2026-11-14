@@ -196,7 +196,7 @@ function capRuleOf(capUsd: () => number): WorkflowCapRule {
 
 /** The claim-time builder: `specOf(claim)` the loop calls. Reads the run's launch and revision, resolves each tier's
  *  provider, and returns the spec. The model proxies and the booking are started per claim (release closes them). */
-export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string }, run?: WorkflowSpecRun) => Promise<WorkflowRunSpec> {
+export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string; runner?: string }, run?: WorkflowSpecRun) => Promise<WorkflowRunSpec> {
   const now = deps.now ?? Date.now;
   // The proxies a claim started: closed by the spec's release once the claim is done, or here when the claim fails before
   // its spec is returned (the loop then has no spec to release), so a failed claim leaves no proxy listening.
@@ -209,7 +209,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       throw error;
     }
   };
-  async function claimSpec(claim: { runId: string }, run: WorkflowSpecRun | undefined, proxies: ModelProxy[]): Promise<WorkflowRunSpec> {
+  async function claimSpec(claim: { runId: string; runner?: string }, run: WorkflowSpecRun | undefined, proxies: ModelProxy[]): Promise<WorkflowRunSpec> {
     /** The keys a claim opens, held by the runner's one redactor (run.redact) before a decision can echo one. */
     const holding = async (opening: Promise<NodeJS.ProcessEnv>): Promise<NodeJS.ProcessEnv> => {
       const opened = await opening;
@@ -387,7 +387,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         // The run's ONE cap over the journal's sessions: its model requests and its decisions admit by the one rule and
         // book on one ledger (runCap's runBooking over the sessions), so each is judged on the run's whole spend and a
         // refusal's figures are the run's. Wired now the Harness is open; the proxies' hooks forward to the model booking.
-        const sessions = journalSessions(harness, context, { flush: () => deps.store.flush() });
+        const sessions = journalSessions(harness, context, { flush: () => deps.store.flush(), ...(claim.runner === undefined ? {} : { claim: { runId: claim.runId, runner: claim.runner } }) });
         const writer = await sessions.open(SESSION);
         const run = runCap({ sessions: sessions as unknown as RunSessions, capUsd: () => effectiveCapUsd, mode: claimed.mode, now, modelOf: capModelOf });
         booking = await modelPortFor(writer, {
@@ -397,6 +397,10 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           beforeRequest: parkOnRefusal(run.before, hooks, flight, steps),
           onEvent: async (event) => { if (event.type === "request_start") await deps.store.flush(); },
         });
+        // An earlier claim's requests, before the workflow sends anything: one this runner's lost claim saw answer, its
+        // record refused, is booked at what it reported (waiting, bounded, for one still in flight); one a dead runner left
+        // is booked cut (the kernel's bookCut). Read as before for the cap: cut or open, a request counts at its hold and bound.
+        await booking.bookCut();
         // The run's decisions book on the same cap, under their own session (DECISION_SESSION); created now the Harness is
         // open, so a decision node (which runs after this) reaches it through the deferred reference. The flush makes each
         // decision's hold durable before it is sent, as a model request's is.

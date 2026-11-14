@@ -13,7 +13,7 @@ const AT = Date.UTC(2026, 10, 9, 5, 0, 0);
 const ANSWERED = { answered_at: new Date(AT).toISOString(), job_cost_usd: 0.01, look_back_usd: 0 };
 
 /** A hook over fake deps; `answer` is what the turn's ask resolves with. */
-function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n```" }, check, nothingNew, compileFacts } = {}) {
+function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n```" }, check, nothingNew, compileFacts, gradeCap } = {}) {
   const calls = { asked: [], checked: [] };
   const deps = {
     facts: async () => ({ learns: true, costUsd: 0.01, ...facts }),
@@ -27,6 +27,7 @@ function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n`
     now: () => AT,
     ...(nothingNew ? { nothingNew } : {}),
     ...(compileFacts ? { compileFacts } : {}),
+    ...(gradeCap ? { gradeCap } : {}),
   };
   const hook = createReflectHook(deps);
   const input = (outcome = "completed") => ({
@@ -67,12 +68,34 @@ test("a cancelled run, one its cap stopped, and one whose spend is unknown under
   for (const [facts, reason, detail] of [
     [{ cancelled: true }, "cancelled", said.stopped(STOPPED.cancelled)],
     [{ capReached: true }, "no_budget", said.noBudget],
-    [{ capUsd: 1, costUsd: null }, "unknown_cost", said.unknownCost],
+    [{ capUsd: 1, costUsd: null, spentUsd: null }, "unknown_cost", said.unknownCost],
   ]) {
     const { hook, input, calls } = hookWith({ facts });
     assert.deepEqual(await hook(input()), { also: [dropped(reason, detail)] }, reason);
     assert.deepEqual(calls.asked, [], `${reason}: nothing asked`);
   }
+});
+
+test("a capped run whose shown cost is unknown but whose spend under its cap is known (a request booked at its hold) is asked its look-back, never skipped as out of budget", async () => {
+  const { hook, input, calls } = hookWith({ facts: { capUsd: 5, costUsd: null, spentUsd: 2.1 } });
+  const [row] = (await hook(input())).also;
+  assert.equal(calls.asked.length, 1, "the look-back is asked: the cap's own read leaves room");
+  assert.equal(row.row.proposal.state, "proposed", JSON.stringify(row.row.proposal));
+});
+
+test("a capped run's grade, when the spend under its cap is unknown after the look-back, is not queued: dropped as unknown_cost in words that say so, never \"no room under the cap\"", async () => {
+  for (const gradeCap of [async () => null, async () => { throw new Error("the store is gone"); }]) {
+    const { hook, input } = hookWith({ facts: { capUsd: 5, costUsd: 1, spentUsd: 1 }, gradeCap });
+    const { also } = await hook(input());
+    assert.equal(also.length, 1, "no learning run is queued");
+    assert.deepEqual([also[0].table, also[0].row.proposal.state, also[0].row.proposal.reason, also[0].row.proposal.detail], ["learning_proposals", "dropped", "unknown_cost", said.gradeUnknownSpend]);
+    assert.doesNotMatch(also[0].row.proposal.detail, /no room/);
+  }
+  // A known room still queues the grade under it.
+  const { hook, input } = hookWith({ facts: { capUsd: 5, costUsd: 1, spentUsd: 1 }, gradeCap: async () => 4 });
+  const { also } = await hook(input());
+  assert.deepEqual(also.map((row) => row.table), ["learning_proposals", "learning_run"]);
+  assert.equal(also[1].row.capUsd, 4);
 });
 
 test("the turn is asked with the server's prompt, its origin reflect, within its deadline", async () => {
@@ -100,7 +123,7 @@ test("a turn an earlier claim asked first and this claim never asks (skipped, or
   const kept = { answered_at: "2026-11-09T04:00:00.000Z", job_cost_usd: 0.002 };
   const rounds = [];
   const keptOf = (round) => (rounds.push(round), kept);
-  const { hook, input, calls } = hookWith({ facts: { capUsd: 1, costUsd: null } });
+  const { hook, input, calls } = hookWith({ facts: { capUsd: 1, costUsd: null, spentUsd: null } });
   const [row] = (await hook({ ...input(), keptOf })).also;
   assert.deepEqual(calls.asked, [], "skipped: nothing asked");
   assert.deepEqual(row.row.proposal, { state: "dropped", reason: "unknown_cost", detail: said.unknownCost, answered_at: kept.answered_at, job_cost_usd: 0.002, look_back_usd: null });
@@ -112,7 +135,7 @@ test("a turn an earlier claim asked first and this claim never asks (skipped, or
     assert.deepEqual([one.row.proposal.reason, one.row.proposal.answered_at, one.row.proposal.job_cost_usd, one.row.proposal.look_back_usd], [reason, kept.answered_at, 0.002, 0.008], reason);
   }
   // A turn no claim asked before: the skip keeps no figures, as before.
-  const { hook: fresh, input: freshInput } = hookWith({ facts: { capUsd: 1, costUsd: null } });
+  const { hook: fresh, input: freshInput } = hookWith({ facts: { capUsd: 1, costUsd: null, spentUsd: null } });
   assert.deepEqual(await fresh({ ...freshInput(), keptOf: () => undefined }), { also: [dropped("unknown_cost", said.unknownCost)] });
 });
 

@@ -30,7 +30,7 @@
 // A request's input bound is its bytes less the escapes in the text it carries (the kernel's `responsesInputOverhead`);
 // on a route straight to OpenAI, also OpenAI's own count of it when that is lower (`OPENAI_INPUT_COUNTER`).
 import type { IncomingHttpHeaders } from "node:http";
-import { NATIVE_SEARCH_USD, OPENAI_INPUT_COUNTER, ProxyRefusal, responsesInputOverhead, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { lastObjectOf, NATIVE_SEARCH_USD, OPENAI_INPUT_COUNTER, ProxyRefusal, responsesInputOverhead, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },
@@ -218,8 +218,8 @@ function cutEnd(text: string): string | undefined {
  * The value of `key` in the response an answer ends with: a stream's `response.completed` (or `response.incomplete`),
  * each `data:` line parsed on its own, or a whole JSON body's. The proxy keeps only the first and last 64 KiB of a long
  * answer, and the completed event carries the whole response (its tools and encrypted reasoning), so its line can be cut
- * at the window's start: then the last `"<key>":{` in the text (the response's, which a JSON string cannot contain
- * unescaped) is read as one JSON object. The usage is looked for in all the text kept; `tool_usage` only in the cut end
+ * at the window's start: then the last `"<key>": {` in the text, whatever its spacing (the kernel's `lastObjectOf`: the
+ * response's, which a JSON string cannot contain unescaped), is read as one JSON object. The usage is looked for in all the text kept; `tool_usage` only in the cut end
  * of the last event (`cutEnd`), since the events before the terminal one carry a `tool_usage` of their own (a count of
  * 0 as the response starts). No completed event, or no `key` in it, is undefined.
  */
@@ -250,17 +250,7 @@ function endValue(text: string, key: "usage" | "tool_usage"): unknown {
     } catch {}
   }
   const scope = key === "usage" ? text : cutEnd(text);
-  if (scope === undefined) return undefined;
-  const mark = `"${key}":{`;
-  const at = scope.lastIndexOf(mark);
-  if (at < 0) return undefined;
-  const json = objectAt(scope, at + mark.length - 1);
-  if (json === undefined) return undefined;
-  try {
-    return JSON.parse(json);
-  } catch {
-    return undefined;
-  }
+  return scope === undefined ? undefined : lastObjectOf(scope, key);
 }
 
 /**

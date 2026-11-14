@@ -90,23 +90,25 @@ function views(refusal) {
   const opened = [];
   const closed = [];
   const holds = [];
+  const gones = [];
   const open = async (args) => {
     holds.push(args.hold);
+    gones.push(args.gone);
     const watched = await args.watch({ frame() {}, ended() {} }, { signal: new AbortController().signal });
     opened.push({ kind: args.kind, input: args.input, tag: args.tag, claim: args.claim, sealKey: Buffer.isBuffer(args.sealKey), hold: typeof args.hold?.take, watched: watched.ok });
     if (refusal) return { ok: false, refused: refusal, message: `the store refused the viewer (${refusal})` };
     return { ok: true, view: { close: (why) => void closed.push(why) } };
   };
-  return { open, opened, closed, holds };
+  return { open, opened, closed, holds, gones };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, epoch = 3 } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, epoch = 3, list } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const record = { created: [], released: [], options: [], ...(existing ? { existing } : {}) };
-  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}) })]));
+  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}), ...(list ? { list } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
   const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { mode, kinds, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}) });
@@ -162,6 +164,51 @@ test("a desktop opens one proxied live view under the claim with its hold, and o
   assert.equal(hold.take(), false, "the hold is closed");
   assert.equal(await asking, "the run's computer was let go before the person answered");
   assert.deepEqual(record.released, [["c1", "delete"]]);
+});
+
+test("a desktop's view is told whether its computer is gone by the provider's listing under the run's labels (read-only, nothing attached or started): not listed is gone; listed, running or stopped, or a listing that failed, is not", async () => {
+  // The launch's own listing (the run's older claims) answers none; then each answer is the test's, in order.
+  const answers = [];
+  const asked = [];
+  const list = async (labels) => (answers.length ? (asked.push(labels), answers.shift()) : { ok: true, value: [] });
+  const view = views();
+  const { run } = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: ["screen", "input.pointer", "input.keys"], view, list });
+  const answer = await run();
+  const [gone] = view.gones;
+  assert.equal(typeof gone, "function", "the view is given the question");
+  const info = (id, state) => ({ ref: { id, name: id }, labels: { "agentrun.run": "run-1", "agentrun.epoch": "3" }, deadline: undefined, state, network: "none" });
+  answers.push(
+    { ok: true, value: [info("c1", "running")] },
+    { ok: true, value: [info("c1", "stopped")] },
+    { ok: false, error: { code: "vendor", vendor: "e2b", message: "E2B answered 503" } },
+    // Deleted, or going: the listing leaves out a machine on its way out.
+    { ok: true, value: [] },
+    { ok: true, value: [info("c2", "running")] },
+  );
+  assert.deepEqual([await gone(), await gone(), await gone(), await gone(), await gone()], [false, false, false, true, true]);
+  assert.deepEqual(asked, Array(5).fill({ "agentrun.run": "run-1", "agentrun.epoch": "3" }), "listed under the run's own labels");
+  await answer.release();
+});
+
+test("a phone ended under the run, outside its release (the service listing it closing, so stopped), is gone: a phone is never stopped and kept; listed running, or a listing that failed, is not", async () => {
+  const answers = [];
+  const asked = [];
+  const list = async (labels) => (answers.length ? (asked.push(labels), answers.shift()) : { ok: true, value: [] });
+  const view = views();
+  const { run } = await claim({ kind: "phone", provider: "phone-harness" }, { keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: ["screen", "input.touch", "input.keys", "apps", "ui"], machine: "android", view, list });
+  const answer = await run();
+  const [gone] = view.gones;
+  assert.equal(typeof gone, "function", "the phone's view is given the question");
+  const info = (id, state) => ({ ref: { id, name: id }, labels: { "agentrun.run": "run-1", "agentrun.epoch": "3" }, deadline: undefined, state, network: "open" });
+  answers.push(
+    { ok: true, value: [info("c1", "running")] },
+    { ok: false, error: { code: "vendor", vendor: "phone-harness", message: "GET /sessions answered 503" } },
+    { ok: true, value: [info("c1", "stopped")] },
+    { ok: true, value: [] },
+  );
+  assert.deepEqual([await gone(), await gone(), await gone(), await gone()], [false, false, true, true]);
+  assert.deepEqual(asked, Array(4).fill({ "agentrun.run": "run-1", "agentrun.epoch": "3" }), "listed under the run's own labels");
+  await answer.release();
 });
 
 test("a phone's view is opened with its platform, as the phone says it: android, or ios", async () => {

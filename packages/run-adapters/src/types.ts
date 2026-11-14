@@ -127,6 +127,12 @@ export interface SessionStore {
 /** The one holder that may write a session. */
 export interface SessionWriter {
   readonly key: string;
+  /** The session's identity across the claims of one holder (a runner's name and a run's id beside the key), for a store
+   *  whose claims a holder can lose and take again. A booking of the session whose cost write is refused (its claim lost
+   *  as its request answered) hands that booking to the next booking of the same scope in this process, which writes it
+   *  before it books any request cut (ModelBooking.bookCut). Absent: nothing is handed on, and such a request is booked
+   *  cut. Never shared by two holders: another runner, as one that died, takes nothing of it. */
+  readonly scope?: string;
   read(): Promise<SessionRecord[]>;
   /** Resolves once the records are durable, in order. Rejects with `SessionFenced`, writing none of them, once a newer
    *  `open` of the key has resolved. */
