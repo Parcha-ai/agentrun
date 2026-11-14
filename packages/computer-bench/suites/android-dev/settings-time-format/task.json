@@ -5,7 +5,7 @@
   "title": "Switch the clock between 12-hour and 24-hour time in Settings",
   "split": "dev",
   "tags": ["settings", "toggle", "search"],
-  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings"] },
   "params": {
     "f": {
       "pick": [

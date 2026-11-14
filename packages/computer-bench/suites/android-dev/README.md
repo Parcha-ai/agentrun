@@ -91,7 +91,9 @@ one sets `exec: "deny"`, so the agent has only `ui`, `input`, `screen` and `apps
 methods: each oracle is a UI path a person could take, proven on a cloud phone. Each task starts from the opposite of its
 goal, its params give the three seeds three different targets, and everything it makes carries `{{nonce}}`. Three are
 answer tasks; their `unchanged` exec check fails the run if the agent edits what it was asked to read. Four are long (15+
-steps). `needs.apps` lists the packages each task opens; a nested list is alternatives (Google or AOSP build).
+steps). `needs.apps` follows the rule above: each entry is required, a nested list is alternatives (Google, AOSP or
+Samsung build), and Settings is `com.android.settings` alone. The Settings oracles go through Settings' search
+(`com.android.settings.intelligence` on AOSP); an agent can take the menus instead.
 
 | id | app | split | steps expected | what the checks read |
 |---|---|---|---|---|

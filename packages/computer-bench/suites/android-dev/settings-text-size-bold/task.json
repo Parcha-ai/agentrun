@@ -5,7 +5,7 @@
   "title": "Set the font size and turn on bold text in Settings",
   "split": "heldout",
   "tags": ["settings", "slider", "toggle", "search"],
-  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings"] },
   "params": {
     "x": {
       "pick": [

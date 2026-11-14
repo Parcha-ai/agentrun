@@ -5,7 +5,7 @@
   "title": "Change notification history, the time format and animations in Settings",
   "split": "dev",
   "tags": ["settings", "toggle", "search", "multi", "long"],
-  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings"] },
   "params": {
     "s": {
       "pick": [

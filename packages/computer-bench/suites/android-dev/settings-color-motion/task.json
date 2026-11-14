@@ -5,7 +5,7 @@
   "title": "Turn on color inversion and set animations and dark theme in Settings",
   "split": "dev",
   "tags": ["settings", "toggle", "accessibility", "search", "multi"],
-  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings"] },
   "params": {
     "c": {
       "pick": [

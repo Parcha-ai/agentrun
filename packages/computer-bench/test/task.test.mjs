@@ -37,7 +37,7 @@ const problemsOf = (spec, files) => {
 	return "";
 };
 
-test("every suite in the package loads, and mac-dev and android-dev are 20 tasks, half dev and half held out", () => {
+test("every suite in the package loads, mac-dev is 20 tasks and android-dev 38, each half dev and half held out", () => {
 	const counts = {};
 	for (const suite of ["fake", "ui-fixture", "mac-dev", "android-dev", "macosworld", "mobileworld"]) {
 		const tasks = loadSuite(join(SUITES, suite));
@@ -48,7 +48,7 @@ test("every suite in the package loads, and mac-dev and android-dev are 20 tasks
 		}
 	}
 	assert.deepEqual(counts["mac-dev"], { all: 20, dev: 10 });
-	assert.deepEqual(counts["android-dev"], { all: 20, dev: 10 });
+	assert.deepEqual(counts["android-dev"], { all: 38, dev: 19 });
 	assert.equal(counts.macosworld.all + counts.mobileworld.all, 18);
 });
 
