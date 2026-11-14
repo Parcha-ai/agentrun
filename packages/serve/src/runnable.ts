@@ -31,7 +31,7 @@ export type RevisionComputer = { kind: string; provider?: string; image?: string
 /** A revision's body as it is saved or stored. `unnamed`: its `place` is the one a revision that names none resolves to
  *  (place.ts defaultPlaceOf), not one it names. `computer`: its computer setting (computer-setting.ts), when it has one. */
 export type RevisionShape =
-  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; computer?: RevisionComputer; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never"; maxToolCalls?: number }
+  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; computer?: RevisionComputer; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" }
   | { kind: "workflow"; workflow: unknown; tools?: readonly string[]; harness?: string; place?: { mode: string; box?: string }; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool` (one it does
@@ -194,9 +194,6 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
         if (!(tool === "browser" && browserComputer)) unavailable(`definition.tools[${index}]`, revision.tools ?? [], tool);
       }
     });
-    // The tool-call budget is counted from pi's own journal (tool-budget.ts): on another harness it would hold nothing, so
-    // the definition is refused, never saved to run without it.
-    if (revision.maxToolCalls !== undefined && onAdapter(env, harness)) out.push({ field: "definition.max_tool_calls", reason: NOT_SET_UP, message: `A tool-call budget is held on pi here; on ${harness} it is not counted yet.`, fix: "Run the agent on pi, or set max_tool_calls to 0.", host: false, harness });
     const resolved = await harnessModel(env, harness, revision.model, offer?.available === true);
     if (!resolved) return out;
     if ("why" in resolved) out.push({ field: "definition.model", reason: resolved.host ? NOT_SET_UP : "not_an_option", message: resolved.why, host: resolved.host });
