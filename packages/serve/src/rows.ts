@@ -2,8 +2,9 @@
 // changed after change N and the ids dropped after it.
 //
 // Rows come in whole (the reducer's rows of a live run, or a released store's rows) and are diffed against what was
-// served. A row keeps the seq it was first served with, so seq is the order rows first appeared; a row id that comes
-// back after a drop is served under a new id, so one id never names two seqs. The usage row is the one exception: it is
+// served. A row keeps the seq it was first served with while the rows keep their order; a row id that comes back after a
+// drop is served under a new id, so one id never names two seqs. A row the rows now hold after one served later than it
+// moves after that one (a new seq, as a change), so a live log and a fresh read of the same rows agree. The usage row is
 // the run's running total, its time the latest entry's, so it is always the last row, and moves to the end (a new seq,
 // as a change) when a row is served after it.
 import type { TimelineEvent } from "./timeline/index.js";
@@ -51,18 +52,25 @@ export class RowLog {
     return this.clock.next();
   }
 
-  /** Make the served rows equal `rows`: new ids are added after every row served so far, changed ones keep their seq,
-   *  and ids no longer there are dropped, except those `keep` says stay (a row a committed entry made: the timeline only
-   *  grows). Returns whether anything changed. */
+  /** Make the served rows equal `rows`, in their order: new ids are added after every row served so far, changed ones
+   *  keep their seq, and ids no longer there are dropped, except those `keep` says stay (a row a committed entry made: the
+   *  timeline only grows). A row that now comes after a row served later than it moves after it (a new seq, as a change),
+   *  so this log reads as a fresh one synced from the same rows: the learning row, which the view adds after every row of
+   *  the run, moves after a feedback round's rows or a follow-up's. Returns whether anything changed. */
   sync(rows: readonly TimelineEvent[], keep?: (id: string) => boolean): boolean {
     let changed = false;
     const present = new Set<string>();
+    // The latest seq of the rows so far, the usage row's left out (it goes last below).
+    let latest = -1;
     for (const row of rows) {
       present.add(row.id);
       const text = SEQ_FREE(row);
       const slot = this.slots.get(row.id);
       if (slot && !slot.dropped) {
-        if (slot.text === text) continue;
+        const behind = row.kind !== "usage" && slot.seq < latest;
+        if (behind) slot.seq = this.seq++;
+        if (row.kind !== "usage") latest = Math.max(latest, slot.seq);
+        if (slot.text === text && !behind) continue;
         slot.text = text;
         slot.row = { ...row, id: slot.id, seq: slot.seq };
         slot.change = this.next();
@@ -74,6 +82,7 @@ export class RowLog {
       const id = use === 1 ? row.id : `${row.id}~${use}`;
       if (slot) this.slots.set(`${row.id}\0${slot.change}`, slot);
       const seq = this.seq++;
+      if (row.kind !== "usage") latest = seq;
       this.slots.set(row.id, { id, source: row.id, seq, row: { ...row, id, seq }, change: this.next(), dropped: false, text });
       changed = true;
     }
