@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
+import { DEFER_CATALOG_OVER } from "@parcha/agentrun-kernel";
 import { copyStandIn } from "../../../run-adapters-codex/test/stand-in.mjs";
 import { withToolSearch } from "./claude-tool-search.mjs";
 import { startFakeMcp } from "./fake-mcp-server.mjs";
@@ -16,6 +17,12 @@ import { scratch, serve, withEnv } from "../support.mjs";
 /** The harnesses these tests run on: claude-agent where its sandbox can start (setpriv). */
 export const HARNESSES = ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : []), "codex"];
 const FAUX_OFFERED = new URL("./faux-mcp-offered.mjs", import.meta.url).pathname;
+/** Idle tools for the fake, DEFER_CATALOG_OVER of them: granted beside a test's own tool, the run's catalog passes the
+ *  threshold, so its MCP tools are deferred, found with tools_search and called with tools_call (pi and codex; Claude Code
+ *  defers them behind its own ToolSearch and is offered neither). A run under it lists them and has no tools_call. */
+export const IDLE_TOOLS = Object.fromEntries(Array.from({ length: DEFER_CATALOG_OVER }, (_, index) => [`idle_${index}`, { description: "Does nothing.", input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: "idle" }] }) }]));
+/** The harnesses that offer tools_call to a run whose catalog is deferred: Claude Code defers it itself. */
+export const TOOLS_CALL_HARNESSES = new Set(["pi", "codex"]);
 /** The calls of `tool` the fake MCP server was sent. */
 export const callsOf = (fake, tool) => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === tool);
 
