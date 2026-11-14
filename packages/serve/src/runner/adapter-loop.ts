@@ -830,6 +830,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** While the run's learned workflow runs first (AdapterRunSpec.workflowFirst): a message waits for it, then goes the way
    *  any message goes once the workflow answered (the run is ending) or handed the job back (the agent's turn runs). */
   let servingFirst: Promise<void> | undefined;
+  /** The messages waiting for the run's first input (steer: the session still new, or its learned workflow running first),
+   *  placed one after another, in the order they came, once it is sent; `waitingFirst` counts those not placed yet, so a
+   *  message after them waits its turn behind them. */
+  let afterFirst: Promise<void> = Promise.resolve();
+  let waitingFirst = 0;
   /** The wait in the claim is over (an answer placed, a lapse, the run's end, park, restart or loss): its holds go. `of`:
    *  only while it is that wait's (a wait that settles late never ends a later one). */
   const endWait = (of?: object): void => {
@@ -1085,13 +1090,39 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (data.capUsd > 0) raisedCapUsd = data.capUsd;
   }
 
+  const over = () => (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined);
   const steer = async (command: Command): Promise<CommandOutcome> => {
     // Handed over before the session is open: placed once it is, its outcome the real one (never taken and then dropped).
     // Awaited even with a session there: until the claim is ready it has not said whether this message reopens the run.
-    const over = () => (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined);
     await Promise.race([ready, over()]);
     // The session never opened, or the run is parking or stopping (its journal sealed, its session closed): left
     // untaken for the next claim, which hands it on again; never refused for good.
+    if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    // The session is still new and this is no reopen's message (the claim has yet to send the run's input), or the run's
+    // learned workflow runs first, or a message before it still waits for either: it waits for the input, off the runner's
+    // delivery, as a computer channel's call does (channelCommand). The runner hands the run's rows on one at a time, each
+    // once the one before it answered: held here for a workflow that runs long, this message would hold every row after it,
+    // and a person's stop or cancel (the stop that cuts the workflow's call, its spend and custody), a raise or a hand-back
+    // would never reach the run. `taken` here means its take rides on the commit that places it once the input is sent; a
+    // claim that ends first (a stop, a park, the workflow's answer) leaves the row untaken, for the run's end or its next
+    // claim to settle, as any message the run's end finds untaken.
+    if (waitingFirst > 0 || (!reopen && session.state === "new") || servingFirst) {
+      waitingFirst += 1;
+      const placing = afterFirst.then(() => placeSteer(command));
+      afterFirst = placing.then(
+        () => void (waitingFirst -= 1),
+        (error: unknown) => {
+          waitingFirst -= 1;
+          console.warn(`[runner] a message that waited for the run's first input was not placed: ${said(error)}`);
+        },
+      );
+      return { taken: true };
+    }
+    return placeSteer(command);
+  };
+
+  /** A person's message placed (steer): as the run's next turn, into the turn in flight, or after it. */
+  const placeSteer = async (command: Command): Promise<CommandOutcome> => {
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
     // The session is still new and this is no reopen's message: the claim has yet to send the run's input. Placed now,
     // the message would be the session's first prompt and the input would follow it; it waits for the input instead, then
