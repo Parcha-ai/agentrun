@@ -2059,7 +2059,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A template package applied: its parameters and the owner's grants checked (422), then the secrets and required MCP
    *  servers it names (409, nothing made; an MCP server it can do without is skipped, with a warning), then its
    *  agent made as POST /agents makes one, granted the MCP tools the owner ticked (grants) alone, with no permission written
-   *  (the gate's default decides each call: a write asks unless approvals never; a deny the owner set on this server stays,
+   *  (each call follows this server's tool settings: a write asks unless the owner allowed it there or approvals never; a deny the owner set on this server stays,
    *  with a warning): a tool left unticked is not the agent's, under any approvals, its body held to POST /agents' limit (413), on the first harness of its list this server runs and the model packageModel
    *  picks, then each trigger on it as POST /triggers makes one. A trigger refused undoes the apply: the triggers made
    *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`; a

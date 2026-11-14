@@ -362,7 +362,7 @@ describe("applying a template", () => {
     // A tick grants the tool and sets no permission: the section says what a granted tool then does, once, and no row
     // promises a call without asking. Each row says apart what the template asks for.
     const section = t.host.querySelector('section[aria-label="Tools you grant"]')!.textContent ?? "";
-    expect(section).toContain("A tool you tick is granted: a write asks you first unless you choose Never ask, and a read runs without asking where you turned on Allow reads for its server.");
+    expect(section).toContain("A tool you tick is granted and follows this server's tool settings: a write asks you first unless you allowed it in Settings or choose Never ask, and a read runs without asking where you turned on Allow reads for its server.");
     const reads = t.host.querySelector('[data-tool="mcp:github/get_pull_request"]')!.textContent ?? "";
     const writes = t.host.querySelector('[data-tool="mcp:github/create_review"]')!.textContent ?? "";
     for (const row of [reads, writes]) expect(row).not.toContain("without asking you");
@@ -524,6 +524,8 @@ describe("applying a template", () => {
     const t = await open("pr-reviewer");
     const radio = (label: RegExp) => [...t.host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
     expect(radio(/^Ask me/)!.checked).toBe(true);
+    // The Ask note keeps the promise as this server's settings make it: a ticked write asks unless allowed in Settings.
+    expect(radio(/^Ask me/)!.closest("label")!.textContent).toContain("A call that asks waits for your answer: a ticked tool's write unless you allowed it in Settings, and its read unless you turned on Allow reads for its server.");
     // One plain line beside the Never choice: what a triggered template needs.
     expect(radio(/^Never ask/)!.closest("label")!.textContent).toContain("Runs without asking you, even for writes. Pick this if a trigger starts the agent while you're away.");
     await t.click(radio(/^Never ask/));

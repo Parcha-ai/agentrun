@@ -386,7 +386,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       )}
 
       {t.mcp.length > 0 && (
-        <Section title="Tools you grant" note="Nothing is granted until you tick it. A tool you tick is granted: a write asks you first unless you choose Never ask, and a read runs without asking where you turned on Allow reads for its server. A tool you leave unticked is not given to the agent, even when it never asks: you can add it later on the agent's page.">
+        <Section title="Tools you grant" note="Nothing is granted until you tick it. A tool you tick is granted and follows this server's tool settings: a write asks you first unless you allowed it in Settings or choose Never ask, and a read runs without asking where you turned on Allow reads for its server. A tool you leave unticked is not given to the agent, even when it never asks: you can add it later on the agent's page.">
           {serversError && !servers && (
             <div data-servers-unread className="px-4 py-3"><ProblemCard problem={serversError} onRetry={() => setServersTries((n) => n + 1)} className="" /></div>
           )}
@@ -447,7 +447,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       <fieldset aria-label="Approvals" className="mt-6">
         <legend className="caps text-small font-semibold">Approvals</legend>
         <div className="mt-2 divide-y border">
-          {([["ask", "Ask me", "A call that asks waits for your answer: a ticked tool's write, and its read unless you turned on Allow reads for its server."], ["never", "Never ask (run unattended)", "Runs without asking you, even for writes. Pick this if a trigger starts the agent while you're away."]] as const).map(([value, label, note]) => (
+          {([["ask", "Ask me", "A call that asks waits for your answer: a ticked tool's write unless you allowed it in Settings, and its read unless you turned on Allow reads for its server."], ["never", "Never ask (run unattended)", "Runs without asking you, even for writes. Pick this if a trigger starts the agent while you're away."]] as const).map(([value, label, note]) => (
             <label key={value} className="flex items-start gap-3 px-4 py-3">
               <input type="radio" name="approvals" value={value} className="mt-1 accent-primary" checked={approvals === value} onChange={() => setApprovals(value)} />
               <span><span className="font-mono text-body">{label}</span><span className="block text-small text-muted-foreground">{note}</span></span>

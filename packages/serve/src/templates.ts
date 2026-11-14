@@ -91,8 +91,8 @@ const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 /** An MCP server a package uses, by where it comes from (`source`, `toolkit`), never by the name an owner saves it under:
  *  inside the package its tools are `mcp:<toolkit>/<tool>`. `tools`, those the agent may be granted, and `allow`, those of
  *  them the package asks the owner to grant (a consent screen shows it, with `reason`). Neither the package nor an apply
- *  sets a permission: an apply's `grants`, the owner's ticks, grant the tools, and the gate's default decides each call
- *  (a write asks, a read follows the server's Allow reads, approvals never lifts an ask). `pin`, by tool: the arguments each of its calls must carry (a value, or
+ *  sets a permission: an apply's `grants`, the owner's ticks, grant the tools, and each call follows this server's tool settings
+ *  (a write asks unless the owner allowed it there, a read follows the server's Allow reads, approvals never lifts an ask). `pin`, by tool: the arguments each of its calls must carry (a value, or
  *  `${parameters.<name>}`), which apply writes as the tool's pin in the agent's tool settings, so a send goes only to the
  *  destination the owner set. */
 export type McpNeed = { source: McpSource; toolkit: string; tools: string[]; required: boolean; reason?: string; allow: string[]; pin: Record<string, Record<string, PinValue>> };
@@ -955,9 +955,9 @@ export async function packageTiers(env: NodeJS.ProcessEnv, model: Package["model
 /** The bodies an apply makes: POST /v2/agents' (its definition and skill files) and each trigger's, with no agent_id,
  *  every `${parameters.x}` filled. `grants`, the owner's answer at apply (the tools ticked, by the saved servers' names):
  *  of the package's tools on `mcp`, its needs each served by a saved server, those alone are granted, beside the package's
- *  tools (or, when it names none, `defaultTools`, those this server gives a new agent). A grant writes no permission: the
- *  gate's default decides each call, so under approvals ask a write asks the owner, a read runs where the owner turned
- *  on Allow reads for its server and asks otherwise, and a deny the owner set on this server still holds; approvals
+ *  tools (or, when it names none, `defaultTools`, those this server gives a new agent). A grant writes no permission: each
+ *  call follows this server's tool settings, so under approvals ask a write asks the owner unless the owner allowed it
+ *  there, a read runs where the owner turned on Allow reads for its server and asks otherwise, and a deny the owner set on this server still holds; approvals
  *  never lifts those asks. A tool left unticked is not the agent's at all, so no harness offers it and approvals never,
  *  which lifts an ask of a tool the agent has, has nothing to lift: the owner grants it later in the agent's tools. A
  *  tool the package pins gets its pin, filled, in the agent's tool settings, ticked or not (it holds once the tool is
@@ -973,7 +973,7 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
   const own = pick ? (p.tools ?? pick.defaults).filter((tool) => !pick.dropped.includes(tool)) : p.tools;
   const named = own && (p.tools || own.length) ? own : undefined;
   const tools = granted.length ? [...(named ?? (pick ? [] : chosen.defaultTools)), ...granted] : named;
-  // No permission for a tick: a grant is no allow (the gate's default decides). Only a pin, or a pin's empty fill's deny.
+  // No permission for a tick: a grant is no allow (this server's tool settings decide). Only a pin, or a pin's empty fill's deny.
   const settings: Record<string, { permission?: "deny"; pin?: Record<string, PinValue>; policy?: BashPolicy }> = {};
   // A tool's policy (bash's read-only), written as its setting, whatever its permission: never one an apply grants. With
   // a picked computer, only where the agent's tools hold bash: none for a bash the computer dropped, or never gave.
