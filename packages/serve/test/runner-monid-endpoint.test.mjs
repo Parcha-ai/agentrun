@@ -369,7 +369,8 @@ test("a call priced by usage that monid estimates at $0 runs at its card's estim
   // No results asked for: monid estimates $0, so maxCost 0 lets it run; monid charges $1.42.
   const run = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, requests, script: [{ call: "monid__faux__person__search", args: { body: { name: "Ada", limit: 0 } } }, { say: "done" }] });
   const booked = paidBookings(run.records.entries).filter((row) => row.tool === SEARCH);
-  assert.deepEqual(booked.map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", 0], ["agentrun.tool_cost", 1.42]], JSON.stringify(booked));
+  // Held at $0 (a mark with no held figure), settled at the charge.
+  assert.deepEqual(booked.map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", undefined], ["agentrun.tool_cost", 1.42]], JSON.stringify(booked));
   assert.deepEqual(sent().map((call) => call.maxCost), [0], "run once, by its card's read");
   assert.deepEqual([run.row.state, run.row.summary], ["failed", "monid charged $1.42, more than the $0 held; the run stopped"], JSON.stringify(run.row));
 });

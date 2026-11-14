@@ -20,7 +20,7 @@ import { wireName } from "../catalog.js";
 import { fauxFetch } from "../decisions.js";
 import { chargeOf, estimateOf, FAUX_MONID_ENV, MONID_KEY_ENV, type MonidAnswer, monidClient, type MonidPin, monidText, uncharged } from "../monid.js";
 import { money } from "../cap.js";
-import { paidLedger, paidStep, stopRun, unbookedRefusal } from "../paid-calls.js";
+import { type PaidBooking, paidLedger, paidStep, stopRun, unbookedRefusal } from "../paid-calls.js";
 import { monidNameOf, parseToolName } from "../tool-names.js";
 import type { Json } from "../validate.js";
 import type { Workspace } from "../workspace/index.js";
@@ -80,8 +80,27 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
   const usageHeld = async (at: Endpoint, input: Json, callId: string, signal: AbortSignal): Promise<Held | { answer: MonidAnswer }> => {
     const read = await estimated(callId, at, input, signal);
     if ("usd" in read) return { usd: read.usd, basis: "monid's estimate for this call's input (priced by usage: its charge can pass it)" };
-    if (chargeOf(read.answer) === undefined) return { answer: read.answer };
-    return { usd: 0, basis: "monid's estimate for this call's input, $0: monid ran it when asked for that estimate", ran: read.answer };
+    // Not sent; or run, and booked already by its card's read (priceOf): its answer is the call's.
+    if (read.booked || chargeOf(read.answer) === undefined) return { answer: read.answer };
+    return { usd: 0, basis: RAN_BASIS, ran: read.answer };
+  };
+  /** One paid step for the call `callId` of `name` on the run's ledger `ledger`: held at `held.usd`, `send` run, settled at
+   *  what monid says it charged. maxCost checks only monid's estimate, so a charge above the hold is booked as charged,
+   *  logged, and stops the run at once in words naming both (stopRun). */
+  const paidCall = async (ledger: PaidBooking, callId: string, name: string, held: { usd: number; basis: string }, send: () => Promise<MonidAnswer>) => {
+    const paid = await paidStep<MonidAnswer>(ledger, callId, { name, holdUsd: held.usd, basis: held.basis, by: "monid" }, send, (outcome) => {
+      if (!("result" in outcome)) return null;
+      const usd = chargeOf(outcome.result);
+      return usd === undefined ? 0 : usd;
+    });
+    if ("refused" in paid) return paid;
+    const charged = chargeOf(paid.result);
+    if (typeof charged === "number" && Math.round(charged * 1e6) > Math.round(held.usd * 1e6)) {
+      const words = `monid charged ${money(charged)}, more than the ${money(held.usd)} held; the run stopped`;
+      console.error(`[runner] run ${runId ?? "(unnamed)"}: ${name}: ${words}`);
+      await stopRun(words);
+    }
+    return paid;
   };
   const tools: HostTool[] = names.flatMap((name) => {
     const at = monidNameOf(name);
@@ -106,18 +125,8 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
         if ("answer" in held) return { text: await monidText(held.answer, work(), at.provider), ...(held.answer.error !== undefined ? { isError: true } : {}) };
         // Sent with its hold as maxCost: monid refuses it unrun when it estimates it higher.
         const send = async () => (fixedUsd !== null ? fixedThenRun(name, at, input, fixedUsd, context.signal) : (held.ran ?? (await clientOf()).run({ provider: at.provider, endpoint: `/${at.endpoint}`, input, maxCost: held.usd }, context.signal)));
-        const paid = await paidStep<MonidAnswer>(ledger, context.callId, { name, holdUsd: held.usd, basis: held.basis, by: "monid" }, send, (outcome) => {
-          if (!("result" in outcome)) return null;
-          const usd = chargeOf(outcome.result);
-          return usd === undefined ? 0 : usd;
-        });
+        const paid = await paidCall(ledger, context.callId, name, held, send);
         if ("refused" in paid) return { text: JSON.stringify({ error: paid.refused }), isError: true };
-        const charged = chargeOf(paid.result);
-        if (typeof charged === "number" && Math.round(charged * 1e6) > Math.round(held.usd * 1e6)) {
-          const words = `monid charged ${money(charged)}, more than the ${money(held.usd)} held; the run stopped`;
-          console.error(`[runner] run ${runId ?? "(unnamed)"}: ${name}: ${words}`);
-          await stopRun(words);
-        }
         return { text: await monidText(paid.result, work(), at.provider), ...(paid.result.error !== undefined ? { isError: true } : {}) };
       },
     } satisfies HostTool];
@@ -127,12 +136,23 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
     catalogOf: (tool) => catalog.get(tool),
     // Its card shows what the call is held at: its pinned price (the most monid may estimate it at and still run it), or
     // for one priced by usage monid's estimate for its input, read when the card is made (none when that cannot be read).
+    // A read monid ran (an estimate of $0, a free run maxCost 0 lets through) is booked here, under the call on the run's
+    // ledger the card is read in, so its charge is never lost however the card is answered: above $0 it stops the run.
     priceOf: (name, call) => {
       if (!Object.hasOwn(pin, name)) return undefined;
       const usd = pin[name]!.usd;
       const at = monidNameOf(name);
       if (usd !== null || !at || !call) return usd ?? undefined;
-      return estimated(call.callId, at, (call.args ?? {}) as Json, call.signal).then((read) => ("usd" in read ? { estimate_usd: read.usd } : undefined));
+      return estimated(call.callId, at, (call.args ?? {}) as Json, call.signal).then(async (read) => {
+        if ("usd" in read) return { estimate_usd: read.usd };
+        if (chargeOf(read.answer) === undefined) return undefined;
+        const ledger = paidLedger();
+        if (ledger && !read.booked) {
+          read.booked = true;
+          await paidCall(ledger, call.callId, name, { usd: 0, basis: RAN_BASIS }, async () => read.answer);
+        }
+        return { estimate_usd: 0 };
+      });
     },
     release: () => {
       released.abort(new Error("the claim let its monid endpoints go"));
@@ -143,8 +163,11 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
 }
 
 type Endpoint = { provider: string; endpoint: string };
-/** monid's estimate for a call priced by usage, in USD; or its answer when monid gave none (refused unrun, or ran it). */
-type Estimated = { usd: number } | { answer: MonidAnswer };
+/** monid's estimate for a call priced by usage, in USD; or its answer when monid gave none (refused unrun, or ran it:
+ *  `booked` once its card's read booked that run). */
+type Estimated = { usd: number } | { answer: MonidAnswer; booked?: boolean };
+/** The cap's basis for a call monid ran when asked for its estimate. */
+const RAN_BASIS = "monid's estimate for this call's input, $0: monid ran it when asked for that estimate";
 /** What a call is held at, why (the cap's basis), and the call's answer when the read of its estimate ran it. */
 type Held = { usd: number; basis: string; ran?: MonidAnswer };
 
