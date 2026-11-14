@@ -1353,12 +1353,27 @@ async function readMachine(host: MachineHost, id: string, ms: number, signal?: A
 	return !read.ok && read.error.code === "not_found" ? ok(undefined) : read;
 }
 
+/** What reading answers, or undefined once signal aborts first: a caller that stopped waiting never waits on a read. */
+function untilAborted<T>(reading: Promise<T>, signal: AbortSignal | undefined): Promise<T | undefined> {
+	if (signal === undefined) return reading;
+	if (signal.aborted) return Promise.resolve(undefined);
+	return new Promise((settle) => {
+		const onAbort = () => settle(undefined);
+		signal.addEventListener("abort", onAbort, { once: true });
+		reading.then((value) => {
+			signal.removeEventListener("abort", onAbort);
+			settle(value);
+		});
+	});
+}
+
 /**
  * A connection's client that says its computer was deleted (the vendor's own API can delete it mid-run). Once the
  * client answers gone (its stream ended or failed) the machine is read once, and that one read answers every call in
  * flight at that moment and every later call; a call with no answer by its own timeout reads it again. A machine the
  * vendor no longer has, or reads going, makes each of them not_found in these words; one still there, or a read that
- * failed, leaves the client's own answer. A connection its caller closed is never read back.
+ * failed, leaves the client's own answer, as does a caller's abort during the read. A connection its caller closed is
+ * never read back.
  */
 function deletedSaid(host: MachineHost, ref: ComputerRef, label: string, requestMs: number, connection: ComputerConnection): ComputerConnection {
 	const { client } = connection;
@@ -1380,7 +1395,7 @@ function deletedSaid(host: MachineHost, ref: ComputerRef, label: string, request
 				if (deleted) return { ok: false, error: deleted };
 				const answered = await client.call(method, params, options);
 				if (answered.ok || closed || (answered.error.code !== "gone" && answered.error.code !== "timeout")) return answered;
-				const found = await (answered.error.code === "gone" ? (ended ??= read()) : read());
+				const found = await untilAborted(answered.error.code === "gone" ? (ended ??= read()) : read(), options?.signal);
 				return found ? { ok: false, error: found } : answered;
 			},
 			close() {

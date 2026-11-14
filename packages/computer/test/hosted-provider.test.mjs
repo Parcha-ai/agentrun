@@ -807,6 +807,28 @@ test("a computer the vendor reads as going once its stream ended (Agent37 reads 
 	await connected.close();
 });
 
+test("a caller that aborts while the machine is read back stops waiting on the read: the client's own words, at once", async () => {
+	const held = deferred();
+	let holdGets = false;
+	const { provider, fake } = setup({}, { onStep: (step) => (holdGets && step === "get" ? held.promise : undefined) });
+	const ref = made(await create(provider));
+	const connected = made(await provider.connect(ref));
+	const controller = new AbortController();
+	holdGets = true;
+	const running = connected.client.call("exec.run", { argv: ["sleep", "60"], timeoutMs: 60_000 }, { signal: controller.signal });
+	await turns();
+	const gets = () => fake.calls.filter(([name, id]) => name === "get" && id === ref.id).length;
+	const before = gets();
+	fake.vanish(ref.id, "end");
+	await turns();
+	assert.equal(gets(), before + 1, "the read-back started, and the vendor holds it");
+	controller.abort();
+	const answer = await running;
+	assert.equal(answer.error?.code, "gone", JSON.stringify(answer));
+	held.resolve();
+	await connected.close();
+});
+
 test("a connection closed by its caller is not a deleted computer: no read-back, the client's own words", async () => {
 	const { provider, fake } = setup();
 	const ref = made(await create(provider));
