@@ -8,17 +8,30 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import test from "node:test";
-import { FAKE_AGENTS, FakeWorld } from "../dist/fake-world.js";
-import { MissingRoute, resolveTask, runBench, serveBackend, Store, tap, verifySuite } from "../dist/index.js";
-import { arm, fakeTasks, store, tmp } from "./support.mjs";
+import { FAKE_AGENTS, FakeWorld, helper, SETTINGS_APP } from "../dist/fake-world.js";
+import { ENTRY, MissingRoute, resolveTask, runBench, serveBackend, Store, verifySuite } from "../dist/index.js";
+import { arm, fakeTasks, recordOf, store, tmp, withSpec } from "./support.mjs";
 
 const TOKEN = "t0ken";
+
+/** A computer call as serve's record keeps it (serve's computer-calls.ts callRecordOf): method, ok, ms, the error's
+ *  code, and for ui.act each step's kind, route and readback, and whether its expect held. */
+function callRecordOf(method, params, answer, ms) {
+	if (!answer.ok) return { method, ok: false, ms, code: answer.error.code };
+	if (method !== "ui.act") return { method, ok: true, ms };
+	const kinds = ["press", "set", "perform", "click", "type", "key", "nav", "scroll", "drag"];
+	const steps = (answer.value.steps ?? []).map((result, i) => {
+		const kind = kinds.find((one) => one in (params.steps?.[i] ?? {})) ?? "step";
+		return result.error ? { do: kind, error: result.error.kind } : { do: kind, route: result.route, verified: result.verified };
+	});
+	return { method, ok: true, ms, steps, ...(answer.value.expect ? { expect: answer.value.expect } : {}) };
+}
 
 /** A fake serve: the routes the bench calls, over fake worlds. Like serve, it answers a route it lacks (`lacks`, as
  *  SERVE_CONTRACT names them) 404 "no route" or 405, an agent or run it doesn't have 404 not_found, and, once it has the
  *  agent, a runs body field it keeps none of (`keepsNo`) 422 not_allowed. Its OpenAPI document has RunCreate.hold unless
  *  it keeps no hold, and Run.computer.held unless `noHeld`, which leaves held out of its run reads too. */
-async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, lacks = [], lackStatus = 404, keepsNo = [], noHeld = false } = {}) {
+async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, lacks = [], lackStatus = 404, keepsNo = [], noHeld = false, agents: extraAgents = {}, words = false, maxCalls = 200, lateRows = false } = {}) {
 	const agents = new Map();
 	const runs = new Map();
 	const requests = [];
@@ -91,6 +104,7 @@ async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, la
 		if (req.method === "GET" && rest === "") {
 			run.polls += 1;
 			if (run.held === "starting" && run.polls >= holdPolls) [run.held, run.computer] = ["waiting", "ready"];
+			if (run.held === "ended" || final()) run.toldEnded = true;
 			return send(200, view());
 		}
 		if (req.method === "POST" && rest === "computer/call") {
@@ -100,21 +114,36 @@ async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, la
 		if (req.method === "POST" && rest === "start") {
 			if (run.held !== "waiting") return send(409, { error: { code: "computer_not_live", message: "not waiting" } });
 			run.held = "started";
-			const agent = FAKE_AGENTS[run.definition.harness];
+			const agent = { ...FAKE_AGENTS, ...extraAgents }[run.definition.harness];
 			const row = (fields) => run.timeline.push({ id: `r${run.timeline.length + 1}`, seq: run.timeline.length + 1, timestamp: new Date().toISOString(), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, text: null, ...fields });
-			// The agent's calls as serve's Timeline shows them: a tool_use row and its tool_result row each.
-			const recorded = tap(run.world, {
-				phase: "agent",
-				store: new Store(tmp()),
-				t0: Date.now(),
-				next: () => run.timeline.length + 1,
-				onStep: (step) => {
-					const use = `call-${step.n}`;
-					row({ kind: "tool_use", tool_name: step.method, tool_use_id: use, tool_input_preview: JSON.stringify(step.params) });
-					row({ kind: "tool_result", tool_name: step.method, tool_use_id: use, tool_status: step.ok ? "success" : "failed", tool_result_preview: step.ok ? "ok" : (step.error?.message ?? "") });
-				},
-			});
-			agent(recorded, { task: run.task, signal: new AbortController().signal }).then((result) => {
+			// The agent's surface as serve gives it (its definition's computer.surface): "tools", one computer method per tool
+			// call; "code", one script per tool call and no per-step tool; absent, both. computer.exec false: no shell. Each
+			// tool call is a tool_use row and its tool_result row, which carries the computer calls it made, as serve's does.
+			const { surface, exec } = run.definition.computer ?? {};
+			let uses = 0;
+			const toolCall = async (name, input, work, extra = {}) => {
+				const use = `call-${(uses += 1)}`;
+				row({ kind: "tool_use", tool_name: name, tool_use_id: use, tool_input_preview: input });
+				const calls = [];
+				const answer = await work(calls);
+				const ok = answer?.ok !== false;
+				row({ kind: "tool_result", tool_name: name, tool_use_id: use, tool_status: ok ? "success" : "failed", tool_result_preview: ok ? "ok" : (answer.error?.message ?? ""), ...(calls.length > 0 ? { computer_calls: calls.slice(0, maxCalls) } : {}), ...(calls.length > maxCalls ? { computer_calls_dropped: calls.length - maxCalls } : {}), ...extra });
+				return answer;
+			};
+			const computerCall = async (calls, method, params) => {
+				const t = Date.now();
+				const answer = exec === false && (method === "exec.run" || method.startsWith("process.")) ? { ok: false, error: { code: "denied", message: "this agent's computer has no shell" } } : await run.world.call(method, params);
+				calls.push({ ...callRecordOf(method, params, answer, Date.now() - t), ...(words ? { words: `${method} said ${answer.ok ? "ok" : answer.error.code}`, at: new Date(t).toISOString() } : {}) });
+				return answer;
+			};
+			const given = {
+				call: (method, params) => (surface === "code" ? Promise.resolve({ ok: false, error: { code: "denied", message: "code mode: no per-step tool" } }) : toolCall(`computer_${method.replace(".", "_")}`, JSON.stringify(params), (calls) => computerCall(calls, method, params))),
+				...(surface === "tools" ? {} : { script: (fn) => toolCall("codemode", "a script", (calls) => fn({ call: (method, params) => computerCall(calls, method, params) })) }),
+				// A non-computer tool call: answered, failed ("failed"), or refused before it ran ("refused", serve's row
+				// then says refused: true).
+				tool: (name, how) => toolCall(name, "{}", async () => (how ? { ok: false, error: { message: `${name} ${how}` } } : { ok: true, value: {} }), how === "refused" ? { refused: true } : {}),
+			};
+			agent(given, { task: run.task, signal: new AbortController().signal }).then((result) => {
 				run.answer = result.answer;
 				run.cost = cost;
 				if (result.answer !== undefined) row({ kind: "final_answer", text: result.answer });
@@ -127,7 +156,9 @@ async function fakeServe({ holdPolls = 1, endAs, cost = 0.01, refuseRuns = 0, la
 		}
 		if (req.method === "GET" && rest === "timeline") {
 			const after = Number(url.searchParams.get("after") ?? 0);
-			const rows = run.timeline.filter((one) => one.seq > after);
+			// lateRows: the Timeline shows the agent's rows only once a run read has said its agent is done, as when its
+			// last script ends between the bench's Timeline read and its run read.
+			const rows = lateRows && !run.toldEnded ? [] : run.timeline.filter((one) => one.seq > after);
 			return send(200, { run_id: run.id, rows, next_after: rows.at(-1)?.seq ?? after, has_more: false });
 		}
 		if (req.method === "POST" && rest === "cancel") {
@@ -176,8 +207,10 @@ test("serve: a held run is set up, driven, checked before release, and released,
 			],
 		);
 		const [first] = results;
-		assert.equal(first.steps, 4, "the agent's four calls, read from the Timeline's tool rows");
-		assert.deepEqual(first.routes, {}, "a Timeline tool row says no ui.act route");
+		assert.equal(first.steps, 4, "the agent's four computer calls, read from the Timeline's tool rows");
+		assert.equal(first.tool_calls, 4, "a tools agent: one tool call per computer call");
+		assert.deepEqual(first.routes, { semantic: 4 }, "each ui.act step's route, from the tool row's computer_calls");
+		assert.deepEqual([first.acts, first.verified], [2, 4]);
 		assert.equal(first.cost_usd, 0.01);
 		assert.equal(results[2].answer !== undefined, true, "the answer, from the Timeline's final answer before the release");
 		for (const run of serve.runs.values()) {
@@ -187,7 +220,7 @@ test("serve: a held run is set up, driven, checked before release, and released,
 			assert.deepEqual(Object.keys(run.body).sort(), ["hold", "hold_minutes", "input", "max_cost_usd"]);
 		}
 		const definition = [...serve.agents.values()].find((one) => one.harness === "fake-right");
-		assert.deepEqual(definition.computer, { kind: "desktop", provider: "fake-vendor" });
+		assert.deepEqual(definition.computer, { kind: "desktop", provider: "fake-vendor", surface: "tools" });
 		assert.deepEqual(definition.tools, ["computer"], "the arm's definition fields are passed as they are");
 		assert.equal(definition.max_tool_calls, undefined, "the step budget is the agent's own only on pi");
 		assert.equal(serve.agents.size, 2, "one agent per arm and kind, made once");
@@ -202,6 +235,155 @@ test("serve: a held run is set up, driven, checked before release, and released,
 	}
 });
 
+/** A code-mode agent: a search first (a tool call that makes no computer call), then one script of six computer calls
+ *  that turns the dark theme on, sets the volume and the device name. */
+const six = async (given) => {
+	await given.tool("web_search");
+	await given.script(async (computer) => {
+		const h = helper(computer);
+		await h.observe(SETTINGS_APP);
+		await h.act([{ press: h.find("Dark theme") }]);
+		await h.observe(SETTINGS_APP);
+		await h.act([{ set: h.find("Volume"), value: "6" }]);
+		await h.observe(SETTINGS_APP);
+		await h.act([{ set: h.find("Device name"), value: "Bench" }]);
+	});
+	return { outcome: "done" };
+};
+
+test("serve: steps are computer calls: one script of six calls is six steps and one model turn, and a tool call with no computer call is a turn", async () => {
+	const serve = await fakeServe({ agents: { six }, words: true });
+	try {
+		const s = store();
+		const backend = withTask(serveBackend({ baseUrl: serve.baseUrl, token: TOKEN, pollMs: 5 }), serve);
+		const [result] = await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("six", "six", "code")], seeds: [1], backend, store: s, grade: "never" });
+		assert.equal(result.outcome, "pass", result.why);
+		assert.equal(result.steps, 6, "six computer calls in one script are six steps");
+		assert.equal(result.tool_calls, 2, "the search and the script: two model turns");
+		assert.deepEqual(result.routes, { semantic: 3 }, "the routes table fills from the script's ui.act calls");
+		assert.deepEqual([result.acts, result.verified], [3, 3]);
+		const [definition] = serve.agents.values();
+		assert.deepEqual(definition.computer, { kind: "desktop", surface: "code" });
+		assert.match(definition.id, /-desktop-code$/);
+		const entries = recordOf(s, result.run);
+		assert.deepEqual(entries[0].data.agent, { surface: "code", exec: "allow", groups: ["exec", "files", "screen", "input.pointer", "input.keys", "apps", "ui"], id: definition.id });
+		const steps = entries.filter((entry) => entry.kind === ENTRY.step && entry.data.phase === "agent").map((entry) => entry.data);
+		assert.deepEqual(
+			steps.map((step) => step.method),
+			["ui.observe", "ui.act", "ui.observe", "ui.act", "ui.observe", "ui.act"],
+		);
+		assert.ok(steps.every((step) => step.tool === "codemode" && step.turn === 2 && step.ok));
+		assert.deepEqual(
+			steps.filter((step) => step.method === "ui.act").map((step) => [step.routes, step.verified, step.ran]),
+			[
+				[["semantic"], 1, 1],
+				[["semantic"], 1, 1],
+				[["semantic"], 1, 1],
+			],
+		);
+		assert.equal(steps[1].note, "ui.act said ok", "a call's words, when serve's record has them");
+		for (let i = 1; i < steps.length; i += 1) assert.ok(steps[i].t_ms >= steps[i - 1].t_ms, "calls in the order the script made them");
+	} finally {
+		await serve.close();
+	}
+});
+
+test("serve: the step budget is computer calls: a script past it stops the run though it is one tool call; calls past serve's record bound count", async () => {
+	const serve = await fakeServe({ agents: { six } });
+	try {
+		const [task] = fakeTasks("fake.settings.dark-theme");
+		const tight = withSpec(task, { budget: { ...task.spec.budget, steps: 4 } });
+		const backend = withTask(serveBackend({ baseUrl: serve.baseUrl, token: TOKEN, pollMs: 5 }), serve);
+		const [result] = await runBench({ tasks: [tight], arms: [arm("six", "six", "code")], seeds: [1], backend, store: store(), grade: "never" });
+		assert.equal(result.outcome, "budget");
+		assert.equal(result.tool_calls, 2);
+		assert.match(result.why ?? "", /budget of 4 computer calls/);
+		assert.equal(serve.runs.get("run_1").status, "cancelled");
+	} finally {
+		await serve.close();
+	}
+	const bounded = await fakeServe({ agents: { six }, maxCalls: 4 });
+	try {
+		const backend = withTask(serveBackend({ baseUrl: bounded.baseUrl, token: TOKEN, pollMs: 5 }), bounded);
+		const s = store();
+		const [result] = await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("six", "six", "code")], seeds: [1], backend, store: s, grade: "never" });
+		assert.equal(result.outcome, "pass", result.why);
+		assert.equal(result.steps, 6, "four recorded calls and two past serve's bound");
+		const unrecorded = recordOf(s, result.run).filter((entry) => entry.kind === ENTRY.step && entry.data.phase === "agent" && entry.data.method === "unrecorded");
+		assert.equal(unrecorded.length, 2);
+	} finally {
+		await bounded.close();
+	}
+	// The calls of a script that ends between the bench's Timeline read and its run read are counted after the run ends.
+	const late = await fakeServe({ agents: { six }, lateRows: true });
+	try {
+		const [task] = fakeTasks("fake.settings.dark-theme");
+		const tight = withSpec(task, { budget: { ...task.spec.budget, steps: 4 } });
+		const backend = withTask(serveBackend({ baseUrl: late.baseUrl, token: TOKEN, pollMs: 5 }), late);
+		const [result] = await runBench({ tasks: [tight], arms: [arm("six", "six", "code")], seeds: [1], backend, store: store(), grade: "never" });
+		assert.equal(result.outcome, "budget", "six calls past a budget of four never pass, however late the Timeline shows them");
+		assert.match(result.why ?? "", /budget of 4 computer calls/);
+	} finally {
+		await late.close();
+	}
+});
+
+test("serve: an exec deny task runs on its own agent whose computer has exec false, and its result says deny", async () => {
+	const shell = async (given) => {
+		const ran = await given.call("exec.run", { argv: ["set", "dark", "yes"] });
+		return { outcome: "done", message: ran.ok ? "ran" : ran.error.code };
+	};
+	const serve = await fakeServe({ agents: { shell } });
+	try {
+		const [task] = fakeTasks("fake.settings.dark-theme");
+		const deny = withSpec(task, { id: "fake.settings.dark-theme-ui", exec: "deny" });
+		const s = store();
+		const backend = withTask(serveBackend({ baseUrl: serve.baseUrl, token: TOKEN, pollMs: 5 }), serve);
+		// An arm whose definition pins its own computer keeps its provider, never its say over the surface or exec.
+		const pinned = { ...arm("shell", "pinned"), options: { definition: { computer: { kind: "desktop", provider: "pinned-vendor", surface: "code", exec: true } } } };
+		const [allowed, pinnedAllowed, denied, pinnedDenied] = await runBench({ tasks: [task, deny], arms: [arm("shell"), pinned], seeds: [1], backend, store: s, grade: "never" });
+		assert.deepEqual([allowed.exec, allowed.outcome, allowed.exec_calls], ["allow", "pass", 1]);
+		assert.deepEqual([denied.exec, denied.outcome, denied.exec_calls], ["deny", "fail", 0]);
+		assert.deepEqual([pinnedAllowed.outcome, pinnedDenied.exec, pinnedDenied.outcome, pinnedDenied.exec_calls], ["pass", "deny", "fail", 0]);
+		const definitions = [...serve.agents.values()];
+		assert.deepEqual(
+			definitions.map((one) => [one.id.replace(/^.*?-(shell|pinned)-/, "$1-"), one.computer]),
+			[
+				["shell-desktop-tools", { kind: "desktop", surface: "tools" }],
+				["pinned-desktop-tools", { kind: "desktop", provider: "pinned-vendor", surface: "tools" }],
+				["shell-desktop-tools-ui", { kind: "desktop", surface: "tools", exec: false }],
+				["pinned-desktop-tools-ui", { kind: "desktop", provider: "pinned-vendor", surface: "tools", exec: false }],
+			],
+		);
+		const header = recordOf(s, denied.run)[0].data;
+		assert.deepEqual(header.agent, { surface: "tools", exec: "deny", groups: ["files", "screen", "input.pointer", "input.keys", "apps", "ui"], id: definitions[2].id });
+	} finally {
+		await serve.close();
+	}
+});
+
+test("serve: a shell tool call refused before it ran is no program; one that ran and failed is", async () => {
+	const gated = async (given) => {
+		await given.tool("bash", "refused");
+		await given.tool("bash", "failed");
+		return { outcome: "done" };
+	};
+	const serve = await fakeServe({ agents: { gated } });
+	try {
+		const s = store();
+		const backend = withTask(serveBackend({ baseUrl: serve.baseUrl, token: TOKEN, pollMs: 5 }), serve);
+		const [result] = await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("gated")], seeds: [1], backend, store: s, grade: "never" });
+		assert.deepEqual([result.tool_calls, result.steps, result.exec_calls], [2, 0, 1]);
+		const turns = recordOf(s, result.run).filter((entry) => entry.kind === ENTRY.step && entry.data.phase === "tool").map((entry) => [entry.data.method, entry.data.error?.code]);
+		assert.deepEqual(turns, [
+			["bash", "tool_refused"],
+			["bash", "tool_failed"],
+		]);
+	} finally {
+		await serve.close();
+	}
+});
+
 test("serve: a pi arm's agent holds the task's step budget as its max_tool_calls, one agent per budget", async () => {
 	const serve = await fakeServe();
 	try {
@@ -211,7 +393,7 @@ test("serve: a pi arm's agent holds the task's step budget as its max_tool_calls
 		const opened = await backend.open({ task: resolved, arm: { id: "pi-a", harness: "pi", surface: "code", model: "m" }, labels: { "agentrun.bench": "b1" }, signal: AbortSignal.timeout(10_000) });
 		assert.equal(opened.ok, true);
 		const [definition] = serve.agents.values();
-		assert.deepEqual([definition.id, definition.max_tool_calls], ["b1-pi-a-desktop-s7", 7]);
+		assert.deepEqual([definition.id, definition.max_tool_calls], ["b1-pi-a-desktop-code-s7", 7]);
 		await opened.value.release();
 		assert.equal(serve.runs.get("run_1").status, "cancelled", "released before its start, the run never ran its agent");
 		await opened.value.release();
@@ -401,8 +583,9 @@ test("this repository's serve saves an arm's agent: its effort is the definition
 	// is set and the run holds a computer, it is let go at once.
 	const opened = await serveBackend({ baseUrl: server.baseUrl, token: server.token }).open({ task: resolveTask(task, 1), arm: thinking, labels: { "agentrun.bench": "cb-effort" }, signal: AbortSignal.timeout(30_000) });
 	if (opened.ok) await opened.value.release();
-	const saved = await fetch(`${server.baseUrl}/agents/cb-effort-thinking-desktop-s${task.spec.budget.steps}`, { headers: { authorization: `Bearer ${server.token}` } });
+	const saved = await fetch(`${server.baseUrl}/agents/cb-effort-thinking-desktop-tools-s${task.spec.budget.steps}`, { headers: { authorization: `Bearer ${server.token}` } });
 	assert.equal(saved.status, 200, await saved.clone().text());
 	const agent = await saved.json();
 	assert.equal((agent.definition ?? agent).thinking, "high");
+	assert.equal((agent.definition ?? agent).computer.surface, "tools", "serve keeps the arm's surface");
 });

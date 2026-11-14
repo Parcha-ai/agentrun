@@ -22,7 +22,11 @@ function assertNever(id) {
 	throw new Error(`no fake task ${id}`);
 }
 
-export const arm = (harness, id = harness, surface = "code") => ({ id, harness, surface, model: "fake" });
+/** An arm. Its surface is "tools" unless given: a test's own agent calls the computer one method at a time. */
+export const arm = (harness, id = harness, surface = "tools") => ({ id, harness, surface, model: "fake" });
+
+/** A task with some of its spec's fields changed (exec, budget), its folder and hash as they were. */
+export const withSpec = (task, change) => ({ ...task, spec: { ...task.spec, ...change } });
 
 export const jsonl = (path) =>
 	readFileSync(path, "utf8")

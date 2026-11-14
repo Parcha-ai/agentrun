@@ -51,7 +51,7 @@ function reflectOf(records: Records): Pick<Reflect, "after" | "until" | "earlier
  *  tool call its assistant tool-call and its result. So a claude-agent / codex / opencode run reads the same rows, words
  *  and final answer as a pi run of the same conversation. A run's own pi entries and its end-of-run turn (already model
  *  shaped) pass through unchanged, so a pi run is untouched. */
-function piShaped(entries: readonly EntryLike[]): EntryLike[] {
+export function piShaped(entries: readonly EntryLike[]): EntryLike[] {
   return entries.flatMap((entry) => {
     const data = (entry.data ?? {}) as Record<string, unknown>;
     // When the record's entry was written (`at`), as pi's own message carries its timestamp: the Timeline dates the row by it.
