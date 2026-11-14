@@ -20,7 +20,7 @@ that says what your API offers.
 
 ### Step one: run the exec pre-check
 
-Before you write anything else, write your host's constructor and its `exec` (see [the eight members](#the-eight-members)
+Before you write anything else, write your host's constructor and its `exec` (see [the twelve members](#the-twelve-members)
 below). Then write a `createHost({ env })` in your conformance module that builds the host from your key, and point to
 that module from your provider file with `conformance`, as `e2b.ts` does. E2B's `createHost` in
 `src/conformance/e2b.ts` is three lines. Make a machine by hand in your console, then run, from the repository root:
@@ -52,17 +52,20 @@ You add four things under `packages/computer/src/`, each copied from E2B's:
 - `conformance/<vendor>.ts`, which reads your key and builds your provider for the test suite.
 - One line in `descriptors/index.ts` that adds your descriptor to `DESCRIPTORS`.
 
-### The eight members
+### The twelve members
 
-Every snippet below is cut from E2B's host in `src/e2b.ts`, and `// …` marks a cut. A member answers a `Result`, either
-`ok(value)` or a failure with a code. If a member throws, AgentRun reads the error through `errorCode`. Each call gets
-`ctx` with a `timeoutMs` and sometimes a `signal`. Pass both to your client where you can.
+A host has twelve members: `descriptor`, `facts`, `create`, `get`, `list`, `delete` and `exec`, then the optional
+`upload`, `errorCode`, `stop`, `extend` and `check`. Every snippet below is cut from E2B's host in `src/e2b.ts`, and
+`// …` marks a cut. A call answers a `Result`, either `ok(value)` or a failure with a code. If a call throws, AgentRun
+reads the error through `errorCode`. Each call gets `ctx` with a `timeoutMs` and sometimes a `signal`. Pass both to
+your client where you can.
 
-**`id`** is your descriptor's id. Errors with code `vendor` name it.
+**`descriptor`** is your descriptor (below). Errors with code `vendor` name its id, refusals name its label, and the
+provider's network and mounts are the ones it declares.
 
 ```ts
 class E2BHost implements MachineHost {
-	readonly id = "e2b";
+	readonly descriptor = E2B;
 ```
 
 **`facts`** says what your machines are. It never changes, and AgentRun builds the provider's capabilities from it.
@@ -85,8 +88,6 @@ A user on a bigger plan raises the option, up to the fact.
 		arch: "amd64",
 		vendorAgentPorts: [ENVD_PORT],
 		networkReadBack: true,
-		network: [...E2B.network],
-		mounts: [...MOUNT],
 		release: ["delete"],
 	};
 ```
@@ -113,33 +114,26 @@ Archil, and the agent's programs still have no network.
 ```
 
 **`get(id, ctx)`** reads one machine as your API sees it now. It returns a `Machine` with its labels, its `state`
-(`starting`, `running`, `stopped`, `going` or `failed`), and the network and image you read back. A machine that no
-longer exists is `undefined`, not an error.
+(`starting`, `running`, `stopping`, `stopped`, `going` or `failed`), and the network and image you read back. A machine
+that no longer exists is `undefined`, or an error that maps to `not_found`; neither is a failure.
 
 ```ts
 	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
-		try {
-			return ok(machineOf(await this.#Sandbox.getInfo(id, this.#api(ctx.timeoutMs, ctx.signal))));
-		} catch (error) {
-			if (codeOf(error) === "not_found") return ok(undefined);
-			throw error;
-		}
+		return ok(machineOf(await this.#Sandbox.getInfo(id, this.#api(ctx.timeoutMs, ctx.signal))));
 	}
 ```
 
-**`list(labels, ctx)`** returns every machine on the account that carries all of these labels. It reads every page and
-each machine the way `get` does, all within `ctx.timeoutMs`.
+**`list(labels, ctx)`** returns the machines your listing shows for these labels, every page, within `ctx.timeoutMs`,
+each as the listing reads it. Leave out what the listing doesn't carry, such as the network: AgentRun calls `get` where
+it needs it. You may return machines that don't carry every label (your API filters by some, or none): AgentRun keeps
+the ones that do.
 
 ```ts
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
 		// …
 		const paginator = this.#Sandbox.list({ ...this.#connection, requestTimeoutMs: this.#requestMs, query: { metadata: labels }, limit: PAGE });
-		// … every page into found, then each sandbox read back
-		for (const sb of found.values()) {
-			const read = await this.get(sb.sandboxId, { timeoutMs: left(), ...(ctx.signal ? { signal: ctx.signal } : {}) });
-			// …
-		}
-		return ok(machines);
+		// … every page into found
+		return ok([...found.values()].map(listedOf));
 	}
 ```
 
@@ -149,11 +143,7 @@ fine. AgentRun then waits until `get` and `list` stop showing it.
 ```ts
 	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
 		// …
-		try {
-			await this.#Sandbox.kill(id, this.#api(ctx.timeoutMs));
-		} catch (error) {
-			if (codeOf(error) !== "not_found") throw error;
-		}
+		await this.#Sandbox.kill(id, this.#api(ctx.timeoutMs));
 		return ok(undefined);
 	}
 ```
@@ -179,8 +169,8 @@ E2B's SDK hands `commands.run` output over as text, decoded as UTF-8, which brea
 		)[Symbol.asyncIterator]();
 		// … the start event gives the pid; then each data event's bytes go to out or err as they come
 		return ok({
-			stdout: out.iterable,
-			stderr: err.iterable,
+			stdout: out,
+			stderr: err,
 			write: (bytes) => sandbox.commands.sendStdin(pid, bytes, { requestTimeoutMs }),
 			end: () => sandbox.commands.closeStdin(pid, { requestTimeoutMs }),
 			wait: () => exited,
@@ -189,13 +179,15 @@ E2B's SDK hands `commands.run` output over as text, decoded as UTF-8, which brea
 	}
 ```
 
-**`errorCode(error)`** maps an error your client threw to one of AgentRun's [codes](#refusals). Anything you don't
-recognise is `"vendor"`. E2B's `errorCode` returns `codeOf(error)`:
+**`errorCode(error)`** is optional. It maps an error your client threw to one of AgentRun's [codes](#refusals), and
+anything you don't map is `"vendor"`. AgentRun reads an `AbortError` as `aborted` and a `TimeoutError` as `timeout`
+itself, so map the rest. Map your vendor's not-found exception to `not_found`: AgentRun reads that from `get` as a
+machine that is gone and from `delete` as done, so those two need no catch of their own. E2B's `errorCode` returns
+`codeOf(error)`:
 
 ```ts
 function codeOf(error: unknown): ComputerErrorCode {
 	const name = (error as { name?: unknown } | null)?.name;
-	if (name === "AbortError") return "aborted";
 	if (name === "SandboxNotFoundError" || name === "NotFoundError" || name === "FileNotFoundError") return "not_found";
 	// …
 	return "vendor";
@@ -203,27 +195,28 @@ function codeOf(error: unknown): ComputerErrorCode {
 ```
 
 **Optional hooks.** `upload(id, path, bytes, ctx)` puts a file in the machine. E2B has one because it has a file API;
-without it, AgentRun streams its daemon through `exec`'s stdin. Six more hooks each cover one vendor need. `prepare`
-applies settings once a machine runs. `stop` goes with `release: ["stop"]`. `setTimer` moves your timer when an agent
-extends its deadline, and `setLabels` does the same for `lifetime: "janitor"`. `check` adds your own rules for a spec,
-such as image names. `testConnection` replaces the default list call if listing would create something. Leave out what
-you don't need.
+without it, AgentRun streams its daemon through `exec`'s stdin. Three more hooks each cover one vendor need. `stop`
+goes with `release: ["stop"]`; it only asks, and AgentRun waits until the machine reads stopped. `extend` moves a
+machine's end when an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's deadline label with
+`"janitor"`. AgentRun reads the end back through `get`. `check` adds your own rules for a spec, such as image names; the
+spec it gets is an object whose fields aren't checked yet. Leave out what you don't need. Settings' test of your keys is
+one `list` by AgentRun's label, so a `list` must never create anything.
 
 ### Wire it up
 
 Your provider class hands the host to `HostedProvider`, which turns it into a whole `ComputerProvider`, the interface
-the rest of AgentRun calls. The function `hostedProvider(host, options)` does the same.
+the rest of AgentRun calls.
 
 ```ts
 export class E2BProvider extends HostedProvider {
 	constructor(options: E2BProviderOptions) {
 		// … check the options
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, label: "E2B", kind, maxLifetimeMs });
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, kind, maxLifetimeMs });
 	}
 }
 ```
 
-The same file exports `create(options)`, `MOUNT`, `CAPABILITIES` and `conformance`, as `e2b.ts` does. Load your SDK
+The same file exports `create(options)` and `conformance`, as `e2b.ts` does. Load your SDK
 lazily through a constant like `E2B_PACKAGE` and pin it exactly as a root devDependency. `test/vendor-sdks.test.mjs`
 finds that constant in your file and checks the pin.
 
@@ -333,8 +326,8 @@ in the pull request template.
 ### What a provider declares
 
 Every provider has a descriptor and answers `capabilities()` with its kind, OS, daemon, groups (exec, files, screen
-and so on), lifetime, networks, isolation, release, users and mounts. On a `MachineHost` these come from `facts` and the
-provider's options, so you write none of them by hand. The case `health.declared` checks `capabilities()` against the
+and so on), lifetime, networks, isolation, release, users and mounts. On a `MachineHost` these come from `facts`, the descriptor
+(networks and mounts) and the provider's options, so you write none of them by hand. The case `health.declared` checks `capabilities()` against the
 descriptor, and each computer's `hello` against `capabilities()`. [spec/computer/provider.md](../../spec/computer/provider.md)
 says what each member promises.
 
@@ -393,8 +386,9 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
   to run, holds your read-back to the request, uploads the daemon and checks its sha256, starts it, and probes from
   inside that the network is none. If any step fails after the machine exists, it deletes the machine and waits until
   it reads gone.
-- **The rest** covers `attach`, `list`, `connect`, `network` (fixed at create), `extend` (where `setTimer` or
-  `setLabels` exists), `release` (delete, then wait until `get` and `list` read it gone), `watch` and `testConnection`.
+- **The rest** covers `attach`, `list`, `connect`, `network` (fixed at create), `extend` (where your host has
+  `extend`), `release` (delete, then wait until `get` and `list` read it gone; a stop waits until both read it
+  stopped, or gone where a stop deletes it, and asks again while it reads running), `watch` and `testConnection`.
   Every refusal uses the codes above, and `vendor` carries your API's own words.
 
 ### The live sweep

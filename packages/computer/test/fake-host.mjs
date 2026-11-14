@@ -70,7 +70,8 @@ const START = Date.now();
 
 /**
  * A fake host. Options:
- *  - facts: over the defaults (child daemon, vendor lifetime, network read back, archil mounts);
+ *  - facts: over the defaults (child daemon, vendor lifetime, network read back); its descriptor takes network none
+ *    and an archil mount;
  *  - create: "ok", "fail" (refused: nothing made), "hold" (answers once fake.release() is called), "lost" (makes the
  *    machine, then throws Late: its id never comes back), "broken" (makes it, then throws a plain error);
  *  - starting: how many reads a new machine answers starting before it runs;
@@ -82,9 +83,12 @@ const START = Date.now();
  *  - sha: "ok" or "lie"; install: the install's exit code; initFails: words init writes before it exits;
  *  - notListening: how many bridges find no daemon before one does;
  *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
- *  - display: "ok", "never" or "dies"; drift: the vendor's own drift words a read gives;
+ *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager does not start) or
+ *    "manager dies" (it ends at once); drift: the vendor's own drift words a read gives;
  *  - network: the vendor's network read back, over what create asked ("none"/"open"/{ other });
  *  - lingers: { reads, lists } after a delete; fileApi: false for a host with no upload;
+ *  - timer: "ok" (extend moves the end: the vendor's timer, or with lifetime janitor the deadline label, rounded up to a
+ *    whole second), "limit" (extend refuses, nothing moves), or "none" (a host with no extend);
  *  - onStep(step, machine): at the start of every host call and daemon request, so a test can abort a signal there;
  *  - hang: a script's kind ("install", ...) whose process never ends; killHangs: a process's kill that never settles;
  *  - archil: root verbs' answers, as fake-archil.mjs's;
@@ -186,7 +190,7 @@ export function fakeHost({
 		const displayUp = m.init?.display && m.displayUp;
 		if (method === "hello") {
 			const groups = displayUp ? [...DESKTOP_GROUPS] : [...LINUX_GROUPS];
-			if (m.xvfb && display === "ok") m.displayUp = true;
+			if (m.xvfb && (display === "ok" || display.startsWith("manager "))) m.displayUp = true;
 			return result({ ...m.box.hello, groups, kind: displayUp ? "desktop" : "linux", ...(m.box.helloPatch ?? {}) });
 		}
 		if (method === "files.read" && params.path === "/proc/self/mounts") return result({ data: Buffer.from(mountsOf(m.box)).toString("base64"), size: 0, eof: true });
@@ -221,14 +225,15 @@ export function fakeHost({
 			return result({ exitCode: 0, stdout: Buffer.from(`${argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 		}
 		if (method === "process.start") {
-			if (params.argv[0] === "no-such-program") return error("not_found", "no-such-program: executable file not found in $PATH");
+			const manager = params.argv.some((arg) => arg.includes("xfwm4"));
+			if (manager && display === "manager missing") return error("not_found", `${params.argv[0]}: executable file not found in $PATH`);
 			const entry = { id: `p${m.processes.length + 1}`, pid: 100 + m.processes.length, argv: params.argv, running: true, exitCode: null, signal: null, stderr: "" };
 			if (params.argv[0] === "Xvfb") {
 				m.xvfb = entry;
 				if (display === "dies") Object.assign(entry, { running: false, exitCode: 1, stderr: "(EE) Fatal server error:\n(EE) Cannot establish any listening sockets\n" });
 			}
 			// A window manager that starts and ends at once, as xfwm4 does with no session bus.
-			if (params.argv[0] === "ends-at-once") Object.assign(entry, { running: false, exitCode: 1, stderr: "Xfconf could not be initialized\n" });
+			if (manager && display === "manager dies") Object.assign(entry, { running: false, exitCode: 1, stderr: "Xfconf could not be initialized\n" });
 			m.processes.push(entry);
 			return result({ id: entry.id, pid: entry.pid });
 		}
@@ -437,7 +442,7 @@ export function fakeHost({
 	const chunks = (proc) => (proc.chunks.length === 0 ? undefined : Buffer.concat(proc.chunks).toString("utf8"));
 
 	const host = {
-		id: "fakehost",
+		descriptor: { id: "fakehost", label: "Fakehost", network: ["none"], mounts: ["archil"] },
 		facts: {
 			daemon: "child",
 			isolation: "microvm",
@@ -447,8 +452,6 @@ export function fakeHost({
 			vendorAgentPorts: [7777],
 			networkReadBack: true,
 			gpuReadBack: true,
-			network: ["none"],
-			mounts: ["archil"],
 			release: ["delete"],
 			...facts,
 		},
@@ -481,6 +484,11 @@ export function fakeHost({
 			if (create === "lost") {
 				make();
 				throw new Late("the answer never came back");
+			}
+			if (create === "lost-answered") {
+				// A host whose own client gave up on the create's reply, answered as a Result (Agent37's REST, Daytona's).
+				make();
+				return { ok: false, error: { code: "timeout", message: "POST /v1/instances did not answer within 300 s" } };
 			}
 			if (create === "broken") {
 				make();
@@ -542,15 +550,21 @@ export function fakeHost({
 					},
 				}
 			: {}),
-		async setTimer(id, { end, most }, ctx) {
-			const m = machines.get(id);
-			await step("setTimer", ctx, m);
-			if (gone(m)) throw new NotFound(`machine ${id} not found`);
-			if (timer === "limit") return { ok: false, error: { code: "limit", message: "no whole number of seconds reaches it; nothing moved" } };
-			m.endsAt = new Date(Math.min(end.getTime(), most.getTime()));
-			m.timerMoved = true;
-			return { ok: true, value: undefined };
-		},
+		...(timer === "none"
+			? {}
+			: {
+					// The vendor's timer, or the janitor's deadline label, which this fake rounds up to a whole second.
+					async extend(id, end, ctx) {
+						const m = machines.get(id);
+						await step("extend", ctx, m);
+						if (gone(m)) throw new NotFound(`machine ${id} not found`);
+						if (timer === "limit") return { ok: false, error: { code: "limit", message: "no whole number of seconds reaches it; nothing moved" } };
+						const most = Date.parse(m.labels["agentrun.computer.max-deadline"]);
+						if (host.facts.lifetime === "janitor") m.labels["agentrun.computer.deadline"] = new Date(Math.min(Math.ceil(end.getTime() / 1000) * 1000, most)).toISOString();
+						else [m.endsAt, m.timerMoved] = [new Date(Math.min(end.getTime(), most)), true];
+						return { ok: true, value: undefined };
+					},
+				}),
 	};
 
 	fake.host = host;

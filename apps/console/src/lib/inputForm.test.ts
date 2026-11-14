@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentInputOf, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, inputOf, placeholderOf, startText } from "./inputForm";
+import { agentInputOf, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, inputOf, placeholderOf, schemaFields, startText } from "./inputForm";
 
 // An agentic agent's input_schema, as the run forms read it: one field for each top-level property other than
 // `content` (the run's message), the message box required or not, and the typed input the form sends. A schema the
@@ -79,6 +79,12 @@ describe("inputOf", () => {
     expect(start).toEqual({ reason: "vendor" });
     expect(inputOf(f, "Check them.", start)).toEqual({ content: "Check them.", reason: "vendor" });
   });
+
+  it("reads a template's served parameters as the same fields, content and all: a parameter named content is a field", () => {
+    const served = { type: "object", additionalProperties: false, required: ["content"], properties: { content: { type: "string" }, depth: { type: "integer", default: 3 } } };
+    expect(schemaFields(served)).toEqual([["content", { type: "string", required: true }], ["depth", { type: "integer", required: false, default: 3 }]]);
+    expect(schemaFields({ type: "object", properties: { pair: { type: "object" } } })).toBeNull();
+  });
 });
 
 describe("a field's start, label, hint and check", () => {
@@ -115,6 +121,9 @@ describe("a field's start, label, hint and check", () => {
     expect(fieldOfIssue("input.company")).toBe("company");
     expect(fieldOfIssue("input.topics.1")).toBe("topics");
     expect(fieldOfIssue("max_cost_usd")).toBeNull();
+    // A template's apply refuses its parameters under `parameters`, by the same check.
+    expect(fieldOfIssue("parameters.repo", "parameters")).toBe("repo");
+    expect(fieldOfIssue("input.repo", "parameters")).toBeNull();
     expect(fieldIssueWords({ field: "input.company", reason: "missing", message: "input.company is required" }, "company", f.company)).toBe("Company is required.");
     expect(fieldIssueWords({ field: "input.limit", reason: "wrong_type", message: "x" }, "limit", f.limit)).toBe("limit takes a whole number.");
     expect(fieldIssueWords({ field: "input.topics.1", reason: "wrong_type", message: "x" }, "topics", f.topics)).toBe("Each line of topics is text.");

@@ -26,8 +26,8 @@ type SocketBounds struct {
 // DefaultSocketBounds are the probe's.
 var DefaultSocketBounds = SocketBounds{Entries: 50_000, Depth: 8}
 
-// Socket is one socket a program could connect to: its real path, and the type that connected (stream, dgram or
-// seqpacket).
+// Socket is one socket a program could connect to: its real path, or its abstract name as /proc/net/unix gives it
+// (@...), and the type that connected (stream, dgram or seqpacket).
 type Socket struct {
 	Path string `json:"path"`
 	Type string `json:"type"`
@@ -43,11 +43,13 @@ type SocketSearch struct {
 // The socket types a connect is tried with, each by Go's network name and the name reported.
 var socketTypes = []struct{ network, name string }{{"unix", "stream"}, {"unixgram", "dgram"}, {"unixpacket", "seqpacket"}}
 
-// ConnectableSockets lists the unix sockets with a path that the calling process can connect to: every socket found by
-// walking roots (each root by its real path, links never followed, each within bounds of its own) and every path in
-// netUnix (the text of /proc/net/unix; abstract names, @..., are the namespace's own and left out). Each is tried with a
-// connect of each type, bounded by timeout, at once; the real paths of those that accept, with the type, sorted by path.
-// A root whose walk reached a bound is named in Incomplete.
+// ConnectableSockets lists the unix sockets that the calling process can connect to: every socket found by walking
+// roots (each root by its real path, links never followed, each within bounds of its own), and every path and abstract
+// name (@...) in the table at netUnix (/proc/net/unix, the sockets of the reader's network namespace). An abstract name
+// is in no folder: the network namespace holds it, so every program in the namespace reaches it, and the table alone
+// names it. Each is tried with a connect of each type, bounded by timeout, at once; the real paths and names of those
+// that accept, with the type, sorted. A root whose walk reached a bound, and a table that could not be read, are named
+// in Incomplete.
 func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, timeout time.Duration) SocketSearch {
 	candidates := map[string]bool{}
 	add := func(path string) {
@@ -94,12 +96,17 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 			incomplete = append(incomplete, fmt.Sprintf("%s: folders deeper than %d levels were not searched", real, bounds.Depth))
 		}
 	}
-	for _, line := range strings.Split(netUnix, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 8 || !strings.HasPrefix(fields[7], "/") {
-			continue
+	table, err := os.ReadFile(netUnix)
+	if err != nil {
+		incomplete = append(incomplete, fmt.Sprintf("%s: cannot be read, so no abstract name was tried: %v", netUnix, err))
+	}
+	for _, line := range strings.Split(string(table), "\n") {
+		switch name := unixSocketName(line); {
+		case strings.HasPrefix(name, "/"):
+			add(name)
+		case strings.HasPrefix(name, "@"):
+			candidates[name] = true // Go dials a name that starts with @ as an abstract one
 		}
-		add(fields[7])
 	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -124,4 +131,20 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 	wg.Wait()
 	sort.Slice(sockets, func(i, j int) bool { return sockets[i].Path < sockets[j].Path })
 	return SocketSearch{Sockets: sockets, Incomplete: incomplete}
+}
+
+// unixSocketName is the name a line of /proc/net/unix gives its socket, or "" for one with none (and for the header).
+// The kernel writes seven columns, then one space and the name as it is, spaces and all, so the name is the rest of
+// the line after that space, not a field.
+func unixSocketName(line string) string {
+	rest := line
+	for range 7 {
+		rest = strings.TrimLeft(rest, " ")
+		end := strings.IndexByte(rest, ' ')
+		if end < 0 {
+			return ""
+		}
+		rest = rest[end:]
+	}
+	return strings.TrimPrefix(rest, " ")
 }

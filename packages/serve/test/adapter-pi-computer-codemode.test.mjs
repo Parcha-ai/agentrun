@@ -67,7 +67,7 @@ async function desktop({ ui = false } = {}) {
 async function codemodeRun(t, script, computer, gate = () => "allow", restartAt = undefined) {
   const { server, runners: stores_ } = await stores({ runners: 2 });
   await queue(server, "run-1");
-  const { tools } = suiteTools();
+  const { tools, ran } = suiteTools();
   const requests = [];
   const loop = createAdapterLoop(async (_claim, run) => ({
     adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0, extensions: [computerCodemode(computer)] }),
@@ -90,7 +90,7 @@ async function codemodeRun(t, script, computer, gate = () => "allow", restartAt 
     const now = await server.runs.get("run-1");
     return now.state === "ended" && now.runner === null && now;
   }, "the run ended", 30_000);
-  return { requests, server };
+  return { requests, server, ran };
 }
 
 /** The text of the newest tool result the provider got. */

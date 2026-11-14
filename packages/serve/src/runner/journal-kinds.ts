@@ -72,6 +72,11 @@ export const KINDS = {
    *  (adapter-loop.ts pauseFor), and a claim lost before that restores it from here (pendingPauseOf). No run patch, and
    *  neither a call nor a message, so the reader passes over it. */
   pausePending: "agentrun.pause.pending",
+  /** On the run's model session (resume log, never read as a call or a message): the session's recent requests as the
+   *  cap's expected pricing reads them (the kernel's RecentRequest list, recentAfter), written each time one answers.
+   *  A later claim or pass starts from the newest record, so its first request reads the cache a recent answer left warm
+   *  when it ended under CACHE_WARM_MS ago by the cap's clock, and uncached after that (adapter-loop.ts recentIn). */
+  capRecent: "agentrun.cap.recent",
   /** A workflow call node's effect, as it starts and as it ends (pause.ts NodeLine: its path, item, tool, label, input,
    *  then its status and output or error), on the run's node-log session (NODE_LOG_SESSION): the run's graph lists its
    *  effects from these. Written as the effect runs, never for one the driver answers from its receipt. */
@@ -190,6 +195,9 @@ export interface CallStartData {
    *  until its agentrun.call.sent mark (KINDS.callSent). The bridge holds the call and hands the CLI nothing while it waits,
    *  so no waiting result shows for it, as on pi. */
   readonly parked?: true;
+  /** A tool that only nests calls (tools_call, codemode; HostTool.nests): its calls start after it, each its own, and it
+   *  runs again whole after a crash, so a start a crash left open is never ended interrupted (adapter-loop.ts). */
+  readonly nests?: true;
   /** The harness's working directory (a CLI's), which an absolute path in `input` is built from: the run's rows name a
    *  path under it by its name in the workspace (store-reads/journal.ts runTimeline). */
   readonly cwd?: string;

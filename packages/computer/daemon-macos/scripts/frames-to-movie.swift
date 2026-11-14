@@ -51,6 +51,23 @@ guard !frames.isEmpty else { fail("no frames in \(arguments[1])") }
 frames.sort { $0.at < $1.at }
 captions.sort { $0.at < $1.at }
 
+// The task's own frames and captions. A frame from well before the start is the setup's (Notes' welcome sheet, answered
+// before the task, or its window before the fixture sized it), and one after the end the teardown's (Notes' window put
+// back to its own size): the movie starts at the task's first frame instead, ends at its end, and sizes its window by
+// the task's frames alone.
+var start = from ?? frames[0].at
+let last = end > start ? end : frames.last!.at + 1.2
+// A caption from before the start is the setup's, not the task's.
+captions.removeAll { $0.at < start }
+if let first = frames.firstIndex(where: { $0.at >= start - 0.5 }) {
+	frames.removeFirst(first)
+	start = max(start, frames[0].at)
+} else {
+	frames = [frames.last!]
+}
+// The movie shows no frame after its end; the first frame stays, so there is one.
+frames = [frames[0]] + frames.dropFirst().filter { $0.at <= last }
+
 func image(_ path: String) -> CGImage? {
 	guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
 	return CGImageSourceCreateImageAtIndex(source, 0, nil)
@@ -171,19 +188,7 @@ func draw(_ picture: CGImage, caption: String) -> CVPixelBuffer {
 }
 
 // Every 1/30 s from the start (the task's, else the first frame's) to the end: the latest frame and caption at that
-// time. A frame from well before the start is the setup's (Notes' welcome sheet, answered before the task): the movie
-// starts at the task's first frame instead.
-var start = from ?? frames[0].at
-let last = end > start ? end : frames.last!.at + 1.2
-// A caption from before the start is the setup's, not the task's.
-captions.removeAll { $0.at < start }
-if let first = frames.firstIndex(where: { $0.at >= start - 0.5 }) {
-	frames.removeFirst(first)
-	start = max(start, frames[0].at)
-} else {
-	frames = [frames.last!]
-}
-// A still stretch (no new frame, no new caption) plays at `fast` times its speed after its first `still` seconds, with a
+// time (the frames and captions were cut to the task's own, above). A still stretch (no new frame, no new caption) plays at `fast` times its speed after its first `still` seconds, with a
 // mark in the corner saying so: an agent's turns wait on its model, and a window that does not change for ten seconds
 // shows nothing. The movie's time is the run's elsewhere.
 let still = 1.0

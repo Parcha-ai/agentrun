@@ -181,8 +181,10 @@ test("the run record keeps each guard's row as metrics.guards; a workflow whose 
     { kind: LEARNED_NODES, data: { call: "workflow-first", workflow: "answer", nodes: [{ label: "fetch", kind: "call", status: "ok", duration_ms: 3 }, { label: "answer", kind: "agent", status: "escalated", duration_ms: 9, guard: rows[0] }], guards: rows } },
     { kind: "other", data: {} },
   ];
-  assert.deepEqual(guardsOf(entries), rows);
-  assert.deepEqual(pathMetrics({ input: {}, learning: { seed: "abc" } }, undefined, entries).guards, rows);
+  // Each row names the workflow whose call made it (the entry's `workflow`): a run can call more than one.
+  const named = rows.map((row) => ({ ...row, workflow: "answer" }));
+  assert.deepEqual(guardsOf(entries), named);
+  assert.deepEqual(pathMetrics({ input: {}, learning: { seed: "abc" } }, undefined, entries).guards, named);
   assert.equal("guards" in pathMetrics({ input: {}, learning: { seed: "abc" } }, undefined, []), false, "no guard ran: no key");
   assert.deepEqual(providersNamed([{ node: "extract", guard: { signal: "jev", threshold: 0.5 } }]), ["jev"]);
   assert.deepEqual(providersNamed([{ node: "agent", guard: { signal: "both", threshold: 0.5 } }]), ["jev"]);
@@ -220,7 +222,28 @@ test("every guard check is kept past the trace's cap: a map of 70 guarded judges
   const rows = guardsOf(kept);
   assert.equal(rows.length, 71, "every check: 70 in the map, and the one that handed back");
   assert.equal(rows.filter((row) => row.node === "check" && !row.escalated).length, 70);
-  assert.deepEqual(rows.at(-1), { node: "answer", signal: "self", self: 0.84, p: 0.84, threshold: 0.9, escalated: true });
+  assert.deepEqual(rows.at(-1), { node: "answer", signal: "self", self: 0.84, p: 0.84, threshold: 0.9, escalated: true, workflow: "answer" });
   assert.deepEqual(pathMetrics({ input: {}, learning: { seed: "abc" } }, undefined, kept).guards, rows);
   assert.match(text, /guard on "answer" \(self\): p 0\.84 against threshold 0\.9 \(its own confidence 0\.84\); handed back/, "the hand-back names the check past the cap");
+});
+
+// Review on #2644 (recovered replays): a replay's outcome is how its workflow ended, never whether some node failed on the
+// way. A map that collects a failed item and goes on to an escalate node handed back: the agent's recorded answer. Only a
+// workflow that itself ended failed (or was refused) is no evidence.
+test("a replay's outcome reads how its workflow ended: a recovered node failure that ends escalated is handed back", () => {
+  const launch = { input: {}, learning: { seed: "abc" }, replay: { of: "graded-1", workflow: "answer", digest: "d" } };
+  const handedBack = { path: "handed_back", workflow: "answer" };
+  const entry = (ended, nodes) => ({ kind: LEARNED_NODES, data: { call: "workflow-first", workflow: "answer", nodes, ...(ended ? { ended } : {}) } });
+  const recovered = [entry("escalated", [{ label: "check", kind: "extract", status: "failed", duration_ms: 3 }, { label: "check", kind: "extract", status: "ok", duration_ms: 3 }])];
+  assert.equal(pathMetrics(launch, handedBack, recovered).replay.outcome, "handed_back", "a failed item the map collected, then an escalation: handed back");
+  assert.equal(pathMetrics(launch, handedBack, [entry("failed", [{ label: "check", kind: "extract", status: "failed", duration_ms: 3 }])]).replay.outcome, "failed");
+  assert.equal(pathMetrics(launch, handedBack, []).replay.outcome, "failed", "no word of how it ended (refused before any node ran): no evidence");
+});
+
+test("a learned_workflow call keeps how its workflow ended beside its nodes: escalated, complete, or failed", { timeout: 60_000 }, async (t) => {
+  const guard = { signal: "self", threshold: 0.7 };
+  const ended = (kept) => kept.find((entry) => entry.kind === LEARNED_NODES)?.data?.ended;
+  assert.equal(ended((await call(t, flowOf(guard), { submitted: { answer: 41, confidence: 0.3 } })).kept), "escalated");
+  assert.equal(ended((await call(t, flowOf(guard), { submitted: { answer: 42, confidence: 0.9 } })).kept), "complete");
+  assert.equal(ended((await call(t, flowOf(guard), { submitted: { answer: "forty-two", confidence: 0.9 } })).kept), "failed");
 });

@@ -103,8 +103,8 @@ export type Header = {
   /** The rows' total $ (job and learning) of the rows finished, and how many of them cost nothing known. */
   spent_usd: number;
   unknown_cost_rows: number;
-  /** Rows finished by the path their run took. */
-  paths: Record<RunPath, number>;
+  /** Rows finished by the path their run took (a batch's run is never a replay run: runner/promotion.ts starts those). */
+  paths: Record<Exclude<RunPath, "replay">, number>;
   /** What the batch's learning kept, each name once, and the merges that touched workflows: [{row, commit, workflows}]. */
   lessons: Lessons;
   revisions: { row: number; commit: string | null; workflows: string[] }[];
@@ -622,7 +622,7 @@ export class LearningBatches {
       else if (row.right === false) next.wrong++;
       if (row.run_id && (row.total_usd === null || row.total_usd === undefined)) next.unknown_cost_rows++;
       spent += row.total_usd ?? 0;
-      if (row.path) next.paths[row.path]++;
+      if (row.path && row.path !== "replay") next.paths[row.path]++;
       for (const kind of ["notes", "skills", "workflows"] as const) for (const name of row.learned?.[kind] ?? []) if (!next.lessons[kind].includes(name)) next.lessons[kind].push(name);
       for (const r of row.revisions ?? []) next.revisions.push({ row: row.n, commit: r.commit, workflows: r.workflows });
     }

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { registryPin } from "./store-helpers.mjs";
 
 /** A tool as the registry keeps it: as its server listed it (input_schema). */
 const listed = ({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema });
@@ -28,6 +29,7 @@ const { TOOL_UNMETERED } = await import("../dist/timeline/index.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { STOPPED_WHILE_WAITING } = await import("../dist/refusal-words.js");
+const { CODEMODE } = await import("../dist/meta-tool-names.js");
 const { INTERRUPTED_TEXT } = await import("@parcha/agentrun-kernel/kernel");
 
 const KEY = randomBytes(32);
@@ -113,7 +115,7 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gat
     rmSync(dir, { recursive: true, force: true });
   });
   await server.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools: [listed(ADD)], sealed: sealMcpCredential(KEY, "fake", { type: "headers", headers: { authorization: `Bearer ${TOKEN}` } }, fake.url) });
-  await server.agents.create({ id: "agent-1", name: "Cli" }, { id: "rev-1", kind: "agentic", body: {} });
+  await server.agents.create({ id: "agent-1", name: "Cli" }, { id: "rev-1", kind: "agentic", body: {}, mcpPin: await registryPin(server) });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   await before?.({ server });
   const seen = {};
@@ -185,7 +187,7 @@ const toolCalls = (fake) => fake.log.filter((entry) => entry.method === "tools/c
 test("C1: the CLI's session carries the run's MCP tools as host tools; an allowed call through its bridge answers, sent once with the credential the CLI never held, on the run's record", async (t) => {
   const { row, seen, fake, entries } = await cliRun(t, { settings: { "mcp:fake/add": { permission: "allow" } } });
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.deepEqual(seen.spec.tools.map((tool) => tool.name), ["lookup", WIRE], "the MCP tools are host tools, beside the run's own");
+  assert.deepEqual(seen.spec.tools.map((tool) => tool.name), ["lookup", WIRE, CODEMODE], "the MCP tools are host tools, beside the run's own");
   assert.equal("mcp" in seen.spec, false, "no MCP of its own: the CLI's client is never handed a server");
   assert.equal(JSON.stringify(seen.spec).includes(TOKEN), false, "no credential in what the CLI was handed");
   assert.equal(seen.answer?.text, "5", JSON.stringify(seen.answer));
@@ -260,7 +262,7 @@ test("C5: a parked call across a new runner: the runner that parked it goes, ano
 test("C6: a run that grants no MCP tool hands its CLI no MCP tool, and the server sees nothing", async (t) => {
   const run = await cliRun(t, { grants: [] });
   assert.equal(run.row.state, "ended", JSON.stringify(run.row));
-  assert.deepEqual(run.seen.spec.tools.map((tool) => tool.name), ["lookup"], "no MCP tool among the host tools");
+  assert.deepEqual(run.seen.spec.tools.map((tool) => tool.name), ["lookup", CODEMODE], "no MCP tool among the host tools, and the host's codemode alone");
   assert.deepEqual(run.fake.log.filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "the server saw nothing of the run");
 });
 

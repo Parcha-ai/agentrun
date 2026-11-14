@@ -13,7 +13,7 @@
 // claim) records each call made inside one.
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ComputerClient } from "@parcha/agentrun-computer";
-import type { ComputerCallRow, ComputerStepRow } from "./timeline/computer.js";
+import { stepOf, type ComputerCallRow, type ComputerStepRow } from "./timeline/computer.js";
 
 /** The element a step acted on, as the run's ui.observe answers named it: its role, and its name when it has one. */
 export type ComputerTarget = NonNullable<ComputerStepRow["on"]>;
@@ -25,7 +25,7 @@ export type ComputerStepRecord = ComputerStepRow;
 
 /** One computer call, as a run's record keeps it: its method, when it started (`started_at`, ISO, so a reader places each
  *  call of a tool call on the run's own clock), the app it named (apps.launch's and apps.terminate's id, a ui call's
- *  target app), whether it answered and in how long, the error's code when it failed, and a ui.act's steps and whether
+ *  target app; for a ui.observe that named none, the app its answer showed), whether it answered and in how long, the error's code when it failed, and a ui.act's steps and whether
  *  its expect held. */
 export type ComputerCallRecord = ComputerCallRow;
 
@@ -87,8 +87,6 @@ function targetOf(value: unknown): ComputerTarget | undefined {
   return { role: one.role, ...(typeof one.name === "string" ? { name: one.name } : {}) };
 }
 
-/** The step kinds a ui.act step may name (the protocol's UiStep keys). */
-const STEP_KINDS = ["press", "set", "perform", "click", "type", "key", "nav", "scroll", "drag"] as const;
 /** The longest element name a row shows: past it, cut with "…" (shownName), after the run's redaction read it whole. */
 export const MAX_TARGET_NAME = 60;
 /** The longest element name a record keeps, whole. A longer one (no control's name on a screen is that long) is kept as
@@ -101,37 +99,14 @@ export function shownName(name: string, redact?: (text: string) => string): stri
   const said = redact ? redact(name) : name;
   return said.length > MAX_TARGET_NAME ? `${said.slice(0, MAX_TARGET_NAME - 1)}…` : said;
 }
-/** The keys a chord names that are no character (the protocol's KEYS). */
-const NAMED_KEYS: ReadonlySet<string> = new Set(["enter", "tab", "space", "backspace", "delete", "escape", "insert", "up", "down", "left", "right", "home", "end", "pageup", "pagedown",
-  "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "shift", "ctrl", "alt", "super", "capslock"]);
-/** The modifiers whose chord with a character is a command, never typing ("super+s"); shift and a character is typing. */
-const COMMAND_KEYS: ReadonlySet<string> = new Set(["ctrl", "alt", "super"]);
-
-/** A key step's chord as the record may keep it: one with a command modifier, or of named keys only ("enter",
- *  "shift+tab"). A lone character or shift and one is typing (a password's, key by key), so it is kept as nothing. */
-export function keptChord(chord: unknown): string | undefined {
-  if (typeof chord !== "string" || !chord) return undefined;
-  // The last key may be "+" itself ("shift++").
-  const keys = chord.endsWith("++") ? [...chord.slice(0, -2).split("+"), "+"] : chord.split("+");
-  const lower = keys.map((key) => key.toLowerCase());
-  if (lower.some((key) => COMMAND_KEYS.has(key))) return chord;
-  return lower.every((key) => NAMED_KEYS.has(key)) ? chord : undefined;
-}
 
 /** What a ui.act step's ref names, as the run's ui.observe answers showed it. */
 export type TargetNames = (ref: string) => ComputerTarget | undefined;
 
-/** A ui.act step's record: its kind and what it acted on from its params (the element by `names`, a key step's chord, a
- *  nav step's place), how it ran from its result. A typed or set value is never read. */
+/** A ui.act step's record: what it acted on from its params (stepOf, the element by `names`), how it ran from its
+ *  result. */
 function stepRecord(step: unknown, result: unknown, names: TargetNames): ComputerStepRecord {
-  const given = obj(step) ?? {};
-  const kind = STEP_KINDS.find((name) => name in given) ?? "step";
-  // The element: the step's own ref (press, set, perform, click, scroll at one), or the one a type goes into.
-  const ref = kind === "type" ? given.into : given[kind];
-  const on = typeof ref === "string" ? names(ref) : undefined;
-  const keys = kind === "key" ? keptChord(given.key) : undefined;
-  const nav = kind === "nav" && typeof given.nav === "string" ? given.nav : undefined;
-  const what = { do: kind, ...(on ? { on } : {}), ...(keys ? { keys } : {}), ...(nav ? { nav } : {}) };
+  const what = stepOf(step, names);
   const ran = obj(result);
   const error = obj(ran?.error);
   if (error) return { ...what, error: typeof error.kind === "string" ? error.kind : "error" };
@@ -151,7 +126,9 @@ function appOf(method: string, params: unknown): string | undefined {
 export function callRecordOf(method: string, params: unknown, answer: unknown, ms: number, startedAt: number, names: TargetNames = () => undefined): ComputerCallRecord {
   const said = obj(answer);
   const ok = said?.ok === true;
-  const app = appOf(method, params);
+  // A look that names no app looks at the one in front: the answer names it.
+  const shown = method === "ui.observe" && ok ? obj(obj(said?.value)?.app)?.id : undefined;
+  const app = appOf(method, params) ?? (typeof shown === "string" && shown ? shown : undefined);
   const base = { method, started_at: new Date(startedAt).toISOString(), ...(app ? { app } : {}), ok, ms: Math.max(0, Math.round(ms)) };
   if (!ok) {
     const code = obj(said?.error)?.code;
@@ -174,7 +151,7 @@ const MAX_NAMED_REFS = 10_000;
 /** The names a client's ui.observe answers gave each ref: role and name (never a value), the name whole up to
  *  MAX_KEPT_NAME (the row cuts it, after the redaction: shownName).
  *  Each observe's nodes are learned again (a ref's element keeps its ref across states, so its newest name wins). */
-class RefNames {
+export class RefNames {
   readonly #byRef = new Map<string, ComputerTarget>();
   learn(answer: unknown): void {
     const nodes = obj(obj(answer)?.value)?.nodes;

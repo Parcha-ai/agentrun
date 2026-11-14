@@ -91,8 +91,9 @@ async function seedAt(lw: Workspace, seed: string, wanted: (snapshot: Snapshot) 
  *  seed holds is no change, and `MEMORY.md` is the host's (the checker ignores it). A skill is laid at
  *  `skills/<name>/SKILL.md`; a draft at `workflows/<name>/workflow.json`, with the README.md the host writes from the
  *  description its block gives. `outcome`, how the run's job ended (only a completed run adds or changes a skill);
- *  `tools`, those a draft may name (tools.ts learnedWorkflowTools); `refuse`: this host's secrets. */
-export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; notesSeed?: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>; ask?: DraftAsk; decisions?: DraftDecisions; workflows?: false }): Promise<Proposed> => {
+ *  `tools`, those a draft may name (tools.ts learnedWorkflowTools); `refuse`: this host's secrets; `outputSchema`: the
+ *  agent's, which a draft's dry run holds its answer to (learn/skills.ts draftDryRun). */
+export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; notesSeed?: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>; ask?: DraftAsk; decisions?: DraftDecisions; workflows?: false; outputSchema?: unknown }): Promise<Proposed> => {
   const parsed = parseReflection(input.turn.answer);
   // Each skill and draft as the folder would hold it, keyed by its block (kind and name) so the changes keep the
   // answer's order; a draft is its two files, given together or not at all. A draft's `example:` line, by its
@@ -162,7 +163,7 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
     const statics = check(changes).problems;
     const whole = statics.some((problem) => WHOLE.has(problem.rule) || problem.path === undefined);
     const refused = new Set(statics.flatMap((problem) => (problem.path === undefined ? [] : [itemOf(problem.path)])));
-    if (!whole) for (const { file, text } of files) if (file.endsWith("/workflow.json") && !refused.has(itemOf(file))) dryRuns[file] = await draftDryRun(dsl, text, examples.get(file));
+    if (!whole) for (const { file, text } of files) if (file.endsWith("/workflow.json") && !refused.has(itemOf(file))) dryRuns[file] = await draftDryRun(dsl, text, examples.get(file), input.outputSchema);
   }
   // A verdict per item from the checks too: the items a problem names are left out (a draft's two files together),
   // and the rest is checked again, until it passes; a problem that names no item, or one that refuses the whole (WHOLE),

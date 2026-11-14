@@ -13,7 +13,7 @@ import { harnessOfBody } from "./harness.js";
 import { storedHarness } from "./harness-table.js";
 import {
   AgentBodyInvalid, type AgenticBody, RevisionMoved, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
-  type ModelTiers, type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type ToolSettings, type WorkflowBody,
+  type ModelTiers, type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type TemplatePackage, type ToolSettings, type WorkflowBody,
 } from "./store/index.js";
 import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
 import { computerOfPlace, type PlaceView, settingOfDefinition } from "./computer-setting.js";
@@ -61,6 +61,8 @@ export type AgentEntry = {
   version: number;
   revisions: number;
   sizes: Map<string, number>;
+  /** The template package it was applied from, as its first revision keeps it; absent or null for one made otherwise. */
+  template?: TemplatePackage | null;
 };
 
 /** A store refusal as the request's answer: a duplicate name (agent exists) and a constraint map the right way. */
@@ -140,8 +142,6 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
     ...(isObject(definition.input_schema) ? { inputSchema: definition.input_schema } : {}),
     ...(isObject(definition.output_schema) ? { outputSchema: definition.output_schema } : {}),
     ...(definition.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}),
-    // The tool-call budget (tool-budget.ts): 0 keeps none.
-    ...(typeof definition.max_tool_calls === "number" && definition.max_tool_calls > 0 ? { maxToolCalls: definition.max_tool_calls } : {}),
     ...common,
     ...learning,
     ...capped,
@@ -170,10 +170,22 @@ function checkPast(definition: Json, current: number): void {
 }
 
 /** Whether committing `next` would leave the agent's current revision unchanged: the same kind and body (skills are in the
- *  body as their SHA-256, so equal files are an equal body — and equal pins an equal body, keys sorted by the validator). */
+ *  body as their SHA-256, so equal files are an equal body — and equal pins an equal body, keys sorted by the validator),
+ *  and the same MCP pin: a save after a server changed a granted tool is a new revision, pinned anew (that is how a person
+ *  takes a server's changed tools). */
 function sameRevision(current: RevisionRow, next: NewRevision): boolean {
-  return current.kind === next.kind && canonical(current.body) === canonical(next.body);
+  return current.kind === next.kind && canonical(current.body) === canonical(next.body) && canonical(current.mcpPin ?? null) === canonical(next.mcpPin ?? null);
 }
+
+/** What a save's check stamps on the revision it let through: its MCP pin (the granted MCP tools as their servers listed
+ *  them at this save), when it grants any. */
+export type SaveStamp = { readonly mcpPin?: unknown };
+/** A save's check (server.ts saveable): it sees the revision before anything is written, may refuse it, and answers what
+ *  to stamp on it. `on`: the revision this save is built on (an edit's: the agent's current one as this try read it, so a
+ *  retry on a newer one sees that one; null for a new agent), whose MCP pin a server that can't be listed keeps. */
+export type SaveCheck = (revision: NewRevision, on: RevisionRow | null) => Promise<SaveStamp | void>;
+/** `revision` with what its check stamped. */
+const stamped = <T extends NewRevision>(revision: T, stamp: SaveStamp | void): T => (stamp?.mcpPin === undefined ? revision : { ...revision, mcpPin: stamp.mcpPin });
 
 /** The byte size of each of the revision's skill files, by the SHA-256 the body keeps (from the texts on its row). */
 function sizesOf(revision: RevisionRow | null): Map<string, number> {
@@ -196,7 +208,7 @@ export async function getAgent(store: AgentsStore, id: string): Promise<AgentEnt
   const revisions = await store.agents.revisions(id); // oldest first (created_at, id)
   const at = agent.currentRevision === null ? -1 : revisions.findIndex((r) => r.id === agent.currentRevision);
   const revision = at < 0 ? null : revisions[at]!;
-  return { agent, revision, version: at < 0 ? 0 : at + 1, revisions: revisions.length, sizes: sizesOf(revision) };
+  return { agent, revision, version: at < 0 ? 0 : at + 1, revisions: revisions.length, sizes: sizesOf(revision), template: revisions[0]?.package ?? null };
 }
 
 /** Every agent here, newest first (its creation, then its id). Archived agents are left out by default. */
@@ -213,18 +225,20 @@ export async function listAgents(store: AgentsStore, options: { archived?: boole
 export async function createAgent(
   store: AgentsStore,
   { definition, skills = {}, note }: DefinitionBody,
-  options: { check?: (revision: NewRevision) => Promise<void>; fresh?: { place: RevisionPlace; tools: readonly string[] } } = {},
+  options: { check?: SaveCheck; fresh?: { place: RevisionPlace; tools: readonly string[] }; template?: TemplatePackage } = {},
 ): Promise<AgentEntry> {
   const given = typeof definition.id === "string" ? definition.id : undefined;
   if (given !== undefined && !ID_PATTERN.test(given)) throw invalid([{ field: "definition.id", reason: "invalid", message: `definition.id does not match ${ID_PATTERN.source}` }]);
   if (given !== undefined && (await store.agents.get(given))) throw new ApiError("agent_exists", `an agent ${given} exists here`);
   // Stamped on the revision now, never resolved at run time: an agent saved with no place keeps running on the runner.
-  const stamped = options.fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow)
+  const placed = options.fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow)
     ? { place: options.fresh.place, ...(definition.tools === undefined ? { tools: [...options.fresh.tools] } : {}) }
     : {};
-  const revision = makeRevision({ ...definition, ...stamped }, skills, note);
+  // A template's agent keeps the package it was applied from on its first revision (store `revisions.package`).
+  const made = makeRevision({ ...definition, ...placed }, skills, note);
+  const packaged = options.template ? { ...made, package: options.template } : made;
   checkVersion(definition, 1);
-  await options.check?.(revision);
+  const revision = stamped(packaged, await options.check?.(packaged, null));
   const id = given ?? uuidv7();
   const name = definition.name as string;
   try {
@@ -265,7 +279,7 @@ export async function commitAgent(
   store: AgentsStore,
   read: AgentEntry,
   { definition, skills, note }: DefinitionBody,
-  { ifCurrent, check, contract = false }: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean } = {},
+  { ifCurrent, check, contract = false }: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean } = {},
 ): Promise<AgentEntry> {
   const stale = () => new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   const held = (entry: AgentEntry): AgentEntry => {
@@ -285,8 +299,8 @@ export async function commitAgent(
   if (kept.length) throw invalid(kept);
   for (let tries = 1; ; tries++) {
     if (tries > 1) entry = held((await getAgent(store, agent.id)) ?? entry);
-    const revision = editOn(entry, definition, skills, note);
-    await check?.(revision);
+    const edit = editOn(entry, definition, skills, note);
+    const revision = stamped(edit, await check?.(edit, entry.revision));
     const base = entry.revision?.id ?? null;
     const now = held((await getAgent(store, agent.id)) ?? entry);
     if ((now.revision?.id ?? null) === base) {
@@ -327,8 +341,6 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals),
         // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
-        // A tool-call budget is a limit too: an edit of an agentic revision that leaves it out keeps it.
-        ...(definition.max_tool_calls === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).maxToolCalls !== undefined ? { max_tool_calls: (currentBody as AgenticBody).maxToolCalls } : {}),
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
         // Its input's and its structured answer's schemas are the agent's contract with its callers: an edit that leaves
         // one out keeps it.
@@ -383,7 +395,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     ...(body.capMode !== undefined ? { cap_mode: body.capMode } : {}),
   };
   const kindBody = revision.kind === "agentic"
-    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).inputSchema !== undefined ? { input_schema: (body as AgenticBody).inputSchema } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).maxToolCalls !== undefined ? { max_tool_calls: (body as AgenticBody).maxToolCalls } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
+    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).inputSchema !== undefined ? { input_schema: (body as AgenticBody).inputSchema } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
   return {
     id: agent.id,
@@ -420,9 +432,13 @@ export function agentView(
     ...(external ? { external } : {}),
     definition: revision ? definitionOf(agent, revision, entry.version) : null,
     kind: revision?.kind ?? null,
+    mcp_pin: pinView(revision?.mcpPin),
     revision: revision?.id ?? null,
     revisions: entry.revisions,
     source: null,
+    // The template package it was applied from (its first revision keeps it): the package's id, version and the commit an
+    // imported one was read at (null for a bundled one). Null for an agent made otherwise.
+    template: entry.template ? { id: entry.template.id, version: entry.template.version, sha: entry.template.sha ?? null } : null,
     skills: Object.entries(body.skills ?? {}).map(([path, sha]) => ({ path, sha256: sha, size_bytes: entry.sizes.get(sha) ?? null })),
     sign_ins: extra.signIns ?? [],
     runs: extra.runs ?? { count: 0, live: 0 },
@@ -450,5 +466,21 @@ export function revisionView(agent: AgentRow, row: RevisionRow & { version: numb
     note: row.note ?? null,
     created_at: new Date(row.createdAt).toISOString(),
     definition: definitionOf(agent, row, row.version),
+    mcp_pin: pinView(row.mcpPin),
   };
+}
+
+/** A revision's MCP pin as the API shows it: per server, the granted tools as the server listed them when the revision was
+ *  saved (name, title, description, input schema, annotations) and the prices its owner set for them; null when it grants
+ *  no MCP tool. Never the server's URL, whose path or query may be a secret. */
+export function pinView(pin: unknown): Record<string, { tools: Record<string, unknown>[]; prices?: Record<string, number> }> | null {
+  if (!isObject(pin)) return null;
+  const out: Record<string, { tools: Record<string, unknown>[]; prices?: Record<string, number> }> = {};
+  for (const [server, pinned] of Object.entries(pin as Record<string, { tools?: { name: string; title?: string; description?: string; inputSchema?: unknown; annotations?: unknown }[]; prices?: Record<string, number> }>)) {
+    out[server] = {
+      tools: (pinned.tools ?? []).map((tool) => ({ name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), input_schema: tool.inputSchema ?? {}, ...(tool.annotations ? { annotations: tool.annotations } : {}) })),
+      ...(pinned.prices && Object.keys(pinned.prices).length ? { prices: { ...pinned.prices } } : {}),
+    };
+  }
+  return out;
 }

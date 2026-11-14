@@ -200,7 +200,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   {/* The agent's typed input fields, drawn as a template's parameters are. */}
                   {form?.fields.map(([key, f]) => (
                     <div key={key} data-field={`input.${key}`}>
-                      <FieldInput field={f} label={fieldLabel(key, f)} help={paramHelp(f)} value={values[key] ?? ""} typedInput onChange={(v) => setField(key, f, v)} />
+                      <FieldInput field={f} label={fieldLabel(key, f)} help={paramHelp(f)} value={values[key] ?? ""} onChange={(v) => setField(key, f, v)} />
                       <FieldIssues issues={issuesAt(key)} words={(i) => fieldIssueWords(i, key, f)} />
                     </div>
                   ))}

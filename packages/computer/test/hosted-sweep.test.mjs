@@ -85,6 +85,18 @@ test("sweepMachines over a run's label: what the conformance runner calls at a r
 	assert.equal(fake.live().length, 1, "another run's machine is not this run's sweep's");
 });
 
+test("sweepMachines keeps to the run's label where the host's listing answers more machines than carry it", async () => {
+	const fake = fakeHost();
+	const listing = fake.host.list;
+	fake.host.list = (labels, ctx) => listing(OURS, ctx);
+	const left = fake.add({ labels: { ...OURS, ...RUN } });
+	const other = fake.add({ labels: { ...OURS, "agentrun.conformance": "another-run" } });
+	const swept = await sweepMachines(fake.host, { labels: RUN, waitMs: 300, pollMs: 5 });
+	assert.deepEqual(swept.value, { swept: 1, gone: 1, stillThere: [], leftAlone: 0 });
+	assert.equal(left.deleted, true);
+	assert.equal(other.deleted, false, "another run's machine is never deleted");
+});
+
 test("a provider that names where it lists (sweepScope: an app and a server): --before records it, and --after refuses a file of another place, or one that names none, before any list or delete", async () => {
 	const fake = fakeHost();
 	const scope = "the app computers on https://api.example.invalid:443";

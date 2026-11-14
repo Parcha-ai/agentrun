@@ -75,15 +75,21 @@ async function saveAndStart(api, id, setting) {
 }
 
 for (const [provider, keys] of [["e2b", { E2B_API_KEY: "fake-test-key" }], ["modal", { MODAL_TOKEN_ID: "fake-test-id", MODAL_TOKEN_SECRET: "fake-test-key" }]]) {
-  test(`an agent whose computer is a ${provider} sandbox, its key saved in Settings → Computers, is never refused for its place in Mode 2 (AGENTRUN_BOXES unset)`, async (t) => {
+  test(`an agent whose computer is a ${provider} sandbox, its key saved in Settings → Computers, is never refused for its place in Mode 2 (AGENTRUN_BOXES unset); it is not ready, needing Archil's image in the owner's account`, async (t) => {
     const api = await server(t, { archil: true });
     const saved = await api("PUT", `/computers/${provider}/keys`, keys);
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
-    assert.equal(saved.body.ready, true, `${provider} is ready with its key saved: ${JSON.stringify(saved.body)}`);
+    assert.deepEqual([saved.body.ready, /needs Archil's image in your (E2B|Modal) account/.test(saved.body.why ?? "")], [false, true], `${provider} is not ready with its key saved: ${JSON.stringify(saved.body)}`);
 
+    // Its computer, not its place: a warning at the save, and the run refused at its start (409) before any computer is
+    // made, in the words Settings says.
     const said = await saveAndStart(api, `remote-${provider}`, { computer: { kind: "sandbox", provider } });
-    assert.deepEqual(said.saved, [], `the agent is saved with a warning on its computer or place: ${JSON.stringify(said)}`);
-    assert.deepEqual(said.refused, [], `the run is refused for its computer or place: ${JSON.stringify(said)}`);
+    const words = /^An? (E2B|Modal) sandbox can't start in Mode 2 yet: it needs Archil's image in your \1 account, and this server can't put it there yet\. Set this agent's computer to none \(Settings → Computers\)\.$/;
+    for (const [field, reason, message] of [...said.saved, ...said.refused]) {
+      assert.deepEqual([field, reason], ["definition.computer", "not_set_up_here"], JSON.stringify(said));
+      assert.match(message, words);
+    }
+    assert.deepEqual([said.saved.length, said.refused.length, said.started[0], said.started[1]], [1, 1, 409, "agent_not_runnable"], JSON.stringify(said));
     assert.doesNotMatch(said.started[2] ?? "", PLACE_WORDS, `the run is refused for its place: ${JSON.stringify(said)}`);
   });
 }
@@ -185,7 +191,7 @@ test("Mode 1: an e2b sandbox is refused, as a sandbox there needs a bind mount o
   const saved = await api("PUT", "/computers/e2b/keys", { E2B_API_KEY: "fake-test-key" });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const said = await saveAndStart(api, "remote-mode1", { computer: { kind: "sandbox", provider: "e2b" } });
-  const words = /^Mode 1 runs a sandbox only on Docker: a E2B sandbox can't reach the run's folder on this machine\. Pick Docker for this agent's computer in Settings → Computers, or another kind of computer\.$/;
+  const words = /^Mode 1 runs a sandbox only on Docker: an E2B sandbox can't reach the run's folder on this machine\. Pick Docker for this agent's computer in Settings → Computers, or another kind of computer\.$/;
   assert.equal(said.refused.length, 1, JSON.stringify(said));
   assert.deepEqual(said.refused[0].slice(0, 2), ["definition.computer", "not_set_up_here"], JSON.stringify(said));
   assert.match(said.refused[0][2], words);

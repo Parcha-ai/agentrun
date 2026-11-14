@@ -40,15 +40,15 @@ describe("a tool call's computer calls, on its step", () => {
     expect(host.querySelector('[aria-label="The computer calls"]')).toBeNull();
   });
 
-  it("open: each call in words, when it started after the first, and how long it took", () => {
+  it("open: each call in words, when it started after the first, a failed one's code, and how long it took", () => {
     const host = draw(rows());
     act(() => (host.querySelector('[aria-label="Show the computer calls"]') as HTMLButtonElement).click());
     const lines = [...host.querySelectorAll('[aria-label="The computer calls"] li')].map((li) => li.textContent);
     expect(lines).toEqual([
-      "+0 msopen TextEdit900 ms",
-      "+1.4 sselect all (⌘A); type into the text box640 ms",
-      "+2.5 ssave (⌘S)420 ms",
-      "+3.0 sact (failed: denied)12 ms",
+      "+0 msOpened TextEdit900 ms",
+      "+1.4 sSelected all (⌘A), typed into the text box640 ms",
+      "+2.5 sSaved (⌘S)420 ms",
+      "+3.0 sCould not act on the computerdenied12 ms",
     ]);
   });
 

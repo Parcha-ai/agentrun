@@ -11,8 +11,8 @@ import type { ModelRequest, ModelTicket, SessionRecord, SessionWriter } from "..
 import { overCapEnd } from "./words.js";
 import { decisionAsk } from "./admit.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
-import { beforeRequestOf } from "./port.js";
-import type { Admission, CapMode, CapModel, DecisionCapRequest, Previous, RefusalFigures, Settled } from "./types.js";
+import { beforeRequestOf, capRequestOf, type PricedRequest } from "./port.js";
+import type { Admission, CapMode, CapModel, DecisionCapRequest, ModelCapRequest, RecentRequest, RefusalFigures, Settled } from "./types.js";
 
 /** A verdict of the run's rule, as a decision's admission reads it. */
 type Verdict = { refuse?: string; forGood?: boolean; figures?: RefusalFigures; holdUsd?: number; boundUsd?: number };
@@ -29,10 +29,13 @@ export interface RunCapOptions {
   readonly now?: () => number;
   /** The run's model requests' models, by id and route (BeforeRequestOptions.modelOf; its decisions' are the cap's own). */
   modelOf(id: string, route?: string): CapModel | undefined;
-  previousOf?(model: string): Previous | undefined;
+  /** The session's recent requests, by the id their model is priced under (BeforeRequestOptions.recentOf). */
+  recentOf?(model: string): readonly RecentRequest[];
   /** The run's priced tools' charges and holds beside its requests (beforeRequestOf's), when it has any. */
   spentUsd?(): number | null;
   heldUsd?(): number | null;
+  /** What the host keeps back beside a model request while it streams (BeforeRequestOptions.keepBackUsd). */
+  keepBackUsd?(request: Parameters<BeforeRequest>[0], asked: ModelCapRequest): number | undefined;
   /** Told each request the rule judged, with the run's totals it was asked with, and its answer (an observer: a live
    *  view of the cap, a test's record). */
   judged?(request: Parameters<BeforeRequest>[0], answer: Awaited<ReturnType<BeforeRequest>>): void;
@@ -53,6 +56,9 @@ export interface RunDecisions {
 export interface RunCap {
   /** The run's one rule for every model request (a model booking's beforeRequest), its decisions' models known to it. */
   readonly before: BeforeRequest;
+  /** A model request as `before` prices it (port.ts capRequestOf, with the same models and the session's recent
+   *  requests): what the wrap-up's note and the reserve (requestFigures) price, so they read a warm cache as admission does. */
+  asked(request: PricedRequest): ModelCapRequest;
   /** The run's decisions, booked on `writer` (the run's DECISION_SESSION) under the same rule. `flush`: makes what the
    *  journal holds survive a lost box, awaited once a decision's hold is written and before it is sent, as a model
    *  request's is (request_start), so a decision sent and then lost with its box still counts after the next claim. */
@@ -103,14 +109,18 @@ export function runCap(options: RunCapOptions): RunCap {
   const mode: CapMode = options.mode ?? "expected";
   /** Each decision under way's model, as the rule prices it (decisionAsk), by the model key its request books under. */
   const deciding = new Map<string, CapModel>();
+  const pricing = {
+    modelOf: (id: string, route?: string) => deciding.get(id) ?? options.modelOf(id, route),
+    ...(options.recentOf ? { recentOf: (model: string) => (deciding.has(model) ? [] : options.recentOf!(model)) } : {}),
+  };
   const rule = beforeRequestOf({
     capUsd: options.capUsd,
     mode,
     ...(options.now ? { now: options.now } : {}),
-    modelOf: (id, route) => deciding.get(id) ?? options.modelOf(id, route),
-    ...(options.previousOf ? { previousOf: (model: string) => (deciding.has(model) ? undefined : options.previousOf!(model)) } : {}),
+    ...pricing,
     ...(options.spentUsd ? { spentUsd: options.spentUsd } : {}),
     ...(options.heldUsd ? { heldUsd: options.heldUsd } : {}),
+    ...(options.keepBackUsd ? { keepBackUsd: options.keepBackUsd } : {}),
   });
   const before = runBooking(options.sessions, options.judged ? async (request) => {
     const answer = await rule(request);
@@ -121,6 +131,7 @@ export function runCap(options: RunCapOptions): RunCap {
   const forget = (key: string) => void deciding.delete(key);
   return {
     before,
+    asked: (request) => capRequestOf("asked", request, pricing),
     async decisions(writer, decisionOptions = {}) {
       const steps = await stepsOn(writer, before, decisionOptions.flush, "decision", forget);
       return {

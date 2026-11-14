@@ -2,7 +2,7 @@
 # learning it. Step 01 teaches it; every later step needs it (or, at 04 and 05, needs it NOT applied), with no hint.
 # The diffs are pasted, as the template's own evals paste them (evals/repo-rule, evals/off-by-one): no fake is needed.
 template: code-review
-parameters: { repo: example/shop }
+parameters: { owner: example, repo: shop }
 grants: []
 fakes: {}
 harnesses: [pi, claude-agent]

@@ -10,8 +10,8 @@ import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
-import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, markdownReport, metricsOf, readCases, searched, startFake, verdictOf } from "../dist/template-eval.js";
-import { lastJsonBlock } from "../dist/answer-json.js";
+import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, markdownReport, metricsOf, outputVerdict, readCases, searched, startFake, verdictOf } from "../dist/template-eval.js";
+import { lastJsonBlock, structuredAnswer } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve } from "./support.mjs";
 
@@ -100,7 +100,7 @@ test("a case that does not check fails before anything runs, each problem named"
     /all-pass\/prompt\.md: no field max_cost/, /all-pass\/prompt\.md: runs is a whole number/,
     /graders\/regex\.md: its pattern does not compile/, /graders\/file\.md: a file_exists grader names a path in the run's work folder/,
     /graders\/wrote\.md: mcp:nowhere\/thing is neither a tool this server binds nor an MCP tool the package lists/, /graders\/wrote\.md: args are checked on a faked MCP tool's calls alone/,
-    /learned\/case\.yaml: parameters\.colour: The package evalpkg takes no parameter colour/, /learned\/case\.yaml: learning names "fixtures\/missing\/", not a folder in the case/,
+    /learned\/case\.yaml: parameters\.colour: parameters keeps no field colour/, /learned\/case\.yaml: learning names "fixtures\/missing\/", not a folder in the case/,
     /mcp-match\/fixtures\/crm\.json: tools\.get_contact is \{description, input/, /mcp-mismatch\/case\.yaml: grants\.0: grants\.0 is not a tool of the package evalpkg/,
   ]) assert.match(said, expected);
   assert.throws(() => readCases(dir, ["nope"]), (e) => e instanceof CaseError && /evals\/nope: no such case/.test(e.message));
@@ -112,7 +112,8 @@ test("a case whose answer meets a grader of every type passes, each llm grader a
   assert.equal(one.pass, true, JSON.stringify(one, null, 1));
   const [run] = one.runs;
   assert.equal(run.status, "completed");
-  assert.deepEqual(new Set(run.graders.map((g) => g.type)), new Set(["schema", "regex", "tool_used", "file_exists", "llm"]));
+  assert.deepEqual(new Set(run.graders.map((g) => g.type)), new Set(["output", "regex", "tool_used", "file_exists", "llm"]));
+  assert.equal(graderOf(run, "output").reason, "the answer's json meets answer.schema.json");
   assert.ok(run.graders.every((g) => g.pass), JSON.stringify(run.graders));
   assert.match(graderOf(run, "file.md").reason, /work folder holds notes\/out\.md/);
   assert.match(graderOf(run, "wrote.md").reason, /^2 calls of write; the grader expects exactly 2$/);
@@ -144,9 +145,10 @@ test("a case whose answer fails a grader of every type fails, each failure named
   const [run] = one.runs;
   assert.equal(run.status, "completed", "the run itself went fine: its answer is what fails");
   const failed = Object.fromEntries(run.graders.map((g) => [g.grader, [g.pass, g.reason]]));
-  assert.deepEqual(Object.keys(failed).sort(), ["file.md", "llm-target.md", "llm.md", "no-bad.md", "regex.md", "schema.md", "target.md", "wrote.md"]);
+  assert.deepEqual(Object.keys(failed).sort(), ["file.md", "llm-target.md", "llm.md", "no-bad.md", "output", "regex.md", "target.md", "wrote.md"]);
   assert.ok(Object.values(failed).every(([pass]) => pass === false), JSON.stringify(failed));
-  assert.match(failed["schema.md"][1], /does not meet answer\.schema\.json: \/verdict must be equal to one of the allowed values; \/score must be <= 100/);
+  // No grader file asks for it: the package declares its output schema, and the run's own output_error fails it.
+  assert.match(failed.output[1], /^the answer misses answer\.schema\.json: the answer's json does not meet the output schema: \/verdict must be equal to one of the allowed values; \/score must be <= 100/);
   assert.match(failed["regex.md"][1], /does not match .*expects a match/);
   assert.match(failed["no-bad.md"][1], /matches \/BAD-MARKER\/, and the grader expects none/);
   assert.match(failed["target.md"][1], /the answer's summary does not match/);
@@ -195,6 +197,11 @@ test("a background shell call keeps its own name in the grading record, as the g
   const record = { answer: "", calls: callsOf(rows, "pi", ["crm"]), mcpCalls: [], files: [] };
   assert.equal(gradeDeterministic({ file: "bg.md", type: "tool_used", tools: ["bash_background"], expect: "called" }, record, []).pass, true);
   assert.equal(gradeDeterministic({ file: "sh.md", type: "tool_used", tools: ["bash"], count: 1 }, record, []).pass, true, "bash counts its own call alone");
+  // A need an owner's saved server filled under another name (my-crm for crm): its calls are graded by the package's name.
+  const owned = [{ kind: "tool_use", tool_use_id: "5", tool_name: "mcp__my-crm__get_contact", tool_input_preview: "{}" }];
+  const renamed = { answer: "", calls: callsOf(owned, "claude-agent", ["my-crm"], { "my-crm": "crm" }), mcpCalls: [], files: [] };
+  assert.deepEqual(renamed.calls.map((c) => c.tool), ["mcp:crm/get_contact"]);
+  assert.equal(gradeDeterministic({ file: "got.md", type: "tool_used", tools: ["mcp:crm/get_contact"], expect: "called" }, renamed, []).pass, true);
 });
 
 test("the eval's exit code is 1 when any case failed, however many passed beside it, and 0 only when every case passed", () => {
@@ -359,6 +366,22 @@ test("on another server, a package that differs in what runs (budget, effort, to
   assert.match(report.cases[0].error, /the server's evalpkg package is not this folder's: it differs in budget, effort, tools/);
 });
 
+test("on another server, a need the owner's server fills under another name is this folder's package still: its text is compared on that server's names", { timeout: 300_000 }, async (t) => {
+  const shipped = join(await scratch(t), "templates");
+  const dir = join(shipped, "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  writeFileSync(join(dir, "agent.md"), readFileSync(join(dir, "agent.md"), "utf8").replace("You answer for", "Read a contact with mcp:crm/get_contact. You answer for"));
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: shipped });
+  const owner = await startFake("my-crm", readCases(PKG, ["mcp-match"]).cases[0].mcp.crm);
+  t.after(() => owner.close());
+  assert.equal((await api("PUT", "/settings/mcp-servers/my-crm", { url: owner.url, auth: { type: "none" }, toolkit: "crm" })).status, 200);
+  const report = await evalTemplate({ dir, cases: ["learned"], server: { baseUrl, token } });
+  assert.equal(report.cases[0].error, undefined, report.cases[0].error);
+  assert.equal(report.cases[0].runs.length, 1, JSON.stringify(report.cases[0]));
+  const agent = (await api("GET", `/agents/${report.cases[0].runs[0].agent_id}`)).body;
+  assert.match(agent.definition.instructions, /mcp:my-crm\/get_contact/, "apply put the need on the owner's server");
+});
+
 test("a stop asked after the last run is waited for still stops the eval: no report", { timeout: 300_000 }, async () => {
   const stop = new AbortController();
   // The line for run 1 is told once it is waited for and graded: the last run, so nothing is left to wait on.
@@ -387,16 +410,45 @@ test("graders read the answer as written: the last fenced json block, a target f
   assert.equal(fakeAnswer(fixture, "nope", {}).isError, true);
 });
 
-test("the schema grader agrees with ajv on the shipped packages' schemas", () => {
+test("the output check agrees with ajv on the shipped packages' output schemas", () => {
   const ajv = new Ajv2020({ strict: false, allErrors: true, validateFormats: false });
   for (const p of readPackages(TEMPLATES_DIR)) {
-    const { cases } = readCases(join(TEMPLATES_DIR, p.name));
-    const grader = cases.flatMap((c) => c.graders).find((g) => g.type === "schema");
-    const check = ajv.compile(JSON.parse(readFileSync(join(TEMPLATES_DIR, p.name, grader.schema), "utf8")));
+    const check = ajv.compile(p.outputSchema);
     for (const value of [{}, [], null, "x", { findings: [] }]) {
-      const ours = gradeDeterministic(grader, { answer: `\`\`\`json\n${JSON.stringify(value)}\n\`\`\``, calls: [], mcpCalls: [], files: [] }, []).pass;
+      const ours = "value" in structuredAnswer(`\`\`\`json\n${JSON.stringify(value)}\n\`\`\``, p.outputSchema);
       assert.equal(ours, check(value), `${p.name}: ${JSON.stringify(value)}`);
     }
+  }
+});
+
+test("no case carries a schema grader: a package's output schema is held by the server's own verdict on each completed run", async (t) => {
+  // The verdict is the run's result.output_error, set after the runner's one retry; a run with none meets the schema.
+  const pkg = readPackage(PKG);
+  assert.deepEqual(outputVerdict(pkg, { output: { verdict: "good" }, final_answer: "x" }), { grader: "output", type: "output", cost_usd: null, pass: true, reason: "the answer's json meets answer.schema.json" });
+  assert.deepEqual(outputVerdict(pkg, { output: null, final_answer: "x", output_error: "the answer has no fenced json block" }), { grader: "output", type: "output", cost_usd: null, pass: false, reason: "the answer misses answer.schema.json: the answer has no fenced json block" });
+  assert.equal(outputVerdict({ ...pkg, output: undefined, outputSchema: undefined }, { output: null }), undefined, "a package with no output schema has no output check");
+  for (const p of readPackages(TEMPLATES_DIR)) {
+    assert.ok(p.output, `${p.name} declares its output schema`);
+    for (const one of readCases(join(TEMPLATES_DIR, p.name)).cases) assert.ok(!one.graders.some((g) => g.type === "schema"), `${p.name}/${one.name}`);
+  }
+  // A schema grader is a type no case takes now.
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  writeFileSync(join(dir, "evals/all-pass/graders/schema.md"), "---\ntype: schema\nschema: answer.schema.json\n---\n");
+  assert.throws(() => readCases(dir), (e) => e instanceof PackageError && /evals\/all-pass\/graders\/schema\.md: type is one of llm, regex, tool_used, file_exists$/m.test(e.message));
+});
+
+test("code-review's cases hold the answer's head_sha to the head the prompt names: an answer naming another sha fails", () => {
+  const { cases } = readCases(join(TEMPLATES_DIR, "code-review"));
+  for (const one of cases) {
+    const head = /head is now ([0-9a-f]{40})/.exec(one.input)?.[1] ?? /\b[0-9a-f]{40}\b/.exec(one.input)?.[0];
+    const grader = one.graders.find((g) => g.type === "regex" && g.target === "head_sha");
+    assert.ok(head && grader, `${one.name}: a head_sha grader`);
+    const answer = (sha) => ({ answer: `\`\`\`json\n${JSON.stringify({ head_sha: sha, findings: [] })}\n\`\`\``, calls: [], mcpCalls: [], files: [] });
+    assert.equal(gradeDeterministic(grader, answer(head), []).pass, true, `${one.name}: the prompt's head passes`);
+    assert.equal(gradeDeterministic(grader, answer("0".repeat(40)), []).pass, false, `${one.name}: another sha fails`);
+    const other = /last_reviewed_sha was ([0-9a-f]{40})/.exec(one.input)?.[1];
+    if (other) assert.equal(gradeDeterministic(grader, answer(other), []).pass, false, `${one.name}: the last reviewed sha fails`);
   }
 });
 

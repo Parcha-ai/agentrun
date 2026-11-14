@@ -67,14 +67,13 @@ export interface AgentRow {
   readonly externalRef: string | null;
 }
 
-/** A template's package, kept on the revision made from it. */
+/** The template package an agent was applied from, kept on the revision the apply made (its first): the package's id
+ *  (a bundled one's name, an imported one's `github:<owner>/<repo>[/<path>]`), its SemVer version, and the commit SHA it
+ *  was imported at (null for a bundled one, which is the server's own build). */
 export interface TemplatePackage {
-  readonly name: string;
+  readonly id: string;
   readonly version: string;
-  readonly source: "builtin" | "git";
-  readonly ref?: string;
-  readonly sha?: string;
-  readonly parameters?: unknown;
+  readonly sha: string | null;
 }
 
 export interface NewRevision {
@@ -89,6 +88,9 @@ export interface NewRevision {
   readonly package?: TemplatePackage;
   /** The version this revision maps in an externally owned agent, set only on an inline-agent run's revision. */
   readonly externalVersion?: string;
+  /** The MCP tools the revision grants, pinned as their servers listed them when it was saved (mcp-gateway.ts McpPin), which
+   *  every run of it calls; none when it grants none. */
+  readonly mcpPin?: unknown;
 }
 
 export interface RevisionRow {
@@ -107,6 +109,8 @@ export interface RevisionRow {
   readonly createdAt: number;
   /** The version this revision maps in the agent's owning system (one revision per version), or null for one committed here. */
   readonly externalVersion: string | null;
+  /** Its MCP pin as its save made it (NewRevision.mcpPin), or null for a revision that grants no MCP tool. */
+  readonly mcpPin: unknown;
 }
 
 /** How a run ended, beside its state. An ended run (state 'ended'): 'escalated' (it finished its work and waits for a
@@ -571,6 +575,8 @@ export interface Agents {
   byExternal(ref: string): Promise<AgentRow | undefined>;
   /** Whether the agent already has the revision that maps `version` of its owning system (one row looked up, no bodies read). */
   hasExternalVersion(agentId: string, version: string): Promise<boolean>;
+  /** The revision that maps `version` of its owning system, or undefined before that version's first run. */
+  externalRevision(agentId: string, version: string): Promise<RevisionRow | undefined>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
@@ -586,6 +592,10 @@ export interface Agents {
   setCurrent(agentId: string, revisionId: string): Promise<void>;
   revision(id: string): Promise<RevisionRow | undefined>;
   revisions(agentId: string): Promise<RevisionRow[]>;
+  /** Pins a revision saved with no MCP pin (before pins were made at save) at its first run: `pin` is written only while
+   *  the revision still has none, and the pin it has then is the answer, so two first runs at once agree on one. Null when
+   *  there is no such revision. */
+  pinOnce(revisionId: string, pin: unknown): Promise<unknown>;
 }
 
 export interface Templates {
@@ -670,7 +680,7 @@ export interface Runs {
    *  revision's `note` is kept by its first use, as an edit's note is; it is not part of its body. */
   createInline(input: {
     agent: { id: string; name: string; description?: string | null; ref: string };
-    revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown; note?: string };
+    revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown; note?: string; mcpPin?: unknown };
     run: { id: string; origin?: RunOrigin };
     launch: RunLaunchInput;
   }): Promise<RunRow>;
@@ -809,7 +819,8 @@ export interface McpServerStamp {
   readonly tokenUntil: number | null;
 }
 
-/** A run's MCP pin: what it may call, per granted server (url, tools, prices), written once at its first claim. */
+/** A run's MCP pin: what it may call, per granted server (url, tools, prices), as its revision's save pinned it
+ *  (RevisionRow.mcpPin); `pinnedAt` is when that revision was saved. */
 export interface McpPinRow {
   readonly runId: string;
   readonly body: unknown;
@@ -868,12 +879,8 @@ export interface Mcp {
    *  (runner/mcp-claim.ts) to see its credential removed, replaced or moved, or its access token near its end. Undefined
    *  when it is no longer saved. */
   stamp(name: string): Promise<McpServerStamp | undefined>;
-  /** The run's pin, or none (a run that grants no MCP tool has none). */
+  /** The run's pin: its revision's, as the revision's save made it; none for a run whose revision grants no MCP tool. */
   pin(runId: string): Promise<McpPinRow | undefined>;
-  /** Writes the run's pin under `claim` unless it has one, in one transaction with the claim's epoch fence, and answers the
-   *  pin as stored: never rewritten, so a second call (or a later claim's) reads the first. Fenced, writing nothing, on a
-   *  stale claim. */
-  pinOnce(claim: Claim, body: unknown): Promise<McpPinRow>;
   /** One refresh at a time per server (a provider that rotates refresh tokens spends the old one at each refresh): the lease
    *  is granted to `holder` for `ms` (MCP_REFRESH_LEASE_MS by default) only while the credential is still the one it read
    *  (`seen`: the sealed bytes, null for none) and no live lease is held. Not granted: the current row comes back, and the
@@ -1038,6 +1045,29 @@ export interface PairedComputers {
   seen(id: string, hello: Readonly<Record<string, unknown>>): Promise<void>;
   /** Removes the computer: its token dials no more. False when it was not paired (unknown, or removed already). */
   revoke(id: string): Promise<boolean>;
+}
+
+/** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
+ *  (`github:<owner>/<repo>[/<path>]`), its source as given, the commit SHA read, its publisher (the GitHub account), and
+ *  its files as they were read, by path, base64. The server checks them again (templates.ts readPackage) as it loads them
+ *  at its start, so a package this build no longer takes is never served. */
+export interface ImportedTemplateRow {
+  readonly id: string;
+  readonly source: string;
+  readonly sha: string;
+  readonly publisher: string;
+  readonly files: Readonly<Record<string, string>>;
+  /** When it was last imported (stamped by the store). */
+  readonly importedAt: number;
+}
+
+export interface ImportedTemplates {
+  /** Every imported package, by id. */
+  list(): Promise<ImportedTemplateRow[]>;
+  /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it). */
+  put(row: Omit<ImportedTemplateRow, "importedAt">): Promise<void>;
+  /** Removes the package: false when none had that id. */
+  remove(id: string): Promise<boolean>;
 }
 
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one
@@ -1220,6 +1250,8 @@ export interface Store {
   readonly computerLedger: ComputerLedger;
   /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
   readonly pairedComputers: PairedComputers;
+  /** The template packages imported from GitHub, their files kept as read. */
+  readonly importedTemplates: ImportedTemplates;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */
   readonly triggerSettings: TriggerSettings;
   /** The outbox of a channel the server sends itself, its tries and what it told each run. */
@@ -1283,10 +1315,11 @@ export interface Store {
    *  stay in the store. Undefined when the row is untaken, refused, taken with no answer, already read, or not the run's. */
   answerOf(runId: string, commandId: number): Promise<{ readonly value: unknown } | undefined>;
   /** Tells `listener` when a command of a run in this store is written ("written", after command() commits) or taken,
-   *  refused or answered ("answered": a take, a run update that takes, a journal commit that takes or ends the run).
+   *  refused or answered ("answered": a take, a run update that takes, a journal commit that takes or ends the run), and
+   *  when a run is queued ("queued": runs.create, runs.createInline or a trigger's fire committed it, claimable now).
    *  A hint to read now, for handles in this process only: a row another process writes wakes nothing here, the reader's
    *  poll finds it. Called after the commit, asynchronously; a listener's throw is swallowed. Answers the unsubscribe. */
-  watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" }) => void): () => void;
+  watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" | "queued" }) => void): () => void;
   /** Counts a failed resume on the untaken command that woke the run, under the claim, and answers its tries; the command
    *  stays untaken. Fenced on a stale claim; StoreConstraint when the command is taken or not the run's. */
   retry(claim: Claim, commandId: number): Promise<number>;

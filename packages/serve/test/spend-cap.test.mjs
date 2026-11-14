@@ -59,10 +59,11 @@ test("a request the cap refuses never reaches the model: the run's second reques
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
   const { api } = await serve(t, { faux: new URL("./fixtures/faux-recorded.mjs", import.meta.url).pathname });
-  // The ask is small and cheap; the answer's 20,000 characters (about 5,700 tokens at $100 per million, $0.57) pass the cap
-  // alone. The cap is above the wrap-up line at step 0 (three times a request's least, $0.31): under it the run is told to
-  // finish and never asks.
-  const run = await start(api, "region", "Pick a region.", { max_cost_usd: 0.35 }, { tools: ["ask_person"] });
+  // The ask is small and cheap; the answer's 20,000 characters (read by their bytes, about $2 at $100 per million) pass the
+  // cap alone. The cap is above the wrap-up line at step 0 (twice a request's least, its input read by its bytes with the
+  // host's tools_search, tools_call and codemode among its tools: near $1.05): under it the run is told to finish and never
+  // asks.
+  const run = await start(api, "region", "Pick a region.", { max_cost_usd: 1.2 }, { tools: ["ask_person"] });
   await follow(api, run.run_id, ["input_required"]);
   assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu ".repeat(6_666) })).body.mode, "answer");
   const view = await ended(api, run.run_id);

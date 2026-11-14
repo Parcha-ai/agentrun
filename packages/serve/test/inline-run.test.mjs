@@ -163,8 +163,10 @@ test("a run started inline reads exactly as a run of an agent made with POST /ag
   const external_ = await api("POST", "/runs", inline({ input, max_cost_usd: 1 }));
   assert.deepEqual([plain.status, external_.status], [202, 202], JSON.stringify([plain.body, external_.body]));
   const ids = (run) => [[run.run_id, "<run>"], [run.agent_id, "<agent>"], [run.revision, "<revision>"]];
-  // The start's own answer.
-  assert.deepEqual(shapeOf(external_.body, ids(external_.body)), shapeOf(plain.body, ids(plain.body)), "the 202");
+  // The start's own answer. It is the run as the server read it back, and the runner beside it claims a queued run at once
+  // (the store's wake), so where the run has got to by then (its claim, its status and state) is not compared.
+  const started = (body) => shapeOf({ ...body, claim: "<claim>", status: "<status>", state: "<state>" }, ids(body));
+  assert.deepEqual(started(external_.body), started(plain.body), "the 202");
   await follow(api, plain.body.run_id, ["completed"]);
   await follow(api, external_.body.run_id, ["completed"]);
   const read = async (path, run) => shapeOf((await api("GET", path)).body, ids(run));

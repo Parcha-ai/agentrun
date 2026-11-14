@@ -86,16 +86,17 @@ test("the report over a fake run: per arm success, steps, routes and the paired 
 	assert.equal(wrong.passed, 2, "only the judged task's stage 1 passes the wrong agent");
 	assert.ok(right.routes.semantic > 0);
 	assert.equal(right.queue, 2);
-	assert.equal(report.paired[0].arm, "fake-wrong");
-	assert.equal(report.paired[0].against, "fake-right");
-	assert.ok(report.paired[0].difference.estimate < -0.5);
-	assert.equal(report.tasks.length, 6);
+	assert.equal(right.difference, undefined, "the first arm is the baseline");
+	assert.ok(wrong.difference.estimate < -0.5);
+	assert.equal(report.measured.tasks, 6);
 	const markdown = reportMarkdown(report);
-	assert.match(markdown, /\| fake-right \| 100\.0% \(/);
+	assert.match(markdown, /## Every arm\n\n.*\n\n\| arm \| passed \/ scored \| success \(95% CI\) \| difference vs fake-right \(95% CI\) \| all seeds pass \|/);
+	assert.match(markdown, /\| fake-right \| 12 \/ 12 \| 100\.0% \(\d+\.\d%-100\.0%\) \| baseline \| 6\/6 \|/);
 	assert.match(markdown, /## How the agents acted/);
-	assert.match(markdown, /## Against the first arm/);
+	assert.match(markdown, /fake-right: 0 out of budget, infra 2 re-run \/ 0 final, 0 refused, 2 in the queue\.\n- infra ×2: the computer could not be had/);
+	assert.doesNotMatch(markdown, /## Tasks\n/, "each platform lists its tasks; there is no global task table");
 	const dev = buildReport(results, labels, { split: "dev" });
-	assert.equal(dev.tasks.length, 3);
+	assert.equal(dev.measured.tasks, 3);
 	assert.deepEqual(dev.splits, ["dev"]);
 });
 
@@ -103,11 +104,11 @@ test("the paired difference compares a task on the seeds both arms scored, never
 	const row = (arm, seed, outcome) => ({ bench: "b", run: `${arm}-${seed}`, task: "t.one", version: 1, sha256: "s", split: "dev", seed, arm, attempt: 1, outcome, scored: outcome !== "infra", rerun: false, steps: 1, wall_s: 1, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 });
 	// Two arms that both pass seed 1 and fail seed 2, each with the other seed lost to infra.
 	const lopsided = buildReport([row("a", 1, "pass"), row("a", 2, "infra"), row("b", 1, "infra"), row("b", 2, "fail")]);
-	assert.equal(lopsided.paired[0].difference.tasks, 0, "no seed was scored in both arms");
-	assert.equal(lopsided.paired[0].difference.estimate, 0);
+	assert.equal(lopsided.arms[1].difference.tasks, 0, "no seed was scored in both arms");
+	assert.equal(lopsided.arms[1].difference.estimate, 0);
 	const both = buildReport([row("a", 1, "pass"), row("a", 2, "fail"), row("b", 1, "pass"), row("b", 2, "pass"), row("b", 3, "pass")]);
-	assert.equal(both.paired[0].difference.tasks, 1);
-	assert.equal(both.paired[0].difference.estimate, 0.5, "b passes 2 of the 2 seeds a ran, a 1 of 2; b's seed 3 has no pair");
+	assert.equal(both.arms[1].difference.tasks, 1);
+	assert.equal(both.arms[1].difference.estimate, 0.5, "b passes 2 of the 2 seeds a ran, a 1 of 2; b's seed 3 has no pair");
 });
 
 /** A bench folder written by hand: its bench.json (arms in their order, seeds, judge) and its results, terra's first. */
@@ -137,11 +138,11 @@ test("the report follows bench.json's arms: the first arm is the baseline, not t
 	assert.deepEqual(bench.arms.map((one) => one.id), ["sonnet-5.5", "gpt-6.1-terra"]);
 	const report = buildReport(results, labels, { bench });
 	assert.deepEqual(report.arms.map((one) => one.arm), ["sonnet-5.5", "gpt-6.1-terra"]);
-	assert.deepEqual([report.paired[0].arm, report.paired[0].against], ["gpt-6.1-terra", "sonnet-5.5"]);
+	assert.deepEqual([report.arms[0].difference, report.arms[1].difference.tasks], [undefined, 3]);
 	const markdown = reportMarkdown(report);
 	assert.ok(markdown.indexOf("| sonnet-5.5 | ") < markdown.indexOf("| gpt-6.1-terra | "), "the first arm's row first");
-	assert.match(markdown, /\| task \| split \| sonnet-5\.5 \| gpt-6\.1-terra \|/);
-	assert.match(markdown, /## Against the first arm \(sonnet-5\.5, paired by task\)/);
+	assert.match(markdown, /\| task \| exec \| sonnet-5\.5 \| gpt-6\.1-terra \|/);
+	assert.match(markdown, /difference vs sonnet-5\.5 \(95% CI\)/);
 	// Without bench.json the order is the arms' first appearance, and an arm bench.json does not name comes after.
 	assert.equal(buildReport(results).arms[0].arm, "gpt-6.1-terra");
 });
@@ -152,10 +153,10 @@ test("the report for the blog: a table per platform with the paired difference, 
 	assert.deepEqual(report.platforms.map((one) => one.platform), ["android phone", "linux desktop"]);
 	const [android, linux] = report.platforms;
 	const [sonnet, terra] = android.arms;
-	assert.deepEqual([sonnet.arm, sonnet.passed, sonnet.scored, sonnet.steps_median, sonnet.tool_calls_median, sonnet.wall_s_median], ["sonnet-5.5", 3, 4, 3.5, 2, 8.5]);
+	assert.deepEqual([sonnet.arm, sonnet.passed, sonnet.success.runs, sonnet.steps_median, sonnet.tool_calls_median, sonnet.wall_s_median], ["sonnet-5.5", 3, 4, 3.5, 2, 8.5]);
 	close(sonnet.usd_per_pass, 0.08 / 3);
 	assert.equal(sonnet.difference, undefined, "the first arm is the baseline");
-	assert.deepEqual([terra.arm, terra.passed, terra.scored, terra.steps_median, terra.tool_calls_median, terra.wall_s_median], ["gpt-6.1-terra", 3, 3, 5, 3, 12]);
+	assert.deepEqual([terra.arm, terra.passed, terra.success.runs, terra.steps_median, terra.tool_calls_median, terra.wall_s_median], ["gpt-6.1-terra", 3, 3, 5, 3, 12]);
 	close(terra.usd_per_pass, 0.025 / 3);
 	assert.equal(terra.difference.tasks, 2, "a2 seed 2 is infra for terra: a2 pairs on seed 1 alone");
 	close(terra.difference.estimate, 0.25);
@@ -173,9 +174,9 @@ test("the report for the blog: a table per platform with the paired difference, 
 		],
 	);
 	const markdown = reportMarkdown(report);
-	assert.match(markdown, /## android phone\n\n\| arm \| passed \/ scored \| success \| difference vs sonnet-5\.5 \(95% CI\) \| median computer steps \| median model turns \| median wall s \| \$ \/ pass \|/);
-	assert.match(markdown, /\| sonnet-5\.5 \| 3 \/ 4 \| 75\.0% \| baseline \| 3\.5 \| 2 \| 8\.5 \| 0\.027 \|/);
-	assert.match(markdown, /\| gpt-6\.1-terra \| 3 \/ 3 \| 100\.0% \| \+25\.0 pt \(-?\d+\.\d to \d+\.\d\), 2 tasks \| 5 \| 3 \| 12 \| 0\.008 \|/);
+	assert.match(markdown, /## android phone\n\n\| arm \| passed \/ scored \| success \(95% CI\) \| difference vs sonnet-5\.5 \(95% CI\) \| all seeds pass \| median computer steps \| median model turns \| median wall s \| \$ \/ pass \|/);
+	assert.match(markdown, /\| sonnet-5\.5 \| 3 \/ 4 \| 75\.0% \(\d+\.\d%-\d+\.\d%\) \| baseline \| 1\/2 \| 3\.5 \| 2 \| 8\.5 \| 0\.027 \|/);
+	assert.match(markdown, /\| gpt-6\.1-terra \| 3 \/ 3 \| 100\.0% \(\d+\.\d%-100\.0%\) \| \+25\.0 pt \(-?\d+\.\d to \d+\.\d\), 2 tasks \| 2\/2 \| 5 \| 3 \| 12 \| 0\.008 \|/);
 	assert.match(markdown, /### android phone: tasks\n\n\| task \| exec \| sonnet-5\.5 \| gpt-6\.1-terra \|\n\|---\|---\|---\|---\|\n\| a1 \| deny \| 1\/2 \| 2\/2 \|/);
 	assert.match(markdown, /## linux desktop\n/);
 	assert.match(markdown, /\| sonnet-5\.5 \| 2 of 4 \|/);
@@ -269,7 +270,7 @@ test("the command line: validate, verify, run and report over the fake suite, an
 	assert.match(ran.stdout, /12 attempts, 12 scored, 6 passed/);
 	const reported = cli("report", join(out, "run"), "--split", "dev");
 	assert.equal(reported.status, 0, reported.stderr);
-	assert.match(reported.stdout, /\| fake-right \| 100\.0%/);
+	assert.match(reported.stdout, /\| fake-right \| 6 \/ 6 \| 100\.0%/);
 	assert.ok(existsSync(join(out, "run", "report-dev.json")));
 	const bad = cli("run", "--suite", FAKE, "--colour", "blue");
 	assert.equal(bad.status, 2);
