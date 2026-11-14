@@ -11,9 +11,10 @@ npm run verify:packages
 ```
 
 `npm run verify:packages` needs the computer daemon built first: `npm run build:daemon -w @parcha/agentrun-computer`
-(after the build, with Go on PATH, the version `packages/computer/daemon/go.mod` names or newer) writes
-`dist/computerd-linux-amd64` and `-arm64`, which `@parcha/agentrun-computer`'s archive must hold, and verification
-stops without them.
+(after the build) writes `dist/computerd-linux-amd64` and `-arm64`, which `@parcha/agentrun-computer`'s archive must
+hold, and verification stops without them. With Go on PATH (the version `packages/computer/daemon/go.mod` names or
+newer) it builds them. Without Go it takes them from the same version of the package on npm, when that version was
+built from the daemon source in your checkout; once you change the daemon, you need Go.
 
 `npm run build` builds the console (`apps/console`, outside the workspaces, with its own lockfile) before the packages, so the server's build carries it. It installs the console's dependencies when npm's record of them differs from its lockfile, and skips the console's build when `apps/console/dist` was built from the same sources (a hash of them, written beside the build).
 

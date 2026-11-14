@@ -2724,8 +2724,14 @@ npm run conformance -w @parcha/agentrun-computer -- --provider fly
 
 ```sh
 npm run build -w @parcha/agentrun-computer          # the TypeScript, into dist/
-npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64 and -arm64; needs Go 1.24 or newer on PATH
+npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64 and -arm64, and dist/computerd.json
 ```
+
+`build:daemon` builds the daemon with Go 1.24 or newer when Go is on PATH, and records the daemon source it came from in
+`dist/computerd.json`. Without Go, it takes both binaries from this version's package on npm, but only when that
+package's `computerd.json` names the same daemon source as the checkout (`scripts/daemon-source.mjs`); otherwise it
+stops and says to install Go. Each release carries the record, so a checkout of a released version needs no Go until
+its daemon changes.
 
 ## Tests
 
