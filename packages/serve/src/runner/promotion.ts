@@ -4,11 +4,14 @@
 // agent's): each a queued replay run of its own (RunLaunch.replay, at workflow cost, its guards record-only), the agent
 // taking the runs meanwhile. A later claim that finds every replay run ended scores them (replayScore at the serving
 // thresholds: a hand-back is the agent's recorded answer) and promotes the digest when it is within PROMOTE_BAR of the
-// agent path, else holds it; a held digest whose workflow has guards gets one threshold refit over the replay's rows
-// (learn/refit.ts), a new revision that serves when the refit clears the bar. Fewer than REPLAY_MIN graded inputs: the
-// digest is promoted on its passing dry run, as before, and its record says so. A serving digest is checked once per
-// REFIT_EVERY more graded runs it served: its thresholds refit (a new revision when they move and still clear the bar),
-// and held when its graded runs fall below the bar. Escalation never holds a workflow: a hand-back is the agent's answer.
+// agent path and answers alone on at least one input, else holds it; a held digest gets one refit over the replay's rows
+// (learn/refit.ts: its guards' thresholds, and its guards and recorded escalates on or off), a new revision that serves
+// when the refit clears the bar. A replay records an escalate that reads a judge's field instead of obeying it
+// (learn/promote.ts softEscalatesOf): it scores as a hand-back where it fired, and the refit may switch it off. Fewer than
+// REPLAY_MIN graded inputs: the digest is promoted on its passing dry run, as before, and its record says so. A serving
+// digest is checked once per REFIT_EVERY more graded runs it served: its thresholds refit (a new revision when they move
+// and still clear the bar), and held when its graded runs fall below the bar. A hand-back is the agent's answer, never a
+// failure; but a revision that hands back every input it replayed would never answer alone, and is held.
 // The champion keeps serving meanwhile: while the folder's revision (the challenger) replays, or once it is held, the
 // digest promoted last (learn/promote.ts championOf) serves the run, read from the learning commit its record names, so
 // a wrong served grade asks for a revision and never stops the workflow serving. The challenger serves once its replay
@@ -48,7 +51,7 @@ import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/j
 import type { McpPin } from "../mcp-gateway.js";
 import { recordedCalls, type ReplayCalls, replayCalls, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
-import { championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, replayingOf, replayScore, answerCorrect, scoredRows, skippedToolsOf, thresholdsOf } from "../learn/promote.js";
+import { answersAlone, championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, replayingOf, replayScore, answerCorrect, scoredRows, skippedToolsOf, thresholdsOf } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
@@ -466,8 +469,8 @@ async function replayRows(deps: PromotionDeps, record: PromotionRecord): Promise
   return { rows, cost: cost === null ? null : Math.round(cost * 1e6) / 1e6, unstarted: runs.filter((row) => !row).length };
 }
 
-/** A replaying digest's decision, once its replay runs ended: promote within the bar, else hold, then one refit when its
- *  workflow has guards. Undefined while a replay run is at work. */
+/** A replaying digest's decision, once its replay runs ended: promote within the bar when it answered alone at least once,
+ *  else hold, then one refit (of its guards and recorded escalates). Undefined while a replay run is at work. */
 async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, record: PromotionRecord): Promise<PromotionRecord | undefined> {
   const { store, agentId, log } = deps;
   const now = deps.now ?? Date.now;
@@ -497,7 +500,9 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
     ? hint ? `nothing was replayed on its ${plural(skipped, "graded input")}: ${skipWhy}` : `every one of its ${plural(skipped, "graded input")} ${SKIPPED_WRITE}: a replay never runs a write, so nothing was replayed`
     : scored.length < REPLAY_MIN
       ? `only ${plural(scored.length, "replay")} answered or handed back${aside ? ` (${aside})` : ""}, fewer than ${REPLAY_MIN}`
-      : ok ? `replayed ${said}: within ${PROMOTE_BAR * 100} pts` : `replayed ${said}: more than ${PROMOTE_BAR * 100} pts under the agent`;
+      : ok ? `replayed ${said}: within ${PROMOTE_BAR * 100} pts`
+        : !answersAlone(score) ? `it handed back every one of its ${plural(score.n, "replayed input")}: it would never answer alone (${said})`
+          : `replayed ${said}: more than ${PROMOTE_BAR * 100} pts under the agent`;
   const decided = await recordPromotion(store.settings, agentId, {
     workflow: workflow.name, digest, at: iso(now()), decided: ok ? "promote" : "hold", source: "replay", reason,
     replay: { ...score, of: read.rows.map((row) => row.of), cost_usd: read.cost, skipped_write: skipped, skipped_tools: tools }, ...(record.runs ? { runs: record.runs } : {}),
@@ -510,7 +515,8 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
   const cancelled = await cancelUnended(deps, record);
   if (cancelled) log(`workflow-first: ${workflow.name} at ${digest}: ${plural(cancelled, "replay run")} still at work past the replay's deadline cancelled`);
   if (!ok && scored.length >= REPLAY_MIN) {
-    // Held with guards: one refit over the replay's scored rows (each step's p known: its guards read record-only).
+    // Held: one refit over the replay's scored rows (each step's p known: its guards read record-only, its judge-driven
+    // escalates recorded). One with neither changes nothing.
     await refitAndWrite(deps, workflow, digest, scored.map(replayRefitRow), "its replay held it", scored);
   }
   return decided.record;
@@ -570,14 +576,17 @@ async function refitAndWrite(deps: PromotionDeps, workflow: LearnedWorkflow, dig
   const refit = refitGuards(workflow.workflow, rows, iso(now()));
   if (!refit.text || !clears(refit)) return false;
   const next = workflowDigest({ workflow: refit.text });
-  const moved = refit.guards.map((one) => `${one.node} ${one.was} -> ${one.threshold}${one.fit ? " (fit)" : ""}`).join(", ");
+  const moved = refit.guards.map((one) => (one.escalate ? `${one.node} escalate off` : one.threshold === null ? `${one.node} guard off` : `${one.node} ${one.was} -> ${one.threshold}${one.fit ? " (fit)" : ""}`)).join(", ");
   const reason = `refit ${workflow.name}'s guards over ${why} (${plural(rows.length, "row")}): ${moved}`;
   const landed = await deps.commit([{ path: `workflows/${workflow.name}/workflow.json`, text: refit.text }], reason, `refit-${digest}-${next}`);
   if (landed === null) {
     deps.log(`workflow-first: ${workflow.name}'s refit did not land on its learning folder; it keeps its thresholds`);
     return false;
   }
-  const agree = replayed.length ? replayScore(replayed, new Map(refit.guards.map((one) => [one.node, one.threshold]))).agree : 0;
+  // What the new revision agrees on: its moved thresholds, and no row of a guard or escalate it switched off.
+  const off = new Set(refit.guards.filter((one) => one.threshold === null).map((one) => one.node));
+  const kept = replayed.map((row) => (off.size ? { ...row, guards: row.guards.filter((guard) => !off.has(guard.node)) } : row));
+  const agree = kept.length ? replayScore(kept, new Map(refit.guards.flatMap((one) => (one.threshold === null ? [] : [[one.node, one.threshold] as const])))).agree : 0;
   await recordPromotion(deps.store.settings, deps.agentId, {
     workflow: workflow.name, digest: next, at: iso(now()), decided: "promote", source: "refit",
     reason: `${reason}: the workflow ${(refit.wf_acc * 100).toFixed(1)}%, the agent ${(refit.agent_acc * 100).toFixed(1)}% on those rows`,

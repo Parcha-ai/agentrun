@@ -1435,12 +1435,13 @@ ListLearningPromotionsResponsePromotionsItemRefit = TypedDict("ListLearningPromo
 
 class _ListLearningPromotionsResponsePromotionsItemRefitGuardsItemRequired(TypedDict):
     node: str
-    was: float
-    threshold: float
+    was: float | None
+    threshold: float | None
 
 
 class ListLearningPromotionsResponsePromotionsItemRefitGuardsItem(_ListLearningPromotionsResponsePromotionsItemRefitGuardsItemRequired, total=False):
     fit: dict[str, Any]
+    escalate: Literal[True]
 
 
 class ListLearningPromotionsResponseServingItem(TypedDict):
