@@ -2448,7 +2448,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             if (cutBy?.kind === "command") return await writeEnd(harness, root, gate, stopEnd(cutBy.cancel), [cutBy.commandId], await cutRows(claim, spec, "stopped"));
             if (cutBy || deps.signal.aborted || step === "park") return await interrupted(cutBy?.kind ?? "its claim's signal aborted");
             served = step;
-            if (served?.outcome === "answered") turnsOver = true;
+            // A replay run (runner/promotion.ts) ends on its workflow's step whichever way it ended: its hand-back is the
+            // agent's recorded answer for that input, read from the graded run, never asked of the agent again.
+            if (served?.outcome === "answered" || (served?.outcome === "handed_back" && spec.workflowFirst?.replay)) turnsOver = true;
             else if (served?.outcome === "handed_back") {
               // The agent's first input: the handback, the server's (its row "AgentRun: …"), the job whole after it. Cut of
               // every secret the runner holds: the workflow's words may quote what its steps read.
@@ -2477,7 +2479,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // The turn this claim waits on: the first, then each the person's answer starts while the run waits in its claim on
         // its question (waitInClaim: ask_person with the browser open); "lapsed" when such a wait can no longer hold. None
         // when the workflow answered: the run ends on its answer.
-        let turn: Promise<TurnEnd | "lapsed"> = served?.outcome === "answered" ? new Promise<never>(() => {}) : placed ? session!.turnEnd() : idleTurnOf(harness, root);
+        const alone = served?.outcome === "answered" || (served?.outcome === "handed_back" && spec.workflowFirst?.replay === true);
+        let turn: Promise<TurnEnd | "lapsed"> = alone ? new Promise<never>(() => {}) : placed ? session!.turnEnd() : idleTurnOf(harness, root);
         // Set on every way out of the loop below but parkOn's, which returns before it is read.
         let data!: EndData;
         let failedWith: string | undefined;
@@ -2485,7 +2488,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let parkOn: string | undefined;
         /** The ask_person call the run waits on in its claim, while it does. */
         let waitingOn: string | undefined;
-        if (served?.outcome === "answered") data = { state: "ended" };
+        if (alone) data = { state: "ended" };
         else for (;;) {
           const end = await Promise.race([turn.then((ended) => (ended === "lapsed" ? ("lapsed" as const) : ("answered" as const))), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const), askCut.asked.then(() => "cut" as const)]);
           // Parked on a call held at the gate (a CLI's at its tool bridge): the answer that made the call may still be
