@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "report.schema.json",
+  "title": "Upgrade watch report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "repository",
+    "current_version",
+    "latest_version",
+    "verdict",
+    "items",
+    "versions",
+    "findings",
+    "summary"
+  ],
+  "properties": {
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "the watched repository, owner/name"
+    },
+    "current_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60,
+      "description": "the version the owner runs, as the project tags it"
+    },
+    "current_found": {
+      "type": "boolean",
+      "description": "false when the version in use is not a tag of the repository: nothing after it can be listed, and the verdict is incomplete"
+    },
+    "latest_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60,
+      "description": "the newest version of the owner's series, by version order; the version in use when no newer one could be established (verdict incomplete or up_to_date)"
+    },
+    "verdict": {
+      "enum": [
+        "up_to_date",
+        "safe",
+        "changes_needed",
+        "incomplete"
+      ],
+      "description": "up_to_date: nothing newer in the owner's series; safe: every version in between read in full and none touches an item; changes_needed: a version changes something an item names; incomplete: a version in between was not read or read in part, or the versions could not be listed, never safe"
+    },
+    "items": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 2000,
+      "description": "the items this run checked, each in the owner's words: the depends-on list as learned notes and the run's message change it. The limits are the depends_on parameter's (4000 characters in all), so any list the template accepts fits here whole",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4000
+      }
+    },
+    "versions": {
+      "type": "array",
+      "maxItems": 50,
+      "description": "each version in between whose notes were read, newest first; empty for up_to_date. With unread it accounts for every version in between",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "source_url",
+          "read"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "source_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https?://",
+            "description": "a page a person can open that shows its notes: its release page or the changelog"
+          },
+          "read": {
+            "enum": [
+              "full",
+              "partial"
+            ],
+            "description": "partial: a slice cut its notes and the rest was not read"
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 20,
+      "description": "each change that touches an item on the owner's list",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "kind",
+          "change",
+          "affects",
+          "what_to_do",
+          "source_url",
+          "confidence"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "kind": {
+            "enum": [
+              "removal",
+              "rename",
+              "behavior",
+              "requirement",
+              "deprecation",
+              "security"
+            ]
+          },
+          "change": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400,
+            "description": "what changes, in the release note's own words"
+          },
+          "affects": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "the item it touches, in the owner's words"
+          },
+          "what_to_do": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400,
+            "description": "the note's migration step; when it gives none, what the change implies, starting \"Not stated in the notes:\""
+          },
+          "source_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https?://",
+            "description": "the page that shows the change"
+          },
+          "confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "description": "high: the note names the item itself; medium: it names the item's parent; low: the match is the agent's reading"
+          }
+        }
+      }
+    },
+    "other_breaking": {
+      "type": "array",
+      "maxItems": 10,
+      "description": "breaking changes in the releases read that touch nothing on the list, one line each with its version",
+      "items": {
+        "type": "string",
+        "maxLength": 300
+      }
+    },
+    "unread": {
+      "type": "array",
+      "maxItems": 50,
+      "description": "each version in between whose notes were not read, objects never text; several unread for one reason may share an entry (\"v2.0.0 to v2.3.1 (9 versions)\"); not empty means the verdict is incomplete",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "reason"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "reason": {
+            "enum": [
+              "blocked",
+              "not_found",
+              "error",
+              "skipped"
+            ],
+            "description": "blocked: a rate limit or an access-denied answer; not_found: no notes for it; error: a timeout or server error; skipped: the fetch budget was spent"
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "why, in a few words"
+          }
+        }
+      }
+    },
+    "unreachable": {
+      "type": "array",
+      "maxItems": 20,
+      "description": "each page the plan needed and could not read, with why, objects never text",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "reason"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "reason": {
+            "enum": [
+              "blocked",
+              "not_found",
+              "error",
+              "skipped"
+            ],
+            "description": "blocked: a rate limit or an access-denied answer; not_found: no notes for it; error: a timeout or server error; skipped: the fetch budget was spent"
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "what the page answered, in a few words: \"rate limited (403)\", \"timed out\""
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "description": "the report as a person reads it: the range, the verdict, each finding with what to do, what was not read, what a note or the message changed, what is new since the last report"
+    }
+  }
+}

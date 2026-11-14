@@ -198,13 +198,13 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   const listed = await api("GET", "/templates");
   assert.equal(listed.status, 200);
   meets("/templates", "get", "200", listed.body);
-  assert.deepEqual(listed.body.templates.map((x) => x.name), ["code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
+  assert.deepEqual(listed.body.templates.map((x) => x.name), ["code-review", "inbound-lead", "kyb", "market-monitor", "release-notes", "upgrade-watch"]);
   for (const view of listed.body.templates) {
     assert.deepEqual(view.author, { name: "Parcha Labs" }, `${view.name} names its author`);
     assert.equal(typeof view.output?.schema, "string", `${view.name} names its answer's schema file`);
     assert.equal(view.output.json_schema.type, "object", `${view.name} shows the schema itself, for the console`);
   }
-  assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never" }, "a template whose job runs on triggers runs unattended by default");
+  assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never", "upgrade-watch": "never" }, "a template whose job runs on triggers runs unattended by default");
   const review = listed.body.templates.find((x) => x.name === "code-review");
   assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.repo.required], ["0.3.0", [], ["review"], ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "re-review", "re-review-open", "repo-rule", "two-defects"], true]);
 
@@ -462,6 +462,7 @@ test("every package this server ships applies on a server with nothing saved: no
     kyb: { risk_appetite: "medium" },
     "market-monitor": { competitors: "Acme (acme.example)" },
     "release-notes": { repo: "Parcha-ai/agentrun" },
+    "upgrade-watch": { repository: "acme/widget", current_version: "v2.3.1", depends_on: "the serve command's --port flag; POST /v2/agents" },
   };
   const listed = (await api("GET", "/templates")).body.templates;
   assert.deepEqual(listed.map((x) => x.name), Object.keys(parameters), "a new package gets its parameters here");
@@ -530,7 +531,7 @@ test("a package's writes are bounded: each MCP tool it lists is a known read or 
   for (const { p, id } of listed) assert.ok(WRITES.has(id) || READS.has(id), `${p} lists ${id}, neither a known read nor a known write: classify it here`);
   assert.deepEqual(listed.filter((x) => x.allowed && WRITES.has(x.id)).map((x) => `${x.p}: ${x.id}`), [], "a write at the package's allow");
   assert.deepEqual(listed.filter((x) => x.unattended && WRITES.has(x.id) && !x.pinned && !Object.hasOwn(BOUNDED, x.id)).map((x) => `${x.p}: ${x.id}`), [], "an unattended package's write with neither a pin nor a stated bound");
-  assert.deepEqual(packages.filter((p) => p.approvals === "never").map((p) => p.name), ["code-review", "inbound-lead", "market-monitor", "release-notes"], "the packages whose job runs on triggers run unattended");
+  assert.deepEqual(packages.filter((p) => p.approvals === "never").map((p) => p.name), ["code-review", "inbound-lead", "market-monitor", "release-notes", "upgrade-watch"], "the packages whose job runs on triggers run unattended");
   assert.ok(listed.some((x) => WRITES.has(x.id) && x.pinned) && listed.some((x) => x.allowed), "the check sees pinned writes and allowed tools");
 });
 
