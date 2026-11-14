@@ -401,7 +401,9 @@ test("a restart after the compile answer is saved replays it against the main it
     crashBeforeEnd: async (data) => (moved = await answerOnMain(data, OTHERS, "run-other")),
     agentText: (body) => (/^One more turn: revise your learned workflow `answer`\./m.test(textOf({ messages: (body?.messages ?? []).slice(-1) })) ? revisedBlock : undefined),
   });
-  assert.equal(claims, 2, "a second claim ended the run");
+  // A claim after the crash ended the run. How many claims the restart took races its timing (3, not 2, in a merge-queue
+  // run), so only "past the first" is asserted; the asks below pin that the saved compile answer was replayed, not re-asked.
+  assert.ok(claims >= 2, `a claim after the crash ended the run: ${claims} claims`);
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.ok(moved && moved !== seed, "main moved past the compile read before the restart");
   const asks = gateway.requests.filter((request) => !isNode(request) && /One more turn: revise your learned workflow `answer`/.test(textOf({ messages: (request.body?.messages ?? []).slice(-1) })));

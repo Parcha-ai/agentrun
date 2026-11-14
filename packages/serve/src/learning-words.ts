@@ -160,6 +160,9 @@ export const said = {
   /** A grade under a cap whose cost can't be kept within it (its spend or the grade model's price unknown). */
   gradeUncapped: "Not graded: the grade's cost can't be kept under the cap.",
   unknownCost: "Skipped: this run's spend is unknown, so its budget can't cover looking back.",
+  /** A capped run whose spend under its cap is unknown once it looked back: its grade is not run (none could be kept
+   *  within the cap), so nothing it learned is kept. */
+  gradeUnknownSpend: "Not graded: this run's spend is unknown, so its budget can't cover the grade.",
   stopped: (cause: string) => `Not kept: learning stopped (${cause}).`,
 };
 

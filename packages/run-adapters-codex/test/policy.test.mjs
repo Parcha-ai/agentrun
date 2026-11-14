@@ -168,6 +168,24 @@ test('a completed event longer than the window the proxy keeps (its encrypted re
   assert.notEqual(reports[0].usd, null);
 });
 
+test("a completed event longer than the window, written with Python's json.dumps spacing (a LiteLLM gateway's `\"usage\": {`), is still booked, not unknown", async () => {
+  /** `value` as `json.dumps` writes it: `", "` between items, `": "` after a key. */
+  const spaced = (value) => Array.isArray(value) ? `[${value.map(spaced).join(', ')}]`
+    : value && typeof value === 'object' ? `{${Object.entries(value).map(([k, v]) => `${JSON.stringify(k)}: ${spaced(v)}`).join(', ')}}`
+    : JSON.stringify(value);
+  const usage = { input_tokens: 368_010, input_tokens_details: { cached_tokens: 0 }, output_tokens: 9_000, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 377_010 };
+  const message = { type: 'message', content: [{ type: 'output_text', text: 'a long answer, \\"usage\\": {\\"input_tokens\\": 0} quoted in it. '.repeat(3000) }] };
+  // LiteLLM's field order: the output, the tools, then the usage, then user and store.
+  const end = { type: 'response.completed', response: { object: 'response', status: 'completed', output: [message], tools: [], usage, user: null, store: false } };
+  const stream = [{ type: 'response.created', response: { usage: null } }, end].map((e) => `data: ${spaced(e)}\n\n`).join('') + 'data: [DONE]\n\n';
+  assert.ok(stream.length > 2 * 64 * 1024, 'longer than the window');
+  const { p, reports } = await proxy({ answer: () => new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }) });
+  assert.equal((await send(p.url, { body: RECORDED_REQUEST })).status, 200);
+  await settled();
+  assert.deepEqual(reports.map(({ usd, ...u }) => u), [{ input: 368_010, output: 9_000, cacheRead: 0, cacheWrite: 0, estimated: true }]);
+  assert.notEqual(reports[0].usd, null, 'priced: the client read this usage too');
+});
+
 test("past the window, the model's own text saying a zero usage is never booked: the real one, or an unknown cost", async () => {
   // JSON escapes every quote in a string, so a model that writes the key (even with its own backslashes) never forms
   // the bare `"usage":{` the window fallback reads; placed before the real usage, after it, and across the window's start.
