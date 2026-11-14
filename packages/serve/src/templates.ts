@@ -159,7 +159,11 @@ export class PackageError extends Error {
   }
 }
 
-/** A github source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
+/** The source kinds whose accept rules a parameter may fill: a github trigger's, and a webhook trigger's (a provider that
+ *  sends every trigger of a project to one URL, as Composio does, is filtered to the owner's own repository by them). */
+const FILTERED_KINDS = ["github", "webhook"];
+
+/** A github or webhook source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
  *  condition's list, and `rest`, the source without them. */
 function whereIns(source: Json): { ins: unknown[]; rest: Json } {
   const ins: unknown[] = [];
@@ -582,22 +586,23 @@ export function readPackage(dir: string): Package {
     for (const [, used] of value.matchAll(PLACEHOLDER)) if (!Object.hasOwn(parameters, used!)) bad(MANIFEST, `\${parameters.${used}} names no parameter`);
   }
   // A placeholder fills text a run reads, a schedule's time (its cron and timezone, read as the schedule at apply), and a
-  // github trigger's where `in` values (the repository it takes, say); a trigger's other settings are the package's own,
-  // checked here. A parameter that sets a time has a default, so the schedule the package ships is checked here too; one
-  // a github trigger takes is required or has a default, so the trigger never fills empty and takes no event.
+  // github or webhook trigger's where `in` values (the repository it takes, say); a trigger's other settings are the
+  // package's own, checked here. A parameter that sets a time has a default, so the schedule the package ships is checked
+  // here too; one a github or webhook trigger's where takes is required or has a default, so the trigger never fills
+  // empty and takes no event.
   triggers.forEach((trigger, i) => {
     if (!isObject(trigger)) return;
     const timed = isObject(trigger.source) && trigger.source.kind === "schedule";
-    const github = isObject(trigger.source) && trigger.source.kind === "github";
+    const filtered = isObject(trigger.source) && FILTERED_KINDS.includes(trigger.source.kind as string);
     const fixed = Object.entries(trigger).flatMap(([key, value]) =>
       key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const)
       : key === "source" && timed && isObject(value) ? Object.entries(value).filter(([k]) => !SCHEDULE_FIELDS.includes(k)).map(([k, v]) => [`source.${k}`, v] as const)
-      : key === "source" && github && isObject(value) ? [[key, whereIns(value).rest] as const]
+      : key === "source" && filtered && isObject(value) ? [[key, whereIns(value).rest] as const]
       : [[key, value] as const]);
-    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github trigger's where in values, or an mcp pin's values`);
-    if (github) {
+    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github or webhook trigger's where in values, or an mcp pin's values`);
+    if (filtered) {
       for (const used of new Set(strings(whereIns(trigger.source as Json).ins).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
-        if (Object.hasOwn(parameters, used) && !parameters[used]!.required && parameters[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a github trigger filled empty takes no event`);
+        if (Object.hasOwn(parameters, used) && !parameters[used]!.required && parameters[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a ${(trigger.source as Json).kind as string} trigger filled empty takes no event`);
       }
     }
     if (!timed) return;
