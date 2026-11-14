@@ -6,6 +6,8 @@
 // fake MCP server; claude-agent and codex are mcp-gate-wired.test.mjs's. No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { permissionFrom, SETTINGS_UNREAD, toolEffect } from "../dist/tool-gate.js";
@@ -314,8 +316,8 @@ test("pi: the gate reads the mark the run's pin holds: a tool its server marks r
   assert.equal(calls(fake, "note").length, 1);
 });
 
-test("an agent's read (GET /v2/agents/{id}) gives each MCP tool's permission by the mark its revision's pin holds, as its runs read it: a refresh that marks a write read-only, or a read a write, changes neither until the agent is saved again", async (t) => {
-  const { api } = await serve(t);
+test("an agent's read (GET /v2/agents/{id}) gives each MCP tool's permission by the mark its revision's pin holds, as its runs read it: a refresh that marks a write read-only, or a read a write, changes neither until the agent is saved again; a revision with no pin yet reads the listing its first run would pin", async (t) => {
+  const { api, data } = await serve(t);
   const fake = await addFake(t, api);
   assert.equal((await api("PUT", "/settings/tools", READS)).status, 200);
   const made = await whenFree(() => api("POST", "/agents", agent("pinned-read", { tools: ["mcp:fake/note", "mcp:fake/add"] })));
@@ -334,4 +336,15 @@ test("an agent's read (GET /v2/agents/{id}) gives each MCP tool's permission by 
   const fresh = await whenFree(() => api("POST", "/agents", agent("pinned-after", { tools: ["mcp:fake/note", "mcp:fake/add"] })));
   assert.equal(fresh.status, 201, JSON.stringify(fresh.body));
   assert.deepEqual(await permissions("pinned-after"), { "mcp:fake/note": "allow", "mcp:fake/add": "ask" });
+  // A revision with no pin yet (saved before pins were made at save) is pinned from the listing at its first run: its read
+  // says that listing now.
+  const revision = (await api("GET", "/agents/pinned-read")).body.revision;
+  const raw = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+  try {
+    raw.prepare("UPDATE revisions SET mcp_pin = NULL WHERE id = ?").run(revision);
+  } finally {
+    raw.close();
+  }
+  assert.equal((await api("GET", "/agents/pinned-read")).body.mcp_pin, null, "unpinned");
+  assert.deepEqual(await permissions("pinned-read"), { "mcp:fake/note": "allow", "mcp:fake/add": "ask" }, "no pin: the listing its first run would pin");
 });

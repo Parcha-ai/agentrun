@@ -127,7 +127,7 @@ import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
-import { permissionFrom, toolEffect } from "./tool-gate.js";
+import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
 import { isMcpWildcard, mcpNameOf as mcpToolOf, mcpToolName, monidDroppedWords, monidNameOf } from "./tool-names.js";
 import { wireName } from "./catalog.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
@@ -2933,9 +2933,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // A tool of bash's family the agent's computer gives no shell for reads unavailable (runShellOf).
         const revision = entry.revision as unknown as Revision | undefined;
         const tooling = revision ? await toolingOf(revision) : undefined;
-        // An MCP tool's effect, by its saved server's listing now (mcp-servers-store.ts): what "allow reads" reads.
-        const listed = tooling?.tools.some((name) => mcpToolOf(name)) ? new Map((await store.mcp.servers()).map((row) => [row.name, (row.tools ?? []) as { name: string; annotations?: unknown }[]])) : undefined;
+        // An MCP tool's effect, what "allow reads" reads: as the revision's pin marks it (pinnedEffect), the marks its runs
+        // read. A revision saved before pins were made at save holds none until its first run, which pins its saved
+        // server's listing then (pinFirst): so until then, that listing now (mcp-servers-store.ts).
+        const pin = (revision as { mcpPin?: McpPin | null } | undefined)?.mcpPin ?? undefined;
+        const listed = !pin && tooling?.tools.some((name) => mcpToolOf(name)) ? new Map((await store.mcp.servers()).map((row) => [row.name, (row.tools ?? []) as { name: string; annotations?: unknown }[]])) : undefined;
         const effectOf = (name: string) => {
+          if (pin) return pinnedEffect(pin, name);
           const parsed = mcpToolOf(name);
           const tool = parsed && listed?.get(parsed.server)?.find((one) => one.name === parsed.tool);
           return tool ? toolEffect(tool.annotations) : undefined;
