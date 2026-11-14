@@ -220,29 +220,118 @@ def choose(bridge, args, verify=True):
     return bridge.call({'type': 'prepare', 'target': candidates[0]})['target'] if verify else candidates[0]
 
 
+def history_inventory(value):
+    if not isinstance(value, str) or len(value) != 64 or any(character not in '0123456789abcdef' for character in value):
+        raise ValueError('The source omitted a valid history inventory. Retry remote import-history from the beginning; earlier imports are deduplicated.')
+    return value
+
+
+def history_summary(bridge, target):
+    if target['selector']['kind'] != 'project':
+        raise ValueError('History belongs to a project and runtime, not a named agent or profile. Select --selector-kind project for history; connect named setups separately for live runs.')
+    report = bridge.call({'type': 'history-preview', 'target': target})
+    total = report.get('total')
+    if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+        raise ValueError('The source returned an invalid history preview.')
+    return {'candidate_sessions': total, 'skipped': report.get('skipped', []), 'inventory': history_inventory(report.get('inventory'))}
+
+
+def approve_history(args, destination, target, preview):
+    if args.yes:
+        return True
+    print(json.dumps({'destination': destination, 'project': target['project'], 'runtime': target['runtime'], 'history': preview}))
+    print('Import ended conversation history for only this project and runtime. This does not run a model or enable self-improvement.')
+    return input('Import this selected history? [y/N] ').strip().lower() in {'y', 'yes'}
+
+
+def upload_history(args, state, *, approved_inventory=None):
+    if not state.data.get('history_import') or state.data.get('disconnected') or not state.data.get('agent_id'):
+        raise ValueError('History import was not enabled for this connection. Create a new connection with --history or --history-only and a matching console enrollment grant.')
+    target_id, target = next(iter(state.data['targets'].items()))
+    bridge = Bridge(args.bridge or state.data.get('bridge'))
+    try:
+        if approved_inventory is None:
+            preview = history_summary(bridge, target)
+            if not approve_history(args, state.data['origin'], target, preview):
+                return {'status': 'cancelled'}
+            approved_inventory = preview['inventory']
+        inventory = history_inventory(approved_inventory)
+        cursor, uploaded, imported, already, pages, skipped = 0, 0, 0, 0, 0, []
+        while True:
+            page = bridge.call({'type': 'history-export', 'target': target, 'payload': {'cursor': cursor, 'inventory': inventory, 'redact_values': [state.data['credential']]}})
+            if history_inventory(page.get('inventory')) != inventory:
+                raise ValueError('The source history inventory changed during import. Retry remote import-history from the beginning; earlier imports are deduplicated.')
+            sessions = page.get('sessions')
+            if not isinstance(sessions, list) or len(sessions) > 20:
+                raise ValueError('The source returned an invalid history page.')
+            body = {'sessions': sessions}
+            if len(json.dumps(body, separators=(',', ':'), ensure_ascii=False).encode()) > 2_000_000:
+                raise ValueError('The selected history page exceeds the upload limit; no partial session was sent.')
+            if sessions:
+                receipt = request(state.data['origin'], state.data['credential'], 'POST',
+                        f"/v2/connectors/{identifier(state.data['connector_id'])}/targets/{identifier(target_id)}/history", body)
+                counts = [receipt.get('imported'), receipt.get('already')]
+                if any(not isinstance(count, int) or isinstance(count, bool) or count < 0 for count in counts) or sum(counts) != len(sessions):
+                    raise ValueError('The destination did not acknowledge every history session. Retry remote import-history; previously imported sessions are deduplicated.')
+                imported += counts[0]
+                already += counts[1]
+                uploaded += len(sessions)
+            skipped.extend(page.get('skipped', []))
+            pages += 1
+            next_cursor = page.get('next_cursor')
+            if next_cursor is None:
+                break
+            if not isinstance(next_cursor, int) or isinstance(next_cursor, bool) or next_cursor <= cursor or pages >= 100_000:
+                raise ValueError('The source returned an invalid history cursor.')
+            cursor = next_cursor
+        return {'status': 'imported', 'sessions_uploaded': uploaded, 'imported': imported, 'already': already, 'skipped': skipped, 'agent_id': state.data['agent_id']}
+    finally:
+        bridge.close()
+
+
 def connect(args, state):
     api_origin = origin(args.origin)
+    history = args.history or args.history_only
+    native_execution = not args.history_only
+    if history and args.selector_kind != 'project':
+        raise ValueError('History belongs to a project and runtime. Select --selector-kind project for history; connect named agents or profiles separately for live runs.')
     if state.data.get('connector_id') and state.data.get('disconnected'):
         raise ValueError('Use a new private --state-dir for a replacement connection. The old command journal must remain bound to its original destination.')
     pending_import = state.data.get('remote') and state.data.get('connector_id') and not state.data.get('disconnected') and not state.data.get('agent_id')
     if state.data.get('connector_id') and not state.data.get('disconnected') and not pending_import:
-        raise ValueError('This source state already has a connection. Use another private state directory for a new connection.')
+        raise ValueError('This source state already has a connection. Use remote import-history to import history again, or use another private state directory for a new connection.')
     if pending_import:
         if state.data['origin'] != api_origin:
             raise ValueError('This pending connection belongs to another destination.')
+        if state.data.get('native_execution', True) != native_execution or state.data.get('history_import', False) != history:
+            raise ValueError('Retry the pending connection with the same live/history choice.')
         target_id, target = next(iter(state.data['targets'].items()))
         selector = {'kind': args.selector_kind, **({'name': args.selector_name} if args.selector_name else {})}
         if target['project'] != str(Path(args.project).expanduser().resolve()) or target['runtime'] != args.runtime or target['selector'] != selector:
             raise ValueError('Retry only the already approved pending source import, or use a separate state directory.')
+        if history:
+            bridge = Bridge(args.bridge or state.data.get('bridge'))
+            try:
+                preview = history_summary(bridge, target)
+            finally:
+                bridge.close()
+            if not approve_history(args, api_origin, target, preview):
+                return {'status': 'cancelled'}
     else:
         bridge = Bridge(args.bridge)
         try:
-            target = choose(bridge, args)
+            target = choose(bridge, args, verify=native_execution)
+            preview = history_summary(bridge, target) if history else None
         finally:
             bridge.close()
         if not args.yes:
-            print(json.dumps({'destination': api_origin, 'project': target['project'], 'runtime': target['runtime'], 'selector': target['selector']}))
-            print('This connection allows the destination to run this selected agent using its existing native permissions. Run prompts, results, tool activity, usage and standing instruction evidence are sent for those jobs. Native credentials stay on this machine.')
+            print(json.dumps({'destination': api_origin, 'project': target['project'], 'runtime': target['runtime'], 'selector': target['selector'], 'history': preview}))
+            if native_execution:
+                print('This connection allows the destination to run this selected agent using its existing native permissions. Run prompts, results, tool activity, usage and standing instruction evidence are sent for those jobs. Native credentials stay on this machine.')
+            if history:
+                print('Ended conversation history for this project and runtime will be imported. This does not run a model or enable self-improvement.')
+            else:
+                print('Existing conversation history is not imported.')
             if input('Connect and import this exact setup? [y/N] ').strip().lower() not in {'y', 'yes'}:
                 return {'status': 'cancelled'}
         if args.credential_file:
@@ -257,7 +346,7 @@ def connect(args, state):
         state.save()
         registered = request(api_origin, credential, 'POST', '/v2/connectors', {
             'installation_id': state.data['installation_id'], 'label': args.name,
-            'capabilities': {'native_execution': True}, 'operation_id': operation,
+            'capabilities': {'native_execution': native_execution, 'history_import': history}, 'operation_id': operation,
         })
         connector = registered.get('connector', {})
         connector_id = identifier(connector.get('id') or connector.get('connector_id'))
@@ -268,18 +357,23 @@ def connect(args, state):
         state.data.update(origin=api_origin, connector_id=connector_id, credential=token,
                           credential_expires_at=registered.get('credential_expires_at'),
                           remote=True, disconnected=False, targets={target_id: target},
-                          native_execution=True,
+                          native_execution=native_execution, history_import=history,
                           bridge=str(Path(args.bridge).resolve()) if args.bridge else None)
         state.data.pop('remote_registration_operation', None)
         state.save()
     imported = request(api_origin, state.data['credential'], 'POST', f"/v2/connectors/{identifier(state.data['connector_id'])}/import", {
         'target_id': target_id, 'name': args.agent_name or Path(target['project']).name,
-        'target': target,
+        'target': target, 'history_only': args.history_only,
     })
     state.data['agent_id'] = imported['agent_id']
     state.save()
     result = {'status': 'connected', 'connector_id': state.data['connector_id'], 'agent_id': imported['agent_id'], 'runtime': target['runtime'], 'worker': 'stopped'}
-    if not args.no_start:
+    if history:
+        try:
+            result['history'] = upload_history(args, state, approved_inventory=preview['inventory'])
+        except (ValueError, OSError, APIError) as error:
+            raise ValueError(safe_message(error) + ' The setup is connected and its worker is stopped. Resume with remote import-history using the same --state-dir; earlier imports are deduplicated.') from None
+    if native_execution and not args.no_start:
         start(state, args.bridge)
         result['worker'] = 'running'
     return result
@@ -306,7 +400,7 @@ def running(state):
 
 def start(state, bridge=None):
     if state.data.get('native_execution') is False:
-        raise ValueError('This connection has not authorized native execution.')
+        raise ValueError('This is a history-only connection. Create a new live connection to run an agent.')
     if running(state):
         return
     command = [sys.executable, '-m', 'agentrun_cli', 'remote', 'worker', '--foreground', '--state-dir', str(state.directory)]
@@ -329,7 +423,7 @@ def start(state, bridge=None):
 
 def worker(state, bridge_path=None, once=False):
     if state.data.get('native_execution') is False:
-        raise ValueError('This connection has not authorized native execution.')
+        raise ValueError('This is a history-only connection. Create a new live connection to run an agent.')
     if not state.data.get('remote') or state.data.get('disconnected') or not state.data.get('credential'):
         raise ValueError('Connect an explicit source target before starting the remote worker.')
     lock = lock_worker(state)
@@ -582,7 +676,7 @@ def safe_message(error):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='agentrun remote', description='Explicitly connect a source-machine native setup to an OSS AgentRun server.')
-    parser.add_argument('action', choices=['discover', 'connect', 'worker', 'status', 'disconnect'])
+    parser.add_argument('action', choices=['discover', 'history-preview', 'connect', 'import-history', 'worker', 'status', 'disconnect'])
     parser.add_argument('--state-dir', default=str(Path.home() / '.agentrun-remote'))
     parser.add_argument('--origin')
     parser.add_argument('--project')
@@ -595,26 +689,37 @@ def main(argv=None):
     parser.add_argument('--agent-name')
     parser.add_argument('--yes', action='store_true')
     parser.add_argument('--no-start', action='store_true')
+    history_mode = parser.add_mutually_exclusive_group()
+    history_mode.add_argument('--history', action='store_true', help='Connect for live runs and explicitly import this project/runtime history')
+    history_mode.add_argument('--history-only', action='store_true', help='Import this project/runtime history without enabling execution or starting a worker')
     parser.add_argument('--foreground', action='store_true')
     parser.add_argument('--once', action='store_true')
     args = parser.parse_args(argv)
     try:
-        if args.action in ('discover', 'connect') and (not args.project or not args.runtime):
+        if args.action in ('discover', 'history-preview', 'connect') and (not args.project or not args.runtime):
             raise ValueError('Choose an explicit --project and --runtime on this source machine.')
-        if args.action not in ('discover', 'connect') and (args.project or args.runtime or args.selector_kind != 'project' or args.selector_name):
+        if (args.history or args.history_only) and args.action != 'connect':
+            raise ValueError('--history and --history-only are connect options. Use history-preview for a dry run, or import-history for an existing connection.')
+        if args.action not in ('discover', 'history-preview', 'connect') and (args.project or args.runtime or args.selector_kind != 'project' or args.selector_name):
             raise ValueError('This command uses only the exact source target in --state-dir; do not supply another project or runtime.')
         if (args.selector_kind == 'project') != (args.selector_name is None):
             raise ValueError('Choose an exact --selector-name only for an agent or profile.')
-        if args.action == 'discover':
+        if args.action in ('discover', 'history-preview'):
             bridge = Bridge(args.bridge)
             try:
-                result = bridge.call({'type': 'discover', 'payload': {'project': str(Path(args.project).expanduser().resolve()), 'runtime': args.runtime}})
+                if args.action == 'history-preview':
+                    target = choose(bridge, args, verify=False)
+                    result = {'project': target['project'], 'runtime': target['runtime'], 'history': history_summary(bridge, target)}
+                else:
+                    result = bridge.call({'type': 'discover', 'payload': {'project': str(Path(args.project).expanduser().resolve()), 'runtime': args.runtime}})
             finally:
                 bridge.close()
         else:
             state = State(args.state_dir)
             if args.action == 'connect':
                 result = connect(args, state)
+            elif args.action == 'import-history':
+                result = upload_history(args, state)
             elif args.action == 'worker':
                 if args.foreground or args.once:
                     result = worker(state, args.bridge, args.once)
@@ -623,7 +728,7 @@ def main(argv=None):
                     result = {'status': 'running'}
             elif args.action == 'status':
                 result = {'connected': bool(state.data.get('remote') and not state.data.get('disconnected')), 'worker_running': running(state),
-                          'connector_id': state.data.get('connector_id'), 'agent_id': state.data.get('agent_id'), 'origin': state.data.get('origin'), 'native_execution': state.data.get('native_execution', True)}
+                          'connector_id': state.data.get('connector_id'), 'agent_id': state.data.get('agent_id'), 'origin': state.data.get('origin'), 'native_execution': state.data.get('native_execution', True), 'history_import': state.data.get('history_import', False)}
             else:
                 if not state.data.get('connector_id'):
                     result = {'status': 'disconnected'}

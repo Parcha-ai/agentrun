@@ -28,6 +28,28 @@ The CLI finds `agentrun-serve remote-bridge` from the matching Node installation
 
 Import here means an ordinary agent/revision referencing the selected source setup. Its configuration, skills, MCP, hooks and sign-in stay on that machine. Run prompts, results, tool activity, usage and an immutable standing-instruction snapshot are sent to the destination for the approved runs and learning. The server cannot select another source path, executable or environment through the worker protocol. The original source permissions remain authoritative.
 
+### Import selected history
+
+The remote CLI can import completed Claude Code or Codex sessions from another machine. First preview one exact project and runtime on the source; nothing is uploaded:
+
+```sh
+agentrun remote history-preview --project /absolute/project --runtime codex
+```
+
+Review the selected destination and candidate session counts. Export can skip oversized or unsettled content after this metadata preview. The destination owner must create a code through `POST /v2/connectors/enrollment` with `capabilities.history_import: true` and the chosen `capabilities.native_execution` flag, and the source operator must explicitly choose the matching flag:
+
+```sh
+# Historical records only; no executing worker or self-improvement.
+agentrun remote connect --origin https://console.example.com --project /absolute/project --runtime codex --history-only
+
+# A live project connection plus its completed session history.
+agentrun remote connect --origin https://console.example.com --project /absolute/project --runtime codex --history
+```
+
+Use only the selected command. History-only needs no native sign-in or model call. It cannot become runnable without a new owner enrollment. Completed sessions are imported as ordinary historical run records with source provenance, without executing them or using them as learning. Recent sessions (last ten minutes) and child sessions are skipped. `agentrun remote import-history --state-dir /private/connector` imports newly eligible sessions for the same approved target; repeated uploads skip duplicates. This is an explicit import, not continuous transcript collection or attachment to a conversation in progress.
+
+History is scoped to the selected project/runtime. Native logs cannot reliably attribute sessions to a named Claude agent or Codex profile, so history flags reject those selectors. Connect a named setup separately and use a project-level history-only connection when both are needed. Local-store import remains available for local Claude Code, Codex and pi histories; stop the owning server before importing directly into its store.
+
 Connected agents use the ordinary agent, revision, skills and per-agent learning records. Their revision contains a reference to the native source, not a copied prompt or credential store. Normal definition edits retain that reference. The portable `agent.md` template manifest continues to compile into the same ordinary records; it rejects native machine references. The current template API does not export a connected source setup. Existing managed adapters retain their isolated configuration.
 
 New jobs run in the original project and use native configuration resolution, model selection, MCP tools, hooks and sign-in. A named Claude agent is selected as the main session; a Codex profile is a profile, not a custom subagent. Each run records its exact session and resolved configuration fingerprint. Local reconnection updates the same agent; Verify refreshes metadata for an existing remote binding. Replacing a revoked remote connector requires a new grant and private state directory, and creates a new binding. Disconnect prevents future starts without changing the project or removing history.
