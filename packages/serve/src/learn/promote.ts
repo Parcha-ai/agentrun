@@ -166,10 +166,11 @@ export const putGrade = async (settings: Pick<Settings, "get" | "putIfAbsent" | 
   return kept;
 };
 
-/** Marks the kept grade `grade` (its run, given at its `at`) with the feedback round it opened, in place: its `seq` stays,
- *  so a serving digest's check never counts it twice. A newer grade of the run is left as it is. The grade, marked. */
+/** Marks the kept grade `grade` (its run, given at its `at`, kept at its `seq`) with the feedback round it opened, in
+ *  place: its `seq` stays, so a serving digest's check never counts it twice. A newer grade of the run is left as it is,
+ *  one given in the same millisecond too (its `seq` is another). The grade, marked. */
 export const markGradeRound = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, grade: Grade, feedback: FeedbackRound): Promise<Grade> => {
-  await updateKept<Grade>(settings, gradesKey(agentId), (items) => items.map((one) => (one.run === grade.run && one.at === grade.at ? { ...one, feedback } : one)));
+  await updateKept<Grade>(settings, gradesKey(agentId), (items) => items.map((one) => (one.run === grade.run && one.at === grade.at && one.seq === grade.seq ? { ...one, feedback } : one)));
   return { ...grade, feedback };
 };
 

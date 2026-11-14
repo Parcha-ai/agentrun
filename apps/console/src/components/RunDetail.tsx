@@ -149,8 +149,9 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // What the run's learning changed: read once, shown under the report and under the timeline's look-back.
   const changes = useRunChanges(run, readLearningDiff);
   // The run's learning, read once and again when it ends: the learned skills and workflows it used, and its grade with the
-  // round it opened. A grade this page sends is taken into it from the PUT's answer, so a tab switch still shows it.
-  const { read: learning, graded } = useRunLearning(run, view.final, readLearning);
+  // round it opened. A grade this page sends is kept beside it from the PUT's answer, so a tab switch, a read still
+  // pending or one begun before the grade still shows it.
+  const { read: learning, grade: runGrade, graded } = useRunLearning(run, view.final, readLearning);
   const grade = onGrade && (async (body: GradeBody) => {
     const answer = await onGrade(body);
     graded(answer);
@@ -245,7 +246,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
             <p className="font-mono text-body text-muted-foreground">{NO_ANSWER}{view.canMessage ? " Send a follow-up below to ask for one." : ""}</p>
           )}
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} ended={runEnded(run.status)} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} files={files} onOpen={show} />}
-          {(tab === "report" || tab === "timeline") && <RunGrade run={run} graded={learning?.graded ?? null} onGrade={grade} onOpenTimeline={tab === "timeline" ? undefined : () => setTab("timeline")} />}
+          {(tab === "report" || tab === "timeline") && <RunGrade run={run} graded={runGrade} onGrade={grade} onOpenTimeline={tab === "timeline" ? undefined : () => setTab("timeline")} />}
           {(tab === "report" || tab === "timeline") && <RunUsed used={learning?.used ?? null} agentId={run.agent_id} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}

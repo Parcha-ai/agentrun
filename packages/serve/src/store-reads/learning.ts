@@ -643,9 +643,10 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const current = holdsForOk(learning) && row && statuses ? currentLearning(learning, await statuses(row.agentId)) : learning;
   const body = runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled, used: learnedUseOf(started, reflect, rows, callArgsOf(entries), laidOf(entries), nativeSkillLoads(entries)) }, shown, secrets);
   // The run's own grade (PUT /runs/{id}/grade), as its agent keeps it and the PUT answered it, with the round it opened.
-  // Never its `expected` (a person's words, uncut), nor its label (not kept).
+  // Never its `expected` (a person's words, uncut), nor its label (not kept). Its workflow's name is cut as every other
+  // learning name is (`shown.name`): a secret registered after the grade never shows here.
   const grade = row ? (await gradesOf(store.settings, row.agentId).catch(() => [])).find((one) => one.run === runId) : undefined;
   if (!grade) return body;
   const { expected: _, ...graded } = gradeView(grade);
-  return { ...body, graded };
+  return { ...body, graded: { ...graded, workflow: graded.workflow === null ? null : shown.name(graded.workflow) } };
 }

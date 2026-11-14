@@ -52,7 +52,7 @@ function outcome(graded: RunGraded, reviewing: boolean, learning: Run["learning"
 }
 
 export type RunGradeProps = {
-  run: Pick<Run, "status" | "learning">;
+  run: Pick<Run, "status" | "learning" | "ended_at">;
   /** The run's grade as its learning read gives it back (`graded`, with the round it opened), a grade this page sent
    *  taken into it: null when it has none, or before the read. */
   graded: RunGraded | null;
@@ -77,9 +77,11 @@ export function RunGrade({ run, graded, onGrade, onOpenTimeline }: RunGradeProps
   // Held outside React's state, so two clicks in the same tick are still one grade.
   const sending = useRef(false);
   const ended = runEnded(run.status);
-  // The round the grade opened runs until the run has ended again and its learning settled (the grade's PUT reopens the
-  // run before it answers, and the page reads the run again before it takes the answer).
-  const reviewing = !!graded?.feedback && (!ended || underWay(run.learning ?? undefined));
+  // The round the grade opened runs until a run read says the run ended again after the grade and its learning settled.
+  // The grade's PUT reopens the run before it answers; a run read after it that failed leaves the page holding the run's
+  // end from before the grade, which never says the round ended.
+  const endedAgain = ended && !!run.ended_at && !!graded && Date.parse(run.ended_at) > Date.parse(graded.graded_at);
+  const reviewing = !!graded?.feedback && (!endedAgain || underWay(run.learning ?? undefined));
   if (!gradable(run) || (!ended && !graded)) return null;
   const form = open === "auto" ? (graded ? "closed" : "choose") : open;
   const canGrade = ended && !reviewing;

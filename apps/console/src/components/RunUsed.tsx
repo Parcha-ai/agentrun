@@ -2,16 +2,23 @@ import { BookOpen, Workflow } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Chip } from "@/components/ui/chip";
 import { learningHash } from "@/lib/learning";
-import type { GradeAnswer, LearnedUse, Run, RunLearningRead } from "@/lib/v2";
+import type { GradeAnswer, LearnedUse, Run, RunGraded, RunLearningRead } from "@/lib/v2";
+
+/** The newer of two grades of one run, by when each was given: the read's on a tie (the server's word for that grade). */
+const newer = (read: RunGraded | null, sent: RunGraded | null): RunGraded | null =>
+  !sent ? read : !read || Date.parse(sent.graded_at) > Date.parse(read.graded_at) ? sent : read;
 
 /** The run's learning (GET /v2/runs/{id}/learning), read for a run that learns, once and again when it ends (a skill read
  *  late counts; a grade's feedback round ends it again): what its job did with the learned skills and workflows its agent
- *  gave it (`used`) and its grade (`graded`, with the round it opened). `read` is null while unread, when the read failed,
- *  or for a run with nothing to read it from. `graded` takes a grade's answer (PUT /v2/runs/{id}/grade) into the read: the
- *  read's own shape, without `expected`. A grade changes nothing else the read says, so it is not read again for it. */
-export function useRunLearning(run: Pick<Run, "run_id" | "learning">, ended: boolean, read?: () => Promise<RunLearningRead>): { read: RunLearningRead | null; graded: (answer: GradeAnswer) => void } {
+ *  gave it (`used`). `read` is null while unread, when the read failed, or for a run with nothing to read it from.
+ *  `grade` is the run's grade with the round it opened: the newer of the read's (`graded`) and the one this page sent,
+ *  taken by `graded` from the PUT's answer (PUT /v2/runs/{id}/grade, without `expected`). It is kept apart from the read,
+ *  so a read still pending or failed never loses it, and a read begun before it never replaces it. A grade changes
+ *  nothing else the read says, so it is not read again for it. */
+export function useRunLearning(run: Pick<Run, "run_id" | "learning">, ended: boolean, read?: () => Promise<RunLearningRead>): { read: RunLearningRead | null; grade: RunGraded | null; graded: (answer: GradeAnswer) => void } {
   const learns = !!read && !!run.learning;
   const [got, setGot] = useState<RunLearningRead | null>(null);
+  const [sent, setSent] = useState<{ run: string; grade: RunGraded } | null>(null);
   useEffect(() => {
     if (!learns) return;
     let live = true;
@@ -20,9 +27,10 @@ export function useRunLearning(run: Pick<Run, "run_id" | "learning">, ended: boo
     return () => { live = false; };
   }, [run.run_id, learns, ended]); // eslint-disable-line react-hooks/exhaustive-deps
   const graded = useCallback(({ expected: _, ...answer }: GradeAnswer) => {
-    setGot((was) => (was ? { ...was, graded: answer } : was));
+    setSent({ run: answer.run_id, grade: answer });
   }, []);
-  return { read: learns ? got : null, graded };
+  const shown = learns ? got : null;
+  return { read: shown, grade: newer(shown?.graded ?? null, sent?.run === run.run_id ? sent.grade : null), graded };
 }
 
 const times = (n: number) => (n === 1 ? "once" : n === 2 ? "twice" : `${n} times`);

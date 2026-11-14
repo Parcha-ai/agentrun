@@ -77,6 +77,7 @@ import { keepGrade, LABEL_MAX } from "./runner/feedback-round.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { type Grade, GRADE_SOURCES, type GradeSource, gradeView, promotionsOf, promotionsShown } from "./learn/promote.js";
 import { runModelRef } from "./model.js";
+import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
 import { runLines } from "./usage-lines.js";
@@ -3137,7 +3138,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           ...(typeof m.workflow === "string" ? { workflow: m.workflow } : {}), ...(typeof m.workflow_digest === "string" ? { digest: m.workflow_digest } : {}),
         };
         // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, a revision ask, or a look-back.
-        return send(res, 200, gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined)));
+        const kept = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined));
+        // Its workflow's name cut as GET /runs/{id}/learning cuts it (learningShown); withheld whole when that cut can't be
+        // read (the grade is kept by then: never a shorter cut, never a refusal of a grade it kept).
+        const shown = await learningShown(row.agentId).catch(() => undefined);
+        return send(res, 200, { ...kept, workflow: kept.workflow === null ? null : shown ? shown.name(kept.workflow) : REDACTED });
       }
       case "archiveRun":
       case "unarchiveRun": {
