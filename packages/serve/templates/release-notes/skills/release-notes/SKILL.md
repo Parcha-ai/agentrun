@@ -130,8 +130,10 @@ membership. Each result carries the title, body, labels, author, `merged_at`, `m
 the merged results (`merged_at` set) whose numbers step 4 found, or whose merge or head commit is an in-range commit
 that names no PR, and ignore the rest. A PR step 4 found that the list missed: `pull_request_read` with `method: get`.
 
-**Fallback, approximate** (over 500 commits, or a walk that never reaches the `from` sha): the range is the PRs of the
-same `list_pull_requests` read with `base: <release branch>` whose `merged_at` is between `from_date` and `to_date`,
+**Fallback, approximate** (over 500 commits, or a walk that never reaches the `from` sha): the range is the PRs of a
+`list_pull_requests` read like the one above with `base: <release branch>`, paged on its own bound: until a whole page
+was last updated before `from_date`, or the list ends (never stopped at the walk's oldest commit, which is newer than
+`from_date` when the walk was cut). Its PRs whose `merged_at` is between `from_date` and `to_date` are the range,
 with `range.method: "merged_date"`. It is approximate because merge dates are not reachability: it misses a PR merged into another branch
 before `from` that reached the release branch after it, and it counts a PR merged into the branch inside the window that
 the tag doesn't hold (a tag cut from an older commit, or a backport branch). The intro says the range is by merge date
