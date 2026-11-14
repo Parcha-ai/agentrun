@@ -21,6 +21,7 @@
     },
     "summary": {
       "type": "string",
+      "contentMediaType": "text/markdown",
       "minLength": 1,
       "maxLength": 2400,
       "description": "2-4 sentences: what the change does and the verdict"

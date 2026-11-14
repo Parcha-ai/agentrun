@@ -1,0 +1,55 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.files.delete-file",
+  "version": 1,
+  "title": "Delete one file of three in the Files app",
+  "split": "heldout",
+  "tags": ["files", "delete"],
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.google.android.documentsui", "com.android.documentsui", "com.google.android.apps.nbu.files", "com.sec.android.app.myfiles"] },
+  "params": {
+    "f": {
+      "pick": [
+        { "del": "old-scan", "k1": "budget", "k2": "recipes" },
+        { "del": "copy-of-cv", "k1": "cv", "k2": "references" },
+        { "del": "temp-notes", "k1": "notes", "k2": "plans" },
+        { "del": "duplicate-photo-list", "k1": "packing-list", "k2": "photo-list" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "A fresh folder for this run in Download with three files: the one to delete and two to keep, named alike.",
+      "params": { "argv": ["sh", "-c", "d=/sdcard/Download/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d && for n in {{f.del}} {{f.k1}} {{f.k2}}; do echo \"$n {{nonce}}\" > $d/$n-{{nonce}}.txt || exit 1; done"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open the system file manager (DocumentsUI) on the folder.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.VIEW", "-t", "vnd.android.document/directory", "-d", "content://com.android.externalstorage.documents/document/primary%3ADownload%2Fcomputer-bench-{{nonce}}"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "In the Files app, delete {{f.del}}-{{nonce}}.txt from Download/computer-bench-{{nonce}}. Keep the other files.",
+  "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
+  "checks": [
+    {
+      "id": "left",
+      "kind": "exec",
+      "why": "The folder lists exactly the two kept files. A file a files app sent to the trash is renamed to a hidden .trashed- name, which `ls` doesn't list, so trashing counts as deleted. After setup all three are listed, so an agent that does nothing fails.",
+      "argv": ["ls", "-1", "/sdcard/Download/computer-bench-{{nonce}}"],
+      "stdout": { "equals": "{{f.k1}}-{{nonce}}.txt\n{{f.k2}}-{{nonce}}.txt" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the run's folder and everything in it, trashed files included.",
+      "params": { "argv": ["rm", "-rf", "/sdcard/Download/computer-bench-{{nonce}}"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "params": { "argv": ["rm", "/sdcard/Download/computer-bench-{{nonce}}/{{f.del}}-{{nonce}}.txt"], "timeoutMs": 20000 }
+    }
+  ]
+}
