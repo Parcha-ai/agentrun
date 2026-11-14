@@ -22,14 +22,13 @@ import { filedAnswer } from "./filed-answer.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
+import { capped, mcpClient, scrub } from "./mcp-wire.js";
 import { mcpNameOf, mcpToolName } from "./tool-names.js";
 import { type Workspace, workspaceAt, workspaceErrorWords } from "./workspace/index.js";
 
 /** The longest answer the model reads whole; past it, the rest is filed in the run's work/ as lines read pages through
  *  (filed-answer.ts). Within the host's result bound (HOST_RESULT_MAX_CHARS), so every harness passes it whole. */
 export const MCP_CLIP = 60_000;
-/** The most of one upstream answer read. */
-export const MAX_RESPONSE = 4 * 1024 * 1024;
 /** The longest one upstream call may take, and its first connection. */
 export const CALL_MS = 120_000;
 export const CONNECT_MS = 30_000;
@@ -166,12 +165,6 @@ function unreachable(error: unknown): string {
 
 const said = (text: string, isError = false): McpCallResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
 
-/** `text` with every credential value in `values` replaced, whole and as its bare token (with any one-word scheme, such
- *  as `Bearer ` or `Basic `, taken off): an upstream answer or error that echoes a header, or only its token, never shows
- *  it to the model, the harness or the run's files. */
-const scrub = (text: string, values: Iterable<string>) =>
-  [...values].flatMap((value) => [value, value.replace(/^[A-Za-z][A-Za-z0-9_-]*\s+(?=\S+$)/, "")]).sort((a, b) => b.length - a.length).reduce((out, value) => (value.length >= 8 ? out.split(value).join("[redacted]") : out), text);
-
 /** `work` until `signal` aborts: a connection shared by calls is never held by one that stopped. */
 const until = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
   new Promise((resolve, reject) => {
@@ -273,16 +266,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const response = await through(input, { ...init, headers: sent, redirect: "manual" });
     status.last = response.status;
     if (response.status >= 300 && response.status < 400) throw new Error(`it answered a redirect (HTTP ${response.status}), which is never followed`);
-    if (!response.body) return response;
-    let read = 0;
-    const capped = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        read += chunk.byteLength;
-        if (read > MAX_RESPONSE) controller.error(new Error(`its answer is longer than ${MAX_RESPONSE} bytes`));
-        else controller.enqueue(chunk);
-      },
-    }));
-    return new Response(capped, { status: response.status, statusText: response.statusText, headers: response.headers });
+    return capped(response);
   };
 
   const connect = (server: string, url: string, headers: Record<string, string>): Promise<Upstream> => {
@@ -291,10 +275,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       const status: { last?: number } = {};
       statuses.set(server, status);
       upstream = (async () => {
-        const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");
-        // The 2026-07-28 revision first, a 2025-era server through its initialize, as a preview connects.
-        const client = new Client({ name: "agentrun", version: "1.0.0" }, { capabilities: {}, versionNegotiation: { mode: "auto" } });
-        await client.connect(new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(server, () => credentials.get(server)?.headers ?? {}, status) as never }), { timeout: options.bounds?.connectMs ?? CONNECT_MS });
+        const { client, transport } = mcpClient(await import("@modelcontextprotocol/client"), { name: "agentrun", version: "1.0.0", url: new URL(url), fetch: guarded(server, () => credentials.get(server)?.headers ?? {}, status) as never });
+        await client.connect(transport, { timeout: options.bounds?.connectMs ?? CONNECT_MS });
         return client as unknown as Upstream;
       })();
       clients.set(server, upstream);
