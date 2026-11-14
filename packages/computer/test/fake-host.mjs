@@ -93,7 +93,9 @@ const START = Date.now();
  *  - hang: a script's kind ("install", ...) whose process never ends; killHangs: a process's kill that never settles;
  *  - archil: root verbs' answers, as fake-archil.mjs's;
  *  - sockets: the path sockets every machine holds, which the sockets script closes where a pattern names them;
- *    socketsFail: a path among them whose chmod fails.
+ *    socketsFail: a path among them whose chmod fails;
+ *  - stale: the listing reads each machine as its create made it, running, forever: it keeps a deleted machine, and
+ *    shows create's end and labels after a timer moved (E2B's Sandbox.list, read live 11-14). get stays current.
  * fake.events records every exec by script or verb, every daemon method and every delete, per machine.
  */
 export function fakeHost({
@@ -119,6 +121,7 @@ export function fakeHost({
 	killHangs = false,
 	sockets = [],
 	socketsFail,
+	stale = false,
 } = {}) {
 	const machines = new Map();
 	const held = [];
@@ -465,6 +468,7 @@ export function fakeHost({
 				m.hidden = unlisted;
 				m.flaps = [...flaps];
 				m.request = req;
+				if (stale) m.listedAs = { ...view(m), state: "running" };
 				if (req.command) {
 					// The entrypoint's words: the daemon, the wait, the home, the display, the nonce, then --gate <path> or not,
 					// then init's.
@@ -505,6 +509,7 @@ export function fakeHost({
 		async list(labels, ctx) {
 			await step("list", ctx);
 			const matched = [...machines.values()].filter((m) => Object.entries(labels).every(([k, v]) => m.labels[k] === v));
+			if (stale) return matched.filter((m) => m.listedAs !== undefined).map((m) => structuredClone(m.listedAs));
 			const flapped = new Set(matched.filter((m) => m.flaps?.length > 0 && m.flaps.shift() === false));
 			const listed = matched.filter((m) => (!m.deleted || m.lingering?.lists > 0) && !(m.hidden > 0) && !flapped.has(m));
 			for (const m of matched) if (m.hidden > 0) m.hidden--;

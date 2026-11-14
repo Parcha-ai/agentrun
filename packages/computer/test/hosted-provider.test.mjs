@@ -553,6 +553,26 @@ test("two extends of one computer run one after the other; a timer the vendor re
 	void fake;
 });
 
+test("the listing finds and get answers: a listing that keeps a deleted machine and shows create's end after an extend changes nothing list, release or a create answers", async () => {
+	const { provider, fake } = setup({}, { stale: true });
+	const ref = made(await create(provider, SPEC, { requestId: "stale" }));
+	const moved = made(await provider.extend(ref, 30 * 60_000));
+	const listed = made(await provider.list({}));
+	assert.deepEqual(listed.map((info) => info.ref.id), [ref.id]);
+	assert.equal(listed[0].deadline.toISOString(), moved.deadline.toISOString(), "list reads the moved end by get, not create's from the listing");
+	const gets = fake.calls.filter(([name]) => name === "get").length;
+	made(await provider.list({}));
+	assert.equal(fake.calls.filter(([name]) => name === "get").length, gets + 1, "one get per listed computer of ours");
+	const released = await provider.release(ref, "delete");
+	assert.equal(released.ok, true, `the wait after a delete reads get, not a listing that keeps the machine: ${released.error?.message}`);
+	assert.deepEqual(made(await provider.list({})), [], "a deleted machine the listing still shows is not listed");
+	// Another instance's create of the request: the listing still names the deleted machine, and get says it is gone.
+	const other = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const again = made(await other.create(SPEC, { requestId: "stale" }));
+	assert.notEqual(again.id, ref.id, "a machine get reads gone is not the request's: a new one is made");
+	assert.deepEqual(made(await other.list({})).map((info) => info.ref.id), [again.id]);
+});
+
 // --- release ---
 
 test("release delete deletes the machine and waits until the host reads it gone and no longer lists it", async () => {
