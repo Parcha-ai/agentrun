@@ -54,15 +54,16 @@ async function parked(api, runId) {
 }
 const answerOf = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer;
 
-test("toolEffect: read-only only on readOnlyHint true; destructive by the MCP spec's default (destructiveHint absent or true) unless read-only; else write", () => {
+test("toolEffect: read-only only on readOnlyHint true; destructive only on destructiveHint true (not the spec's default, which would mark every tool of a server that annotates nothing) unless read-only; else write", () => {
   assert.equal(toolEffect({ readOnlyHint: true }), "read");
   assert.equal(toolEffect({ readOnlyHint: true, destructiveHint: true }), "read", "destructiveHint means nothing on a read-only tool");
   assert.equal(toolEffect({ readOnlyHint: false, destructiveHint: false }), "write");
   assert.equal(toolEffect({ destructiveHint: false }), "write");
   assert.equal(toolEffect({ readOnlyHint: false, destructiveHint: true }), "destructive");
-  assert.equal(toolEffect({ readOnlyHint: false }), "destructive", "the spec's default: destructiveHint true");
-  assert.equal(toolEffect(undefined), "destructive", "no annotations: the spec's defaults");
-  assert.equal(toolEffect({ readOnlyHint: "true" }), "destructive", "only a JSON true is read-only");
+  assert.equal(toolEffect({ readOnlyHint: false }), "write", "destructiveHint not given: a write, which still asks");
+  assert.equal(toolEffect(undefined), "write", "no annotations: a write");
+  assert.equal(toolEffect({ readOnlyHint: "true" }), "write", "only a JSON true is read-only");
+  assert.equal(toolEffect({ destructiveHint: "true" }), "write", "only a JSON true is destructive");
 });
 
 test("permissionFrom: allow_reads lifts the ask of a read-only MCP tool to allow (from the server); a write or a destructive tool still asks; a deny, an explicit key, the agent's own setting and unread settings each hold", () => {
@@ -116,7 +117,7 @@ test("a saved server's read marks each tool read, write or destructive, and give
   await addFake(t, api);
   const before = (await api("GET", "/settings/mcp-servers/fake")).body.tools;
   const of = (tools, name) => tools.find((tool) => tool.name === name);
-  assert.deepEqual(["add", "note", "delete_thing", "slow_write"].map((name) => of(before, name).effect), ["read", "write", "destructive", "destructive"]);
+  assert.deepEqual(["add", "note", "delete_thing", "slow_write"].map((name) => of(before, name).effect), ["read", "write", "destructive", "write"]);
   assert.equal(of(before, "add").permission, "ask");
   assert.equal((await api("PUT", "/settings/tools", READS)).status, 200);
   const after = (await api("GET", "/settings/mcp-servers/fake")).body.tools;

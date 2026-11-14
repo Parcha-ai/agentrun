@@ -313,7 +313,7 @@ async function endBefore(store: RunsStore, runId: string, { before = Number.POSI
  *  again changes nothing, another is 409 already-answered — and a run with no such waiting call is 404. Two answers at once
  *  each write or lose to the store's one-answer index, and the one that loses reads the one that won. The note is the
  *  person's words, carried on the command for the run's gate. */
-export async function approve(store: RunsStore, moment: RunMoment, id: string, decision: "allow" | "deny", note?: string): Promise<void> {
+export async function approve(store: RunsStore, moment: RunMoment, id: string, decision: "allow" | "deny", note?: string, confirmed = false): Promise<void> {
   const settle = (given: { decision: ApprovalDecision; ended?: true }): void => {
     if (given.decision !== decision) throw alreadyAnswered(id, given.decision, given.ended === true);
   };
@@ -328,6 +328,8 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
     return settle(given);
   }
   if (!(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
+  // A call its run's pin marks destructive takes a second, explicit confirm to allow: nothing is written without it.
+  if (decision === "allow" && !confirmed && moment.destructiveIds?.has(id)) throw invalid([{ field: "confirm_destructive", reason: "missing", message: `The tool call ${id} is one its MCP server marks destructive: an allow of it is sent with confirm_destructive true, after a second confirm.` }]);
   const ending = await endBefore(store, moment.id);
   if (ending) throw alreadyAnswered(id, ending.decision);
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };

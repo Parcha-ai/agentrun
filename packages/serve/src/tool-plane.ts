@@ -31,7 +31,7 @@ import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
 import { NEEDS_A_COMPUTER, NO_SHELL, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { canonicalPin, defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SETTINGS_UNREAD, SHELL_FAMILY } from "./tool-gate.js";
+import { canonicalPin, defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SETTINGS_UNREAD, SHELL_FAMILY, type ToolEffect } from "./tool-gate.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 
 /**
@@ -64,7 +64,7 @@ export const permissionsOf = (name: string): readonly Permission[] => (Object.ha
 /** A tool's permission as this server applies it to an agent that sets none, as capabilities and an MCP server's read
  *  give it: the one in force under the server's settings (`permission`), the owner's default (`default_permission`) and
  *  those it may be set to. An agent's read gives the same, the agent's own layer over it (agentTools). */
-export const serverGate = (name: string, settings: ToolSettingsMap) => ({ permission: permissionOf(name, settings as never), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)] });
+export const serverGate = (name: string, settings: ToolSettingsMap, effect?: ToolEffect) => ({ permission: permissionOf(name, settings as never, {}, "ask", effect), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)] });
 /** The run's own tools beyond the table, each its own settings key, allowed by default like a table tool: the learned
  *  workflow a run's pin names runs as `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL). */
 export const SERVE_OWN_TOOLS: readonly string[] = ["learned_workflow"];
@@ -88,7 +88,7 @@ const isToolSettingsKey = (name: string): boolean => TOOL_KEY.test(name);
 const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
-export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** bash's policy, an agent's own only (bash-read-only.ts). */ policy?: BashPolicy; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
+export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** On an MCP server's wildcard (`mcp:<server>/*`) in the server's settings only: the tools its server marks read-only run with no approval (tool-gate.ts readsLift). Kept only when true. */ allow_reads?: true; /** bash's policy, an agent's own only (bash-read-only.ts). */ policy?: BashPolicy; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
 /** The longest pinned string. */
 export const MAX_PIN_TEXT = 1024;
 /** A pinned argument's name: a top-level argument of the tool, as MCP tools name theirs. */
@@ -434,6 +434,11 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
         if (layer === "agent" || !isMcpTool(name) || /\/\*$/.test(name)) return [{ field: field(name, key), reason: "not_allowed", message: `pin_broken is the server's mark of a pin in its tool settings that does not read, on an MCP tool's own key; ${field(name)} keeps no such field.` }];
         return given === true ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is true, as the server serves it: it keeps the broken pin until a valid pin replaces it` }];
       }
+      // "Allow reads" (tool-gate.ts readsLift): the server's, on an MCP server's wildcard only; false clears it.
+      if (key === "allow_reads") {
+        if (layer === "agent" || !/^mcp:[^/]+\/\*$/.test(name)) return [{ field: field(name, key), reason: "not_allowed", message: `allow_reads is set on an MCP server's wildcard (mcp:<server>/*) in this server's tool settings, never ${layer === "agent" ? "in an agent's own" : `on ${name}`}.` }];
+        return typeof given === "boolean" ? [] : [{ field: field(name, key), reason: "wrong_type", message: `${field(name, key)} is true (its read-only tools run with no approval) or false` }];
+      }
       if (key === "permission") {
         // A wildcard sets each tool of its server's: a catalog tool's permissions.
         const offered = permissionsOf(name);
@@ -454,7 +459,7 @@ export function canonicalToolSettings(map: ToolSettingsMap): ToolSettingsMap {
   const sorted = <T>(record: Readonly<Record<string, T>>): Record<string, T> => Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]!]));
   return sorted(Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
     if (!setting) return [];
-    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.policy ? { policy: setting.policy } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
+    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.allow_reads === true ? { allow_reads: true as const } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.policy ? { policy: setting.policy } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
     return Object.keys(kept).length ? [[name, kept]] : [];
   })));
 }
@@ -462,7 +467,7 @@ export function canonicalToolSettings(map: ToolSettingsMap): ToolSettingsMap {
 /** `map` with each capability's provider, its default where none is picked; a permission where one is set. */
 export const withDefaults = (map: ToolSettingsMap): ToolSettingsMap & Record<Pickable, { provider: string; permission?: Permission }> => ({
   // As served: what is in force, never the internal mark of a stand-in.
-  ...Object.fromEntries(Object.entries(map).map(([name, setting]) => [name, setting && { ...(setting.provider ? { provider: setting.provider } : {}), ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.pin ? { pin: setting.pin } : {}), ...(setting.brokenPin ? { pin_broken: true as const } : {}) }])),
+  ...Object.fromEntries(Object.entries(map).map(([name, setting]) => [name, setting && { ...(setting.provider ? { provider: setting.provider } : {}), ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.allow_reads === true ? { allow_reads: true as const } : {}), ...(setting.pin ? { pin: setting.pin } : {}), ...(setting.brokenPin ? { pin_broken: true as const } : {}) }])),
   ...(Object.fromEntries(PICKABLE.map((name) => [name, { provider: map[name]?.provider ?? PROVIDERS[name][0], ...(map[name]?.permission ? { permission: map[name]!.permission } : {}) }])) as Record<Pickable, { provider: string; permission?: Permission }>),
 });
 
@@ -541,13 +546,13 @@ export async function loadToolSettings(store: { settings: Pick<Settings, "get"> 
  *    SHELL_WATCHERS). A different permission is a choice, written as given. */
 export function keptSettings(map: ToolSettingsMap, current: ToolSettingsMap): { kept: ToolSettingsMap; written: Record<string, Record<string, unknown>> } {
   const kept: ToolSettingsMap = Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
-    const set: ToolSetting = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}), ...(setting?.pin ? { pin: setting.pin } : {}) };
+    const set: ToolSetting = { ...(setting?.provider ? { provider: setting.provider } : {}), ...(setting?.permission ? { permission: setting.permission } : {}), ...(setting?.allow_reads === true ? { allow_reads: true as const } : {}), ...(setting?.pin ? { pin: setting.pin } : {}) };
     const before = current[name];
     if (before?.fallback && set.permission === before.permission) Object.assign(set, { fallback: true, raw: before.raw });
     if (before?.brokenPin && !set.pin) Object.assign(set, { brokenPin: true, rawPin: before.rawPin });
     return Object.keys(set).length ? [[name, set]] : [];
   }));
-  const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}), ...(setting!.pin ? { pin: setting!.pin } : setting!.brokenPin ? { pin: setting!.rawPin } : {}) }]));
+  const written = Object.fromEntries(Object.entries(kept).map(([name, setting]) => [name, { ...(setting!.provider ? { provider: setting!.provider } : {}), ...(setting!.fallback ? { permission: setting!.raw } : setting!.permission ? { permission: setting!.permission } : {}), ...(setting!.allow_reads ? { allow_reads: true } : {}), ...(setting!.pin ? { pin: setting!.pin } : setting!.brokenPin ? { pin: setting!.rawPin } : {}) }]));
   return { kept, written };
 }
 
@@ -578,12 +583,14 @@ export function shellUnavailable(name: string, shell: ShellPlace): Resolution | 
  *  provider choice the provider in force and where it came from, the one that applies when the agent sets none, and what
  *  it resolves to on the agent's harness and model. `shell`: where a run of the agent has its shell (runShellOf on its
  *  computer setting); a tool of bash's family that leaves out resolves unavailable, saying why (shellUnavailable). */
-export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, agent: Tooling, order: readonly string[], shell: ShellPlace = "computer") {
+export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, agent: Tooling, order: readonly string[], shell: ShellPlace = "computer", effectOf: (name: string) => ToolEffect | undefined = () => undefined) {
   const plane = planeFor(env, agent, settings);
   const rank = (name: string) => order.indexOf(name);
   return [...new Set(agent.tools)].sort((a, b) => rank(a) - rank(b)).map((name) => {
-    const { permission, from } = permissionFrom(name, settings as never, (agent.overrides ?? {}) as never, agent.approvals ?? "ask");
-    const gate = { permission, permission_from: from, default_permission: permissionOf(name, settings as never), permissions: [...permissionsOf(name)] };
+    // An MCP tool's effect as its saved server lists it now (what a run started now pins): "allow reads" reads it.
+    const effect = effectOf(name);
+    const { permission, from } = permissionFrom(name, settings as never, (agent.overrides ?? {}) as never, agent.approvals ?? "ask", {}, effect);
+    const gate = { permission, permission_from: from, default_permission: permissionOf(name, settings as never, {}, "ask", effect), permissions: [...permissionsOf(name)] };
     // One short line for people (tool-blurbs.ts), as capabilities serves it.
     const blurb = blurbOf(name);
     const shown = { name, ...(blurb ? { blurb } : {}) };

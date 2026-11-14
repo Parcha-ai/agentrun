@@ -39,7 +39,7 @@ export type RunDetailProps = {
   onMessage?: (text: string) => void | boolean | Promise<void | boolean>;
   /** Answers the tool call the run waits on the owner's approval of (`pending.id`): resolves with the refusal to show,
    *  in words, or null once the server took it. */
-  onApprove?: (approvalId: string, decision: "allow" | "deny", note?: string) => Promise<string | null>;
+  onApprove?: (approvalId: string, decision: "allow" | "deny", note?: string, confirmed?: true) => Promise<string | null>;
   tab?: Tab;
   /** A workflow run's live graph (RunGraphView): the first tab when given. */
   graphView?: React.ReactNode;
@@ -125,8 +125,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // It is said apart from the card unless that same approval's card still shows (the card says it then): the run may
   // already wait on the next call, whose card is another.
   const [refused, setRefused] = useState<{ id: string; text: string } | null>(null);
-  const approve = async (id: string, decision: "allow" | "deny", note?: string) => {
-    const said = onApprove ? await onApprove(id, decision, note) : "This page can't answer an approval.";
+  const approve = async (id: string, decision: "allow" | "deny", note?: string, confirmed?: true) => {
+    const said = onApprove ? await (confirmed ? onApprove(id, decision, note, confirmed) : onApprove(id, decision, note)) : "This page can't answer an approval.";
     setRefused(said ? { id, text: said } : null);
     return said;
   };
@@ -220,7 +220,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           )}
           {refused && refused.id !== approval?.id && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-small text-destructive-text" role="alert">Your answer wasn't taken: {refused.text}</p>}
           {askRefused && askRefused.at !== ask?.asked_at && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-small text-destructive-text" role="alert">Your answer wasn't taken: {askRefused.text}</p>}
-          {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
+          {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note, confirmed) => (confirmed ? approve(approval.id, decision, note, confirmed) : approve(approval.id, decision, note))} />
             : ask ? <ComputerAskCard key={askKey} ask={ask} onAnswer={onHandBack ? answerAsk : undefined}
                 open={tab !== "screen" ? <Button size="sm" variant="primary" onClick={() => setTab("screen")}>Open the screen</Button> : null} />
             : view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}

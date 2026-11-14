@@ -4,7 +4,10 @@ import type { Permission, SecretMeta } from "./v2";
 /** A tool as a remote MCP server lists it (`tools/list`, through the server's preview). */
 /** A tool as a server lists it; on a saved server's read, with its permission as this server applies it to an agent that
  *  sets none (`permission`, under the server's tool settings), the owner's default and those it may be set to. */
-export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[] };
+/** What a tool does by its server's annotations (the server's read): read-only, destructive (marked destructiveHint),
+ *  or a write (any other, one its server says nothing about included). */
+export type ToolEffect = "read" | "write" | "destructive";
+export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[]; effect?: ToolEffect };
 export type McpAuthType = "none" | "bearer" | "headers" | "oauth" | "github_app";
 /** The one address a `github_app` server may have: GitHub's hosted MCP (the save refuses any other, so the App's tokens go to
  *  GitHub alone). */
