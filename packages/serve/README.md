@@ -1659,6 +1659,9 @@ action it runs and deny could target none. Reads mark it `grantable: false` with
 `details.not_grantable` (each with its `tool` and `reason`), and a run that pinned one before is refused at its launch. Use the server's direct tools instead:
 each of these providers has a direct mode. The list is closed: a meta tool it doesn't know is an MCP tool like any other,
 asked by default.
+A saved server's read also gives each tool its `grant_problems` when a grant of it is refused where it would run, in the words the
+save's `422` says: under `*` for every harness (its wire name `mcp__<server>__<tool>` is past the 52 characters every harness's
+tool names share), or under a harness id when that harness's own MCP client would drop or retype its schema.
 
 - **Pinned.** A run's first launch keeps each granted tool as the server listed it when you saved it (its description
   and schema) and the server's URL then, in the run's directory (`mcp-tools.json`). A refresh or a new save never
