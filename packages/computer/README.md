@@ -1740,15 +1740,18 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
 4. The adapter's start command, a background command as root, starts `computerd init --deadline <time> --user
    2510:2510 --own-network --max-deadline <create's time plus the cap>` with `DISPLAY=:0`, in a clean environment,
    detached: in a session of its own (`setsid`), its output to `/run/agentrun-init.log`, so the command ends at once
-   and a daemon that never answers is reported with init's own words. envd runs every command under `bash -l -c`
-   (`index.mjs:5123-5146`), each with timeout 0, because envd kills a command whose timeout passes (envd
-   `process/start.go:39-44`); the SDK's default would end it after 60 s (`index.mjs:4978`).
-5. `connect()` starts `computerd stdio` the same way, as root, with `stdin: true` and `retainOutput: false` (so a long
-   connection keeps no copy of its output, `index.mjs:2708-2711`, `5150-5153`): its stdout comes through `onStdout`
-   (decoded as a stream, `index.mjs:2860`), and requests go in with `sendStdin`, one call after another.
-   `close()` kills the bridge (SIGKILL, `index.mjs:5092-5095`), which ends nothing else, and disconnects from it. The
-   bridge has no command timeout, so one whose start answers after the call gave up on it (its bound passed, or the
-   caller aborted) is killed and disconnected as it lands.
+   and a daemon that never answers is reported with init's own words. Every command goes through envd's
+   `Process.Start` stream, called on the SDK's own Connect client (`commands.rpc`, `index.mjs:4972-4985`) as
+   `commands.run` calls it (`index.mjs:5123-5146`): `/bin/bash -l -c` and the argv quoted, root by the Basic header
+   (`index.mjs:1896-1900`), envd's keepalive every 50 s, and no deadline on the stream (timeout 0, which the Connect
+   transport reads as none), because envd kills a command whose timeout passes (envd `process/start.go:39-44`); the
+   SDK's default would end it after 60 s (`index.mjs:4978`). Only the start is bounded.
+5. `connect()` starts `computerd stdio` the same way, as root, with `stdin: true`. Its stdout is the bytes each data
+   event carries, passed on as they come: `commands.run` would hand them to `onStdout` as text, decoded as UTF-8
+   (`index.mjs:2702`, `2860`), which turns every byte that is not UTF-8 into U+FFFD, so `exec` reads the stream
+   itself. Requests go in with `sendStdin`, one call after another. `close()` kills the bridge (SIGKILL,
+   `index.mjs:5092-5095`), which ends nothing else, and lets go of its stream. The bridge has no command timeout, so one
+   whose start answers after the call gave up on it (its bound passed, or the caller aborted) is killed as it lands.
 6. A desktop's X server, `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`, starts through the daemon with
    `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
    shared with Docker). Hello re-checks the display on every call, so `connect()` refuses a desktop whose X server has
@@ -2459,6 +2462,12 @@ optional screen screenshot-size                              - 1
 core PASS 55/55 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps ui extend not declared
 ```
 
+A hosted vendor runs the exec pre-check first, with `--exec-stream --machine <id> [--quick]`: the module's
+`createHost(options)` and `host.exec` alone, on a machine made by hand, checked for a live, two-way, byte-exact stream
+with no timeout (`src/conformance/exec-stream.ts`; [the contract](../../spec/computer/provider.md#a-hosted-vendors-exec)).
+It exits 0 when every check passes and 1 when one fails, and `--json` prints `{ host, machine, checks: [{ id, status,
+words, ms }], pass }`.
+
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
 resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
@@ -2724,8 +2733,14 @@ npm run conformance -w @parcha/agentrun-computer -- --provider fly
 
 ```sh
 npm run build -w @parcha/agentrun-computer          # the TypeScript, into dist/
-npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64 and -arm64; needs Go 1.24 or newer on PATH
+npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64 and -arm64, and dist/computerd.json
 ```
+
+`build:daemon` builds the daemon with Go 1.24 or newer when Go is on PATH, and records the daemon source it came from in
+`dist/computerd.json`. Without Go, it takes both binaries from this version's package on npm, but only when that
+package's `computerd.json` names the same daemon source as the checkout (`scripts/daemon-source.mjs`); otherwise it
+stops and says to install Go. Each release carries the record, so a checkout of a released version needs no Go until
+its daemon changes.
 
 ## Tests
 

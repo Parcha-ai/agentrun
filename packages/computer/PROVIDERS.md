@@ -5,11 +5,44 @@ a vendor's machines. This page shows how to add your machines in one pull reques
 
 ## How to contribute a provider
 
+### What your API needs
+
+AgentRun needs two things from your API:
+
+- **A streaming, two-way exec.** You start a process in a machine, write to its stdin and read its stdout and stderr
+  while it runs, byte for byte, with no timeout. AgentRun talks to its daemon over one such process for the machine's
+  whole life.
+- **A list by label.** You can list your machines by a label, tag or metadata pair that AgentRun sets at create.
+
+If your API only runs a command and gives back its output when it ends (a one-shot REST exec), or can't list machines
+by label, this adapter can't use it today. Talk to us first by [opening an issue](https://github.com/Parcha-ai/agentrun/issues)
+that says what your API offers.
+
+### Step one: run the exec pre-check
+
+Before you write anything else, write your host's constructor and its `exec` (see [the eight members](#the-eight-members)
+below). Then write a `createHost({ env })` in your conformance module that builds the host from your key, and point to
+that module from your provider file with `conformance`, as `e2b.ts` does. E2B's `createHost` in
+`src/conformance/e2b.ts` is three lines. Make a machine by hand in your console, then run, from the repository root:
+
+```sh
+npm ci --ignore-scripts && npm run build
+export COMPUTER_<VENDOR>_API_KEY=<your key>
+npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>
+```
+
+It calls `exec` and nothing else. It sends all 256 byte values each way and 8 MiB of random bytes, reads output while
+the process still runs, checks stderr comes back apart from stdout, checks the exit code and `kill`, and runs a silent
+process for 75 seconds to check nothing cuts it off. Each failure says what your exec did wrong, such as "byte 0x80 came
+back on stdout as ef bf bd: your exec decodes UTF-8". `--quick` shortens the 75 seconds to 5. When it prints `exec
+PASS`, write the rest.
+
 ### What you write
 
 You write one small TypeScript object, a `MachineHost`. It creates, reads, lists and deletes your machines, and runs a
-command in one. AgentRun does the rest. It installs its daemon (computerd) in each machine, enforces deadlines, makes
-create safe to retry, sweeps up leftovers and checks from inside that the agent's programs have no network. This works
+command in one. AgentRun does the rest. It installs its daemon (computerd) in each machine. This package ships that
+daemon, so it always matches the provider's protocol and version exactly. AgentRun also enforces deadlines, makes create
+safe to retry, sweeps up leftovers and checks from inside that the agent's programs have no network. This works
 for any vendor whose machines run Linux and can start a process as root.
 
 You add four things under `packages/computer/src/`, each copied from E2B's:
@@ -38,6 +71,11 @@ the command AgentRun passes to create. `lifetime: "vendor"` means your timer end
 `"janitor"`, AgentRun ends it by label. `vendorAgentPorts` are the ports your agent listens on inside the machine.
 `HostFacts` in [`src/host.ts`](src/host.ts) lists the optional fields, such as `gpu`, `user` and `specFields`.
 
+`maxLifetimeMs` in `facts` is the longest any of your plans keeps a machine. For E2B that's Pro's 24 hours
+(`PRO_MAX_MS`). Your provider's `maxLifetimeMs` option is the cap a user gets, and it may only lower the fact. Default
+it to the plan most people are on, which is also the plan you test on. For E2B that's Hobby's 1 hour (`HOBBY_MAX_MS`).
+A user on a bigger plan raises the option, up to the fact.
+
 ```ts
 	readonly facts: HostFacts = {
 		daemon: "child",
@@ -54,8 +92,9 @@ the command AgentRun passes to create. `lifetime: "vendor"` means your timer end
 ```
 
 **`create(req, ctx)`** makes one machine and answers as soon as you have its id. Don't wait for it to boot, because
-AgentRun polls `get`. Store `req.labels` on the machine, since `list` finds machines by them. Give it no network unless
-`req.network` is `"open"`.
+AgentRun polls `get`. Store `req.labels` on the machine, since `list` finds machines by them. `req.network` is always
+`"none"`, except for a computer with an Archil storage mount. There AgentRun asks `"open"` so its root can reach
+Archil, and the agent's programs still have no network.
 
 ```ts
 	async create(req: MachineRequest, ctx: HostCall): Promise<Result<{ id: string }>> {
@@ -119,28 +158,31 @@ fine. AgentRun then waits until `get` and `list` stop showing it.
 	}
 ```
 
-**`exec(id, argv, { stdin }, ctx)`** starts `argv` in the machine as root, or as a user with passwordless sudo. It sets
-no timeout and answers once the process has started. It returns a `MachineProcess` with the output streams, `write` and
-`end` for stdin, `wait` for the exit code, and `kill`. AgentRun installs and starts its daemon this way, then talks to
-the daemon over its stdio.
+**`exec(id, argv, { stdin }, ctx)`** starts `argv` in the machine as root, or as a user with passwordless sudo, and
+answers once the process has started. It returns a `MachineProcess` with the output streams, `write` and `end` for
+stdin, `wait` for the exit code, and `kill`. AgentRun installs and starts its daemon this way, then talks to the daemon
+over one process's stdin and stdout for the machine's whole life. So bytes go both ways while the process runs. Every
+byte comes back exactly as written, with no text decoding and no terminal. Nothing times the process out. stdout and
+stderr stay apart, and `kill` ends the process itself. [The spec](../../spec/computer/provider.md#a-hosted-vendors-exec)
+says each rule, and the exec pre-check tests them.
+
+E2B's SDK hands `commands.run` output over as text, decoded as UTF-8, which breaks any byte that isn't UTF-8. So E2B's
+`exec` reads envd's process stream itself and passes on the bytes each event carries:
 
 ```ts
 	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
 		const sandbox = await this.#sandbox(id, ctx);
 		// …
-		const handle = await sandbox.commands.run(shellLine(argv), {
-			background: true,
-			stdin,
-			user: "root",
-			timeoutMs: 0,
-			// …
-		});
-		// …
+		const events = sandbox.commands.rpc.start(
+			{ process: { cmd: "/bin/bash", args: ["-l", "-c", shellLine(argv)], envs: {} }, stdin },
+			{ headers: { Authorization: ROOT, [KEEPALIVE_HEADER]: KEEPALIVE_S }, signal: stream.signal, timeoutMs: 0 },
+		)[Symbol.asyncIterator]();
+		// … the start event gives the pid; then each data event's bytes go to out or err as they come
 		return ok({
 			stdout: out.iterable,
 			stderr: err.iterable,
-			write: (bytes) => sandbox.commands.sendStdin(handle.pid, bytes, { requestTimeoutMs }),
-			end: () => sandbox.commands.closeStdin(handle.pid, { requestTimeoutMs }),
+			write: (bytes) => sandbox.commands.sendStdin(pid, bytes, { requestTimeoutMs }),
+			end: () => sandbox.commands.closeStdin(pid, { requestTimeoutMs }),
 			wait: () => exited,
 			// … and kill
 		});
@@ -182,8 +224,8 @@ export class E2BProvider extends HostedProvider {
 ```
 
 The same file exports `create(options)`, `MOUNT`, `CAPABILITIES` and `conformance`, as `e2b.ts` does. Load your SDK
-lazily through a constant like `E2B_PACKAGE`, pin it exactly as a root devDependency, and add it to
-`test/vendor-sdks.test.mjs`.
+lazily through a constant like `E2B_PACKAGE` and pin it exactly as a root devDependency. `test/vendor-sdks.test.mjs`
+finds that constant in your file and checks the pin.
 
 The descriptor is data. AgentRun's Settings page shows it, and the registry loads your file through `load`.
 
@@ -201,24 +243,29 @@ export const E2B = defineProvider({
 });
 ```
 
-`test/kinds.test.mjs` and a few tests under `packages/serve/test/` list every provider, so add yours there too.
+The tests that cover every provider read the descriptors, so your descriptor is the only list you add to.
 
-The conformance module reads your settings as `COMPUTER_<VENDOR>_*` and the key as `COMPUTER_<VENDOR>_API_KEY`. It
-creates nothing unless `AGENTRUN_COMPUTER_LIVE_<VENDOR>=1`. Rename E2B's and keep its exports: `createProvider`,
-`createDriftedProvider` (its daemon reports another version, and the suite checks AgentRun refuses it), `createHost`
-for the sweep, `conformanceImage` and `conformanceNotes`.
+Settings stores your key under the name your descriptor gives it, `<VENDOR>_API_KEY`. The conformance module reads it
+as `COMPUTER_<VENDOR>_API_KEY` instead, so a test run never picks up a key your shell already holds for something else.
+It reads your other settings as `COMPUTER_<VENDOR>_*` too, and creates nothing unless `AGENTRUN_COMPUTER_LIVE_<VENDOR>=1`.
+Rename E2B's and keep its exports: `createProvider`, `createDriftedProvider` (its daemon reports another version, and
+the suite checks AgentRun refuses it), `createHost` for the exec pre-check and the sweep, `conformanceImage` and
+`conformanceNotes`.
 
 Unit-test what needs no network, as `test/e2b-provider.test.mjs` does: your capabilities, your `check`, how the key and
-endpoint reach your SDK, and the settings your conformance module reads. Don't write a fake of your vendor. AgentRun
-tests its own lifecycle against one fake host, and your live run is the proof.
+endpoint reach your SDK, and the settings your conformance module reads. A small fake of the SDK calls you make, which
+records what it's given, is fine for that. You don't need a fake that behaves like your vendor. AgentRun tests its own
+lifecycle against one fake host, and your live run is the proof.
 
 ### Prove it
 
-Build, then run the suite with your own key between two sweeps, from the repository root:
+Without Go, `build:daemon` takes AgentRun's daemon from the same version on npm, as long as your checkout's daemon
+source is that version's. If you or your branch changed the daemon, you need Go to build it. The drift case always needs Go on your PATH, because it compiles a second copy of the daemon that reports another
+version. Build, then run the suite with your own key between two sweeps, from the repository root:
 
 ```sh
 npm ci --ignore-scripts && npm run build
-npm run build:daemon -w @parcha/agentrun-computer   # needs Go on PATH
+npm run build:daemon -w @parcha/agentrun-computer
 export AGENTRUN_COMPUTER_LIVE_<VENDOR>=1 COMPUTER_<VENDOR>_API_KEY=<your key>
 node packages/computer/dist/conformance/sweep.js --provider <vendor> --before /tmp/<vendor>-before.json
 npm run conformance -w @parcha/agentrun-computer -- --provider <vendor>
@@ -270,9 +317,11 @@ The second sweep:
 {"swept":0,"gone":0,"stillThere":[],"leftAlone":0}
 ```
 
-`✓` counts passes, `✗` failures and `-` skips, and every skip says why. Core is the set of cases every computer of your
-kind must pass. The run passes when the last line reads `core PASS` and the command exits 0. `"stillThere":[]` means
-the run left nothing on your account.
+`✓` counts passes, `✗` failures and `-` skips, and every skip says why. The 45 skips aren't failures. They're cases for
+groups Daytona doesn't declare, such as screen and mounts. That's 13 Core cases only a desktop needs, listed as
+optional, and 32 Full cases for capabilities it doesn't offer. Only Core decides whether a run passes. Core is the set of
+cases every computer of your kind must pass. The run passes when the last line reads `core PASS` and the command exits
+0. `"stillThere":[]` means the run left nothing on your account.
 
 ### Send it
 
@@ -286,9 +335,13 @@ in the pull request template.
 Every provider has a descriptor and answers `capabilities()` with its kind, OS, daemon, groups (exec, files, screen
 and so on), lifetime, networks, isolation, release, users and mounts. On a `MachineHost` these come from `facts` and the
 provider's options, so you write none of them by hand. The case `health.declared` checks `capabilities()` against the
-descriptor, and each computer's `hello` against `capabilities()`. A vendor whose machines can't run Linux as root
-implements `ComputerProvider` (`src/provider.ts`) directly. [spec/computer/provider.md](../../spec/computer/provider.md)
+descriptor, and each computer's `hello` against `capabilities()`. [spec/computer/provider.md](../../spec/computer/provider.md)
 says what each member promises.
+
+If your machines can't run Linux as root, the adapter doesn't fit, and you'd implement `ComputerProvider`
+(`src/provider.ts`) directly. That's a big job, because the adapter's whole lifecycle, claims and all, becomes yours to
+write.
+Talk to us first, in [an issue](https://github.com/Parcha-ai/agentrun/issues).
 
 ### Refusals
 
