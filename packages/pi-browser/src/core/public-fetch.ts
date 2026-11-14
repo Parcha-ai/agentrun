@@ -75,9 +75,9 @@ export type PublicFetchOptions = {
 /** The answer that ended the redirects: its URL, status and type, and its body when it is a 2xx text answer. */
 export type PublicAnswer = { url: string; status: number; contentType: string; body: string | null };
 
-/** The content types read as text: any text/*, application/json and application/xml, and any type with a +xml or +json
- *  suffix (atom, rss, xhtml, ld+json), so a site's feed reads like its pages. Anything else (a PDF, a zip, octet-stream)
- *  is refused. */
+/** The content types read as text: any text/*, application/json and application/xml, and any application/<name>+xml
+ *  or application/<name>+json (atom, rss, xhtml, ld+json), so a site's feed reads like its pages. Anything else (a PDF,
+ *  a zip, octet-stream, an image/svg+xml) is refused. */
 const TEXT_TYPE = /^(text\/|application\/(json|xml|[\w.!#$&^-]+\+(xml|json)\b))/i;
 
 /**
