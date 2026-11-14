@@ -298,6 +298,21 @@ test("shell and files: a string runs in sh -c, output decoded; a file written in
 	await assert.rejects(surface.call("files.read", { path: "/nope" }), (error) => error.kind === "not_found");
 });
 
+test("a surface given a folder starts the shell's and processes' programs there when a call names none; a call's own cwd wins", async () => {
+	const fake = fakeComputer({ os: "linux", groups: ["exec", "processes", "screen", "input.pointer", "input.keys"], display: ":0" });
+	const surface = createSurface(fake.client, fake.hello, { cwd: "/workspace" });
+	await surface.call("shell.run", { command: "pwd" });
+	assert.equal(fake.calls.at(-1).params.cwd, "/workspace");
+	await surface.call("shell.run", { command: "pwd", cwd: "/tmp" });
+	assert.equal(fake.calls.at(-1).params.cwd, "/tmp");
+	await surface.call("processes.start", { command: "mousepad" });
+	assert.equal(fake.calls.at(-1).params.cwd, "/workspace");
+	// With none given, the computer's own folder: no cwd is sent.
+	const { surface: plain, calls } = surfaceOf({ os: "linux", groups: ["exec"] });
+	await plain.call("shell.run", { command: "pwd" });
+	assert.equal("cwd" in calls.at(-1).params, false);
+});
+
 test("a Windows computer runs a string command in cmd", async () => {
 	const { surface, calls } = surfaceOf({ os: "windows" });
 	await surface.call("shell.run", { command: "dir" });

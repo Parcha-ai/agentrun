@@ -111,9 +111,10 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
 
 /** A desktop's or a phone's port, over its surface, the kind whose tools the run gets, its groups, and the script's
  *  executor for its card; none for any other computer. */
-async function portsOf(computer: RunComputer | undefined, guard: ScriptGuard): Promise<{ readonly ports: Pick<Hands, "computer">; readonly kinds: readonly CapabilityKind[]; readonly groups: readonly string[]; readonly script?: Executor; readonly card?: Card; readonly prelude?: string }> {
+async function portsOf(computer: RunComputer | undefined, guard: ScriptGuard, mounted: boolean): Promise<{ readonly ports: Pick<Hands, "computer">; readonly kinds: readonly CapabilityKind[]; readonly groups: readonly string[]; readonly script?: Executor; readonly card?: Card; readonly prelude?: string }> {
   if (computer?.kind !== "desktop" && computer?.kind !== "phone") return { ports: {}, kinds: [], groups: [] };
-  const surface = createSurface(computer.computer.client, computer.hello);
+  // A desktop that mounts the run's folder starts its shell's programs there, as bash does, not in the computer's home.
+  const surface = createSurface(computer.computer.client, computer.hello, mounted ? { cwd: COMPUTER_ROOT } : {});
   const prelude = scriptPreludeOf(surface.card, noPrograms(computer) ? { exec: false } : {});
   return { ports: { computer: portOf(surface) }, kinds: [computer.kind], groups: surface.card.groups, script: computerScriptExecutor(prelude, guard), card: surface.card, prelude };
 }
@@ -187,7 +188,7 @@ export async function runHands(workspace: Workspace, claimed: RunComputer | unde
   const read = mounted === undefined ? tools.read! : readAnywhereInComputer(tools.read!, attached, names, env);
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
   const guard = new ScriptGuard({ env: policyEnv(options.bashPolicy), prelude }, computer?.kind);
-  const own = await portsOf(computer, guard);
+  const own = await portsOf(computer, guard, mounted !== undefined);
   const { ports, kinds, groups, script, card, prelude: scriptPrelude } = options.hold !== undefined && own.ports.computer ? { ...own, ports: options.hold(own.ports) } : own;
   return {
     workspace: attached,

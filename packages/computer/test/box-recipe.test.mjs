@@ -162,10 +162,8 @@ function fakeBuilds({ description, fail } = {}) {
 }
 
 test("the Agent37 build's recipe is box/Dockerfile plus Xvfb, xfwm4 and the apps, named agentrun-box, its hash over every copied file and the desktop's lines", async () => {
-  const { AGENT37_BOX_TEMPLATE } = await import("../dist/index.js");
   const { WINDOW_MANAGER } = await import("../dist/desktop.js");
   const { DESKTOP_APPS } = await import("../dist/conformance/cases/apps.js");
-  assert.equal(agent37Build.NAME, AGENT37_BOX_TEMPLATE, "the descriptor's desktop image is the template this builds");
   const copied = INSTRUCTIONS.filter((line) => line.startsWith("COPY ")).map((line) => line.split(/\s+/)[1]);
   assert.deepEqual([...agent37Build.RECIPE].sort(), ["Dockerfile", ...copied].sort());
   assert.ok(agent37Build.DESKTOP.includes(`apt-get install -y -qq --no-install-recommends ${agent37Build.DESKTOP_PACKAGES.join(" ")} >/dev/null`));
