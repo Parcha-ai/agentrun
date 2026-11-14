@@ -71,8 +71,9 @@ fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and 
   that differs is refused `exists`. A retry never gets a wider network, another folder or another user than it asked.
   A size (`cpus`, `memoryMb`) is compared only where the vendor reads one back; on a vendor that reads none back
   (Modal), a retry asking another size after a restart answers the request's computer as it was made.
-  The GPUs are compared likewise: where the vendor reads them back (Daytona), a retry asking a GPU finds a computer
-  made without one, or the other way round, refused `exists`; on Modal, which reads none back, it answers the computer.
+  The GPUs are compared likewise: the hosted adapter records them at create in the label `agentrun.computer.gpu`
+  (`<type>:<count>`), on every vendor, so a retry asking a GPU finds a computer made without one, or the other way
+  round, refused `exists`.
 - The same id after it stopped, ended or passed its deadline is refused `exists`, in words: "computer-… was made for
   this request and has ended: create with a new request id". Never a second computer under the same name.
 - A second create of a request still in flight in the same provider waits for the first and answers what it does; one

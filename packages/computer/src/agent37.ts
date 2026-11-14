@@ -116,7 +116,10 @@ const SHAPES: ReadonlyArray<{ cpu: number; memory: number }> = [
 	{ cpu: 4, memory: 32 },
 ];
 const MAX_CPUS = 4;
-/** metadata's cap, serialized (docs: instances/edit, "up to 4 KB serialized"). */
+/**
+ * metadata's cap, serialized (docs: instances/edit, "up to 4 KB serialized"): check() holds the names and values to it,
+ * and create the JSON, its quotes and commas too.
+ */
 const METADATA_MAX_BYTES = 4096;
 /** A VM boots inside the create's POST, which answers once it runs (docs: instances/create, Defaults). */
 const DEFAULT_CREATE_MS = 300_000;
@@ -291,19 +294,17 @@ class Agent37Host implements MachineHost {
 		this.#WebSocket = options.WebSocket;
 		this.#proxyDomain = options.proxyDomain;
 		this.#declared = { type: options.type, region: options.region };
-		const runtime = options.type === "vm" ? "vm" : "gvisor";
 		this.facts = {
 			daemon: "child",
-			isolation: runtime,
+			// The adapter holds the probe's kernel to it: gVisor's for type default, never for a VM.
+			isolation: options.type === "vm" ? "vm" : "gvisor",
 			lifetime: "janitor",
 			maxLifetimeMs: DAY_MS,
 			arch: "amd64",
 			vendorAgentPorts: [AGENT37_SSH_PORT, AGENT37_TTYD_PORT],
 			// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
 			windowManager: true,
-			specFields: ["cpus", "memoryMb"],
-			labelRules: { maxBytes: METADATA_MAX_BYTES, measure: "json" },
-			runtime: () => runtime,
+			labels: { bytes: METADATA_MAX_BYTES },
 		};
 	}
 
@@ -332,7 +333,7 @@ class Agent37Host implements MachineHost {
 		return parsed as T;
 	}
 
-	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes. The adapter holds metadata to 4 KB (labelRules). */
+	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes. The adapter holds metadata to 4 KB (facts.labels.bytes). */
 	check(given: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = [];
 		const { image, cpus, memoryMb } = given;
@@ -353,6 +354,8 @@ class Agent37Host implements MachineHost {
 	 * no public port. It answers once the instance runs (docs: instances/create, Defaults).
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
+		const bytes = Buffer.byteLength(JSON.stringify(req.labels));
+		if (bytes > METADATA_MAX_BYTES) throw new HostError("invalid", `Agent37 holds an instance's metadata to ${METADATA_MAX_BYTES} bytes as JSON, and this one's would be ${bytes}: give shorter labels`);
 		const shape = req.cpus !== undefined || req.memoryMb !== undefined ? shapeOf(req.cpus, req.memoryMb) : undefined;
 		const made = await this.#rest<Agent37Instance>(
 			"POST",
@@ -364,7 +367,7 @@ class Agent37Host implements MachineHost {
 				...(shape === undefined ? {} : { resources: { cpu: shape.cpu, memory: shape.memory } }),
 				name: req.name,
 				metadata: req.labels,
-				network: req.network === "open" ? "allow-all" : "deny-all",
+				network: req.egress ? "allow-all" : "deny-all",
 				auto_sleep: false,
 				public_ports: [],
 			},
