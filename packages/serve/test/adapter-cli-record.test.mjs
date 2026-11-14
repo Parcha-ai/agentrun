@@ -81,7 +81,9 @@ test("a CLI run's record: the person's input, the call's start and end around it
     gate: () => "allow",
   }));
   const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
-  t.after(() => runner.close());
+  t.after(async () => {
+    try { await runner.close(); } finally { await release(opened); }
+  });
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
     return now.state === "ended" && now.runner === null && now;
@@ -112,7 +114,9 @@ test("a call a fault cut off after it ran ends interrupted when the session open
     gate: () => "allow",
   }), { restartLimit: 3 });
   const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
-  t.after(() => runner.close());
+  t.after(async () => {
+    try { await runner.close(); } finally { await release(opened); }
+  });
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
     return ["ended", "failed"].includes(now.state) && now.runner === null && now;
@@ -162,7 +166,9 @@ test("a call's end whose commit the store could not answer, and that landed, is 
         }),
     });
   const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
-  t.after(() => runner.close());
+  t.after(async () => {
+    try { await runner.close(); } finally { await release(opened); }
+  });
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
     return ["ended", "failed"].includes(now.state) && now.runner === null && now;
@@ -241,7 +247,9 @@ async function refusedRun(t, { gate, state = "ended", meanwhile }) {
     gate,
   }));
   const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
-  t.after(() => runner.close());
+  t.after(async () => {
+    try { await runner.close(); } finally { await release(opened); }
+  });
   const rested = (want) => until(async () => {
     const now = await opened.server.runs.get("run-1");
     return now.state === want && now.runner === null && now;
@@ -319,7 +327,9 @@ test("a pi-style run (the adapter keeps its own record) gets no call or message 
     hooks: quiet,
   }));
   const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
-  t.after(() => runner.close());
+  t.after(async () => {
+    try { await runner.close(); } finally { await release(opened); }
+  });
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
     return now.state === "ended" && now.runner === null && now;
@@ -386,7 +396,9 @@ test("a CLI run whose one answer asks for two calls at once: the run completes, 
     gate: () => "allow",
   }));
   const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
-  t.after(() => runner.close());
+  t.after(async () => {
+    try { await runner.close(); } finally { await release(opened); }
+  });
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
     return now.state === "ended" && now.runner === null && now;

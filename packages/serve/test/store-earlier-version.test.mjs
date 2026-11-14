@@ -151,3 +151,37 @@ test("a store an earlier build of this version made (no revisions.mcp_pin, a per
   const again = await openSqliteStore({ dataDir: dir, role: "server" });
   await again.close();
 });
+
+
+test("a runner refuses version 11 without revision MCP metadata until its server upgrades it", async (t) => {
+  const dir = dataDir(t);
+  const first = await openSqliteStore({ dataDir: dir, role: "server" });
+  await first.agents.create({ id: "agent-readiness", name: "Readiness" }, { id: "rev-readiness", kind: "agentic", body: { instructions: "Keep this saved body." } });
+  await first.close();
+  const file = join(dir, "store.sqlite");
+  const old = new DatabaseSync(file);
+  try {
+    old.exec("ALTER TABLE revisions DROP COLUMN mcp_pin");
+    old.exec("CREATE TABLE mcp_pins (run_id TEXT PRIMARY KEY, body TEXT, pinned_at INTEGER) STRICT");
+  } finally { old.close(); }
+  // The schema version is current: only the server may install this additive metadata.
+  await assert.rejects(async () => {
+    const runner = await openSqliteStore({ dataDir: dir, role: "runner" });
+    await runner.close();
+  }, /server.*MCP revision metadata.*runner/i);
+  const check = new DatabaseSync(file, { readOnly: true });
+  try {
+    assert.equal(check.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get().schema_version, 11);
+    assert.equal(check.prepare("SELECT count(*) AS n FROM pragma_table_info('revisions') WHERE name = 'mcp_pin'").get().n, 0, "the runner did not add the column");
+    assert.equal(check.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name = 'mcp_pins'").get().n, 1, "the runner did not remove legacy storage");
+  } finally { check.close(); }
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  try {
+    const runner = await openSqliteStore({ dataDir: dir, role: "runner" });
+    try {
+      const revision = await runner.agents.revision("rev-readiness");
+      assert.deepEqual(revision.body, { instructions: "Keep this saved body." });
+      assert.equal(revision.mcpPin, null, "legacy revisions remain unpinned until their first managed run");
+    } finally { await runner.close(); }
+  } finally { await server.close(); }
+});
