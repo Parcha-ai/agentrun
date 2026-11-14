@@ -48,6 +48,8 @@ public actor UIEngine {
 	/// foreground route: from then on every step checks.
 	var takeOver: TakeOverWatch?
 	var takeOverArmed = false
+	/// The running step's mark (Marks), which only that step moves.
+	var stepMark: UInt64?
 
 	public init(platform: Platform, policy: Policy, timing: Timing = Timing()) {
 		self.platform = platform
@@ -775,11 +777,13 @@ public actor UIEngine {
 		case .key, .scroll, .drag, .nav: kind = .point
 		}
 		if let frame {
-			marks.mark(kind, at: frame.center, box: kind == .type ? frame : nil, now: clock.now())
+			stepMark = marks.mark(kind, at: frame.center, box: kind == .type ? frame : nil, now: clock.now())
 		} else if let point = step.point {
-			marks.mark(kind, at: target.toScreen(point), now: clock.now())
+			stepMark = marks.mark(kind, at: target.toScreen(point), now: clock.now())
 		} else if let last = marks.lastPoint {
-			marks.mark(.point, at: last, now: clock.now())
+			stepMark = marks.mark(.point, at: last, now: clock.now())
+		} else {
+			stepMark = nil
 		}
 	}
 
@@ -793,7 +797,7 @@ public actor UIEngine {
 			if let moved = ax.frame(element) {
 				frame = moved
 				// The step's mark was read before the scroll: it follows the element to where the pointer goes.
-				platform.marks.move(to: moved.center, box: moved)
+				if let stepMark { platform.marks.move(stepMark, to: moved.center, box: moved) }
 			}
 		}
 		guard target.window.bounds.contains(frame.center) else {

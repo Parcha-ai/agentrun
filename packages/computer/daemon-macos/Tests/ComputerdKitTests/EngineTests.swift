@@ -210,6 +210,18 @@ final class EngineTests: XCTestCase {
 		XCTAssertNotNil(scene.ring)
 	}
 
+	func testAStepMovesOnlyItsOwnMark() {
+		let marks = Marks()
+		let mine = marks.mark(.press, at: Point(10, 10), now: 0)
+		marks.mark(.press, at: Point(50, 50), now: 1)
+		marks.move(mine, to: Point(20, 20), box: nil)
+		XCTAssertEqual(marks.lastPoint, Point(50, 50), "another connection's newer mark stays where it was")
+		let newest = marks.mark(.type, at: Point(60, 60), box: Rect(40, 50, 40, 20), now: 2)
+		marks.move(newest, to: Point(70, 70), box: Rect(50, 60, 40, 20))
+		XCTAssertEqual(marks.lastPoint, Point(70, 70))
+		XCTAssertEqual(marks.scene(now: 2)?.box, Rect(50, 60, 40, 20))
+	}
+
 	func testPressWithoutAnActionClicksInTheBackground() async throws {
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())

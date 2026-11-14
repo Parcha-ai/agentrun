@@ -29,6 +29,8 @@ public final class Marks: @unchecked Sendable {
 	}
 
 	public struct Mark: Sendable, Equatable {
+		/// Which mark this is, so a step moves only its own.
+		public let id: UInt64
 		public let at: Double
 		public let point: Point
 		public let kind: Kind
@@ -49,23 +51,27 @@ public final class Marks: @unchecked Sendable {
 
 	private let lock = NSLock()
 	private var last: Mark?
+	private var made: UInt64 = 0
 
 	public init() {}
 
-	/// A step's place, at a time on the engine's clock (milliseconds).
-	public func mark(_ kind: Kind, at point: Point, box: Rect? = nil, now: Double) {
+	/// A step's place, at a time on the engine's clock (milliseconds). Answers the mark's id, for move.
+	@discardableResult
+	public func mark(_ kind: Kind, at point: Point, box: Rect? = nil, now: Double) -> UInt64 {
 		lock.lock()
 		defer { lock.unlock() }
-		last = Mark(at: now, point: point, kind: kind, box: box)
+		made += 1
+		last = Mark(id: made, at: now, point: point, kind: kind, box: box)
+		return made
 	}
 
-	/// The last step's place moved, its time and kind kept: an element scrolled into view after it was marked. Its box,
-	/// when it had one, is the element's new frame.
-	public func move(to point: Point, box: Rect?) {
+	/// Mark `id` moved, its time and kind kept: an element scrolled into view after its step was marked. Its box, when it
+	/// had one, is the element's new frame. A mark another connection made since is newer, and stays as it is.
+	public func move(_ id: UInt64, to point: Point, box: Rect?) {
 		lock.lock()
 		defer { lock.unlock() }
-		guard let mark = last else { return }
-		last = Mark(at: mark.at, point: point, kind: mark.kind, box: mark.box == nil ? nil : box)
+		guard let mark = last, mark.id == id else { return }
+		last = Mark(id: id, at: mark.at, point: point, kind: mark.kind, box: mark.box == nil ? nil : box)
 	}
 
 	/// The last step's place, for a step that names no place of its own (a key to the window's focus).
