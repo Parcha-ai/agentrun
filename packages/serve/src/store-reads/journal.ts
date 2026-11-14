@@ -12,7 +12,7 @@ import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
-import { type ComputerCallRecord, computerCallsOf } from "../computer-calls.js";
+import { type ComputerCallRecord, computerCallsOf, shownName } from "../computer-calls.js";
 import { labelled, type Reflect, reflects } from "../reflect-range.js";
 import { reflectRanges } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords, recordOf } from "../runner/journal-reader.js";
@@ -196,13 +196,12 @@ function turnCutOf(records: Records, reflect: Reflect | undefined): boolean {
  *  `computer_calls_dropped` past the record's bound), from the COMPUTER_CALLS entry the adapter loop kept beside the call
  *  (computer-calls.ts), joined by the call's id. A record holds no typed or set value and no answer's bytes; the names of
  *  the elements its steps acted on (words on the screen) go through `redact` when given (the run's cut), as every text a
- *  row shows. Rows of a run whose tools made none are as they were. */
+ *  row shows, whole, and are cut for the row after (shownName). Rows of a run whose tools made none are as they were. */
 function withComputerCalls(rows: TimelineEvent[], entries: readonly EntryLike[], redact?: (text: string) => string): TimelineEvent[] {
   const made = computerCallsOf(entries);
   if (!made.size) return rows;
-  const cut = (calls: readonly ComputerCallRecord[]) => (redact
-    ? calls.map((call) => (call.steps?.some((step) => step.on?.name) ? { ...call, steps: call.steps.map((step) => (step.on?.name ? { ...step, on: { ...step.on, name: redact(step.on.name) } } : step)) } : call))
-    : calls);
+  const cut = (calls: readonly ComputerCallRecord[]) =>
+    calls.map((call) => (call.steps?.some((step) => step.on?.name) ? { ...call, steps: call.steps.map((step) => (step.on?.name ? { ...step, on: { ...step.on, name: shownName(step.on.name, redact) } } : step)) } : call));
   return rows.map((row) => {
     const kept = row.kind === "tool_result" && row.tool_use_id ? made.get(row.tool_use_id) : undefined;
     return kept ? { ...row, computer_calls: cut(kept.calls), ...(kept.dropped > 0 ? { computer_calls_dropped: kept.dropped } : {}) } : row;

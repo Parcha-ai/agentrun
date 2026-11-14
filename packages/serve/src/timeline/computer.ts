@@ -60,7 +60,9 @@ const CHORD_WORDS: Readonly<Record<string, string>> = {
 const GLYPHS: Readonly<Record<string, string>> = { super: "⌘", shift: "⇧", alt: "⌥", ctrl: "⌃" };
 const NAMED: Readonly<Record<string, string>> = { enter: "Return", escape: "Esc", tab: "Tab", space: "Space", backspace: "Delete", delete: "Forward Delete", up: "↑", down: "↓", left: "←", right: "→" };
 
-/** A chord as a person reads it: "super+s" is "save (⌘S)", "enter" is "press Return", "ctrl+shift+t" is "press ⌃⇧T". */
+/** A chord as a person reads it: "super+s" is "save (⌘S)", "enter" is "press Return", "ctrl+shift+t" is "press ⌃⇧T".
+ *  Only a ⌘ chord is named by what it does: what a ⌃ one does depends on the computer (on a Mac ⌃A goes to the line's
+ *  start, elsewhere it selects all), and a record does not say which computer it was. */
 export function chordWords(chord: string): string {
   const keys = chord.endsWith("++") ? [...chord.slice(0, -2).split("+"), "+"] : chord.split("+");
   const last = keys.at(-1) ?? "";
@@ -68,7 +70,7 @@ export function chordWords(chord: string): string {
   const shown = keys.length === 1 && NAMED[last.toLowerCase()]
     ? NAMED[last.toLowerCase()]!
     : `${mods.map((key) => GLYPHS[key] ?? `${key}+`).join("")}${NAMED[last.toLowerCase()] ?? (last.length === 1 ? last.toUpperCase() : last)}`;
-  const command = mods.length === 1 && (mods[0] === "super" || mods[0] === "ctrl") ? CHORD_WORDS[last.toLowerCase()] : undefined;
+  const command = mods.length === 1 && mods[0] === "super" ? CHORD_WORDS[last.toLowerCase()] : undefined;
   return command ? `${command} (${shown})` : `press ${shown}`;
 }
 

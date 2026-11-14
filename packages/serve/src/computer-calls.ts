@@ -89,8 +89,18 @@ function targetOf(value: unknown): ComputerTarget | undefined {
 
 /** The step kinds a ui.act step may name (the protocol's UiStep keys). */
 const STEP_KINDS = ["press", "set", "perform", "click", "type", "key", "nav", "scroll", "drag"] as const;
-/** The longest element name a record keeps: past it, cut with "…". */
+/** The longest element name a row shows: past it, cut with "…" (shownName), after the run's redaction read it whole. */
 export const MAX_TARGET_NAME = 60;
+/** The longest element name a record keeps, whole. A longer one (no control's name on a screen is that long) is kept as
+ *  no name at all: a part of it could hold part of a secret the redaction no longer recognizes. */
+export const MAX_KEPT_NAME = 1000;
+
+/** An element's name as a row shows it: through the run's redaction whole, then cut at MAX_TARGET_NAME. Cut first, a
+ *  held secret across the cut would show its first part. */
+export function shownName(name: string, redact?: (text: string) => string): string {
+  const said = redact ? redact(name) : name;
+  return said.length > MAX_TARGET_NAME ? `${said.slice(0, MAX_TARGET_NAME - 1)}…` : said;
+}
 /** The keys a chord names that are no character (the protocol's KEYS). */
 const NAMED_KEYS: ReadonlySet<string> = new Set(["enter", "tab", "space", "backspace", "delete", "escape", "insert", "up", "down", "left", "right", "home", "end", "pageup", "pagedown",
   "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "shift", "ctrl", "alt", "super", "capslock"]);
@@ -161,7 +171,8 @@ export function callRecordOf(method: string, params: unknown, answer: unknown, m
 /** The most refs a client keeps the names of: past it, the ones learned first go. */
 const MAX_NAMED_REFS = 10_000;
 
-/** The names a client's ui.observe answers gave each ref: role and name (never a value), the name cut at MAX_TARGET_NAME.
+/** The names a client's ui.observe answers gave each ref: role and name (never a value), the name whole up to
+ *  MAX_KEPT_NAME (the row cuts it, after the redaction: shownName).
  *  Each observe's nodes are learned again (a ref's element keeps its ref across states, so its newest name wins). */
 class RefNames {
   readonly #byRef = new Map<string, ComputerTarget>();
@@ -173,7 +184,7 @@ class RefNames {
       if (typeof one?.ref !== "string" || typeof one.role !== "string") continue;
       const name = typeof one.name === "string" ? one.name.replace(/\s+/g, " ").trim() : "";
       this.#byRef.delete(one.ref);
-      this.#byRef.set(one.ref, { role: one.role, ...(name ? { name: name.length > MAX_TARGET_NAME ? `${name.slice(0, MAX_TARGET_NAME - 1)}…` : name } : {}) });
+      this.#byRef.set(one.ref, { role: one.role, ...(name && name.length <= MAX_KEPT_NAME ? { name } : {}) });
     }
     for (const ref of this.#byRef.keys()) {
       if (this.#byRef.size <= MAX_NAMED_REFS) break;
@@ -210,7 +221,8 @@ export function unrecorded<T>(work: () => T): T {
  *  refs a later recorded step acts on. */
 export function recordedClient(client: ComputerClient): ComputerClient {
   const names = new RefNames();
-  const send = client.call as (method: string, params: unknown, options?: { signal?: AbortSignal }) => Promise<unknown>;
+  // Bound: a provider's DaemonClient reads its own fields through `this`.
+  const send = client.call.bind(client) as (method: string, params: unknown, options?: { signal?: AbortSignal }) => Promise<unknown>;
   return {
     call: (async (method: string, params: unknown, options?: { signal?: AbortSignal }) => {
       const into = scope.getStore();

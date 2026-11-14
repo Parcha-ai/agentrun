@@ -26,7 +26,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { heldField, heldRoute, runComputerRead } = await import("../dist/computer-held-routes.js");
 const { HOLD_MAX_MINUTES, HOLD_MINUTES, heldIn, holdIssues, holdOf } = await import("../dist/computer-held.js");
 const { CALL_KIND, PROTOCOL_METHODS } = await import("../dist/computer-channel.js");
-const { callRecordOf, keptChord, MAX_RECORDED_CALLS, recordedClient, recordingCalls, unrecorded } = await import("../dist/computer-calls.js");
+const { callRecordOf, keptChord, MAX_KEPT_NAME, MAX_RECORDED_CALLS, MAX_TARGET_NAME, recordedClient, recordingCalls, shownName, unrecorded } = await import("../dist/computer-calls.js");
 const { entriesOf } = await import("../dist/computer-commands.js");
 const { journalHeld } = await import("../dist/runner/held-run.js");
 const { runChannelCall } = await import("../dist/runner/computer-channel.js");
@@ -265,24 +265,47 @@ test("a call's record: ui.act steps by kind, an error by its code, the most a to
   assert.deepEqual(["super+s", "ctrl+shift+t", "enter", "shift+tab", "alt++", "a", "A", "shift+a", "4", "shift++"].map((chord) => keptChord(chord) ?? null),
     ["super+s", "ctrl+shift+t", "enter", "shift+tab", "alt++", null, null, null, null, null]);
 
-  // A step's element by the names the client's observes gave its ref: role and name, never a value, a long name cut.
+  // The client's call keeps its receiver: a provider's DaemonClient reads its own fields through `this`.
+  class Daemon {
+    #answer = { ok: true, value: { pong: true } };
+    async call() { return this.#answer; }
+    close() {}
+  }
+  const daemon = recordedClient(new Daemon());
+  assert.deepEqual(await daemon.call("ping", {}), { ok: true, value: { pong: true } }, "outside a tool call");
+  assert.deepEqual(await recordingCalls(() => daemon.call("ping", {}), async () => undefined), { ok: true, value: { pong: true } }, "inside one");
+
+  // An element's name is kept whole: the run's redaction reads it whole at the read, and only then is it cut for the
+  // row (shownName). A held secret across the cut is redacted whole, never shown in part.
+  const secret = "s3cr3t-held-token-value";
+  const crossing = `${"N".repeat(MAX_TARGET_NAME - 5)}${secret}`;
+  const redact = (text) => text.replaceAll(secret, "[redacted]");
+  assert.equal(shownName(crossing, redact), `${"N".repeat(MAX_TARGET_NAME - 5)}[redacted]`.slice(0, MAX_TARGET_NAME - 1) + "…");
+  assert.doesNotMatch(shownName(crossing, redact), /s3cr/);
+  assert.equal(shownName("Save", redact), "Save");
+  assert.equal(shownName("L".repeat(80)), `${"L".repeat(MAX_TARGET_NAME - 1)}…`, "no redactor: only the cut");
+
+  // A step's element by the names the client's observes gave its ref: role and name, never a value; the name whole
+  // (normalized), and none at all past MAX_KEPT_NAME, which no element's name on a screen reaches.
   const long = "L".repeat(80);
+  const huge = "H".repeat(MAX_KEPT_NAME + 1);
   const named = recordedClient({
     call: async (method, params) => (method === "ui.observe"
-      ? { ok: true, value: { state: "s1", nodes: [{ ref: "@e1", role: "textbox", name: "Password", value: "hunter2-secret", flags: ["secure"] }, { ref: "@e2", role: "button", name: "Sign  in\n" }, { ref: "@e3", role: "text", name: long }] } }
+      ? { ok: true, value: { state: "s1", nodes: [{ ref: "@e1", role: "textbox", name: "Password", value: "hunter2-secret", flags: ["secure"] }, { ref: "@e2", role: "button", name: "Sign  in\n" }, { ref: "@e3", role: "text", name: long }, { ref: "@e4", role: "text", name: huge }] } }
       : { ok: true, value: { steps: params.steps.map(() => ({ route: "semantic", verified: true })) } }),
     close() {},
   });
   await named.call("ui.observe", { target: { app: "com.example.Mail" } });
   const acted = [];
   await recordingCalls(
-    () => named.call("ui.act", { target: { app: "com.example.Mail" }, steps: [{ type: "hunter2-secret", into: "@e1" }, { press: "@e2" }, { click: "@e3" }, { click: [4, 5] }, { set: "@e9", value: "x" }, { nav: "back" }] }),
+    () => named.call("ui.act", { target: { app: "com.example.Mail" }, steps: [{ type: "hunter2-secret", into: "@e1" }, { press: "@e2" }, { click: "@e3" }, { click: "@e4" }, { click: [4, 5] }, { set: "@e9", value: "x" }, { nav: "back" }] }),
     async (calls) => void acted.push(...calls),
   );
   assert.deepEqual(acted.map(({ ms, started_at, ...rest }) => rest), [{ method: "ui.act", app: "com.example.Mail", ok: true, steps: [
     { do: "type", on: { role: "textbox", name: "Password" }, route: "semantic", verified: true },
     { do: "press", on: { role: "button", name: "Sign in" }, route: "semantic", verified: true },
-    { do: "click", on: { role: "text", name: `${"L".repeat(59)}…` }, route: "semantic", verified: true },
+    { do: "click", on: { role: "text", name: long }, route: "semantic", verified: true },
+    { do: "click", on: { role: "text" }, route: "semantic", verified: true },
     { do: "click", route: "semantic", verified: true },
     { do: "set", route: "semantic", verified: true },
     { do: "nav", nav: "back", route: "semantic", verified: true },

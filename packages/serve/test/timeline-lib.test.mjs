@@ -990,6 +990,9 @@ test("a computer call in words, as the run page and a movie's caption say it: th
     call({ method: "ui.act", ok: false, code: "denied" }),
     call({ method: "screen.shot" }),
     call({ method: "ui.act", steps: [{ do: "key", keys: "enter" }, { do: "key", keys: "ctrl+shift+t" }, { do: "key", keys: "shift+tab" }] }),
+    // ⌃ chords as pressed: what one does depends on the computer (on a Mac ⌃A goes to the line's start, elsewhere it
+    // selects all), and the record does not say which computer it was.
+    call({ method: "ui.act", steps: [{ do: "key", keys: "ctrl+a" }, { do: "key", keys: "ctrl+s" }] }),
   ].map(callWords), [
     "open TextEdit",
     "open System Settings",
@@ -1000,5 +1003,6 @@ test("a computer call in words, as the run page and a movie's caption say it: th
     "act (failed: denied)",
     "take a screenshot",
     "press Return; press ⌃⇧T; press ⇧Tab",
+    "press ⌃A; press ⌃S",
   ]);
 });
