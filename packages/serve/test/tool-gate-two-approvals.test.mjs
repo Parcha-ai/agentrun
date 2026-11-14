@@ -1,5 +1,5 @@
 // Two calls in one pi run, each set to ask and answered in turn: an answer restates the run's rows at once (runs.ts
-// restate), and the earlier call must still read in order then: its own rows "Held for your approval", its approval row,
+// restate), and the earlier call must still read in order then: its own rows (as any call's, once it ran), its approval row,
 // then its resume row with the outcome. The rows an answer restates were rewritten once already (the resume row's text no
 // longer starts with the gate's head), so the link from a resume row to its approval can't be read from that text.
 import assert from "node:assert/strict";
@@ -41,7 +41,12 @@ function readsInOrder(rows, callId, outcome, at) {
   const resume = rows.findIndex((r, i) => i > ask && r.origin === "server" && outcome.test(r.summary ?? ""));
   assert.ok(own.length > 0 && ask > Math.max(...own), `${at}: the approval row follows the call's own rows: ${JSON.stringify(shown)}`);
   assert.ok(resume > ask, `${at}: the outcome (the resume row) follows the approval row: ${JSON.stringify(shown)}`);
-  assert.deepEqual(own.map((i) => rows[i].summary), own.map(() => "Held for your approval"), `${at}: the call's own rows say only that it was held: ${JSON.stringify(shown)}`);
+  // One that ran reads as any call, its result saying how it came to run; one that did not run says only that it was held.
+  const ran = /^AgentRun: \S+ ran( once you allowed it|, as its setting allows it)/.exec(rows[resume].summary ?? "");
+  if (!ran) return assert.deepEqual(own.map((i) => rows[i].summary), own.map(() => "Held for your approval"), `${at}: the call's own rows say only that it was held: ${JSON.stringify(shown)}`);
+  assert.ok(own.every((i) => rows[i].summary !== "Held for your approval"), `${at}: a call that ran is never "held": ${JSON.stringify(shown)}`);
+  const result = own.map((i) => rows[i]).find((r) => r.kind === "tool_result");
+  assert.ok(result?.summary.endsWith(`(${ran[1] === ", as its setting allows it" ? "ran, as its setting allows it" : "ran once you allowed it"})`), `${at}: its result row says how it came to run: ${JSON.stringify(shown)}`);
 }
 
 test("pi: two calls set to ask in one run, the first allowed, the second denied with a note: after the second answer, and at the run's end, the first still reads held, then its approval, then its outcome, and so does the second", { timeout: 150_000 }, async (t) => {
