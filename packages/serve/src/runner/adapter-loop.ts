@@ -64,7 +64,7 @@ import { COMPUTER_CALLS, type ComputerCallRecord, recordingCalls } from "../comp
 import { channelCallOf, type LoopComputer, runChannelCall } from "./computer-channel.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, FIT_TOLERANCE, noteFor, overCapOf, paidRefusal, type Previous, previousAfter, requestFigures, runCap, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, FIT_TOLERANCE, noteFor, overCapOf, paidRefusal, type PricedRequest, type Previous, previousAfter, requestFigures, runCap, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap's config, as its spec gives it: the kernel runCap's options but its sessions (the loop's own), and
@@ -1659,8 +1659,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           return { ...pending, refuse: text, figures };
         };
         const beforeRequest: BeforeRequest = async (request) => {
-          // Kept until it ends, so its answer can be the session's previous request (requestEnded).
-          askedFor.set(request.turn, { model: request.model, ...(request.inputTokensMax === undefined ? {} : { bound: request.inputTokensMax }), counted: request.inputTokensCounted === true, own: request.host === undefined && !request.side && !request.unanswered });
+          // Kept until it ends, so its answer can be the session's previous request (requestEnded): on its model as the cap
+          // prices it (RunCap.asked), which a CLI's request names as its provider does, so the next request finds it.
+          askedFor.set(request.turn, { model: specNow?.runCap ? theCap().asked(request).model.id : request.model, ...(request.inputTokensMax === undefined ? {} : { bound: request.inputTokensMax }), counted: request.inputTokensCounted === true, own: request.host === undefined && !request.side && !request.unanswered });
           // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused,
           // whatever else would pause it (a paid call's refusal, pendingPause).
           const over = await overCap();
@@ -1772,16 +1773,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }),
           restUsd: await restOf(),
         };
+        /** A main-model request as the run's cap prices it at admission (RunCap.asked: its model and the session's previous
+         *  request, so its input reads the cache that request left warm), for the wrap-up's note and what the run keeps back
+         *  to answer. A request the note takes is measured as its client sent it (NoteRequest), by its bytes. */
+        const pricedOf = (model: string, asked?: Omit<PricedRequest, "model">) => theCap().asked({ ...asked, model });
         /** A main-model request's figures as the run's cap prices them (kernel cap requestFigures), for what it keeps back. */
-        const figuresOf = (model: string, asked?: NoteRequest): RequestFigures | undefined => {
+        const figuresOf = (model: string, asked?: Omit<PricedRequest, "model">): RequestFigures | undefined => {
           const config = specNow?.runCap;
-          const capModel = config?.modelOf(model);
-          if (!config || !capModel) return undefined;
-          return requestFigures(
-            { kind: "model", id: "reserve", model: capModel, inputTokens: asked?.inputTokensMax, ...(asked?.outputTokensAsked === undefined ? {} : { outputAsked: asked.outputTokensAsked }), ...(asked?.outputTokensLeast === undefined ? {} : { outputTokensLeast: asked.outputTokensLeast }) },
-            config.mode ?? "expected",
-            Date.now(),
-          );
+          if (!config?.modelOf(model)) return undefined;
+          return requestFigures(pricedOf(model, asked), config.mode ?? "expected", (config.now ?? Date.now)());
         };
         /** What the run keeps back to answer (wrap-up.ts reserveFor), its typical step the run's own priced answers'. */
         const reserveOf = (figures: RequestFigures | undefined): number | undefined => reserveFor(figures, (step0Usd) => typicalCost(capNote.costs, step0Usd));
@@ -1807,10 +1807,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // The tools' gate counts a request in flight at its hold and its bound (sessionSpendOf: a cache miss adds the bound),
           // so the note counts it the same: it never comes later than the gate's first refusal.
           const heldUsd = inFlight + (bookingNow?.boundUsd() ?? 0) + ledger.decisions.heldUsd() + ledger.paid.heldUsd();
-          const due = noteFor(
-            { kind: "model", id: "wrap-up", model: capModel, inputTokens: asked?.inputTokensMax, ...(asked?.outputTokensAsked === undefined ? {} : { outputAsked: asked.outputTokensAsked }), ...(asked?.outputTokensLeast === undefined ? {} : { outputTokensLeast: asked.outputTokensLeast }) },
-            { capUsd, spentUsd, heldUsd, costs: capNote.costs, told: false, mode: config.mode ?? "expected", now: Date.now() },
-          );
+          const due = noteFor(pricedOf(model, asked), { capUsd, spentUsd, heldUsd, costs: capNote.costs, told: false, mode: config.mode ?? "expected", now: (config.now ?? Date.now)() });
           // The two wrap-ups read as one story: the note tells the model what is left; once what the run keeps back to
           // answer (wrap-up.ts reserveFor) no longer fits, its tools stop. So the note comes due on that same rule too, if
           // its own has not made it due before: told on the request whose tool call would be refused now, no later than the

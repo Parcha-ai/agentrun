@@ -10,11 +10,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, kindRefusals, sweep } from "../dist/index.js";
+import { checkLifetime, kindRefusals, recordedMount, sweep } from "../dist/index.js";
 import { fakeObjects } from "./fake-archil.mjs";
 
 const modal = await import("../dist/modal.js");
-const { ModalProvider, labelsOf, tagsOf } = modal;
+const { ModalProvider } = modal;
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
@@ -318,30 +318,8 @@ test("create of an Archil computer: Modal's network stays on for root to reach A
 	const { tags, blockNetwork } = rec.params();
 	assert.equal(blockNetwork, undefined, "root reaches Archil; the tools' none is init's own, read from inside");
 	assert.equal(tags["agentrun.mount"], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }));
-	assert.equal(labelsOf(tags)["agentrun.mount"], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder }), "read back as the adapter wrote it");
+	assert.equal(recordedMount(tags).folder, MOUNT.folder, "read back as the adapter wrote it");
 	noToken(rec.calls, "what the SDK was handed");
-});
-
-test("tagsOf and labelsOf: only a mount label exactly as the adapter writes it, for the run its label names, is shortened, and it reads back the same", () => {
-	const mount = (folder) => JSON.stringify({ kind: "archil", disk: "d", region: "r", folder });
-	const labels = { "agentrun.run": "r1", "agentrun.mount": mount("agents/a1/runs/r1/work"), team: "x" };
-	assert.deepEqual(labelsOf(tagsOf(labels)), labels);
-	assert.equal(tagsOf(labels)["agentrun.mount"], '{"kind":"archil","disk":"d","region":"r","agent":"a1"}');
-	for (const other of [
-		{ "agentrun.run": "r2", "agentrun.mount": mount("agents/a1/runs/r1/work") },
-		{ "agentrun.mount": mount("agents/a1/runs/r1/work") },
-		{ "agentrun.run": "r1", "agentrun.mount": mount("elsewhere") },
-		{ "agentrun.run": "r1", "agentrun.mount": `${mount("agents/a1/runs/r1/work")} ` },
-		{ "agentrun.run": "r1", "agentrun.mount": "not json" },
-		{ team: "x" },
-	]) {
-		assert.deepEqual(tagsOf(other), other, JSON.stringify(other));
-		assert.deepEqual(labelsOf(tagsOf(other)), other, JSON.stringify(other));
-	}
-	// A tag of the short shape with no run label, or with more in it, is no mount the adapter wrote: left as it is.
-	for (const tags of [{ "agentrun.mount": '{"kind":"archil","disk":"d","region":"r","agent":"a1"}' }, { "agentrun.run": "r1", "agentrun.mount": '{"kind":"archil","disk":"d","region":"r","agent":"a1","x":1}' }]) {
-		assert.deepEqual(labelsOf(tags), tags);
-	}
 });
 
 test("Modal's 512 bytes of tags: qa36's Archil computer and one of the longest agent id fit; past the bound check() refuses in words, before any SDK call", async () => {
@@ -352,14 +330,14 @@ test("Modal's 512 bytes of tags: qa36's Archil computer and one of the longest a
 		await create(provider, spec);
 		const { tags } = rec.params();
 		assert.ok(bytesOf(tags) <= 512, `${bytesOf(tags)} bytes of tags`);
-		assert.equal(JSON.parse(labelsOf(tags)["agentrun.mount"]).folder, spec.mount.folder);
+		assert.equal(recordedMount(tags).folder, spec.mount.folder);
 	}
 	const { provider, rec } = setup();
 	const over = archilSpec("a".repeat(128), `registry.example/agentrun-archil@sha256:${"b".repeat(64)}`);
 	const refusals = provider.check(over);
 	assert.equal(refusals.length, 1, JSON.stringify(refusals));
 	assert.equal(refusals[0].field, "mount");
-	assert.match(refusals[0].message, /a Modal sandbox's tags come to at most 512 bytes, names and values together, and this computer's would come to \d+ \(.*agentrun\.mount \d+.*\): give a shorter image, mount folder or labels/);
+	assert.match(refusals[0].message, /a Modal computer's labels come to at most 512 bytes, names and values together, and this computer's would come to \d+ \(.*agentrun\.mount \d+.*\): give a shorter image, mount folder or labels/);
 	noToken(refusals, "the refusal of the tags' size");
 	const created = await create(provider, over);
 	assert.equal(created.error?.code, "refused");

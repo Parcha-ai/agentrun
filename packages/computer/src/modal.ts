@@ -8,15 +8,13 @@
 // modal-client@64880502 (js/src) and Modal's docs.
 import type { App, Image, ModalClient, Sandbox, SandboxCreateParams } from "modal";
 import { MODAL, MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./descriptors/modal.js";
-import { COMPUTER_LABEL, DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
+import { DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, NAME_LABEL } from "./hosted/provider.js";
+import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
 import { codeOfError, words } from "./hosted/process.js";
 import { isWhole } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
-import { RUN_LABEL } from "./labels.js";
 import type { MountKind } from "./mount.js";
-import { ARCHIL_MOUNT_LABEL, type ArchilMount, archilLabels } from "./mount-archil.js";
 import type { ComputerSpec, GpuCapability, GpuSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
 
@@ -162,12 +160,8 @@ const CPUS_PER_CORE = 2;
  * terminate is asynchronous, and the daemon is streamed in through exec.
  */
 const MODAL_TIMEOUTS: Partial<HostedTimeouts> = { requestMs: 60_000, createMs: 600_000, uploadMs: 300_000, listMs: 120_000, goneMs: 120_000, pollMs: 500, mountMs: 120_000 };
-/** An Archil folder agents/<agent>/runs/<run>/work, the shape the shared check holds it to. */
-const FOLDER = /^agents\/([^/]+)\/runs\/([^/]+)\/work$/;
 
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
-const isLabels = (value: unknown): value is Record<string, string> =>
-	typeof value === "object" && value !== null && !Array.isArray(value) && Object.values(value).every((one) => typeof one === "string");
 
 /** The SDK names its errors (js/src/errors.ts); a call that failed on the wire carries a gRPC status code. */
 function codeOf(error: unknown): ComputerErrorCode {
@@ -180,64 +174,6 @@ function codeOf(error: unknown): ComputerErrorCode {
 	// TaskExecStart, when its command, init, has exited). Gone, so create waits to read why.
 	if (code === 9) return "gone";
 	return "vendor";
-}
-
-
-/**
- * The tags a sandbox carries for a machine's labels. Every label is its own tag, with one exception that keeps an
- * Archil computer within Modal's 512 bytes: the mount label's folder, agents/<agent>/runs/<run>/work, names the run its
- * agentrun.run label holds, so the tag records the agent alone, and labelsOf puts the folder back.
- */
-export function tagsOf(labels: Record<string, string>): Record<string, string> {
-	const tags = { ...labels };
-	const text = labels[ARCHIL_MOUNT_LABEL];
-	if (text === undefined) return tags;
-	let mount: Record<string, unknown> | null;
-	try {
-		mount = JSON.parse(text) as Record<string, unknown> | null;
-	} catch {
-		return tags;
-	}
-	const { kind, disk, region, folder } = mount ?? {};
-	const found = typeof folder === "string" ? FOLDER.exec(folder) : null;
-	// Only a label exactly as the adapter writes it (archilLabels) is shortened, so labelsOf gives back the same text.
-	if (found === null || found[2] !== labels[RUN_LABEL] || text !== archilLabels({ kind: "archil", disk, region, folder } as ArchilMount)[ARCHIL_MOUNT_LABEL]) return tags;
-	tags[ARCHIL_MOUNT_LABEL] = JSON.stringify({ kind, disk, region, agent: found[1] });
-	return tags;
-}
-
-/** A sandbox's labels from its tags: tagsOf undone. */
-export function labelsOf(tags: Record<string, string>): Record<string, string> {
-	const labels = { ...tags };
-	const text = tags[ARCHIL_MOUNT_LABEL];
-	const run = tags[RUN_LABEL];
-	if (text === undefined || run === undefined) return labels;
-	try {
-		const { kind, disk, region, agent, ...rest } = (JSON.parse(text) ?? {}) as Record<string, unknown>;
-		if (kind !== "archil" || typeof disk !== "string" || typeof region !== "string" || typeof agent !== "string" || Object.keys(rest).length > 0) return labels;
-		Object.assign(labels, archilLabels({ kind: "archil", disk, region, folder: `agents/${agent}/runs/${run}/work` } as ArchilMount));
-	} catch {
-		// Not the shortened mount: the tag as it is.
-	}
-	return labels;
-}
-
-/** The bytes Modal counts of `tags`: every name and value, in UTF-8. */
-const tagBytes = (tags: Record<string, string>): number => Object.entries(tags).reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
-
-/** A sandbox's tags as the adapter would make them of spec: its labels, the adapter's own, its name and deadline as long as create's. */
-function tagsForSpec(spec: ComputerSpec): Record<string, string> {
-	const at = new Date(0).toISOString();
-	const own = { [COMPUTER_LABEL]: "1", [NAME_LABEL]: "computer-000000000000", [DEADLINE_LABEL]: at, [IMAGE_LABEL]: spec.image, [MAX_LABEL]: at };
-	return tagsOf({ ...spec.labels, ...own, ...(spec.mount?.kind === "archil" ? archilLabels(spec.mount) : {}) });
-}
-
-/** Why tags are past Modal's bound, or undefined. */
-function tagProblem(tags: Record<string, string>): string | undefined {
-	const bytes = tagBytes(tags);
-	if (bytes <= MAX_TAG_BYTES) return undefined;
-	const sizes = Object.entries(tags).map(([key, value]) => `${key} ${Buffer.byteLength(key) + Buffer.byteLength(value)}`).join(", ");
-	return `a Modal sandbox's tags come to at most ${MAX_TAG_BYTES} bytes, names and values together, and this computer's would come to ${bytes} (${sizes}): give a shorter image, mount folder or labels`;
 }
 
 /** Modal's sandboxes as a MachineHost (../host.ts). */
@@ -273,7 +209,7 @@ class ModalHost implements MachineHost {
 			// Never root: each connection is Modal's exec of the stdio bridge, as Modal's root, outside the daemon.
 			user: ["uid"],
 			specFields: ["cpus", "memoryMb", "user"],
-			labelRules: { max: MAX_TAGS },
+			labelRules: { max: MAX_TAGS, maxBytes: MAX_TAG_BYTES, measure: "pairs" },
 			runtime: (req) => (req.gpu === undefined ? "vm" : "gvisor"),
 		};
 	}
@@ -295,12 +231,12 @@ class ModalHost implements MachineHost {
 
 	/**
 	 * Modal's own rules of a spec, over the adapter's: an image Modal can pull or holds (no option, no space), sizes in
-	 * the units Modal takes, and the sandbox's tags within Modal's 512 bytes. No call.
+	 * the units Modal takes. No call; the adapter holds the tags to Modal's 512 bytes (labelRules).
 	 */
 	check(spec: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
-		const { image, cpus, memoryMb, labels, mount } = spec;
+		const { image, cpus, memoryMb } = spec;
 		if (typeof image === "string" && (image.startsWith("-") || /\s/.test(image))) {
 			refuse("image", `an image is a registry tag for linux/amd64 that Modal can pull, such as ${MODAL_DEFAULT_IMAGE}, or an image Modal holds by its id (im-...)`);
 		}
@@ -308,11 +244,6 @@ class ModalHost implements MachineHost {
 			refuse("cpus", `cpus must be a number of CPUs of at least ${CPU_REQUEST * CPUS_PER_CORE}: Modal counts physical cores, 2 CPUs each, and requests ${CPU_REQUEST} of one by default`);
 		}
 		if (memoryMb !== undefined && !(isWhole(memoryMb) && memoryMb > 0)) refuse("memoryMb", "memoryMb must be a whole number of MiB above 0");
-		const archil = mount === undefined || (mount?.kind === "archil" && ["disk", "region", "folder"].every((key) => typeof (mount as unknown as Record<string, unknown>)[key] === "string"));
-		if (refusals.length === 0 && typeof image === "string" && (labels === undefined || isLabels(labels)) && archil) {
-			const problem = tagProblem(tagsForSpec(spec as ComputerSpec));
-			if (problem) refuse(mount === undefined ? "labels" : "mount", problem);
-		}
 		return refusals;
 	}
 
@@ -325,9 +256,6 @@ class ModalHost implements MachineHost {
 	async create(req: MachineRequest, ctx: HostCall): Promise<Result<{ id: string }>> {
 		void ctx;
 		if (req.command === undefined) return fail("invalid", "a Modal sandbox's command is the entrypoint the adapter gives a pid1 host, and the request has none");
-		const tags = tagsOf(req.labels);
-		const problem = tagProblem(tags);
-		if (problem) return fail("refused", problem);
 		let base: Image;
 		if (MODAL_IMAGE_ID.test(req.image)) {
 			const fromId = this.#sdk.images.fromId;
@@ -348,7 +276,7 @@ class ModalHost implements MachineHost {
 			memoryMiB: Math.min(MEMORY_REQUEST_MIB, memoryMb),
 			memoryLimitMiB: memoryMb,
 			...(req.network === "none" ? { blockNetwork: true as const } : {}),
-			tags,
+			tags: req.labels,
 		};
 		const image = base.dockerfileCommands([`ENV HOME=${WORK}`, `WORKDIR ${WORK}`]);
 		const sandbox = await this.#sdk.sandboxes.create(await this.#theApp(), image, params);
@@ -370,7 +298,7 @@ class ModalHost implements MachineHost {
 	async #machine(sandbox: Sandbox): Promise<Machine | undefined> {
 		try {
 			if ((await sandbox.poll()) !== null) return undefined;
-			return { id: sandbox.sandboxId, labels: labelsOf(await sandbox.getTags()), state: "running" };
+			return { id: sandbox.sandboxId, labels: await sandbox.getTags(), state: "running" };
 		} catch (error) {
 			if (codeOf(error) === "not_found") return undefined;
 			throw error;
@@ -385,9 +313,7 @@ class ModalHost implements MachineHost {
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
 		const until = Date.now() + ctx.timeoutMs;
 		const app = await this.#theApp();
-		// The mount label is a tag of another text (tagsOf): the listing filters by the rest, and the adapter by all.
-		const { [ARCHIL_MOUNT_LABEL]: _mount, ...filter } = labels;
-		const iterator = this.#sdk.sandboxes.list({ appId: app.appId, tags: filter })[Symbol.asyncIterator]();
+		const iterator = this.#sdk.sandboxes.list({ appId: app.appId, tags: labels })[Symbol.asyncIterator]();
 		const machines: Machine[] = [];
 		try {
 			for (;;) {

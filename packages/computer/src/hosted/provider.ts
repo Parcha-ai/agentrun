@@ -377,10 +377,12 @@ export class HostedProvider implements ComputerProvider {
 		refusals.push(...checkTenure(given, capabilities, label));
 		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
 		else if (network !== "none") refuse("network", 'network is required: "none"');
-		if (labels !== undefined) {
-			const entries = typeof labels === "object" && labels !== null && !Array.isArray(labels) ? Object.entries(labels) : undefined;
-			const bad = entries === undefined ? "labels must map names to strings" : (entries.map(([key, value]) => labelProblem(key, value, this.host.facts.labelRules?.key)).find(Boolean) ?? this.#labelCount(entries.length, mount));
-			if (bad) refuse("labels", bad);
+		const entries = labels === undefined ? [] : typeof labels === "object" && labels !== null && !Array.isArray(labels) ? Object.entries(labels) : undefined;
+		const bad = entries === undefined ? "labels must map names to strings" : (entries.map(([key, value]) => labelProblem(key, value, this.host.facts.labelRules?.key)).find(Boolean) ?? this.#labelCount(entries.length, given));
+		if (bad) refuse("labels", bad);
+		else if (typeof image === "string" && (!archil || ["disk", "region", "folder"].every((key) => typeof (mount as Record<string, unknown>)[key] === "string"))) {
+			const over = this.#labelBytes(given as unknown as ComputerSpec);
+			if (over) refuse(archil ? "mount" : "labels", over);
 		}
 		refusals.push(...checkGpu(given.gpu, capabilities, mount));
 		const taken = new Set<string>(this.host.facts.specFields ?? []);
@@ -405,12 +407,30 @@ export class HostedProvider implements ComputerProvider {
 		return (this.#takesUser() ? specUserOf(spec.user) : undefined) ?? `${this.#uid}:${this.#gid}`;
 	}
 
+	/** The labels create would give a spec's computer, the adapter's own at their longest (#labelsOf). */
+	#longestLabels(spec: Record<string, unknown>, caller: boolean): Record<string, string> {
+		const at = new Date(0).toISOString();
+		return this.#labelsOf({ ...spec, labels: caller ? spec.labels : {} } as unknown as ComputerSpec, "computer-000000000000", at, at);
+	}
+
 	/** Why a spec's labels, with the adapter's own, are more than the vendor takes; undefined when they fit. */
-	#labelCount(count: number, mount: unknown): string | undefined {
+	#labelCount(count: number, spec: Record<string, unknown>): string | undefined {
 		const max = this.host.facts.labelRules?.max;
 		if (max === undefined) return undefined;
-		const own = 5 + ((mount as { kind?: unknown } | undefined)?.kind === "archil" ? Object.keys(archilLabels({ kind: "archil", disk: "d", region: "r", folder: "f", token: "t" } as ArchilMount)).length : 0);
+		const own = Object.keys(this.#longestLabels(spec, false)).length;
 		return count + own > max ? `${a(this.#label)} computer takes ${max} labels, ${own} of them the provider's own: ${count} is ${count + own - max} too many` : undefined;
+	}
+
+	/** Why a spec's labels, with the adapter's own at their longest, come to more bytes than the vendor takes; undefined when they fit. */
+	#labelBytes(spec: ComputerSpec): string | undefined {
+		const { maxBytes, measure = "pairs" } = this.host.facts.labelRules ?? {};
+		if (maxBytes === undefined) return undefined;
+		const labels = this.#longestLabels(spec as unknown as Record<string, unknown>, true);
+		const sizes = Object.entries(labels).map(([key, value]) => [key, Buffer.byteLength(key) + Buffer.byteLength(value)] as const);
+		const bytes = measure === "json" ? Buffer.byteLength(JSON.stringify(labels)) : sizes.reduce((sum, [, size]) => sum + size, 0);
+		if (bytes <= maxBytes) return undefined;
+		const how = measure === "json" ? "as JSON" : "names and values together";
+		return `${a(this.#label)} computer's labels come to at most ${maxBytes} bytes, ${how}, and this computer's would come to ${bytes} (${sizes.map(([key, size]) => `${key} ${size}`).join(", ")}): give a shorter image, mount folder or labels`;
 	}
 
 	/** A host call bounded by ms, the caller's signal when given. */

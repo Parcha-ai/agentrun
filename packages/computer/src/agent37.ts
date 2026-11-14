@@ -11,15 +11,13 @@
 import { createHash } from "node:crypto";
 import { Duplex } from "node:stream";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
-import { DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
-import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, NAME_LABEL } from "./hosted/provider.js";
+import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
 import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh.js";
 import { dateOf, driftOf, isWhole, show, sizeOf } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
-import { type ArchilMount, archilLabels } from "./mount-archil.js";
 import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
@@ -358,6 +356,7 @@ class Agent37Host implements MachineHost {
 			mounts: [...MOUNT],
 			release: ["delete"],
 			specFields: ["cpus", "memoryMb"],
+			labelRules: { maxBytes: METADATA_MAX_BYTES, measure: "json" },
 			runtime: () => runtime,
 		};
 	}
@@ -395,7 +394,7 @@ class Agent37Host implements MachineHost {
 		return `/v1/instances/${id}`;
 	}
 
-	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes; metadata fits 4 KB. */
+	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes. The adapter holds metadata to 4 KB (labelRules). */
 	check(given: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = [];
 		const { image, cpus, memoryMb } = given;
@@ -406,11 +405,6 @@ class Agent37Host implements MachineHost {
 			refusals.push({ field: "cpus", message: `an Agent37 instance has at most ${MAX_CPUS} CPUs, and Agent37 gives 4 for a larger ask without saying so: ask for 2 or 4` });
 		} else if ((cpus !== undefined || memoryMb !== undefined) && shapeOf(cpus, memoryMb) === undefined) {
 			refusals.push({ field: cpus !== undefined && !SHAPES.some((shape) => shape.cpu === cpus) ? "cpus" : "memoryMb", message: `an Agent37 instance is one of its shapes: ${SHAPE_WORDS}` });
-		}
-		const labels = given.labels;
-		if (typeof labels === "object" && labels !== null && !Array.isArray(labels)) {
-			const bytes = Buffer.byteLength(JSON.stringify({ ...labels, ...ownLabels(given) }), "utf8");
-			if (bytes > METADATA_MAX_BYTES) refusals.push({ field: "labels", message: `an Agent37 instance's metadata holds ${METADATA_MAX_BYTES} bytes, the provider's own labels with them; these come to ${bytes}` });
 		}
 		return refusals;
 	}
@@ -484,20 +478,6 @@ class Agent37Host implements MachineHost {
 		await this.#rest("PATCH", path, { metadata: { ...(instance.metadata ?? {}), ...labels } }, ctx);
 		return ok(undefined);
 	}
-}
-
-/** The provider's own labels at create, as check() counts them toward metadata's cap: the longest each can be. */
-function ownLabels(spec: Partial<ComputerSpec>): Record<string, string> {
-	const time = new Date(0).toISOString();
-	let archil: Record<string, string> = {};
-	if ((spec.mount as { kind?: unknown } | undefined)?.kind === "archil") {
-		try {
-			archil = archilLabels(spec.mount as ArchilMount);
-		} catch {
-			// The adapter refuses a mount it cannot read, in its own words.
-		}
-	}
-	return { "agentrun.computer": "1", [NAME_LABEL]: "computer-000000000000", [DEADLINE_LABEL]: time, [IMAGE_LABEL]: typeof spec.image === "string" ? spec.image : "", [MAX_LABEL]: time, ...archil };
 }
 
 /** The ssh2 module's slice, or why it is not one. */
