@@ -1,30 +1,34 @@
 {
   "server": "slack",
-  "description": "A fake Slack MCP server for the post-happens case. Its one tool is named as Slack's MCP server (https://mcp.slack.com/mcp) names it. A post to C0MKTINTEL succeeds; a post anywhere else answers channel_not_found, so a stray post is visible in the recorded calls.",
+  "description": "A fake Slack toolkit (Composio's) for the post-happens case. Its one tool is named and shaped as Composio's SLACK_SEND_MESSAGE action (arguments as its input_parameters, answers as its {data, successful, error} envelope). A post to C0MKTINTEL succeeds; a post anywhere else answers channel_not_found, so a stray post is visible in the recorded calls.",
   "tools": {
-    "slack_send_message": {
-      "description": "Send a message to a channel or a person.",
+    "SLACK_SEND_MESSAGE": {
+      "description": "Posts a message to a Slack channel, direct message, or private group; requires content via `text`, `blocks`, or `attachments`.",
       "input": {
         "type": "object",
         "properties": {
-          "channel_id": { "type": "string", "description": "the channel's id" },
-          "message": { "type": "string", "description": "the message text, Slack mrkdwn" }
+          "channel": { "type": "string", "description": "ID or name of the channel, private group, or IM channel to send the message to." },
+          "text": { "type": "string", "description": "Primary textual content. Supports mrkdwn unless `mrkdwn` is `false`." },
+          "markdown_text": { "type": "string", "description": "Message written in markdown." },
+          "mrkdwn": { "type": "boolean", "description": "Disable Slack's markdown for `text` field if `false`. Default `true`." },
+          "thread_ts": { "type": "string", "description": "Timestamp (`ts`) of an existing message to make this a threaded reply." },
+          "unfurl_links": { "type": "boolean", "description": "Enable unfurling of text-based URLs." }
         },
-        "required": ["channel_id", "message"]
+        "required": ["channel"]
       },
       "answers": [
         {
-          "when": { "channel_id": "C0MKTINTEL" },
+          "when": { "channel": "C0MKTINTEL" },
           "result": {
             "content": [
-              { "type": "text", "text": "{\"ok\":true,\"message_context\":{\"channel_id\":\"C0MKTINTEL\",\"ts\":\"1762675200.000400\"},\"permalink\":\"https://example.slack.com/archives/C0MKTINTEL/p1762675200000400\"}" }
+              { "type": "text", "text": "{\"data\":{\"ok\":true,\"channel\":\"C0MKTINTEL\",\"ts\":\"1762675200.000400\",\"message\":{\"type\":\"message\",\"ts\":\"1762675200.000400\",\"text\":\"posted\"}},\"successful\":true,\"error\":null}" }
             ]
           }
         }
       ],
       "default": {
         "isError": true,
-        "content": [{ "type": "text", "text": "{\"ok\":false,\"error\":\"channel_not_found\"}" }]
+        "content": [{ "type": "text", "text": "{\"data\":{},\"successful\":false,\"error\":\"channel_not_found\"}" }]
       }
     }
   }

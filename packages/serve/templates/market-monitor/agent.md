@@ -6,19 +6,25 @@ description: Every Monday, a short digest of what changed at the companies you w
 license: Apache-2.0
 author: { name: Parcha Labs }
 repository: https://github.com/Parcha-ai/agentrun
+category: marketing
+tags: [competitors, digest, slack, gmail]
 harness: [pi]
 model: { tier: fast }
 effort: low
 tools: [web_search, web_fetch, read]
 mcp:
-  - server: slack
-    tools: [slack_send_message]
+  - source: composio
+    toolkit: slack
+    tools: [SLACK_SEND_MESSAGE]
     required: false
+    reason: "Posts the weekly digest to the one Slack channel you set, and nowhere else."
     allow: []
-    pin: { slack_send_message: { channel_id: "${parameters.channel}" } }
-  - server: gmail
+    pin: { SLACK_SEND_MESSAGE: { channel: "${parameters.channel}" } }
+  - source: composio
+    toolkit: gmail
     tools: [GMAIL_SEND_EMAIL]
     required: false
+    reason: "Emails the weekly digest to the one address you set, with no cc or bcc."
     allow: []
     pin: { GMAIL_SEND_EMAIL: { recipient_email: "${parameters.channel}", cc: null, bcc: null, extra_recipients: null } }
 parameters:

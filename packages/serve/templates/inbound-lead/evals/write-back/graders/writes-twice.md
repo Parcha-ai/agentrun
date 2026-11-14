@@ -1,7 +1,8 @@
 ---
 type: tool_used
-tool: mcp:hubspot/manage_crm_objects
+tools: [mcp:hubspot/HUBSPOT_CREATE_CRM_OBJECT_WITH_PROPERTIES, mcp:hubspot/HUBSPOT_PARTIALLY_UPDATE_CONTACT_USING_CONTACT_ID]
 count: 2
 ---
-`mcp:hubspot/manage_crm_objects` is called exactly twice in the run: once for the note, once for the score update
-(the fake HubSpot server records each call). Fewer or more calls fail.
+The two HubSpot write tools together are called exactly twice in the run: `HUBSPOT_CREATE_CRM_OBJECT_WITH_PROPERTIES`
+once for the note, `HUBSPOT_PARTIALLY_UPDATE_CONTACT_USING_CONTACT_ID` once for the score update (the fake HubSpot
+server records each call). Fewer or more calls fail.

@@ -6,19 +6,27 @@ description: Researches each inbound lead from your form or CRM (the person, the
 license: Apache-2.0
 author: { name: Parcha Labs }
 repository: https://github.com/Parcha-ai/agentrun
+category: sales
+tags: [leads, crm, hubspot, slack]
 harness: [pi]
 model: { tier: fast }
 effort: low
 tools: [read, web_search, web_fetch]
 mcp:
-  - server: hubspot
-    tools: [get_crm_objects, search_crm_objects, tool_guidance, manage_crm_objects]
+  - source: composio
+    toolkit: hubspot
+    tools: [HUBSPOT_READ_CRM_CONTACT_BY_ID, HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA, HUBSPOT_CREATE_CRM_OBJECT_WITH_PROPERTIES, HUBSPOT_PARTIALLY_UPDATE_CONTACT_USING_CONTACT_ID]
     required: false
-    allow: [get_crm_objects, search_crm_objects, tool_guidance]
-  - server: slack
-    tools: [slack_send_message]
+    reason: "Looks up the lead's contact in HubSpot to prove it is theirs, then adds one note and sets the score property on that contact. It never creates a contact."
+    allow: [HUBSPOT_READ_CRM_CONTACT_BY_ID, HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA]
+    # The create tool only ever makes the note: a contact, company or deal is refused.
+    pin: { HUBSPOT_CREATE_CRM_OBJECT_WITH_PROPERTIES: { objectType: notes } }
+  - source: composio
+    toolkit: slack
+    tools: [SLACK_SEND_MESSAGE]
     required: false
-    pin: { slack_send_message: { channel_id: "${parameters.slack_channel}" } }
+    reason: "Posts each lead's brief to the one Slack channel you set, and nowhere else."
+    pin: { SLACK_SEND_MESSAGE: { channel: "${parameters.slack_channel}" } }
 parameters:
   icp: { type: string, required: true, description: "your ideal customer in your own words: industry, company size, region, buying signals, and what disqualifies a lead (e.g. 'B2B fintech, 50-2000 people, US or EU, has a compliance team; never gambling operators')" }
   post_to: { type: string, required: false, default: none, enum: [crm, slack, none], description: "where each brief goes: crm (a note and the score field on the HubSpot contact), slack (a message in one channel) or none (the run's answer only)" }

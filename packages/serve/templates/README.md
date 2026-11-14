@@ -14,12 +14,18 @@ code-review/
   evals/<case>/prompt.md   a case's run input (front matter: description, runs, max_cost_usd, ...)
   evals/<case>/graders/*.md   front matter `type`: llm, regex, tool_used, file_exists or schema (with `schema: <file>`)
   evals/<case>/case.yaml, evals/<case>/fixtures/   optional
+  examples/<name>/input.json, output.json, output.md?   a sample run, shown and never applied
   findings.schema.json     any other file the manifest names
 ```
 
-Links and other special files are refused anywhere in the folder, and its only folders are `skills/`, `rules/` and
-`evals/`. The server checks evals for their layout only and runs none; `agentrun template eval DIR` runs them ([Running
-the evals](#running-the-evals)).
+Links and other special files are refused anywhere in the folder, and its only folders are `skills/`, `rules/`,
+`evals/` and `examples/`. The server checks evals for their layout only and runs none; `agentrun template eval DIR`
+runs them ([Running the evals](#running-the-evals)).
+
+Each `examples/<name>/` shows what one run takes and gives, for a listing to show: `input.json`, the run's input (a
+JSON object, checked as a run's input is), `output.json`, its answer (checked against `output`'s schema when the
+package has one), and `output.md`, optional, the answer as a person reads it. Nothing else goes in it. Apply never
+reads it, and its files are not the agent's (they don't count toward the agent's 1 MiB).
 
 ## The packages this server ships
 
@@ -40,25 +46,26 @@ rule-bounded ones above, and once granted they run unasked under `never`.
 whose destination is not the pinned one, before it is sent or asked about, even once the owner granted the tool. So
 a page that talks the agent into posting elsewhere gets a refusal, never a post. A pin fixes where a send goes, not
 what it says, and it does not reach a write to a record (a CRM contact): that one is held by its skill's own check.
-`market-monitor` pins `slack_send_message`'s `channel_id` and `GMAIL_SEND_EMAIL`'s `recipient_email` to its `channel`
-parameter (and keeps `cc`, `bcc` and `extra_recipients` out), and `inbound-lead` pins `slack_send_message`'s
-`channel_id` to its `slack_channel`. `market-monitor`'s `channel` takes a Slack channel id or an email address: each
+`market-monitor` pins `SLACK_SEND_MESSAGE`'s `channel` and `GMAIL_SEND_EMAIL`'s `recipient_email` to its `channel`
+parameter (and keeps `cc`, `bcc` and `extra_recipients` out), and `inbound-lead` pins `SLACK_SEND_MESSAGE`'s
+`channel` to its `slack_channel` (both Composio actions) and `HUBSPOT_CREATE_CRM_OBJECT_WITH_PROPERTIES`'s `objectType`
+to `notes`, so that tool can only make a note. `market-monitor`'s `channel` takes a Slack channel id or an email address: each
 pin applies only to its own tool, so a channel id leaves no address `GMAIL_SEND_EMAIL` can send to and an address no
 channel Slack can post in, and its skill sends with the tool that matches the destination's kind. A send whose
 destination parameter apply was not given is set to deny, so it never runs, with a `pins.<tool>` warning that names
 the parameter to give.
 
-**Scope the credentials.** An allowed read reaches whatever the saved credential reaches. Save `github` with a
-fine-grained token for the one repository the agent works on, `hubspot` with the scopes its tools need, and so on: once
+**Scope the credentials.** An allowed read reaches whatever the saved credential reaches. Save the GitHub server with
+a fine-grained token for the one repository the agent works on, the HubSpot one with the scopes its tools need, and so on: once
 the owner grants a write, text the agent read could try to copy what that read reaches into it.
 
 | Package | What it does | Started by | Needs |
 |---|---|---|---|
-| `code-review` | Reviews a pull request for real bugs on a read-only checkout AgentRun makes of the PR (`checkout: pull_request`, in `repo/`): one `subagent` turn starts five quick and three deep reviewers, each with read-only bash (`git diff`, `git grep`, `nl -ba`; none builds or runs the code), against the repository's `CODEREVIEW.md` (on top of its own `rules/CODEREVIEW.md`, the baseline and the starter); the agent merges and verifies their findings and posts one comment review with P0/P1/P2 findings, each quoting the line behind it, and a 1-5 risk score, never an approval (its write is pinned to COMMENT). A fork's PR is reviewed when a writer comments `@<bot> review` | a run naming a PR, or a GitHub webhook trigger the owner adds | a shell (`computer: [shell, none]`: with none, it is made without bash and its reviewers read through the GitHub tools); the GitHub MCP server `github` to read the PR and post; with neither, a diff in the message |
+| `code-review` | Reviews a pull request for real bugs on a read-only checkout AgentRun makes of the PR (`checkout: pull_request`, in `repo/`): one `subagent` turn starts five quick and three deep reviewers, each with read-only bash (`git diff`, `git grep`, `nl -ba`; none builds or runs the code), against the repository's `CODEREVIEW.md` (on top of its own `rules/CODEREVIEW.md`, the baseline and the starter); the agent merges and verifies their findings and posts one comment review with P0/P1/P2 findings, each quoting the line behind it, and a 1-5 risk score, never an approval (its write is pinned to COMMENT). A fork's PR is reviewed when a writer comments `@<bot> review` | a run naming a PR, or a GitHub webhook trigger the owner adds | a shell (`computer: [shell, none]`: with none, it is made without bash and its reviewers read through the GitHub tools); a saved GitHub MCP server (source `github`) to read the PR and post; with neither, a diff in the message |
 | `kyb` | Business due diligence: identity, owners, sanctions against the lists themselves, adverse media, a verdict, every claim cited | a run naming a company | nothing; web tools only |
-| `market-monitor` | A weekly digest of what changed at the companies you watch, posted to one Slack channel or address | a weekly schedule (its `cron` and `timezone` parameters, Monday 08:00 UTC by default), or a run | optional: Slack (`slack`) or Gmail (`gmail`) MCP, to send |
-| `inbound-lead` | Researches a form or CRM lead, scores it against your ICP, writes back to HubSpot or posts to Slack | a webhook (needs the seal key): your form tool or relay signs Standard Webhooks bodies of type `lead.submitted`, each lead its own run (3 at once); or a run | optional: HubSpot (`hubspot`) or Slack (`slack`) MCP |
-| `release-notes` | Turns the merged PRs since the last release into user-facing notes, as a draft issue to edit (no MCP tool makes a draft release) | a run naming the release or tag | the GitHub MCP server `github`; with none, a list of PRs in the message |
+| `market-monitor` | A weekly digest of what changed at the companies you watch, posted to one Slack channel or address | a weekly schedule (its `cron` and `timezone` parameters, Monday 08:00 UTC by default), or a run | optional: a saved Composio Slack or Gmail MCP server (toolkit `slack` or `gmail`), to send |
+| `inbound-lead` | Researches a form or CRM lead, scores it against your ICP, writes back to HubSpot or posts to Slack | a webhook (needs the seal key): your form tool or relay signs Standard Webhooks bodies of type `lead.submitted`, each lead its own run (3 at once); or a run | optional: a saved Composio HubSpot or Slack MCP server (toolkit `hubspot` or `slack`) |
+| `release-notes` | Turns the merged PRs since the last release into user-facing notes, as a draft issue to edit (no MCP tool makes a draft release) | a run naming the release or tag | a saved GitHub MCP server (source `github`); with none, a list of PRs in the message |
 
 ## Eval cases
 
@@ -69,7 +76,7 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   it: the trigger's words, then the body in `<trigger-payload ... untrusted>`). Front matter: `description`, `runs`
   (how many times; the case passes when every run passes), `max_cost_usd` (each run's cap).
 - `case.yaml`, optional: `parameters` (the apply's parameters), `grants` (the gate names the apply allows, always a
-  list), `mcp` (a server's name to a fixture file in the case that fakes it), `learning` (a folder of notes in the case
+  list), `mcp` (an `mcp` need's toolkit to a fixture file in the case that fakes it), `learning` (a folder of notes in the case
   the agent starts with: `MEMORY.md` and its notes).
 - A fake MCP server's fixture, one shape for every package:
   ```json
@@ -126,8 +133,9 @@ saved by the same name, and the agents the eval made are archived at the end.
 
 **A case**, run by run:
 
-1. Each `mcp` fixture is served as an MCP server on this machine's loopback and saved under its name with no
-   credential; it records every call, with its arguments. It is removed after the case.
+1. Each `mcp` fixture is served as an MCP server on this machine's loopback and saved under its toolkit's name, with
+   the need's source and toolkit and no credential; it records every call, with its arguments. It is removed after the
+   case.
 2. The package is applied with the case's `parameters` and `grants`: a fresh agent for each run, so what one run
    learns never reaches the next.
 3. The `learning` folder's notes are written to the agent's learning folder (`PUT .../learning/files/{file}`); the
@@ -171,11 +179,13 @@ The report gives each run's cost and each `llm` grade's, as their run records sa
 | `version` | Required. SemVer 2 (`0.1.0`), the package's own version. Never `definition.version`, which is the agent's revision number; a bare number is refused. |
 | `description` | Required. Also the agent's description. |
 | `license`, `author` (`{name, email?, url?}`), `repository` | Optional, shown in the list. |
+| `category` | Optional, shown in the list: one of `engineering`, `security`, `sales`, `marketing`, `research`, `finance`, `operations`, `compliance`, `personal`. |
+| `tags` | Optional, shown in the list: at most 8, each lowercase letters, digits and dashes, at most 32, none twice. |
 | `harness` | A preference list (`[pi, claude-agent]`): apply takes the first this server runs, else the first. Absent: the server's default. |
 | `model` | `{tier: fast \| balanced \| strong, prefer?: "provider/model-id"}`. Apply uses `prefer` when this server runs it on the chosen harness (it holds that provider's key and reaches models directly, not through a gateway); otherwise the server's model for the tier: `AGENT_MODEL_FAST`, `AGENT_MODEL` (balanced) or `AGENT_MODEL_STRONG`, each else the default of a model key the server holds. `overrides.model` in the apply wins over both. On a server that reaches its models through a gateway (`AGENT_MODEL_BASE_URL`), `prefer` is not used, since the gateway never said it serves it, and a tier model that is the gateway's own id (no `provider/`) is left out, so the agent runs on the server's default; each is said in a `model` warning. `fast` and `strong` (each `"provider/model-id"`, optional) name the model the agent's `subagent` calls run on for that tier, kept by the same rule as `prefer` (else the server's model for the tier, with a `model` warning); the agent's own tier, named in neither, is the agent's own model. Apply writes them as the definition's `model_tiers`. Absent: the server's default. |
 | `effort` | The thinking level: `low`, `medium`, `high`, `xhigh` or `max`. |
 | `tools` | The tools the agent is granted, never an MCP tool (`mcp` grants those). `subagent` (pi only) lets the agent run a fresh conversation with a prompt and a subset of its own tools (MCP tools and `bash` included, `bash` held to the agent's `tool_policy`), on the agent's own model or one of its tiers (`fast`, `strong`) when the call names one, under its permissions and cap, and get the child's final text back, with `max_tool_calls` (narrowing the agent's budget, never widening it) and `effort` (`low`, `medium`, `high`) of its own when the call names them; several in a turn run at once, at most 4. A skill can use it to sample K answers, merge them and verify each before acting ([patterns](../README.md#patterns)). Absent: those the server gives a new agent (its box's shell, where it has a box). |
-| `mcp` | `[{server, tools, required?, allow?, pin?}]`: MCP servers by the name a server saves them under (Settings → MCP servers), the tools of each the agent uses (each one tool by its name, `A-Z a-z 0-9 _ . -`; never `*`), and `allow`, those of its tools the package asks the owner to allow (`GET /v2/templates` shows each tool with `asks: allow` or `ask`, for a consent screen). Where the server has one saved, apply grants `mcp:<server>/<tool>` for each, beside the other tools, at the owner's own setting: a package never sets a permission. Only the apply's `grants`, the owner's answer, are set to `allow`. Where it has none, apply skips it with a warning (`mcp.<server>`), or, when `required` is true, refuses with `409 agent_not_runnable` and makes nothing. `pin`, optional: `{<tool>: {<argument>: <value>}}`, for tools of the entry, 1 to 8 top-level arguments each, every value a scalar (text, which may be or hold `${parameters.<name>}`, a number, `true`/`false`, or `null` for an argument that must be left out) or a list of 1 to 16 of them, the argument one of the list (`event: [null, COMMENT]`), kept with each value once, null first, then by its JSON text. Apply writes it, filled, as the tool's `pin` in the agent's `tool_settings` (text that is one placeholder alone takes the parameter's value and type), whatever the tool's permission, and the gate refuses any call not as pinned; a pin the server's own settings (Settings → Tools) set for the tool holds too. A pin whose parameter apply is not given sets the tool to `deny` instead, granted or not, with a `pins.mcp:<server>/<tool>` warning. `GET /v2/templates` shows each tool's `pin`, unfilled. |
+| `mcp` | `[{source, toolkit, tools, required?, reason?, allow?, pin?}]`: the MCP tools the agent uses, by where they come from, never by the name a server saves them under. `source` is `composio` (a Composio toolkit, saved with the Composio preset), `github` (GitHub's MCP server; its toolkit is `github`) or `url` (any other MCP server). `toolkit` names the tools' set (Composio's toolkit slug, `github`, or the name a `url` server's owner gives it in Settings → MCP servers), lowercase letters, digits and dashes, at most 32, each toolkit once. Inside the package its tools are `mcp:<toolkit>/<tool>`. `tools` are the ones the agent uses (each one tool by its name, `A-Z a-z 0-9 _ -`; never `*`; a Composio action by its slug, `SLACK_SEND_MESSAGE`), `reason` one line (at most 280 characters) on why, shown on the apply screen, and `allow` those of its tools the package asks the owner to allow (`GET /v2/templates` shows each tool with `asks: allow` or `ask`, for a consent screen). Apply maps each need to the saved MCP server whose recorded source and toolkit are the need's (each saved server records them: the Composio preset its toolkit, a GitHub App or GitHub MCP address server `github`, any other `url` with the toolkit its owner sets); where several are, the one named as the toolkit, else the first by name, and the apply's `servers` picks another. When the server's name is not the toolkit, apply rewrites `mcp:<toolkit>/` to `mcp:<server>/` in the instructions, the skills and the tool settings. It grants `mcp:<server>/<tool>` for each, beside the other tools, at the owner's own setting: a package never sets a permission. Only the apply's `grants`, the owner's answer, are set to `allow`. Where no saved server matches, the need is not set up here: apply skips it with a warning (`mcp.<toolkit>`, its `fix` saying how to add one: for Composio, the preset with the toolkit and actions), or, when `required` is true, refuses with `409 agent_not_runnable` and makes nothing. `pin`, optional: `{<tool>: {<argument>: <value>}}`, for tools of the entry, 1 to 8 top-level arguments each, every value a scalar (text, which may be or hold `${parameters.<name>}`, a number, `true`/`false`, or `null` for an argument that must be left out) or a list of 1 to 16 of them, the argument one of the list (`event: [null, COMMENT]`), kept with each value once, null first, then by its JSON text. Apply writes it, filled, as the tool's `pin` in the agent's `tool_settings` (text that is one placeholder alone takes the parameter's value and type), whatever the tool's permission, and the gate refuses any call not as pinned; a pin the server's own settings (Settings → Tools) set for the tool holds too. A pin whose parameter apply is not given sets the tool to `deny` instead, granted or not, with a `pins.mcp:<server>/<tool>` warning. `GET /v2/templates` shows each need's `source`, `toolkit` and `reason`, and each tool's `pin`, unfilled. |
 | `tool_policy` | `{bash: read-only}`: a policy on the agent's bash, the one tool that takes one. Apply writes it as `policy` on bash in the agent's `tool_settings` (`definition.tool_settings.bash.policy`), whatever bash's permission, and the tool gate reads each shell call's command before it runs or anyone is asked. Under `read-only` it refuses, in words the model reads, any command that could write, run code or read outside the run's folder: a program outside the read list (git's read subcommands `diff`, `show`, `log`, `blame`, `grep`, `ls-files`, `ls-tree`, `rev-parse`, `cat-file`, `merge-base`, `status`, `shortlog`, `rev-list`, `diff-tree`, `name-rev`, `describe`; `grep`, `egrep`, `fgrep`, `rg`, `sed -n 'N,Mp'`, `cat`, `head`, `tail`, `wc`, `nl`, `ls`, `find` without `-exec` or `-delete`, `sort`, `uniq`, `cut`, `tr`, `diff`, `basename`, `dirname`, `echo`, `true`), a redirection other than `2>/dev/null` and `2>&1`, `$` and backticks, a subshell, `\|\|` or a lone `&`, a pipe into anything but a filter (`head`, `tail`, `sed -n`, `grep`, `wc`, `sort`, `uniq`, `cut`, `tr`, `nl`), an unquoted glob (a glob is quoted, and only in a grep pattern, an `--include=` value or a `find -name` value), a path outside the run's folder, or one on the never-open list (`.env*`, `.ssh/`, `id_rsa*`, `*.pem`, `*.key`, `.npmrc`, `.netrc`, `.git-credentials`, `credentials`), which refuses a command that names such a file but is no fence around the folder: a recursive search reads all it holds, the run's own files and never a key of the server's. `git -C <dir>` is allowed to a directory inside the folder. A line with a `cd` joins its commands with `&&` only. `bash_background` and `bash_input` are refused under it. The check reads the command, never the folder, so a symbolic link in the folder reaches what the computer lets it; and it holds bash alone, so a read-only agent's tools are `read` and `bash` (one that may write can change what git obeys). Approvals `never` lifts none of it. A package with `tools` grants `bash` among them. |
 | `computer` | `default` (or absent): the agent runs where this server puts a new one. Or a preference list, `[shell, none]`, read like `harness`: apply takes the first entry this server meets now and saves it as the agent's `computer`. `shell` is a computer that gives the agent a shell here: Archil's serverless exec on the runner when Archil is on (Settings → Workspace; `bash` alone, so `bash_background` and the other background tools are not granted), else the Docker sandbox where Docker answers. `none` is no shell, and is always met: the shell tools in `tools` (`bash` and the background tools) are not granted, and neither is `tool_policy`'s bash. A package with no `tools` is given the chosen shell's tools, as a new agent in a box is given the box's. A fallback, or a tool not granted, is said in a `computer` warning on the apply. A list with `shell` alone, where there is none, refuses the apply (`409`, nothing made). A list without `shell` grants no shell tool, so one in `tools` is refused, and so is an entry after `none`, which would never be picked. The choice is made at apply: a server that gains a shell later gives it to an agent applied again. `GET /v2/templates` shows the list as `computer`, and as `computer_here` what an apply here would pick now: the entry, the agent's `computer`, the shell in words, the tools it would not grant, and the warning or refusal. |
 | `checkout` | `pull_request` only: apply sets the agent definition's `checkout`, and the server checks out the pull request each run's GitHub event names before its first turn, in `repo/` of the run's folder, detached at the head, with its base and their merge base (refs `pr/head`, `pr/base`, `pr/merge-base`: `git diff pr/merge-base pr/head` reads the change). The server fetches it with its GitHub App's token, narrowed to that one repository and `contents: read` and revoked after the fetch, or anonymously with no App; the agent never holds a token, and nothing of it is left in the folder or the checkout's git config. The run's system prompt says what was checked out, or why nothing was, so the package's instructions can fall back to the GitHub MCP. It is removed when the run's claim ends. With `tool_policy: {bash: read-only}` the agent reads it with git's read subcommands and never fetches itself. |
@@ -195,14 +205,16 @@ apply. A trigger's date is checked for its form only: one that has passed is ref
 
 ## Apply
 
-`POST /v2/templates/{name}/apply` with `{parameters, grants?, overrides?: {model}}`:
+`POST /v2/templates/{name}/apply` with `{parameters, grants?, servers?, overrides?: {model}}`:
 
-1. The parameters and `grants` are checked against the package (`422` naming each field: a grant is one of the
-   package's MCP tools by its gate name, `mcp:<server>/<tool>`), then its secrets, its required MCP servers and, for a
-   webhook trigger, the server's seal key (`409`), then every trigger as `POST /v2/triggers` checks it, its parameters
-   filled (`422` under `triggers.<i>`). Nothing is made yet.
+1. The parameters, `grants` and `servers` are checked against the package (`422` naming each field: a grant is one of
+   the package's MCP tools as the package names it, `mcp:<toolkit>/<tool>`; `servers` maps a need's toolkit to the
+   saved server the owner picked for it, one whose source and toolkit match), then its secrets, its required MCP
+   needs and, for a webhook trigger, the server's seal key (`409`), then every trigger as `POST /v2/triggers` checks
+   it, its parameters filled (`422` under `triggers.<i>`). Nothing is made yet.
 2. The agent is made through `POST /v2/agents`' own function: named by `display_name` (else the package's name),
-   described as the package, its MCP tools granted where their server is saved, each at the owner's setting (a
+   described as the package, its MCP tools granted from the saved server each need maps to (answered as `servers`,
+   toolkit to server or null), `mcp:<toolkit>/` rewritten to that server's name, each at the owner's setting (a
    third-party tool asks by default) and those in `grants` set to `allow`, never one the owner denies on this server
    (it stays denied, with a `grants.<tool>` warning), each pinned tool with its pin filled (or set to `deny`, with a
    `pins.<tool>` warning, when its parameter was not given), bash's policy from `tool_policy`, its computer the first

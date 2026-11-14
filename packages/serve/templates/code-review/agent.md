@@ -6,6 +6,8 @@ description: Reviews a pull request on its own read-only checkout with eight ind
 license: Apache-2.0
 author: { name: Parcha Labs }
 repository: https://github.com/Parcha-ai/agentrun
+category: engineering
+tags: [code-review, github, pull-requests]
 harness: [pi]
 model: { tier: fast, prefer: openrouter/particle-ai/particle-1 }
 effort: medium
@@ -21,9 +23,11 @@ tools: [read, bash, subagent]
 # run's folder, before it runs. A subagent's bash goes through the same gate, so the eight reviewers are held to it too.
 tool_policy: { bash: read-only }
 mcp:
-  - server: github
+  - source: github
+    toolkit: github
     tools: [pull_request_read, get_file_contents, search_code, get_repository_tree, pull_request_review_write, add_comment_to_pending_review]
     required: false
+    reason: "Reads the pull request and the repo through GitHub, and posts one COMMENT review with the findings. It never approves, requests changes or resolves a thread."
     allow: [pull_request_read, get_file_contents, search_code, get_repository_tree]
     # Its review write posts COMMENT reviews only: never APPROVE or REQUEST_CHANGES, and never resolve_thread.
     pin: { pull_request_review_write: { method: [create, submit_pending, delete_pending], event: [null, COMMENT] } }

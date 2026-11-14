@@ -18,6 +18,7 @@ import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./m
 import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
+import { mcpSourceKey, sourceGiven, sourceOf, type SourceRecord, sourceToWrite } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
@@ -32,8 +33,9 @@ const SCOPE_LIST = "scopes is a list of 1 to 32 OAuth scopes.";
 const ADDRESS_CHECK_MS = 15_000;
 const MAX_VALUE_BYTES = MAX_OAUTH_VALUE_BYTES;
 
-/** The store slice this layer reads and writes; `settings` for the private-network OAuth hosts the owner allows. */
-type McpServersStore = { readonly mcp: Mcp; readonly mcpOauth: McpOauth; readonly settings: Pick<Settings, "get" | "put">; flush: Store["flush"] };
+/** The store slice this layer reads and writes; `settings` for the private-network OAuth hosts the owner allows and each
+ *  server's source and toolkit (mcp-sources.ts). */
+type McpServersStore = { readonly mcp: Mcp; readonly mcpOauth: McpOauth; readonly settings: Pick<Settings, "get" | "put" | "remove">; flush: Store["flush"] };
 
 /** The row a conditional save wrote, or the refusal when it wrote nothing: the server's credential changed while the save
  *  listed its tools (another save, a sign-in or a removal landed), and writing would drop or undo it. */
@@ -207,7 +209,12 @@ export class McpServersOverStore {
     nameOf(name);
     const was = await this.store.mcp.server(name);
     // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one.
-    const { url, auth, prices } = this.admit({ ...body, ...(body.url !== undefined ? { url: savedOrGiven(body.url, was?.url) } : {}) }, true);
+    const { url, auth, prices, given } = this.admit({ ...body, ...(body.url !== undefined ? { url: savedOrGiven(body.url, was?.url) } : {}) }, true);
+    // What the server is (its source and toolkit, mcp-sources.ts): what the save gives, over what it is now, checked before
+    // anything is listed; written once the server is.
+    const sourceIssues: InputIssue[] = [];
+    const source = sourceToWrite(given, await this.sourceOf({ name, url: url.href, auth: auth.type }), auth.type, sourceIssues);
+    if (sourceIssues.length) throw invalid(sourceIssues);
     const send = await this.reached(auth.type, url, stop);
     // The credential this save may write over: the one the secret-write gate let it through against (`checkedAgainst`,
     // its credentialMark), else the one read here. The write compares it in its own statement, after the listing's wait.
@@ -257,6 +264,7 @@ export class McpServersOverStore {
       ? await this.rewriteKeeping(name, was!, fields, "save", (fresh) => fresh.auth === auth.type && fresh.sealed !== null && new URL(fresh.url).origin === url.origin)
       // A new credential, or none: written only while the row's credential is still `against`, in the store's one statement.
       : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin }));
+    if (source) await this.store.settings.put(mcpSourceKey(name), source);
     await this.store.flush();
     return this.view(saved);
   }
@@ -316,6 +324,8 @@ export class McpServersOverStore {
     const removed = checkedAgainst === undefined ? await removeMcpServer(this.store, this.sealKey, name)
       : checkedAgainst === null ? undefined : await removeMcpServerIfCredential(this.store, this.sealKey, name, checkedAgainst);
     if (checkedAgainst !== undefined && !removed) changedMeanwhile(name, undefined);
+    // Its record goes with it: a server saved again under the name says what it is afresh.
+    await this.store.settings.remove(mcpSourceKey(name));
     await this.store.flush();
     const open = removed?.opened;
     const credential = open && "credential" in open && open.credential.type === "oauth" && !(open.credential as { expired?: true }).expired ? open.credential : undefined;
@@ -450,8 +460,15 @@ export class McpServersOverStore {
     return open && "credential" in open && open.credential.type === "oauth" ? (open.credential.set as TokenSet) : undefined;
   }
 
+  /** What the saved server `row` is, for a template's apply to match (mcp-sources.ts sourceOf): its record, else what its
+   *  address and auth say. */
+  async sourceOf(row: Pick<McpServerRow, "name" | "url" | "auth">): Promise<SourceRecord> {
+    return sourceOf(row, await this.store.settings.get(mcpSourceKey(row.name)), this.appOrigin);
+  }
+
   private async view(row: McpServerRow) {
     const name = row.name;
+    const { source, toolkit } = await this.sourceOf(row);
     const settings = this.toolSettings();
     const tools = (row.tools as McpTool[]) ?? [];
     const prices = (row.prices ?? undefined) as McpPrices | undefined;
@@ -469,6 +486,9 @@ export class McpServersOverStore {
       name,
       // Its origin, the path and query held as a secret (shownUrl): the whole URL is only ever sent to the server itself.
       url: shownUrl(row.url),
+      // Where its tools come from and the toolkit they are: what a template's MCP needs are matched on at apply.
+      source,
+      toolkit,
       ...(prices && Object.keys(prices).length ? { prices } : {}),
       ...listed,
       // Each priced tool's price in USD a call, as the owner saved them, on every read.
@@ -484,17 +504,18 @@ export class McpServersOverStore {
     };
   }
 
-  /** A body's URL, auth and prices, or 422. */
-  private admit(body: Record<string, unknown>, priced = false): { url: URL; auth: Auth; prices?: McpPrices } {
-    const issues: InputIssue[] = unknownFields(body, priced ? ["url", "auth", "prices"] : ["url", "auth"]);
+  /** A body's URL, auth and prices, and a save's source and toolkit (`priced`: a save's body), or 422. */
+  private admit(body: Record<string, unknown>, priced = false): { url: URL; auth: Auth; prices?: McpPrices; given: ReturnType<typeof sourceGiven> } {
+    const issues: InputIssue[] = unknownFields(body, priced ? ["url", "auth", "prices", "source", "toolkit"] : ["url", "auth"]);
     const url = urlOf(body.url, issues);
     const auth = authOf(body.auth, issues);
     const prices = pricesOf(body.prices, issues);
+    const given = priced ? sourceGiven(body, issues) : {};
     // The App's tokens go to GitHub alone: a github_app server is GitHub's hosted MCP, nothing else, refused in that rule's
     // words in place of any other its URL drew.
     if (url && auth?.type === "github_app" && !githubMcpUrl(url, this.appOrigin)) issues.splice(0, issues.length, ...issues.filter((issue) => issue.field !== "url"), { field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY });
     if (issues.length) throw invalid(issues);
-    return { url: url!, auth: auth!, ...(prices ? { prices } : {}) };
+    return { url: url!, auth: auth!, ...(prices ? { prices } : {}), given };
   }
 
   /** `headers` and, for a github_app server, an installation token of the connected App to list its tools with. Its URL

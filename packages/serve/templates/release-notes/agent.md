@@ -6,14 +6,18 @@ description: Turns the pull requests merged since the last release into user-fac
 license: Apache-2.0
 author: { name: Parcha Labs }
 repository: https://github.com/Parcha-ai/agentrun
+category: engineering
+tags: [release-notes, github, changelog]
 harness: [pi]
 model: { tier: balanced }
 effort: medium
 tools: [read]
 mcp:
-  - server: github
+  - source: github
+    toolkit: github
     tools: [list_releases, get_latest_release, get_release_by_tag, list_tags, get_tag, list_commits, get_commit, search_pull_requests, pull_request_read, get_file_contents, search_issues, get_label, issue_write]
     required: false
+    reason: "Reads releases, tags, commits and merged pull requests to find what changed, and opens one new draft issue with the notes. It never publishes or edits anything."
     allow: [list_releases, get_latest_release, get_release_by_tag, list_tags, get_tag, list_commits, get_commit, search_pull_requests, pull_request_read, get_file_contents, search_issues, get_label]
     # Its one write only ever opens a new issue (the draft); it never edits or closes one.
     pin: { issue_write: { method: create } }

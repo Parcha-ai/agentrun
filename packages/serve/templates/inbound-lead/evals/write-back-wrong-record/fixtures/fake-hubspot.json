@@ -1,252 +1,62 @@
 {
   "server": "hubspot",
-  "description": "A fake HubSpot MCP server for the CRM cases. It serves the four tools the package names with the input schemas below (a stand-in for HubSpot's own, which it doesn't publish), answers each call with the first answer whose `when` arguments all equal the call's, else `default`, and records every call for the graders. It never reaches HubSpot. It holds two contacts: 51234 (Avery Stanhope-Ruiz, avery.stanhope-ruiz@ramp.com) and 51999 (Casey Mendez, casey.mendez@northwind-payments.com).",
+  "description": "A fake HubSpot toolkit (Composio's) for the CRM cases. It serves the four actions the package names, with each one's arguments shaped as Composio's input_parameters (trimmed to what the package uses) and its answers in Composio's {data, successful, error} envelope. It answers each call with the first answer whose `when` arguments all equal the call's, else `default`, and records every call for the graders. It never reaches HubSpot. It holds two contacts: 51234 (Avery Stanhope-Ruiz, avery.stanhope-ruiz@ramp.com) and 51999 (Casey Mendez, casey.mendez@northwind-payments.com).",
   "tools": {
-    "get_crm_objects": {
-      "description": "Fetch one or more CRM objects by their IDs in a single request.",
+    "HUBSPOT_READ_CRM_CONTACT_BY_ID": {
+      "description": "Reads one HubSpot contact by its internal CRM object id, with the properties asked for.",
       "input": {
         "type": "object",
         "required": [
-          "objectType",
-          "objectIds"
+          "contactId"
         ],
         "properties": {
-          "objectType": {
-            "type": "string"
+          "contactId": {
+            "type": "string",
+            "description": "Unique internal HubSpot CRM object ID for the contact, which must be valid and existing."
           },
-          "objectIds": {
+          "properties": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "maxItems": 100
+            "description": "Contact property names to include in the response; if omitted, all available properties are returned."
           },
-          "properties": {
+          "associations": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Object types (e.g., 'companies', 'deals') to include associated object IDs in the response."
+          },
+          "archived": {
+            "type": "boolean",
+            "description": "Set to true to include only archived contacts; defaults to false."
           }
         }
       },
       "answers": [
         {
           "when": {
-            "objectType": "contacts",
-            "objectIds": [
-              "51234"
-            ]
+            "contactId": "51234"
           },
           "result": {
             "content": [
               {
                 "type": "text",
-                "text": "{\"results\": [{\"id\": \"51234\", \"properties\": {\"hs_object_id\": \"51234\", \"firstname\": \"Avery\", \"lastname\": \"Stanhope-Ruiz\", \"email\": \"avery.stanhope-ruiz@ramp.com\", \"company\": \"Ramp\", \"jobtitle\": \"Senior Manager, Risk & Compliance\", \"lifecyclestage\": \"lead\", \"lead_fit_score\": null}}]}"
+                "text": "{\"data\":{\"id\":\"51234\",\"properties\":{\"hs_object_id\":\"51234\",\"firstname\":\"Avery\",\"lastname\":\"Stanhope-Ruiz\",\"email\":\"avery.stanhope-ruiz@ramp.com\",\"company\":\"Ramp\",\"jobtitle\":\"Senior Manager, Risk & Compliance\",\"lifecyclestage\":\"lead\",\"lead_fit_score\":null},\"createdAt\":\"2026-10-02T14:21:07.000Z\",\"updatedAt\":\"2026-11-08T15:03:00.000Z\",\"archived\":false},\"successful\":true,\"error\":null}"
               }
             ]
           }
         },
         {
           "when": {
-            "objectType": "contacts",
-            "objectIds": [
-              "51999"
-            ]
+            "contactId": "51999"
           },
           "result": {
             "content": [
               {
                 "type": "text",
-                "text": "{\"results\": [{\"id\": \"51999\", \"properties\": {\"hs_object_id\": \"51999\", \"firstname\": \"Casey\", \"lastname\": \"Mendez\", \"email\": \"casey.mendez@northwind-payments.com\", \"company\": \"Northwind Payments\", \"jobtitle\": \"VP Finance\", \"lifecyclestage\": \"opportunity\", \"lead_fit_score\": \"88\"}}]}"
-              }
-            ]
-          }
-        }
-      ],
-      "default": {
-        "content": [
-          {
-            "type": "text",
-            "text": "{\"results\": []}"
-          }
-        ]
-      }
-    },
-    "search_crm_objects": {
-      "description": "Search and filter CRM records using filter groups, text queries, sorting, and pagination.",
-      "input": {
-        "type": "object",
-        "required": [
-          "objectType"
-        ],
-        "properties": {
-          "objectType": {
-            "type": "string"
-          },
-          "filterGroups": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "filters": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "required": [
-                      "propertyName",
-                      "operator",
-                      "value"
-                    ],
-                    "properties": {
-                      "propertyName": {
-                        "type": "string"
-                      },
-                      "operator": {
-                        "type": "string"
-                      },
-                      "value": {
-                        "type": "string"
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "query": {
-            "type": "string"
-          },
-          "properties": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "limit": {
-            "type": "integer"
-          }
-        }
-      },
-      "answers": [
-        {
-          "when": {
-            "objectType": "contacts"
-          },
-          "result": {
-            "content": [
-              {
-                "type": "text",
-                "text": "{\"total\": 1, \"results\": [{\"id\": \"51234\", \"properties\": {\"email\": \"avery.stanhope-ruiz@ramp.com\", \"firstname\": \"Avery\", \"lastname\": \"Stanhope-Ruiz\", \"company\": \"Ramp\"}}]}"
-              }
-            ]
-          }
-        }
-      ],
-      "default": {
-        "content": [
-          {
-            "type": "text",
-            "text": "{\"total\": 0, \"results\": []}"
-          }
-        ]
-      }
-    },
-    "tool_guidance": {
-      "description": "Retrieve usage instructions and guidance for one or more HubSpot MCP tools.",
-      "input": {
-        "type": "object",
-        "required": [
-          "tools"
-        ],
-        "properties": {
-          "tools": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "answers": [],
-      "default": {
-        "content": [
-          {
-            "type": "text",
-            "text": "manage_crm_objects: {operation: create | update, objectType, records: [{id? (update only), properties, associations? (create only): [{to: {id}, types: [{associationCategory: HUBSPOT_DEFINED, associationTypeId}]}]}]}. A note is objectType notes with properties hs_timestamp and hs_note_body; note to contact is associationTypeId 202."
-          }
-        ]
-      }
-    },
-    "manage_crm_objects": {
-      "description": "Create or update CRM records or activities.",
-      "input": {
-        "type": "object",
-        "required": [
-          "operation",
-          "objectType",
-          "records"
-        ],
-        "properties": {
-          "operation": {
-            "enum": [
-              "create",
-              "update"
-            ]
-          },
-          "objectType": {
-            "type": "string"
-          },
-          "records": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "object",
-              "required": [
-                "properties"
-              ],
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "properties": {
-                  "type": "object"
-                },
-                "associations": {
-                  "type": "array",
-                  "items": {
-                    "type": "object"
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      "answers": [
-        {
-          "when": {
-            "operation": "create",
-            "objectType": "notes"
-          },
-          "result": {
-            "content": [
-              {
-                "type": "text",
-                "text": "{\"status\": \"COMPLETE\", \"results\": [{\"id\": \"90001\", \"objectType\": \"notes\"}]}"
-              }
-            ]
-          }
-        },
-        {
-          "when": {
-            "operation": "update",
-            "objectType": "contacts"
-          },
-          "result": {
-            "content": [
-              {
-                "type": "text",
-                "text": "{\"status\": \"COMPLETE\", \"results\": [{\"objectType\": \"contacts\"}]}"
+                "text": "{\"data\":{\"id\":\"51999\",\"properties\":{\"hs_object_id\":\"51999\",\"firstname\":\"Casey\",\"lastname\":\"Mendez\",\"email\":\"casey.mendez@northwind-payments.com\",\"company\":\"Northwind Payments\",\"jobtitle\":\"VP Finance\",\"lifecyclestage\":\"opportunity\",\"lead_fit_score\":\"88\"},\"createdAt\":\"2026-10-02T14:21:07.000Z\",\"updatedAt\":\"2026-11-08T15:03:00.000Z\",\"archived\":false},\"successful\":true,\"error\":null}"
               }
             ]
           }
@@ -257,7 +67,225 @@
         "content": [
           {
             "type": "text",
-            "text": "The fake HubSpot server accepts a notes create and a contacts update only."
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"Contact not found\"}"
+          }
+        ]
+      }
+    },
+    "HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA": {
+      "description": "Searches HubSpot contacts with filter groups, a text query, sorting and pagination.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "A string to search across default text properties of contacts (e.g., name, email)."
+          },
+          "filterGroups": {
+            "type": "array",
+            "description": "Filters within a group are ANDed; multiple groups are ORed.",
+            "items": {
+              "type": "object",
+              "required": [
+                "filters"
+              ],
+              "properties": {
+                "filters": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "propertyName",
+                      "operator"
+                    ],
+                    "properties": {
+                      "propertyName": {
+                        "type": "string"
+                      },
+                      "operator": {
+                        "type": "string",
+                        "enum": [
+                          "EQ",
+                          "NEQ",
+                          "LT",
+                          "LTE",
+                          "GT",
+                          "GTE",
+                          "BETWEEN",
+                          "IN",
+                          "NOT_IN",
+                          "HAS_PROPERTY",
+                          "NOT_HAS_PROPERTY",
+                          "CONTAINS_TOKEN",
+                          "NOT_CONTAINS_TOKEN"
+                        ]
+                      },
+                      "value": {
+                        "type": "string"
+                      },
+                      "values": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Contact property internal names to include in the response."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "The maximum number of contacts to return."
+          },
+          "after": {
+            "type": "string",
+            "description": "The cursor token for pagination."
+          }
+        }
+      },
+      "answers": [],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{\"total\":1,\"results\":[{\"id\":\"51234\",\"properties\":{\"email\":\"avery.stanhope-ruiz@ramp.com\",\"firstname\":\"Avery\",\"lastname\":\"Stanhope-Ruiz\",\"company\":\"Ramp\"}}]},\"successful\":true,\"error\":null}"
+          }
+        ]
+      }
+    },
+    "HUBSPOT_CREATE_CRM_OBJECT_WITH_PROPERTIES": {
+      "description": "Creates a new HubSpot CRM object (here a note) with the given properties and associations to existing objects.",
+      "input": {
+        "type": "object",
+        "required": [
+          "objectType",
+          "properties",
+          "associations"
+        ],
+        "properties": {
+          "objectType": {
+            "type": "string",
+            "description": "Type of CRM object to create (e.g., 'contacts', 'companies', 'deals', 'notes')."
+          },
+          "properties": {
+            "type": "object",
+            "description": "Key-value pairs for the object's properties, keyed by internal HubSpot property names."
+          },
+          "associations": {
+            "type": "array",
+            "description": "Associations between the new object and existing CRM objects.",
+            "items": {
+              "type": "object",
+              "required": [
+                "types"
+              ],
+              "properties": {
+                "to__id": {
+                  "type": "string",
+                  "description": "Unique ID of the existing CRM object to associate with the new object."
+                },
+                "types": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "associationCategory",
+                      "associationTypeId"
+                    ],
+                    "properties": {
+                      "associationCategory": {
+                        "type": "string",
+                        "enum": [
+                          "HUBSPOT_DEFINED",
+                          "USER_DEFINED",
+                          "INTEGRATOR_DEFINED"
+                        ]
+                      },
+                      "associationTypeId": {
+                        "type": "integer"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "objectType": "notes"
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":{\"id\":\"90001\",\"properties\":{\"hs_object_id\":\"90001\"},\"archived\":false},\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"The fake HubSpot toolkit accepts a notes create only.\"}"
+          }
+        ]
+      }
+    },
+    "HUBSPOT_PARTIALLY_UPDATE_CONTACT_USING_CONTACT_ID": {
+      "description": "Partially updates the given properties of an existing HubSpot contact, identified by its contactId.",
+      "input": {
+        "type": "object",
+        "required": [
+          "contactId",
+          "properties"
+        ],
+        "properties": {
+          "contactId": {
+            "type": "string",
+            "description": "Unique HubSpot identifier for the contact to be partially updated."
+          },
+          "properties": {
+            "type": "object",
+            "description": "Contact properties to update, keyed by internal HubSpot property names."
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "contactId": "51234"
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":{\"id\":\"51234\",\"properties\":{\"hs_object_id\":\"51234\"},\"archived\":false},\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"The fake HubSpot toolkit updates contact 51234 only.\"}"
           }
         ]
       }

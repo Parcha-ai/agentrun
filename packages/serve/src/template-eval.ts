@@ -188,9 +188,9 @@ function graderOf(dir: string, p: Package, file: string, text: string, mcp: Reco
     case "tool_used": {
       const tools = data.tool !== undefined && data.tools === undefined ? [data.tool] : data.tools;
       if (!Array.isArray(tools) || !tools.length || !tools.every((t) => typeof t === "string") || (data.tool !== undefined && data.tools !== undefined)) return bad(`${file}: a tool_used grader names tool (one gate name) or tools (a list), not both`), undefined;
-      const listed = p.mcp.flatMap(({ server, tools: names }) => names.map((name) => mcpToolName(server, name)));
+      const listed = p.mcp.flatMap(({ toolkit, tools: names }) => names.map((name) => mcpToolName(toolkit, name)));
       for (const tool of tools as string[]) {
-        if (mcpNameOf(tool) ? !listed.includes(tool) : !(BOUND_TOOLS.includes(tool) || tool === ASK_TOOL)) bad(`${file}: ${tool} is neither a tool this server binds nor an MCP tool the package lists (mcp:<server>/<tool>)`);
+        if (mcpNameOf(tool) ? !listed.includes(tool) : !(BOUND_TOOLS.includes(tool) || tool === ASK_TOOL)) bad(`${file}: ${tool} is neither a tool this server binds nor an MCP tool the package lists (mcp:<toolkit>/<tool>)`);
       }
       const expect = data.expect ?? "called";
       if (expect !== "called" && expect !== "not_called") return bad(`${file}: expect is called or not_called`), undefined;
@@ -260,11 +260,13 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       for (const issue of fields) bad(`${at}/case.yaml: ${issue.field}: ${issue.message}`);
     }
     const mcp: Record<string, McpFixture> = {};
-    const servers = c.mcp === undefined ? {} : isObject(c.mcp) ? c.mcp : (bad(`${at}/case.yaml: mcp is a mapping of a server's name to its fixture file in the case`), {});
+    // Each fake by the toolkit it stands in for (the package's own name for its tools), saved under that name as that
+    // source and toolkit, so the apply maps the need to it.
+    const servers = c.mcp === undefined ? {} : isObject(c.mcp) ? c.mcp : (bad(`${at}/case.yaml: mcp is a mapping of a toolkit the package uses to its fake's fixture file in the case`), {});
     for (const [server, file] of Object.entries(servers)) {
       const path = inside(root, file, "file");
-      if (!MCP_SERVER_NAME.test(server)) bad(`${at}/case.yaml: mcp.${server} is not an MCP server's name (${MCP_SERVER_NAME.source})`);
-      else if (!pkg.mcp.some((need) => need.server === server)) bad(`${at}/case.yaml: mcp.${server} is a server the package does not use (it uses ${pkg.mcp.map((need) => need.server).join(", ") || "none"})`);
+      if (!MCP_SERVER_NAME.test(server)) bad(`${at}/case.yaml: mcp.${server} is not a toolkit's name (${MCP_SERVER_NAME.source})`);
+      else if (!pkg.mcp.some((need) => need.toolkit === server)) bad(`${at}/case.yaml: mcp.${server} is a toolkit the package does not use (it uses ${pkg.mcp.map((need) => need.toolkit).join(", ") || "none"})`);
       else if (!path) bad(`${at}/case.yaml: mcp.${server} names ${JSON.stringify(file)}, not a file in the case`);
       else {
         const fixture = fixtureOf(readFileSync(join(root, path), "utf8"), server, `${at}/${path}`, bad);
@@ -834,7 +836,8 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
       if (options.server &&(await api("GET", `/settings/mcp-servers/${name}`)).status !== 404) throw new ApiFailure(`the server already has an MCP server named ${name}, and the case would replace it with its fake: run the eval on its own server (no --server), or on one without ${name}`);
       const fake = await startFake(name, fixture);
       fakes.push(fake);
-      expectOk(`saving the fake MCP server ${name}`, await api("PUT", `/settings/mcp-servers/${name}`, { url: fake.url, auth: { type: "none" } }));
+      const need = ctx.pkg.mcp.find((one) => one.toolkit === name);
+      expectOk(`saving the fake MCP server ${name}`, await api("PUT", `/settings/mcp-servers/${name}`, { url: fake.url, auth: { type: "none" }, ...(need ? { source: need.source, toolkit: need.toolkit } : {}) }));
       saved.push({ name, url: fake.url });
       // Another eval on the same server may have saved its own fake under the name meanwhile: then neither case's calls
       // can be told apart, and this one fails rather than run on a fake it does not own.
@@ -868,7 +871,9 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const { api, pkg, options, made } = ctx;
   const stopped = () => options.signal?.throwIfAborted();
   await serverPins(ctx, one);
-  const applied = expectOk(`applying ${pkg.name}`, await api("POST", `/templates/${pkg.name}/apply`, { parameters: one.parameters, grants: one.grants }));
+  // Each faked toolkit on its fake, by name: never on a server of the same toolkit the owner saved.
+  const servers = Object.fromEntries(fakes.map((fake) => [fake.name, fake.name]));
+  const applied = expectOk(`applying ${pkg.name}`, await api("POST", `/templates/${pkg.name}/apply`, { parameters: one.parameters, grants: one.grants, ...(fakes.length ? { servers } : {}) }));
   const agentId = String(applied.agent_id);
   made.agents.push(agentId);
   // An eval's agent runs only the eval's runs: the package's triggers (a weekly schedule, say) would start paid runs of
@@ -1001,7 +1006,8 @@ async function serverPins(ctx: Ctx, one: EvalCase): Promise<void> {
   const { api, pkg, options } = ctx;
   if (options.server) return;
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
-  const pins = filledPins(pkg.mcp, parameters).filter(({ empty }) => !empty.length);
+  // Each fake is saved under its toolkit's name, so the package's own tool names are the server's.
+  const pins = filledPins(pkg.mcp.map((need) => ({ ...need, server: need.toolkit })), parameters).filter(({ empty }) => !empty.length);
   if (!pins.length) return;
   const settings = expectOk("reading the server's tool settings", await api("GET", "/settings/tools"));
   for (const { tool, pin } of pins) settings[tool] = { ...(isObject(settings[tool]) ? settings[tool] : {}), pin };

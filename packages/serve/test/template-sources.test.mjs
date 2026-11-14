@@ -13,7 +13,10 @@ import { test } from "node:test";
 import { PackageError, packageView, readPackage } from "../dist/templates.js";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { scratch, serve } from "./support.mjs";
+import { scratch, secretWritePath, serve } from "./support.mjs";
+
+// The Composio preset takes the owner's session, as the console sends it.
+secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 

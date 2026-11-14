@@ -6,6 +6,8 @@ description: Business due diligence (KYB) on one company. Establishes who it is 
 license: Apache-2.0
 author: { name: Parcha Labs }
 repository: https://github.com/Parcha-ai/agentrun
+category: compliance
+tags: [kyb, due-diligence, sanctions]
 harness: [pi]
 model: { tier: balanced }
 effort: medium

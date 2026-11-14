@@ -33,7 +33,8 @@ import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signa
 import { HOOK_BODY_MS } from "./push-handler.js";
 import { CATCHUP_WINDOW_S, DUE_KEPT, MAX_ACTIVE_RUNS, SEEN_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
 import { DEFINITION_FIELDS, EXTERNAL_NAME, MAX_TOOL_CALLS, MODEL_REF, NOT_KEPT } from "./validate.js";
-import { COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
+import { CATEGORIES, COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
+import { MCP_SOURCES } from "./mcp-sources.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
 import { BROWSER_VENDOR_IDS, DECISION_PROVIDER_KEYS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS } from "./tool-plane.js";
@@ -272,10 +273,13 @@ const MCP_PRICES = {
   type: "object", additionalProperties: { type: "number", minimum: 0 },
   description: "Each tool's price in USD a call, as the owner declared it, for tools the server lists (a refresh drops the price of a tool it no longer lists). A priced call is held at its price under a run's cap (refused unsent when the cap cannot take it) and booked as the run's tool cost, as any paid call; a tool with none runs, shown \"not metered\" on the run's timeline and in GET /usage, outside the run's cost and its cap. A run keeps the prices its first launch saw. On a PUT: no `prices` keeps the saved ones, for the tools the server still lists at the same URL (a new URL keeps none); `{}` clears them; any other value replaces them.",
 };
+const MCP_SOURCE = { enum: [...MCP_SOURCES] };
 const MCP_SERVER_VIEW = {
-  type: "object", additionalProperties: false, required: ["name", "url", "auth", "credential", "protocol", "server_info", "tools", "listed_at", "updated_at"],
+  type: "object", additionalProperties: false, required: ["name", "url", "source", "toolkit", "auth", "credential", "protocol", "server_info", "tools", "listed_at", "updated_at"],
   properties: {
     name: { type: "string" }, url: { type: "string", format: "uri" },
+    source: { ...MCP_SOURCE, description: "Where its tools come from, which a template's MCP needs are matched on at apply: `composio` from the Composio preset, `github` on the GitHub App's tokens or at GitHub's MCP address, else `url`, or what a PUT's `source` said." },
+    toolkit: { type: ["string", "null"], description: "The toolkit its tools are, as a template names them (`mcp:<toolkit>/<tool>`): the Composio preset's toolkit, `github` for a github one, else what a PUT's `toolkit` said; null: none, and no template's need maps to it." },
     auth: { type: "object", additionalProperties: false, required: ["type"], properties: { type: { enum: [...MCP_AUTH_TYPES] }, headers: { type: "array", items: { type: "string" }, description: "For `headers`: the names of the headers kept (lowercase), never a value." } } },
     credential: { enum: ["sealed", "unreadable", "expired", null], description: "`sealed`: kept sealed and opens here; `unreadable`: sealed under another seal key, or damaged: a PUT with the credential seals it again; `expired`: an OAuth sign-in whose refresh the authorization server refused (revoked or expired): sign in again. Null for `auth.type` none. Never a value." },
     oauth: {
@@ -954,14 +958,19 @@ const TEMPLATE = closed({
     description: "What this server would pick of `computer` now: its readiness, read on each listing. Null: the package names no list.",
     ...TEMPLATE_COMPUTER_MARK,
   },
+  category: { enum: [...CATEGORIES, null], description: "What it is for, for a list or marketplace page to file it under; display only. Null: none given." },
+  tags: { type: "array", maxItems: 8, items: { type: "string", pattern: "^[a-z0-9-]{1,32}$" }, description: "Its tags, display only." },
+  examples: { type: "array", items: { type: "string" }, description: "Its examples (examples/<name>/: input.json, output.json, output.md), each checked against its input and output schemas: shown on a marketplace page, never given to the agent." },
   mcp: {
     type: "array",
     items: closed({
-      server: { type: "string" },
+      source: { enum: [...MCP_SOURCES], description: "Where its tools come from: `composio` (a Composio toolkit, through Settings → MCP servers → Add from Composio), `github` (GitHub's MCP server) or `url` (any MCP server its owner marks with the toolkit)." },
+      toolkit: { type: "string", description: "The toolkit its tools are: the package names them `mcp:<toolkit>/<tool>`, and apply maps it to a saved MCP server whose `source` and `toolkit` match, rewriting the name to `mcp:<server>/<tool>` in the agent it makes." },
       required: { type: "boolean" },
-      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its gate name, `mcp:<server>/<tool>`: what apply's `grants` and the tool settings name." }, asks: { enum: ["allow", "ask"], description: "The permission the package asks the owner for: a consent screen shows it, and only the owner's `grants` at apply set it." } }, { pin: { type: "object", additionalProperties: { anyOf: [{ type: ["string", "number", "boolean", "null"] }, { type: "array", items: { type: ["string", "number", "boolean", "null"] } }] }, description: "The arguments (each a value, or a list one of which) each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning.", "x-agentrun-serve": "pins/1" } }) },
+      reason: { type: ["string", "null"], description: "Why the agent needs these tools, one line, for the apply screen." },
+      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its name in the package, `mcp:<toolkit>/<tool>`: what apply's `grants` name." }, asks: { enum: ["allow", "ask"], description: "The permission the package asks the owner for: a consent screen shows it, and only the owner's `grants` at apply set it." } }, { pin: { type: "object", additionalProperties: { anyOf: [{ type: ["string", "number", "boolean", "null"] }, { type: "array", items: { type: ["string", "number", "boolean", "null"] } }] }, description: "The arguments (each a value, or a list one of which) each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning.", "x-agentrun-serve": "pins/1" } }) },
     }),
-    description: "The MCP servers it uses, by the name this server saves them under, and the tools of each it grants: apply grants them when the server is saved here, each at the owner's own setting (a third-party tool asks by default), and sets to allow only those the apply's `grants` name; one not saved is skipped with a warning, or, `required`, refuses the apply (409, nothing made).",
+    description: "The MCP servers it uses, by source and toolkit, and the tools of each it grants: apply maps each to a saved server whose `source` and `toolkit` match (`servers` picks when several do) and grants its tools there, each at the owner's own setting (a third-party tool asks by default), and sets to allow only those the apply's `grants` name; one no saved server matches is skipped with an `mcp.<toolkit>` warning saying how to set it up, or, `required`, refuses the apply (409, nothing made).",
   },
   parameters: { type: "object", additionalProperties: TEMPLATE_PARAMETER, description: "What apply takes in `parameters`, by name, put where the package writes `${parameters.<name>}`." },
   secrets: { type: "array", items: { type: "string" }, description: "The keys this server must have, by variable name (a saved key counts), before apply makes anything." },
@@ -976,7 +985,8 @@ const TEMPLATE_APPLY = {
   type: "object", additionalProperties: false,
   properties: {
     parameters: { type: "object", description: "The package's parameters (GET /templates), by name, each of its type." },
-    grants: { type: "array", items: { type: "string" }, description: "The owner's answer to the consent screen: the package's MCP tools, by gate name (`mcp:<server>/<tool>`, GET /templates `mcp[].tools[].tool`), the agent is allowed to call unasked. Any other is 422. One the owner denies on this server stays denied, with a warning. A grant is written as the agent's own tool setting, which outranks the server's ask or allow; a deny set on this server, before or after the apply, still refuses the tool there, as a server deny is absolute (edit its `definition.tool_settings` to take a grant back). Absent, none: every tool keeps the owner's setting." },
+    servers: { type: "object", additionalProperties: { type: "string" }, description: "The owner's pick of a saved MCP server, by the package's toolkit, where several saved servers match its source and toolkit; one that does not match is 422. Absent for a toolkit: the server named as the toolkit, else the first by name, said in a `servers.<toolkit>` warning when there were several." },
+    grants: { type: "array", items: { type: "string" }, description: "The owner's answer to the consent screen: the package's MCP tools, by the package's own names (`mcp:<toolkit>/<tool>`, GET /templates `mcp[].tools[].tool`; apply grants each as the tool of the server it maps the toolkit to), the agent is allowed to call unasked. Any other is 422. One the owner denies on this server stays denied, with a warning. A grant is written as the agent's own tool setting, which outranks the server's ask or allow; a deny set on this server, before or after the apply, still refuses the tool there, as a server deny is absolute (edit its `definition.tool_settings` to take a grant back). Absent, none: every tool keeps the owner's setting." },
     overrides: { type: "object", additionalProperties: false, properties: { model: { type: "string", pattern: MODEL_REF.source, description: "The agent's model in place of the one the package's tier and preference pick, \"provider/model-id\"." }, approvals: { enum: ["ask", "never"], description: "The agent's approvals (its definition's): never runs it unattended (each tool that would ask allowed, a deny still refusing), ask makes it ask. Absent: the package's `approvals_default` (`ask` only when it names none).", "x-agentrun-serve": "unattended/1" } } },
   },
 };
@@ -984,6 +994,7 @@ const TEMPLATE_APPLIED = closedWith({
   template: { type: "string" },
   version: { type: "string" },
   agent_id: { type: "string", description: "The agent made (GET /agents/{agent_id})." },
+  servers: { type: "object", additionalProperties: { type: ["string", "null"] }, description: "The saved MCP server each of the package's toolkits runs on, by toolkit; null: none here matches it (said under `mcp.<toolkit>`)." },
   trigger_ids: { type: "array", items: { type: "string" }, description: "Its triggers, in the package's order (GET /triggers/{trigger_id})." },
   warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as POST /agents answers it; a webhook trigger the apply made adds a warning pointing to the console for its signing secret, never the secret itself (the first answer to the owner's signed-in session shows it once, under `webhook_secrets`)." },
 }, {
@@ -1828,7 +1839,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "saveMcpServer", tags: ["local"], summary: "Preview a remote MCP server, then save it with the tools listed and its credential sealed",
       description: `The credential is sealed under the server's seal key, bound to the server's name and its URL's origin, and kept in the data directory as ciphertext alone. 403 forbidden to the API token for a save that sends a credential's value, or that would drop or change the credential the server holds (another \`auth.type\`, or none): the owner's signed-in session alone. 412 precondition_failed when a save that sends a new credential, or none, finds the server's credential changed while it listed its tools (another save, a sign-in or a removal landed): nothing is written over it. A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. A body with no \`prices\` keeps the saved ones for the tools still listed at the same URL, so a save from any client never leaves a paid tool unmetered; \`prices: {}\` clears them. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
       parameters: [MCP_NAME],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, prices: MCP_PRICES } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, prices: MCP_PRICES, source: { ...MCP_SOURCE, description: "Where its tools come from: a template's MCP need of this source and `toolkit` maps to it at apply. Absent: what it was (a new server: `github` on the GitHub App or at GitHub's MCP address, else `url`). A github_app server is always `github`; a `github` one's toolkit is `github`; a `composio` one names its toolkit." }, toolkit: { type: ["string", "null"], pattern: MCP_SERVER_NAME.source, description: "The toolkit its tools are, as a template names them (`mcp:<toolkit>/<tool>`); null clears it. Absent: what it was." } } } } } },
       responses: { "200": json(MCP_SERVER_VIEW, "The server, as saved."), ...errors(400, 401, 403, 409, 412, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
     },
