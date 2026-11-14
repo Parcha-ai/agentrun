@@ -40,9 +40,7 @@ const request = (labels = {}) => ({ name: "computer-0123456789ab", image: "agent
 
 /** Runs argv to its end: its exit code, stdout and stderr. */
 async function run(host, id, argv, input) {
-	const made = await host.exec(id, argv, { stdin: input !== undefined }, CTX);
-	assert.ok(made.ok);
-	const proc = made.value;
+	const proc = await host.exec(id, argv, CTX);
 	const out = [];
 	const err = [];
 	const reading = Promise.all([
@@ -53,10 +51,9 @@ async function run(host, id, argv, input) {
 			for await (const chunk of proc.stderr) err.push(Buffer.from(chunk));
 		})(),
 	]);
-	if (input !== undefined) {
-		await proc.write(Buffer.from(input));
-		await proc.end();
-	}
+	if (input !== undefined) await proc.write(Buffer.from(input));
+	// With no input, stdin is ended at once, as the adapter does.
+	await proc.end();
 	const code = await proc.wait();
 	await reading;
 	return { code, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() };
@@ -82,7 +79,7 @@ async function until(check, ms = 5_000) {
 
 // --- what it declares ---
 
-test("an Agent37 computer is kind linux with daemon child, network none read back, the sshd's and the web terminal's ports, and a 24 h janitor", () => {
+test("an Agent37 computer is kind linux with daemon child, network none read from inside, the sshd's and the web terminal's ports, and a 24 h janitor", () => {
 	const { provider } = restOnly();
 	const caps = provider.capabilities();
 	assert.equal(caps.kind, "linux");
@@ -91,7 +88,7 @@ test("an Agent37 computer is kind linux with daemon child, network none read bac
 	assert.equal(caps.lifetime, "janitor");
 	assert.equal(caps.maxLifetimeMs, 24 * 3_600_000);
 	assert.deepEqual(caps.network, ["none"]);
-	assert.equal(caps.networkReadBack, true);
+	assert.equal(caps.networkReadBack, false);
 	assert.deepEqual(caps.vendorAgentPorts, [22022, 7681]);
 	assert.deepEqual(caps.mount, ["archil"]);
 	assert.equal(caps.isolation, "vm");
@@ -152,7 +149,7 @@ test("check() refuses more than 4 CPUs (Agent37 would give 4 without saying so),
 test("create posts the template, type, region, name, labels as metadata, deny-all, auto-sleep off and no public port, with the key as a Bearer token", async () => {
 	const { rest, host } = restOnly();
 	const made = await host.create({ ...request(), cpus: 4, memoryMb: 8192 }, CTX);
-	assert.ok(made.ok);
+	assert.match(made.id, /^[a-z0-9]{10}$/);
 	const [call] = rest.calls;
 	assert.deepEqual([call.method, call.path, call.auth], ["POST", "/v1/instances", `Bearer ${KEY}`]);
 	assert.deepEqual(call.body, {
@@ -173,33 +170,30 @@ test("create posts the template, type, region, name, labels as metadata, deny-al
 
 test("get reads an instance back as a machine; an unknown id is none; list answers the whole workspace, which the adapter matches by labels; delete twice is done", async () => {
 	const { rest, host, provider } = restOnly();
-	const { value } = await host.create(request({ "agentrun.conformance": "run-1" }), CTX);
+	const value = await host.create(request({ "agentrun.conformance": "run-1" }), CTX);
 	await host.create(request({ "agentrun.conformance": "run-2" }), CTX);
-	const machine = (await host.get(value.id, CTX)).value;
+	const machine = await host.get(value.id, CTX);
+	assert.deepEqual(Object.keys(machine).sort(), ["createdAt", "id", "labels", "state"], "a machine is its id, labels, state and start: nothing the adapter does not read");
 	assert.equal(machine.id, value.id);
 	assert.equal(machine.state, "running");
-	assert.equal(machine.network, "none");
-	assert.deepEqual(machine.size, { cpus: 2, memoryMb: 4096 });
-	assert.equal(machine.image.resolved, `sha256:${"d".repeat(64)}`);
 	assert.deepEqual(machine.createdAt, new Date(1_800_000_000_000));
-	assert.equal(machine.drift, undefined);
 	assert.equal(machine.labels["agentrun.conformance"], "run-1");
 	// get no longer catches 404: the adapter reads not_found as none (hosted-provider.test.mjs).
 	assert.equal(host.errorCode(await host.get("zzzzzzzzzz", CTX).catch((thrown) => thrown)), "not_found");
 	assert.equal(host.errorCode(await host.get("not an id", CTX).catch((thrown) => thrown)), "not_found", "an id that is not Agent37's is not found, never a URL");
 	// Agent37 filters nothing: its listing is the whole workspace, and the adapter keeps the machines that carry the labels.
-	assert.equal((await host.list({ "agentrun.conformance": "run-1" }, CTX)).value.length, 2);
+	assert.equal((await host.list({ "agentrun.conformance": "run-1" }, CTX)).length, 2);
 	assert.deepEqual((await provider.list({ "agentrun.conformance": "run-1" })).value.map((info) => info.ref.id), [value.id]);
-	assert.ok((await host.delete(value.id, CTX)).ok);
+	assert.equal(await host.delete(value.id, CTX), undefined);
 	assert.equal(host.errorCode(await host.delete(value.id, CTX).catch((thrown) => thrown)), "not_found", "a repeat's 404 is not_found, which the adapter's delete reads as done");
 	assert.equal(rest.instances.has(value.id), false);
 	rest.fail("GET", /^\/v1\/instances$/, new Response(JSON.stringify({ data: [], has_more: true }), { status: 200 }));
 	await assert.rejects(host.list({}, CTX), /would miss machines/);
 });
 
-test("the status mapping: every Agent37 status is one of the adapter's states, and one it does not know is failed with why", async () => {
+test("the status mapping: every Agent37 status is one of the adapter's states, and one it does not know is gone with why", async () => {
 	const { rest, host } = restOnly();
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	const states = {
 		running: "running",
 		provisioning: "starting",
@@ -210,48 +204,28 @@ test("the status mapping: every Agent37 status is one of the adapter's states, a
 		stopping: "stopped",
 		stopped: "stopped",
 		sleeping: "stopped",
-		failed: "failed",
-		deleting: "going",
-		deleted: "going",
+		failed: "gone",
+		deleting: "gone",
+		deleted: "gone",
 	};
 	for (const [status, state] of Object.entries(states)) {
 		rest.instances.get(value.id).status = status;
-		assert.equal((await host.get(value.id, CTX)).value.state, state, status);
+		assert.equal((await host.get(value.id, CTX)).state, state, status);
 	}
 	rest.instances.get(value.id).status = "melting";
-	const odd = (await host.get(value.id, CTX)).value;
-	assert.equal(odd.state, "failed");
+	const odd = (await host.get(value.id, CTX));
+	assert.equal(odd.state, "gone");
 	assert.match(odd.why, /melting/);
 	rest.instances.get(value.id).status = "failed";
 	rest.instances.get(value.id).status_reason = { code: "boot_failed", message: "the VM did not boot" };
-	assert.equal((await host.get(value.id, CTX)).value.why, "the VM did not boot");
-});
-
-test("network read-back: deny-all is none, allow-all open, an allow list or any public port other; a create's options read back wrong are drift", async () => {
-	const { rest, host } = restOnly();
-	const { value } = await host.create(request(), CTX);
-	const instance = rest.instances.get(value.id);
-	const network = async () => (await host.get(value.id, CTX)).value.network;
-	assert.equal(await network(), "none");
-	instance.network = "allow-all";
-	assert.equal(await network(), "open");
-	instance.network = { allow: ["example.com"] };
-	assert.match((await network()).other, /allow list/);
-	instance.network = "deny-all";
-	instance.public_ports = [{ port: 8080, auth: "public" }];
-	assert.match((await network()).other, /public ports \(8080\)/);
-	instance.public_ports = [];
-	Object.assign(instance, { type: "default", region: "eu", auto_sleep: true, template: "other" });
-	const { drift } = (await host.get(value.id, CTX)).value;
-	assert.equal(drift.length, 4);
-	for (const field of ["template", "type", "region", "auto_sleep"]) assert.ok(drift.some((one) => one.startsWith(`${field}:`)), field);
+	assert.equal((await host.get(value.id, CTX)).why, "the VM did not boot");
 });
 
 test("setLabels reads the instance, then PATCHes the whole metadata, since a PATCH replaces it", async () => {
 	const { rest, host } = restOnly();
-	const { value } = await host.create(request({ keep: "me" }), CTX);
+	const value = await host.create(request({ keep: "me" }), CTX);
 	rest.calls.length = 0;
-	assert.ok((await host.setLabels(value.id, { "agentrun.computer.deadline": "2026-11-13T08:00:00.000Z" }, CTX)).ok);
+	assert.equal(await host.setLabels(value.id, { "agentrun.computer.deadline": "2026-11-13T08:00:00.000Z" }, CTX), undefined);
 	assert.deepEqual(rest.calls.map((one) => [one.method, one.path]), [
 		["GET", `/v1/instances/${value.id}`],
 		["PATCH", `/v1/instances/${value.id}`],
@@ -298,7 +272,7 @@ test("the error codes: Agent37's envelope codes, then the status, flat transport
 
 test("exec rides wss://{id}-22022.<domain>/ with the key in X-Agent37-Key, and runs argv as given: stdout, stderr and the exit code", async (t) => {
 	const { fake, host } = await setup(t);
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	const result = await run(host, value.id, ["sh", "-c", 'echo "out $1"; echo err >&2; exit 3', "sh", "a b'c"]);
 	assert.deepEqual(result, { code: 3, stdout: "out a b'c\n", stderr: "err\n" });
 	assert.deepEqual(fake.ws.opened[0], { url: `wss://${value.id}-22022.${PROXY}/`, headers: { "X-Agent37-Key": KEY } });
@@ -308,11 +282,10 @@ test("exec rides wss://{id}-22022.<domain>/ with the key in X-Agent37-Key, and r
 
 test("exec's stdin: written in order, then ended; a write after the end is refused", async (t) => {
 	const { host } = await setup(t);
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	const big = Buffer.alloc(3 * 1024 * 1024, 7);
 	assert.deepEqual(await run(host, value.id, ["wc", "-c"], big), { code: 0, stdout: `${big.length}\n`, stderr: "" });
-	const made = await host.exec(value.id, ["cat"], { stdin: true }, CTX);
-	const proc = made.value;
+	const proc = await host.exec(value.id, ["cat"], CTX);
 	const out = [];
 	const reading = (async () => {
 		for await (const chunk of proc.stdout) out.push(Buffer.from(chunk));
@@ -328,12 +301,14 @@ test("exec's stdin: written in order, then ended; a write after the end is refus
 
 test("kill ends the whole process group, with stdin ended or held open, and wait answers -1", async (t) => {
 	const { host } = await setup(t);
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	for (const [stdin, script] of [
 		[false, "sleep 300 & echo $!; sleep 301 & echo $!; wait"],
 		[true, "sleep 302 & echo $!; cat; wait"],
 	]) {
-		const proc = (await host.exec(value.id, ["sh", "-c", script], { stdin }, CTX)).value;
+		const proc = await host.exec(value.id, ["sh", "-c", script], CTX);
+		// stdin ended at once, as the adapter does where it gives none, or held open.
+		if (!stdin) await proc.end();
 		let text = "";
 		const reading = (async () => {
 			for await (const chunk of proc.stdout) text += chunk;
@@ -351,7 +326,7 @@ test("kill ends the whole process group, with stdin ended or held open, and wait
 		assert.ok(await until(() => !pids.some(alive)), `every sleep is gone (stdin ${stdin})`);
 	}
 	// A kill after the process ended is nothing.
-	const done = (await host.exec(value.id, ["true"], { stdin: false }, CTX)).value;
+	const done = await host.exec(value.id, ["true"], CTX);
 	(async () => {
 		for await (const _ of done.stdout);
 	})();
@@ -364,7 +339,7 @@ test("kill ends the whole process group, with stdin ended or held open, and wait
 
 test("the pid file each command writes is gone once it ends, killed or not", async (t) => {
 	const { fake, host } = await setup(t);
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	await run(host, value.id, ["true"]);
 	const file = /\/tmp\/\.agentrun-exec-[0-9a-f]{16}/.exec(fake.sshd.commands[0])[0];
 	assert.equal(existsSync(file), false);
@@ -375,7 +350,7 @@ test("an SSH key pasted onto one line (a password field drops line breaks) is wr
 	t.after(() => fake.sshd.close());
 	for (const sshKey of [fake.sshKey.replace(/\n/g, ""), fake.sshKey.replace(/\n/g, "\r\n"), `  ${fake.sshKey.replace(/\n/g, " ")}  `]) {
 		const provider = new Agent37Provider({ ...fake.options, sshKey });
-		const { value } = await provider.host.create(request(), CTX);
+		const value = await provider.host.create(request(), CTX);
 		assert.equal((await run(provider.host, value.id, ["true"])).code, 0);
 	}
 	// The armor of the generated key with its body replaced: no key text sits in this file.
@@ -387,8 +362,8 @@ test("an SSH key pasted onto one line (a password field drops line breaks) is wr
 
 test("a key the edge refuses closes the tunnel before it opens: the exec fails in words, with no key in them", async (t) => {
 	const { host } = await setup(t, { apiKey: BARE, fetch: fakeRest({ key: BARE }).fetch });
-	const { value } = await host.create(request(), CTX);
-	await assert.rejects(host.exec(value.id, ["true"], { stdin: false }, CTX), (error) => {
+	const value = await host.create(request(), CTX);
+	await assert.rejects(host.exec(value.id, ["true"], CTX), (error) => {
 		assert.match(error.message, /tunnel .* was refused \(closed with 1008/);
 		assert.doesNotMatch(error.message, new RegExp(BARE));
 		return true;
@@ -397,33 +372,33 @@ test("a key the edge refuses closes the tunnel before it opens: the exec fails i
 
 test("a tunnel that fails to open is opened again, within the call's bound; after the last try the failure is the call's", async (t) => {
 	const { fake, host } = await setup(t);
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	fake.ws.failNext(2);
 	assert.equal((await run(host, value.id, ["true"])).code, 0);
 	assert.equal(fake.ws.opened.length, 3, "two failed, the third opened");
 	// Each instance below is a fresh one: the first one's connection stays open for its next exec.
-	const second = (await host.create(request(), CTX)).value;
+	const second = (await host.create(request(), CTX));
 	fake.ws.failNext(4);
-	await assert.rejects(host.exec(second.id, ["true"], { stdin: false }, CTX), /failed to open/);
+	await assert.rejects(host.exec(second.id, ["true"], CTX), /failed to open/);
 	assert.equal(fake.ws.opened.length, 7, "four tries in all");
 	fake.ws.failNext(10);
-	const error = await host.exec(second.id, ["true"], { stdin: false }, { timeoutMs: 300 }).catch((thrown) => thrown);
+	const error = await host.exec(second.id, ["true"], { timeoutMs: 300 }).catch((thrown) => thrown);
 	assert.equal(codeOfError(host, error), "timeout", "the bound ends the retries");
 	fake.ws.failNext(0);
 });
 
 test("a tunnel still opening when its call times out or is aborted is closed, not left to open later", async (t) => {
 	const { fake, host } = await setup(t);
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	const before = fake.ws.closedBy.length;
 	fake.ws.hangNext(1);
-	const timedOut = await host.exec(value.id, ["true"], { stdin: false }, { timeoutMs: 200 }).catch((thrown) => thrown);
+	const timedOut = await host.exec(value.id, ["true"], { timeoutMs: 200 }).catch((thrown) => thrown);
 	assert.equal(codeOfError(host, timedOut), "timeout");
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(fake.ws.closedBy.slice(before), [0], "the opening tunnel was closed as the call gave up");
 	fake.ws.hangNext(1);
 	const stop = new AbortController();
-	const aborted = host.exec(value.id, ["true"], { stdin: false }, { timeoutMs: 30_000, signal: stop.signal }).catch((thrown) => thrown);
+	const aborted = host.exec(value.id, ["true"], { timeoutMs: 30_000, signal: stop.signal }).catch((thrown) => thrown);
 	await new Promise((resolve) => setTimeout(resolve, 50));
 	stop.abort();
 	await aborted;
@@ -434,8 +409,8 @@ test("a tunnel still opening when its call times out or is aborted is closed, no
 
 test("an SSH key the instance's sshd does not take is denied", async (t) => {
 	const { host } = await setup(t, { sshKey: keyPair().private });
-	const { value } = await host.create(request(), CTX);
-	const error = await host.exec(value.id, ["true"], { stdin: false }, CTX).catch((thrown) => thrown);
+	const value = await host.create(request(), CTX);
+	const error = await host.exec(value.id, ["true"], CTX).catch((thrown) => thrown);
 	assert.equal(host.errorCode(error), "denied");
 });
 
@@ -443,9 +418,8 @@ test("an SSH key the instance's sshd does not take is denied", async (t) => {
 
 /** A process exec started, its stdout kept as text as it comes and its stderr drained. */
 async function started(host, id, argv, stdin) {
-	const made = await host.exec(id, argv, { stdin }, CTX);
-	assert.ok(made.ok);
-	const proc = made.value;
+	const proc = await host.exec(id, argv, CTX);
+	if (!stdin) await proc.end();
 	const seen = { text: "" };
 	const reading = (async () => {
 		for await (const chunk of proc.stdout) seen.text += Buffer.from(chunk).toString();
@@ -458,7 +432,7 @@ async function started(host, id, argv, stdin) {
 
 test("two execs on one instance share one WebSocket and one SSH handshake, together or one after the other; another instance has its own", async (t) => {
 	const { fake, host } = await setup(t);
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	// Together, as connect and the live view's watch can start.
 	const [a, b] = await Promise.all([run(host, value.id, ["echo", "a"]), run(host, value.id, ["echo", "b"])]);
 	assert.deepEqual([a.stdout, b.stdout], ["a\n", "b\n"]);
@@ -470,7 +444,7 @@ test("two execs on one instance share one WebSocket and one SSH handshake, toget
 	assert.equal((await run(host, value.id, ["true"])).code, 0);
 	assert.equal(fake.ws.opened.length, 1, "one WebSocket");
 	assert.equal(fake.sshd.state.logins, 1, "one SSH handshake");
-	const other = (await host.create(request(), CTX)).value;
+	const other = (await host.create(request(), CTX));
 	assert.equal((await run(host, other.id, ["true"])).code, 0);
 	assert.equal(fake.ws.opened.length, 2);
 	assert.equal(fake.ws.opened[1].url, `wss://${other.id}-22022.${PROXY}/`);
@@ -478,7 +452,7 @@ test("two execs on one instance share one WebSocket and one SSH handshake, toget
 
 test("past 10 channels at once (OpenSSH's MaxSessions) a second connection opens, and kills of 10 execs at once each get a channel", async (t) => {
 	const { fake, host } = await setup(t);
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	const procs = await Promise.all(Array.from({ length: MAX_SESSIONS + 1 }, () => started(host, value.id, ["cat"], true)));
 	assert.equal(fake.ws.opened.length, 2);
 	assert.equal(fake.sshd.state.logins, 2);
@@ -488,7 +462,7 @@ test("past 10 channels at once (OpenSSH's MaxSessions) a second connection opens
 	assert.equal((await run(host, value.id, ["true"])).code, 0);
 	assert.equal(fake.ws.opened.length, 2, "the next exec takes one of the two");
 	// A full connection's execs, all killed at once: their kills go on a connection with room, never refused.
-	const other = (await host.create(request(), CTX)).value;
+	const other = (await host.create(request(), CTX));
 	const sleeps = await Promise.all(Array.from({ length: MAX_SESSIONS }, () => started(host, other.id, ["sh", "-c", "sleep 300 & echo $!; wait"], false)));
 	assert.ok(await until(() => sleeps.every(({ seen }) => seen.text.includes("\n"))));
 	const pids = sleeps.map(({ seen }) => Number(seen.text.trim()));
@@ -499,9 +473,9 @@ test("past 10 channels at once (OpenSSH's MaxSessions) a second connection opens
 
 test("an exec that joins another's handshake keeps its own bound: when the shared one runs out of the first call's time, it opens its own", async (t) => {
 	const { fake, host } = await setup(t);
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	fake.ws.hangNext(1);
-	const short = host.exec(value.id, ["true"], { stdin: false }, { timeoutMs: 600 }).catch((thrown) => thrown);
+	const short = host.exec(value.id, ["true"], { timeoutMs: 600 }).catch((thrown) => thrown);
 	await new Promise((resolve) => setTimeout(resolve, 100));
 	const long = run(host, value.id, ["echo", "mine"]);
 	assert.equal(codeOfError(host, await short), "timeout");
@@ -511,7 +485,7 @@ test("an exec that joins another's handshake keeps its own bound: when the share
 
 test("kill closes its own channel and leaves another exec on the same connection running", async (t) => {
 	const { fake, host } = await setup(t);
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	const killed = await started(host, value.id, ["sh", "-c", "sleep 300 & echo $!; wait"], false);
 	const kept = await started(host, value.id, ["cat"], true);
 	assert.ok(await until(() => killed.seen.text.includes("\n")));
@@ -529,7 +503,7 @@ test("kill closes its own channel and leaves another exec on the same connection
 
 test("a connection that died is never handed out: the next exec opens a fresh one, and a channel the sshd refuses is opened once more on a fresh connection", async (t) => {
 	const { fake, host } = await setup(t);
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	await run(host, value.id, ["true"]);
 	fake.sshd.dropAll();
 	assert.ok(await until(() => fake.sshd.state.live === 0));
@@ -542,14 +516,14 @@ test("a connection that died is never handed out: the next exec opens a fresh on
 	assert.equal((await run(host, value.id, ["true"])).code, 0);
 	assert.equal(fake.ws.opened.length, 4, "the refusing connection takes no more; a fresh one took the exec");
 	fake.sshd.refuseSessions(2);
-	await assert.rejects(host.exec(value.id, ["true"], { stdin: false }, CTX), /open failure/i);
+	await assert.rejects(host.exec(value.id, ["true"], CTX), /open failure/i);
 	assert.equal(fake.ws.opened.length, 5, "once more, no more");
 	assert.ok(await until(() => fake.sshd.state.live === 0), "the refusing connections ended, none holding them");
 });
 
 test("a connection with no channel left waits a moment for the next exec, then ends; delete ends it at once, channels and all", async (t) => {
 	const { fake, host } = await setup(t);
-	const { value } = await host.create(request(), CTX);
+	const value = await host.create(request(), CTX);
 	await run(host, value.id, ["true"]);
 	assert.equal(fake.sshd.state.live, 1, "kept for the next exec");
 	assert.ok(await until(() => fake.sshd.state.live === 0, 5_000), "then ended");
@@ -559,7 +533,7 @@ test("a connection with no channel left waits a moment for the next exec, then e
 	fake.sshd.refuseSessions(1);
 	const next = await started(host, value.id, ["sh", "-c", "sleep 301 & wait"], false);
 	assert.equal(fake.sshd.state.live, 2);
-	assert.ok((await host.delete(value.id, CTX)).ok);
+	assert.equal(await host.delete(value.id, CTX), undefined);
 	assert.deepEqual(await Promise.all([long.proc.wait(), next.proc.wait()]), [-1, -1], "the channels closed with their connections");
 	assert.ok(await until(() => fake.sshd.state.live === 0, 1_000), "ended at once");
 	assert.equal(fake.ws.opened.length, 3);

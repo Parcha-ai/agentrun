@@ -69,7 +69,15 @@ export async function fakeEnvd() {
 		if (method === "SendInput") {
 			child.stdin.write(Buffer.from(body.input?.stdin ?? "", "base64"), () => unary(res, 200, {}));
 		} else if (method === "CloseStdin") {
-			child.stdin.end(() => unary(res, 200, {}));
+			// A command that exited first has a closed pipe, whose end() never calls back: answered at once, as envd does.
+			let answered = false;
+			const done = () => {
+				if (!answered) unary(res, 200, {});
+				answered = true;
+			};
+			if (child.stdin.destroyed || child.stdin.writableFinished) return done();
+			child.stdin.once("close", done).once("error", done);
+			child.stdin.end(done);
 		} else if (method === "SendSignal") {
 			child.kill(body.signal === "SIGNAL_SIGTERM" ? "SIGTERM" : "SIGKILL");
 			unary(res, 200, {});

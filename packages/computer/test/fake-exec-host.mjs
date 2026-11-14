@@ -46,10 +46,12 @@ export function fakeExecHost(options = {}) {
 	const host = {
 		id: "fake-exec",
 		calls: [],
-		async exec(id, argv, { stdin }) {
-			host.calls.push({ id, argv, stdin });
-			const child = spawn(argv[0], argv.slice(1), { stdio: [stdin ? "pipe" : "ignore", "pipe", "pipe"] });
+		async exec(id, argv, ctx) {
+			host.calls.push({ id, argv, ctx });
+			const child = spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
 			children.add(child);
+			// A write or end after the command exited is a closed pipe: the write's own callback says so.
+			child.stdin.on("error", () => {});
 			const out = feed();
 			const err = feed();
 			const decoder = new TextDecoder();
@@ -86,25 +88,22 @@ export function fakeExecHost(options = {}) {
 			});
 			const pending = [];
 			return {
-				ok: true,
-				value: {
-					stdout: out.iterable,
-					stderr: err.iterable,
-					async write(bytes) {
-						if (slowWriteMs > 0) await new Promise((done) => setTimeout(done, slowWriteMs));
-						if (holdStdin) pending.push(Buffer.from(bytes));
-						else await new Promise((done, fail) => child.stdin.write(Buffer.from(bytes), (error) => (error ? fail(error) : done())));
-					},
-					async end() {
-						if (pending.length > 0) child.stdin.write(Buffer.concat(pending.splice(0)));
-						child.stdin.end();
-					},
-					wait: () => exited,
-					async kill() {
-						if (!killDetaches) child.kill("SIGKILL");
-						out.end();
-						err.end();
-					},
+				stdout: out.iterable,
+				stderr: err.iterable,
+				async write(bytes) {
+					if (slowWriteMs > 0) await new Promise((done) => setTimeout(done, slowWriteMs));
+					if (holdStdin) pending.push(Buffer.from(bytes));
+					else await new Promise((done, fail) => child.stdin.write(Buffer.from(bytes), (error) => (error ? fail(error) : done())));
+				},
+				async end() {
+					if (pending.length > 0) child.stdin.write(Buffer.concat(pending.splice(0)));
+					child.stdin.end();
+				},
+				wait: () => exited,
+				async kill() {
+					if (!killDetaches) child.kill("SIGKILL");
+					out.end();
+					err.end();
 				},
 			};
 		},

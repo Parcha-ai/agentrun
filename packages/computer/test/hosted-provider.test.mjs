@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, computerNameFor as nameOf } from "../dist/index.js";
+import { HostError } from "../dist/host.js";
 import { DAEMON, DESKTOP_GROUPS, deferred, fakeHost, LINUX_GROUPS, NotFound, VERSION } from "./fake-host.mjs";
 
 const { hostedProvider } = await import("../dist/hosted/provider.js");
@@ -22,7 +23,7 @@ const DEADLINE = "agentrun.computer.deadline";
 const MAX = "agentrun.computer.max-deadline";
 const SPEC = { image: "img", lifetimeMs: 600_000, network: "none" };
 /** A pid1 host that takes a spec's user. */
-const USER_FACTS = { daemon: "pid1", specFields: ["user"], user: ["uid"], networkReadBack: false };
+const USER_FACTS = { daemon: "pid1", specFields: ["user"], user: ["uid"] };
 const HOUR = 3_600_000;
 const ACCEPTED_NOTE = "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443, 8.8.8.8:443";
 const INSTALLER_NOTE = "the daemon was installed by root (uid 0), as root";
@@ -56,7 +57,7 @@ const only = (fake) => {
 async function nothingLeft(fake, what) {
 	assert.deepEqual(fake.live().map((m) => m.id), [], `${what}: every machine made was deleted`);
 	const listed = await fake.host.list({ [COMPUTER]: "1" }, { timeoutMs: 1_000 });
-	assert.deepEqual(listed.value, [], `${what}: none is listed`);
+	assert.deepEqual(listed, [], `${what}: none is listed`);
 }
 
 // --- capabilities and check ---
@@ -67,7 +68,8 @@ test("capabilities come from the host's facts and the adapter's options alone", 
 		kind: "desktop",
 		lifetime: "vendor",
 		network: ["none"],
-		networkReadBack: true,
+		// The probe from inside is the network's truth: no hosted vendor's read-back is held.
+		networkReadBack: false,
 		isolation: "microvm",
 		os: "linux",
 		daemon: "child",
@@ -325,7 +327,7 @@ test("two provider instances racing one request each make a machine; both conver
 		assert.equal(made(b).id, kept.id, `${what}: the second instance answers the one kept`);
 		assert.deepEqual(fake.live().map((m) => m.id), [kept.id], `${what}: the other was deleted`);
 		const listed = await fake.host.list({ [NAME]: nameOf("two-instances") }, { timeoutMs: 1_000 });
-		assert.deepEqual(listed.value.map((m) => m.id), [kept.id], `${what}: and is no longer listed`);
+		assert.deepEqual(listed.map((m) => m.id), [kept.id], `${what}: and is no longer listed`);
 		assert.ok(kept.init !== undefined, `${what}: the one kept was brought up`);
 	}
 });
@@ -346,18 +348,6 @@ test("a retry of a request whose computer ended, stopped or was deleted is refus
 	const other = await provider.create({ ...SPEC, labels: { team: "a" } }, { requestId: "other" });
 	assert.equal(other.error?.code, "exists");
 	assert.match(other.error.message, /with another spec/);
-	assert.equal(fake.creates(), 1, "never a second machine under one name");
-});
-
-test("a retry is held to the size its computer reads back where the vendor takes one in a spec: another is refused as exists", async () => {
-	const { provider, fake } = setup({}, { facts: { specFields: ["cpus", "memoryMb"] }, size: { cpus: 2, memoryMb: 4096 } });
-	const spec = { ...SPEC, cpus: 2, memoryMb: 4096 };
-	const ref = made(await provider.create(spec, { requestId: "sized" }));
-	const bigger = await provider.create({ ...spec, cpus: 4 }, { requestId: "sized" });
-	assert.equal(bigger.error?.code, "exists");
-	assert.match(bigger.error.message, new RegExp(`${ref.name} was made for this request with another spec, so it is not returned: cpus: asked 4, read back 2`));
-	assert.equal(made(await provider.create(spec, { requestId: "sized" })).id, ref.id, "the same spec gets the same computer");
-	assert.equal(made(await provider.create(SPEC, { requestId: "sized" })).id, ref.id, "a size the spec leaves out is the vendor's default");
 	assert.equal(fake.creates(), 1, "never a second machine under one name");
 });
 
@@ -472,8 +462,7 @@ test("nothing left behind: a failure or an abort at any step after the machine e
 		["an install that fails", { install: 5 }, /installing the daemon failed/],
 		["init that never listens", { initFails: "computerd: init: no such user" }, /init wrote: computerd: init: no such user/],
 		["an X server that dies", { display: "dies" }, /X server/],
-		["the vendor's own drift", { drift: ["lifecycle onTimeout: declared \"kill\", read back \"pause\""] }, /onTimeout/],
-		["a network read back open", { network: "open" }, /network: declared none, read back open/],
+		["a machine the vendor reads gone, failed in its words", { failed: "the image could not be pulled" }, /Fakehost could not start computer-[0-9a-f]{12}: the image could not be pulled/],
 		["a daemon's network holding more than its loopback", { box: { interfaces: ["lo", "eth0"] } }, /daemon network/],
 		["a probe target that answers", { box: { reached: ["1.1.1.1:443"] } }, /1\.1\.1\.1:443/],
 		["a daemon of another uid", { box: { status: { Uid: "0\t0\t0\t0" } } }, /daemon user/],
@@ -595,69 +584,19 @@ test("release never touches a machine that is not this provider's, and refuses s
 	assert.equal((await provider.connect({ id: stranger.id, name: "computer-0123456789ab" })).error?.code, "not_found");
 });
 
-test("release stop, where the host declares it: the host only asks, and the adapter waits until get and the listing read it stopped, asking again while it reads running; it keeps the machine; never another's; no stop hook is unsupported", async () => {
-	const { provider, fake } = setup({}, { facts: { release: ["stop", "delete"], stopDeletes: false } });
-	const asks = [];
-	let lost = 1;
-	fake.host.stop = async (id, ctx) => {
-		asks.push([id, ctx.timeoutMs]);
-		// The first ask is lost: the machine reads running still, so the adapter asks again.
-		if (lost-- <= 0) Object.assign(fake.machines.get(id), { state: "stopping", stoppingReads: 3 });
-		return { ok: true, value: undefined };
-	};
-	const reading = fake.host.get;
-	fake.host.get = async (id, ctx) => {
-		const m = fake.machines.get(id);
-		if (m?.state === "stopping" && --m.stoppingReads <= 0) m.state = "stopped";
-		return reading(id, ctx);
-	};
-	assert.deepEqual(provider.capabilities().release, ["stop", "delete"]);
-	const ref = made(await create(provider));
-	assert.deepEqual(await provider.release(ref, "stop"), { ok: true, value: undefined });
-	assert.equal(fake.machines.get(ref.id).state, "stopped", "answered once the machine read stopped, not once the host took the ask");
-	assert.deepEqual(asks, [[ref.id, TIMEOUTS.requestMs], [ref.id, TIMEOUTS.requestMs]], "asked again while it read running, each ask bounded by requestMs");
-	assert.equal(fake.live().length, 1, "a stop keeps the machine");
-	assert.deepEqual(await provider.release(ref, "stop"), { ok: true, value: undefined });
-	assert.equal(asks.length, 2, "a machine that reads stopped is not asked");
-	const stranger = fake.add({ labels: { team: "x" } });
-	assert.equal((await provider.release({ id: stranger.id, name: "computer-0123456789ab" }, "stop")).error?.code, "not_found");
-	assert.equal(asks.length, 2, "another's machine is never stopped");
-	// One that goes to failed ends the wait; one that never reads stopped is bounded by goneMs, saying what it last read.
-	fake.host.stop = async (id) => ((fake.machines.get(id).state = "failed"), { ok: true, value: undefined });
-	const failed = await provider.release(made(await create(provider)), "stop");
-	assert.equal(failed.error?.code, "vendor");
-	assert.match(failed.error.message, /went to failed/);
-	fake.host.stop = async (id) => (Object.assign(fake.machines.get(id), { state: "stopping", stoppingReads: Number.POSITIVE_INFINITY }), { ok: true, value: undefined });
-	const slow = await provider.release(made(await create(provider)), "stop");
-	assert.equal(slow.error?.code, "timeout");
-	assert.match(slow.error.message, /read it stopping/);
-	fake.host.stop = async () => ({ ok: false, error: { code: "denied", message: "the key may not stop it" } });
-	assert.equal((await provider.release(made(await create(provider)), "stop")).error?.code, "denied", "a stop the vendor refused is the answer");
-	delete fake.host.stop;
-	assert.equal((await provider.release(ref, "stop")).error?.code, "unsupported", "declared, but with no stop hook: unsupported");
-});
-
-test("release stop of a computer whose stop deletes it (stopDeletes, or a GPU's where gpu.stopDeletes) waits until it is gone", async () => {
-	const { provider, fake } = setup({}, { facts: { release: ["stop", "delete"], stopDeletes: false, gpu: { types: ["H100"], max: 1, stopDeletes: true } } });
-	fake.host.stop = async (id) => ((fake.machines.get(id).state = "stopped"), { ok: true, value: undefined });
-	const reading = fake.host.get;
-	fake.host.get = async (id, ctx) => {
-		const m = fake.machines.get(id);
-		// The vendor deletes a GPU machine a few reads after it stops.
-		if (m?.request?.gpu !== undefined && m.state === "stopped" && !m.deleted && (m.reads = (m.reads ?? 0) + 1) >= 3) m.deleted = true;
-		return reading(id, ctx);
-	};
-	const gpu = made(await create(provider, { ...SPEC, gpu: { type: "H100", count: 1 } }));
-	assert.deepEqual(await provider.release(gpu, "stop"), { ok: true, value: undefined });
-	assert.equal(fake.machines.get(gpu.id).deleted, true, "answered once the GPU computer was gone");
-	const plain = made(await create(provider));
-	assert.deepEqual(await provider.release(plain, "stop"), { ok: true, value: undefined });
-	assert.equal(fake.machines.get(plain.id).deleted, false, "a computer with no GPU is kept, stopped");
-	// A GPU computer that goes to failed on its stop ends the wait, as a kept one does, not at goneMs.
-	fake.host.stop = async (id) => ((fake.machines.get(id).state = "failed"), { ok: true, value: undefined });
-	const failed = await provider.release(made(await create(provider, { ...SPEC, gpu: { type: "H100", count: 1 } })), "stop");
-	assert.equal(failed.error?.code, "vendor");
-	assert.match(failed.error.message, /the stop of computer-[0-9a-f]{12}: it went to failed/);
+test("release stop is refused for every hosted computer, in words, and nothing is asked of the host: a computer here is deleted, never stopped and kept", async () => {
+	const { provider, fake } = setup({}, { facts: { gpu: { types: ["H100"], max: 1, stopDeletes: true } } });
+	assert.deepEqual(provider.capabilities().release, ["delete"]);
+	assert.equal(provider.capabilities().stopDeletes, undefined, "no stop, so no stop that deletes");
+	for (const spec of [SPEC, { ...SPEC, gpu: { type: "H100", count: 1 } }]) {
+		const ref = made(await create(provider, spec));
+		const before = fake.calls.length;
+		const refused = await provider.release(ref, "stop");
+		assert.equal(refused.error?.code, "unsupported");
+		assert.match(refused.error.message, /computer is deleted, never stopped and kept: release it with delete/);
+		assert.deepEqual(fake.calls.slice(before), [], "no host call");
+		assert.equal(fake.machines.get(ref.id).deleted, false, "left running");
+	}
 });
 
 // --- connect, list, attach, network ---
@@ -682,10 +621,10 @@ test("connect checks hello against the provider: one that drifted is refused; a 
 	assert.equal((await provider.connect(ref)).error?.code, "refused");
 });
 
-test("connect to a machine the vendor reads as going (past its deadline or released, still being deleted) answers gone, not refused; releasing it again stays ok", async () => {
+test("connect to a machine the vendor reads as gone (past its deadline or released, still being deleted) answers gone, not refused; releasing it again stays ok", async () => {
 	const { provider, fake } = setup();
 	const ref = made(await create(provider));
-	only(fake).state = "going";
+	only(fake).state = "gone";
 	const connected = await provider.connect(ref);
 	assert.equal(connected.error?.code, "gone");
 	assert.match(connected.error?.message ?? "", /going/);
@@ -702,7 +641,8 @@ test("list finds this provider's machines by labels; attach by id or labels read
 	assert.equal(listed[0].network, "none");
 	assert.equal(listed[0].state, "running");
 	const byId = made(await provider.attach({ id: a.id }));
-	assert.deepEqual({ image: byId.spec.image, snapshot: byId.spec.snapshot, user: byId.spec.user, network: byId.spec.network, kind: byId.spec.kind }, { image: "img", snapshot: "img-id", user: "2510:2510", network: "none", kind: "linux" });
+	assert.deepEqual({ image: byId.spec.image, user: byId.spec.user, network: byId.spec.network, kind: byId.spec.kind }, { image: "img", user: "2510:2510", network: "none", kind: "linux" });
+	assert.deepEqual([byId.spec.snapshot, byId.spec.cpus, byId.spec.memoryMb], [undefined, undefined, undefined], "the image is the one create asked for (its label); no vendor size or snapshot is read back");
 	assert.equal(made(await provider.attach({ labels: { team: "a" } })).id, a.id);
 	assert.equal((await provider.attach({ labels: { team: "c" } })).error?.code, "not_found");
 	fake.machines.get(a.id).box.interfaces = ["lo", "eth0"];
@@ -711,43 +651,16 @@ test("list finds this provider's machines by labels; attach by id or labels read
 	assert.equal(fake.machines.get(a.id).deleted, false);
 });
 
-test("attach holds the vendor's own read-back drift as create does, and reports the size the vendor reads back", async () => {
-	const sized = setup({}, { size: { cpus: 2, memoryMb: 4096 } });
-	const ref = made(await create(sized.provider));
-	const attached = made(await sized.provider.attach({ id: ref.id }));
-	assert.deepEqual({ cpus: attached.spec.cpus, memoryMb: attached.spec.memoryMb }, { cpus: 2, memoryMb: 4096 });
+test("network() reads the network from inside (the probe) and refuses any change: it is fixed at create", async () => {
 	const { provider, fake } = setup();
-	const other = made(await create(provider));
-	assert.equal(made(await provider.attach({ id: other.id })).spec.cpus, undefined, "no size read back: none reported");
-	// The vendor's own read-back goes wrong after create (the drift every read of it now gives): attach refuses it.
-	const drifting = fakeHost({ drift: ['lifecycle onTimeout: declared "kill", read back "pause"'] });
-	const reader = hostedProvider(drifting.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
-	const m = drifting.add({ labels: fake.machines.get(other.id).labels });
-	Object.assign(m, { daemon: { path: DAEMON, bytes: DAEMON_BYTES }, init: { deadline: m.labels[DEADLINE], user: "2510:2510", display: "", max: m.labels[MAX] } });
-	const refused = await reader.attach({ id: m.id });
-	assert.equal(refused.error?.code, "refused");
-	assert.match(refused.error.message, /lifecycle onTimeout: declared "kill", read back "pause"/);
-	assert.equal(m.deleted, false, "left as it is");
-});
-
-test("create refuses a machine whose vendor timer already reads moved: no extend has run on it", async () => {
-	const { provider, fake } = setup({}, { lingers: { reads: 0, lists: 0 } });
-	const reading = fake.host.get;
-	fake.host.get = async (id, ctx) => {
-		const read = await reading(id, ctx);
-		return read.ok && read.value ? { ok: true, value: { ...read.value, timerMoved: true } } : read;
-	};
-	const refused = await create(provider);
-	assert.equal(refused.error?.code, "refused");
-	assert.match(refused.error.message, /timer: declared the spec's lifetime, read back an end of .*later than create set it/);
-	fake.host.get = reading;
-	await nothingLeft(fake, "a moved timer at create");
-});
-
-test("network() reads the network back and refuses any change: it is fixed at create", async () => {
-	const { provider } = setup();
 	const ref = made(await create(provider));
+	const probes = () => fake.requests.filter(({ method, params }) => method === "exec.run" && params.argv[1] === "probe").length;
+	const before = probes();
 	assert.equal(made(await provider.network(ref)), "none");
+	assert.ok(probes() > before, "the probe from inside is the network's truth, with no vendor read-back");
+	only(fake).box.reached = ["1.1.1.1:443"];
+	assert.match(made(await provider.network(ref)).other, /created none, yet from inside an answer came back from 1\.1\.1\.1:443/, "a probe that reaches out is no network none");
+	only(fake).box.reached = [];
 	assert.equal(made(await provider.network(ref, "none")), "none", "the network it already has answers ok");
 	for (const policy of ["open", { allow: ["example.com"] }]) {
 		const refused = await provider.network(ref, policy);
@@ -763,39 +676,29 @@ test("testConnection lists by the adapter's label and counts this provider's mac
 	assert.match(made(await provider.testConnection()).detail, /^Fakehost answered: 1 computer of this provider$/);
 });
 
-test("a listing as the vendor reads it (no network, more machines than carry the labels): list reads each one it keeps by get, attach and a retry find theirs, and testConnection counts with no get", async () => {
+test("a listing as the vendor reads it (more machines than carry the labels): list keeps those with the labels from the listing alone, with no get; attach and a retry find theirs, and testConnection counts", async () => {
 	const { provider, fake } = setup();
 	const a = made(await provider.create({ ...SPEC, labels: { team: "a" } }, { requestId: "listing-a" }));
-	made(await create(provider, { ...SPEC, labels: { team: "b" } }));
-	// The listing filters by the adapter's label alone, and carries no network and none of the vendor's drift or timer.
-	// stale: labels a listing older than get still shows.
+	const b = made(await create(provider, { ...SPEC, labels: { team: "b" } }));
+	// The listing filters by the adapter's label alone: the adapter keeps those that carry the rest.
 	const listing = fake.host.list;
-	const stale = new Map();
-	fake.host.list = async (labels, ctx) => {
-		const read = await listing({ [COMPUTER]: "1" }, ctx);
-		return read.ok ? { ok: true, value: read.value.map(({ id, labels: carried, state, createdAt }) => ({ id, labels: stale.get(id) ?? carried, state, createdAt })) } : read;
-	};
+	fake.host.list = async (labels, ctx) => listing({ [COMPUTER]: "1" }, ctx);
 	const gets = () => fake.calls.filter(([name]) => name === "get").length;
 	let before = gets();
 	const listed = made(await provider.list({ team: "a" }));
 	assert.deepEqual(listed.map((info) => [info.ref.id, info.network, info.state]), [[a.id, "none", "running"]]);
-	assert.equal(gets() - before, 1, "one get: of the one computer kept");
+	assert.equal(gets(), before, "no get: a listing is the machines as the vendor reads them");
+	fake.machines.get(b.id).state = "stopped";
+	assert.deepEqual(made(await provider.list({ team: "b" })).map((info) => [info.ref.id, info.state]), [[b.id, "stopped"]], "a stopped machine is listed, as the janitor needs");
+	fake.machines.get(b.id).state = "gone";
+	assert.deepEqual(made(await provider.list({ team: "b" })), [], "a gone one is not");
+	fake.machines.get(b.id).state = "running";
 	assert.equal(made(await provider.attach({ labels: { team: "a" } })).id, a.id);
 	assert.equal(made(await provider.create({ ...SPEC, labels: { team: "a" } }, { requestId: "listing-a" })).id, a.id, "a retry reads its computer by get");
 	before = gets();
 	assert.match(made(await provider.testConnection()).detail, /^Fakehost answered: 2 computers of this provider$/);
 	assert.equal(gets(), before, "Settings' test reads the listing alone");
 	assert.equal(fake.creates(), 2);
-	// A listing older than get: the labels get reads are the ones held to the filter.
-	stale.set(a.id, { ...fake.machines.get(a.id).labels });
-	fake.machines.get(a.id).labels.team = "c";
-	assert.deepEqual(made(await provider.list({ team: "a" })), [], "relabelled since the listing: not team a");
-	// A machine the vendor lost between the listing and the read (get is not_found) is left out, not a failed list.
-	stale.delete(a.id);
-	fake.machines.get(a.id).labels.team = "a";
-	const read = fake.host.get;
-	fake.host.get = async (id, ctx) => (id === a.id ? { ok: false, error: { code: "not_found", message: `${id} is gone` } } : read(id, ctx));
-	assert.deepEqual(made(await provider.list({ team: "a" })), [], "gone since the listing: left out");
 });
 
 // --- Archil ---
@@ -903,25 +806,6 @@ test("Archil: release lets the folder go (the final sync, then checkin as root),
 	await nothingLeft(fake, "an Archil release");
 	assert.equal(notes.length, 1);
 	assert.match(notes[0].note, /was deleted, and/);
-});
-
-test("Archil: release stop lets the folder go (the final sync, then checkin as root) before the host's stop, as delete does; a failed checkin still stops, and says so", async () => {
-	const notes = [];
-	const { provider, fake } = setup({ onNote: (note) => notes.push(note) }, { facts: { release: ["stop", "delete"], stopDeletes: false }, box: { reached: [] }, archil: { checkin: { exitCode: 1, output: "checkin refused" } } });
-	const order = [];
-	fake.host.stop = async (id) => {
-		order.push(`stop ${fake.rootRuns.filter(({ verb }) => verb === "checkin").length} checkin`);
-		fake.machines.get(id).state = "stopped";
-		return { ok: true, value: undefined };
-	};
-	const ref = made(await create(provider, ARCHIL_SPEC));
-	const syncs = fake.syncs.length;
-	assert.deepEqual(await provider.release(ref, "stop"), { ok: true, value: undefined });
-	assert.deepEqual(order, ["stop 1 checkin"], "checkin ran before the stop");
-	assert.ok(fake.syncs.length > syncs, "the final sync through the daemon");
-	assert.equal(fake.live().length, 1, "a stop keeps the machine");
-	assert.equal(notes.length, 1);
-	assert.match(notes[0].note, /was stopped, and/);
 });
 
 test("Archil: archilEgress (a documentation address here, RFC 5737) goes to the helper's mount as its last word; unset, the mount names no gateway; a malformed one is refused at construction", async () => {
@@ -1230,15 +1114,16 @@ test("a conformance run of a hosted provider sweeps its label through the host a
 	assert.deepEqual(report.cleanup.left, []);
 });
 
-test("a host's get that answers not_found, by a throw or by a result, is a machine that is gone", async () => {
-	for (const style of ["throw", "result"]) {
+test("a host's get that answers no machine, or throws not_found (its errorCode's or a HostError's), is a machine that is gone", async () => {
+	for (const style of ["throw", "HostError", "undefined"]) {
 		const { provider, fake } = setup({}, { starting: 2 });
 		const made = fake.host.create;
 		fake.host.create = async (...args) => {
 			const result = await made(...args);
 			fake.host.get = async () => {
 				if (style === "throw") throw new NotFound("no such machine");
-				return { ok: false, error: { code: "not_found", vendor: "fakehost", message: "no such machine" } };
+				if (style === "HostError") throw new HostError("not_found", "no such machine");
+				return undefined;
 			};
 			return result;
 		};
@@ -1246,6 +1131,45 @@ test("a host's get that answers not_found, by a throw or by a result, is a machi
 		assert.equal(result.error?.code, "gone", style);
 		assert.match(result.error.message, /was gone before it ran/, style);
 	}
+});
+
+test("a host's call answers its value or throws: a HostError is read as its own code, in its words, over the host's errorCode", async () => {
+	const { provider, fake } = setup();
+	fake.host.create = async () => {
+		throw new HostError("limit", "the account's quota of 10 machines is reached");
+	};
+	const refused = await create(provider);
+	assert.equal(refused.error?.code, "limit");
+	assert.match(refused.error.message, /the account's quota of 10 machines is reached/);
+	assert.equal(refused.error.vendor, undefined, "a code the host knows names no vendor");
+	fake.host.create = async () => {
+		throw new Error("502: Bad Gateway");
+	};
+	const broken = await create(provider);
+	assert.equal(broken.error?.code, "vendor", "any other throw is the host's errorCode, vendor by default");
+	assert.equal(broken.error.vendor, "fakehost");
+});
+
+test("exec takes no stdin flag: the adapter ends a process's stdin at once where it gives none, and after its bytes where it gives some", async () => {
+	const { provider, fake } = setup({}, { fileApi: false });
+	const ended = [];
+	const exec = fake.host.exec;
+	fake.host.exec = async (id, argv, ctx, ...rest) => {
+		assert.deepEqual(rest, [], "three arguments: id, argv, ctx");
+		assert.equal(typeof ctx?.timeoutMs, "number");
+		const proc = await exec(id, argv, ctx);
+		const kind = fake.events.at(-1).what;
+		const written = [];
+		return {
+			...proc,
+			write: async (bytes) => (written.push(bytes.length), proc.write(bytes)),
+			end: async () => (ended.push([kind, written.length > 0]), proc.end()),
+		};
+	};
+	made(await create(provider));
+	assert.ok(ended.some(([kind, wrote]) => kind === "run upload" && wrote), "the upload's stdin ends after its bytes");
+	assert.ok(ended.some(([kind, wrote]) => kind === "run install" && !wrote), "the install, given no stdin, has it ended at once");
+	assert.ok(ended.some(([kind, wrote]) => kind === "run start" && !wrote), "so has init's start");
 });
 
 test("the adapter reads AbortError and TimeoutError by name; a host with no errorCode answers vendor for the rest", async () => {

@@ -129,21 +129,20 @@ test("createProvider() bounds every sandbox's life besides the TTL: autoStopMinu
 	assert.equal(post.body.autoDeleteInterval, 0);
 	assert.equal(post.body.ttlMinutes, 10);
 	assert.equal(Object.hasOwn(post.body, "snapshot"), false, "the default snapshot: no snapshot field");
-	assert.equal(provider.capabilities().stopDeletes, true, "a stop deletes it, and the provider declares that");
+	assert.deepEqual(provider.capabilities().release, ["delete"], "a Daytona computer is deleted, never stopped");
 });
 
-test("the module's note for the run's report says a stop deletes, that the provider declares it, and what each case does with it", () => {
+test("the module's note for the run's report says a stop deletes, that release stop is refused, and what each case does with it", () => {
 	const notes = daytonaModule.conformanceNotes;
 	assert.ok(Array.isArray(notes) && notes.length > 0 && notes.every((note) => typeof note === "string"), "the module exports conformanceNotes, strings");
 	const text = notes.join(" ");
 	assert.match(text, /autoStopMinutes 30/);
 	assert.match(text, /autoDeleteMinutes 0/);
-	assert.match(text, /stopDeletes/);
-	assert.match(text, /provider\.stop/);
+	assert.match(text, /release stop is refused/);
 	assert.match(text, /provider\.janitor/);
 	assert.doesNotMatch(text, /expected to fail|fails/, "no case is expected to fail by design");
 	const provider = createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.daemon]: DAEMON } });
-	assert.deepEqual([provider.capabilities().release, provider.capabilities().stopDeletes], [["stop", "delete"], true], "the run's provider declares that its stop deletes");
+	assert.deepEqual([provider.capabilities().release, provider.capabilities().stopDeletes], [["delete"], undefined], "the run's provider is delete-only");
 });
 
 test("the CLI loads the Daytona module, by path or by its registry id, and fails in words, exit 1, without a key", async () => {
@@ -207,7 +206,7 @@ test("the provider's create() reads no environment: the key, the API URL and the
 		assert.equal(post.body.target, "eu", "options.target, not DAYTONA_TARGET or COMPUTER_DAYTONA_TARGET");
 		assert.equal(post.body.autoStopInterval, 0, "the run's 30-minute bound is the conformance module's, not the provider's");
 		assert.equal(post.body.autoDeleteInterval, -1);
-		assert.equal(provider.capabilities().stopDeletes, false);
+		assert.deepEqual(provider.capabilities().release, ["delete"]);
 		for (const request of fake.requests) {
 			assert.equal(request.headers.authorization, `Bearer ${KEY}`);
 			assert.match(request.host, /\.daytona\.test$/, "options.apiUrl, not DAYTONA_API_URL or COMPUTER_DAYTONA_API_URL");
@@ -246,7 +245,7 @@ test("createHost(): the live sweep's host, from the same COMPUTER_DAYTONA_* name
 	const host = await daytonaModule.createHost({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, DAYTONA_API_KEY: PROD_KEY }, fetch: fake.fetch });
 	assert.equal(host.id, "daytona");
 	assert.deepEqual(fake.requests, []);
-	assert.deepEqual(await host.list({ "agentrun.computer": "1" }, { timeoutMs: 1_000 }), { ok: true, value: [] });
+	assert.deepEqual(await host.list({ "agentrun.computer": "1" }, { timeoutMs: 1_000 }), []);
 	assert.deepEqual(fake.requests.map((r) => `${r.method} ${r.host}${r.path}`), ["GET api.daytona.test/api/sandbox"]);
 	assert.equal(fake.requests[0].headers.authorization, `Bearer ${KEY}`);
 });
