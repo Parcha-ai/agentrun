@@ -1009,6 +1009,29 @@ to read it, which a run's confinement refuses, Codex keeps only the ends of a re
 would cut one past 2,000 lines or 51,200 bytes and save the rest to a file the session has no tool to read. A
 `web_search` answer past 100,000 characters leaves out its least relevant results, `omitted` counting them.
 
+### Finding and calling the run's tools
+
+Every agentic run on every harness also has three tools over its own tools (`src/runner/meta-tools.ts`). Codex has the
+first two and keeps its own code mode. None of them goes around the run's tool settings:
+
+- `tools_search {query, limit?}` ranks the run's tools by what they do and answers each match's name, description and
+  input schema (8 by default, at most 25). It finds only tools the run may call: never one set to deny, and never these
+  three.
+- `tools_call {name, args}` calls one of the run's tools by name. The call is the tool's own: it is asked about at the
+  gate by that tool's name, and recorded and booked under `<callId>/call`. An ask parks the run, a deny refuses it in the gate's words, and a name the run has no tool by (or one of these three)
+  is refused in words with nothing run.
+- `codemode {script}` runs a JavaScript script (the body of an async function) in a QuickJS sandbox. Its
+  `await tools.<name>(args)` calls are each the tool's own call, under `<callId>/s<n>`, answered one at a time. The
+  sandbox has the tools and nothing else of the run: no environment, key, file, network or timer. A script runs at most
+  10 minutes in 256 MiB. A call that needs approval parks the run, and the script follows Codex's rule. Once a person
+  answers, the script runs again from its start, and the calls it already made answer from their records. The parked
+  call runs once (or is refused), its outcome is the script's answer, and the rest of the script does not run. A
+  refused call ends the script with the refusal. A call cut off by a crash is told as possibly done and never run again.
+
+A paid call made through `tools_call` or a script is held at its price before it is sent and settled once, as a direct
+call is, so the cap holds it. On pi with a desktop or a phone, `codemode` is pi's own code mode (see
+[Computers](#computers)), offered in place of this one.
+
 ### Subagents
 
 `subagent` is one primitive: a prompt, a fresh context and a subset of the agent's own tools, on the agent's own model
@@ -1641,7 +1664,9 @@ An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`
 saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
 `mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
 property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi, claude-agent and codex run them (`features.mcp_client.harnesses`); on
-another harness the save warns that they are not bound there yet, and a run is refused. A workflow's nodes bind no MCP
+another harness the save warns that they are not bound there yet, and a run is refused. On claude-agent, a run with MCP
+tools has the Claude CLI's own tool search on: the server's tools reach the model only once its ToolSearch finds them,
+and the run's other tools load as they always do. A workflow's nodes bind no MCP
 tool yet: a workflow that grants one, in its `tools` or on a node, is `422` ("a workflow's nodes don't bind MCP tools
 here yet; grant it to an agentic agent").
 
@@ -2994,17 +3019,19 @@ that fails or takes over 3 seconds leaves the byte bound; the request is never h
 **The smallest cap that works.** The byte bound reads text as about two to three times the tokens it is billed as, and a
 step is sent only when the run's spend plus that step's least (its input bound, priced by the cap mode, and a 1,024-token
 answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet ($3 / $15,
-cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools, five requests (four
+cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (with the host's
+`tools_search`, `tools_call` and `codemode`: about 2,000 bytes, 639 tokens by Anthropic's count), five requests (four
 screenshots, then the answer), spending about $0.04 in all:
 
 | Cap mode | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- | --- |
-| `strict` | Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
-| `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
-| `expected` (the default) | Either | as `strict` | $0.06 | about $0.007 |
+| `strict` | Through a gateway (OpenRouter): the byte bound | $0.07 | $0.13 | about $0.013 |
+| `strict` | Straight to Anthropic: Anthropic's count | $0.04 | $0.09 | about $0.012 |
+| `expected` (the default) | Through a gateway | as `strict` | $0.07 | about $0.007 |
+| `expected` (the default) | Straight to Anthropic | as `strict` | $0.06 | about $0.007 |
 
-In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs about $0.06 by either route, and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
-CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
+In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs $0.06 straight to Anthropic and $0.07 through a gateway (whose first request alone needs $0.064), and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
+CLI's measured 6,926 bytes with five tools, about 8,900 with the host's three: $0.05 for its first request through a gateway). A cap below these pauses at
 once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. (In `strict` mode through a gateway, a run a cent under the five-step figure is not parked before its last step: the cap's wrap-up refuses its last screenshot, and the run answers from what it has.)
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it

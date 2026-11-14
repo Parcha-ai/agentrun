@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
+import { withToolSearch } from "./fixtures/claude-tool-search.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { OFFERED_ENV } from "./fixtures/faux-mcp-offered.mjs";
 import { twoToolPackage } from "./fixtures/two-tool-template.mjs";
@@ -55,13 +56,17 @@ async function setup(t, harness, templates) {
     offered = () => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
   }
   if (harness === "claude-agent") {
-    // The model calls the tool the prompt names whether or not it is offered, then answers with what came back.
+    // The model calls the tool the prompt names whether or not it is offered, then answers with what came back. The MCP
+    // tools are deferred behind the CLI's ToolSearch, so it searches first (withToolSearch), as a real model does.
+    const answer = withToolSearch((request) => {
+      if (Object.keys(request.results).length) return { text: `The tool said: ${Object.values(request.results)[0]}` };
+      const asked = /CALL (\w+) (\{[^}]*\})/.exec(request.text);
+      return asked ? { tool: { name: `mcp__hands__mcp__fake__${asked[1]}`, input: JSON.parse(asked[2]) } } : { text: "Noted." };
+    });
     const anthropic = await fakeAnthropic({
       reply: (request) => {
         offeredLists.push(request.tools);
-        if (Object.keys(request.results).length) return { text: `The tool said: ${Object.values(request.results)[0]}` };
-        const asked = /CALL (\w+) (\{[^}]*\})/.exec(request.text);
-        return asked ? { tool: { name: `mcp__hands__mcp__fake__${asked[1]}`, input: JSON.parse(asked[2]) } } : { text: "Noted." };
+        return answer(request);
       },
     });
     t.after(() => anthropic.close());
@@ -121,7 +126,7 @@ for (const harness of HARNESSES) {
     assert.equal(done.last.status, "completed", JSON.stringify(done.last));
     assert.equal(callsOf(fake, "add").length, 1, "the ticked tool ran once, with no one asked");
     assert.match((await api("GET", `/runs/${ran.body.run_id}`)).body.result?.final_answer ?? "", /5/);
-    if (harness !== "codex") assert.ok(offered().some((tools) => tools.includes(wire("add"))), "the ticked tool was offered");
+    if (harness !== "codex") assert.ok(offered().some((tools) => tools.includes(wire("add"))), `the ticked tool was offered: ${JSON.stringify(offered())}`);
     // At the source: the apply never granted it.
     assert.ok(!agent.definition.tools.includes(UNTICKED), `the unticked tool is not the agent's: ${JSON.stringify(agent.definition.tools)}`);
   });
