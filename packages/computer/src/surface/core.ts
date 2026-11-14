@@ -160,8 +160,11 @@ export function actText(names: readonly string[], result: ActResult): string {
 /** A chord's keys: "ctrl+shift+t" is ctrl, shift, t; a trailing "+" is the plus key ("ctrl++"). */
 export const chordKeys = (chord: string): string[] => chord.split(/\+(?=.)/).filter((key) => key !== "");
 
-/** The surface of one computer, over its connection. */
-export function createSurface(client: ComputerClient, hello: HelloResult): Surface {
+/**
+ * The surface of one computer, over its connection. `cwd`: where shell.run and processes.start start a program whose
+ * call names no folder (the run's folder, where the computer mounts it); absent, where the computer starts it.
+ */
+export function createSurface(client: ComputerClient, hello: HelloResult, { cwd }: { readonly cwd?: string } = {}): Surface {
 	const card = cardOf(hello);
 	const has = (group: string) => card.groups.includes(group);
 	const ops = opsOf(card.groups);
@@ -411,7 +414,8 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 	async function run(args: { command?: unknown; cwd?: string; timeoutMs?: number; env?: Record<string, string> }, signal?: AbortSignal): Promise<RunResult> {
 		const argv = argvOf(args.command);
 		const timeoutMs = Math.min(Math.max(1, args.timeoutMs ?? DEFAULT_RUN_MS), MAX_RUN_MS);
-		const result = await call("exec.run", { argv, timeoutMs, ...(args.cwd ? { cwd: args.cwd } : {}), ...envOf(args.env) }, signal);
+		const folder = args.cwd || cwd;
+		const result = await call("exec.run", { argv, timeoutMs, ...(folder ? { cwd: folder } : {}), ...envOf(args.env) }, signal);
 		return {
 			stdout: Buffer.from(result.stdout, "base64").toString("utf8"),
 			stderr: Buffer.from(result.stderr, "base64").toString("utf8"),
@@ -465,7 +469,8 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 			case "processes.start": {
 				const argv = argvOf(args.command);
 				// orphans "keep": what the program starts (a launcher that forks its app and exits) runs on too.
-				const started = await call("process.start", { argv, ...(typeof args.cwd === "string" && args.cwd ? { cwd: args.cwd } : {}), ...envOf(args.env as Record<string, string> | undefined), orphans: "keep" }, signal);
+				const folder = (typeof args.cwd === "string" && args.cwd) || cwd;
+				const started = await call("process.start", { argv, ...(folder ? { cwd: folder } : {}), ...envOf(args.env as Record<string, string> | undefined), orphans: "keep" }, signal);
 				return { value: { pid: started.pid }, text: `started ${argv.join(" ")} (pid ${started.pid})`, images: [] };
 			}
 			case "files.read": {

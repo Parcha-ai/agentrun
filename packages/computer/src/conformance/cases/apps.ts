@@ -90,7 +90,7 @@ const foreground = async (t: CaseContext) => (await t.call("apps.list", {})).for
 
 /**
  * The stock apps a Linux desktop may have, by their desktop file ids, any vendor's: the text editor and the terminal of
- * Xfce, which E2B Desktop's template and the box image (box/build-agent37.mjs) both carry, and xterm, which a bare
+ * Xfce, which E2B Desktop's template and the box image (box/Dockerfile) both carry, and xterm, which a bare
  * desktop has (the Docker suite's, test/fixtures/desktop).
  */
 export const DESKTOP_APPS: readonly string[] = ["org.xfce.mousepad", "mousepad", "xfce4-terminal", "org.xfce.terminal", "xterm"];

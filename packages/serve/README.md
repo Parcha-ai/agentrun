@@ -738,13 +738,14 @@ passes the binding's conformance cases (below) needs no change here.
   region and that region's S3 URL (and an exec image pinned by digest, if you want one other than serve's default);
   `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
   because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
-  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Modal, E2B or Agent37 sandbox would mount
-  the run's folder from its disk, but it needs Archil's image in your own vendor account, and this server can't put it
-  there yet. Settings shows them not ready, an agent's save warns, and a run's start refuses them (409) before any
-  computer is made. Docker's sandbox is refused, since
-  it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes. So in Mode 2 no sandbox
-  runs for now. An E2B or Agent37 desktop would mount the folder as well (it has files and exec), so it is not ready
-  and refused at the start in the same words.
+  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Modal, E2B or Agent37 sandbox
+  mounts the run's folder from its disk, which needs Archil's image in your own vendor account. Agent37 puts it there
+  itself: its descriptor says `prepareImage`, so a run's first claim registers our public box image as a template of the
+  key's workspace (`agentrun-box-<recipe hash>`) and waits once, saying it is pulling. Its sandbox and desktop are
+  ready once the keys work. This server can't put the image in a Modal or E2B account yet, so Settings shows those not
+  ready, an agent's save warns, and a run's start refuses them (409) before any computer is made. An E2B desktop mounts
+  the folder as well (it has files and exec), so it is refused in the same words. Docker's sandbox is refused, since it
+  cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes.
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
   `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
@@ -812,10 +813,11 @@ DAYTONA_API_KEY=... python3 packages/computer/box/build-daytona.py   # prints sn
 A Daytona computer takes no Archil mount, so this server never holds a run's folder on one (see Mode 2 above). A
 Daytona [box](#sandbox) never reads it.
 
-A desktop, a phone and a browser run in either mode, except a desktop that would mount the owner's disk in Mode 2 (E2B's,
-Agent37's), which needs Archil's image in your vendor account first (see Mode 2 above). The run's folder is at
+A desktop, a phone and a browser run in either mode, except E2B's desktop in Mode 2, which would mount the owner's disk
+and needs Archil's image in your vendor account first (see Mode 2 above). The run's folder is at
 `/workspace` in every computer that mounts it: a sandbox always, and a desktop whose provider mounts the mode's folder
-(Docker's in Mode 1). A phone and a browser never mount it.
+(Docker's in Mode 1, Agent37's in Mode 2). A phone and a browser never mount it. On a desktop that mounts it, the
+`shell` group's commands and the programs `processes.start` opens start in `/workspace` too, as `bash` does.
 
 **Where `bash` runs.** It follows the mount:
 
