@@ -1,5 +1,5 @@
 // Orgo for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider orgo [--image <template>]`.
-// It makes real Orgo desktops, so it runs only with AGENTRUN_COMPUTER_LIVE_ORGO=1 and a key the lead has OKed, under
+// It makes real Orgo desktops, so it runs only with AGENTRUN_COMPUTER_LIVE_ORGO=1 and a key for an account you can bill, under
 // COMPUTER_ORGO_API_KEY (never ORGO_API_KEY), in the workspace COMPUTER_ORGO_WORKSPACE names, or the key's account's one
 // workspace when it names none. The live switch is checked first, before any other setting is read.
 //
@@ -54,7 +54,7 @@ export interface OrgoModuleOptions {
 
 function live(env: Record<string, string | undefined>): void {
 	if (env[ORGO_ENV.live] !== "1") {
-		throw new Error(`the Orgo conformance module makes real computers: set ${ORGO_ENV.live}=1, with a key the lead has OKed, to run it`);
+		throw new Error(`the Orgo conformance module makes real computers: set ${ORGO_ENV.live}=1, with a key for an account you can bill, to run it`);
 	}
 }
 

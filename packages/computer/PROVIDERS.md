@@ -79,7 +79,7 @@ marks a cut. A member answers its value, or throws. AgentRun reads a thrown erro
 call gets `ctx` with a `timeoutMs` and sometimes a `signal`. Pass both to your client where you can.
 
 **`descriptor`** is your descriptor (below). Errors with code `vendor` name its id, refusals name its label, and the
-provider's network and mounts are the ones it declares.
+provider's network, mounts, and each kind's groups and GPUs are the ones it declares.
 
 ```ts
 class E2BHost implements MachineHost {
@@ -90,7 +90,7 @@ class E2BHost implements MachineHost {
 `daemon: "child"` means your own agent runs first and starts processes; with `"pid1"`, the machine's main process is
 the command AgentRun passes to create. `lifetime: "vendor"` means your timer ends a machine at its deadline; with
 `"janitor"`, AgentRun ends it by label. `vendorAgentPorts` are the ports your agent listens on inside the machine.
-`HostFacts` in [`src/host.ts`](src/host.ts) lists the optional fields, such as `gpu`, `user` and `specFields`.
+`HostFacts` in [`src/host.ts`](src/host.ts) lists the optional fields, such as `user` and `labels`.
 
 `maxLifetimeMs` in `facts` is the longest any of your plans keeps a machine. For E2B that's Pro's 24 hours
 (`PRO_MAX_MS`). Your provider's `maxLifetimeMs` option is the cap a user gets, and it may only lower the fact. Default
@@ -110,18 +110,19 @@ A user on a bigger plan raises the option, up to the fact.
 ```
 
 **`create(req, ctx)`** makes one machine and answers as soon as you have its id. Don't wait for it to boot, because
-AgentRun polls `get`. Store `req.labels` on the machine, since `list` finds machines by them. `req.network` is always
-`"none"`, except for a computer with an Archil storage mount. There AgentRun asks `"open"` so its root can reach
-Archil, and the agent's programs still have no network.
+AgentRun polls `get`. Store `req.labels` on the machine, since `list` finds machines by them. `req.egress` is always
+`false`, except for a computer with an Archil storage mount. There AgentRun asks `true` so its root can reach Archil,
+and the agent's programs still have no network. `req.cpus` and `req.memoryMb` come whenever the spec gives them: a
+vendor whose size is its image's refuses them in its own `check`.
 
 ```ts
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
-		const timeoutMs = Math.ceil((req.lifetimeMs ?? 0) / 1000) * 1000;
+		const timeoutMs = Math.ceil(req.lifetimeMs / 1000) * 1000;
 		const options: SandboxOpts = {
 			...this.#api(ctx.timeoutMs),
 			timeoutMs,
 			metadata: { ...req.labels, [TIMEOUT_LABEL]: String(timeoutMs) },
-			allowInternetAccess: req.network === "open",
+			allowInternetAccess: req.egress,
 			// …
 		};
 		const sandbox = await this.#Sandbox.create(req.image, options);
@@ -131,13 +132,12 @@ Archil, and the agent's programs still have no network.
 ```
 
 **`get(id, ctx)`** reads one machine as your API sees it now, as a `Machine`:
-`{ id, labels, state, endsAt?, createdAt?, gpu?, why? }`.
+`{ id, labels, state, endsAt?, createdAt?, why? }`.
 
 - `state` is `starting`, `running`, `stopped` (there but not running, such as paused) or `gone` (being deleted,
   ended, or failed).
 - `endsAt` is when your timer ends it, with `lifetime: "vendor"`.
 - `createdAt` is when your API made it. Of two racing creates' machines, AgentRun keeps the oldest.
-- `gpu` is the GPUs your API reads back, with `facts.gpuReadBack`.
 - `why` is your API's words for a machine that failed to start, which is `gone`.
 
 A machine that no longer exists is `undefined`, or an error that maps to `not_found`; neither is a failure. Don't read
@@ -411,14 +411,16 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
 
 ### What AgentRun does for your host
 
-- **`check(spec)`** applies the shared rules (lifetime and its cap, network none, the label namespace, sizes, users,
-  GPUs, the Archil mount), then your `check`.
+- **`check(spec)`** applies the shared rules (lifetime and its cap, network none, the label namespace and your
+  `labels` bound, sizes, users, GPUs, the Archil mount), then your `check`.
 - **`create(spec, { requestId })`** names the machine `computer-` plus the first 12 hex digits of the request id's
   sha256, so a retried create finds the machine it already made. It deletes a machine whose create landed after the
-  caller gave up. When two creates race, it keeps the oldest machine and deletes the rest. Then it waits for the machine
-  to run, checks the labels `get` reads back, uploads the daemon and checks its sha256, starts it, and probes from
-  inside that the network is none. If any step fails after the machine exists, it deletes the machine and waits until
-  `get` answers none, twice running.
+  caller gave up. When two creates race, it keeps the oldest machine and deletes the rest. A GPU computer's GPUs go in
+  the label `agentrun.computer.gpu` (`<type>:<count>`), which a retry and `attach` read back. Then it waits for the
+  machine to run, checks the labels `get` reads back, closes the session buses in `/tmp` (`/tmp/dbus-*`) to the
+  computer's user on a `child` host, uploads the daemon and checks its sha256, starts it, and probes from inside that
+  the network is none and the kernel is the runtime you declare. If any step fails after the machine exists, it
+  deletes the machine and waits until `get` answers none, twice running.
 - **The rest** covers `attach`, `list`, `connect`, `network` (fixed at create), `extend` (where your host has
   `extend`), `release` (delete, then the same wait; a stop is refused: a computer here is deleted, never stopped and
   kept), `watch` and `testConnection`.
