@@ -764,32 +764,39 @@ test("a computer deleted during a call in flight: that call and every other in f
 	await connected.close();
 });
 
-test("a call in flight whose transport hangs ends at its own timeoutMs (and the answer's slack), not at the transport's death; a deleted computer then says so", async (t) => {
+test("a call in flight whose transport hangs ends at its own timeoutMs (and the answer's slack), not at the transport's death; a deleted computer then ends every other call waiting, and later ones, not_found", async (t) => {
 	for (const deleted of [true, false]) {
 		const { provider, fake } = setup();
 		const ref = made(await create(provider));
 		const connected = made(await provider.connect(ref));
 		t.mock.timers.enable({ apis: ["setTimeout"] });
 		let answer;
+		let other;
 		connected.client.call("exec.run", { argv: ["sleep", "120"], timeoutMs: 70_000 }).then((result) => (answer = result));
 		await turns();
 		if (deleted) fake.vanish(ref.id, "hang");
 		else only(fake).hung = true;
+		// A call with no timeoutMs of its own, sent once the transport hangs: nothing bounds it but the connection.
+		connected.client.call("files.stat", { path: "/proc/self/cwd" }).then((result) => (other = result));
 		t.mock.timers.tick(70_000 + ANSWER_SLACK_MS - 1);
 		await turns();
 		assert.equal(answer, undefined, "still waiting just short of its bound");
 		t.mock.timers.tick(1);
 		await turns();
 		assert.ok(answer, "settled at its bound, while the transport still hangs");
+		assert.equal(answer.error?.code, "timeout", JSON.stringify(answer));
+		assert.match(answer.error.message, /exec\.run had no answer within 75 s \(its own timeout of 70 s, and 5 s for the answer to come\)/);
 		if (deleted) {
-			assert.equal(answer.error?.code, "not_found", JSON.stringify(answer));
-			assert.match(answer.error.message, DELETED);
+			assert.equal(other?.error?.code, "not_found", `the other call waiting: ${JSON.stringify(other)}`);
+			assert.match(other.error.message, DELETED);
+			const later = await connected.client.call("exec.run", { argv: ["true"], timeoutMs: 1_000 });
+			assert.deepEqual(later, other, "a later call says the same");
 		} else {
-			assert.equal(answer.error?.code, "timeout", JSON.stringify(answer));
-			assert.match(answer.error.message, /exec\.run had no answer within 75 s \(its own timeout of 70 s, and 5 s for the answer to come\)/);
+			assert.equal(other, undefined, "a computer still there: the other call waits on its connection");
 		}
 		t.mock.timers.reset();
 		await connected.close();
+		if (!deleted) assert.equal(other?.error?.code, "gone", "and the close ends it");
 	}
 });
 
@@ -827,6 +834,24 @@ test("a caller that aborts while the machine is read back stops waiting on the r
 	assert.equal(answer.error?.code, "gone", JSON.stringify(answer));
 	held.resolve();
 	await connected.close();
+});
+
+test("a close while the machine is read back releases every call waiting on the read: the client's own words, at once", async () => {
+	const held = deferred();
+	let holdGets = false;
+	const { provider, fake } = setup({}, { onStep: (step) => (holdGets && step === "get" ? held.promise : undefined) });
+	const ref = made(await create(provider));
+	const connected = made(await provider.connect(ref));
+	holdGets = true;
+	const running = connected.client.call("exec.run", { argv: ["sleep", "60"], timeoutMs: 60_000 });
+	await turns();
+	fake.vanish(ref.id, "end");
+	await turns();
+	await connected.close();
+	const answer = await running;
+	assert.equal(answer.error?.code, "gone", JSON.stringify(answer));
+	assert.match(answer.error.message, /the daemon's stream (ended|closed)/);
+	held.resolve();
 });
 
 test("a connection closed by its caller is not a deleted computer: no read-back, the client's own words", async () => {

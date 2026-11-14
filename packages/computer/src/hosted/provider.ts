@@ -1353,9 +1353,11 @@ async function readMachine(host: MachineHost, id: string, ms: number, signal?: A
 	return !read.ok && read.error.code === "not_found" ? ok(undefined) : read;
 }
 
-/** What reading answers, or undefined once signal aborts first: a caller that stopped waiting never waits on a read. */
-function untilAborted<T>(reading: Promise<T>, signal: AbortSignal | undefined): Promise<T | undefined> {
-	if (signal === undefined) return reading;
+/** What reading answers, or undefined once a signal aborts first: a caller that stopped waiting never waits on a read. */
+function untilAborted<T>(reading: Promise<T>, signals: readonly (AbortSignal | undefined)[]): Promise<T | undefined> {
+	const given = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+	if (given.length === 0) return reading;
+	const signal = AbortSignal.any(given);
 	if (signal.aborted) return Promise.resolve(undefined);
 	return new Promise((settle) => {
 		const onAbort = () => settle(undefined);
@@ -1368,25 +1370,33 @@ function untilAborted<T>(reading: Promise<T>, signal: AbortSignal | undefined): 
 }
 
 /**
- * A connection's client that says its computer was deleted (the vendor's own API can delete it mid-run). Once the
- * client answers gone (its stream ended or failed) the machine is read once, and that one read answers every call in
- * flight at that moment and every later call; a call with no answer by its own timeout reads it again. A machine the
- * vendor no longer has, or reads going, makes each of them not_found in these words; one still there, or a read that
- * failed, leaves the client's own answer, as does a caller's abort during the read. A connection its caller closed is
- * never read back.
+ * A connection that says its computer was deleted (the vendor's own API can delete it mid-run). Once its client answers
+ * gone (the stream ended or failed), the machine is read once, and that one read answers every call in flight at that
+ * moment and every later call. A machine the vendor no longer has, or reads going, makes each of them not_found in these
+ * words; one still there, or a read that failed, leaves the client's own answer, as does a caller's abort or a close
+ * during the read. A call with no answer by its own timeout answers timeout at once, as the client says; the machine is
+ * read beside it, and a deleted one ends the connection, so every call still waiting on the hung transport and every
+ * later call answers not_found. A connection its caller closed is never read back.
  */
 function deletedSaid(host: MachineHost, ref: ComputerRef, label: string, requestMs: number, connection: ComputerConnection): ComputerConnection {
 	const { client } = connection;
-	let closed = false;
+	const closing = new AbortController();
 	let deleted: ComputerError | undefined;
 	let ended: Promise<ComputerError | undefined> | undefined;
+	let checking: Promise<ComputerError | undefined> | undefined;
 	const read = async (): Promise<ComputerError | undefined> => {
-		const got = await readMachine(host, ref.id, requestMs);
-		if (got.ok && (got.value === undefined || got.value.state === "going")) {
+		const got = await readMachine(host, ref.id, requestMs, closing.signal);
+		if (got.ok && (got.value === undefined || got.value.state === "going") && deleted === undefined && !closing.signal.aborted) {
 			const how = got.value === undefined ? `${label} no longer has it` : `${label} reads it going`;
-			deleted ??= { code: "not_found", message: `the computer ${ref.name} (${ref.id}) was deleted: ${how}` };
+			deleted = { code: "not_found", message: `the computer ${ref.name} (${ref.id}) was deleted: ${how}` };
+			// Every call still waiting on the transport settles now, with these words, as later ones do.
+			void connection.close();
 		}
 		return deleted;
+	};
+	const close = () => {
+		closing.abort();
+		return connection.close();
 	};
 	return {
 		...connection,
@@ -1394,19 +1404,22 @@ function deletedSaid(host: MachineHost, ref: ComputerRef, label: string, request
 			async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }): Promise<Result<DaemonMethods[M]["result"]>> {
 				if (deleted) return { ok: false, error: deleted };
 				const answered = await client.call(method, params, options);
-				if (answered.ok || closed || (answered.error.code !== "gone" && answered.error.code !== "timeout")) return answered;
-				const found = await untilAborted(answered.error.code === "gone" ? (ended ??= read()) : read(), options?.signal);
+				if (answered.ok) return answered;
+				if (deleted) return { ok: false, error: deleted };
+				if (closing.signal.aborted) return answered;
+				if (answered.error.code === "timeout") {
+					checking ??= read().finally(() => (checking = undefined));
+					return answered;
+				}
+				if (answered.error.code !== "gone") return answered;
+				const found = await untilAborted((ended ??= read()), [options?.signal, closing.signal]);
 				return found ? { ok: false, error: found } : answered;
 			},
 			close() {
-				closed = true;
-				client.close();
+				void close();
 			},
 		},
-		close() {
-			closed = true;
-			return connection.close();
-		},
+		close,
 	};
 }
 
