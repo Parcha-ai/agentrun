@@ -13,6 +13,7 @@ import { pick } from "@/test/picker";
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
 describe("route", () => {
+
   it("opens Mission Control for the bare address and the old start page", () => {
     for (const h of ["", "#", "#/", "#/start"]) expect(route(h).section, h).toBe("mission");
   });
@@ -20,6 +21,17 @@ describe("route", () => {
     expect(route("#/runs")).toEqual({ section: "runs" });
     expect(route("#/runs/r1")).toEqual({ section: "runs", run: "r1" });
     expect(route("#/runs?agent=calc")).toEqual({ section: "runs", runsOf: "calc" });
+  });
+  it("keeps the selected agent in a Playground link", () => {
+    expect(route("#/playground?agent=agent%20two")).toEqual({ section: "playground", playgroundAgent: "agent two" });
+    expect(route("#/playground")).toEqual({ section: "playground" });
+  });
+  it("keeps creation and editing requests separate from starting a run", () => {
+    expect(route("#/playground?operation=create-agent&draft=%7B%7D")).toEqual({ section: "playground", operation: "create-agent", draft: "{}" });
+    expect(route("#/playground?operation=edit-agent&agent=agent%20two")).toEqual({ section: "playground", operation: "edit-agent", playgroundAgent: "agent two" });
+  });
+  it("keeps the scope of a read-only query playground link", () => {
+    expect(route("#/playground?operation=list-runs&agent=agent%20two&status=failed&archived=true")).toEqual({ section: "playground", operation: "list-runs", playgroundAgent: "agent two", status: "failed", archived: true });
   });
   it("opens the triggers list, a new schedule, a new webhook, one trigger, and a schedule's editor at their own addresses", () => {
     expect(route("#/triggers")).toEqual({ section: "triggers" });
@@ -464,11 +476,13 @@ describe("App, the agents' names", () => {
     await until(() => !!link());
     await act(async () => { link()!.click(); });
     await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}`);
-    // Its page, then a run of it from the run bar: the run's page opens.
-    await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}` && !!host.querySelector('section[aria-label="Start a run"] textarea'));
-    await type(host.querySelector<HTMLTextAreaElement>('section[aria-label="Start a run"] textarea')!, "Check the 2.3.0 entry.");
-    await act(async () => { button(/^Run$/)!.click(); });
-    await until(() => location.hash === `#/runs/${encodeURIComponent(started.run_id)}` && !!host.querySelector("h1"));
+        await act(async () => { location.hash = `#/playground?agent=${encodeURIComponent(made.agent_id)}`; });
+    await until(() => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]')?.textContent === made.definition.name);
+    await type(host.querySelector<HTMLTextAreaElement>("textarea")!, "Check the 2.3.0 entry.");
+    await act(async () => { button(/send request/i)!.click(); });
+    await until(() => !!button(/Open this run/));
+    await act(async () => { button(/Open this run/)!.click(); });
+    await until(() => location.hash === `#/runs/${encodeURIComponent(started.run_id)}` && !button(/Open this run/) && !!host.querySelector('nav[aria-label="Breadcrumb"]'));
     // The run's page names its agent in its breadcrumb.
     await until(() => host.textContent!.includes(made.definition.name!));
     expect(host.textContent).not.toContain(made.agent_id);
@@ -478,7 +492,7 @@ describe("App, the agents' names", () => {
     expect(rows().join("\n")).not.toContain(made.agent_id);
   });
 
-  it("names an agent made here, not by its id, on its first run in the Playground", async () => {
+  it("opens the requested agent in the Playground and names its first run correctly", async () => {
     server();
     const { host, until, button, type } = await open("#/playground?operation=create-agent");
     // The blank request is the manual creation path linked from the coding-agent handoff.
@@ -491,14 +505,8 @@ describe("App, the agents' names", () => {
     await act(async () => { link()!.click(); });
     await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}`);
     // Straight to the Playground, as a person tries a new agent: it is offered there, picked, and run.
-    await act(async () => { location.hash = "#/playground"; });
-    // The Agent picker: opened, the agent made here is among its options, and picked.
+    await act(async () => { location.hash = `#/playground?agent=${encodeURIComponent(made.agent_id)}`; });
     const pick = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]');
-    await until(() => !!pick());
-    await act(async () => { pick()!.click(); });
-    const option = () => [...document.querySelectorAll('[role="listbox"] [role="option"]')].find((o) => o.textContent === made.definition.name) as HTMLElement | undefined;
-    await until(() => !!option());
-    await act(async () => { option()!.click(); });
     await until(() => !!pick()?.textContent?.includes(made.definition.name!));
     await type(host.querySelector<HTMLTextAreaElement>("textarea")!, "Check the 2.3.0 entry.");
     await act(async () => { button(/send request/i)!.click(); });
@@ -507,6 +515,40 @@ describe("App, the agents' names", () => {
     await until(() => crumb().includes(`Run ${runLabel(started.run_id)}`));
     await until(() => crumb().includes(made.definition.name!));
     expect(crumb()).not.toContain(made.agent_id);
+  });
+
+  it("updates the Playground target when its URL changes and never substitutes a missing agent", async () => {
+    const [first, second] = agentsList();
+    server({ active: [first, second] });
+    const { host, until } = await open(`#/playground?agent=${encodeURIComponent(second.agent_id)}`);
+    const selected = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]')?.textContent;
+    await until(() => selected() === second.definition.name);
+    expect(selected()).toBe(second.definition.name);
+    await act(async () => { location.hash = `#/playground?agent=${encodeURIComponent(first.agent_id)}`; });
+    await until(() => selected() === first.definition.name);
+    expect(selected()).toBe(first.definition.name);
+    await act(async () => { location.hash = "#/playground?agent=missing-agent"; });
+    await until(() => !!host.querySelector('[role="alert"]'));
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("selected agent is unavailable or archived");
+    expect(host.querySelector('button[aria-haspopup="listbox"][aria-label="Agent"]')).toBeNull();
+    expect([...host.querySelectorAll("button")].some((b) => /send request/i.test(b.textContent ?? ""))).toBe(false);
+  });
+  it("edits the agent selected in the run form when it differs from the original link", async () => {
+    const [first, second] = agentsList();
+    server({ active: [first, second] });
+    const { host, until } = await open(`#/playground?agent=${encodeURIComponent(first.agent_id)}`);
+    const picker = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]');
+    await until(() => !!picker());
+    await act(async () => { picker()!.click(); });
+    await until(() => !!document.querySelector('[role="listbox"]'));
+    await act(async () => {
+      const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) => o.textContent === second.definition.name)!;
+      option.click();
+    });
+    await until(() => picker()?.textContent === second.definition.name);
+    await pick(host.querySelector<HTMLButtonElement>("#api-operation")!, "edit-agent");
+    await until(() => location.hash.includes(`agent=${encodeURIComponent(second.agent_id)}`) && !!host.querySelector('input[aria-label="Name"]'));
+    expect(host.querySelector<HTMLInputElement>('input[aria-label="Name"]')!.value).toBe(second.definition.name);
   });
 
   it("names a run of an archived agent, which is not gone, and shows the id of one that is", async () => {

@@ -35,28 +35,22 @@ async function agentPage(agent: Agent = agentFixture("invoice-checker")) {
 }
 
 describe("the agent page's header on a phone", () => {
-  it("the back button sits in the name row, its word read but not shown; Edit keeps its name with its word hidden", async () => {
+  it("keeps the compact toolbar and named handoff actions reachable on a narrow screen", async () => {
     const host = await agentPage();
-    const header = host.querySelector("header")!;
-    const back = [...header.querySelectorAll("button")].find((b) => b.textContent?.includes("Agents"))!;
-    expect(back).toBeDefined();
-    expect(back.closest("[data-phone-row]")).not.toBeNull();
-    expect(back.closest("[data-phone-row]")!.querySelector("h1")).not.toBeNull();
-    expect(classes(back.closest("[data-phone-row]"))).toEqual(expect.arrayContaining(["max-sm:flex-row", "max-sm:items-center"]));
-    expect(classes([...back.querySelectorAll("span")].find((s) => s.textContent === "Agents"))).toContain("max-sm:sr-only");
-    const edit = [...header.querySelectorAll("button")].find((b) => b.textContent?.includes("Edit"))!;
-    expect(classes([...edit.querySelectorAll("span")].find((s) => s.textContent === "Edit"))).toContain("max-sm:sr-only");
-    expect(classes(header)).toContain("max-sm:py-3");
+    const header = host.querySelector('header[aria-label="Agent toolbar"]')!;
+    const back = header.querySelector('button[aria-label="Back to agents"]');
+    expect(back).not.toBeNull();
+    expect(header.textContent).toContain("Invoice checker");
+    expect(classes(header)).toEqual(expect.arrayContaining(["min-h-12", "flex-wrap"]));
+    expect(header.querySelector('button[aria-label="Choose coding agent for Edit agent"]')).not.toBeNull();
+    expect(header.querySelector('button[aria-label="Choose coding agent for Run agent"]')).not.toBeNull();
+    expect(host.querySelectorAll("h1")).toHaveLength(1);
+    expect(host.querySelector('[aria-label="Agent overview"] h1')?.textContent).toBe("Invoice checker");
   });
 
-  it("the shared Edit action stays compact, named and beside the local editor on a phone", async () => {
+  it("keeps distinct app and CLI destinations in the compact agent toolbar", async () => {
     const host = await agentPage();
-    const group = host.querySelector('header [aria-label="Edit agent options"]')!;
-    expect(group.closest("[data-phone-row]")).not.toBeNull();
-    const handoff = group.querySelector<HTMLButtonElement>('button[aria-label="Edit agent"]');
-    expect(handoff).not.toBeNull();
-    expect(classes([...handoff!.querySelectorAll("span")].find((s) => s.textContent === "Edit agent"))).toContain("sr-only");
-    const dropdown = group.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Edit agent"]')!;
+    const dropdown = host.querySelector<HTMLButtonElement>('header [aria-label="Choose coding agent for Edit agent"]')!;
     await act(async () => dropdown.click());
     const menu = document.querySelector('[role="menu"]')!;
     for (const label of ["Claude Code app", "Claude Code CLI", "Codex app", "Codex CLI"]) expect(menu.textContent).toContain(label);
@@ -84,7 +78,7 @@ describe("the agent page's header on a phone", () => {
 
   it("a description cut at two lines opens whole with the facts, from the same line", async () => {
     const host = await agentPage();
-    const description = [...host.querySelectorAll("header p")].find((p) => p.textContent === agentFixture("invoice-checker").definition.description)!;
+    const description = [...host.querySelectorAll('[aria-label="Agent overview"] p')].find((p) => p.textContent === agentFixture("invoice-checker").definition.description)!;
     expect(description).toBeDefined();
     const toggle = host.querySelector('button[aria-controls~="agent-facts"]')!;
     expect(description.id).not.toBe("");

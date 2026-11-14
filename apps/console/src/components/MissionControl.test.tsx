@@ -41,6 +41,7 @@ describe("MissionControl", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     for (const s of ["Mission Control", ">2<", ">7<", "Active", "Needs input", "Failed"]) expect(html).toContain(s);
   });
+
   it("links each recent run to its page, and each agent to its page's Runs tab", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     expect(html).toContain('href="#/runs/run-1"');
@@ -130,6 +131,22 @@ describe("MissionControl's analytics", () => {
     expect(html).toContain("<summary");
     // Live runs only: no source line.
     expect(html).not.toContain("Imported from");
+  });
+
+  it("keeps unknown native token totals and chart days unknown without inventing cache ratios", () => {
+    const a = analytics({ totals: { ...analytics().totals, tokens: null, input: null, output: null, cache_read: 100, cache_write: null }, by_harness_effort: [{ ...analytics().by_harness_effort[0], tokens: null }], by_day: [{ ...analytics().by_day[0], tokens: null }, analytics().by_day[1]] });
+    const html = render(withA(a), scope);
+    expect(html).toContain("Unknown");
+    expect(html).toContain("2026-10-30: Unknown tokens");
+    expect(html).not.toContain("of input cached");
+    expect(html).not.toMatch(/NaN|Infinity/);
+  });
+
+  it("makes native model request counts explicitly unknown when telemetry cannot report them", () => {
+    const a = analytics({ totals: { ...analytics().totals, requests: null, unmetered: null } });
+    const html = render(withA(a), scope);
+    expect(html).toContain("Model request counts unavailable");
+    expect(html).not.toContain("0 requests with no token count");
   });
 
   it("says when tokens leave runs out, when requests were unmetered, and when runs were at work", () => {

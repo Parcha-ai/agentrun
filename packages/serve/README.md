@@ -2470,10 +2470,19 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
 Open the link the server prints, once, in a browser. `/` is the console (`apps/console` in the repository), on the
 server's own origin, under a CSP that allows that origin only, but for the provider icons on the Keys page (below):
 
-- **Mission Control**: the store's counts and latest runs, available without a model-provider key.
-- **Agents**: Build opens a brief and template catalog; Connected agents includes existing local or remote native
-  setups. Build, edit and run share the remembered coding-agent dropdown and API playground.
-- **API playground**: prepare create, edit, query and run requests, or hand the same request to your coding agent.
+- **Mission Control**: the store's counts, imported history, analytics and the latest runs, available before the first
+  server-run agent and without a model-provider key. Its introduction is dismissible. Import agents and Query use
+  the coding-agent selector; the page refreshes when you return from your coding agent.
+- **Agents**: **Build** opens a description composer and local starter templates; **Connected agents** lists definitions,
+  with archived ones behind **Archived**. Build, edit and run actions share the remembered coding-agent dropdown,
+  including **API playground**. Choosing a template prepares its full definition without creating or running it.
+  Each agent opens an overview beside its runs, versions and supported workflow, learning and analytics tabs.
+- **API playground**: create an agent with `POST /v2/agents`, edit its definition with
+  `PUT /v2/agents/{id}/definition`, query runs with `GET /v2/runs` (or one agent's runs), or start a run on the revision
+  you pick and follow it live. Query links retain the agent, state and archive filters. Build descriptions and
+  templates carry into the editable create request. Edits preserve other configuration and use `If-Match` (412 when
+  another revision came first). Definition management does not require a model-provider key. The existing detailed
+  editor remains available at `#/agents/{id}/edit`, including making an older revision current.
 - **Runs**: every run, newest first, filtered by agent and by state, archived runs behind **Archived**; the address
   keeps the filters. A run's page follows `GET /v2/runs/{id}/timeline` with a long poll, sends messages (an answer while
   it waits on `ask_person`), stops or cancels the run, shows its files and a workflow's graph, and has **Archive** or

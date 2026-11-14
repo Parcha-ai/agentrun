@@ -1,25 +1,14 @@
-import { Bot, CalendarClock, History, LayoutDashboard, LayoutTemplate, LogOut, Menu, Monitor, Moon, Settings, Sun, Terminal } from "lucide-react";
+import { Brain, CalendarClock, ChevronDown, Code, Hammer, History, LayoutGrid, LayoutTemplate, LogOut, Menu, Monitor, Moon, Settings, Sun } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ConnectionBanner } from "@/components/Connection";
-import { NavItem } from "@/components/ui/nav-item";
-import { Button } from "@/components/ui/button";
+import { Button, NavItem } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
-export type Section = "mission" | "playground" | "agents" | "templates" | "runs" | "triggers" | "settings";
+export type Section = "mission" | "playground" | "agents" | "runs" | "templates" | "triggers" | "settings";
 
-// v1's navigation only. Deployments, runners, swarms, teams and billing are not part of this console.
-const NAV: { id: Section; label: string; Icon: typeof Bot }[] = [
-  { id: "mission", label: "Mission Control", Icon: LayoutDashboard },
-  { id: "playground", label: "Playground", Icon: Terminal },
-  { id: "agents", label: "Agents", Icon: Bot },
-  { id: "templates", label: "Templates", Icon: LayoutTemplate },
-  { id: "runs", label: "Runs", Icon: History },
-  { id: "triggers", label: "Triggers", Icon: CalendarClock },
-  { id: "settings", label: "Settings", Icon: Settings },
-];
-
-const THEME_LABEL: Record<Theme, [string, typeof Bot]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
+const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", templates: "#/templates", triggers: "#/triggers", settings: "#/settings/keys" };
+const THEME_LABEL: Record<Theme, [string, typeof Brain]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
 
 /** System (the OS's), Light or Dark: a pick shows at once and is kept in this browser (lib/theme). */
 function ThemeSwitch() {
@@ -27,14 +16,14 @@ function ThemeSwitch() {
   const [theme, setTheme] = useState<Theme>(() => currentTheme());
   const pick = (t: Theme) => { saveTheme(t); applyTheme(t); setTheme(t); };
   return (
-    <div role="group" aria-label="Theme" className="flex border">
+    <div role="group" aria-label="Theme" className="flex gap-1 border p-1">
       {THEMES.map((t) => {
         const [label, Icon] = THEME_LABEL[t];
         return (
-          <button key={t} type="button" aria-label={label} title={label} aria-pressed={theme === t} onClick={() => pick(t)}
-            className={cn("flex flex-1 items-center justify-center py-2 hover:bg-accent", theme === t && "bg-primary/[0.06] text-primary-text")}>
+          <Button key={t} variant="ghost" size="sm" aria-label={label} title={label} aria-pressed={theme === t} onClick={() => pick(t)}
+            className={cn("flex flex-1 items-center justify-center py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground", theme === t && "bg-accent text-foreground")}>
             <Icon className="size-4" aria-hidden />
-          </button>
+          </Button>
         );
       })}
     </div>
@@ -42,17 +31,17 @@ function ThemeSwitch() {
 }
 
 export function Wordmark() {
-  return <span className="whitespace-nowrap font-mono text-figure font-semibold" aria-label="AgentRun">agent<span className="text-primary-text">.run()</span></span>;
+  return <span className="inline-flex items-center whitespace-nowrap text-lg font-semibold font-mono" aria-label="AgentRun">
+    <svg viewBox="0 0 64 64" className="mr-1 size-4 text-primary-text" aria-hidden><path d="M18 12L42 32L18 52" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="square" strokeLinejoin="miter" /></svg>
+    agent<span className="text-primary-text">.run()</span>
+  </span>;
 }
 
-/** The AgentRun shell: a 220px sidebar with the wordmark, the nav (the active item orange with a 2px inset bar),
- *  and sign out at its foot; under 700px a top bar with a menu that opens the nav. Settings shows only when `settings`
- *  (the server has a settings page to open), Triggers only when `triggers` (the server has them). Above every page,
- *  the one banner on the link to the server, while it is away and as it comes back, then `banners` (the page's own: no
- *  model yet, an import, a failed sign-out). They sit outside the page's scrolling main, so a full-height page fills what
- *  is left under them and keeps its footer in view. */
-/** `onSignOut`: this browser; `onSignOutEverywhere`: every browser and phone signed in to the server, asked first. */
-export function Shell({ active, settings = false, triggers = false, onNavigate, onSignOut, onSignOutEverywhere, banners, children }: { active: Section; settings?: boolean; triggers?: boolean; onNavigate?: (s: Section) => void; onSignOut?: () => void; onSignOutEverywhere?: () => void; banners?: ReactNode; children: ReactNode }) {
+export type ShellProps = { active: Section; settings?: boolean; triggers?: boolean; banners?: ReactNode; building?: boolean; onBuild?: () => void; onNavigate?: (s: Section) => void; onSignOut?: () => void; onSignOutEverywhere?: () => void; children: ReactNode };
+
+/** The hosted console's workspace shell, with only destinations this server supports. The logo row aligns with
+ * the 48px page toolbar. Agent creation, management and history share the expandable Agents section. */
+export function Shell({ active, settings = false, triggers = false, banners, building = false, onBuild, onNavigate, onSignOut, onSignOutEverywhere, children }: ShellProps) {
   const [open, setOpen] = useState(false);
   const [everywhere, setEverywhere] = useState(false);
   // The keyboard's place: the confirm opens on Cancel, and Cancel or Escape gives the focus back to its trigger.
@@ -64,37 +53,57 @@ export function Shell({ active, settings = false, triggers = false, onNavigate, 
     else if (reopened.current) trigger.current?.focus();
   }, [everywhere]);
   const closeEverywhere = () => { reopened.current = true; setEverywhere(false); };
-  // The window never scrolls: the outer box is its height and clips, and the page's own scrollbar is <main>'s. Both are
-  // relative, so nothing positioned inside (a menu, sr-only text) is placed in the document and stretches it.
+  const [agentsExpanded, setAgentsExpanded] = useState(true);
+  const agentsActive = active === "agents" || active === "runs" || active === "templates";
+  useEffect(() => { if (agentsActive || building) setAgentsExpanded(true); }, [active, building]);
+  const navigate = (section: Section) => { if (onNavigate) onNavigate(section); else location.hash = ROUTES[section]; setOpen(false); };
+  const build = () => { if (onBuild) onBuild(); else location.hash = "#/agents/new"; setOpen(false); };
   return (
     <div className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground roomy:flex-row">
-      <header className="flex shrink-0 items-center justify-between border-b px-4 py-3 roomy:hidden">
-        <Wordmark />
-        <Button size="icon" className="size-9 [&_svg]:size-[18px]" aria-label="Navigation" aria-expanded={open} onClick={() => setOpen((v) => !v)}><Menu aria-hidden /></Button>
+      <header className="flex h-12 shrink-0 items-center justify-between border-b px-4 roomy:hidden">
+        <button type="button" onClick={() => navigate("mission")} aria-label="AgentRun home"><Wordmark /></button>
+        <Button size="icon" aria-label="Navigation" aria-expanded={open} onClick={() => setOpen((v) => !v)}><Menu className="size-4" aria-hidden /></Button>
       </header>
-      {/* It scrolls at every width it shows at: on a short screen (a phone on its side) its foot, Sign out, stays reachable. */}
-      <aside className={cn("shrink-0 flex-col border-r bg-background px-3 pb-4 pt-6 roomy:flex roomy:h-dvh roomy:w-sidebar roomy:overflow-y-auto", open ? "flex max-h-[60dvh] overflow-y-auto border-b roomy:max-h-none" : "hidden")}>
-        <div className="hidden px-3 pb-[30px] roomy:block"><Wordmark /></div>
-        <nav aria-label="Navigation" className="flex flex-col gap-1">
-          {NAV.filter((n) => (n.id !== "settings" || settings) && (n.id !== "triggers" || triggers)).map(({ id, label, Icon }) => (
-            <NavItem key={id} icon={Icon} active={active === id} onClick={() => { onNavigate?.(id); setOpen(false); }}>{label}</NavItem>
-          ))}
+      <aside className={cn("shrink-0 flex-col border-r bg-background roomy:flex roomy:h-dvh roomy:overflow-y-auto roomy:w-sidebar", open ? "flex max-h-[60dvh] overflow-y-auto border-b roomy:max-h-none" : "hidden")}>
+        <div className="hidden h-12 shrink-0 items-center border-b px-4 roomy:flex">
+          <button type="button" onClick={() => navigate("mission")} aria-label="AgentRun home"><Wordmark /></button>
+        </div>
+        <nav aria-label="Navigation" className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pt-3">
+          <div className="space-y-0.5">
+            <NavItem className="w-full" active={active === "mission"} onClick={() => navigate("mission")}><LayoutGrid className="size-4 shrink-0" aria-hidden />Mission Control</NavItem>
+            <NavItem className="w-full" active={active === "playground"} onClick={() => navigate("playground")}><Code className="size-4 shrink-0" aria-hidden />API playground</NavItem>
+            <div>
+              <NavItem className={cn("w-full", agentsActive && "text-primary-text")} aria-expanded={agentsExpanded} aria-controls="agent-navigation" onClick={() => setAgentsExpanded((value) => !value)}>
+                <Brain className="size-4 shrink-0" aria-hidden /><span className="flex-1">Agents</span><ChevronDown className={cn("size-3.5 transition-transform", !agentsExpanded && "-rotate-90")} aria-hidden />
+              </NavItem>
+              <div id="agent-navigation" hidden={!agentsExpanded} className="space-y-0.5">
+                <NavItem className="w-full pl-8" active={building} onClick={build}><Hammer className="size-3.5 shrink-0" aria-hidden />Build</NavItem>
+                <NavItem className="w-full pl-8" active={active === "agents" && !building} onClick={() => navigate("agents")}><Brain className="size-3.5 shrink-0" aria-hidden />Connected agents</NavItem>
+                <NavItem className="w-full pl-8" active={active === "templates"} onClick={() => navigate("templates")}><LayoutTemplate className="size-3.5 shrink-0" aria-hidden />Templates</NavItem>
+                <NavItem className="w-full pl-8" active={active === "runs"} onClick={() => navigate("runs")}><History className="size-3.5 shrink-0" aria-hidden />Runs</NavItem>
+              </div>
+            </div>
+            {triggers && <NavItem className="w-full" active={active === "triggers"} onClick={() => navigate("triggers")}><CalendarClock className="size-4 shrink-0" aria-hidden />Triggers</NavItem>}
+          </div>
+          {settings && <div data-sidebar-account className="mt-auto border-t pb-2 pt-3">
+            <NavItem className="w-full" active={active === "settings"} onClick={() => navigate("settings")}><Settings className="size-4 shrink-0" aria-hidden />Settings</NavItem>
+          </div>}
         </nav>
-        <div className="mt-4 roomy:mt-auto"><ThemeSwitch /></div>
-        <Button type="button" onClick={onSignOut} className="mt-2 justify-start gap-2.5 px-3">
-          <LogOut aria-hidden /> Sign out
-        </Button>
+        <div className="shrink-0 space-y-2 px-3 pb-4 pt-3">
+          <ThemeSwitch />
+          <Button onClick={onSignOut} className="w-full justify-start"><LogOut aria-hidden />Sign out</Button>
         {onSignOutEverywhere && (everywhere ? (
           <div role="alertdialog" aria-label="Sign out everywhere?" onKeyDown={(e) => { if (e.key === "Escape") closeEverywhere(); }} className="mt-2 space-y-2 border border-destructive/50 px-3 py-2.5 text-small">
             <p>Signs out every browser and phone signed in to this server, this one too.</p>
             <div className="flex flex-wrap gap-2">
-              <Button type="button" variant="destructive" size="xs" onClick={() => { setEverywhere(false); onSignOutEverywhere(); }}>Sign out everywhere</Button>
-              <Button type="button" ref={cancel} onClick={closeEverywhere} size="xs">Cancel</Button>
+              <Button size="xs" variant="destructive" onClick={() => { setEverywhere(false); onSignOutEverywhere(); }}>Sign out everywhere</Button>
+              <Button size="xs" ref={cancel} onClick={closeEverywhere}>Cancel</Button>
             </div>
           </div>
         ) : (
-          <button type="button" ref={trigger} onClick={() => setEverywhere(true)} className="mt-1 px-3 py-1.5 text-left text-small text-muted-foreground hover:text-foreground">Sign out everywhere</button>
+          <Button size="sm" variant="ghost" ref={trigger} onClick={() => setEverywhere(true)} className="mt-1 w-full justify-start text-muted-foreground hover:text-foreground">Sign out everywhere</Button>
         ))}
+        </div>
       </aside>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ConnectionBanner />
