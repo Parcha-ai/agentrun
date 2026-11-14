@@ -5,8 +5,8 @@
 // no_auth only as `auth_config_details[].mode` "NO_AUTH" (only the toolkit list has a `no_auth` field). `authConfigs`: by toolkit slug, the auth configs
 // it already has. `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
 // call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config }` (an ACTIVE one under another
-// config, say); as the real one, `auth_config_ids` narrows the list to those under it. `fail`: `{ path, status }`
-// makes the call whose path ends in `path` answer that status.
+// config, say); as the real one, `auth_config_ids` narrows the list to those under it. `noTools`: its MCP endpoint serves no tool at all. `listStatus`: its MCP endpoint answers every request after the first handshake with that HTTP status (an outage, not an answer "no"). `fail`: `{ path, status, method? }`
+// makes the call whose path ends in `path` (or for which `path`, a function, holds) answer that status.
 // Its base URL carries a path of its own, new each start, and its MCP server's id is new each start too: a request on its
 // port that the server under test didn't send (a port prober on the host GETs / on each new loopback listener; another
 // test process's client may still call a port it freed, which this fake then took) is not one of its calls. Such a
@@ -16,13 +16,35 @@ import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { startFakeMcp } from "./fake-mcp-server.mjs";
 
-export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail } = {}) {
+/** An MCP endpoint that serves no tools, as Composio's does when none of the allowed actions is one it serves: it agrees a
+ *  protocol and answers every other method "Method not found". */
+async function startEmptyMcp(path, inspect, listStatus) {
+  const http = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    inspect(req.headers);
+    let message = {};
+    try { message = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch {}
+    if (new URL(req.url, "http://x").pathname !== path) return void res.writeHead(404).end();
+    if (message.id === undefined) return void res.writeHead(202).end();
+    if (listStatus && message.method !== "initialize") return void res.writeHead(listStatus, { "content-type": "application/json" }).end(JSON.stringify({ error: "down" }));
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(message.method === "initialize"
+      ? { jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "composio", version: "1" } } }
+      : { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } }));
+  });
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  return { url: `http://127.0.0.1:${http.address().port}${path}`, log: [], close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())) };
+}
+
+export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false, listStatus } = {}) {
   const calls = [];
   const strays = [];
   const mcpKeys = [];
   const own = `/fake-composio-${randomBytes(6).toString("hex")}`;
   const id = `srv_fake_${randomBytes(4).toString("hex")}`;
-  const mcp = await startFakeMcp({ path: `/v3/mcp/${id}/mcp`, inspect: (headers) => mcpKeys.push(headers["x-api-key"]) });
+  const inspect = (headers) => mcpKeys.push(headers["x-api-key"]);
+  const mcp = noTools || listStatus ? await startEmptyMcp(`/v3/mcp/${id}/mcp`, inspect, listStatus) : await startFakeMcp({ path: `/v3/mcp/${id}/mcp`, inspect });
   const mcpOrigin = new URL(mcp.url).origin;
   let made = 0;
   const http = createServer(async (req, res) => {
@@ -40,7 +62,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     calls.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), body, keyOk: req.headers["x-api-key"] === apiKey });
     const reply = (status, value) => (res.writeHead(status, { "content-type": "application/json" }), res.end(JSON.stringify(value)));
     if (req.headers["x-api-key"] !== apiKey) return reply(401, { error: { message: "Invalid API key" } });
-    if (fail && url.pathname.endsWith(fail.path)) return reply(fail.status, { error: { message: `Composio refused ${fail.path}` } });
+    if (fail && (!fail.method || fail.method === req.method) && (typeof fail.path === "function" ? fail.path(url.pathname) : url.pathname.endsWith(fail.path))) return reply(fail.status, { error: { message: `Composio refused ${url.pathname}` } });
     const slug = url.searchParams.get("toolkit_slug");
     if (req.method === "GET" && url.pathname === "/api/v3/tools") {
       const known = toolkits[slug];

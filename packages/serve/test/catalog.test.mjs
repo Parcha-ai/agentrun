@@ -1,5 +1,6 @@
-// The catalog name -> wire name mapping: a wire name a CLI adapter accepts. The served catalog is mostly bare names (the mapping
-// is the identity for them) plus monid's dotted ones; the mapping's full range is checked against a synthetic catalog.
+// The catalog name -> wire name mapping: a wire name a CLI adapter accepts. The served catalog is bare names (the mapping
+// is the identity for them); a catalog tool's name (monid:<provider>/<endpoint>, mcp:<server>/<tool>) maps away from
+// it, and the mapping's full range is checked against a synthetic catalog.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { WIRE_NAME, wireName } from "../dist/catalog.js";
@@ -9,7 +10,8 @@ import { TOOLS } from "../dist/tools.js";
 // shape a kind of tool brings, and a name past 64 characters that must take the hash suffix.
 const SYNTHETIC = [
   "read",
-  "monid.discover",
+  "monid:faux/person/enrich",
+  "monid:tiktok/api/v1/{id}/x",
   "mcp:github/create_issue",
   "mcp:a-very-long-server-name-that-keeps-going/an-equally-long-tool-name-past-the-limit",
   "weird name/with spaces.and:punctuation",
@@ -29,15 +31,14 @@ test("every served tool has its own wire name", () => {
   assert.equal(new Set(names.map(wireName)).size, names.length, "two served tools would share a wire name");
 });
 
-test("the served catalog's dotted names, monid's, map to wire names", () => {
-  for (const kind of ["discover", "inspect", "run"]) {
-    assert.ok(Object.keys(TOOLS).includes(`monid.${kind}`), `monid.${kind} is served`);
-    assert.equal(wireName(`monid.${kind}`), `monid_${kind}`);
-  }
+test("a monid endpoint's name maps to a wire name of its own: its separators doubled, any other character an underscore", () => {
+  assert.ok(!Object.keys(TOOLS).some((name) => name.startsWith("monid")), "no monid tool is served by itself: each endpoint is granted by name");
+  assert.equal(wireName("monid:faux/person/enrich"), "monid__faux__person__enrich");
+  assert.equal(wireName("monid:apollo/news_articles/search"), "monid__apollo__news_articles__search");
 });
 
-test("a dotted name maps away from the identity, so the mapping is doing something", () => {
-  assert.equal(wireName("monid.discover"), "monid_discover");
+test("a catalog name maps away from the identity, so the mapping is doing something", () => {
+  assert.equal(wireName("monid:faux/person/enrich"), "monid__faux__person__enrich");
   assert.equal(wireName("mcp:github/create_issue"), "mcp__github__create_issue");
 });
 

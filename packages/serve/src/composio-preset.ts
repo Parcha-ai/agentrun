@@ -52,6 +52,8 @@ function asking(control: ComposioControl, key: string, signal: AbortSignal | und
     try { json = JSON.parse(raw); } catch { /* not JSON: said below */ }
     if (res.ok) {
       if (isObject(json)) return json;
+      // A delete may answer nothing at all.
+      if (!raw.trim()) return {};
       throw new ApiError("upstream_failed", `Composio's answer while ${step} was not JSON: nothing was saved.`);
     }
     const said = isObject(json) && isObject(json.error) ? text(json.error.message) : isObject(json) ? text(json.message) : "";
@@ -159,7 +161,13 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     url = composioAddress(address);
     // Saved as what it is, a Composio server of this toolkit: a template that needs the toolkit maps to it, whatever its
     // name. A slug no template can name (mcp:<toolkit>/<tool>: no `_`) is saved as a Composio server of no toolkit.
-    const server = await save({ url, auth: { type: "headers", headers: { "x-api-key": key } } }, { source: "composio", toolkit: MCP_SERVER_NAME.test(toolkit) ? toolkit : null });
+    // Composio leaves out an action it does not serve, and a server that serves none of the picked ones lists no tools at
+    // all: its MCP answers the listing "Method not found" (JSON-RPC -32601). Only that answer says "none served", in words
+    // naming the picked actions; any other failure (no DNS, a timeout, an HTTP 500) stays the 424 it is.
+    const server = await save({ url, auth: { type: "headers", headers: { "x-api-key": key } } }, { source: "composio", toolkit: MCP_SERVER_NAME.test(toolkit) ? toolkit : null }).catch((error: unknown) => {
+      if (!(error instanceof ApiError) || error.code !== "upstream_failed" || error.extra.details?.rpc_code !== METHOD_NOT_FOUND) throw error;
+      throw invalid([issue("tools", "not_served", `Composio's ${toolkit} server doesn't serve ${(tools as string[]).join(", ")}: pick another action.`)]);
+    });
     // Composio's server can leave out an action it was allowed (HACKERNEWS_GET_FRONTPAGE, live 11-13): say which, so a grant
     // doesn't vanish without a word. A toolkit with no account yet still lists its actions, so this holds before the connect.
     const listed = new Set((server.tools ?? []).map((tool) => tool.name));
@@ -169,5 +177,31 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     if (url && savedUrl && (await savedUrl().catch(() => undefined)) === url) throw error;
     await ask("deleting the MCP server it made", "DELETE", `/api/v3.1/mcp/${encodeURIComponent(id)}`).catch(() => undefined);
     throw error;
+  }
+}
+
+/** JSON-RPC's "Method not found": what a Composio MCP server with none of the picked actions answers a tool listing. */
+const METHOD_NOT_FOUND = -32601;
+
+/** Where the owner removes a Composio MCP server by hand, said when this server could not. */
+const DASHBOARD = "https://platform.composio.dev";
+/** The Composio MCP server a saved preset address names (`/v3/mcp/<id>/mcp`, composioAddress): its id, or undefined. */
+export const composioServerId = (address: string): string | undefined => {
+  try { return /^\/v3\/mcp\/([^/]+)\/mcp$/.exec(new URL(address).pathname)?.[1]; } catch { return undefined; }
+};
+
+/** What the answer to a delete says when the Composio MCP server could not be removed: where to remove it by hand. */
+export const composioNote = (name: string): { removed: false; note: string } => ({ removed: false, note: `Remove ${name} in Composio yourself: ${DASHBOARD}` });
+
+/** Deleting a preset server: the Composio MCP server `id` it made is deleted as `key` (the saved credential, held for this
+ *  call only). Composio's 404 is "already gone"; a refusal, or no answer, is `removed: false` with what to do by hand, for
+ *  the delete of our own row to go on regardless. */
+export async function composioForget(control: ComposioControl, key: string, id: string, name: string, signal?: AbortSignal): Promise<{ removed: boolean; note?: string }> {
+  try {
+    await asking(control, key, signal)("deleting the MCP server it made", "DELETE", `/api/v3.1/mcp/${encodeURIComponent(id)}`, undefined, "gone");
+    return { removed: true };
+  } catch (error) {
+    if (error instanceof ApiError && error.extra.fields?.[0]?.reason === "not_found") return { removed: true };
+    return composioNote(name);
   }
 }

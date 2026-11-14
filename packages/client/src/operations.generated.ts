@@ -2146,6 +2146,13 @@ export type TestWorkspaceArchilResponse = {
 };
 
 /** Forget a saved MCP server and its credential (DELETE /settings/mcp-servers/{name}). */
+export type DeleteMcpServerResponse = {
+  deleted: true;
+  composio: {
+    removed: false;
+    note: string;
+  };
+};
 
 /** One saved MCP server; never its credential (GET /settings/mcp-servers/{name}). */
 export type GetMcpServerResponse = {
@@ -3990,7 +3997,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   startMcpOAuth: {"method":"POST","path":"/settings/mcp-servers/{name}/oauth/start","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["url","scopes.[]","client_id"],"tagged":false},
   testComputer: {"method":"POST","path":"/computers/{provider}/test","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testWorkspaceArchil: {"method":"POST","path":"/workspace/archil/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  deleteMcpServer: {"method":"DELETE","path":"/settings/mcp-servers/{name}","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
+  deleteMcpServer: {"method":"DELETE","path":"/settings/mcp-servers/{name}","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getMcpServer: {"method":"GET","path":"/settings/mcp-servers/{name}","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listMcpServers: {"method":"GET","path":"/settings/mcp-servers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   mcpOAuthClient: {"method":"GET","path":"/settings/mcp-servers/oauth/client.json","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -4169,7 +4176,7 @@ export function resources(call: Call) {
     },
     mcpServers: {
       /** Forget a saved MCP server and its credential (DELETE /settings/mcp-servers/{name}). */
-      delete: (name: string, options?: RequestOptions): Promise<void> => call("deleteMcpServer", [name], undefined, undefined, options),
+      delete: (name: string, options?: RequestOptions): Promise<DeleteMcpServerResponse | undefined> => call("deleteMcpServer", [name], undefined, undefined, options),
       /** One saved MCP server; never its credential (GET /settings/mcp-servers/{name}). */
       get: (name: string, options?: RequestOptions): Promise<GetMcpServerResponse> => call("getMcpServer", [name], undefined, undefined, options),
       /** The remote MCP servers saved here, with their tools; never a credential (GET /settings/mcp-servers). */

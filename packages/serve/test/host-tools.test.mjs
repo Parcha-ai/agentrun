@@ -1,14 +1,13 @@
 // The host tools a run on another harness gets are pi's, each with the replay the kernel keeps: read, ask_person,
-// web_fetch and web_search, and monid's discover and inspect, may run again after a crash; write, edit and monid.run
-// never (the faux harness does not consult it, so it is checked here, where it is set). Each goes to the harness under
-// its wire name.
+// web_fetch and web_search may run again after a crash; write, edit and a monid endpoint never (the faux harness does
+// not consult it, so it is checked here, where it is set). Each goes to the harness under its wire name.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { CLAUDE_AGENT_MAX_IMAGE_BYTES, claudeAgentAdapter } from "@parcha/agentrun-harness-claude";
 import { codexAdapter } from "@parcha/agentrun-harness-codex";
 import { workspaceRelative } from "../dist/host-tools.js";
-import { monidRegistration } from "../dist/monid.js";
+import { monidForClaim } from "../dist/runner/monid-run.js";
 import { asked, askPerson } from "../dist/tools.js";
 import { webFetchTool } from "../dist/web-fetch.js";
 import { webSearchTool } from "../dist/web-search.js";
@@ -20,13 +19,17 @@ import { withEnv } from "./support.mjs";
 
 /** The run a host tool is built for: nothing here calls a tool. */
 const RUN = {};
-const MONID = ["monid.discover", "monid.inspect", "monid.run"];
-/** monid's three registrations, as the tool table binds them (monid.ts monidRegistration). */
-const monid = () => ["discover", "inspect", "run"].map((kind) => monidRegistration(kind, {}, () => localWorkspace("/nonexistent/work")));
+/** A revision's pin of two monid endpoints (monid.ts pinMonid, made at its save): each with the input monid lists. */
+const PIN = {
+  "monid:faux/person/enrich": { description: "Enrich a person.", input: { type: "object", additionalProperties: false, properties: { body: { type: "object", required: ["name"], properties: { name: { type: "string" } } } }, required: ["body"] }, usd: 0.003 },
+  "monid:apollo/news_articles/search": { description: "Search news.", input: { type: "object", additionalProperties: false, properties: { queryParams: { type: "object", properties: { q: { type: "string" } } } } }, usd: 0.01 },
+};
+/** The run's monid endpoints, as the runner makes them from the pin (runner/monid-run.ts monidForClaim). */
+const monid = () => monidForClaim(PIN, {}, () => localWorkspace("/nonexistent/work")).tools;
 /** A registration named `name` that is no tool a host runs: what it would bind is never asked. */
 const named = (name) => ({ name, description: name, parameters: { type: "object" }, execute: async () => ({}) });
 /** The tools a run on another harness may name here, as their registrations. */
-const registrations = () => [...fileTools(), bashTool(), webFetchTool(process.env), webSearchTool(process.env), ...monid(), askPerson, named("browser")];
+const registrations = () => [...fileTools(), bashTool(), webFetchTool(process.env), webSearchTool(process.env), askPerson, named("browser")];
 
 test("read, web_fetch, web_search and ask_person are replay-safe; write, edit and bash never replay; a tool a host runs none of, the browser, gives none", () => {
   const tools = hostToolsOf(RUN, ["read", "write", "edit", "web_fetch", "web_search", "ask_person", "browser", "bash"], ctx, new Map(), registrations());
@@ -157,16 +160,16 @@ test("a tool answering as pi 1.2's bash does (its retained output asked for, its
   assert.deepEqual(await tool.call({}, { callId: "c", signal: new AbortController().signal }), { text: "first line\nlast line\n\n\nCommand exited with code 2", isError: true });
 });
 
-test("monid's three go under their wire names: discover and inspect replay-safe, run never; a wire name is not a catalog name", () => {
-  const tools = hostToolsOf(RUN, MONID, ctx, new Map(), monid());
-  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["monid_discover", "safe"], ["monid_inspect", "safe"], ["monid_run", "never"]]);
-  assert.deepEqual(tools.map((tool) => tool.inputSchema.required), [["query"], ["provider", "endpoint"], ["provider", "endpoint"]], "monid's own parameters");
-  assert.deepEqual(hostToolsOf(RUN, ["monid_run", "monid"], ctx, new Map(), monid()), [], "a revision names the catalog name, never the wire name");
+test("each pinned monid endpoint goes under its wire name, never replayed, with the input monid lists for it", () => {
+  const tools = monid();
+  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["monid__faux__person__enrich", "never"], ["monid__apollo__news_articles__search", "never"]]);
+  assert.deepEqual(tools.map((tool) => tool.inputSchema), Object.values(PIN).map((one) => one.input), "the pinned input");
+  assert.equal(monidForClaim({}, {}, () => localWorkspace("/nonexistent/work")), undefined, "a pin of none gives no tool");
 });
 
-test("both CLI adapters take the three as they are: names in their alphabet, schemas their own checks pass", (t) => {
+test("both CLI adapters take the host tools and monid's endpoints as they are: names in their alphabet, schemas their own checks pass", (t) => {
   withEnv(t, { AGENTRUN_CLAUDE_AGENT_STANDIN: "1" });
-  const spec = { key: "run:x", label: "x", system: ["x"], context: "fresh", tools: hostToolsOf(RUN, ["read", ...MONID], ctx, new Map(), registrations()) };
+  const spec = { key: "run:x", label: "x", system: ["x"], context: "fresh", tools: [...hostToolsOf(RUN, ["read"], ctx, new Map(), registrations()), ...monid()] };
   const provider = { origin: "https://api.example", credential: () => "" };
   assert.deepEqual(codexAdapter({ model: "gpt-6-luna", provider, standIn: { command: "true" } }).check(spec), []);
   assert.deepEqual(claudeAgentAdapter({ model: "claude-haiku-5-5", provider, standIn: { command: "true" }, sdk: {} }).check(spec), []);

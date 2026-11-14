@@ -33,6 +33,7 @@ export type ComputerStepRow = {
 const APP_NAMES: Readonly<Record<string, string>> = {
   "com.apple.systempreferences": "System Settings", "com.apple.iCal": "Calendar", "com.apple.finder": "Finder",
   "com.android.settings": "Settings", "com.android.chrome": "Chrome", "xfce4-terminal": "Terminal", "org.xfce.terminal": "Terminal", xterm: "XTerm",
+  "firefox-esr": "Firefox", "google-chrome": "Chrome",
 };
 /** An app's id as a person names it: "com.apple.TextEdit" is TextEdit, "org.xfce.mousepad" Mousepad. */
 export function appWords(id: string): string {
@@ -201,3 +202,7 @@ export function callWords(call: ComputerCallRow): string {
   })();
   return call.ok ? told.did : `Could not ${told.tried}`;
 }
+
+/** Several calls of one step in words, as its row says them: each call's, in order, "Opened Mousepad, took a screenshot,
+ *  listed the apps". */
+export const callsWords = (calls: readonly ComputerCallRow[]): string => calls.map((call, index) => (index === 0 ? callWords(call) : lower(callWords(call)))).join(", ");

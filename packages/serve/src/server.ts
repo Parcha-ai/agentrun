@@ -20,7 +20,7 @@ import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent,
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
-import { FAUX_MONID_ENV } from "./monid.js";
+import { FAUX_MONID_ENV, MONID_KEY_ENV, pinMonid } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, sentence, unsupported } from "./errors.js";
@@ -103,7 +103,7 @@ import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
-import { type ComposioControl, composioSave, composioTools } from "./composio-preset.js";
+import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
@@ -128,7 +128,8 @@ import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
-import { isMcpWildcard, mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
+import { isMcpWildcard, mcpNameOf as mcpToolOf, mcpToolName, monidDroppedWords, monidNameOf } from "./tool-names.js";
+import { wireName } from "./catalog.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
 import { deleteTemplate, importTemplate, loadImported, type TemplateImportDeps } from "./template-import.js";
@@ -1939,8 +1940,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks, and
-   *  what the save stamps on it (its MCP pin, mcpListingOf). A revision that names no place is checked where it would run
-   *  (fallbackPlace). */
+   *  what the save stamps on it (its MCP pin, mcpListingOf; its monid pin, on its body). A revision that names no place is
+   *  checked where it would run (fallbackPlace). */
   async function saveable(revision: NewRevision, previous?: unknown): Promise<{ warnings: InputIssue[]; stamp: SaveStamp }> {
     // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
     // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
@@ -1970,8 +1971,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
+    // Its monid grants pinned against what monid lists now, on this server's monid key (monid.ts pinMonid): the pin is
+    // stamped on the revision's body, and its runs read it, never monid's listing. A grant monid does not list is refused
+    // here. An endpoint a wildcard left out (priced by usage: monid.ts unboundedWords) is a warning at the wildcard's grant.
+    const leftOut: InputIssue[] = [];
+    if (revision.kind === "agentic") {
+      const send = await checkFetch("monid");
+      // The key as the server reads it (env: what it was started with, its handed secrets and its saved keys).
+      const pinned = await pinMonid(body.tools ?? [], { key: env[MONID_KEY_ENV]?.trim(), fetch: send ?? (async () => { throw new Error("no fake of monid's API under faux"); }), signal: stopping.signal });
+      if (pinned && "refused" in pinned) throw invalid(pinned.refused.map(({ tool, message }) => ({ field: (body.tools ?? []).includes(tool) ? `definition.tools[${body.tools.indexOf(tool)}]` : "definition.tools", reason: "not_an_option", message })));
+      if (pinned) {
+        // Each pinned endpoint's input held to the harness's own measured refusals, as an MCP grant is (runnable.ts
+        // mcpGrant): one it would drop or retype refuses the save at the grant that named it, never every run.
+        const harness = body.harness ?? DEFAULT_HARNESS;
+        const problems = harnessOf(env, harness)?.facts?.schemaProblems;
+        const tools = body.tools ?? [];
+        const grantOf = (tool: string) => (tools.includes(tool) ? tools.indexOf(tool) : tools.indexOf(`monid:${monidNameOf(tool)?.provider}/*`));
+        const dropped = problems ? Object.entries(pinned.pin).flatMap(([tool, { input }]) => problems(wireName(tool), input).slice(0, 1).map((first) => ({ tool, first }))) : [];
+        if (dropped.length) throw invalid(dropped.map(({ tool, first }) => ({ field: `definition.tools[${grantOf(tool)}]`, reason: "not_an_option", message: monidDroppedWords(tool, harness, first) })));
+        (revision.body as AgenticBody).monidPin = pinned.pin;
+        leftOut.push(...pinned.leftOut.map(({ tool, message }) => ({ field: `definition.tools[${tools.indexOf(tool)}]`, reason: "not_an_option", message })));
+      }
+    }
     const mcpPin = listing.pin();
-    return { warnings: blockers.map(issueOf), stamp: mcpPin ? { mcpPin } : {} };
+    return { warnings: [...blockers.map(issueOf), ...leftOut], stamp: mcpPin ? { mcpPin } : {} };
   }
 
   /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
@@ -2271,7 +2294,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const mapped = await store.agents.byExternal(externalKey(ref));
     const stored = mapped ? await store.agents.externalRevision(mapped.id, String(ref.version)) : undefined;
     const current = !stored && mapped?.currentRevision ? await store.agents.revision(mapped.currentRevision) : undefined;
-    const revision = stored ? made : { ...made, ...(await saveable(made, current?.mcpPin)).stamp };
+    // A version already stored keeps its revision's monid pin, not what monid lists now: its definition never changes
+    // here, so it compares equal to the stored one (startInline), and monid's listing is not read again.
+    const keptMonid = stored?.kind === "agentic" ? (stored.body as AgenticBody).monidPin : undefined;
+    const revision = stored ? (keptMonid ? { ...made, body: { ...(made.body as AgenticBody), monidPin: keptMonid } } : made) : { ...made, ...(await saveable(made, current?.mcpPin)).stamp };
     const inline = {
       external: { source: ref.source, kind: ref.kind, id: ref.id, version: String(ref.version) },
       name: checked.definition.name as string,
@@ -3423,10 +3449,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await privateHostsRoute(mcpServers, { method: "GET" }), { "cache-control": "no-store" });
       case "putMcpPrivateHosts":
         return send(res, 200, await privateHostsRoute(mcpServers, { method: "PUT", body: () => bodyOf(req) }), { "cache-control": "no-store" });
-      case "deleteMcpServer":
-        await mcpServers.remove(id, secretSeen as McpCredentialMark | undefined);
+      case "deleteMcpServer": {
+        // Our row goes first, by the checked removal (a 412 sends Composio nothing), and answers what it removed: a Composio
+        // preset server's MCP server on Composio is deleted next, as the row removed named it and with its saved key.
+        // Composio refusing or not answering, or a key that does not open, never keeps our row: the answer says what to
+        // remove there by hand.
+        const { composio: made } = await mcpServers.remove(id, secretSeen as McpCredentialMark | undefined);
         await refreshMcpMeta();
+        const forgotten = !made ? undefined : "unusable" in made ? composioNote(id) : await composioForget(options.composioControl ?? {}, made.key, made.id, id, stopping.signal);
+        if (forgotten && !forgotten.removed) return send(res, 200, { deleted: true, composio: forgotten }, { "cache-control": "no-store" });
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      }
       case "getToolSettings":
         return send(res, 200, withDefaults(settings.get()));
       case "putToolSettings": {
