@@ -162,10 +162,11 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     // Saved as what it is, a Composio server of this toolkit: a template that needs the toolkit maps to it, whatever its
     // name. A slug no template can name (mcp:<toolkit>/<tool>: no `_`) is saved as a Composio server of no toolkit.
     // Composio leaves out an action it does not serve, and a server that serves none of the picked ones lists no tools at
-    // all, which the MCP listing reports as "Method not found": said here as what it means, naming the picked actions.
+    // all: its MCP answers the listing "Method not found" (JSON-RPC -32601). Only that answer says "none served", in words
+    // naming the picked actions; any other failure (no DNS, a timeout, an HTTP 500) stays the 424 it is.
     const server = await save({ url, auth: { type: "headers", headers: { "x-api-key": key } } }, { source: "composio", toolkit: MCP_SERVER_NAME.test(toolkit) ? toolkit : null }).catch((error: unknown) => {
-      if (!(error instanceof ApiError) || error.code !== "upstream_failed") throw error;
-      throw invalid([issue("tools", "not_served", `Composio's ${toolkit} server doesn't serve ${(tools as string[]).join(", ")}: pick another action. Its tool listing failed: ${error.message}`)]);
+      if (!(error instanceof ApiError) || error.code !== "upstream_failed" || error.extra.details?.rpc_code !== METHOD_NOT_FOUND) throw error;
+      throw invalid([issue("tools", "not_served", `Composio's ${toolkit} server doesn't serve ${(tools as string[]).join(", ")}: pick another action.`)]);
     });
     // Composio's server can leave out an action it was allowed (HACKERNEWS_GET_FRONTPAGE, live 11-13): say which, so a grant
     // doesn't vanish without a word. A toolkit with no account yet still lists its actions, so this holds before the connect.
@@ -179,12 +180,18 @@ export async function composioSave<T extends { tools?: readonly { name: string }
   }
 }
 
+/** JSON-RPC's "Method not found": what a Composio MCP server with none of the picked actions answers a tool listing. */
+const METHOD_NOT_FOUND = -32601;
+
 /** Where the owner removes a Composio MCP server by hand, said when this server could not. */
 const DASHBOARD = "https://platform.composio.dev";
 /** The Composio MCP server a saved preset address names (`/v3/mcp/<id>/mcp`, composioAddress): its id, or undefined. */
 export const composioServerId = (address: string): string | undefined => {
   try { return /^\/v3\/mcp\/([^/]+)\/mcp$/.exec(new URL(address).pathname)?.[1]; } catch { return undefined; }
 };
+
+/** What the answer to a delete says when the Composio MCP server could not be removed: where to remove it by hand. */
+export const composioNote = (name: string): { removed: false; note: string } => ({ removed: false, note: `Remove ${name} in Composio yourself: ${DASHBOARD}` });
 
 /** Deleting a preset server: the Composio MCP server `id` it made is deleted as `key` (the saved credential, held for this
  *  call only). Composio's 404 is "already gone"; a refusal, or no answer, is `removed: false` with what to do by hand, for
@@ -195,6 +202,6 @@ export async function composioForget(control: ComposioControl, key: string, id: 
     return { removed: true };
   } catch (error) {
     if (error instanceof ApiError && error.extra.fields?.[0]?.reason === "not_found") return { removed: true };
-    return { removed: false, note: `Remove ${name} in Composio yourself: ${DASHBOARD}` };
+    return composioNote(name);
   }
 }

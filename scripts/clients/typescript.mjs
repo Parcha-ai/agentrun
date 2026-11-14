@@ -152,7 +152,9 @@ export function clientText(ops, map, commandOf, hash) {
     const lastRequired = args.findLastIndex((a) => a.required);
     const signature = args.map((a, i) => (a.required ? `${a.name}: ${a.type}` : i < lastRequired ? `${a.name}: ${a.type} | undefined` : `${a.name}?: ${a.type}`)).join(', ');
     const plain = { none: 'void', json, text: 'string', bytes: 'S extends true ? Response : Uint8Array', 'json+text': `${json} | string`, 'json+bytes': `${json} | Uint8Array`, 'text+bytes': 'string | Uint8Array', 'json+text+bytes': `${json} | string | Uint8Array` }[answer];
-    const result = tagged && !download ? `Tagged<${plain}>` : plain;
+    // A 204 beside a body: the transport answers nothing for it, so the type holds that.
+    const orNothing = op.noContent && answer !== 'none' ? `${plain} | undefined` : plain;
+    const result = tagged && !download ? `Tagged<${orNothing}>` : orNothing;
     const argOf = (n) => (args.some((a) => a.name === n) ? n : 'undefined');
     const method = [
       `      /** ${doc(op.summary)} (${route}). */`,

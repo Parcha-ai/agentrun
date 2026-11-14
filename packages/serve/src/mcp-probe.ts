@@ -346,7 +346,11 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
   if (deadline.aborted || timedOut(error)) return upstream(deadline.aborted ? `The MCP server did not finish listing its tools within ${PREVIEW_MS / 1000} s.` : `The MCP server did not answer a request within ${REQUEST_MS / 1000} s.`);
   // Cut every credential value from the SDK's words: a server may echo what it was sent.
   const said = scrub(error instanceof Error ? error.message : String(error), Object.values(headers));
-  return upstream(`The MCP server failed to list its tools: ${said.slice(0, 300)}`);
+  const failure = upstream(`The MCP server failed to list its tools: ${said.slice(0, 300)}`);
+  // The JSON-RPC code of the server's own error answer (-32601 Method not found, say), so a caller can tell a server that
+  // answered "no" from one that did not answer: details.rpc_code, beside no HTTP status.
+  const rpc = isObject(error) ? (error as { code?: unknown }).code : undefined;
+  return typeof rpc === "number" ? new ApiError("upstream_failed", failure.message, { details: { rpc_code: rpc } }) : failure;
 }
 
 /** What a 401 or 403 asks for: `oauth` when the server names protected-resource metadata (its WWW-Authenticate, or a

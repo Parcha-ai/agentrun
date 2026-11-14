@@ -12,7 +12,7 @@ import {
   type Auth, authOf, canonical, credentialInQuery, credentialInQueryWords, credentialMissing, type HeaderMap, savedOrGiven, shownUrl, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
   type McpTool, nameOf, notFound, oauthValueValid, pricesListed, pricesOf, scopesValid, urlOf,
 } from "./mcp-probe.js";
-import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn } from "./mcp-store.js";
+import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn, type RemovedMcpServer } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
 import { credentialMark } from "./mcp-secret-writes.js";
@@ -46,6 +46,20 @@ type McpServersStore = { readonly mcp: Mcp; readonly mcpOauth: McpOauth; readonl
 function changedMeanwhile(name: string, saved: McpServerRow | undefined): McpServerRow {
   if (!saved) throw new ApiError("precondition_failed", `The MCP server ${name}'s credential changed while this save ran (another save, a sign-in or a removal): read it again, then save again.`);
   return saved;
+}
+
+/** What a deleted Composio preset server leaves to remove on Composio: the MCP server it made (its id, from the removed
+ *  row's own address) and the key it was made with (the removed row's sealed x-api-key, held for the one call), or
+ *  `unusable` when either can't be had (a key that does not open here, an address that names no server): the delete of
+ *  our row still stands, and the answer says to remove it in Composio by hand. Taken from the row actually removed, never
+ *  a row read before it, so a server saved again under the name meanwhile is not the one deleted on Composio. */
+export type ComposioHandle = { id: string; key: string } | { unusable: true };
+function composioHandleOf(removed: RemovedMcpServer | undefined): ComposioHandle {
+  const id = removed ? composioServerId(removed.url) : undefined;
+  const open = removed?.opened;
+  const headers = open && "credential" in open && open.credential.type === "headers" ? (open.credential.headers as HeaderMap) : undefined;
+  const key = headers ? Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1] : undefined;
+  return id && key ? { id, key } : { unusable: true };
 }
 
 /** The sign-ins in flight over the store (store.mcpOauth): the sign-in's secret parts (the PKCE verifier and the OAuth
@@ -325,8 +339,10 @@ export class McpServersOverStore {
    *  credential saved meanwhile is never dropped by it. An OAuth one's sign-in is then let go at its authorization server
    *  (its refresh token revoked, RFC 7009, where its metadata names a revocation_endpoint), behind the answer: best effort,
    *  never holding or failing the removal. A claimed run sees the removal at its next call (runner/mcp-claim.ts check). */
-  async remove(name: string, checkedAgainst?: McpCredentialMark): Promise<void> {
+  async remove(name: string, checkedAgainst?: McpCredentialMark): Promise<{ composio?: ComposioHandle }> {
     const row = await this.need(name);
+    // Whether it is a Composio preset server: from its record (source composio), read before the row goes.
+    const preset = row.auth === "headers" && (await this.sourceOf(row)).source === "composio";
     // The credential revoked is the one the deleting statement saw (RETURNING): a run's refresh landing before it is in it,
     // one landing after finds no row to keep. A sign-in kept as expired has no refresh token left to revoke.
     const removed = checkedAgainst === undefined ? await removeMcpServer(this.store, this.sealKey, name)
@@ -339,6 +355,7 @@ export class McpServersOverStore {
     const open = removed?.opened;
     const credential = open && "credential" in open && open.credential.type === "oauth" && !(open.credential as { expired?: true }).expired ? open.credential : undefined;
     if (credential && removed) void this.track(this.signIns.revoke(credential.set as TokenSet, removed.url, this.stopped.signal));
+    return preset ? { composio: composioHandleOf(removed) } : {};
   }
 
   /** POST .../{name}/oauth/start: `{url, scopes?, client_id?, client_secret?, toolkit?}`; answers the URL the owner opens.
@@ -472,20 +489,6 @@ export class McpServersOverStore {
     if (row.auth !== "oauth") return undefined;
     const open = await openServerCredential(this.store, this.sealKey, name);
     return open && "credential" in open && open.credential.type === "oauth" ? (open.credential.set as TokenSet) : undefined;
-  }
-
-  /** The Composio MCP server a saved preset server stands for and the key it was made with, to delete it on Composio as
-   *  the server is forgotten: from the server's own record (source composio), its saved address (which names the Composio
-   *  server) and its sealed x-api-key header. Undefined for any other server, so nothing else is ever sent to Composio.
-   *  The key is read for the one call, never kept or answered. */
-  async composioHandle(name: string): Promise<{ id: string; key: string } | undefined> {
-    const row = await this.store.mcp.server(name);
-    if (!row || row.auth !== "headers" || (await this.sourceOf(row)).source !== "composio") return undefined;
-    const id = composioServerId(row.url);
-    const open = id ? await openServerCredential(this.store, this.sealKey, name) : undefined;
-    const headers = open && "credential" in open && open.credential.type === "headers" ? (open.credential.headers as HeaderMap) : undefined;
-    const key = headers ? Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1] : undefined;
-    return id && key ? { id, key } : undefined;
   }
 
   /** What the saved server `row` is, for a template's apply to match (mcp-sources.ts sourceOf): github on the GitHub App's
