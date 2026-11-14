@@ -172,6 +172,12 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`${harness}: a call the person declined, web_fetch's setting put back to allow right after, is never run`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, "declined"));
 }
 
+// A deny set on the server while a call waits for its person, then their allow: the deny refuses it, and its rows say so
+// (never that the run ended while it waited), its allow kept on the record as the answer the deny overrode.
+for (const harness of ["pi", "claude-agent", "codex"]) {
+  test(`${harness}: web_fetch set to deny on the server while the second call waits, then the person allows it: refused unrun, its rows saying the tool is now set to deny`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, "denied-since"));
+}
+
 async function bothAllowed(t, harness, putBack) {
   const server = await serve(t, { faux: FAUX, harnessTable: fauxTable(fixture("faux-harness.mjs")), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true });
   const { api } = server;
@@ -223,6 +229,10 @@ async function bothAllowed(t, harness, putBack) {
     const view = (await api("GET", `/runs/${runId}`)).body;
     assert.deepEqual([view.status, view.pending?.id], ["input_required", second.id], "still waiting on the person");
     assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
+  } else if (putBack === "denied-since") {
+    // web_fetch set to deny while the second call waits, then the person allows it: the deny wins.
+    assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
+    assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
   } else {
     assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
   }
@@ -230,6 +240,16 @@ async function bothAllowed(t, harness, putBack) {
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   const done = await rowsNow(api, runId);
   const shown = JSON.stringify(done.map((r) => `${r.kind}: ${r.summary}`));
+  if (putBack === "denied-since") {
+    const own = done.filter((r) => (r.kind === "tool_use" || r.kind === "tool_result") && r.tool_use_id === second.call_id);
+    assert.ok(own.length > 0 && own.every((r) => r.summary === "Not run: its tool is now set to deny on this server"), `its own rows say the deny refused it: ${shown}`);
+    assert.equal(own.find((r) => r.kind === "tool_result")?.refused, true, `its result row is marked refused: ${shown}`);
+    assert.deepEqual(done.filter((r) => r.kind === "tool_approval_requested" && r.tool_use_id === second.call_id).map((r) => r.summary), [`Denied by the tool's setting on this server: web_fetch {"url":"http://b.example/"}`], `its approval row: ${shown}`);
+    assert.ok(done.some((r) => r.kind === "phase" && r.summary === "AgentRun: You allowed web_fetch, but it is now set to deny on this server, so it was not run"), `its outcome names the allow and the deny: ${shown}`);
+    assert.ok(!done.some((r) => /ENOTFOUND b\.example/.test(`${r.summary ?? ""} ${r.tool_result_preview ?? ""}`)), `it never ran: ${shown}`);
+    assert.ok(!done.some((r) => /^(Not run: the run ended|Withdrawn)/.test(r.summary ?? "")), `never "ended while it waited" or withdrawn: ${shown}`);
+    return;
+  }
   if (putBack === "declined") {
     assert.ok(!done.some((r) => r.kind === "tool_result" && r.tool_use_id === second.call_id && r.summary !== "Held for your approval"), `the declined call never ran: ${shown}`);
     assert.ok(!done.some((r) => /ENOTFOUND b\.example|as its setting allows it/.test(`${r.summary ?? ""} ${r.tool_result_preview ?? ""}`)), `no row says it ran: ${shown}`);

@@ -38,8 +38,10 @@ async function parkedRun(t, { price, noResume = false, setting } = {}) {
   const loop = createAdapterLoop(async (claim, run) => ({
     ...(await spec(claim, run)),
     ...(price !== undefined ? { approvalPrice: (call) => (call.tool === "asked" ? price : undefined) } : {}),
-    // The tool's setting as `setting.now` reads it at each call (the server's gate): "ask", then perhaps "allow".
-    ...(setting ? { gate: async () => setting.now } : {}),
+    // The tool's setting as `setting.now` reads it at each call (the server's gate): "ask", then perhaps "allow" or "deny".
+    // As the server's gate (adapter-run-spec.ts adapterRunGate) does, a deny is refused in its own words, and the
+    // setting itself is read by `permission`.
+    ...(setting ? { gate: Object.assign(async () => (setting.now === "deny" ? { deny: "asked is set to deny on this server." } : setting.now), { permission: async () => setting.now }) } : {}),
   }), { restartLimit: MAX_RESTARTS, now: () => clock.at });
   const createLoop = noResume
     ? (deps) => {
