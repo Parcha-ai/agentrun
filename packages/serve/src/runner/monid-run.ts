@@ -31,8 +31,9 @@ import type { ClaimMcp } from "./mcp-run.js";
 export type ClaimMonid = Pick<ClaimMcp, "tools" | "catalogOf" | "priceOf">;
 
 /** One host tool per endpoint of `pin`, on the claim's environment `env` (its key, and the tests' fake under faux), an
- *  answer too long for the model filed in `work()`; undefined when the pin holds none. `runId` names the run in the log. */
-export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv, work: () => Workspace, runId?: string): ClaimMonid | undefined {
+ *  answer too long for the model filed in `work()`; undefined when the pin holds none. `runId` names the run in the log;
+ *  `capped`, whether the run has a spend cap now (its launch's, read at each call). */
+export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv, work: () => Workspace, runId?: string, capped: () => boolean = () => false): ClaimMonid | undefined {
   const names = Object.keys(pin ?? {});
   if (!pin || !names.length) return undefined;
   const catalog = new Map<string, string>();
@@ -53,7 +54,9 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
   // the call sent with maxCost 0, which monid refuses unrun and uncharged, naming the estimate, or runs when it estimates
   // the call at $0 (a free run). So the read is a paid step of the call, marked at $0 before it is sent (a crash while
   // monid holds it leaves its possible charge on record, unknown), given back when monid refused it unrun, else settled
-  // at what monid charged, a charge above $0 stopping the run.
+  // at what monid charged, a charge above $0 stopping the run. One whose charge is unknown (no answer, FAILED with no
+  // cost) stops a capped run too: its $0 hold bounds nothing, so the cap can't be kept. One its call's signal cut off is
+  // left as a crash leaves it: the run is stopping or its claim is going.
   const estimated = async (ledger: PaidBooking, callId: string, name: string, at: Endpoint, input: Json, signal: AbortSignal): Promise<Estimated> => {
     const client = await clientOf();
     const step = await paidStep<MonidAnswer>(ledger, callId, { name, holdUsd: 0, basis: READ_BASIS, by: "monid" }, () => client.run({ provider: at.provider, endpoint: `/${at.endpoint}`, input, maxCost: 0 }, signal), (outcome) => {
@@ -64,7 +67,13 @@ export function monidForClaim(pin: MonidPin | undefined, env: NodeJS.ProcessEnv,
     if ("refused" in step) return { answer: uncharged({ error: step.refused }) };
     const usd = estimateOf(step.result);
     if (usd !== undefined) return { usd };
-    await overHold(name, chargeOf(step.result), 0);
+    const charged = chargeOf(step.result);
+    if (charged === null && !signal.aborted && capped()) {
+      const words = `monid may have charged for ${name} and did not say how much, so this run's cap can't be kept; the run stopped`;
+      console.error(`[runner] run ${runId ?? "(unnamed)"}: ${name}: ${words}`);
+      await stopRun(words);
+    }
+    await overHold(name, charged, 0);
     return { answer: step.result };
   };
   /** A call of the fixed-price endpoint `at` (`name`) with `input`, held at its pinned `usd`: its price read again first
