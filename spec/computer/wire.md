@@ -270,7 +270,9 @@ The result:
   `invalid`. A window that only moved keeps its points good, because they are window points. Every point a step
   touches is held to this, each point of a drag's path as much as its first.
 - **The driver waits, never the model.** Every act settles before it answers: the window looks the same twice, a short
-  quiet apart, or `maxSettleMs` passed. An expect is polled on the computer, and an act's `state` is the window once it
+  quiet apart, or `maxSettleMs` passed. A driver whose OS tells when an app's tree changes (macOS's accessibility
+  notifications) may settle on those instead: it reads the window once the app told no change for the quiet, and
+  reads it again only for a change told after that read began. An expect is polled on the computer, and an act's `state` is the window once it
   settles after the expect, never a frame of a transition. Every verdict of an act reads that one final view: a set's
   hold, the expect's `met`, and the `state` it answers. A poll's look only says when to read the final view again.
 - **A settle reads the tree.** "Looks the same" compares the window's id, bounds and the nodes on it (each node's role,
