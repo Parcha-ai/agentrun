@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST } from "../dist/timeline/index.js";
+import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { CAP_REFUSED_FIELD, HELD_FIELD, meterFiguresFrom, spentFrom } from "../dist/cap.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { runEntries } from "../dist/store-reads/journal.js";
@@ -47,6 +47,37 @@ test("the spend read from a run's store is each known cost summed, a compaction'
   const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid.run", charged_by: "monid", usd } });
   assert.equal(Math.round(spentFrom(rowsOf([started, answer({ total: 0.001 }), charged(0.003)])) * 1e6) / 1e6, 0.004, "a paid tool's charge is spent too");
   assert.equal(spentFrom(rowsOf([started, answer({ total: 0.001 }), charged(null)])), null, "an unknown charge leaves the spend unknown");
+});
+
+test("a Parallel request whose settle record could not be written: the cap, and a restarted process, count it at its held price, never $0; the run's shown cost and the tools meter read it as unknown", async (t) => {
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  const marked = { kind: TOOL_STARTED, data: { tool: "web_search", charged_by: "parallel", call: "c1", heldUsd: 0.001 } };
+  const open = [started, answer({ total: 0.002 }), marked];
+  assert.equal(round(spentFrom(rowsOf(open))), 0.003, "a restarted process reads the held $0.001 as spent");
+  assert.equal(timelineOf(open, { settled: true }).at(-1).usage.usd, null, "the run's shown cost: unknown, never the hold or $0");
+  assert.deepEqual(metersOf(open), { tools: null, tokens: 0.002, browser: { usd: 0, seconds: 0 }, others: null }, "the tools meter: unknown");
+});
+
+test("a paid tool call a crash cut (marked, never settled) counts at its held figure in the cap's spend, leaves the run's reported cost unknown, and is no reported tool charge; settled, its charge alone", async (t) => {
+  const marked = (heldUsd) => ({ kind: TOOL_STARTED, data: { tool: "monid.run", charged_by: "monid", call: "c1", heldUsd } });
+  const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid.run", charged_by: "monid", call: "c1", usd } });
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  // A monid call held at the $1 allowance, cut, beside a model request of $0.002.
+  const cut = [started, answer({ total: 0.002 }), marked(1)];
+  assert.equal(round(spentFrom(rowsOf(cut))), 1.002, "the cap counts the held figure");
+  assert.equal(timelineOf(cut, { settled: true }).at(-1).usage.usd, null, "the run's cost is unknown, never 1.002");
+  assert.deepEqual(metersOf(cut), { tools: null, tokens: 0.002, browser: { usd: 0, seconds: 0 }, others: null }, "a cut call: the tools meter unknown, the tokens known, never the held $1");
+  const settled = [...cut, charged(0.003)];
+  assert.equal(round(spentFrom(rowsOf(settled))), 0.005, "its charge, not both");
+  assert.equal(timelineOf(settled, { settled: true }).at(-1).usage.usd, 0.005);
+  assert.deepEqual(metersOf(settled), { tools: 0.003, tokens: 0.002, browser: { usd: 0, seconds: 0 }, others: 0.003 });
+  assert.equal(metersOf([...settled, { kind: TOOL_COST, data: { call: "c2", usd: null } }]).tools, null, "an unknown charge is unknown");
+  assert.deepEqual(metersOf([...settled, { kind: TOOL_COST, data: { tool: "browser", charged_by: "browserbase", call: "c3", usd: 0.002, seconds: 60 } }]).browser, { usd: 0.002, seconds: 60 }, "the browser's session time apart, with its seconds");
+  // A live run's tools, from the same rows as its cost: the charge's line, never a mark.
+  const { toolCostOf } = await import("../dist/run-view.js");
+  assert.equal(toolCostOf(timelineOf(cut)), 0);
+  assert.equal(toolCostOf(timelineOf(settled)), 0.003);
+  assert.equal(spentFrom(rowsOf([started, answer({ total: 0.001 }), marked(undefined)])), null, "cut with no figure: unknown, never $0");
 });
 
 test("a spend the store cannot say is unknown (null), never $0: a request a crash cut, a stopped answer, a cost that is not a number, a cut compaction, a cut request the cap's refusal follows", (t) => {
