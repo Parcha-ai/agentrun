@@ -444,8 +444,10 @@ export interface AdapterFacts {
    *  shapes it drops or retypes, measured on its pinned build, so a grant of an MCP tool would offer the model another
    *  tool than the one granted. None: it takes any schema the kernel's check does. */
   schemaProblems?(tool: string, schema: Record<string, unknown>): string[];
-  /** A name its client calls a session's MCP tool by beside `mcp__<server>__<tool>` (OpenCode's `<server>_<tool>`). */
-  readonly toolAlias?: RegExp;
+  /** The host's name for a host tool the model names its own way on this harness's tool channel (Claude's
+   *  `mcp__hands__<name>`, OpenCode's `hands_<name>`, Codex's `mcp_<server>__<tool>`). Absent: the model's name is the
+   *  host's (pi's). A name already the host's comes back as it is. */
+  readonly hostName?: (given: string) => string;
   /** Its CLI's own tools, by the name a call reaches the host by, each with the host's table tool it is (Claude's
    *  `Bash` is `bash`): a host holds such a call to that tool's setting. None: its CLI calls only the host's tools. */
   readonly nativeTools?: Readonly<Record<string, string>>;
