@@ -18,6 +18,10 @@ const capsTools = (settings: ToolSettings, askNeeds = false) => [
   { name: "read", permissions: ALL, default_permission: "allow" },
   { name: "bash", permissions: ALL, default_permission: "allow" },
   { name: "ask_person", permissions: ["allow", "deny"], default_permission: "allow" },
+  // The host tools over a run's own tools, as the server lists them: allow or deny, allow by default.
+  { name: "tools_search", permissions: ["allow", "deny"], default_permission: "allow" },
+  { name: "tools_call", permissions: ["allow", "deny"], default_permission: "allow" },
+  { name: "codemode", permissions: ["allow", "deny"], default_permission: "allow" },
   // web_fetch as the server lists it: a GET answers its provider filled in, which the page knows as the default.
   { name: "web_fetch", permissions: ALL, default_permission: "allow", providers: ["kernel", "parallel"], provider: settings.web_fetch?.provider ?? "kernel", default_provider: "kernel", resolves: { pi: "kernel", "claude-agent": "native", codex: "native" } },
   { name: "web_search", permissions: ALL, default_permission: "allow", providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: settings.web_search?.provider ?? "auto", default_provider: "auto", resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } },
@@ -89,5 +93,16 @@ describe("ToolsPage, each tool's permission", () => {
     expect(page.host.textContent).toContain("Ask is off on this server: approving a call takes the owner's password sign-in, and this server runs with accounts off.");
     expect(page.row("web_search")!.textContent).toContain("Each call is refused: no one can approve it here.");
     expect(page.row("read")!.textContent).not.toContain("Each call is refused");
+  });
+
+  it("lists tools_search, tools_call and codemode like any built-in: allow by default, deny saved under its own key", async () => {
+    const page = await open({});
+    for (const name of ["tools_search", "tools_call", "codemode"]) {
+      expect(!!page.row(name), `${name} has a row`).toBe(true);
+      expect((await optionsOf(page.permission(name))).map((o) => o.text)).toEqual(["allow (default)", "deny"]);
+      expect(valueOf(page.permission(name))).toBe("allow");
+    }
+    await page.choose("tools_search", "deny");
+    expect(page.puts).toEqual([{ tools_search: { permission: "deny" } }]);
   });
 });

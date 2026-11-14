@@ -119,6 +119,8 @@ export type ToolOffer = { name: string; available: boolean; summary?: string; /*
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
     if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
+    // A host tool over the run's own tools (capabilities' `meta`: tools_search, tools_call, codemode) is no grant: Settings → Tools sets it.
+    if ((t as { meta?: unknown }).meta === true) return [];
     const { name, available, summary, blurb, missing, reason, harnesses, call_only, sandbox_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; blurb?: unknown; missing?: string[]; reason?: unknown; harnesses?: string[]; call_only?: unknown; sandbox_only?: unknown; nodes?: unknown };
     return [{
       name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(typeof blurb === "string" && blurb.trim() ? { blurb: blurb.trim() } : {}), ...(missing?.length ? { missing } : {}), ...(typeof reason === "string" && reason ? { reason } : {}), harnesses: Array.isArray(harnesses) ? harnesses : [],
