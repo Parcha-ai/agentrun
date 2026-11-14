@@ -63,9 +63,10 @@ const messageOf = (entry: JournalEntry): Obj | undefined => {
 /** Where the run's computer of `kind` is, read from the run's journal `entries` (in order), for a run with no viewer
  *  open. A desktop or a phone is opened by the run's claim at its start and held to its end: opening until its viewer
  *  answers. A browser is opened by the agent's browser steps (OPENS): unopened with no such call in the run; opening
- *  while one has no result yet; closed otherwise (released, or let go with its process). */
-export function sessionIn(kind: ComputerKind, entries: readonly JournalEntry[]): ComputerSession {
-  if (kind !== "browser") return "opening";
+ *  while one has no result yet; closed otherwise (released, or let go with its process). An `ended` run's computer is
+ *  opening nothing: a desktop or a phone closed with the run, and a browser step it ended under is closed. */
+export function sessionIn(kind: ComputerKind, entries: readonly JournalEntry[], ended = false): ComputerSession {
+  if (kind !== "browser") return ended ? "closed" : "opening";
   let asked = false;
   const waiting = new Set<string>();
   const called = (id: unknown, name: unknown): void => {
@@ -84,5 +85,5 @@ export function sessionIn(kind: ComputerKind, entries: readonly JournalEntry[]):
     else if (entry.kind === KINDS.callStart) called(data?.callId, data?.tool);
     else if (entry.kind === KINDS.callEnd && typeof data?.callId === "string") waiting.delete(data.callId);
   }
-  return !asked ? "unopened" : waiting.size ? "opening" : "closed";
+  return !asked ? "unopened" : waiting.size && !ended ? "opening" : "closed";
 }

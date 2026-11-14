@@ -7,7 +7,7 @@ export const COMPUTER_TOOL_SCHEMAS: { readonly [tool in "computer_observe" | "co
     "type": "object",
     "properties": {
       "app": {
-        "description": "Default: the app in front.",
+        "description": "Default: the app in front. With no ui group, opened or brought in front first.",
         "type": "string"
       },
       "image": {
@@ -25,7 +25,7 @@ export const COMPUTER_TOOL_SCHEMAS: { readonly [tool in "computer_observe" | "co
     "type": "object",
     "properties": {
       "app": {
-        "description": "Default: the state's app, else the app in front.",
+        "description": "Default: the state's app, else the app in front. With no ui group, opened or brought in front first.",
         "type": "string"
       },
       "state": {

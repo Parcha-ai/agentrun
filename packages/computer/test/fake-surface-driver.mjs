@@ -9,7 +9,7 @@ export const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP4
  * hello: the groups to declare (default a Mac with ui), and a Linux desktop's display. split: how many bytes of the PNG
  * screen.shot sends before screen.read must fetch the rest.
  */
-export function fakeComputer({ groups = ["exec", "files", "screen", "input.pointer", "input.keys", "apps", "ui"], features = { "ui.image": true, "apps.background": true }, os = "macos", kind = "desktop", display, split } = {}) {
+export function fakeComputer({ groups = ["exec", "files", "screen", "input.pointer", "input.keys", "apps", "ui"], features = { "ui.image": true, "apps.background": true }, os = "macos", kind = "desktop", display, split, apps = [{ id: "com.apple.Notes", name: "Notes", version: "4" }], foreground = "com.apple.Notes" } = {}) {
 	const calls = [];
 	let seq = 1;
 	let saved = false;
@@ -65,8 +65,11 @@ export function fakeComputer({ groups = ["exec", "files", "screen", "input.point
 			const bad = params.actions.findIndex((action) => action.type === "pinch");
 			return bad >= 0 ? { done: bad, failed: { index: bad, kind: "unsupported", message: "no pinch here" } } : { done: params.actions.length };
 		},
-		"apps.list": () => ({ apps: [{ id: "com.apple.Notes", name: "Notes", version: "4" }], foreground: "com.apple.Notes" }),
-		"apps.launch": () => ({}),
+		"apps.list": () => ({ apps, foreground }),
+		"apps.launch": (params) => {
+			if (!params.background) foreground = params.id;
+			return {};
+		},
 		"exec.run": (params) => ({ exitCode: 0, stdout: Buffer.from(params.argv.join(" ")).toString("base64"), stderr: "", timedOut: false, truncated: false }),
 		"process.start": () => ({ id: "p1", pid: 4242 }),
 		"files.write": (params) => {

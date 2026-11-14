@@ -173,6 +173,21 @@ test("without the ui group: observe is the screen, read whole across screen.read
 	assert.equal(acted.value.changed, undefined);
 });
 
+test("without the ui group: a screen with no app in front lists the apps, and an app named to observe or act on is opened first", async () => {
+	const apps = [{ id: "org.xfce.mousepad", name: "Mousepad" }, { id: "xfce4-terminal", name: "Terminal" }];
+	const { surface, calls } = surfaceOf({ groups: ["screen", "input.pointer", "input.keys", "apps"], os: "linux", apps, foreground: null });
+	const empty = await surface.call("observe", {});
+	assert.match(empty.text, /^screen 1440×900 px · no app in front; name one as app to open it: org\.xfce\.mousepad, xfce4-terminal · this computer has no ui group/);
+	assert.equal(calls.some((call) => call.method === "apps.launch"), false, "a look that names no app opens none");
+	const seen = await surface.call("observe", { app: "org.xfce.mousepad" });
+	assert.deepEqual(calls.find((call) => call.method === "apps.launch"), { method: "apps.launch", params: { id: "org.xfce.mousepad" } });
+	assert.match(seen.text, /^screen 1440×900 px · org\.xfce\.mousepad in front · this computer has no ui group/);
+	calls.length = 0;
+	await surface.call("act", { app: "xfce4-terminal", steps: [{ type: "ls" }] });
+	assert.deepEqual(calls.map((call) => call.method), ["apps.launch", "input.actions"], "the act's app is in front before its input");
+	assert.deepEqual(calls[0].params, { id: "xfce4-terminal" });
+});
+
 test("without the ui group: a ref, an into or an expect is refused before anything runs", async () => {
 	const { surface, calls } = surfaceOf({ groups: ["screen", "input.pointer"] });
 	await assert.rejects(surface.call("act", { steps: [{ press: "@e3" }] }), (error) => error instanceof SurfaceError && error.kind === "unsupported" && /needs the ui group/.test(error.message));

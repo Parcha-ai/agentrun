@@ -24,7 +24,7 @@ import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./s
 import type { PairedComputerRow, Store } from "./store/index.js";
 import type { PairedView } from "./computer-attach.js";
 import { withPaired } from "./workspace/attached-computers.js";
-import { type ComputerSettingKind, type ShellPlace, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
+import { aLabel, type ComputerSettingKind, type ShellPlace, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
 
 // Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
 // body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
@@ -432,7 +432,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const options = providerOptions(providerId, await keysOf(entry), settings, keyTable);
     if (!options.ok) throw new Error(options.error.message);
     const make = Object.hasOwn(factories, providerId) ? factories[providerId] : undefined;
-    if (typeof make !== "function") throw new Error(`this server cannot make a ${entry.label} provider`);
+    if (typeof make !== "function") throw new Error(`this server cannot make ${aLabel(entry.label)} provider`);
     const configuration = image === undefined ? undefined : entry.capabilities.find((one) => one.image === image);
     const made = (await make({ ...options.options, ...((configuration?.options ?? {}) as Record<string, string>) })) as unknown as Partial<Pick<ComputerProvider, "release">>;
     if (typeof made.release !== "function") throw new Error(`this server's ${entry.label} provider cannot release a computer`);

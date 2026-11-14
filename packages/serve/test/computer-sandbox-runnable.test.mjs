@@ -185,7 +185,7 @@ test("Mode 1: an e2b sandbox is refused, as a sandbox there needs a bind mount o
   const saved = await api("PUT", "/computers/e2b/keys", { E2B_API_KEY: "fake-test-key" });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const said = await saveAndStart(api, "remote-mode1", { computer: { kind: "sandbox", provider: "e2b" } });
-  const words = /^Mode 1 runs a sandbox only on Docker: a E2B sandbox can't reach the run's folder on this machine\. Pick Docker for this agent's computer in Settings → Computers, or another kind of computer\.$/;
+  const words = /^Mode 1 runs a sandbox only on Docker: an E2B sandbox can't reach the run's folder on this machine\. Pick Docker for this agent's computer in Settings → Computers, or another kind of computer\.$/;
   assert.equal(said.refused.length, 1, JSON.stringify(said));
   assert.deepEqual(said.refused[0].slice(0, 2), ["definition.computer", "not_set_up_here"], JSON.stringify(said));
   assert.match(said.refused[0][2], words);
