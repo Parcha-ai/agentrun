@@ -59,6 +59,9 @@ export interface HostTool {
    *  no intent or outcome of its own. A harness runs it again after a crash, its recorded nested calls answered from their
    *  records, never run twice. */
   nests?: true;
+  /** Registered and callable (by the gate, and by a nested call: tools_call, a script), but not listed to the model: a
+   *  catalog tool of a run whose catalog is deferred (tool-deferral.ts), which the model finds with tools_search. */
+  deferred?: true;
 }
 
 /**
@@ -419,6 +422,9 @@ export interface AdapterFacts {
   /** It runs the model's scripts itself (Codex's code mode, its nested calls the host's tools): the host offers no
    *  `codemode` of its own beside it. Absent: the host's codemode is offered. */
   readonly ownCodemode?: true;
+  /** It defers a run's MCP tools behind a tool search of its own (Claude Code's ToolSearch), so the host offers no
+   *  `tools_search` or `tools_call` beside it. Absent: the host's are offered when a run's catalog tools are deferred. */
+  readonly ownToolSearch?: true;
   /** The model as the harness names it (Anthropic's id has no dot). */
   normalizeModel(model: { provider: string; modelId: string }): { provider: string; modelId: string };
   /** How it is installed and pinned: the line that installs it into a project, the package it pins, and the codes its

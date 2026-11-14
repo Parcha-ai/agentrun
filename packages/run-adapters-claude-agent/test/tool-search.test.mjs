@@ -29,9 +29,13 @@ const MESSAGES = { method: 'POST', path: '/v1/messages', query: ['beta=true'] };
 
 const refused = (fn, status, words) => assert.throws(fn, (error) => error instanceof ProxyRefusal && error.status === status && words.test(error.message));
 
-test('tool search is on exactly when the session has an MCP server\'s tools, and only those wait behind it', () => {
-  assert.equal(claudeToolSearch(['lookup', 'mcp__github__get_issue']), 'true');
-  assert.equal(claudeToolSearch(['lookup', 'tools_search']), 'false');
+test("tool search is on exactly when the session's catalog tools pass the kernel's threshold (the one test the host's own search follows), and only MCP tools wait behind it", () => {
+  const mcp = (count) => Array.from({ length: count }, (_, index) => `mcp__probe__tool_${index}`);
+  assert.equal(claudeToolSearch(['lookup', 'mcp__github__get_issue']), 'false', 'a few MCP tools: every tool is listed');
+  assert.equal(claudeToolSearch(mcp(20)), 'false', 'the threshold itself: not yet');
+  assert.equal(claudeToolSearch(mcp(21)), 'true', 'past it: on');
+  assert.equal(claudeToolSearch(['monid_discover', 'monid_inspect', ...mcp(19)]), 'true', 'monid tools count toward it');
+  assert.equal(claudeToolSearch(Array.from({ length: 40 }, (_, index) => `tool_${index}`)), 'false', 'built-in tools never defer');
   const listed = listedTools([{ name: 'lookup', description: 'd', inputSchema: { type: 'object' } }, { name: 'mcp__github__get_issue', description: 'd', inputSchema: { type: 'object' } }]);
   assert.equal(listed[0]._meta[ALWAYS_LOAD_KEY], true, 'a tool of the session\'s own is never deferred');
   assert.equal(listed[1]._meta[ALWAYS_LOAD_KEY], undefined, 'an MCP server\'s tool is deferred');

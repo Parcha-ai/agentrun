@@ -1,14 +1,24 @@
-// mini-demos.py's movie captions for an agent's computer calls: each call on a tool_result row's computer_calls (serve's
-// record of it) as the line a person reads, from serve's own timeline helpers (packages/serve/src/timeline/computer.ts),
-// so a movie says what the console's run page says. Reads the calls as a JSON array on stdin, writes their lines as a
-// JSON array on stdout.
+// mini-demos.py's movie captions for computer calls, in the one voice the console's run page reads them in: each call as
+// serve's record keeps it (a tool_result row's computer_calls, or a scripted demo's own call in that shape) through serve's
+// own words for it (packages/serve/src/timeline/computer.ts callWords). A key step's chord is kept as the record keeps it
+// (keptChord: a lone character is typing, never said). Reads one call as JSON a line on stdin and writes its words as a
+// JSON string a line on stdout, flushed per line, so one process serves a whole run.
 //
-//   node call-words.mjs < calls.json
-import { readFileSync } from "node:fs";
+//   printf '%s\n' '{"method":"apps.launch","app":"com.apple.TextEdit","ok":true}' | node call-words.mjs
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const built = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "serve", "dist", "timeline", "computer.js");
-const { callWords } = await import(pathToFileURL(built).href);
-const calls = JSON.parse(readFileSync(0, "utf8"));
-process.stdout.write(JSON.stringify(calls.map((call) => callWords(call))));
+const { callWords, keptChord } = await import(pathToFileURL(built).href);
+
+/** A call with each key step's chord as the record keeps it. */
+const kept = (call) => ({
+  ...call,
+  ...(Array.isArray(call.steps) ? { steps: call.steps.map(({ keys, ...step }) => ({ ...step, ...(keptChord(keys) ? { keys } : {}) })) } : {}),
+});
+
+for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
+  if (!line.trim()) continue;
+  process.stdout.write(`${JSON.stringify(callWords(kept(JSON.parse(line))))}\n`);
+}
