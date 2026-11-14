@@ -1043,6 +1043,27 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(os.detailReads, 2, "one read for each step's element")
 	}
 
+	/// An act with no steps changes nothing between its first look and its settle, so the first look is the settle's
+	/// first: a wait that already holds costs two looks a quiet apart, not three (System Settings on CI: 400 ms a look).
+	func testAnActWithNoStepsSettlesFromItsFirstLook() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		let (start, walks) = (os.now, os.snapshots)
+		let result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Save")))
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertEqual(result.changed, false)
+		XCTAssertEqual(os.snapshots - walks, 2)
+		XCTAssertEqual(os.now - start, 150)
+		// A window that moves on between the two still settles, and the act says it changed.
+		os.onSnapshot = { os in
+			if os.snapshots == walks + 4 { os.elements[5]!.name = "Saved" }
+		}
+		let moved = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Saved")))
+		XCTAssertEqual(moved.expect, .met)
+		XCTAssertEqual(moved.changed, true)
+		XCTAssertEqual(os.snapshots - walks, 5, "the first look, one that saw the change, one that saw it hold")
+	}
+
 	func testCallsRunOneAtATime() async throws {
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())
