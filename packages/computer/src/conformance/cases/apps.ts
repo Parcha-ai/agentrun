@@ -8,7 +8,7 @@ import { FIXTURE_BUTTON } from "../fixture.js";
 import { featureOff } from "../../ui-engine.js";
 import type { Case, CaseContext } from "../types.js";
 import { UI_FIXTURE } from "../ui-fixture.js";
-import { shoot } from "./screen.js";
+import { captureOff, shoot } from "./screen.js";
 import { namesOf, observe, openSettings, rowsOf, settingsApp, throughSettings } from "./settings.js";
 
 /** Whether the provider and the computer both declare group. */
@@ -30,11 +30,12 @@ async function screenPrint(t: CaseContext): Promise<string> {
 
 /**
  * What the screen shows now, as the case compares it: ui.observe's names and values when it reads the elements, else a
- * screenshot's print, else (ui.tree off, no screen group) ui.observe's image. Undefined when the launch cannot be seen.
+ * screenshot's print, else (ui.tree off, no screen group or screen.capture off) ui.observe's image. Undefined when the
+ * launch cannot be seen.
  */
 async function shown(t: CaseContext): Promise<string | undefined> {
 	if (readsTree(t)) return JSON.stringify(namesOf(await observe(t)));
-	if (declares(t, "screen")) return screenPrint(t);
+	if (declares(t, "screen") && captureOff(t) === undefined) return screenPrint(t);
 	if (declares(t, "ui")) return (await observe(t)).image?.data;
 	return undefined;
 }

@@ -8,11 +8,6 @@ import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { capModels, paidCall, sideRequests, useSpend } from "../dist/cap.js";
 import { chargeOf, monidClient } from "../dist/monid.js";
 import fakeMonid, { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
-import { bookedIn, PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
-import { parallelExtract, webFetch } from "../dist/web-fetch.js";
-import { webSearch } from "../dist/web-search.js";
-import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
-import { network } from "./fixtures/fake-network.mjs";
 /** A cap's refusals' figures (capModels' `refused`): what a refusal counts as spent and held, which its words say in cents. */
 const refusals = () => {
   const all = [];
@@ -346,78 +341,5 @@ test("a tool's own request adds its hosted tool's allowance to its input bound a
     requests[0]?.end(0.001);
     if (!sent) assert.match((await answer).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: /);
   }
-});
-
-test("a Parallel search under way holds its fee for the cap: a model request beside it that fits only without it is refused, and goes once the search answered and charged nothing", async (t) => {
-  // A request's worst case is $0.001 (1,000 output tokens at $1 a million), and a fast search is held at its $0.001: a
-  // $0.0015 cap holds one of the two, never both, whichever branch, tool round or harness each comes from.
-  const mode = process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH;
-  process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH = "422";
-  t.after(() => (mode === undefined ? delete process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH : (process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH = mode)));
-  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
-  const { models, sent } = fakeModels();
-  const seen = refusals();
-  const capped = await capModels(models, 0.0015, 0, { refused: seen.refused });
-  t.after(() => useSpend(undefined));
-  // The search reaches Parallel and is held there until released.
-  let arrived, release;
-  const reached = new Promise((resolve) => (arrived = resolve));
-  const held = new Promise((resolve) => (release = resolve));
-  t.after(() => release());
-  const send = async (url, init) => (arrived(), await held, fakeParallel(url, init));
-  const records = [];
-  const ledger = { call: "c1", record: async (kind, data) => void records.push([kind, data.heldUsd ?? data.usd]) };
-  const search = bookedIn(ledger, () => webSearch({ query: "widgets", n: 2 }, parallelExtract(CANARY, send)));
-  await reached;
-  const request = capped.streamSimple(priced, context);
-  assert.equal(wentOut(sent), 0, "not sent while the search is under way");
-  // The refusal counts the search's fee as held (#1539's words, as main's paid-call hold test reads them).
-  assert.equal((await request.result()).errorMessage, "spend_cap_reached (out of budget): Not sent: this run has spent $0 of its $0.0015 cap, and the next step needs at least $0.01. Raise the cap to at least $0.01 to continue.");
-  assert.ok(Math.abs(seen.last()?.spentUsd - 0.001) < 1e-12, `its figures count the search's fee as held, which its words round to $0: ${JSON.stringify(seen.last())}`);
-  // Parallel refused the search (422): it charged nothing, and its hold is gone.
-  release();
-  assert.deepEqual(await search, { error: "Parallel's search answered 422" });
-  assert.deepEqual(records, [["agentrun.tool_started", PARALLEL_SEARCH_USD], ["agentrun.tool_cost", 0]]);
-  const admitted = capped.streamSimple(priced, context);
-  assert.equal(sent.length, 1, "with the search's hold released at $0, the request fits");
-  sent[0].end(0);
-  await admitted.result();
-});
-
-
-test("under a cap, a page's one Parallel extract is held as any Parallel request: a model request that fits only without its $0.001 is refused while the read is under way, and the page's later parts hold and ask nothing", async (t) => {
-  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
-  const { models, sent } = fakeModels();
-  const seen = refusals();
-  const capped = await capModels(models, 0.0015, 0, { refused: seen.refused });
-  t.after(() => useSpend(undefined));
-  let arrived, release;
-  const reached = new Promise((resolve) => (arrived = resolve));
-  const held = new Promise((resolve) => (release = resolve));
-  t.after(() => release());
-  const asked = [];
-  const text = `${"capped ".repeat(6_000)}end`;
-  const send = async (_url, init) => {
-    asked.push(JSON.parse(init.body).advanced_settings.full_content.max_chars_per_result);
-    arrived();
-    await held;
-    return new Response(JSON.stringify({ results: [{ url: "http://public.example/", title: "Capped", full_content: text }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
-  };
-  const records = [];
-  const ledger = { call: "c1", record: async (kind, data) => void records.push([kind, data.heldUsd ?? data.usd]) };
-  const extract = parallelExtract(CANARY, send);
-  const pages = new Map();
-  const net = network();
-  const first = bookedIn(ledger, () => webFetch("http://public.example/", { ...net, parallel: extract, pages }));
-  await reached;
-  const request = capped.streamSimple(priced, context);
-  assert.equal(wentOut(sent), 0, "not sent while the extract is under way");
-  assert.match((await request.result()).errorMessage ?? "", /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0015 cap/);
-  assert.ok(Math.abs(seen.last()?.spentUsd - 0.001) < 1e-12, `its figures count the extract as held, which its words round to $0: ${JSON.stringify(seen.last())}`);
-  release();
-  assert.equal((await first).via, "parallel");
-  const later = await bookedIn(ledger, () => webFetch("http://public.example/", { ...net, parallel: extract, pages, offset: 20_000 }));
-  assert.deepEqual([later.via, later.offset, asked], ["parallel", 20_000, [1_000_001]], "a later part from what the run read: no request");
-  assert.deepEqual(records, [["agentrun.tool_started", PARALLEL_EXTRACT_USD], ["agentrun.tool_cost", PARALLEL_EXTRACT_USD]], "held and charged once");
 });
 

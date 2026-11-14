@@ -11,9 +11,7 @@ import * as daytona from "../dist/daytona.js";
 import * as docker from "../dist/docker.js";
 import * as e2b from "../dist/e2b.js";
 import * as modal from "../dist/modal.js";
-import { API, fakeDaytona, KEY } from "./fake-daytona.mjs";
 import { fakeDocker } from "./fake-docker.mjs";
-import { DAEMON_IMAGE, fakeModal } from "./fake-modal.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "computer-provider-mount-"));
 const DAEMON = join(dir, "computerd");
@@ -28,15 +26,21 @@ test("Docker: MOUNT is [\"bind\"], what its provider declares", () => {
 	assert.deepEqual([...docker.MOUNT], declared(fakeDocker({ desktop: {} }).provider), "a desktop takes the same mount");
 });
 
+/** The Modal SDK's slice, never called: these build a provider only to read what it declares. */
+const MODAL_SDK = {
+	apps: { fromName: () => assert.fail("apps.fromName was called") },
+	images: { fromRegistry: () => assert.fail("images.fromRegistry was called") },
+	sandboxes: Object.fromEntries(["create", "fromId", "list"].map((name) => [name, () => assert.fail(`sandboxes.${name} was called`)])),
+};
+
 test("Modal: MOUNT is [\"archil\"], what its provider declares", () => {
-	const provider = new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: DAEMON_IMAGE });
+	const provider = new ModalProvider({ sdk: MODAL_SDK, app: "computers" });
 	assert.deepEqual([...modal.MOUNT], ["archil"]);
 	assert.deepEqual([...modal.MOUNT], declared(provider));
 });
 
 test("Daytona: MOUNT is [\"archil\"], what its provider declares", () => {
-	const fake = fakeDaytona();
-	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: fake.fetch, webSocket: fake.webSocket });
+	const provider = new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: DAEMON, fetch: async () => assert.fail("no request") });
 	assert.deepEqual([...daytona.MOUNT], ["archil"]);
 	assert.deepEqual([...daytona.MOUNT], declared(provider));
 });

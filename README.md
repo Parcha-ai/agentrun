@@ -256,7 +256,48 @@ them. [Template packages](packages/serve/templates/README.md) has the folder for
 Want a template to know your code? [Tune a template on your own code](docs/tutorials/tune-a-template.md) walks
 through the loop we ran on `code-review`.
 
-**Triggers** start capped runs on their own: schedules, signed webhooks and GitHub pull request events.
+**Triggers** start capped runs on their own: schedules, signed webhooks, GitHub pull request events and Composio
+events.
+
+## Connect your tools
+
+Give an agent the tools of any remote MCP server in **Settings → MCP servers**. With a Composio key, five steps take
+you from a toolkit to a run that a Composio event starts:
+
+1. In **Settings → MCP servers → Add from Composio**, paste your Composio API key, type a toolkit (`hackernews`) and
+   press **Load actions**.
+
+   <p align="center">
+     <img alt="The Add from Composio form: the Composio API key field, masked, and the toolkit hackernews" src="docs/assets/tutorials/composio-1-key.png" width="100%">
+   </p>
+
+2. Save a toolkit that acts as you, such as `github`, and open its link to connect your account on Composio.
+
+   <p align="center">
+     <img alt="After saving the github toolkit: its tools need your github account, with a link to connect it on Composio" src="docs/assets/tutorials/composio-2-connect.png" width="100%">
+   </p>
+
+3. Tick the actions an agent may use and save the server, then tick its tools in the agent's **Tools & skills** step.
+
+   <p align="center">
+     <img alt="The hackernews toolkit's six actions, two of them ticked, saved as the server hackernews" src="docs/assets/tutorials/composio-3-actions.png" width="100%">
+   </p>
+
+4. In **Triggers → New webhook**, pick **Composio's** signature and the agent, subscribe its URL on Composio, then
+   paste Composio's secret with **Set secret**.
+
+   <p align="center">
+     <img alt="The trigger's page: its agent, URL, Composio's signature, Accepts GITHUB_ISSUE_CREATED_TRIGGER, and one firing that started a run" src="docs/assets/tutorials/composio-4-trigger.png" width="100%">
+   </p>
+
+5. Open an issue in your repository and watch the run it starts on the **Timeline**.
+
+   <p align="center">
+     <img alt="A run started by the trigger: its Timeline opens with the trigger's row, then three Hacker News searches" src="docs/assets/tutorials/composio-5-timeline.png" width="100%">
+   </p>
+
+[Connect Composio tools and triggers](docs/tutorials/composio.md) has each step's API call and the Composio side of the
+trigger.
 
 ## Harnesses and computers
 
@@ -306,7 +347,7 @@ has Docker, and no computer otherwise. Remote computers bill through your own ac
   `npm run conformance -w @parcha/agentrun-computer -- --provider docker --kind sandbox`.
 
 [`@parcha/agentrun-computer`](packages/computer/README.md) is the protocol underneath: one small daemon in every
-computer and one provider per vendor.
+computer and one provider per vendor. To add your vendor, see [How to contribute a provider](packages/computer/PROVIDERS.md#how-to-contribute-a-provider).
 
 </details>
 
@@ -448,6 +489,7 @@ nothing a run learns can keep a secret it was handed. [SECURITY.md](SECURITY.md)
 - [Quickstart on agentrun.ai](https://agentrun.ai/docs/quickstart) and the [docs](https://agentrun.ai/docs)
 - [The CLI's skill](packages/agentrun/skills/agentrun-cli/SKILL.md) and [every command](packages/agentrun/skills/agentrun-cli/references/commands.md)
 - [Deploying](deploy/README.md), [computers](packages/computer/README.md), [templates](packages/serve/templates/README.md)
+- [Connect Composio tools and triggers](docs/tutorials/composio.md)
 - [The workflow language](packages/dsl/README.md), [authoring](docs/authoring.md), [the guide](docs/guide.md)
 - [Changelog](CHANGELOG.md) and [contributing](CONTRIBUTING.md)
 
