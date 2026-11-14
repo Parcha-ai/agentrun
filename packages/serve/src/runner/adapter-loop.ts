@@ -1458,7 +1458,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // What was spent beside them on the run's behalf (its spec's runCap.beside) is read with them at each admission
         // (runBooking), the spec's once it is known.
         const besideNow = async (): Promise<number | null> => (specNow?.runCap?.beside ? await specNow.runCap.beside() : 0);
-        const sessions = Object.assign(journalSessions(harness, context, { flush: () => deps.flush(), runId: claim.runId }), { beside: besideNow });
+        const sessions = Object.assign(journalSessions(harness, context, { flush: () => deps.flush(), claim }), { beside: besideNow });
         let capBuilt: RunCap | undefined;
         /** The session's recent requests, as the cap's `expected` pricing reads them (the kernel's recentAfter and
          *  warmFrom): the harness's own requests that answered under CACHE_WARM_MS ago, each one's input as its usage

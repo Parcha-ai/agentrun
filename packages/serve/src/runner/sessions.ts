@@ -13,7 +13,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { type ConversationId, type Cursor, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { SessionFenced, type SessionRecord, type SessionStore, type SessionWriter } from "@parcha/agentrun-kernel";
-import { Fenced, type Store } from "../store/store.js";
+import { type Claim, Fenced, type Store } from "../store/store.js";
 import { KINDS, type SessionKeyData } from "./journal-kinds.js";
 import { ClaimLost } from "./runner.js";
 
@@ -28,10 +28,11 @@ const fenced = (error: unknown): boolean => {
 };
 
 /** The sessions of the run whose one Harness is `harness` (on store.journal(claim)); `context`: the loop's, whose signal is
- *  the claim's; `store`: its flush makes every record appended so far survive a lost box (sync), and `runId` is the run's,
- *  each writer's scope beside its key (SessionWriter.scope): a request whose cost a lost claim of this process could not
- *  write is booked by the run's next claim here at what it reported, never cut. A reader that books nothing needs none. */
-export function journalSessions(harness: Harness, context: Context, store: Pick<Store, "flush"> & { runId?: string }): SessionStore & { keys(): Promise<string[]> } {
+ *  the claim's; `store`: its flush makes every record appended so far survive a lost box (sync), and `claim` (its run and
+ *  runner) scopes each writer beside its key (SessionWriter.scope): a request whose cost a lost claim of this runner could
+ *  not write is booked at what it reported by this runner's next claim of the run, never cut. Another runner, in this
+ *  process or not, takes nothing of it. A reader that books nothing needs no claim. */
+export function journalSessions(harness: Harness, context: Context, store: Pick<Store, "flush"> & { claim?: Pick<Claim, "runId" | "runner"> }): SessionStore & { keys(): Promise<string[]> } {
   const holders = new Map<string, number>();
   const known = new Map<string, ConversationId>();
   // One creation per key at a time: two first opens at once share it, so a key names one conversation.
@@ -136,7 +137,7 @@ export function journalSessions(harness: Harness, context: Context, store: Pick<
       const conversation = (await find(key)) ?? (await create(key));
       const writer: SessionWriter = {
         key,
-        ...(store.runId === undefined ? {} : { scope: `${store.runId}\n${key}` }),
+        ...(store.claim === undefined ? {} : { scope: `${store.claim.runner}\n${store.claim.runId}\n${key}` }),
         read: () => read(key),
         // Every record appended so far is durable when this resolves: the kernel calls it after an effect's start record
         // and before the effect runs (drive.ts), so a lost box never runs it twice. One FULL commit of the store.

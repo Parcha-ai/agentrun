@@ -1,10 +1,11 @@
 // A runner loses a run's claim while a paid request of the run is out (its lease lapsed: the box stalled past it), the
 // request answers on a priced model, and the same runner takes the run again. The lost claim's booking admitted the
 // request (its runner.request is in the run's journal) and saw it answer with its usage, but the journal refused its
-// runner.turn: the run's claim had moved on. The run's next claim in this process books it at what it reported
-// (journalSessions scopes each session by the run's id: SessionWriter.scope), never cut at an unknown cost, so the run's
-// cost stays known and it is metered. A request whose price is unknown stays unpriced (the run's cost null, one request
-// unpriced) and counts for the cap at its hold, never all of the cap.
+// runner.turn: the run's claim had moved on. The runner's next claim of the run books it at what it reported
+// (journalSessions scopes each session by the claim's runner and run: SessionWriter.scope), never cut at an unknown cost,
+// so the run's cost stays known and it is metered. A request whose price is unknown stays unpriced (the run's cost null,
+// one request unpriced) and counts for the cap at its hold, never all of the cap. Another runner that takes the run (one
+// in another process, as the lost one may be dead) takes nothing of it: the request is booked cut there, as before.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -38,15 +39,15 @@ async function knownUsd() {
  *  the run's id. */
 async function bookingOn(store, claim, events) {
   const harness = await Harness.open(store.journal(claim), { registry: createRegistry(), models: createModels() }, ctx);
-  const sessions = journalSessions(harness, ctx, { flush: () => store.flush(), runId: claim.runId });
+  const sessions = journalSessions(harness, ctx, { flush: () => store.flush(), claim });
   const writer = await sessions.open(SESSION);
   const booking = await modelPortFor(writer, { key: SESSION, label: SESSION, beforeRequest: () => ({ holdUsd: HOLD, boundUsd: BOUND }), onEvent: (event) => void events.push(event) });
   return { sessions, booking };
 }
 
 /** A run whose claim is lost while a learned workflow's request is out, answering with `usd`, then taken again by the
- *  same runner: what the run's session reads after the new claim books its cut, and the new claim's events. */
-async function lostAndTakenAgain(t, runId, usd) {
+ *  same runner (or `taker`): what the run's session reads after the new claim books its cut, and its events. */
+async function lostAndTakenAgain(t, runId, usd, taker = "runner-a") {
   const { store, clock } = await storeOn(t);
   await queued(store, runId);
   const first = await store.claim(runId, "runner-a", { leaseMs: LEASE });
@@ -54,7 +55,7 @@ async function lostAndTakenAgain(t, runId, usd) {
   const ticket = await lost.booking.models.beforeRequest({ model: MODEL, inputTokensMax: 1000, host: "learned_workflow" });
   // The box stalls past the lease: the claim lapses, and the same runner takes the run again at the next epoch.
   clock.now = T0 + LEASE + 1;
-  const again = await store.claim(runId, "runner-a", { leaseMs: LEASE });
+  const again = await store.claim(runId, taker, { leaseMs: LEASE });
   assert.equal(again?.epoch, 2, "the run is taken again");
   // The request answers, and the lost claim's write of its cost is refused.
   await assert.rejects(lost.booking.models.afterRequest({ ...TOKENS, usd }, ticket, { end: "answered", usd }), SessionFenced, "the lost claim cannot write the request's cost");
@@ -86,4 +87,11 @@ test("a request whose price is unknown stays unpriced on the run's next claim an
   assert.equal(read.cost.usd, null, "the run's cost is unknown, never $0");
   assert.equal(read.cost.unpriced, 1, "one request is not metered");
   assert.ok(typeof read.spentUsd === "number" && read.spentUsd <= HOLD + BOUND && read.spentUsd < CAP, `the cap counts it at its hold, never all of the cap: ${read.spentUsd}`);
+});
+
+test("another runner that takes the run takes nothing the lost runner kept: the request is booked cut, at its hold and bound", async (t) => {
+  const { records, turns } = await lostAndTakenAgain(t, "run-other", await knownUsd(), "runner-b");
+  assert.equal(turns.length, 1, `booked once: ${JSON.stringify(turns)}`);
+  assert.equal(turns[0].data.cut, true, `cut, as a dead runner's request is: ${JSON.stringify(turns[0])}`);
+  assert.ok(near(sessionSpendOf(records).spentUsd, HOLD + BOUND), "counted for the cap at its hold and bound");
 });

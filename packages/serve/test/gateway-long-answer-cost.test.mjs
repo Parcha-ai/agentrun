@@ -1,4 +1,4 @@
-// A pi run on a priced gateway model (claude-opus-5-5 through serve's OpenAI Responses gateway, AGENT_MODEL_BASE_URL) is
+// A pi run on a priced gateway model (gpt-5.5 through serve's gateway on OpenAI Responses, AGENT_MODEL_BASE_URL) is
 // priced whatever the gateway's JSON looks like. The session's model proxy keeps only the first and last 64 KiB of an
 // answer, and a long answer's terminal event (`response.completed`, which carries the whole response) is longer than that,
 // so its usage is read from the event's kept end. A Python gateway (LiteLLM's `json.dumps`) writes `"usage": {`, with a
@@ -47,7 +47,8 @@ async function gateway(t, text, usage, write) {
   return { url: `http://127.0.0.1:${server.address().port}`, models };
 }
 
-const MODEL = "claude-opus-5-5";
+// A model the gateway serves on Responses (a Claude model goes on Messages, whose usage is read per event line).
+const MODEL = "gpt-5.5";
 const USAGE = { input: 3_000, output: 25_000 };
 /** An answer whose terminal event is longer than the proxy's 64 KiB window. */
 const LONG = "The long answer. ".repeat(6_000);
