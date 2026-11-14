@@ -103,7 +103,7 @@ export function pinIssues(pin: unknown, at: string, key?: string): InputIssue[] 
   return entries.flatMap(([arg, value]): InputIssue[] => {
     if (!PIN_ARG.test(arg)) return [{ field: `${at}.${arg}`, reason: "bad_format", message: `${at} names a top-level argument of the tool (${PIN_ARG.source}); ${JSON.stringify(arg).slice(0, 60)} is none` }];
     const held = Array.isArray(value) ? value.length >= 1 && value.length <= MAX_PIN_CHOICES && value.every(scalar) : isPinKeys(value) ? keysRead(value) : scalar(value);
-    return held ? [] : [{ field: `${at}.${arg}`, reason: "wrong_type", message: `${at}.${arg} is a JSON scalar (a string of at most ${MAX_PIN_TEXT} characters, a number, true or false, or null: the argument left out), a list of 1 to ${MAX_PIN_CHOICES} of them, the argument one of the list, or {keys: [<key>, ...]}: 1 to ${MAX_PIN_CHOICES} names (each text of 1 to ${MAX_PIN_TEXT} characters) of the keys an object argument may hold, any values, nothing else beside keys` }];
+    return held ? [] : [{ field: `${at}.${arg}`, reason: "wrong_type", message: `${at}.${arg} is a JSON scalar (a string of at most ${MAX_PIN_TEXT} characters, a number, true or false, or null: the argument left out) or a list of 1 to ${MAX_PIN_CHOICES} of them, the argument one of the list; or {keys: [<key>, ...]}: 1 to ${MAX_PIN_CHOICES} names (each text of 1 to ${MAX_PIN_TEXT} characters) of the keys an object argument may hold, any values, nothing else beside keys` }];
   });
 }
 

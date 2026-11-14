@@ -1734,7 +1734,13 @@ tool names share), or under a harness id when that harness's own MCP client woul
   key names, holds a call whose argument, when given, is an object of those keys alone, any values (left out or `null`
   holds too), so `{"mcp:hubspot/HUBSPOT_UPDATE_CONTACT": {"pin": {"properties": {"keys": ["hs_lead_score"]}}}}` lets a
   write set that one field and no other, and refuses one that sets another with "properties keys in (hs_lead_score)".
-  Two layers' keys pins of one argument hold as the keys in both. The gate checks a pinned
+  Two layers' keys pins of one argument hold as the keys in both. A pinned tool takes only its listed arguments: a
+  call of a tool with a pin in either layer may carry only the top-level arguments its listing declares under its
+  inputSchema's `properties` (the listing the run pinned when it started, the one its model is offered), beside the
+  pinned ones. So an alias a server takes for a pinned argument, one its listing does not declare (Gmail's `to` for
+  `recipient_email`, Slack's `channel_id` for `channel`), is refused with "`to` is not an argument of
+  GMAIL_SEND_EMAIL; a pinned tool takes only its listed arguments (recipient_email is pinned)", and a pin need not
+  null aliases by hand. A listing with no `properties` object closes nothing, and a tool with no pin is not closed. The gate checks a pinned
   tool's call before it runs or asks anyone, whatever the permission (an allow, an ask, a grant): a call whose arguments
   are not as pinned is refused, never sent and never asked about, and the model reads "mcp:slack/slack_send_message may
   only be called with channel_id = C0123: its destination is fixed by the agent's settings". The run's process logs a

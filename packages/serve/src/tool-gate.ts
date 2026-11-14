@@ -4,7 +4,9 @@
 // host tools on claude-agent, codex and OpenCode, and the MCP gateway's calls alike.
 //
 // An MCP tool's setting may also carry a pin (pinRefusal): top-level arguments its calls must carry, each a JSON scalar
-// or one of a list, or an object argument's keys (`{keys: [...]}`: given, it holds those keys alone, any values).
+// or one of a list, or an object argument's keys (`{keys: [...]}`: given, it holds those keys alone, any values). A
+// pinned tool takes only the arguments its listing in the run's pin declares, beside its pinned ones, so no alias the
+// server takes for a pinned argument goes around it.
 // A pin adds to a setting and is never a permission: the gate checks it after a deny and before an
 // allow or an ask, so an allowed call not as pinned is refused unsent, and one under ask is refused before anyone is
 // asked; an approved call is checked again before it runs. The agent's pin and the server's both hold.
@@ -191,6 +193,10 @@ const scalarWords = (one: PinScalar): string => (one === null ? "absent" : typeo
 /** A pin in words, as the refusal says it, in its one form (canonicalPin): `channel_id = C0123`, `cc absent` for a null,
  *  `event in (absent | COMMENT)` for a list, `properties keys in (hs_lead_score)` for a keys pin. */
 export const pinWords = (pin: Pin): string => Object.entries(canonicalPin(pin)).map(([arg, value]) => (isPinKeys(value) ? `${arg} keys in (${value.keys.join(" | ")})` : Array.isArray(value) ? `${arg} in (${value.map(scalarWords).join(" | ")})` : value === null ? `${arg} absent` : `${arg} = ${scalarWords(value as PinScalar)}`)).join(", ");
+/** Names in words: `a`, `a and b`, `a, b and c`. */
+const listWords = (names: readonly string[]): string => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
+/** The arguments a call of `tool` carries that its listing does not declare, in words: "`to` is not an argument of X". */
+const undeclaredWords = (args: readonly string[], tool: string): string => `${listWords(args.map((arg) => `\`${arg}\``))} ${args.length === 1 ? "is not an argument" : "are not arguments"} of ${tool}`;
 /** What holds both of two layers' pins of one argument (`own`, the agent's, and `theirs`, the server's): a scalar where
  *  either is one and the other holds it, else the agent's list kept to the server's, in the agent's order; two keys pins,
  *  the agent's keys the server's has too; a keys pin and a scalar or list, what of the scalars the keys pin holds (null:
@@ -217,9 +223,13 @@ function bothOf(own: PinValue, theirs: PinValue): PinValue | undefined {
  *  addition to a setting, never a permission: each layer's pin on the tool's own key holds (the agent's and the
  *  server's both, whatever the permission), and a call must carry every pinned argument as pinned: its value, one of
  *  its list, or (a keys pin) an object of its keys alone, null or the argument left out. An argument both layers pin
- *  takes what holds both; where nothing does, every call is refused. `ran`: whether an earlier attempt of the call may
- *  have been sent (deniedText's). `mismatched`: the arguments that do not hold, for the gate's log line. */
-export function pinRefusal(name: string, args: unknown, server: PermissionSettings, agent: PermissionSettings = {}, ran: "no" | "unknown" = "no"): { text: string; mismatched: string[] } | undefined {
+ *  takes what holds both; where nothing does, every call is refused. `declared`: the top-level arguments the tool's
+ *  listing in the run's pin declares (its inputSchema's `properties`): a pinned tool takes only those and its pinned
+ *  ones, so an alias the server takes beside a pinned argument (`to` beside `recipient_email`) is refused, with no
+ *  table of aliases; undefined (a listing with no `properties` object, or none known), no argument is closed. `ran`:
+ *  whether an earlier attempt of the call may have been sent (deniedText's). `mismatched`: the arguments that do not
+ *  hold, for the gate's log line. */
+export function pinRefusal(name: string, args: unknown, server: PermissionSettings, agent: PermissionSettings = {}, ran: "no" | "unknown" = "no", declared?: ReadonlySet<string>): { text: string; mismatched: string[] } | undefined {
   if (!mcpNameOf(name)) return undefined;
   const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
   if (server[name]?.brokenPin) return { text: `${name} can't be called: its pin in this server's tool settings does not read, so no call is let through until the owner sets it again (Settings → Tools). ${what}`, mismatched: [] };
@@ -230,6 +240,8 @@ export function pinRefusal(name: string, args: unknown, server: PermissionSettin
   if (clash.length) return { text: `${name} can't be called: this agent's settings fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, own[arg]!])))} and this server's fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, theirs[arg]!])))}, so no call can satisfy both. ${what} Don't retry it: the owner makes the two agree.`, mismatched: clash };
   const pin: Pin = { ...theirs, ...Object.fromEntries(Object.entries(own).map(([arg, value]) => [arg, Object.hasOwn(theirs, arg) ? bothOf(value, theirs[arg]!)! : value])) };
   const given = typeof args === "object" && args !== null && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
+  const undeclared = declared && Object.keys(pin).length ? Object.keys(given).filter((arg) => !declared.has(arg) && !Object.hasOwn(pin, arg)) : [];
+  if (undeclared.length) return { text: `${undeclaredWords(undeclared, mcpNameOf(name)!.tool)}; a pinned tool takes only its listed arguments (${listWords(Object.keys(pin).sort())} ${Object.keys(pin).length === 1 ? "is" : "are"} pinned). ${what}`, mismatched: undeclared };
   const mismatched = Object.keys(pin).filter((arg) => !holds(Object.hasOwn(given, arg) ? given[arg] : undefined, pin[arg]!));
   if (!mismatched.length) return undefined;
   const by = Object.keys(own).length && Object.keys(theirs).length ? "the agent's and this server's settings" : Object.keys(own).length ? "the agent's settings" : "this server's settings";
@@ -375,9 +387,14 @@ export function previewOf(text: string): string {
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
  *  claim). The gate reads nothing of the run's own files: they are the agent's to write. `mcpServers`: the run's MCP
  *  servers (mcpServersOf its grants), so a harness's own name for an MCP tool is held to that tool's settings. */
-export function runGate(where: { root: string; work: string; computer?: boolean; mcpServers?: readonly string[]; computerCodemode?: boolean }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.mcpServers ? { mcpServers: where.mcpServers } : {}), ...(where.computerCodemode ? { computerCodemode: true } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+export function runGate(where: { root: string; work: string; computer?: boolean; mcpServers?: readonly string[]; computerCodemode?: boolean; argumentsOf?: ArgumentsOf }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.mcpServers ? { mcpServers: where.mcpServers } : {}), ...(where.computerCodemode ? { computerCodemode: true } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
+
+/** The top-level arguments the listing of the MCP tool `name` (`mcp:<server>/<tool>`) in the run's pin declares under
+ *  its inputSchema's `properties`, the snapshot the run offers the model, never a live listing; undefined for a listing
+ *  with no `properties` object (nothing to close a pinned call to) and for any other tool. */
+export type ArgumentsOf = (name: string) => ReadonlySet<string> | undefined;
 
 /** A run's folder as its spec names it: the run's Workspace (Mode 2: its folder on the run's disk, never a folder of this
  *  machine), or the local folder's path. The gate checks paths against it and reads nothing in it. */
@@ -389,7 +406,7 @@ export class RunGate {
   /** `readServerSettings`: the server's tool settings, read at each call; `overrides`: the pinned revision's own;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on); `approvals`: the
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
-  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; mcpServers?: readonly string[]; computer?: boolean; /** The run's `codemode` is pi's on a desktop or a phone (runner/adapters/pi-computer.ts), not the host's. */ computerCodemode?: boolean },private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; mcpServers?: readonly string[]; computer?: boolean; /** The run's `codemode` is pi's on a desktop or a phone (runner/adapters/pi-computer.ts), not the host's. */ computerCodemode?: boolean; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf },private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
   private names?: NameMap;
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
@@ -466,9 +483,10 @@ export class RunGate {
   }
 
   /** Why a pin refuses the call of `key` with `args` now (pinRefusal): the revision's own pins and the server's, read at
-   *  each call as its permission is, so a pin set or changed reaches a live run at its next call. */
+   *  each call as its permission is, so a pin set or changed reaches a live run at its next call; a pinned tool held to
+   *  the arguments its listing in the run's pin declares (where.argumentsOf). */
   private pinned(key: string, args: unknown, ran: "no" | "unknown" = "no"): { text: string; mismatched: string[] } | undefined {
-    return pinRefusal(key, args, this.serverSettings() ?? {}, this.overrides, ran);
+    return pinRefusal(key, args, this.serverSettings() ?? {}, this.overrides, ran, this.where.argumentsOf?.(key));
   }
 
   /** Why bash's policy refuses the call `name` (held to `key`) with `args` now, or undefined: the revision's own setting

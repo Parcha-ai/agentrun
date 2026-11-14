@@ -43,7 +43,9 @@ whose destination is not the pinned one, before it is sent or asked about, even 
 a page that talks the agent into posting elsewhere gets a refusal, never a post. A pin fixes where a send goes, not
 what it says. A write to a record (a CRM contact) can be fenced to the fields it may set with a keys pin
 (`properties: {keys: ["${parameters.crm_score_property}"]}`): a call that sets any other field is refused; which record
-it writes is held by its skill's own check, or by a pin of the record's id.
+it writes is held by its skill's own check, or by a pin of the record's id. A pinned tool takes only the arguments
+its listing declares, so an alias the server takes for a pinned argument that the listing does not declare (Gmail's
+`to` beside `recipient_email`) is refused without a pin of its own.
 `market-monitor` pins `slack_send_message`'s `channel_id` and `GMAIL_SEND_EMAIL`'s `recipient_email` to its `channel`
 parameter (and keeps `cc`, `bcc` and `extra_recipients` out), and `inbound-lead` pins `slack_send_message`'s
 `channel_id` to its `slack_channel`. `market-monitor`'s `channel` takes a Slack channel id or an email address: each
