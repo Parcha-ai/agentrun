@@ -42,7 +42,13 @@ export function parseSource(text: unknown): GithubSource {
     }
     if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password) throw refused(`A package is imported from github.com alone, over https: ${url.protocol}//${url.host} is not.`);
     if (url.search || url.hash) throw refused("A package's GitHub URL has no query or fragment.");
-    const parts = url.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+    const parts = url.pathname.split("/").filter(Boolean).map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        throw refused(`${given} has a % that is not an escape: it is not a GitHub URL.`);
+      }
+    });
     [owner = "", repo = ""] = parts;
     repo = repo.replace(/\.git$/, "");
     if (parts.length > 2 && parts[2] !== "tree") throw refused("A package's GitHub URL is the repository's, or a folder's: https://github.com/<owner>/<repo>/tree/<ref>/<path>.");

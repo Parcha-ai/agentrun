@@ -147,6 +147,12 @@ function InstallTemplate({ v2, source, go }: { v2: Client; source: string; go: (
       <Section title="Instructions" note="What the agent is told, in full: a package from someone else says this to your agent.">
         <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-small" data-instructions>{read.instructions}</pre>
       </Section>
+      {t.output?.json_schema && (
+        // Each run is told the answer's schema whole (its output contract), each description in it included.
+        <Section title="Output schema" note={`What the agent is told to answer in (${t.output.schema}), in full: its descriptions are instructions too.`}>
+          <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-small" data-output-schema>{JSON.stringify(t.output.json_schema, null, 2)}</pre>
+        </Section>
+      )}
       {files.length > 0 && (
         <Section title="Skill files" note="Every file the agent is given, in full.">
           {files.map(([path, text]) => (
