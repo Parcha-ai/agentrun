@@ -1265,9 +1265,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const servedAnswer = reopen && !reopen.sent && session.state === "new" && root !== undefined ? servedAnswerOf(await entriesOf(gate.journal, root.id, context)) : undefined;
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
     // A message that may not answer a person (a trigger's), delivered once the run waits on its person (in its claim, or
-    // between the question's turn end and that wait): never the wait's answer, never placed, refused in the words the
-    // server refuses one with while the run waits (runs-over-store.ts WAITS_ON_A_PERSON).
-    if (followUp && (askedLast || (reopen !== undefined && (reopen === waitTurn || reopen === askReopen)))) return { refused: "The run is waiting on a person." };
+    // between the question's turn end and that wait): never the wait's answer, never placed now. Its firing reads sent (the
+    // door took the row), so it is never refused either: left untaken, it runs as a turn of its own after the person's
+    // answer, as a parked run's does (the store's park takes no wake from it; the run's end opens the run again with it).
+    if (followUp && (askedLast || (reopen !== undefined && (reopen === waitTurn || reopen === askReopen)))) return { later: "the run is waiting on a person: the message runs as a turn of its own after the answer" };
     // A reopened run's follow-up, its session idle: sent as a turn of its own, tracked to its end (as the input and a raise's
     // follow-up are), its row taken in its submission's commit; the claim waits on it before the run's next end.
     if (reopen && !reopen.sent && (session.state === "idle" || session.state === "new")) {
