@@ -76,10 +76,12 @@ import { bookedIn } from "../paid-calls.js";
 import { type HostCalls, withHostCalls } from "../host-calls.js";
 import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
+import { metaTools } from "./meta-tools.js";
+import { builtinHarness } from "../harness-table.js";
 import { Fenced } from "../store/index.js";
 import { answerAsServed } from "../answer-json.js";
 import type { ClaimMcp } from "./mcp-run.js";
-import { budgetOf, type RequestFigures, reserveFor, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
+import { type RequestFigures, reserveFor, TOOL_BUDGET_TEXT, withinBudget, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
 import { LEARNED_CLIP, LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
 
@@ -1890,6 +1892,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // bridge asks first; one refused is on the record from the gate, bridgeGate), so its record's start is written
           // here, before the flush and the call, and its end after.
           call: async (args, toolContext) => {
+            // A tool that only nests calls (tools_call, codemode) has no row of its own on a CLI's record: each call it makes
+            // is on the record as its own tool's (its id `<callId>/<key>`), and it runs again whole after a crash, its
+            // recorded calls answered from their records.
+            const record = tool.nests ? undefined : cliRecord;
             // A call its CLI issues again under an id the record already ended (after the CLI's own resume) is answered
             // from that end, never run again.
             const ended = record?.endOf(toolContext.callId);
@@ -1963,7 +1969,26 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }
           },
         });
-        const tools: HostTool[] = [...spec.session.tools, ...(mcp?.tools ?? [])].map(hosted);
+        const own: HostTool[] = [...spec.session.tools, ...(mcp?.tools ?? [])].map(hosted);
+        // tools_search, tools_call and codemode over the session's tools (meta-tools.ts), on every harness (codemode on
+        // each but one that runs scripts of its own): what they call is called nested, each call asked about and recorded
+        // as its own tool's. A search finds a tool whose setting is not deny; an MCP tool's setting is its catalog name's.
+        const settingOf = spec.gate?.permission;
+        // The harness's own tools beside them (pi's subagent, its browser's): found and called by name as the host's are,
+        // run by the harness as its own nested calls. Never called here: a nested call reaches them through the harness.
+        const native: HostTool[] = (spec.adapter.ownTools ?? []).filter((one) => !own.some((tool) => tool.name === one.name)).map((one) => ({
+          name: one.name,
+          description: one.description,
+          inputSchema: one.inputSchema,
+          replay: "never",
+          call: async () => ({ text: `${one.name} is run by the harness itself, as a nested call of tools_call or a script.`, isError: true }),
+        }));
+        const metas = metaTools({
+          tools: () => [...own, ...native],
+          granted: async (name) => !settingOf || (await settingOf(mcp?.catalogOf(name) ?? name).catch(() => "deny" as const)) !== "deny",
+          codemode: builtinHarness(spec.adapter.id)?.facts?.ownCodemode !== true,
+        }).filter((meta) => ![...own, ...native].some((one) => one.name === meta.name));
+        const tools: HostTool[] = [...own, ...metas.map(hosted)];
         // An MCP tool of the run by its catalog name, as wrapped above: what a learned workflow's MCP node calls.
         mcpHosted = (catalog) => {
           const wire = mcp?.tools.find((one) => mcp?.catalogOf(one.name) === catalog);
@@ -2671,10 +2696,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
       // The tool-call budget, before the gate's settings: a call past it is refused in its fixed words, never parked or
-      // asked about.
-      // A conversation's own budget (a subagent's max_tool_calls) narrows the run's, never widens it.
-      const budget = budgetOf(spec.gate?.toolCalls, call.ownBudget ? await call.ownBudget() : undefined);
-      if (budget !== undefined && call.callsBefore && (await call.callsBefore(budget)) >= budget) return { deny: TOOL_BUDGET_TEXT };
+      // asked about. Counted here for every call, a nested one too (tool-budget.ts withinBudget); a conversation's own
+      // budget (a subagent's max_tool_calls) narrows the run's, never widens it.
+      if (!(await withinBudget(harness!, call.conversationId, call, spec.gate?.toolCalls, context))) return { deny: TOOL_BUDGET_TEXT };
       // The cap's wrap-up, the same way: once the run has taken its share of the cap, every call the model makes is refused
       // in its fixed words, and the model answers from what it has. A call a running tool makes is that tool's, let through.
       if (call.nested !== true && (await wrapUp())) return { deny: WRAP_UP_TEXT };

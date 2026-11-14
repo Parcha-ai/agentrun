@@ -387,11 +387,13 @@ test("a capped pi run refused for room with no stop pauses at its cap: its cost 
   await follow(api, probe, ["input_required"]);
   const first = (await view(api, probe)).cost.usd;
   assert.ok(first > 0, "the ask was paid for");
-  // The cap sits above the wrap-up line at step 0 (a bit over three times a request's least, 1,024 tokens at $0.0001, with
-  // the note's own bytes: under it the run is told to finish and never asks), so the ask goes. The answer is a long message, input priced: its input alone, about
-  // 5,700 tokens ($0.57), is more than what the cap leaves after the ask, so it cannot be bought.
+  // The cap sits above the wrap-up line at step 0 (twice a request's least, its input read by its bytes at $100 a million
+  // with the host's tools_search, tools_call and codemode among its tools, and a 1,024-token answer: about $0.52, so the
+  // line is near $1.05; under it the run is told to finish), so the ask goes with no note. The answer is a long message,
+  // input priced: its least, its 20,000 bytes read as tokens (about $2), is more than what the cap leaves after the ask,
+  // so it cannot be bought.
   assert.equal((await api("POST", "/agents", agent("plain", { tools: ["ask_person"] }))).status, 201);
-  const runId = (await api("POST", "/agents/plain/runs", { input: { content: "Pick a region." }, max_cost_usd: 0.5 })).body.run_id;
+  const runId = (await api("POST", "/agents/plain/runs", { input: { content: "Pick a region." }, max_cost_usd: 1.2 })).body.run_id;
   await follow(api, runId, ["input_required"]);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "eu ".repeat(6_666) })).body.mode, "answer");
   // Its next pause, past the question it answered: the answer is taken once the run reads as no longer asking.
