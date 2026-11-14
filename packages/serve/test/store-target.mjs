@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { beforeEach } from "node:test";
 
 export const PG_URL = process.env.AGENTRUN_TEST_PG_URL || undefined;
 /** Whether this run's stores are on Postgres. */
@@ -77,10 +78,75 @@ function sweep() {
   return swept;
 }
 
-/** A new schema name for one store of this file (Postgres). */
+/** A new schema name for one store of this file (Postgres), counted to the test running now (its end checks it). */
 export async function freshSchema() {
   await sweep();
-  return `t_${fileTag}_${process.pid}_${++made}`;
+  const schema = `t_${fileTag}_${process.pid}_${++made}`;
+  tests.at(-1)?.schemas.push(schema);
+  return schema;
+}
+
+/** The tests running now, innermost last: a file's tests run one at a time, and a subtest runs inside its test. */
+const tests = [];
+
+/** How long a closed connection's backend may take to leave pg_stat_activity (the client ends its socket, the backend's
+ *  exit follows it) before it counts as left open. */
+const LEFT_OPEN_WAIT_MS = 5_000;
+
+/** `close` runs at the end of the test running now, after every after-hook of the test's own (a runner it closes there is
+ *  closed first). False when no test is running (a file's before-hook or top level) or on SQLite: the caller closes at
+ *  the file's end then. */
+export function atTestEnd(close) {
+  const scope = tests.at(-1);
+  if (!scope) return false;
+  scope.closers.push(close);
+  return true;
+}
+
+/** The connections still open to `schemas` (each store's names its schema: the pool's, the lease's, the owner lock's, a
+ *  test client's), as "count × application_name (state: query)", waited for up to `waitMs` to close; [] once none is. */
+export async function connectionsLeft(schemas, waitMs = LEFT_OPEN_WAIT_MS) {
+  const c = await client();
+  try {
+    const until = Date.now() + waitMs;
+    for (;;) {
+      const { rows } = await c.query(
+        `SELECT application_name AS name, state, left(regexp_replace(query, '\\s+', ' ', 'g'), 100) AS query, count(*)::int AS n FROM pg_stat_activity
+          WHERE pid <> pg_backend_pid() AND split_part(application_name, ':', 2) = ANY($1) GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`,
+        [schemas],
+      );
+      if (rows.length === 0 || Date.now() >= until) return rows.map((row) => `${row.n} × ${row.name} (${row.state ?? "no state"}: ${row.query || "no query"})`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  } finally {
+    await c.end();
+  }
+}
+
+/** A test's end: what its helpers handed to atTestEnd closes, then no connection to a schema made in the test may be left
+ *  open. A test that leaves one fails here, naming each connection: on CI's Postgres (100 connections, four files at a
+ *  time) those of a file's earlier tests pile up until a later test meets "too many clients". */
+async function endTest(scope) {
+  tests.splice(tests.indexOf(scope), 1);
+  const failed = [];
+  for (const close of scope.closers.splice(0)) await Promise.resolve().then(close).catch((error) => failed.push(error));
+  if (scope.schemas.length > 0) {
+    const left = await connectionsLeft(scope.schemas);
+    if (left.length > 0) {
+      failed.push(new Error(`Postgres connections left open after the test, ${LEFT_OPEN_WAIT_MS / 1000} s after its after-hooks: ${left.join("; ")}. Close every store, pool and client the test opens (t.after), or open it with storeOn, stores or scratchConnection, which close theirs.`));
+    }
+  }
+  if (failed.length > 0) throw failed.length === 1 ? failed[0] : new AggregateError(failed, failed.map((error) => error.message).join(" | "));
+}
+
+// Each test's end on Postgres (endTest). The hook added here is the test's first after-hook, so it runs first, and the
+// end it adds then runs last: after the test's own hooks, a failing test's too.
+if (onPostgres) {
+  beforeEach((t) => {
+    const scope = { closers: [], schemas: [] };
+    tests.push(scope);
+    t.after(() => t.after(() => endTest(scope)));
+  });
 }
 
 /** Drops `schema` and everything in it, ending first any test client of it still holding a transaction open. */

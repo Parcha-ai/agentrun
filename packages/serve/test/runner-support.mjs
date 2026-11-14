@@ -10,7 +10,7 @@ import { after } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 
-import { dropSchema, freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
+import { atTestEnd, dropSchema, freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
 
 const { openPostgresStore, openSqliteStore } = await import("../dist/store/index.js");
 
@@ -64,15 +64,12 @@ export async function until(check, what, ms = 5_000) {
   }
 }
 
-// Stores close and their files go once the file's tests are done: node:test runs a test's after-hooks in the order they
-// were added, so a store closed by a hook added before a runner's close would close under the runner.
+// Stores close and their files go at the end of the test that opened them, after every after-hook of the test's own (its
+// runners' close: store-target.mjs's atTestEnd), and on Postgres no connection of theirs may outlive the test. A store
+// opened outside a test (a before-hook), or one whose test's own hook threw, closes once the file's tests are done.
 const opened = [];
 after(async () => {
-  for (const { stores, dir, schema } of opened.splice(0)) {
-    for (const store of stores) await store.close().catch(() => undefined);
-    rmSync(dir, { recursive: true, force: true });
-    if (schema) await dropSchema(schema);
-  }
+  for (const entry of [...opened]) await closeEntry(entry);
 });
 
 /** The store at the test's place, as `role`: the file in `dir`, or on Postgres the schema `schema`. */
@@ -90,6 +87,7 @@ export async function stores({ runners = 1 } = {}) {
   const now = () => Date.now() + clock.skewMs;
   const entry = { stores: [], dir, schema };
   opened.push(entry);
+  atTestEnd(() => closeEntry(entry));
   const server = await openAt({ file, schema }, "server", now);
   entry.stores.push(server);
   const forRunners = [];
@@ -103,18 +101,23 @@ export async function stores({ runners = 1 } = {}) {
 }
 
 /**
- * Closes what `stores()` opened now, instead of at the file's end: its stores, their files, and on Postgres its schema.
- * Call it after the test's runners are closed (one after-hook: `await runner.close(); await release(opened)`). A file of
- * many cases on Postgres otherwise holds every case's connections until it ends, beside the other files' (too many
- * clients).
+ * Closes what `stores()` opened now: its stores, their files, and on Postgres its schema. Call it after the test's runners
+ * are closed (one after-hook: `await runner.close(); await release(opened)`). On Postgres the test's end closes them
+ * anyway; on SQLite they otherwise stay open until the file's end.
  */
 export async function release({ server }) {
-  const at = opened.findIndex((entry) => entry.stores.includes(server));
+  const entry = opened.find((each) => each.stores.includes(server));
+  if (entry) await closeEntry(entry);
+}
+
+/** Closes one stores() entry, once: its stores, its directory, and on Postgres its schema. */
+async function closeEntry(entry) {
+  const at = opened.indexOf(entry);
   if (at === -1) return;
-  const [{ stores: these, dir, schema }] = opened.splice(at, 1);
-  for (const store of these) await store.close().catch(() => undefined);
-  rmSync(dir, { recursive: true, force: true });
-  if (schema) await dropSchema(schema);
+  opened.splice(at, 1);
+  for (const store of entry.stores) await store.close().catch(() => undefined);
+  rmSync(entry.dir, { recursive: true, force: true });
+  if (entry.schema) await dropSchema(entry.schema);
 }
 
 /** A queued run on the server's store. */
