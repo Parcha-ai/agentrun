@@ -143,7 +143,7 @@ test("a cut-off exec tells a nested host tool's call the host parked the same: i
 
 /** An exec whose script's nested MCP call the host's gate parked (a person's approval: the call never reached its intent),
  *  cut when the run parked, then resumed by the next drive under `gate`: the exec's recovered output, and what ran. */
-async function gateParkedExec(gate) {
+async function gateParkedExec(gate, repair = 'note') {
   const { kernelTool } = await import('../dist/adapter.js');
   const ran = [];
   const host = { name: 'mcp__fake__add', description: 'Adds.', inputSchema: { type: 'object' }, replay: 'never', call: async (args) => (ran.push(args), { text: String(args.a + args.b) }) };
@@ -163,7 +163,14 @@ async function gateParkedExec(gate) {
   const journal = { append() {}, flush: async () => {}, read: async (stream) => (stream === NESTED_STREAM ? ties.map((data) => ({ data })) : []) };
   const asked = [];
   const bridge = toolBridge(next, [kernelTool(host)], { live: false, gate: async (call) => (asked.push(call.callId), gate(call)) });
-  const mode = codeMode({ ctx: next, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge, log() {}, lines: [], rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
+  const injected = [];
+  const mode = codeMode({ ctx: next, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge, log() {}, lines: [], rpc: () => ({ request: async (_method, params) => { injected.push(...params.items); } }), guard: (p) => p, threadId: () => 't', tries: 1 });
+  if (repair === 'ended') {
+    // No recovery note: the turn was ended (settled), and its rollout still holds the exec unanswered.
+    const line = JSON.stringify({ timestamp: '2026-10-30T00:00:00.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', input: 'tools.mcp_fake__add({a:2,b:3})', call_id: EXEC } });
+    const recovered = mode.repairUnnoted([line]);
+    return { ran, asked, recovered, items: injected, state: () => next.state() };
+  }
   const items = [{ type: 'custom_tool_call_output', call_id: EXEC, output: '' }];
   const recovered = mode.recoverItems(items, [{ callId: EXEC, name: 'exec', type: 'custom_tool_call' }], [], since);
   return { ran, asked, recovered, items, state: () => next.state() };
@@ -183,6 +190,17 @@ test("a nested call the gate parked and the person denied is never run: the exec
   await recovered;
   assert.deepEqual(ran, [], 'never run');
   assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then: "Denied: not now\."\. It did not run\./);
+});
+
+test("a turn ended without a recovery note never runs a nested call its cut-off exec left parked: the repair only tells the exec's output", async () => {
+  // repairUnnoted answers the calls an ended (settled) turn left dangling before the next turn is sent: it is read-only, so a
+  // call a person may never have answered is not run on a later, unrelated turn.
+  const { ran, asked, recovered, items } = await gateParkedExec(async () => 'allow', 'ended');
+  await recovered;
+  assert.deepEqual(asked, [], 'the gate is never asked');
+  assert.deepEqual(ran, [], 'never run');
+  assert.deepEqual(items.map((item) => [item.type, item.call_id]), [['custom_tool_call_output', EXEC]], "the exec still gets its output");
+  assert.doesNotMatch(items[0].output, /waited for a person's approval/);
 });
 
 test("a nested call's tie keeps the call itself (Codex's name for its tool, its arguments), written before it runs, so a resume can ask about it again", async () => {
