@@ -81,7 +81,7 @@ import { builtinHarness } from "../harness-table.js";
 import { Fenced } from "../store/index.js";
 import { answerAsServed } from "../answer-json.js";
 import type { ClaimMcp } from "./mcp-run.js";
-import { budgetOf, type RequestFigures, reserveFor, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
+import { type RequestFigures, reserveFor, TOOL_BUDGET_TEXT, withinBudget, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
 import { LEARNED_CLIP, LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
 
@@ -2703,10 +2703,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
       // The tool-call budget, before the gate's settings: a call past it is refused in its fixed words, never parked or
-      // asked about.
-      // A conversation's own budget (a subagent's max_tool_calls) narrows the run's, never widens it.
-      const budget = budgetOf(spec.gate?.toolCalls, call.ownBudget ? await call.ownBudget() : undefined);
-      if (budget !== undefined && call.callsBefore && (await call.callsBefore(budget)) >= budget) return { deny: TOOL_BUDGET_TEXT };
+      // asked about. Counted here for every call, a nested one too (tool-budget.ts withinBudget); a conversation's own
+      // budget (a subagent's max_tool_calls) narrows the run's, never widens it.
+      if (!(await withinBudget(harness!, call.conversationId, call, spec.gate?.toolCalls, context))) return { deny: TOOL_BUDGET_TEXT };
       // The cap's wrap-up, the same way: once the run has taken its share of the cap, every call the model makes is refused
       // in its fixed words, and the model answers from what it has. A call a running tool makes is that tool's, let through.
       if (call.nested !== true && (await wrapUp())) return { deny: WRAP_UP_TEXT };
