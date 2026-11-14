@@ -138,16 +138,18 @@ export function claimPromotion(deps: Omit<PromotionDeps, "commit" | "champion" |
   };
 }
 
-/** A replay run's claim (launch.replay), once its first choice is made: refused (ClaimRefused: the run ends failed, no
- *  agent turn, nothing sent) unless its revision's record still says replaying (it is reserved before its runs are
- *  created), or has none (trimmed), and the claim laid that revision to serve it. A superseded, promoted or held revision's
- *  replay run never runs (a cancel that never reached it included); one whose workflow is not laid at its digest (the
- *  seed could not be read, the folder moved on) never falls to the agent's path. Any other run: nothing to check. */
-export async function replayClaimed(store: Pick<Store, "settings">, agentId: string, launch: RunLaunch, choice: FirstChoice): Promise<void> {
+/** A replay run's claim (launch.replay) of run `runId`, once its first choice is made: refused (ClaimRefused: the run ends
+ *  failed, no agent turn, nothing sent) unless its revision's record still says replaying and names it among its runs (it
+ *  is reserved before its runs are created), or has none (trimmed), and the claim laid that revision to serve it. A
+ *  superseded, promoted or held revision's replay run never runs (a cancel that never reached it included), nor an older
+ *  replay's leftover once its revision replays again; one whose workflow is not laid at its digest (the seed could not be
+ *  read, the folder moved on) never falls to the agent's path. Any other run: nothing to check. */
+export async function replayClaimed(store: Pick<Store, "settings">, agentId: string, runId: string, launch: RunLaunch, choice: FirstChoice): Promise<void> {
   if (!launch.replay) return;
   const { workflow, digest } = launch.replay;
   const record = promotionOf(await promotionsOf(store.settings, agentId), workflow, digest);
   if (record && record.decided !== "replaying") throw new ClaimRefused(`This replay of ${workflow} at ${digest} did not run: that revision is ${record.decided === "superseded" ? `superseded by ${record.superseded_by ?? "a newer revision"}` : record.decided === "promote" ? "promoted already" : "held already"}.`);
+  if (record && !record.runs?.includes(runId)) throw new ClaimRefused(`This replay of ${workflow} at ${digest} did not run: that revision replays again${record.replay_id ? ` (replay ${record.replay_id})` : ""}, and this run is not one of its runs.`);
   if (choice.serve?.replay !== true || choice.serve.name !== workflow) throw new ClaimRefused(`This replay of ${workflow} at ${digest} did not run: its claim laid no workflow by that name at that digest. The agent was not asked.`);
 }
 

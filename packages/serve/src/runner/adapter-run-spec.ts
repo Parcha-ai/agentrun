@@ -622,7 +622,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey,
   })), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
   // A replay run runs only its revision, while it still replays: else its claim is refused (the run ends failed, no agent).
-  await replayClaimed(deps.store, runRow.agentId, launch, firstChoice);
+  await replayClaimed(deps.store, runRow.agentId, claim.runId, launch, firstChoice);
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsFor, learn/replay-calls.ts).
   const replay = await replayCallsFor(deps.store, claim.runId, launch, context);
