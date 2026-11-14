@@ -186,6 +186,13 @@ const describeCall = (fact: NestedFact, label: string): string => {
 /** The output a cut-off `exec` is answered with: its nested calls, in order, each with what it came to, and that nothing was run
  *  again. A completed call's effect is done, a never tool's included; a call with no end is interrupted. `loose`: calls of this turn
  *  whose script could not be told (given to the last cut-off exec only), listed apart under their own heading. */
+/** What a dangling `wait` on a yielded exec's cell is told when calls of that script that waited for a person's approval
+ *  were answered on this resume (code-mode.ts recoverItems): each call's outcome, in order. */
+export function waitResumedText(cell: string, resumed: readonly NestedFact[]): string {
+  const lines = resumed.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
+  return `The session stopped while waiting on cell ${cell}; that cell's script was cut off. Its calls that waited for a person's approval were answered since, each once:\n${lines.join("\n")}\nNothing else of the script was run again. Check the actual state before relying on it.`;
+}
+
 export function execRecoveryOutput(facts: readonly NestedFact[], loose: readonly NestedFact[] = []): string {
   const apart = loose.length
     ? `\n${loose.length} ${loose.length === 1 ? "call" : "calls"} ran whose script could not be told (an answer of the model's could not be read to its end):\n${loose.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`)).join("\n")}`

@@ -16,7 +16,7 @@ import { boundResult, openTurn, recoveryNote, recoverySystemNote, recoveryUserTu
 // load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
 import { repairOutput } from "./harness.js";
 import { type RolloutSummary, summarizeRollout } from "./rollout.js";
-import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, type NestedFact, outputTextOf, parkedKey, recoveryFacts, Scripts, settle, UNWATCHED } from "./scripts.js";
+import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, type NestedFact, outputTextOf, parkedKey, recoveryFacts, Scripts, settle, UNWATCHED, waitResumedText } from "./scripts.js";
 
 /** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec, since }` (`since`: the turn it ran in), written before the call runs. */
 export const NESTED_STREAM = "codex.nested";
@@ -301,15 +301,21 @@ export function codeMode(deps: CodeModeDeps) {
       // the bridge under its own id, the gate first, so the person's answer on it holds, as a dangling call of the model's own
       // does (resumeUnstartedCalls): its outcome is the exec's output, and nothing runs it again. A gate that parks again
       // rejects out of here, nothing written. Only on the resume of the open turn: an ended turn's repair runs nothing, so a call a
-      // person may never have answered does not run on a later turn.
+      // person may never have answered does not run on a later turn. A script whose exec had yielded ("Script running") made
+      // its call in this turn while the model waited on its cell: that call runs too, and the dangling `wait` tells its
+      // outcome (with none dangling there is nowhere to tell it, and it does not run).
       const resumed = new Map<string, NonNullable<NestedFact["resumed"]>>();
       const cut = new Set(execs);
+      const carrier = dangling.findIndex((c) => !isExec(c) && waitedCell(c) !== undefined);
+      const yieldedTies: Tie[] = [];
       for (const tie of resume ? ties : []) {
-        const ofThisTurn = tie.exec === null ? tie.since === since && execs.length > 0 : cut.has(tie.exec);
-        if (!ofThisTurn || tie.tool === undefined || ctx.state().effects.has(toolKey(tie.callId)) || rolled.has(tie.callId)) continue;
+        const cutOff = tie.exec === null ? tie.since === since && execs.length > 0 : cut.has(tie.exec);
+        const yielded = !cutOff && carrier >= 0 && tie.since === since;
+        if ((!cutOff && !yielded) || tie.tool === undefined || ctx.state().effects.has(toolKey(tie.callId)) || rolled.has(tie.callId)) continue;
         if (!deps.bridge.call || !deps.bridge.get(tie.tool)) continue;
         const result = await deps.bridge.call(tie.tool, tie.args ?? {}, tie.callId);
         resumed.set(tie.callId, { text: result.text, isError: result.isError, ran: ctx.state().effects.has(toolKey(tie.callId)) });
+        if (yielded) yieldedTies.push(tie);
       }
       const state: SessionState = ctx.state();
       // Each cut-off exec lists its own calls. A call whose script could not be told when it ran (an answer the proxy did not see to its end)
@@ -325,7 +331,8 @@ export function codeMode(deps: CodeModeDeps) {
           // as JSON, so the model would read their base64 as text. Its text and a line on them instead; they are not sent.
           const done = state.effects.get(toolKey(c.callId));
           const pictured = cell === undefined && done?.status === "completed" ? imagesNoted(done.output) : undefined;
-          items[i] = withOutputKind(cell !== undefined ? { ...item, output: waitStoppedText(cell) } : pictured !== undefined ? { ...item, output: pictured } : item, c);
+          const waited = cell === undefined ? undefined : i === carrier && yieldedTies.length > 0 ? waitResumedText(cell, yieldedTies.map((tie) => ({ ...factOf(state, rolled, tie, told), resumed: resumed.get(tie.callId)! }))) : waitStoppedText(cell);
+          items[i] = withOutputKind(waited !== undefined ? { ...item, output: waited } : pictured !== undefined ? { ...item, output: pictured } : item, c);
           return;
         }
         const { own, loose } = listed.get(c.callId)!;
