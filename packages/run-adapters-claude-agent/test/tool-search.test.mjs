@@ -32,6 +32,11 @@ const refused = (fn, status, words) => assert.throws(fn, (error) => error instan
 test('tool search is on exactly when the session has an MCP server\'s tools, and only those wait behind it', () => {
   assert.equal(claudeToolSearch(['lookup', 'mcp__github__get_issue']), 'true');
   assert.equal(claudeToolSearch(['lookup', 'tools_search']), 'false');
+  assert.equal(claudeToolSearch(['lookup', 'monid.discover']), 'true', 'a monid tool is a catalog tool too');
+  const many = Array.from({ length: 21 }, (_, index) => `tool_${index}`);
+  assert.equal(claudeToolSearch(many.slice(0, 20)), 'false', 'the threshold itself: not yet');
+  assert.equal(claudeToolSearch(many), 'true', 'past the threshold: on, as the host\'s three are offered');
+  assert.equal(claudeToolSearch([...many.slice(0, 20), 'tools_search', 'tools_call', 'codemode']), 'false', 'the host\'s three are not counted');
   const listed = listedTools([{ name: 'lookup', description: 'd', inputSchema: { type: 'object' } }, { name: 'mcp__github__get_issue', description: 'd', inputSchema: { type: 'object' } }]);
   assert.equal(listed[0]._meta[ALWAYS_LOAD_KEY], true, 'a tool of the session\'s own is never deferred');
   assert.equal(listed[1]._meta[ALWAYS_LOAD_KEY], undefined, 'an MCP server\'s tool is deferred');

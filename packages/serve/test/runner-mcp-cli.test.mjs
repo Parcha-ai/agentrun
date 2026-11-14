@@ -263,7 +263,7 @@ test("C5: a parked call across a new runner: the runner that parked it goes, ano
 test("C6: a run that grants no MCP tool hands its CLI no MCP tool, and the server sees nothing", async (t) => {
   const run = await cliRun(t, { grants: [] });
   assert.equal(run.row.state, "ended", JSON.stringify(run.row));
-  assert.deepEqual(run.seen.spec.tools.map((tool) => tool.name), ["lookup", ...METAS], "no MCP tool among the host tools");
+  assert.deepEqual(run.seen.spec.tools.map((tool) => tool.name), ["lookup"], "no MCP tool among the host tools, and none of the host's three (a run with no catalog tool is not offered them)");
   assert.deepEqual(run.fake.log.filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "the server saw nothing of the run");
 });
 

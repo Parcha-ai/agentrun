@@ -20,7 +20,7 @@ const { CODEMODE, META_TOOLS, metaTools, refusedName, searchTools, TOOLS_CALL, T
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { MAX_RESTARTS, suiteTools } = await import("../dist/runner/conformance/harness.js");
+const { fillerTools, MAX_RESTARTS, suiteTools } = await import("../dist/runner/conformance/harness.js");
 const { deniedText } = await import("../dist/refusal-words.js");
 const { paidRequest, parallelSearchFee } = await import("../dist/paid-calls.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
@@ -86,7 +86,7 @@ async function gatedRun(t, script, gate) {
   await queue(server, "run-1");
   const { tools, ran } = suiteTools();
   const requests = [];
-  const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
+  const spec = piAdapterSpec({ script, tools: { ...tools, ...fillerTools() }, hooks: quiet }, { requests });
   const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), gate }));
   const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
@@ -172,7 +172,7 @@ async function paidRun(t, script, harness = HARNESSES[0]) {
   let sent = 0;
   const search = { name: "search", replaySafe: false, run: async () => `searched (${(await paidRequest(parallelSearchFee(10), async () => (sent++, new Response("{}", { status: 200 })))).status})` };
   const asked = [];
-  const spec = harness.specOf({ script, tools: { search }, hooks: quiet });
+  const spec = harness.specOf({ script, tools: { search, ...fillerTools() }, hooks: quiet });
   const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), runCap: { capUsd: () => undefined, modelOf: () => undefined, judged: (request) => void asked.push(request.spentUsd) } }), { restartLimit: MAX_RESTARTS });
   runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
   await until(async () => {
@@ -223,7 +223,7 @@ test("under a cap with room for one paid search, a script's second search is ref
         }
       },
     };
-    return piAdapterSpec({ script, tools: { pay }, hooks: quiet }, { fetch: scriptedOrigin(script, requests) })(claim, run);
+    return piAdapterSpec({ script, tools: { pay, ...fillerTools() }, hooks: quiet }, { fetch: scriptedOrigin(script, requests) })(claim, run);
   };
   const runCap = { capUsd, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
   const { row } = await capRun(t, { script, specOf, cap: runCap, runCap: { capUsd: () => capUsd, modelOf: () => FREE } });
@@ -236,7 +236,8 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwA
 
 /** A `harness` run of `script` over `tools` (each `{name, replaySafe, run, structured?, images?}`), uncapped, ended: what
  *  the model said, in order, and the requests pi's provider got (pi only, `requests`). `native`: pi-native tools. */
-async function metaRun(t, harness, script, tools, { native } = {}) {
+async function metaRun(t, harness, script, own, { native } = {}) {
+  const tools = { ...own, ...fillerTools() };
   const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
   const { journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
   const { server, runners: [store] } = await stores({ runners: 1 });
@@ -291,4 +292,17 @@ test("pi: a pi-native tool of the run (as the subagent tool is) is found by tool
   assert.match(text(results[0]), /"name":\s*"helper_tool"/, `tools_search found the native tool: ${text(results[0])}`);
   assert.equal(ran, 1, "tools_call ran it once");
   assert.match(said.join("\n"), /helper ran/, `its answer is tools_call's: ${JSON.stringify(said)}`);
+});
+
+test("the three are offered only when they earn their tokens: a catalog tool among the run's tools, or more than META_TOOLS_OVER of them", async () => {
+  const { META_TOOLS_OVER, offersMetaTools } = await import("@parcha/agentrun-kernel");
+  const names = (count) => Array.from({ length: count }, (_, index) => `tool_${index}`);
+  assert.equal(META_TOOLS_OVER, 20);
+  assert.equal(offersMetaTools(["read", "write", "edit", "bash", "web_fetch"]), false, "built-in tools only: none of the three");
+  assert.equal(offersMetaTools([]), false);
+  assert.equal(offersMetaTools(["read", "mcp__github__get_issue"]), true, "one MCP tool: all of them");
+  assert.equal(offersMetaTools(["read", "monid.discover"]), true, "one monid tool: all of them");
+  assert.equal(offersMetaTools(names(META_TOOLS_OVER)), false, "exactly the threshold: not yet");
+  assert.equal(offersMetaTools(names(META_TOOLS_OVER + 1)), true, "past it: offered");
+  assert.equal(offersMetaTools([...names(META_TOOLS_OVER), ...META_TOOLS]), false, "the three are never counted toward it");
 });

@@ -22,7 +22,7 @@ export type ToolName = "effect" | "read" | "slow" | "asked";
 export type MetaToolName = "tools_search" | "tools_call" | "codemode";
 
 export interface SuiteTool {
-  readonly name: ToolName;
+  readonly name: string;
   /** May run again after a crash: it changes nothing outside the run. */
   readonly replaySafe: boolean;
   /** The gate asks a person before it runs: the run parks. */
@@ -56,7 +56,7 @@ export interface KernelHooks {
 
 export interface ConformanceSetup {
   readonly script: readonly ScriptStep[];
-  readonly tools: Readonly<Record<ToolName, SuiteTool>>;
+  readonly tools: Readonly<Record<string, SuiteTool>>;
   readonly hooks: KernelHooks;
   /** The run's agent, for the subject's spec to name (AdapterRunSpec.agentId): the end-of-run step is asked with it. */
   readonly agentId?: string;

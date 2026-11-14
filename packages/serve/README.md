@@ -1011,8 +1011,11 @@ would cut one past 2,000 lines or 51,200 bytes and save the rest to a file the s
 
 ### Finding and calling the run's tools
 
-Every agentic run on every harness also has three tools over its own tools (`src/runner/meta-tools.ts`). Codex has the
-first two and keeps its own code mode. None of them goes around the run's tool settings:
+An agentic run on any harness also has three tools over its own tools (`src/runner/meta-tools.ts`) when they earn their
+tokens (about 640 on each request): when the run has a catalog tool (any MCP tool or any `monid` tool), or more than 20
+tools (`META_TOOLS_OVER`, `offersMetaTools` in the kernel, the same test Claude Code's own tool search follows). A run of
+a few built-in tools has none of them. Codex has the first two and keeps its own code mode. None of them goes around the
+run's tool settings:
 
 - `tools_search {query, limit?}` ranks the run's tools by what they do and answers each match's name, description and
   input schema (8 by default, at most 25). It finds only tools the run may call: never one set to deny, and never these
@@ -3019,19 +3022,17 @@ that fails or takes over 3 seconds leaves the byte bound; the request is never h
 **The smallest cap that works.** The byte bound reads text as about two to three times the tokens it is billed as, and a
 step is sent only when the run's spend plus that step's least (its input bound, priced by the cap mode, and a 1,024-token
 answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet ($3 / $15,
-cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (with the host's
-`tools_search`, `tools_call` and `codemode`: about 2,000 bytes, 639 tokens by Anthropic's count), five requests (four
+cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools, five requests (four
 screenshots, then the answer), spending about $0.04 in all:
 
 | Cap mode | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- | --- |
-| `strict` | Through a gateway (OpenRouter): the byte bound | $0.07 | $0.13 | about $0.013 |
-| `strict` | Straight to Anthropic: Anthropic's count | $0.04 | $0.09 | about $0.012 |
-| `expected` (the default) | Through a gateway | as `strict` | $0.07 | about $0.007 |
-| `expected` (the default) | Straight to Anthropic | as `strict` | $0.06 | about $0.007 |
+| `strict` | Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
+| `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
+| `expected` (the default) | Either | as `strict` | $0.06 | about $0.007 |
 
-In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs $0.06 straight to Anthropic and $0.07 through a gateway (whose first request alone needs $0.064), and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
-CLI's measured 6,926 bytes with five tools, about 8,900 with the host's three: $0.05 for its first request through a gateway). A cap below these pauses at
+In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs about $0.06 by either route, and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
+CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
 once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. (In `strict` mode through a gateway, a run a cent under the five-step figure is not parked before its last step: the cap's wrap-up refuses its last screenshot, and the run answers from what it has.)
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it

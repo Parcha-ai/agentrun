@@ -76,6 +76,7 @@ import { bookedIn } from "../paid-calls.js";
 import { type HostCalls, withHostCalls } from "../host-calls.js";
 import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
+import { offersMetaTools } from "@parcha/agentrun-kernel";
 import { metaTools } from "./meta-tools.js";
 import { builtinHarness } from "../harness-table.js";
 import { Fenced } from "../store/index.js";
@@ -1986,7 +1987,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           replay: "never",
           call: async () => ({ text: `${one.name} is run by the harness itself, as a nested call of tools_call or a script.`, isError: true }),
         }));
-        const metas = metaTools({
+        // Offered only when they earn their tokens (offersMetaTools: a catalog tool, or a long list), the one predicate
+        // Claude Code's own tool search follows.
+        const metas = !offersMetaTools([...own, ...native].map((one) => one.name)) ? [] : metaTools({
           tools: () => [...own, ...native],
           granted: async (name) => !settingOf || (await settingOf(mcp?.catalogOf(name) ?? name).catch(() => "deny" as const)) !== "deny",
           codemode: builtinHarness(spec.adapter.id)?.facts?.ownCodemode !== true,

@@ -37,9 +37,8 @@ const SOURCES = {
 const toGateway = (url) => (target, init) => fetch(`${url}${new URL(String(target)).pathname}`, init);
 /** The tool names a request body offers, on its path's API. */
 const toolsOf = (request) => (request.body?.tools ?? []).map((tool) => tool.name ?? tool.function?.name).sort();
-/** The session's tool and the host's search, call-by-name and script tools offered beside it, sorted. */
-const { TOOLS_SEARCH, TOOLS_CALL, CODEMODE } = await import("../dist/meta-tool-names.js");
-const OFFERED = ["note", TOOLS_SEARCH, TOOLS_CALL, CODEMODE].sort();
+/** The session's tool, sorted: a run of one tool is not offered the host's search, call-by-name and script tools. */
+const OFFERED = ["note"];
 /** What the run booked: each runner.turn record of its sessions, read under a reader's claim. */
 async function bookedUsd(store) {
   const row = await store.runs.get("run-1");
