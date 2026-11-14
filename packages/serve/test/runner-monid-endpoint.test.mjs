@@ -110,7 +110,7 @@ test("an endpoint priced by usage is held at the declared ceiling and settled at
 
 /** run-1 on a new store, its agent granted `tools` with the pin `pin`, run by a runner on the adapter spec with a
  *  scripted model; `launch` adds to its launch body (a cap). */
-async function monidRun(t, { script, tools, pin, toolSettings, launch = {} }) {
+async function monidRun(t, { script, tools, pin, toolSettings, launch = {}, requests = [] }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-monid-run-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -127,7 +127,7 @@ async function monidRun(t, { script, tools, pin, toolSettings, launch = {} }) {
   // Someone can answer an ask (server-approvers.ts APPROVERS_KEY), so it parks.
   await server.settings.put("approvers", { approvers: true });
   await server.flush?.();
-  const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, []), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
+  const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
   const deps = { env: env(), data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
   runner = startRunner({
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
@@ -147,6 +147,16 @@ test("a pinned endpoint's ask card names it and shows its pinned price; one pric
   assert.deepEqual(one.asks.map((ask) => [ask.tool, ask.price]), [[MATCH, 0.026]], JSON.stringify(one.asks));
   const usage = await monidRun(t, { tools: [NEWS], pin: { [NEWS]: PIN[NEWS] }, script: [{ call: "monid__apollo__news_articles__search", args: ARGS }, { say: "done" }] });
   assert.deepEqual(usage.asks.map((ask) => [ask.tool, ask.price]), [[NEWS, MONID_USAGE_CEILING_USD]], JSON.stringify(usage.asks));
+});
+
+test("tools_search finds a pinned endpoint by what it does, with its pinned input", async (t) => {
+  callLog(t);
+  const requests = [];
+  await monidRun(t, { tools: [MATCH, NEWS], pin: PIN, requests, script: [{ call: "tools_search", args: { query: "people match" } }, { say: "done" }] });
+  const results = requests.flatMap((body) => body.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : [])).filter((part) => part.type === "tool_result");
+  const found = JSON.parse([results.at(-1)?.content].flat().map((part) => (typeof part === "string" ? part : part?.text ?? "")).join(""));
+  assert.equal(found[0]?.name, "monid__apollo__people__match", JSON.stringify(found));
+  assert.deepEqual(found[0].input_schema, INPUT);
 });
 
 test("an endpoint the agent was not granted is no tool of its run: its call is refused and never sent", async (t) => {

@@ -1869,7 +1869,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // stamped on the revision, and its runs read it, never monid's listing. A grant monid does not list is refused here.
     if (revision.kind === "agentic") {
       const send = await checkFetch("monid");
-      const pinned = await pinMonid(body.tools ?? [], { key: (base as NodeJS.ProcessEnv)[MONID_KEY_ENV]?.trim() || storedKeys(MONID_KEY_ENV), fetch: send ?? (async () => { throw new Error("no fake of monid's API under faux"); }), signal: stopping.signal });
+      // The key as the server reads it (env: what it was started with, its handed secrets and its saved keys).
+      const pinned = await pinMonid(body.tools ?? [], { key: env[MONID_KEY_ENV]?.trim(), fetch: send ?? (async () => { throw new Error("no fake of monid's API under faux"); }), signal: stopping.signal });
       if (pinned && "refused" in pinned) throw invalid(pinned.refused.map(({ tool, message }) => ({ field: (body.tools ?? []).includes(tool) ? `definition.tools[${body.tools.indexOf(tool)}]` : "definition.tools", reason: "not_an_option", message })));
       if (pinned) (revision.body as AgenticBody).monidPin = pinned.pin;
     }
