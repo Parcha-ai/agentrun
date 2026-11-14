@@ -92,10 +92,11 @@ Settings → Tools lists all three, each allow or deny, allow by default; a deny
 `tools_search` or `tools_call` set to deny, nothing is left unlisted: every run lists every tool, Claude Code's too. A
 call made through them is the tool's own call: asked about, pinned and priced exactly as a direct call is. A script
 calls a tool by its own name, as `ALL_TOOLS` and `tools_search` give it, never with the prefix the model's tool list
-may show (`hands_`, `mcp__hands__`); if your instructions show a script, leave the prefix off there too. An MCP
-tool's result reaches a script as the server's text (Composio's is JSON in a string), so parse it before reading its
-fields. With more than 20 such tools and both helpers allowed, tell the model to search for what it needs rather than
-listing every tool in the instructions.
+may show (`hands_`, `mcp__hands__`); if your instructions show a script, leave the prefix off there too. In a
+`codemode` script, a tool's result is already a value: its structured content as the server sent it, else JSON object
+or array text parsed (Composio's results arrive this way), else the text as a string. So read its fields directly, and
+don't `JSON.parse` it again: parse only a result that is still a string. With more than 20 such tools and both
+helpers allowed, tell the model to search for what it needs rather than listing every tool in the instructions.
 
 ## Pin
 
