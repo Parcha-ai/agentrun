@@ -477,6 +477,24 @@ test("an outage met after the machine was made (a 503 on the first readiness rea
 	assert.equal(refused.error.transient, undefined);
 });
 
+test("the daemon's bridge and a run to exit keep an outage's transient mark: an exec the vendor answers 503, and one that never ends", async () => {
+	const { openBridge, runToExit } = await import("../dist/hosted/process.js");
+	const outage = { code: "vendor", vendor: "fakehost", message: "exec: 503 upstream unavailable", transient: true };
+	const host = { id: "fakehost", errorCode: () => "vendor", exec: async () => ({ ok: false, error: outage }) };
+	const bridge = await openBridge(host, "m", { argv: ["computerd", "stdio"], name: "computer-x", version: VERSION, requestMs: 200, helloMs: 200 });
+	assert.equal(bridge.ok, false);
+	assert.match(bridge.error.message, /503 upstream unavailable/);
+	assert.equal(bridge.error.transient, true, "the bridge's failed exec stays transient");
+	const refused = await openBridge({ ...host, exec: async () => ({ ok: false, error: { code: "denied", message: "exec: 403" } }) }, "m", { argv: ["computerd", "stdio"], name: "computer-x", version: VERSION, requestMs: 200, helloMs: 200 });
+	assert.equal(refused.error.transient, undefined, "a refusal carries no mark");
+	// A process that never ends (its exec stream stalled) is a timeout, transient.
+	const never = { stdout: (async function* () {})(), stderr: (async function* () {})(), write: async () => {}, end: async () => {}, wait: () => new Promise(() => {}), kill: async () => {} };
+	const stalled = await runToExit({ ...host, exec: async () => ({ ok: true, value: never }) }, "m", ["true"], { ms: 50, what: "the install" });
+	assert.equal(stalled.error?.code, "timeout");
+	assert.match(stalled.error.message, /the install did not end within/);
+	assert.equal(stalled.error.transient, true);
+});
+
 test("a create that lands after an abort is deleted as it lands", async () => {
 	const { provider, fake } = setup({}, { create: "hold" });
 	const controller = new AbortController();

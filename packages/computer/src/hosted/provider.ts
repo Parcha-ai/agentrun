@@ -63,7 +63,7 @@ import { type ComputerError, failAs, ok, type Result } from "../result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "../screen-watch.js";
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
-import { bounded, CALL_SLACK_MS, failOf, hostCall, type Opened, openBridge, pause, race, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
+import { bounded, CALL_SLACK_MS, failOf, hostCall, marked, type Opened, openBridge, pause, race, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf } from "./scripts.js";
 
 /** The longest each kind of call may take, and the pauses between polls. */
@@ -677,8 +677,7 @@ export class HostedProvider implements ComputerProvider {
 	 * made (a 503 on a readiness read, an upload timed out) stays one a caller may fail over on.
 	 */
 	#failFrom(cause: { code: ComputerError["code"]; transient?: true }, message: string): Result<never> {
-		const failed = this.#fail(cause.code, message);
-		return cause.transient === true && !failed.ok ? { ok: false, error: { ...failed.error, transient: true } } : failed;
+		return marked(this.#fail(cause.code, message), cause);
 	}
 
 	/**
