@@ -10,18 +10,15 @@
 // (./hosted/provider.ts). Every vendor fact here is cited in the README's Agent37 section.
 import { createHash } from "node:crypto";
 import { Duplex } from "node:stream";
+import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./agent37-ssh.js";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
-import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh.js";
 import { dateOf, DOMAIN, driftOf, isWhole, sizeOf } from "./hosted/values.js";
 import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
-
-/** The ssh2 slice types, as this entry has always exported them (they live in hosted/ssh.ts). */
-export type { Ssh2Channel, Ssh2Client, Ssh2ConnectConfig, Ssh2Module, Ssh2Readable } from "./hosted/ssh.js";
 
 /** A WebSocket as this provider uses one: Node's global WebSocket (undici), which takes headers, or the same slice. */
 export interface WebSocketLike {
@@ -129,11 +126,6 @@ const TUNNEL_POLL_MS = 10;
 const fail = failFor(AGENT37.id);
 /** An id held to Agent37's form before it reaches a URL or a host name: an id is also a DNS label here. */
 const notInstance = (id: string) => fail("not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
-
-/** The SSH tunnel's WebSocket closed or failed before it opened, or while it carried the stream. */
-export class Agent37TunnelError extends SshTunnelError {
-	override name = "Agent37TunnelError";
-}
 
 /** The envelope's code: { error: { code } } on the Sandbox API, a flat { error: "<code>" } on transport errors (docs: errors). */
 function envelopeOf(body: unknown): { code?: string; message?: string } {
@@ -244,14 +236,14 @@ function tunnelOf(ws: WebSocketLike, host: string): { duplex: Duplex; opened: Pr
 	const duplex = new Duplex({
 		read() {},
 		write(chunk: Buffer, _encoding, done) {
-			if (ws.readyState !== 1) return done(new Agent37TunnelError(`the SSH tunnel to ${host} is closed`));
+			if (ws.readyState !== 1) return done(new SshTunnelError(`the SSH tunnel to ${host} is closed`));
 			try {
 				ws.send(chunk);
 			} catch (error) {
 				return done(error as Error);
 			}
 			const wait = () => {
-				if (ws.readyState !== 1) done(new Agent37TunnelError(`the SSH tunnel to ${host} closed while it sent`));
+				if (ws.readyState !== 1) done(new SshTunnelError(`the SSH tunnel to ${host} closed while it sent`));
 				else if (ws.bufferedAmount <= TUNNEL_HIGH_WATER) done();
 				else setTimeout(wait, TUNNEL_POLL_MS);
 			};
@@ -285,12 +277,12 @@ function tunnelOf(ws: WebSocketLike, host: string): { duplex: Duplex; opened: Pr
 			resolve();
 		});
 		ws.addEventListener("error", (event) => {
-			const error = new Agent37TunnelError(`the SSH tunnel to ${host} failed${open ? "" : " to open"}${event.message ? `: ${event.message}` : ""}`);
+			const error = new SshTunnelError(`the SSH tunnel to ${host} failed${open ? "" : " to open"}${event.message ? `: ${event.message}` : ""}`);
 			if (!open) reject(error);
 			else duplex.destroy(error);
 		});
 		ws.addEventListener("close", ({ code, reason }) => {
-			if (!open) reject(new Agent37TunnelError(`the SSH tunnel to ${host} was refused (closed with ${code ?? "no code"}${reason ? `: ${reason}` : ""}); the edge opens it for the workspace's API key alone`));
+			if (!open) reject(new SshTunnelError(`the SSH tunnel to ${host} was refused (closed with ${code ?? "no code"}${reason ? `: ${reason}` : ""}); the edge opens it for the workspace's API key alone`));
 			else duplex.push(null);
 		});
 	});
@@ -357,7 +349,7 @@ class Agent37Host implements MachineHost {
 		return { ...tunnelOf(ws, host), host };
 	}
 
-	/** argv as root over SSH (hosted/ssh.ts): one connection per instance through its tunnel, shared by its execs. */
+	/** argv as root over SSH (agent37-ssh.ts): one connection per instance through its tunnel, shared by its execs. */
 	async exec(id: string, argv: readonly string[], opts: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
 		return INSTANCE_ID.test(id) ? this.#ssh.exec(id, argv, opts, ctx) : notInstance(id);
 	}
@@ -458,11 +450,6 @@ class Agent37Host implements MachineHost {
 	}
 }
 
-/** The ssh2 module's slice, or why it is not one. */
-function ssh2Problem(ssh2: unknown): string | undefined {
-	return typeof (ssh2 as { Client?: unknown } | null)?.Client === "function" ? undefined : "options.ssh2 must be the ssh2 package (its Client class): the host installs it, as it does e2b";
-}
-
 /**
  * An Agent37Provider from its options alone; it reads no environment. The key is options.apiKey and the SSH key
  * options.sshKey, nowhere else (serve passes its AGENT37_API_KEY and AGENT37_SSH_KEY, the conformance module what it
@@ -501,8 +488,7 @@ export class Agent37Provider extends HostedProvider {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Agent37 API key, is required: the provider reads no environment, so the caller passes it");
 		const privateKey = typeof sshKey === "string" ? pemOf(sshKey) : undefined;
 		if (privateKey === undefined) throw new Error("options.sshKey must be the contents of an SSH private key (-----BEGIN ... PRIVATE KEY-----), never a path");
-		const problem = ssh2Problem(ssh2);
-		if (problem) throw new Error(problem);
+		if (typeof (ssh2 as { Client?: unknown } | null)?.Client !== "function") throw new Error("options.ssh2 must be the ssh2 package (its Client class): the host installs it, as it does e2b");
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
 		if (typeof WebSocket !== "function") throw new Error("options.WebSocket must be a WebSocket class that takes headers, as Node's global one does");
 		let api: URL;

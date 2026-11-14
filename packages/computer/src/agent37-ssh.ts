@@ -1,14 +1,13 @@
-// SSH exec for a machine host: a vendor whose machines are reached over SSH (as root, one connection per process, under
-// a wrapper that names the process group) gives a "Duplex to the machine's sshd" and gets MachineHost.exec from here.
-// The host's own ssh2 package does the protocol; this package names only the slice it uses (Ssh2Module) and imports
-// nothing at load. The vendor keeps what is its own: how the stream reaches the machine (a WebSocket tunnel for Agent37),
-// and which errors it throws for a machine id it does not know.
+// Agent37's SSH exec: its instances are reached over SSH (as root, one connection per process, under a wrapper that
+// names the process group), through the stream agent37.ts gives to each instance's sshd (its WebSocket tunnel), and
+// this is its MachineHost.exec. The host's own ssh2 package does the protocol; this package names only the slice it
+// uses (Ssh2Module) and imports nothing at load.
 import { randomBytes } from "node:crypto";
 import { Duplex, PassThrough } from "node:stream";
-import type { HostCall, MachineProcess } from "../host.js";
-import { type Result, ok } from "../result.js";
-import { boundOf } from "./process.js";
-import { shellLine } from "./scripts.js";
+import type { HostCall, MachineProcess } from "./host.js";
+import { boundOf } from "./hosted/process.js";
+import { shellLine } from "./hosted/scripts.js";
+import { type Result, ok } from "./result.js";
 
 /** A readable side of an ssh2 channel, as this provider uses it: piped, or drained. */
 export interface Ssh2Readable {
