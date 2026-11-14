@@ -92,8 +92,8 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
   if (!run || run.archivedAt !== null || (await store.agents.get(run.agentId))?.archivedAt !== null) return null;
   const launched = await store.runs.launch(grade.run).catch(() => undefined);
   const launch = launched ? readLaunchBody(launched.body) : undefined;
-  // Source sessions have a dedicated runner that cannot consume a managed feedback steer.
-  if (launch?.native) return null;
+  // Source sessions and application-owned SDK tasks cannot consume a managed feedback steer.
+  if (launch?.native || launch?.sdk) return null;
   const learning = launch?.learning;
   if (!learning || learning.use || (round === "revise" && learning.notesOnly)) return null;
   const feedback = { round, correct: grade.correct, ...(round === "revise" && grade.workflow ? { workflow: grade.workflow } : {}) };

@@ -1,7 +1,7 @@
 // The owner: one person, one password. The first visit sets it (with the printed code at a public address), a signed
 // session cookie carries the sign-in for 30 days, signing out signs out this browser, signing out everywhere ends every
 // session, and reset-password clears it. The token
-// stays the way in for scripts and the CLI. Ordinary API routes take one of those; source connectors
+// stays the way in for scripts and the CLI. Ordinary API routes take one of those; source connectors and SDK receipts
 // require their dedicated scoped credentials. Public routes and browser callbacks keep their own checks.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -332,8 +332,8 @@ test("reset-password clears the password and ends every session; the next visit 
 
 test("every route, called with no credential, enforces its public, owner, API or dedicated scoped credential boundary", async (t) => {
   const server = await owned(t);
-  // Source enrollment, connector commands  accept only their dedicated scoped credential.
-  const scoped = new Set(["registerRemoteConnector", "importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand"]);
+  // Source enrollment, connector commands and SDK receipts accept only their dedicated scoped credential.
+  const scoped = new Set(["registerRemoteConnector", "importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand", "getSdkRun", "sdkRunEvents", "completeSdkRun"]);
   for (const name of scoped) assert.ok(ROUTES.some(route => route.name === name), `${name} remains covered`);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;
