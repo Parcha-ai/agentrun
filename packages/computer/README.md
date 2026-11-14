@@ -1999,7 +1999,7 @@ names the API key by its sha256 prefix alone.
 | `list` | `GET /v1/instances`, the whole workspace in one answer (`{ data }`, no paging keys, seen live), matched on the labels here. An answer that says it has more is refused, never read as all |
 | `delete` | `DELETE /v1/instances/{id}`, never signalled; a repeat's 404 is done |
 | `setLabels` | `GET`, then `PATCH` of the whole `metadata`, which a PATCH replaces |
-| `exec` | SSH as root over a binary WebSocket to `wss://{id}-22022.agent37.app/`, one connection per process (below) |
+| `exec` | SSH as root over a binary WebSocket to `wss://{id}-22022.agent37.app/`, one channel per process on the instance's shared connection (below) |
 | `errorCode` | the envelope's `error.code` (or a flat `error` string), then the HTTP status; ssh2's `client-authentication` is `denied` |
 | `check` | a template name with an optional `@version`; one of Agent37's four shapes; at most 4 CPUs; metadata within 4096 bytes with the provider's own labels |
 
@@ -2016,8 +2016,19 @@ stdin, end of file is sent at once. `wait()` answers at the channel's close with
 signal or none; its listeners go on inside ssh2's callback, since one read off the tunnel can hold the open, the exit
 and the close together (seen live: a listener added after an `await` missed the exit). `kill()` runs a second command
 on the same connection that kills the pid's process group (the sshd starts each command as a session and group leader,
-seen live), then closes the channel and the connection. An SSH signal request is not used: ssh2 sends one only while
-stdin is open (`ssh2@1.17.0` `lib/Channel.js:237-246`), and it reaches one process, not its children.
+seen live), then closes its own channel, never the connection. An SSH signal request is not used: ssh2 sends one only
+while stdin is open (`ssh2@1.17.0` `lib/Channel.js:237-246`), and it reaches one process, not its children.
+
+Every exec on an instance is a channel on one SSH connection that the provider shares: the daemon's upload, its install,
+init's start, the stdio bridge and the live view's watch take one WebSocket and one handshake between them (a tunnel and
+its handshake take about 0.35 s over Agent37's edge, seen live). Execs that start together wait for one handshake. The
+connection opens at the first exec (the four tries above), and a connection that closed or failed is never handed out
+again; a channel that fails to open (the connection died under it, or its sshd took no more sessions) is opened once more
+on a fresh connection. One connection carries at most 8 execs at once, and the next opens a second: OpenSSH's sshd takes
+10 sessions on a connection (`MaxSessions`), and a kill's channel goes on its exec's connection. With no channel left, a
+connection waits 2 s for the next exec, then ends: an open one keeps the process alive (ssh2's keepalive timer and the
+WebSocket's socket), so a process done with its computers exits at most that late. `delete` ends the instance's
+connections at once.
 
 ### Capabilities
 

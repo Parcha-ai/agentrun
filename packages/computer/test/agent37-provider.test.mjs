@@ -399,11 +399,13 @@ test("a tunnel that fails to open is opened again, within the call's bound; afte
 	fake.ws.failNext(2);
 	assert.equal((await run(host, value.id, ["true"])).code, 0);
 	assert.equal(fake.ws.opened.length, 3, "two failed, the third opened");
+	// Each instance below is a fresh one: the first one's connection stays open for its next exec.
+	const second = (await host.create(request(), CTX)).value;
 	fake.ws.failNext(4);
-	await assert.rejects(host.exec(value.id, ["true"], { stdin: false }, CTX), /failed to open/);
+	await assert.rejects(host.exec(second.id, ["true"], { stdin: false }, CTX), /failed to open/);
 	assert.equal(fake.ws.opened.length, 7, "four tries in all");
 	fake.ws.failNext(10);
-	const error = await host.exec(value.id, ["true"], { stdin: false }, { timeoutMs: 300 }).catch((thrown) => thrown);
+	const error = await host.exec(second.id, ["true"], { stdin: false }, { timeoutMs: 300 }).catch((thrown) => thrown);
 	assert.equal(host.errorCode(error), "timeout", "the bound ends the retries");
 	fake.ws.failNext(0);
 });
@@ -433,6 +435,108 @@ test("an SSH key the instance's sshd does not take is denied", async (t) => {
 	const { value } = await host.create(request(), CTX);
 	const error = await host.exec(value.id, ["true"], { stdin: false }, CTX).catch((thrown) => thrown);
 	assert.equal(host.errorCode(error), "denied");
+});
+
+// --- one SSH connection per instance ---
+
+/** A process exec started, its stdout kept as text as it comes and its stderr drained. */
+async function started(host, id, argv, stdin) {
+	const made = await host.exec(id, argv, { stdin }, CTX);
+	assert.ok(made.ok);
+	const proc = made.value;
+	const seen = { text: "" };
+	const reading = (async () => {
+		for await (const chunk of proc.stdout) seen.text += Buffer.from(chunk).toString();
+	})();
+	(async () => {
+		for await (const _ of proc.stderr);
+	})();
+	return { proc, seen, reading };
+}
+
+test("two execs on one instance share one WebSocket and one SSH handshake, together or one after the other; another instance has its own", async (t) => {
+	const { fake, host } = await setup(t);
+	const { value } = await host.create(request(), CTX);
+	// Together, as connect and the live view's watch can start.
+	const [a, b] = await Promise.all([run(host, value.id, ["echo", "a"]), run(host, value.id, ["echo", "b"])]);
+	assert.deepEqual([a.stdout, b.stdout], ["a\n", "b\n"]);
+	// One beside a long one (the bridge, then the watch), then one right after both ended.
+	const bridge = await started(host, value.id, ["cat"], true);
+	assert.equal((await run(host, value.id, ["echo", "watch"])).stdout, "watch\n");
+	await bridge.proc.end();
+	assert.equal(await bridge.proc.wait(), 0);
+	assert.equal((await run(host, value.id, ["true"])).code, 0);
+	assert.equal(fake.ws.opened.length, 1, "one WebSocket");
+	assert.equal(fake.sshd.state.logins, 1, "one SSH handshake");
+	const other = (await host.create(request(), CTX)).value;
+	assert.equal((await run(host, other.id, ["true"])).code, 0);
+	assert.equal(fake.ws.opened.length, 2);
+	assert.equal(fake.ws.opened[1].url, `wss://${other.id}-22022.${PROXY}/`);
+});
+
+test("past 8 channels at once a second connection opens, so no connection asks the sshd for more sessions than OpenSSH's MaxSessions", async (t) => {
+	const { fake, host } = await setup(t);
+	const { value } = await host.create(request(), CTX);
+	const procs = await Promise.all(Array.from({ length: 9 }, () => started(host, value.id, ["cat"], true)));
+	assert.equal(fake.ws.opened.length, 2);
+	assert.equal(fake.sshd.state.logins, 2);
+	assert.equal(fake.sshd.state.sessions, 9);
+	for (const { proc } of procs) await proc.end();
+	assert.deepEqual(await Promise.all(procs.map(({ proc }) => proc.wait())), Array(9).fill(0));
+	assert.equal((await run(host, value.id, ["true"])).code, 0);
+	assert.equal(fake.ws.opened.length, 2, "the next exec takes one of the two");
+});
+
+test("kill closes its own channel and leaves another exec on the same connection running", async (t) => {
+	const { fake, host } = await setup(t);
+	const { value } = await host.create(request(), CTX);
+	const killed = await started(host, value.id, ["sh", "-c", "sleep 300 & echo $!; wait"], false);
+	const kept = await started(host, value.id, ["cat"], true);
+	assert.ok(await until(() => killed.seen.text.includes("\n")));
+	const pid = Number(killed.seen.text.trim());
+	await killed.proc.kill();
+	assert.equal(await killed.proc.wait(), -1);
+	assert.ok(await until(() => !alive(pid)), "the killed group is gone");
+	await kept.proc.write(Buffer.from("still here"));
+	assert.ok(await until(() => kept.seen.text === "still here"), "the other exec still runs");
+	await kept.proc.end();
+	assert.equal(await kept.proc.wait(), 0);
+	assert.equal(fake.ws.opened.length, 1);
+	assert.equal(fake.sshd.state.logins, 1);
+});
+
+test("a connection that died is never handed out: the next exec opens a fresh one, and a channel the sshd refuses is opened once more on a fresh connection", async (t) => {
+	const { fake, host } = await setup(t);
+	const { value } = await host.create(request(), CTX);
+	await run(host, value.id, ["true"]);
+	fake.sshd.dropAll();
+	assert.ok(await until(() => fake.sshd.state.live === 0));
+	assert.equal((await run(host, value.id, ["true"])).code, 0);
+	assert.equal(fake.ws.opened.length, 2, "after the close was seen");
+	fake.sshd.dropAll();
+	assert.equal((await run(host, value.id, ["true"])).code, 0);
+	assert.equal(fake.ws.opened.length, 3, "and as it closes");
+	fake.sshd.refuseSessions(1);
+	assert.equal((await run(host, value.id, ["true"])).code, 0);
+	assert.equal(fake.ws.opened.length, 4, "the refusing connection takes no more; a fresh one took the exec");
+	fake.sshd.refuseSessions(2);
+	await assert.rejects(host.exec(value.id, ["true"], { stdin: false }, CTX), /open failure/i);
+	assert.equal(fake.ws.opened.length, 5, "once more, no more");
+	assert.ok(await until(() => fake.sshd.state.live === 0), "the refusing connections ended, none holding them");
+});
+
+test("a connection with no channel left waits a moment for the next exec, then ends; delete ends it at once, channels and all", async (t) => {
+	const { fake, host } = await setup(t);
+	const { value } = await host.create(request(), CTX);
+	await run(host, value.id, ["true"]);
+	assert.equal(fake.sshd.state.live, 1, "kept for the next exec");
+	assert.ok(await until(() => fake.sshd.state.live === 0, 5_000), "then ended");
+	const long = await started(host, value.id, ["sh", "-c", "sleep 300 & wait"], false);
+	assert.equal(fake.sshd.state.live, 1);
+	assert.ok((await host.delete(value.id, CTX)).ok);
+	assert.equal(await long.proc.wait(), -1, "the channel closed with the connection");
+	assert.ok(await until(() => fake.sshd.state.live === 0, 1_000), "ended at once");
+	assert.equal(fake.ws.opened.length, 2);
 });
 
 // --- the registry and the conformance module ---
