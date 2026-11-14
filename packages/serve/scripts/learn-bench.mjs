@@ -313,7 +313,9 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
   const record = { answer: typeof view.result?.final_answer === "string" ? view.result.final_answer : "", calls: TE.callsOf(rows, harness, servers), mcpCalls: ctx.fakes.flatMap((f) => f.calls.map((c) => ({ ...c }))), files: await filesOf(api, runId, kase) };
   for (const fake of ctx.fakes) fake.calls.length = 0;
   const graded = view.status === "completed";
-  const graders = [];
+  // The package's output schema, held as the template eval holds it: the server's own verdict on the run.
+  const output = graded ? TE.outputVerdict(ctx.pkg, view.result) : undefined;
+  const graders = output ? [output] : [];
   for (const grader of kase.graders) graders.push(await gradeOne(ctx, grader, kase, record, servers, graded));
   const learning = learns ? (await api("GET", `/runs/${runId}/learning`)).body ?? {} : null;
   const approvals = [];
@@ -625,7 +627,7 @@ async function main() {
             ok(`saving the fake ${name}`, await server.api("PUT", `/settings/mcp-servers/${name}`, { url: fake.url, auth: { type: "none" } }));
           }
           await serverPins(server.api, p.pkg.pkg, p.job);
-          const done = await series({ api: server.api, store: server.store, pkgName: p.pkg.pkgName, models, options, owner, fakes }, p.job, p.cases, p.harness, p.arm, p.steps);
+          const done = await series({ api: server.api, store: server.store, pkgName: p.pkg.pkgName, pkg: p.pkg.pkg, models, options, owner, fakes }, p.job, p.cases, p.harness, p.arm, p.steps);
           results.series.push(done);
           write();
           if (done.hard_stop && !/--harness-max-runs/.test(done.hard_stop)) { results.hard_stop = done.hard_stop; break; }
