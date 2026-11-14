@@ -461,13 +461,47 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
     let takes = 0;
     let hold: "agent" | "pending" = "agent";
     const p = await screen(async () => DESKTOP_LIVE(hold), desktop, { tab: "screen", onTakeOver: async () => { takes += 1; hold = "pending"; return { hold: "pending" }; } });
-    expect(p.panel()!.querySelector("iframe")!.getAttribute("src")).toBe(FRAMED(VIEWER));
+    // The viewer is told the page has Take over and Hand back (hands=page), so its own bar shows no second one.
+    expect(p.panel()!.querySelector("iframe")!.getAttribute("src")).toBe(`${FRAMED(VIEWER)}&hands=page`);
     expect(p.panel()!.textContent).toContain("The agent drives · desktop");
     await p.click("Take over");
     expect(takes).toBe(1);
     expect(p.panel()!.textContent).toContain("Yours after the agent's step");
     expect(p.button("Taking over")!.disabled).toBe(true);
     nowhereBut(p.panel()!.querySelector("iframe"), VIEWER);
+  });
+
+  it("a desktop that was live reads released when it goes at the run's end, never 'waiting', and closed once the run ends", async () => {
+    // The order at a run's end: the desktop is let go, its viewer goes, and the read answers none, opening (the run still
+    // working: a desktop is held from the run's start to its end) before the run read turns completed.
+    let gone = false;
+    const p = await screen(async () => (gone ? { state: "none", kind: "desktop", hold: "agent", session: "opening" } : DESKTOP_LIVE()), desktop, { tab: "screen" });
+    expect(p.panel()!.querySelector("iframe")).not.toBeNull();
+    gone = true;
+    await settle(100);
+    expect(p.panel()!.querySelector("iframe")).toBeNull();
+    expect(p.panel()!.textContent).toContain("This desktop has been released.");
+    expect(p.panel()!.textContent).not.toContain("Waiting for the desktop");
+    // Read on, it stays released.
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("This desktop has been released.");
+    await p.show({ ...desktop, status: "completed", state: "idle", ended_at: "2026-11-05T09:12:00Z", computer: { kind: "desktop", provider: "e2b", state: "ended" } } as Run);
+    await settle(60);
+    expect(p.panel()!.textContent).toContain("The desktop closed when the run ended.");
+    // A follow-up's turn opens a new desktop: that one is waited for.
+    await p.show(desktop);
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("Waiting for the desktop. Its screen shows here once it is up.");
+  });
+
+  it("a phone opening at the run's start (never live on this page) still waits for it", async () => {
+    const phone = { ...working, status: "queued", computer: { kind: "phone", provider: "phone-harness", state: "starting" } } as Run;
+    const p = await screen(async () => ({ state: "none", kind: "phone", hold: "agent", session: "opening" }), phone, { tab: "screen" });
+    expect(p.panel()!.textContent).toContain("Waiting for the phone. Its screen shows here once it is up.");
+    // The run's badge says the phone is starting, never that the run is queued.
+    const badge = p.host.querySelector("header")!.textContent ?? "";
+    expect(badge).toContain("Starting");
+    expect(badge).not.toContain("Queued");
   });
 
   it("a live phone's frame fits the page's visible height below it, so the whole phone shows without scrolling; on a short page it keeps a usable size", async () => {

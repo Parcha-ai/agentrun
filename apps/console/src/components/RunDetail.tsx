@@ -107,7 +107,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // The agent's ask at its computer: a message is no answer to it, but one to a working run.
   const ask = askOf(run);
   const askMode = ask ? (harnessSteers && messages.steer ? "steer" as const : messages.follow_up ? "follow_up" as const : null) : null;
-  const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
+  const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review, run.computer);
   const view = budget ? { ...state, canMessage: false, messageMode: null } : ask ? { ...state, canMessage: askMode !== null, messageMode: askMode } : state;
   const defaultTab: Tab = graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline";
   const [picked, setTab] = useState<Tab>(initial ?? defaultTab);
