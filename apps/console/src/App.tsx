@@ -1,3 +1,9 @@
+import { Picker } from "@/components/ui";
+import { Code } from "lucide-react";
+import { BuildAgent } from "@/components/BuildAgent";
+import { RunsRequest } from "@/components/RunsRequest";
+import { AgentRequest, type AgentOperation } from "@/components/AgentRequest";
+import { backendSdkOf } from "@/lib/backendSdk";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
@@ -52,7 +58,7 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; template?: string; install?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -67,7 +73,18 @@ export function route(h: string = location.hash): Where {
   m = h.match(/^#\/agents\/([^/?]+)(?:\/([a-z]+))?$/);
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] === "edit" ? { edit: true } : m[2] ? { tab: m[2] } : {}) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
-  if (h.startsWith("#/playground")) return { section: "playground" };
+  if (h.startsWith("#/playground")) {
+    const params = new URLSearchParams(h.split("?")[1] ?? "");
+    const agent = params.get("agent"), operation = params.get("operation"), draft = params.get("draft");
+    if (operation === "apply-template") {
+      const template = params.get("template");
+      return { section: "playground", operation, ...(template ? { template } : {}), ...(draft !== null ? { draft } : {}) };
+    }
+    return { section: "playground", ...(agent ? { playgroundAgent: agent } : {}),
+      ...(operation === "create-agent" || operation === "edit-agent" || operation === "list-runs" ? { operation } : {}), ...(draft !== null ? { draft } : {}),
+      ...(operation === "list-runs" && RUN_STATUSES.includes(params.get("status") as RunStatus) ? { status: params.get("status") as RunStatus } : {}),
+      ...(operation === "list-runs" && params.get("archived") === "true" ? { archived: true } : {}) };
+  }
   // The server's templates: the list, and one template's Apply screen.
   // A package on GitHub, read before it is installed (its source in `src`, as an "Add from URL" box or a link sends it).
   m = h.match(/^#\/templates\/install\?(.*)$/);
@@ -276,7 +293,14 @@ function Starting() {
   return useLink().state === "offline" ? <Unreached /> : <p className="p-8 text-center font-mono text-body text-muted-foreground" role="status">Connecting…</p>;
 }
 
-function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onSignedOut: () => void }) {
+type ConsoleProps = { v2: ReturnType<typeof createClient>; onSignedOut: () => void };
+/** A replacement authenticated client tears down its cached pages before their next commit. */
+export function Console(props: ConsoleProps) {
+  const clientKey = useMemo(uuid, [props.v2]);
+  return <ConsolePage key={clientKey} {...props} />;
+}
+
+function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   // Whether this session may paste, replace or remove a secret: the owner's password session alone (secrets_writable).
   const { writable: secretsWritable, whyNot: secretsWhyNot } = useSecrets(v2);
   const [signOutError, setSignOutError] = useState<string | null>(null);
@@ -441,24 +465,36 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [revs, setRevs] = useState<{ revision: string; version: number; current: boolean; note: string | null }[]>([]);
   const [pick, setPick] = useState<string | null>(null);
+  const pickedAgent = useRef(pick);
+  pickedAgent.current = pick;
   const [startError, setStartError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const agentsAsked = useRef(0);
+  // A different client, page or requested agent starts with a fresh list. Background refreshes keep the request mounted.
+  useEffect(() => { setAgents(null); setStartError(null); setPick(null); pickedAgent.current = null; }, [v2, where.section, where.operation, where.playgroundAgent]);
   useEffect(() => {
-    if (where.section !== "playground") return;
+    if (where.section !== "playground" || where.operation) return;
     setStartError(null);
     // Only the newest read lands: an earlier one answering late (the list before an import ended) never replaces it.
     const n = ++agentsAsked.current;
     allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents)
       .then((a) => {
         if (n !== agentsAsked.current) return;
-        setAgents(a);
         // Keep the pick only while it is an active agent: one archived since is not offered, so not picked either.
         const active = a.filter((x) => !x.archived_at);
-        setPick((p) => (p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
+        const selected = pickedAgent.current ?? where.playgroundAgent;
+        if (selected && !active.some((x) => x.agent_id === selected)) {
+          setAgents(null);
+          setPick(null);
+          setStartError("The selected agent is unavailable or archived. Choose another agent from Agents.");
+          return;
+        }
+        setAgents(a);
+        setPick(selected ?? active[0]?.agent_id ?? null);
       })
       .catch((e) => { if (n === agentsAsked.current) { const p = problem(e, "the agents"); setStartError(`${p.why} ${p.next}${p.said ? ` (${p.said})` : ""}`); } });
-  }, [v2, where.section, retry, refreshed]);
+    return () => { agentsAsked.current++; };
+  }, [v2, where.section, where.operation, where.playgroundAgent, retry, refreshed]);
   useEffect(() => {
     if (where.section !== "mission") return;
     let live = true;
@@ -601,6 +637,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     window.addEventListener("focus", again);
     return () => { clearInterval(timer); window.removeEventListener("focus", again); };
   }, [v2, modelsReady]);
+  const selectedDefinition = agents?.find((agent) => agent.agent_id === pick)?.definition;
+  const externalPlayground = selectedDefinition?.native || backendSdkOf(selectedDefinition);
+  const playgroundTarget = where.operation ? where.playgroundAgent : pick ?? where.playgroundAgent;
   return (
     <ScheduleNames.Provider value={scheduleNames}>
     <Shell active={where.section} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
@@ -619,11 +658,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
           {imported.state !== "running" && <Button type="button" size="xs" onClick={() => setImported(null)}>Dismiss</Button>}
         </p>
       )}
-      {caps?.models.ready === false && where.section !== "mission" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true} />}
+      {caps?.models.ready === false && where.section !== "mission" && where.section !== "playground" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true} />}
     </>}>
-      {where.section === "playground" && startError
-        ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={() => setRetry((n) => n + 1)}>Try again</Button>}><p className="font-mono">The agents could not be read: {startError}</p></Banner>
-        : where.section === "settings"
+      {where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
             {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!caps?.features?.mcp_client} onSaved={readCaps} onOpen={readCaps} />
               : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} />
@@ -651,10 +688,30 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         : where.section === "triggers"
         ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} failuresToPause={caps?.features?.triggers?.failures_to_pause} />
         : where.section === "playground"
-        ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
-            live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
+        ? <section className="flex h-full min-h-0 flex-col">
+            <header className="flex min-h-12 shrink-0 items-center gap-2 border-b px-5"><Code className="size-4" aria-hidden /><h1 className="caps text-body font-semibold">API playground</h1></header>
+            <div className="flex flex-wrap items-center gap-3 border-b px-6 py-4">
+              <label className="sr-only" htmlFor="api-operation">API operation</label>
+              <Picker id="api-operation" label="API operation" value={where.operation ?? "run"} onChange={(operation) => {
+                const target = playgroundTarget;
+                const params = new URLSearchParams();
+                if (operation !== "run") params.set("operation", operation);
+                if (operation !== "create-agent" && operation !== "apply-template" && target) params.set("agent", target);
+                go(`#/playground${params.size ? `?${params}` : ""}`);
+              }} options={[{ value: "create-agent", label: "POST · Create an agent" }, { value: "apply-template", label: "POST · Apply a template" }, { value: "run", label: "POST · Start a run" }, { value: "list-runs", label: "GET · Query runs" }, { value: "edit-agent", label: "PUT · Edit agent", disabled: !playgroundTarget }]} />
+              <span className="min-w-0 break-all font-mono text-small text-muted-foreground">{where.operation === "apply-template" ? `/v2/templates/${where.template ? encodeURIComponent(where.template) : "{template}"}/apply` : where.operation === "list-runs" ? (where.playgroundAgent ? `/v2/agents/${where.playgroundAgent}/runs` : "/v2/runs") : where.operation === "create-agent" ? "/v2/agents" : where.operation === "edit-agent" ? `/v2/agents/${where.playgroundAgent ?? "{agent_id}"}/definition` : "/v2/agents/{agent_id}/runs"}</span>
+              <span className="caps ml-auto text-micro text-muted-foreground">Live API</span>
+            </div>
+            {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} /> : <>
+              {!externalPlayground && caps?.models?.ready === false && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} />}
+              {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
+              {agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
+                live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />}
+            </>}
+          </section>
         : where.section === "agents"
         ? where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
+          : where.agent === null ? <BuildAgent origin={location.origin} v2={v2} />
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} notes={where.notes} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
           : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />

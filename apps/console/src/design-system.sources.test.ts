@@ -43,6 +43,7 @@ const RULES: Rule[] = [
 
 /** An exception: the rule, the file, a string the line holds, and why the guide's sentence does not apply to it. */
 const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
+  { rule: "rounded", file: "components/BuildAgent.tsx", has: "!rounded-composer", why: "The build composer has a scoped softer edge to group the prompt and its coding-agent action." },
   { rule: "rounded", file: "components/ui/button.tsx", has: "!rounded-action", why: "Every action button uses the shared action radius, including links and menu triggers." },
   { rule: "rounded", file: "components/ui/nav-item.tsx", has: "!rounded-action", why: "The active sidebar item uses the shared action radius around its tint; other surfaces stay square." },
   { rule: "palette-colour", file: "components/NodeDrawer.tsx", has: "bg-white", why: "A page of a document is shown on paper white in both themes, as the document is." },
