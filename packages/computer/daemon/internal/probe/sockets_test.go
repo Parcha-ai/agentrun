@@ -39,14 +39,35 @@ func listed(search probe.SocketSearch) string {
 	return strings.Join(parts, ",")
 }
 
+// table writes text as a /proc/net/unix for ConnectableSockets to read, and gives its path.
+func table(t *testing.T, text string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "unix")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Review (#2787, PRRT_kwDOUmdVMs63e4QV): /proc/net/unix that could not be read was taken for an empty one, and the
+// search said nothing of the abstract names it never tried.
+func TestConnectableSocketsSaysWhenItCouldNotReadTheTableOfAbstractNames(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "unix")
+	search := probe.ConnectableSockets(nil, missing, probe.DefaultSocketBounds, 2*time.Second)
+	if len(search.Incomplete) != 1 || !strings.Contains(search.Incomplete[0], missing) || !strings.Contains(search.Incomplete[0], "no abstract name was tried") {
+		t.Fatalf("Incomplete = %q; want the table named, and that no abstract name was tried", search.Incomplete)
+	}
+}
+
 // set is the same for the sockets a test expects.
 func set(entries ...string) string {
 	sort.Strings(entries)
 	return strings.Join(entries, ",")
 }
 
-// The isolation fence's listing, in computerd so no image lacks it: every unix socket with a path a program can connect
-// to, under the roots walked and among /proc/net/unix's paths, by its real path and the type that connected.
+// The isolation fence's listing, in computerd so no image lacks it: every unix socket a program can connect to, under
+// the roots walked and among /proc/net/unix's paths and abstract names, by its real path or its name and the type that
+// connected.
 func TestConnectableSocketsListsThoseThatAcceptByTheirRealPathAndTypeAndNoOther(t *testing.T) {
 	dir := shortDir(t)
 	stream := filepath.Join(dir, "stream.sock")
@@ -90,14 +111,33 @@ func TestConnectableSocketsListsThoseThatAcceptByTheirRealPathAndTypeAndNoOther(
 		t.Fatal(err)
 	}
 	defer l2.Close()
-	netUnix := "Num       RefCount Protocol Flags    Type St Inode Path\n" +
-		"0000000000000000: 00000002 00000000 00010000 0001 01 12345 " + named + "\n" +
-		"0000000000000000: 00000002 00000000 00010000 0001 01 12346 @abstract-name\n"
+	// An abstract name, which no folder holds: a session bus on E2B (dbus 1.12's unix:tmpdir) is one. The network
+	// namespace holds it, and a program in the namespace reaches it. An abstract name no one listens on is refused.
+	abstract := fmt.Sprintf("@pso-%d", time.Now().UnixNano())
+	l3, err := net.Listen("unix", abstract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l3.Close()
+	// Review (#2787, PRRT_kwDOUmdVMs63e4QR): a name with spaces was split into fields, and its first word, which no one
+	// listens on, was tried instead. The kernel pads the inode on the left.
+	spaced := fmt.Sprintf("@pso %d bus", time.Now().UnixNano())
+	l4, err := net.Listen("unix", spaced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l4.Close()
+	netUnix := table(t, "Num       RefCount Protocol Flags    Type St Inode Path\n"+
+		"0000000000000000: 00000002 00000000 00010000 0001 01 12345 "+named+"\n"+
+		"0000000000000000: 00000002 00000000 00010000 0001 01 12346 "+abstract+"\n"+
+		"0000000000000000: 00000002 00000000 00010000 0001 01   347 "+spaced+"\n"+
+		"0000000000000000: 00000002 00000000 00000000 0002 01 12348\n"+
+		"0000000000000000: 00000002 00000000 00010000 0001 01 12349 @pso-no-one-listens\n")
 
 	search := probe.ConnectableSockets([]string{dir}, netUnix, probe.SocketBounds{Entries: 1000, Depth: 8}, 2*time.Second)
-	want := set("dgram "+dgram, "seqpacket "+seqpacket, "stream "+stream, "stream "+named)
+	want := set("dgram "+dgram, "seqpacket "+seqpacket, "stream "+stream, "stream "+named, "stream "+abstract, "stream "+spaced)
 	if got := listed(search); got != want {
-		t.Fatalf("ConnectableSockets = %s; want %s (not the dead socket, the file, the link again or the abstract name)", got, want)
+		t.Fatalf("ConnectableSockets = %s; want %s (not the dead socket, the file, the link again or the abstract name no one listens on)", got, want)
 	}
 	if len(search.Incomplete) != 0 {
 		t.Fatalf("a search within its bounds reports itself incomplete: %v", search.Incomplete)
@@ -125,7 +165,7 @@ func TestConnectableSocketsSaysWhichRootItCouldNotSearchWholeAndGivesEachRootIts
 	}
 	defer l.Close()
 
-	search := probe.ConnectableSockets([]string{big, deep, small}, "", probe.SocketBounds{Entries: 10, Depth: 2}, 2*time.Second)
+	search := probe.ConnectableSockets([]string{big, deep, small}, table(t, ""), probe.SocketBounds{Entries: 10, Depth: 2}, 2*time.Second)
 	if got := listed(search); got != "stream "+socket {
 		t.Fatalf("ConnectableSockets = %s; want the socket in the root after the large one, searched with its own budget", got)
 	}

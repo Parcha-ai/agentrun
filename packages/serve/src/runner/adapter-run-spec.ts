@@ -726,6 +726,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     signIns: signInReads(deps.store, deps.sealKey),
     handed: runnerSecrets(toolEnv),
     stored: () => storeSecrets(deps.store, deps.sealKey, deps.data),
+    log,
     // A workflow draft's decision nodes are checked against the host's decision providers, on its keys (LS-07).
     decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, DECISION_PROVIDER_KEYS)) }),
     learningFolder: archil === undefined

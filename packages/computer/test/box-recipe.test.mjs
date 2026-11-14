@@ -172,7 +172,12 @@ test("the Agent37 build's recipe is box/Dockerfile plus Xvfb, xfwm4 and the apps
   for (const name of ["xvfb", "xfwm4", "xfce4-terminal", "mousepad", "firefox-esr", "xdotool"]) assert.ok(agent37Build.DESKTOP_PACKAGES.includes(name), name);
   const programs = agent37Build.DESKTOP.match(/for x in ([^;]*); do command -v "\$x"/)?.[1].split(" ") ?? [];
   assert.ok(programs.includes("Xvfb"), "the build checks the X server is there");
-  for (const program of WINDOW_MANAGER.filter((arg) => !arg.startsWith("-"))) assert.ok(programs.includes(program), `the build checks the window manager's ${program} is there`);
+  // The window manager's programs beyond Debian's essential ones (unshare, util-linux's, and sh).
+  assert.equal(WINDOW_MANAGER[0], "unshare");
+  for (const program of ["dbus-run-session", "xfwm4"]) {
+    assert.ok(WINDOW_MANAGER.some((arg) => arg.includes(`${program} `)), `the window manager runs ${program}`);
+    assert.ok(programs.includes(program), `the build checks the window manager's ${program} is there`);
+  }
   const checked = agent37Build.DESKTOP.match(/for app in ([^;]*); do/)?.[1].split(" ") ?? [];
   assert.ok(checked.some((app) => DESKTOP_APPS.includes(app)), "the build checks a desktop file the conformance apps case opens");
   assert.match(agent37Build.DESKTOP, /! command -v sudo/, "the desktop's packages bring no sudo, checked");

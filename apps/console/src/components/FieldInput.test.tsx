@@ -36,11 +36,11 @@ describe("FieldInput", () => {
     expect(options.map((o) => o.value)).toEqual(["", "us", "eu"]);
   });
 
-  it("offers a typed input's default choice by its own value: a run input left out is not filled in, as a template's parameter is", async () => {
+  it("offers a default choice by its own value, named as the default, after an empty option", async () => {
     const field = fieldOf({ reason: { type: "string", enum: ["vendor", "customer"], default: "vendor" } }, "reason");
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    act(() => root!.render(createElement(FieldInput, { field, label: "reason", value: "vendor", typedInput: true, onChange: () => {} })));
+    act(() => root!.render(createElement(FieldInput, { field, label: "reason", value: "vendor", onChange: () => {} })));
     expect((await optionsOf(picker(host, "reason")!)).map((o) => [o.value, o.text])).toEqual([["", "None chosen"], ["vendor", "vendor (default)"], ["customer", "customer"]]);
   });
 

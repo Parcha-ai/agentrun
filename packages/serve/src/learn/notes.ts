@@ -123,6 +123,24 @@ export function runMarkedRisky(text: string | undefined): boolean {
 /** `text`, a pending note's file, as the host leaves it when its owner approves it: active, no status; its origin kept. */
 export const approve = (text: string): string => marked(text, []);
 
+/** `text`, a note's file, as the host leaves it when learned workflow `workflow` (learn/compile.ts) is merged doing its
+ *  work: `compiled_into: <workflow>` in its front matter, in place of any it had, its status as it was. A compiled note is
+ *  still served: a run the workflow hands back is done by hand with it. */
+export function compiledInto(text: string, workflow: string): string {
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(workflow)) throw new Error("compiled_into must be a learned workflow's name");
+  return marked(text, [`compiled_into: ${workflow}`], ["compiled_into"]);
+}
+
+/** The bytes of `text`'s `compiled_into` line in its front matter, newline included, the one the host adds
+ *  (compiledInto): 0 when it holds none. The note cap never counts it (check.ts noteBytes), so marking a note at the cap
+ *  compiled never takes it out of shape for a retire, a restore or the grader's read. */
+export function compiledLineBytes(text: string): number {
+  const head = FRONT.exec(text.replace(/\r\n/g, "\n"));
+  if (!head || head.index !== 0) return 0;
+  const line = head[1]!.split("\n").find((one) => /^compiled_into: [a-z0-9][a-z0-9_-]{0,63}$/.test(one));
+  return line === undefined ? 0 : line.length + 1;
+}
+
 /** `text`, a note's file, as the host leaves it when note `by` supersedes it: `status: superseded` and `superseded_by`. */
 export function supersede(text: string, by: string): string {
   if (!NOTE_FILE.test(by)) throw new Error("superseded_by must be a note's file name");

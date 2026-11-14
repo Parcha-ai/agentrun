@@ -118,6 +118,20 @@ test("a source reads as github:<owner>/<repo>[/<path>][@<ref>], or a github.com 
   }
 });
 
+test("a % that starts no escape is refused by its own sentence, naming it, in a github: source and a tree URL alike; a github: source takes no escape, a tree URL's read as its characters", async () => {
+  const { parseSource } = await import("../dist/template-source.js");
+  const said = (source) => { try { parseSource(source); } catch (error) { return error.extra.fields[0].message; } return null; };
+  assert.equal(said("github:Parcha-ai/agentrun/packages/serve/templates/k%ZZb"), `"k%ZZb" has "%ZZ", which is no percent escape: a % is followed by two hex digits (%25 is a % itself).`);
+  assert.equal(said("https://github.com/acme/agents/tree/main/k%ZZb"), said("github:acme/agents/k%ZZb@main"));
+  assert.equal(said("github:acme/agents/kyb%"), `"kyb%" has "%", which is no percent escape: a % is followed by two hex digits (%25 is a % itself).`);
+  assert.equal(said("https://github.com/acme/agents/tree/main/k%FFb"), `"k%FFb" has percent escapes that spell no text.`);
+  // A github: source is stored and linked as written: an escaped @ read as one would make its source name folder foo at ref bar.
+  assert.equal(said("github:acme/agents/foo%40bar"), `"foo%40bar" has "%40", a percent escape: a github: source names each folder as it is, unescaped.`);
+  const fromUrl = parseSource("https://github.com/acme/agents/tree/main/k%79b/foo%40bar");
+  assert.deepEqual(parseSource(fromUrl.source), fromUrl);
+  assert.equal(fromUrl.path, "kyb/foo@bar");
+});
+
 test("an import from GitHub: a dry run shows the package whole and stores nothing; the first import from a publisher needs its trust; it is listed beside the bundled one, applied with its provenance, and kept across a restart", { timeout: 120_000 }, async (t) => {
   const github = await fauxGitHub(t);
   const server = await serve(t, { templateImportApi: github.url, runner: false });
@@ -213,7 +227,7 @@ test("an import is refused, storing nothing: a source off GitHub, a ref GitHub d
   assert.ok(Date.now() - began < 10_000, `refused at once, in ${Date.now() - began} ms`);
   await refused({ source: `${ID}@hard` }, "package", /rules\/HARD\.md is a hard link/);
   await refused({ source: `${ID}@fifo` }, "package", /rules\/pipe\.md is not a regular file or a folder/);
-  await refused({ source: `${ID}@broken` }, "package", /a package's folders are skills\/, rules\/, evals\/ and examples\//);
+  await refused({ source: `${ID}@broken` }, "package", /a package's folders are skills\/, rules\/ and evals\//);
   await refused({ source: "github:acme/agents/templates/none@main" }, "source", /has no folder templates\/none/);
   await refused({ source: `${ID}@main`, dry_run: "yes" }, "dry_run", /dry_run is true or false/);
   assert.deepEqual((await api("GET", "/templates")).body.templates.filter((one) => !one.bundled), []);

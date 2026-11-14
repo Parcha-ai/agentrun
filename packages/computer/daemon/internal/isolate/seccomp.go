@@ -50,7 +50,7 @@ var (
 )
 
 // program is the filter: a call of another architecture (32-bit x86 on amd64), or of the x32 table, meets ENOSYS; a
-// socket of family AF_VSOCK, and io_uring_setup, meet EPERM; everything else is allowed.
+// socket of family AF_VSOCK, io_uring_setup and setns meet EPERM; everything else is allowed.
 func program() []sockFilter {
 	p := []sockFilter{
 		{bpfLdWAbs, 0, 0, offsetArch},
@@ -64,8 +64,9 @@ func program() []sockFilter {
 	return append(p,
 		sockFilter{bpfJeqK, 0, 2, sysSocket},
 		sockFilter{bpfLdWAbs, 0, 0, offsetArg0},
-		sockFilter{bpfJeqK, 1, 2, afVsock},
-		sockFilter{bpfJeqK, 0, 1, sysIOURingSetup},
+		sockFilter{bpfJeqK, 2, 3, afVsock},
+		sockFilter{bpfJeqK, 1, 0, sysIOURingSetup},
+		sockFilter{bpfJeqK, 0, 1, sysSetns},
 		sockFilter{bpfRetK, 0, 0, seccompRetErrno | uint32(syscall.EPERM)},
 		sockFilter{bpfRetK, 0, 0, seccompRetAllow},
 	)
@@ -73,18 +74,22 @@ func program() []sockFilter {
 
 // DenySockets installs a seccomp filter on every thread of this process, inherited by every program it starts, that
 // refuses (EPERM) a socket of family AF_VSOCK, which no network namespace cuts and where a virtual machine's agent may
-// listen, and io_uring_setup, whose rings open sockets past any filter on socket(2). A call of another architecture or
-// table (32-bit x86, x32) meets ENOSYS, so it cannot open what the native call may not. It needs no_new_privs set on
-// every thread first (Become sets it) and reads back a filter on every thread.
+// listen; io_uring_setup, whose rings open sockets past any filter on socket(2); and setns. A namespace a program of
+// the user's makes belongs to the user, so another program could join it and connect to the sockets it holds, as the
+// window manager's session bus (desktop.ts, WINDOW_MANAGER) on its abstract name; with no setns, a namespace stays its
+// maker's. No program of the user's needs to join one: the containers that do (rootless Podman) need setuid helpers,
+// and no_new_privs takes those already. A call of another architecture or table (32-bit x86, x32) meets ENOSYS, so it
+// cannot do what the native call may not. It needs no_new_privs set on every thread first (Become sets it) and reads
+// back a filter on every thread.
 func DenySockets() error {
 	filterProgram = program()
 	filterHeader = sockFprog{len: uint16(len(filterProgram)), filter: &filterProgram[0]}
 	r, _, errno := syscall.Syscall(sysSeccomp, seccompSetModeFilter, seccompFlagTsync, uintptr(unsafe.Pointer(&filterHeader)))
 	if errno != 0 {
-		return fmt.Errorf("cannot install the filter that refuses vsock and io_uring: %w", errno)
+		return fmt.Errorf("cannot install the filter that refuses vsock, io_uring and setns: %w", errno)
 	}
 	if r != 0 {
-		return fmt.Errorf("cannot install the filter that refuses vsock and io_uring on thread %d", r)
+		return fmt.Errorf("cannot install the filter that refuses vsock, io_uring and setns on thread %d", r)
 	}
 	tasks, err := os.ReadDir("/proc/self/task")
 	if err != nil {

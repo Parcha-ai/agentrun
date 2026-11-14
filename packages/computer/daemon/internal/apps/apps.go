@@ -1,7 +1,8 @@
 // Package apps is a Linux desktop's apps group (src/protocol.ts, the same methods and answers as a Mac's): apps.list
 // reads the desktop files of the apps there are, apps.launch opens one on the display and answers once its window
 // shows, apps.terminate ends it. An app is launched as process.start launches a program with orphans "keep": it is in
-// computerd's process table, with DISPLAY, and what it starts runs on after its launcher ends, to the computer's end.
+// computerd's process table, with DISPLAY, no session bus (DBUS_SESSION_BUS_ADDRESS=disabled:) and NO_AT_BRIDGE=1, and
+// what it starts runs on after its launcher ends, to the computer's end.
 //
 // Windows are read on the display's own connection (package desktop): the top-level windows that are the apps' own (a
 // window manager's frames looked into), each one's app by the process that launched it (_NET_WM_PID) and else by its
@@ -168,7 +169,12 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 		}
 		return g.active(ctx, shown[len(shown)-1], before)
 	}
-	started, err := g.table.Start(ctx, process.StartParams{Argv: argv, Env: map[string]string{"DISPLAY": g.display.Name()}, Orphans: "keep"})
+	// No session bus: an app given none autolaunches one (dbus-launch, on E2B Desktop), and that bus starts services as
+	// the user, with sockets a program of the user reaches: gnome-keyring-daemon's under the user's home
+	// (~/.cache/keyring-*/control), an at-spi bus. "disabled:" is no address a D-Bus library connects to, so an app runs
+	// with no bus, as on Agent37's box, which has no dbus-launch. NO_AT_BRIDGE: a GTK app asks for no accessibility bus.
+	env := map[string]string{"DISPLAY": g.display.Name(), "DBUS_SESSION_BUS_ADDRESS": "disabled:", "NO_AT_BRIDGE": "1"}
+	started, err := g.table.Start(ctx, process.StartParams{Argv: argv, Env: env, Orphans: "keep"})
 	if err != nil {
 		return nil, err
 	}
