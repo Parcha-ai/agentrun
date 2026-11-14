@@ -1,4 +1,7 @@
-# Deploying AgentRun: a server and its runners
+# Self-hosting AgentRun: a server and its runners
+
+Want AgentRun hosted for you? Start with [AgentRun Cloud](../docs/getting-started.md#agentrun-cloud).
+This guide covers the open-source deployment you operate: its server, runners, persistent storage and upgrades.
 
 AgentRun runs as two kinds of process on one store:
 

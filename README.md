@@ -18,13 +18,13 @@
 </p>
 
 <p align="center">
-  <a href="https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun"><img alt="Deploy to Render" src="docs/assets/readme/pill-render.png" height="44"></a>
-  &nbsp;
-  <a href="#start-in-three-steps"><img alt="npx @parcha/agentrun" src="docs/assets/readme/pill-local.png" height="44"></a>
+  <a href="https://console.agentrun.ai/"><b>AgentRun Cloud</b></a> ·
+  <a href="#run-locally-in-three-steps">Run locally</a> ·
+  <a href="#deploy-it">Self-host</a>
 </p>
 
 <p align="center">
-  <a href="#start-in-three-steps">Quickstart</a> ·
+  <a href="#get-started">Quickstart</a> ·
   <a href="#case-studies">Case studies</a> ·
   <a href="#take-the-tour">Tour</a> ·
   <a href="#templates">Templates</a> ·
@@ -70,10 +70,22 @@ Bring your agent on the harness it runs best on: Claude Code, Codex, OpenCode or
 - **You stay in control.** Approvals, spend caps and one console for every agent: what needs you, what failed, what's
   running and what it cost.
 
-You don't build the plumbing: provider integrations, recovery, run tracking and learning are all here. Run it on your
-laptop with one command, in one container, or as a server with runners. Apache-2.0.
+You don't build the plumbing: provider integrations, recovery, run tracking and learning are all here. Use
+[AgentRun Cloud](docs/getting-started.md#agentrun-cloud) for hosted access, or run the open-source platform on your
+laptop, in one container, or as a server with runners. Apache-2.0.
 
-## Start in three steps
+## Get started
+
+**AgentRun Cloud.** Run agents without maintaining your own server. [Open Cloud](https://console.agentrun.ai/) to
+sign in with an existing account. For access and help setting up your team's workflows,
+[talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
+
+Prefer your own machine or infrastructure? Start locally below, or [self-host on Render or Docker](#deploy-it).
+The [getting-started guide](docs/getting-started.md) explains the three options.
+
+<a id="start-in-three-steps"></a>
+
+### Run locally in three steps
 
 You need Node 24.22.3 or newer, on macOS or Linux.
 
@@ -94,7 +106,7 @@ You need Node 24.22.3 or newer, on macOS or Linux.
    website. It needs nothing but your model key. When it finishes, the run's **Report** tab has a due diligence report
    with a verdict and every claim cited. Then open the agent's **Learning** tab to see what it kept for next time.
 
-Rather have your coding agent do it? Tell it: `Read agentrun.ai/SKILL.md and set up AgentRun for me`.
+Rather have your coding agent do the local setup? Tell it: `Read agentrun.ai/SKILL.md and set up AgentRun locally for me`.
 
 <details>
 <summary>Docker, sandboxes and running it on a server</summary>
@@ -103,7 +115,7 @@ If Docker is running on your machine, new agents get a Docker sandbox with a she
 which takes a few minutes, and the console says when it's ready. Without Docker, agents still read and write files,
 but get no shell.
 
-Want your own server with a URL? [Deploy it to Render](#deploy-it) in one click.
+Want your own server with a URL? [Self-host on Render](#deploy-it).
 
 </details>
 
@@ -431,7 +443,10 @@ The Python client is `pip install parcha-agentrun`, with the same methods
 
 ## Deploy it
 
-**Render, in one click.**
+For a hosted workspace, [use AgentRun Cloud](docs/getting-started.md#agentrun-cloud). The options below deploy the
+open-source platform on infrastructure you manage.
+
+**Self-host on Render.**
 
 <a href="https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun"><img alt="Deploy to Render" src="docs/assets/readme/pill-render.png" height="44"></a>
 
@@ -486,6 +501,7 @@ nothing a run learns can keep a secret it was handed. [SECURITY.md](SECURITY.md)
 
 - [AgentRun Server](packages/serve/README.md): the API, models, tools, MCP servers, triggers, spend caps, learning and
   safety, in full
+- [Get started](docs/getting-started.md): AgentRun Cloud, local setup or self-hosting
 - [Quickstart on agentrun.ai](https://agentrun.ai/docs/quickstart) and the [docs](https://agentrun.ai/docs)
 - [The CLI's skill](packages/agentrun/skills/agentrun-cli/SKILL.md) and [every command](packages/agentrun/skills/agentrun-cli/references/commands.md)
 - [Deploying](deploy/README.md), [computers](packages/computer/README.md), [templates](packages/serve/templates/README.md)
