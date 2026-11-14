@@ -73,3 +73,20 @@ test("a monid grant saved with no monid key is refused: it cannot be pinned", as
   assert.equal(saved.status, 422, JSON.stringify(saved.body));
   assert.match(JSON.stringify(saved.body), /no monid key here to read it with: save the monid key in Settings → Tool keys first/);
 });
+
+test("an endpoint whose input the agent's harness refuses is refused at the save, at the grant that names it, in words; another harness takes it", async (t) => {
+  withEnv(t, { MONID_API_KEY: KEY });
+  const { api, store } = await serve(t, { fauxMonid: FAUX_MONID });
+  for (const grant of ["monid:tagger/tag", "monid:tagger/*"]) {
+    const saved = await api("POST", "/agents", agent("tagger-codex", { harness: "codex", tools: ["monid:faux/person/enrich", grant] }));
+    assert.equal(saved.status, 422, JSON.stringify(saved.body));
+    const [issue, ...more] = saved.body.error.fields;
+    assert.deepEqual(more, [], "the one endpoint, once");
+    assert.equal(issue.field, "definition.tools[1]", JSON.stringify(issue));
+    assert.match(issue.message, /^The monid endpoint monid:tagger\/tag cannot be offered on codex: \/properties\/body\/patternProperties: patternProperties is not supported by Codex/, issue.message);
+  }
+  assert.equal((await api("GET", "/agents/tagger-codex")).status, 404, "nothing saved");
+  const pi = await api("POST", "/agents", agent("tagger-pi", { tools: ["monid:tagger/*"] }));
+  assert.equal(pi.status, 201, JSON.stringify(pi.body));
+  assert.deepEqual(Object.keys(await pinOf(store, "tagger-pi")), ["monid:tagger/tag"]);
+});

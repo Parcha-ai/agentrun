@@ -35,7 +35,11 @@ export const LISTING = [
   { provider: "apollo", endpoint: "/news_articles/search", price: { type: "PER_RESULT", amount: { value: 0.001, currency: "USD" } } },
   // Priced by usage, so a call is held at the usage ceiling ($1) under a cap; it charges $0.004.
   { provider: "faux", endpoint: "/person/search", price: { type: "PER_RESULT", amount: { value: 0.001, currency: "USD" } } },
+  // Its body's schema holds patternProperties, which Codex refuses (TAGGED_INPUT).
+  { provider: "tagger", endpoint: "/tag", price: PRICE },
 ];
+/** tagger /tag's input: a body of tags by any name, as patternProperties (a shape Codex refuses, schema.ts). */
+const TAGGED_INPUT = { body: { type: "object", patternProperties: { "^[a-z]+$": { type: "string" } } } };
 const PAGE = 2;
 
 export default async function fakeMonid(url, init = {}) {
@@ -68,7 +72,7 @@ export default async function fakeMonid(url, init = {}) {
   if (path === "/v1/inspect") {
     const listed = LISTING.find((one) => one.provider === body.provider && one.endpoint === body.endpoint);
     if (!listed) return json(404, { code: 404, message: `Endpoint '${body.endpoint}' not found for provider '${body.provider}'` });
-    return json(200, { id: "insp-1", provider: body.provider, endpoint: body.endpoint, description: `${body.provider} ${body.endpoint}: enrich a person.`, input: { body: { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object", required: ["name"], properties: { name: { type: "string" } } } }, price: listed.price, tags: ["verified"] });
+    return json(200, { id: "insp-1", provider: body.provider, endpoint: body.endpoint, description: `${body.provider} ${body.endpoint}: enrich a person.`, input: body.provider === "tagger" ? TAGGED_INPUT : { body: { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object", required: ["name"], properties: { name: { type: "string" } } } }, price: listed.price, tags: ["verified"] });
   }
   const run = /^\/v1\/runs\/([^/]+)(\/stop)?$/.exec(path);
   if (run) {

@@ -110,3 +110,6 @@ export const mcpGrantNameProblem = (server: string, tool: string): string | unde
 /** Why a harness's own MCP client drops or retypes `tool` of `server` (its facts' schemaProblems, `dropped` the first):
  *  the words a save's blocker and a saved server's read both say. */
 export const mcpDroppedWords = (server: string, tool: string, harness: string, dropped: string): string => `The MCP server ${server}'s tool ${tool} cannot be offered on ${harness}: ${dropped.replace(/^mcp__\S+: /, "")}.`;
+/** Why the harness drops or retypes the pinned monid endpoint `tool`'s input (its facts' schemaProblems, `dropped` the
+ *  first, under the endpoint's wire name): the words a save refuses its grant with. */
+export const monidDroppedWords = (tool: string, harness: string, dropped: string): string => `The monid endpoint ${tool} cannot be offered on ${harness}: ${dropped.replace(/^monid__\S+: /, "")}. Grant its provider's other endpoints by name, or pick another harness.`;

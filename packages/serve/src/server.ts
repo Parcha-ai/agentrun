@@ -123,7 +123,8 @@ import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
-import { isMcpWildcard, mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
+import { isMcpWildcard, mcpNameOf as mcpToolOf, mcpToolName, monidDroppedWords, monidNameOf } from "./tool-names.js";
+import { wireName } from "./catalog.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
 import { deleteTemplate, importTemplate, loadImported, type TemplateImportDeps } from "./template-import.js";
@@ -1885,7 +1886,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // The key as the server reads it (env: what it was started with, its handed secrets and its saved keys).
       const pinned = await pinMonid(body.tools ?? [], { key: env[MONID_KEY_ENV]?.trim(), fetch: send ?? (async () => { throw new Error("no fake of monid's API under faux"); }), signal: stopping.signal });
       if (pinned && "refused" in pinned) throw invalid(pinned.refused.map(({ tool, message }) => ({ field: (body.tools ?? []).includes(tool) ? `definition.tools[${body.tools.indexOf(tool)}]` : "definition.tools", reason: "not_an_option", message })));
-      if (pinned) (revision.body as AgenticBody).monidPin = pinned.pin;
+      if (pinned) {
+        // Each pinned endpoint's input held to the harness's own measured refusals, as an MCP grant is (runnable.ts
+        // mcpGrant): one it would drop or retype refuses the save at the grant that named it, never every run.
+        const harness = body.harness ?? DEFAULT_HARNESS;
+        const problems = harnessOf(env, harness)?.facts?.schemaProblems;
+        const tools = body.tools ?? [];
+        const grantOf = (tool: string) => (tools.includes(tool) ? tools.indexOf(tool) : tools.indexOf(`monid:${monidNameOf(tool)?.provider}/*`));
+        const dropped = problems ? Object.entries(pinned.pin).flatMap(([tool, { input }]) => problems(wireName(tool), input).slice(0, 1).map((first) => ({ tool, first }))) : [];
+        if (dropped.length) throw invalid(dropped.map(({ tool, first }) => ({ field: `definition.tools[${grantOf(tool)}]`, reason: "not_an_option", message: monidDroppedWords(tool, harness, first) })));
+        (revision.body as AgenticBody).monidPin = pinned.pin;
+      }
     }
     return blockers.map(issueOf);
   }
