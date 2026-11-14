@@ -67,6 +67,17 @@ test("an endpoint's input keeps its local references: each part's $ref rebased t
   };
   const pinned = await pinMonid([ENRICH], { key: KEY, fetch: withRefs });
   assert.deepEqual(pinned.pin[ENRICH].input.properties.body, { $defs: { Person: person }, type: "object", properties: { who: { $ref: "#/properties/body/$defs/Person" }, nested: { $ref: "#/properties/body" }, named: { $ref: "#person" }, remote: { $ref: "https://example.test/s.json#/x" } } });
+  // A schema with its own $id is a resource of its own: its local references resolve inside it, and stay as they are.
+  const own = { $id: "https://example.test/body", $defs: { Person: person }, type: "object", properties: { who: { $ref: "#/$defs/Person" } } };
+  const inner = { type: "object", properties: { card: { $id: "https://example.test/card", $defs: { Person: person }, $ref: "#/$defs/Person" }, who: { $ref: "#/$defs/Person" } }, $defs: { Person: person } };
+  for (const [given, expected] of [[own, own], [inner, { ...inner, properties: { ...inner.properties, who: { $ref: "#/properties/body/$defs/Person" } } }]]) {
+    const named = async (url, init) => {
+      const res = await fakeMonid(url, init);
+      if (new URL(url).pathname !== "/v1/inspect") return res;
+      return new Response(JSON.stringify({ ...(await res.json()), input: { body: given } }), { status: 200 });
+    };
+    assert.deepEqual((await pinMonid([ENRICH], { key: KEY, fetch: named })).pin[ENRICH].input.properties.body, expected);
+  }
 });
 
 test("a run: a sync provider's output with its cost in dollars; an async one read until COMPLETED; each sent once", async () => {

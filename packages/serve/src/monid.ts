@@ -221,10 +221,11 @@ export const heldOf = (price: unknown): { usd: number; usage?: true } => {
 };
 
 /** `schema` moved from a document's root to the JSON pointer `at`: each local reference to a place in it (`#`, `#/…`)
- *  rebased onto `at`, so `#/$defs/Person` reads `#/properties/body/$defs/Person`. */
+ *  rebased onto `at`, so `#/$defs/Person` reads `#/properties/body/$defs/Person`. A schema with its own `$id` is a
+ *  resource of its own, whose local references resolve inside it: it and all under it are left as they are. */
 const rebased = (schema: unknown, at: string): unknown => {
   if (Array.isArray(schema)) return schema.map((item) => rebased(item, at));
-  if (!isObject(schema)) return schema;
+  if (!isObject(schema) || typeof schema.$id === "string") return schema;
   return Object.fromEntries(Object.entries(schema).map(([key, value]) => [key, key === "$ref" && typeof value === "string" && (value === "#" || value.startsWith("#/")) ? `#${at}${value.slice(1)}` : rebased(value, at)]));
 };
 
