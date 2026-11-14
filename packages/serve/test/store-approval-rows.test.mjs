@@ -48,12 +48,14 @@ async function runWith(t, calls, { ended = true } = {}) {
 }
 
 const fetchCall = (id, answer, result) => ({ id, tool: "web_fetch", args: { url: "https://example.test" }, ...(answer ? { answer, result } : {}) });
-/** The rows of call `id`, then the next two rows: what a person reads for that call. */
+/** The rows of call `id`, then its approval row and the row after its own rows: what a person reads for that call. */
 function readFor(rows, id) {
-  // The call's own rows: its call's and its result's (the approval row carries the call's id too, as runs.ts's does).
+  // The call's own rows: its call's and its result's (the approval row carries the call's id too, as runs.ts's does, and
+  // sits between them).
   const own = rows.filter((row) => row.tool_use_id === id && (row.kind === "tool_use" || row.kind === "tool_result"));
+  const asked = rows.find((row) => row.tool_use_id === id && row.kind === "tool_approval_requested");
   const last = rows.indexOf(own.at(-1));
-  return { own: own.map((row) => [row.kind, row.summary]), after: rows.slice(last + 1, last + 3) };
+  return { own: own.map((row) => [row.kind, row.summary]), after: [asked, rows[last + 1]] };
 }
 
 test("an allowed call reads what it did, then your approval, then that it ran; a note sent with the allow is shown nowhere", async (t) => {
@@ -196,10 +198,10 @@ test("a person's message that declined a waiting call is their own row, their wo
   assert.ok(ask < rows.indexOf(persons[1]) && rows.indexOf(persons[1]) < outcome, "between the approval row and the outcome");
 });
 
-test("served across reads, a call's approval row moves below the call's result once it ran: the call, its result, your approval, the outcome", () => {
+test("served across reads, a call's approval row stays above the call's result once it ran: the call, your approval, its result, the outcome", () => {
   // The Timeline route keeps the seq each row id was first served with (rows.ts RowLog): the approval row is served while
-  // the call waits, before its result row exists. Once the result is in, the approval and outcome rows must still read
-  // after it, as the person reads a call: what it was, that it waited, what came of it.
+  // the call waits, before its result row exists. Once the result is in, the approval row still reads above it and the
+  // outcome row below it, as the person reads a call: what it was, that it waited, what it gave, what came of it.
   const use = { id: "1:a", kind: "tool_use", tool_use_id: "c1", tool_name: "web_fetch", summary: "Fetching", text: "" };
   const result = { id: "1:b", kind: "tool_result", tool_use_id: "c1", tool_name: "web_fetch", summary: "Fetched: ok", text: "fetched", tool_status: "success" };
   const answer = { id: "1:c", kind: "final_answer", summary: "done", text: "done" };
@@ -217,7 +219,7 @@ test("served across reads, a call's approval row moves below the call's result o
     const read = log.rows().map((row) => `${row.kind}: ${row.summary.split(":")[0]}`);
     // An allowed call that ran reads as any call (what it did, its result); a declined one stays held.
     const own = decision === "allow" ? ["tool_use: Fetching", "tool_result: Fetched"] : ["tool_use: Held for your approval", "tool_result: Held for your approval"];
-    assert.deepEqual(read, [...own, "tool_approval_requested: Asked your approval", `phase: AgentRun`, "final_answer: done"], `${decision}: ${JSON.stringify(read)}`);
+    assert.deepEqual(read, [own[0], "tool_approval_requested: Asked your approval", own[1], `phase: AgentRun`, "final_answer: done"], `${decision}: ${JSON.stringify(read)}`);
   }
 });
 

@@ -126,17 +126,20 @@ function ownRowsSay(rows, callId, summary, at, { result = true } = {}) {
   assert.deepEqual(own, own.map(([kind]) => [kind, summary, null]), `${at}: the call's own rows`);
 }
 /** A parked call as a person reads it, in seq order (a client folds a call's result into its call's step, at the call's
- *  place): the call's own rows, then its approval row, then (once answered) the resume row. Nothing that says what came
- *  of it reads before the approval row: the call's rows say only that it was held, and the outcome is the resume row's. */
+ *  place): the call, then its approval row, then its result (once it has one), then (once answered) the resume row.
+ *  Nothing that says what came of it reads before the approval row: the call's rows say only that it was held, and the
+ *  outcome is the resume row's. */
 function readsInOrder(rows, callId, at, { answered = true } = {}) {
   const bySeq = [...rows].sort((a, b) => a.seq - b.seq);
   const own = bySeq.flatMap((r, i) => ((r.kind === "tool_use" || r.kind === "tool_result") && r.tool_use_id === callId ? [i] : []));
   const ask = bySeq.findIndex((r) => r.kind === "tool_approval_requested" && r.tool_use_id === callId);
   const shown = bySeq.map((r) => `${r.kind}: ${r.summary}`);
-  assert.ok(own.length > 0 && ask > Math.max(...own), `${at}: the approval row follows the call's own rows: ${JSON.stringify(shown)}`);
+  const calls = own.filter((i) => bySeq[i].kind === "tool_use");
+  const results = own.filter((i) => bySeq[i].kind === "tool_result");
+  assert.ok(own.length > 0 && ask > Math.max(...calls) && ask < Math.min(...results), `${at}: the approval row follows the call and sits above its result: ${JSON.stringify(shown)}`);
   if (!answered) return;
-  const resume = bySeq.findIndex((r) => r.origin === "server" && /^AgentRun: (\S+ ran once you allowed it|You declined \S+|Your message declined \S+)/.test(r.summary ?? ""));
-  assert.ok(resume > ask, `${at}: the outcome (the resume row) follows the approval row: ${JSON.stringify(shown)}`);
+  const resume = bySeq.findIndex((r, i) => i > Math.max(ask, ...own) && r.origin === "server" && /^AgentRun: (\S+ ran once you allowed it|You declined \S+|Your message declined \S+)/.test(r.summary ?? ""));
+  assert.ok(resume > ask, `${at}: the outcome (the resume row) follows the approval row and the call's own rows: ${JSON.stringify(shown)}`);
   ownRowsRead(own.map((i) => bySeq[i]), bySeq[resume].summary, `${at}: ${JSON.stringify(shown)}`);
 }
 /** A parked call's own rows once answered: one that ran reads as any call (what it did, its result with its status), its
