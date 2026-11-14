@@ -71,7 +71,8 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   (how many times; the case passes when every run passes), `max_cost_usd` (each run's cap), and, for a package with
   `inputs`, `input` (the run's typed input, a mapping by field: `input: {company: Apple Inc., country: US}`). The run's
   input is the body as `content` (none when the body is empty) and those fields, checked against the package's input
-  schema as the server checks a run's, so a case its schema refuses fails before any run.
+  schema as the server checks a run's, so a case its schema refuses fails before any run. The model reads them as the
+  server writes them, under `Input:`; a body that holds its own `Input:` block is refused.
 - `case.yaml`, optional: `parameters` (the apply's parameters), `grants` (the gate names the apply allows, always a
   list), `mcp` (a server's name to a fixture file in the case that fakes it), `learning` (a folder of notes in the case
   the agent starts with: `MEMORY.md` and its notes).
