@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import { McpServersPage } from "./McpServersPage";
+import { freeName, McpServersPage } from "./McpServersPage";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
 import { type McpServer, PREVIEW_SCOPE_NOTE } from "@/lib/mcp";
@@ -760,6 +760,17 @@ describe("Settings → MCP servers, the Composio preset", () => {
     const u = await open(server([older]).v2, { add: { name: "hubspot" } });
     expect(u.input("mcp-name").value).toBe("hubspot-2");
     expect(u.input("mcp-toolkit").value).toBe("hubspot");
+  });
+
+  it("a free name stays within a server name's 32 characters: the toolkit's name is cut to leave room for its number", () => {
+    const long = "a".repeat(32);
+    expect(freeName(long, [{ name: long }])).toBe(`${"a".repeat(30)}-2`);
+    expect(freeName(long, [{ name: long }, { name: `${"a".repeat(30)}-2` }])).toBe(`${"a".repeat(30)}-3`);
+    // A cut that would end on a dash drops it, so the name keeps one dash before its number.
+    expect(freeName(`${"a".repeat(29)}-bc`, [{ name: `${"a".repeat(29)}-bc` }])).toBe(`${"a".repeat(29)}-2`);
+    // Past -9 the number takes three characters, and the cut takes one more.
+    const taken = [long, ...Array.from({ length: 8 }, (_, i) => `${"a".repeat(30)}-${i + 2}`)].map((name) => ({ name }));
+    expect(freeName(long, taken)).toBe(`${"a".repeat(29)}-10`);
   });
 
   it("opens filled for a template's Composio need: its name and toolkit, and its actions ticked once they load", async () => {
