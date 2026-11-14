@@ -13,13 +13,13 @@ import { Duplex } from "node:stream";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
-import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
+import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
 import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh.js";
-import { dateOf, driftOf, isWhole, show, sizeOf } from "./hosted/values.js";
+import { dateOf, isWhole, show } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
-import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";
-import { type ComputerErrorCode, ok, type Result } from "./result.js";
+import type { ComputerSpec, Refusal } from "./provider.js";
+import type { ComputerErrorCode } from "./result.js";
 
 /** The ssh2 slice types, as this entry has always exported them (they live in hosted/ssh.ts). */
 export type { Ssh2Channel, Ssh2Client, Ssh2ConnectConfig, Ssh2Module, Ssh2Readable } from "./hosted/ssh.js";
@@ -184,61 +184,26 @@ function codeOf(error: unknown): ComputerErrorCode {
 	return "vendor";
 }
 
-/** An instance's network as Agent37 reads it back, with its public ports: "allow-all" open, "deny-all" none. */
-function networkOf(instance: Agent37Instance): NetworkPolicy {
-	const ports = Array.isArray(instance.public_ports) ? instance.public_ports : [];
-	if (ports.length > 0) {
-		const numbers = ports.map((port) => (port as { port?: unknown } | null)?.port).filter((port) => typeof port === "number");
-		return { other: `public ports (${numbers.join(", ") || ports.length}) let anyone in, which this provider never makes` };
-	}
-	const { network } = instance;
-	if (network === "deny-all") return "none";
-	if (network === "allow-all") return "open";
-	const allow = (network as { allow?: unknown } | null)?.allow;
-	if (Array.isArray(allow)) return { other: `an allow list (${allow.length} entries), which this provider never makes` };
-	return { other: `Agent37 read back the network ${show(network)}` };
-}
-
-/** Agent37's statuses (docs: instances/object, Statuses) as the adapter's states. */
+/** Agent37's statuses (docs: instances/object, Statuses) as the adapter's states; failed, deleting and deleted are gone. */
 function stateOf(status: string): Machine["state"] | undefined {
 	if (status === "running") return "running";
 	if (["provisioning", "starting", "waking", "restarting", "updating"].includes(status)) return "starting";
 	if (["stopping", "stopped", "sleeping"].includes(status)) return "stopped";
-	if (status === "failed") return "failed";
-	if (status === "deleting" || status === "deleted") return "going";
+	if (["failed", "deleting", "deleted"].includes(status)) return "gone";
 	return undefined;
 }
 
-/** What one provider declared of its instances: its type and region, held at create and attach. */
-interface Declared {
-	type: Agent37Type;
-	region: Agent37Region;
-}
-
-/** An instance as the adapter reads a machine: its state, labels, network, template, size, and its create's drift. */
-function machineOf(instance: Agent37Instance, declared: Declared): Machine {
-	const labels = { ...(instance.metadata ?? {}) };
-	const { found: drift, mismatch } = driftOf();
-	const asked = labels[IMAGE_LABEL];
-	if (asked !== undefined && instance.template !== asked) mismatch("template", asked, instance.template);
-	if (instance.type !== declared.type) mismatch("type", declared.type, instance.type);
-	if (instance.region !== declared.region) mismatch("region", declared.region, instance.region);
-	// A sleeping VM wakes cold, its daemon gone (docs: vm-instances, Auto-sleep): auto-sleep stays off.
-	if (instance.auto_sleep !== false) mismatch("auto_sleep", false, instance.auto_sleep);
+/** An instance as the adapter reads a machine: its state (a status it does not know is gone, in words), labels, start. */
+function machineOf(instance: Agent37Instance): Machine {
 	const state = stateOf(instance.status);
 	const why = instance.status_reason?.message ?? (state === undefined ? `Agent37 reads the status ${show(instance.status)}, which this provider does not know` : undefined);
 	const created = dateOf(instance.created, "s");
-	const size = sizeOf(instance.resources?.cpu, instance.resources?.memory);
 	return {
 		id: instance.id,
-		labels,
-		state: state ?? "failed",
-		network: networkOf(instance),
-		image: { resolved: instance.image_digest ?? instance.template },
+		labels: { ...(instance.metadata ?? {}) },
+		state: state ?? "gone",
 		...(created ? { createdAt: created } : {}),
-		...(size ? { size } : {}),
-		...(drift.length > 0 ? { drift } : {}),
-		...(why === undefined ? {} : { why }),
+		...(why === undefined || (state !== undefined && state !== "gone") ? {} : { why }),
 	};
 }
 
@@ -321,7 +286,7 @@ class Agent37Host implements MachineHost {
 	readonly #client: Rest;
 	readonly #WebSocket: WebSocketClass;
 	readonly #proxyDomain: string;
-	readonly #declared: Declared;
+	readonly #declared: { type: Agent37Type; region: Agent37Region };
 
 	constructor(options: { apiKey: string; sshKey: string; ssh2: Ssh2Module; fetch: typeof fetch; WebSocket: WebSocketClass; apiUrl: string; proxyDomain: string; type: Agent37Type; region: Agent37Region }) {
 		this.#apiKey = options.apiKey;
@@ -351,10 +316,8 @@ class Agent37Host implements MachineHost {
 			vendorAgentPorts: [AGENT37_SSH_PORT, AGENT37_TTYD_PORT],
 			// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
 			windowManager: true,
-			networkReadBack: true,
 			network: [...AGENT37.network],
 			mounts: [...MOUNT],
-			release: ["delete"],
 			specFields: ["cpus", "memoryMb"],
 			labelRules: { maxBytes: METADATA_MAX_BYTES, measure: "json" },
 			runtime: () => runtime,
@@ -375,8 +338,8 @@ class Agent37Host implements MachineHost {
 	}
 
 	/** argv as root over SSH (hosted/ssh.ts): one connection per instance through its tunnel, shared by its execs. */
-	exec(id: string, argv: readonly string[], opts: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
-		return this.#ssh.exec(id, argv, opts, ctx);
+	exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
+		return this.#ssh.exec(id, argv, ctx);
 	}
 
 	/** One REST call, bounded by ctx; a failure throws Agent37Error in Agent37's words. */
@@ -414,7 +377,7 @@ class Agent37Host implements MachineHost {
 	 * instance's name, the labels as metadata, deny-all (or allow-all for an Archil computer's root), auto-sleep off and
 	 * no public port. It answers once the instance runs (docs: instances/create, Defaults).
 	 */
-	async create(req: MachineRequest, ctx: HostCall): Promise<Result<{ id: string }>> {
+	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		const shape = req.cpus !== undefined || req.memoryMb !== undefined ? shapeOf(req.cpus, req.memoryMb) : undefined;
 		const made = await this.#rest<Agent37Instance>(
 			"POST",
@@ -433,33 +396,33 @@ class Agent37Host implements MachineHost {
 			ctx,
 		);
 		if (typeof made?.id !== "string" || !INSTANCE_ID.test(made.id)) throw new Agent37Error("vendor", `POST /v1/instances answered no instance id: ${show(made?.id)}`);
-		return ok({ id: made.id });
+		return { id: made.id };
 	}
 
 	/** GET /v1/instances/{id}; 404 is not_found, which the adapter reads as none (docs: instances/get). */
-	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
-		return ok(machineOf(await this.#rest<Agent37Instance>("GET", this.#path(id), undefined, ctx), this.#declared));
+	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
+		return machineOf(await this.#rest<Agent37Instance>("GET", this.#path(id), undefined, ctx));
 	}
 
 	/**
 	 * GET /v1/instances: the whole workspace in one answer, newest first, each the full instance object (docs:
 	 * instances/list). Agent37 filters nothing: the adapter matches the labels. An answer that says it has more is refused.
 	 */
-	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
+	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
 		void labels;
 		const listed = await this.#rest<{ data?: unknown; has_more?: unknown; next_cursor?: unknown }>("GET", "/v1/instances", undefined, ctx);
 		if (!Array.isArray(listed.data)) throw new Agent37Error("vendor", "GET /v1/instances answered no data list");
 		if (listed.has_more === true || (listed.next_cursor !== undefined && listed.next_cursor !== null)) {
 			throw new Agent37Error("vendor", "GET /v1/instances answered a page with more after it, which Agent37 documents none of: this provider would miss machines");
 		}
-		return ok((listed.data as Agent37Instance[]).filter((instance) => typeof instance?.id === "string").map((instance) => machineOf(instance, this.#declared)));
+		return (listed.data as Agent37Instance[]).filter((instance) => typeof instance?.id === "string").map(machineOf);
 	}
 
 	/**
 	 * DELETE /v1/instances/{id}, never signalled; a repeat answers 404, which the adapter reads as done (docs:
 	 * instances/delete). Once taken, this host's SSH connections to the instance are ended, channels and all.
 	 */
-	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
+	async delete(id: string, ctx: HostCall): Promise<void> {
 		try {
 			await this.#rest("DELETE", this.#path(id), undefined, { timeoutMs: ctx.timeoutMs });
 		} catch (error) {
@@ -468,15 +431,13 @@ class Agent37Host implements MachineHost {
 			throw error;
 		}
 		this.#ssh.closeAll(id);
-		return ok(undefined);
 	}
 
 	/** The janitor's deadline label: GET, then PATCH of the whole metadata, which replaces the stored object (docs: instances/edit). */
-	async setLabels(id: string, labels: Record<string, string>, ctx: HostCall): Promise<Result<void>> {
+	async setLabels(id: string, labels: Record<string, string>, ctx: HostCall): Promise<void> {
 		const path = this.#path(id);
 		const instance = await this.#rest<Agent37Instance>("GET", path, undefined, ctx);
 		await this.#rest("PATCH", path, { metadata: { ...(instance.metadata ?? {}), ...labels } }, ctx);
-		return ok(undefined);
 	}
 }
 
