@@ -23,10 +23,15 @@ final class AXChanges: Changes, @unchecked Sendable {
 		kAXWindowResizedNotification, kAXFocusedWindowChangedNotification, kAXMainWindowChangedNotification,
 	]
 
+	/// An app's observer, and when its process started: a later process given the same pid is another app. No observer
+	/// for an app that took none: it settles on two looks.
+	struct Watch {
+		let observer: AXObserver?
+		let started: Double
+	}
+
 	private let lock = NSLock()
-	private var observers: [pid_t: AXObserver] = [:]
-	/// Apps whose observer could not be made or took no notification: they settle on two looks.
-	private var refused: Set<pid_t> = []
+	private var watches: [pid_t: Watch] = [:]
 	private var last: [pid_t: Double] = [:]
 	/// Notifications by name since the last act's trace took them (told()).
 	private var counts: [String: Int] = [:]
@@ -53,15 +58,16 @@ final class AXChanges: Changes, @unchecked Sendable {
 	func watch(_ pid: Int32) -> Bool {
 		lock.lock()
 		defer { lock.unlock() }
-		if observers[pid] != nil { return true }
-		if refused.contains(pid) { return false }
-		forgetQuit()
+		let started = Self.started(pid)
+		if let known = watches[pid], known.started == started { return known.observer != nil }
+		forgetGone()
+		guard let started else { return false }
 		var made: AXObserver?
 		let callback: AXObserverCallback = { _, _, notification, refcon in
 			AXChanges.shared.record(pid_t(Int(bitPattern: refcon)), notification as String)
 		}
 		guard AXObserverCreate(pid, callback, &made) == .success, let observer = made else {
-			refused.insert(pid)
+			watches[pid] = Watch(observer: nil, started: started)
 			log("accessibility notifications: no observer for pid \(pid): a step there settles on two looks")
 			return false
 		}
@@ -81,13 +87,14 @@ final class AXChanges: Changes, @unchecked Sendable {
 		}
 		guard taken > 0, !busy else {
 			for name in Self.notifications { _ = AXObserverRemoveNotification(observer, app, name as CFString) }
-			if !busy { refused.insert(pid) }
+			if !busy { watches[pid] = Watch(observer: nil, started: started) }
 			log("accessibility notifications: pid \(pid) \(busy ? "did not answer in time" : "took none of them"): a step there settles on two looks")
 			return false
 		}
 		CFRunLoopAddSource(runLoop, AXObserverGetRunLoopSource(observer), .defaultMode)
 		CFRunLoopWakeUp(runLoop)
-		observers[pid] = observer
+		watches[pid] = Watch(observer: observer, started: started)
+		last[pid] = nil
 		log("accessibility notifications: watching pid \(pid), \(taken) of \(Self.notifications.count)\(failed.isEmpty ? "" : "; refused \(failed.joined(separator: ", "))")")
 		return true
 	}
@@ -115,14 +122,23 @@ final class AXChanges: Changes, @unchecked Sendable {
 		return "\(taken.values.reduce(0, +)) changes told since the last act (\(names.joined(separator: ", ")))"
 	}
 
-	/// Drops the observers of apps that quit. Called under the lock.
-	private func forgetQuit() {
-		for (pid, observer) in observers where kill(pid, 0) != 0 && errno == ESRCH {
-			CFRunLoopRemoveSource(runLoop, AXObserverGetRunLoopSource(observer), .defaultMode)
-			observers[pid] = nil
+	/// Drops the watches of apps that quit, and of pids a later process now has. Called under the lock.
+	private func forgetGone() {
+		for (pid, watch) in watches where Self.started(pid) != watch.started {
+			if let observer = watch.observer { CFRunLoopRemoveSource(runLoop, AXObserverGetRunLoopSource(observer), .defaultMode) }
+			watches[pid] = nil
 			last[pid] = nil
 		}
-		refused = refused.filter { kill($0, 0) == 0 || errno != ESRCH }
+	}
+
+	/// When the pid's process started, in seconds since 1970; nil when no process has it.
+	static func started(_ pid: pid_t) -> Double? {
+		var info = kinfo_proc()
+		var size = MemoryLayout<kinfo_proc>.stride
+		var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+		guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return nil }
+		let start = info.kp_proc.p_un.__p_starttime
+		return Double(start.tv_sec) + Double(start.tv_usec) / 1_000_000
 	}
 }
 #endif

@@ -18,6 +18,9 @@ public struct Timing: Sendable {
 	public var settleMaxMs = Double(Limits.maxSettleMs)
 	/// How often an expect looks again.
 	public var expectPollMs: Double = 100
+	/// At an app that tells its changes, how long an expect waits for one before it reads the window anyway: an app may
+	/// change its window without telling it.
+	public var untoldMs: Double = 1000
 	/// How long after the act's first final view a set value must still hold to count as verified.
 	public var setHoldMs = Double(Limits.setHoldMs)
 	/// Told one line per act: each step's route and ms with the looks its settle took, the expect's ms, and the time a
@@ -424,6 +427,13 @@ public actor UIEngine {
 				if aim.closed || clock.now() >= until {
 					outcome = .unmet
 					break
+				}
+				// At an app that tells its changes, wait for one, then read the final view once the app went quiet: a
+				// read takes the app's own thread, and System Settings, read back to back, drew About 2.5 to 4 s after
+				// the click.
+				if try await awaitTold(waitsForWindow ? read.front : read.own, until: until) {
+					read = try await final(&aim)
+					continue
 				}
 				// Poll with quick looks until one holds, the window closes or the time is up; then read the final view
 				// again, so a look caught mid-transition never decides the act.
@@ -960,6 +970,18 @@ public actor UIEngine {
 			if !told(next.target.pid, since: at) || next.fingerprint == last?.fingerprint || clock.now() >= until { return next }
 			(pid, last, since) = (next.target.pid, next, at)
 		}
+	}
+
+	/// An expect's wait at an app that tells its changes: until the app told one after the read `view` began, `until`, or
+	/// untoldMs with none told. False, at once, for a view of an app that tells none, or no view (a window expect before
+	/// the window): then the expect polls with looks.
+	func awaitTold(_ view: View?, until: Double) async throws -> Bool {
+		guard let view, let at = view.at else { return false }
+		let enough = min(until, clock.now() + timing.untoldMs)
+		while !told(view.target.pid, since: at), clock.now() < enough {
+			try await sleep(min(timing.expectPollMs, enough - clock.now()))
+		}
+		return true
 	}
 
 	/// Waits until the app told no change for quietMs, counted from `since` at the earliest, or until `until`.

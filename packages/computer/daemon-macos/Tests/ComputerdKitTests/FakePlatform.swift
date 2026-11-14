@@ -74,8 +74,11 @@ final class FakeOS: @unchecked Sendable {
 	/// Watches begun, as the platform's Changes counts them.
 	var watched: Set<Int32> = []
 
+	/// A change made while this is set goes untold, as an app may make one.
+	var silent = false
+
 	func told() {
-		if tells { toldAt = now }
+		if tells && !silent { toldAt = now }
 	}
 
 	func with<T>(_ body: (FakeOS) throws -> T) rethrows -> T {
