@@ -38,6 +38,14 @@ type ReplyError = { code?: unknown; message?: unknown; data?: { kind?: unknown }
  */
 export const ANSWER_SLACK_MS = 5_000;
 
+/** The timeout errors a client gave itself, a call's bound passed with no answer: never one the daemon answered. */
+const UNANSWERED = new WeakSet<ComputerError>();
+
+/** Whether `error` is a timeout this client gave a call whose bound passed with no answer over the transport. */
+export function unanswered(error: ComputerError): boolean {
+	return UNANSWERED.has(error);
+}
+
 /** The bound of a call whose params carry their own timeoutMs, or undefined for a call with none. */
 function boundOf(params: unknown): { ms: number; own: number } | undefined {
 	const own = (params as { timeoutMs?: unknown } | null)?.timeoutMs;
@@ -124,7 +132,11 @@ export class DaemonClient implements ComputerClient {
 			signal?.addEventListener("abort", onAbort, { once: true });
 			if (bound !== undefined) {
 				const s = (ms: number) => `${ms / 1000} s`;
-				timer = setTimeout(() => giveUp(fail("timeout", `${method} had no answer within ${s(bound.ms)} (its own timeout of ${s(bound.own)}, and ${s(ANSWER_SLACK_MS)} for the answer to come)`)), bound.ms);
+				timer = setTimeout(() => {
+					const timedOut = fail("timeout", `${method} had no answer within ${s(bound.ms)} (its own timeout of ${s(bound.own)}, and ${s(ANSWER_SLACK_MS)} for the answer to come)`);
+					if (!timedOut.ok) UNANSWERED.add(timedOut.error);
+					giveUp(timedOut);
+				}, bound.ms);
 				// The stream holds the process while a call waits on it; the bound alone never does.
 				timer.unref?.();
 			}
