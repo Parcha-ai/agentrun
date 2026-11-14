@@ -1452,7 +1452,9 @@ the person's allow, or at once when it needs no ask), the call is first sent wit
 and uncharged, naming its estimate; that estimate is the hold, and the call is sent with it as `maxCost`. That read is
 itself a paid step of the call, marked at $0 on the run's ledger before it is sent (a crash while monid holds it leaves
 its charge unknown, as any cut call's) and given back when monid refused it unrun; a read monid ran (an estimate of $0,
-which `maxCost` 0 lets through) is the call, settled at its charge. Its charge can pass the estimate: then it is booked
+which `maxCost` 0 lets through) is the call, settled at its charge. Under a cap, a read that ends with its charge unknown
+(no answer, or `FAILED` with no cost) stops the run at once, "monid may have charged for <name> and did not say how
+much, so this run's cap can't be kept; the run stopped": its $0 hold bounds nothing. Its charge can pass the estimate: then it is booked
 as charged, and the run stops at once, failed, in the words "monid charged $X, more than the $Y held; the run stopped".
 A run's spend cap is a hard stop for everything but that one charge. A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
