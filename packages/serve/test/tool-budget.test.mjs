@@ -18,7 +18,7 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { suiteTools, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+const { fillerTools, suiteTools, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 const { TOOL_BUDGET_TEXT } = await import("../dist/tool-budget.js");
 const { CODEMODE, TOOLS_CALL } = await import("../dist/runner/meta-tools.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
@@ -53,12 +53,12 @@ const ended = (server) =>
   }, "the run ended", 30_000);
 
 /** One pi run of `script` through the adapter loop under `toolCalls`: the provider's requests and the tools' counts. */
-async function budgetedRun(t, script, toolCalls) {
+async function budgetedRun(t, script, toolCalls, extraTools = {}) {
   const { server, runners: [store] } = await stores({ runners: 1 });
   await queue(server, "run-1");
   const { tools, ran } = suiteTools();
   const requests = [];
-  const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
+  const spec = piAdapterSpec({ script, tools: { ...tools, ...extraTools }, hooks: quiet }, { requests });
   const runner = startRunner({ store, createLoop: createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), gate: gateOf(toolCalls) })), name: "runner-a", ...TIMING });
   t.after(() => runner.close());
   const row = await ended(server);
@@ -111,7 +111,7 @@ test("codemode under a budget of 2: a script of five reads runs one (the codemod
 
 test("tools_call under a budget of 3: the first call and its read are 2, the second tools_call is the 3rd and its read is refused unsent in the budget's words", async (t) => {
   const call = { call: TOOLS_CALL, args: { name: "read", args: {} } };
-  const w = await budgetedRun(t, [call, call, { say: "done" }], 3);
+  const w = await budgetedRun(t, [call, call, { say: "done" }], 3, fillerTools());
   assert.equal(w.ran.read, 1, "one nested read ran");
   const results = resultsIn(w.requests);
   assert.deepEqual(results.map((result) => result.text), ["read", TOOL_BUDGET_TEXT], JSON.stringify(results));

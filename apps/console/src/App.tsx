@@ -627,7 +627,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={() => setRetry((n) => n + 1)}>Try again</Button>}><p className="font-mono">The agents could not be read: {startError}</p></Banner>
         : where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
-            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} onSaved={readCaps} onOpen={readCaps} />
+            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!caps?.features?.mcp_client} onSaved={readCaps} onOpen={readCaps} />
               : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
               : where.settings === "computers" ? <ComputersPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />

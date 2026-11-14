@@ -284,11 +284,66 @@ func TestOnTheFakeWithDamageAnAnimatedScreenGivesFramesAtFifteenASecond(t *testi
 		}
 	}
 	took := time.Since(start)
-	if took < 9*desktop.FrameGapForTest-20*time.Millisecond {
+	// Frame 0 came after its read; frames 1 to 9 were read at least a gap apart: 8 gaps at the least.
+	if took < 8*desktop.FrameGapForTest {
 		t.Fatalf("9 frames in %v: faster than one each %v", took, desktop.FrameGapForTest)
 	}
 	if took > 9*120*time.Millisecond {
 		t.Fatalf("9 frames of an animated screen in %v: want about %v, 15 a second", took, 9*desktop.FrameGapForTest)
+	}
+}
+
+// The cap counts from the start of a frame's read: a read and an encode that take part of the gap do not make it longer.
+// On a VM the encode of a 1280x800 JPEG takes 20 to 30 ms; counted after it, 15 a second was 10 to 11.
+func TestOnTheFakeWithDamageASlowReadDoesNotLengthenTheGap(t *testing.T) {
+	t.Setenv("XAUTHORITY", "")
+	shade := &atomic.Int32{}
+	shade.Store(0x80)
+	f, name := x11fake.Listen(t, func(f *x11fake.Server) {
+		f.Damage = true
+		f.Image = func(x, y, w, h int) []byte {
+			out := make([]byte, w*h*4)
+			v := byte(shade.Load())
+			for i := range out {
+				out[i] = v
+			}
+			return out
+		}
+		f.Pointer = [2]int{12, 34}
+		f.Hold = func(r x11fake.Request) {
+			if r.Opcode == 73 { // GetImage: each read takes 30 ms
+				time.Sleep(30 * time.Millisecond)
+			}
+		}
+	})
+	d := desktop.New(name)
+	t.Cleanup(d.Close)
+	c := serve(t, d)
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Millisecond):
+				shade.Add(1)
+				f.Damaged(0, 0, 8, 8)
+			}
+		}
+	}()
+	var r watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &r)
+	start := time.Now()
+	for range 9 {
+		after := r.Seq
+		c.ok("screen.watch", map[string]any{"after": after}, &r)
+		if !r.Changed || r.Seq != after+1 {
+			t.Fatalf("an animated screen: %+v; want frame %d", r, after+1)
+		}
+	}
+	if took := time.Since(start); took > 9*desktop.FrameGapForTest+120*time.Millisecond {
+		t.Fatalf("9 frames with a 30 ms read in %v: want about %v, the read inside each gap", took, 9*desktop.FrameGapForTest)
 	}
 }
 
@@ -313,6 +368,25 @@ func TestOnTheFakeWithDamageAPointerMoveIsAFrameWithTheCursorWhereItWent(t *test
 	}
 	if got := reads(f); len(got) != 1 {
 		t.Fatalf("reads %v: a pointer move alone reads no pixels", got)
+	}
+}
+
+// A pointer that moves all the time reads no pixels, but each frame is a whole JPEG: its frames keep the cap too.
+func TestOnTheFakeWithDamageAPointerMovingAllTheTimeGivesFramesAtTheCap(t *testing.T) {
+	c, _, f := damaged(t)
+	var r watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &r)
+	start := time.Now()
+	for i := range 9 {
+		f.MovePointer(20+i, 40)
+		after := r.Seq
+		c.ok("screen.watch", map[string]any{"after": after}, &r)
+		if !r.Changed || r.Seq != after+1 {
+			t.Fatalf("a moved pointer: %+v; want frame %d", r, after+1)
+		}
+	}
+	if took := time.Since(start); took < 8*desktop.FrameGapForTest {
+		t.Fatalf("9 pointer frames in %v: faster than one each %v", took, desktop.FrameGapForTest)
 	}
 }
 

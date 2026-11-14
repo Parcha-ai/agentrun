@@ -1,16 +1,15 @@
 // The smallest cap a pi run on Sonnet can work under, in `strict` cap mode and in `expected` (the default), as serve's
 // README states them, held to what the cap does. The run is
-// a desktop agent's through the dispatch's own spec (its system prompt and tools: read, write, edit, the desktop's, and
-// the host's tools_search, tools_call and codemode), five model requests: four screenshots, then the answer. Each step is
-// admitted only when what the run spent plus the step's least fits the cap; a step's least is its whole input bound at the
-// cache-write price ($3.75 a million) and a 1,024-token answer ($15 a million). The answers' usage is a desktop run's on
-// Sonnet (3,785 tokens written to the cache at first, then 1,300 more each step, 40 out), so the run spends about $0.04 in
-// all. So:
-//  - through a gateway (OpenRouter: the bound is the bytes, about 12,900 tokens at first, about 7,400 of them the
-//    computer's tools' definitions and 2,000 the host's three), the first request needs $0.064 and the whole run $0.125:
-//    $0.13, documented, takes it to its answer, and a cent under has the wrap-up refuse its last screenshot;
-//  - straight to Anthropic, each bound is Anthropic's count (4,460 tokens at first with the tool prompt), so the first
-//    request needs $0.032 and the whole run $0.087: $0.09, documented, takes it to its answer, $0.08 parks it.
+// a desktop agent's through the dispatch's own spec (its system prompt and tools: read, write, edit and the desktop's),
+// five model requests: four screenshots, then the answer. Each step is admitted only when what the run spent plus the
+// step's least fits the cap; a step's least is its whole input bound at the cache-write price ($3.75 a million) and a
+// 1,024-token answer ($15 a million). The answers' usage is a desktop run's on Sonnet (3,146 tokens written to the cache
+// at first, then 1,300 more each step, 40 out), so the run spends about $0.04 in all. So:
+//  - through a gateway (OpenRouter: the bound is the bytes, 11,000 tokens at first, about 7,400 of them the computer's
+//    tools' definitions), the first request needs $0.057 and the whole run $0.115: $0.12, documented, takes it to its
+//    answer, $0.11 parks it before its last step;
+//  - straight to Anthropic, each bound is Anthropic's count (3,821 tokens at first with the tool prompt), so the first
+//    request needs $0.030 and the whole run $0.083: $0.09, documented, takes it to its answer, $0.08 parks it.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { specFor } from "./runner-spec-support.mjs";
@@ -23,7 +22,7 @@ const { fauxComputers } = await import("../dist/faux-computers.js");
 after(closeOpenSessions);
 
 /** The minimums docs/run-caps.md states for pi on Sonnet: through a gateway, and straight to Anthropic. */
-const GATEWAY_MINIMUM = 0.13;
+const GATEWAY_MINIMUM = 0.12;
 const DIRECT_MINIMUM = 0.09;
 /** A step's least, as the cap prices it here: its input bound at the cache-write price and a 1,024-token answer. */
 const leastOf = (bound) => (bound * 3.75 + 1_024 * 15) / 1e6;
@@ -33,11 +32,13 @@ const { WRAP_UP_TEXT } = await import("../dist/tool-budget.js");
 const toldToWrapUp = (sent) => sent.some((body) => JSON.stringify(body.messages ?? []).includes(WRAP_UP_TEXT));
 const SONNET = Object.freeze({ id: "claude-sonnet-5-5", api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 });
 const priceOf = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
+/** A production desktop run has pi's own codemode where the host's would be (the same name: one is offered), so the host's adds nothing to
+ *  its request; this run builds its adapter without that extension, so the host's codemode is switched off by its setting. */
+const NO_HOST_CODEMODE = Object.assign(() => "allow", { permission: async (name) => (name === "codemode" ? "deny" : "allow") });
 const fauxComposer = ({ store, sealKey }) => computerDepsFrom({ env: {}, store, sealKey, faux: fauxComputers() });
 const TASK = "Open a terminal, run hostname, and write what it prints to answer.md in your work folder.";
-/** The tokens Anthropic counts for the first request (a desktop run's first turn on Sonnet): 3,146 for its prompt and
- *  tools, and 639 for the host's tools_search, tools_call and codemode (measured on Sonnet 5.5). */
-const FIRST_TOKENS = 3_146 + 639;
+/** The tokens Anthropic counts for the first request (a desktop run's first turn on Sonnet). */
+const FIRST_TOKENS = 3_146;
 
 const sse = (events) => new Response(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
 /** Anthropic's Messages API for a desktop run: four screenshots, then the answer, each answer's usage a real step's. A
@@ -64,7 +65,7 @@ async function desktopRun(t, capUsd, origin, mode = "strict") {
   const counted = [];
   const provider = { api: "anthropic-messages", origin, credential: () => `not-a-secret-${"x"}` };
   const result = await capRun(t, {
-    specOf: (sent) => (_claim, run) => ({ adapter: piAdapter({ run, model: SONNET.id, provider, fetch: desktopOrigin(sent, counted), price: priceOf }), session: { ...spec.session, key: "root", label: "root", context: "fresh" }, input: TASK, hooks: quiet, gate: () => "allow" }),
+    specOf: (sent) => (_claim, run) => ({ adapter: piAdapter({ run, model: SONNET.id, provider, fetch: desktopOrigin(sent, counted), price: priceOf }), session: { ...spec.session, key: "root", label: "root", context: "fresh" }, input: TASK, hooks: quiet, gate: NO_HOST_CODEMODE }),
     // Strict mode: every step's input at the cache-write price, whatever was cached. Expected mode (the default): a step
     // after the first is priced from what the session's previous request read from the cache (the loop's `previous`).
     runCap: { capUsd: () => capUsd, modelOf: () => SONNET, mode },
@@ -81,19 +82,19 @@ async function neededFor(t, origin, mode = "strict") {
   return { first: leastOf(asked[0].request.inputTokensMax), whole: Math.max(...asked.map(({ request }) => request.spentUsd + leastOf(request.inputTokensMax))), asked };
 }
 
-test("the documented minimums are what the run needs, to the cent above: $0.13 through a gateway, $0.09 straight to Anthropic", async (t) => {
+test("the documented minimums are what the run needs, to the cent above: $0.12 through a gateway, $0.09 straight to Anthropic", async (t) => {
   const gateway = await neededFor(t, "https://openrouter.ai/api");
   const direct = await neededFor(t, "https://api.anthropic.com");
   assert.ok(gateway.asked[0].request.inputTokensMax > 9_000, `through a gateway the first request is read by its bytes: ${gateway.asked[0].request.inputTokensMax}`);
-  assert.equal(direct.asked[0].request.inputTokensMax, FIRST_TOKENS + 675, "straight to Anthropic, by its count and the tool-use prompt");
-  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.064, 0.032], "the first request's least");
+  assert.equal(direct.asked[0].request.inputTokensMax, 3_146 + 675, "straight to Anthropic, by its count and the tool-use prompt");
+  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.057, 0.03], "the first request's least");
   assert.deepEqual([Math.ceil(gateway.whole * 100) / 100, Math.ceil(direct.whole * 100) / 100], [GATEWAY_MINIMUM, DIRECT_MINIMUM], JSON.stringify({ gateway: gateway.whole, direct: direct.whole }));
 });
 
 test("through a gateway, a pi desktop run on Sonnet under $0.04 is refused its first request unsent, in the words that name what it needs", async (t) => {
   const { asked, sent, row } = await desktopRun(t, 0.04, "https://openrouter.ai/api");
   assert.equal(sent.length, 0, "nothing sent");
-  assert.match(asked[0]?.answer?.refuse ?? "", /the next step needs at least \$0\.07/, JSON.stringify({ answer: asked[0]?.answer, state: row.state }));
+  assert.match(asked[0]?.answer?.refuse ?? "", /the next step needs at least \$0\.06/, JSON.stringify({ answer: asked[0]?.answer, state: row.state }));
 });
 
 // A cent under the minimum: through a gateway the cap's wrap-up (a run keeps back one typical step and one final answer)
@@ -114,14 +115,14 @@ for (const [route, origin, minimum, underEnds] of [["through a gateway", "https:
 }
 
 // Expected mode, the default: a step after the first is priced from what the session's previous request read from the cache
-// (cacheRead at $0.30 a million, only what is new at the cache-write price). Through a gateway the first request alone
-// needs $0.064 (the tools' definitions are read by their bytes), so the run needs $0.07, and $0.06 parks it before anything
-// is sent; straight to Anthropic the run needs $0.06, and $0.05 parks it after three steps.
-test("expected mode, the default: $0.07 through a gateway and $0.06 straight to Anthropic take a pi desktop run on Sonnet to its answer; a cent under parks it (a gateway's first request needs $0.064, so nothing is sent; Anthropic's parks after three steps)", async (t) => {
-  for (const [origin, minimum, sentUnder] of [["https://openrouter.ai/api", 0.07, 0], ["https://api.anthropic.com", 0.06, 3]]) {
-    const at = await desktopRun(t, minimum, origin, "expected");
+// (cacheRead at $0.30 a million, only what is new at the cache-write price), so the run needs about $0.06 by either route.
+// Through a gateway the first request alone needs $0.057 (the computer tools' definitions are read by their bytes), so $0.05
+// parks it before anything is sent; straight to Anthropic it parks before the last step.
+test("expected mode, the default: $0.06 takes a pi desktop run on Sonnet to its answer by either route; $0.05 parks it (a gateway's first request needs $0.057, so nothing is sent; Anthropic's parks before its last step)", async (t) => {
+  for (const origin of ["https://openrouter.ai/api", "https://api.anthropic.com"]) {
+    const at = await desktopRun(t, 0.06, origin, "expected");
     assert.deepEqual([at.row.state, at.sent.length], ["ended", 5], `${origin}: ${JSON.stringify({ state: at.row.state, summary: at.row.summary })}`);
-    const under = await desktopRun(t, Math.round((minimum - 0.01) * 100) / 100, origin, "expected");
-    assert.deepEqual([under.row.state, under.sent.length], ["parked", sentUnder], `${origin}: ${JSON.stringify({ state: under.row.state, summary: under.row.summary })}`);
+    const under = await desktopRun(t, 0.05, origin, "expected");
+    assert.deepEqual([under.row.state, under.sent.length], ["parked", origin.includes("openrouter") ? 0 : 4], `${origin}: ${JSON.stringify({ state: under.row.state, summary: under.row.summary })}`);
   }
 });

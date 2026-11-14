@@ -116,6 +116,11 @@ if movie and not demo_machine():
     sys.exit("--movie records only on a demo machine: a CI runner (GITHUB_ACTIONS=true), or a user whose login name "
              "starts with agentrun-demo. This is neither, so nothing was recorded or made; run without --movie.")
 here =os.path.dirname(os.path.abspath(__file__))
+# A movie captions each scripted call in serve's words for it (call-words.mjs), which it reads from serve's build.
+CALL_WORDS_BUILT = os.path.normpath(os.path.join(here, "..", "..", "..", "serve", "dist", "timeline", "computer.js"))
+if movie and not os.path.isfile(CALL_WORDS_BUILT):
+    sys.exit(f"--movie captions each call in serve's words, and packages/serve is not built ({CALL_WORDS_BUILT}): "
+             "node scripts/build-workspaces.mjs --only @parcha/agentrun-serve")
 CI = os.environ.get("CI") == "true"
 
 RUN = uuid.uuid4().hex[:6]
@@ -123,6 +128,8 @@ PREFIX = "AgentRun demo "
 NAME = PREFIX + RUN
 # /tmp is a link to /private/tmp: Finder and TextEdit answer with the real path, so the root is named by it.
 ROOT = "/private/tmp/agentrun-demos"
+# The step kinds a ui.act step may name (the protocol's UiStep keys), as serve's record reads them.
+STEP_KINDS = ("press", "set", "perform", "click", "type", "key", "nav", "scroll", "drag")
 APPS = {"com.apple.iCal": "Calendar", "com.apple.Notes": "Notes", "com.apple.finder": "Finder", "com.apple.TextEdit": "TextEdit", "com.apple.Safari": "Safari",
         "com.apple.systempreferences": "System Settings"}
 # The apps the sandbox's AppleScript drives, whose Automation grants Computerd needs. System Settings' task makes and
@@ -701,11 +708,36 @@ class Task:
         # Settings domains the task's fixture changed for the movie, each with its whole old content (`defaults export`),
         # put back by the teardown. Kept in memory only: a person's settings never reach a file.
         self.restore = []
+        # What the task's fixture changed in a running app for the movie (Notes' window), each undone by the teardown
+        # on its connection, last first, or after a setup that failed (undo_setup): (words, undo(c)).
+        self.undo = []
+        # Each ref the task's observes showed, as serve's record names it: its role, and its name when it has one.
+        self.names = {}
 
-    def say(self, text):
+    def say(self, text, caption=None):
+        """Prints the step's own words; captions it with `caption` (a computer call's words) or those."""
         print(f"  {self.id}: {text}", flush=True)
         if self.rec:
-            self.rec.caption(text)
+            self.rec.caption(caption or text)
+
+    def words(self, call):
+        """A scripted call's caption (call_words), with --movie only: with no movie there is no caption, and the run
+        needs no serve build."""
+        return call_words(call) if self.rec else None
+
+    def step_row(self, step):
+        """A ui.act step as serve's record keeps it: its kind, the element it acts on as the task's observes named it, a
+        key step's chord (call-words.mjs keeps only what the record keeps), a nav step's place. Never a typed value."""
+        kind = next((k for k in STEP_KINDS if k in step), "step")
+        ref = step.get("into") if kind == "type" else step.get(kind)
+        row = {"do": kind}
+        if isinstance(ref, str) and ref in self.names:
+            row["on"] = self.names[ref]
+        if kind == "key":
+            row["keys"] = step["key"]
+        if kind == "nav":
+            row["nav"] = step["nav"]
+        return row
 
     def call(self, method, params, label, not_found=None):
         """One call, timed and recorded. not_found: the words for a not_found the caller expects (a poll for a window
@@ -724,6 +756,9 @@ class Task:
         if method == "ui.observe":
             entry["nodes"] = len(r.get("nodes", []))
             self.shown = (r.get("window") or {}).get("id") or self.shown
+            for n in r.get("nodes", []):
+                name = " ".join((n.get("name") or "").split())
+                self.names[n["ref"]] = {"role": n["role"], **({"name": name} if name else {})}
         self.calls.append(entry)
         # A route, with " unverified" when no readback saw the step's effect; or the refusal's kind.
         routes = ", ".join(
@@ -780,7 +815,8 @@ class Task:
             params["state"] = state
         if foreground:
             params["foreground"] = True
-        self.say(label)
+        # The caption is the step's words as the console says them, from the steps asked: a refused one fails the task.
+        self.say(label, self.words({"method": "ui.act", "app": self.app, "ok": True, "steps": [self.step_row(s) for s in steps]}))
         reply = self.call("ui.act", params, label)
         if "error" in reply:
             raise Failed(f"{label}: {reply['error'].get('message')}")
@@ -806,7 +842,7 @@ class Task:
     def wait_for(self, text, label, seconds=20):
         """Until the task's window (or, before one is pinned, the app's main one) shows the text: an expect, asked again
         while there is no window yet."""
-        self.say(label)
+        self.say(label, self.words({"method": "ui.act", "app": self.app, "ok": True, "steps": [], "expect": "met"}))
         deadline = time.monotonic() + seconds
         while True:
             params = {"target": self.target(), "steps": [], "expect": {"text": text, "timeoutMs": 3000}}
@@ -956,9 +992,9 @@ def textedit_edit_number(t):
     before = "Apples: 3\nPears: 41\nPlums: 7\n"
     after = "Apples: 3\nPears: 42\nPlums: 7\n"
     t.write(path, before, "write the totals file")
-    t.say("open the totals file in TextEdit, in the background")
+    t.say("Opened the totals file in TextEdit, in the background")
     t.run_exec(["/usr/bin/open", "-g", "-a", "TextEdit", path], "open -g -a TextEdit the totals file")
-    t.pin(f"totals-{RUN}.txt", "find the document's window")
+    t.pin(f"totals-{RUN}.txt", "Found the document's window")
     t.wait_for("Pears: 41", "wait for the document")
     tree = t.observe()
     text = need(t, tree["nodes"], "text area", role="textbox", contains="Pears: 41")
@@ -985,11 +1021,11 @@ def finder_rename_file(t):
     folder = sandbox_folder(t, "finder")
     t.write(f"{folder}/draft.txt", "the draft\n", "write draft.txt")
     t.write(f"{folder}/other.txt", "another file\n", "write other.txt")
-    t.say("open the folder in Finder, in the background")
+    t.say("Opened the folder in Finder, in the background")
     t.run_exec(["/usr/bin/open", "-g", folder], "open -g the folder")
     # Finder has a person's own windows open on a real desktop: the task's window is found by its title and every later
     # call names it.
-    t.pin(os.path.basename(folder), "find the folder's window")
+    t.pin(os.path.basename(folder), "Found the folder's window")
     t.wait_for("draft", "wait for the folder's files")
     tree = t.observe()
     # By element, never by point: the window may sit under other apps' windows on a real desktop. As a list, each
@@ -1049,11 +1085,11 @@ def safari_follow_link(t):
     t.write(f"{folder}/index.html", f"<!doctype html><title>{home_title}</title><h1>{home_title}</h1><p><a href=\"report.html\">Quarterly report</a></p><p><a href=\"other.html\">Something else</a></p>", "write index.html")
     t.write(f"{folder}/report.html", f"<!doctype html><title>{report_title}</title><h1>{report_title}</h1><p>Revenue grew 12%.</p>", "write report.html")
     t.write(f"{folder}/other.html", f"<!doctype html><title>Other {RUN}</title><h1>Other</h1>", "write other.html")
-    t.say("open the site in Safari, in the background")
+    t.say("Opened the site in Safari, in the background")
     t.run_exec(["/usr/bin/open", "-g", "-a", "Safari", f"{folder}/index.html"], "open -g -a Safari index.html")
     # Safari may put the page in a tab of a person's own window: the window is found by the page's title, the tab it
     # shows, and the teardown closes the tab by its address.
-    t.pin(home_title, "find the page's window")
+    t.pin(home_title, "Found the page's window")
     t.wait_for("Quarterly report", "wait for the page")
     tree, _ = first_run(t, t.observe())
     link = need(t, tree["nodes"], "the Quarterly report link", role="link", contains="Quarterly report")
@@ -1093,12 +1129,12 @@ def notes_prepare(t):
     alert, and the snapshot sees none of it."""
     t.launch()
     _, pressed = first_run(t, t.observe())
-    if not pressed:
-        return
-    setup = f"{NAME} setup"
-    t.say("make and remove a setup folder, answering the iCloud alert it raises")
-    with shielded():
-        notes_setup_folder(t, setup)
+    if pressed:
+        setup = f"{NAME} setup"
+        t.say("Made and removed a setup folder, answering the iCloud alert it raised")
+        with shielded():
+            notes_setup_folder(t, setup)
+    notes_look(t)
 
 
 def notes_setup_folder(t, setup):
@@ -1122,11 +1158,36 @@ def notes_setup_folder(t, setup):
         t.run_exec(["/usr/bin/osascript", "-e", REMOVE_FOLDERS, setup], "remove the setup folder")
 
 
+# Notes' window for the movie. Its own (1000 by 660 points on CI's 1024 by 737 screen) is drawn at 1.31x on the movie's
+# 1080p frame, its body text smaller than TextEdit's. A window 920 by 430 points is drawn at 2x, as TextEdit's is: the
+# two read alike. The teardown puts the old bounds back, live, so Notes keeps them as they were when it quits (it saves
+# its window frame as it changes). Zoom In (⇧⌘.) is no help here: Notes enables it only in front, and the task leaves
+# Notes in the background.
+NOTES_WINDOW = (920, 430)
+NOTES_BOUNDS = """on run argv
+  tell application "Notes"
+    if (count of argv) is 4 then set bounds of front window to {(item 1 of argv) as integer, (item 2 of argv) as integer, (item 3 of argv) as integer, (item 4 of argv) as integer}
+    set b to bounds of front window
+  end tell
+  return ((item 1 of b) as text) & " " & ((item 2 of b) as text) & " " & ((item 3 of b) as text) & " " & ((item 4 of b) as text)
+end run"""
+
+
+def notes_look(t):
+    """With --movie, Notes' window sized for the movie (NOTES_WINDOW), put back by the teardown."""
+    if not t.rec:
+        return
+    old = [int(n) for n in osa(t.c, NOTES_BOUNDS).split()]
+    t.undo.append(("put back Notes' window", lambda c: print(f"    Notes' window back to {osa(c, NOTES_BOUNDS, *map(str, old)).strip()}", flush=True)))
+    left, top = old[0], old[1]
+    print(f"    Notes' window {old} -> {osa(t.c, NOTES_BOUNDS, str(left), str(top), str(left + NOTES_WINDOW[0]), str(top + NOTES_WINDOW[1])).strip()}", flush=True)
+
+
 def notes_new_note(t):
     """mac.notes.new-note: a note whose first line is its title and whose second line is given, in the task's folder."""
     # The line starts with a capital: Notes capitalizes a line's first word as it is typed (it did on CI's runner).
     title, line = f"{NAME} groceries", "Oat milk and eggs"
-    t.say("make the task's Notes folder (AppleScript)")
+    t.say("Made the task's Notes folder (AppleScript)")
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_FOLDER, NAME], "make the Notes folder")
     # The folder list shows a folder made by AppleScript a moment later.
     try:
@@ -1207,7 +1268,7 @@ def calendar_prepare(t):
     if add is not None:
         with shielded():
             calendar_setup_quick_event(t, add)
-    t.say("wait for Calendar's list of calendars to be still")
+    t.say("Waited for Calendar's list of calendars to be still")
     start = time.monotonic()
     names, since = calendar_names(t.c), start
     while time.monotonic() - since < 8 and time.monotonic() - start < 40:
@@ -1223,7 +1284,7 @@ def calendar_prepare(t):
 def calendar_new_event(t):
     """mac.calendar.new-event: a new event with a given title, in the task's own calendar."""
     title = event_title(RUN)
-    t.say("make the task's calendar (AppleScript)")
+    t.say("Made the task's calendar (AppleScript)")
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_CALENDAR, NAME], "make the calendar")
     tree = t.observe()
     # The toolbar's Add Event button opens the quick event field: the title typed there and enter make the event, in
@@ -1405,13 +1466,22 @@ class Serve:
         shutil.rmtree(self.data, ignore_errors=True)
 
 
-def call_words(calls):
-    """Each computer call as the line a person reads ("open TextEdit", "select all (⌘A); type into the text box"), by
-    serve's own words for it (call-words.mjs): the console's run page shows the same lines."""
-    done = subprocess.run(["node", os.path.join(here, "call-words.mjs")], input=json.dumps(calls), capture_output=True, text=True, timeout=60)
-    if done.returncode != 0:
-        raise Failed(f"call-words.mjs: {done.stderr.strip()[-300:]}")
-    return json.loads(done.stdout)
+words_process = None
+
+
+def call_words(call):
+    """A computer call (serve's record of one, or a scripted call in its shape) as the line a person reads ("Opened
+    TextEdit", "Selected all (⌘A), typed into the text box"), by serve's own words for it (call-words.mjs, one process
+    for the whole run): the console's run page shows the same line on the step's row and in its call list."""
+    global words_process
+    if words_process is None or words_process.poll() is not None:
+        words_process = subprocess.Popen(["node", os.path.join(here, "call-words.mjs")], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    words_process.stdin.write(json.dumps(call) + "\n")
+    words_process.stdin.flush()
+    line = words_process.stdout.readline()
+    if not line:
+        raise Failed(f"call-words.mjs ended (exit {words_process.wait()})")
+    return json.loads(line)
 
 
 def first_sentence(text):
@@ -1428,7 +1498,7 @@ def agent_run(t, serve, model, prompt):
     """One run of the agent on the task: made, followed on its timeline to its end, each row printed, and the movie
     captioned with each computer call its scripts made at the time the call started (serve keeps them on the script's
     result row), a failed script's error, and the answer. Answers what the run did."""
-    t.say(f"the agent gets the task: {prompt}")
+    t.say(f"The agent got the task: {prompt}")
     # The recorder's clock is monotonic from the task's start: a row's wall time maps onto it.
     wall0 = time.time() - (time.monotonic() - t.t0)
     agent = f"mac-demo-{RUN}-{secrets.token_hex(3)}"
@@ -1464,7 +1534,7 @@ def agent_run(t, serve, model, prompt):
             elif kind == "tool_result":
                 calls = row.get("computer_calls") or []
                 did["computerCalls"] += len(calls)
-                lines = call_words(calls) if calls else []
+                lines = [call_words(x) for x in calls]
                 print(f"    {row.get('tool_name')} {row.get('tool_status')}: {len(calls)} computer calls"
                       + "".join(f"\n      +{epoch(x['started_at']) - wall0:.2f} s {line}: {x['method']} {x['ms']} ms"
                                 + (f" [{', '.join(s['do'] + ' ' + s.get('route', s.get('error', '')) for s in x['steps'])}]" if x.get("steps") else "")
@@ -1546,7 +1616,7 @@ def agent_finder(t):
 
 
 def agent_notes(t):
-    t.say("make the task's Notes folder (AppleScript)")
+    t.say("Made the task's Notes folder (AppleScript)")
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_FOLDER, NAME], "make the task's folder")
     title, line = f"{NAME} groceries", "Oat milk and eggs"
     count = """on run argv
@@ -1561,7 +1631,7 @@ end run"""
 
 
 def agent_calendar(t):
-    t.say("make the task's calendar (AppleScript)")
+    t.say("Made the task's calendar (AppleScript)")
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_CALENDAR, NAME], "make the calendar")
     t.inspector = True  # the teardown closes an inspector the agent left open, before it deletes the calendar
     title = event_title(RUN)
@@ -1616,7 +1686,7 @@ def agent_tasks(serve):
             def drive(t, setup=setup, model=model):
                 prompt, check = setup(t)
                 agent_run(t, serve, model, prompt)
-                t.say("check the outcome")
+                t.say("Checked the outcome")
                 check()
             TITLES[f"{tid}.{slug}"] = f"{model_name(model)}: {AGENT_PROMPTS[tid]}"
             tasks.append((f"{tid}.{slug}", app, prepare, drive))
@@ -1677,6 +1747,7 @@ def teardown(t):
             ("delete the task's Notes folder and its notes", lambda: osa(c, REMOVE_FOLDERS, NAME)),
             ("delete the task's files", remove_files),
         ]
+        parts += [(words, lambda undo=undo: undo(c)) for words, undo in reversed(t.undo)]
         if t.restore:
             parts.append(("put back the settings the task's look changed", lambda: settings_back(t)))
         for words, part in parts:
@@ -1690,28 +1761,54 @@ def teardown(t):
     return failed
 
 
-def quit_apps(apps, seconds=15):
-    """Apps the run started, quit by the driver (an Apple event to quit would itself need the grant), on a connection of
-    their own, and waited for: the ones still running after that, by name."""
-    if not apps:
-        return []
+def undo_setup(t):
+    """What a setup that failed had changed for the movie (t.undo, last first, and t.restore's settings), put back on a
+    connection of its own: a task whose setup failed has no teardown. The ones that could not be, in words."""
+    failed = []
     c = Client()
     try:
-        for app in apps:
+        for words, undo in reversed(t.undo):
+            t.say(f"setup failed: {words}")
             try:
-                refused = c.call("apps.terminate", {"id": app}).get("error")
+                undo(c)
             except Exception as e:
-                refused = e
-            if refused:
-                print(f"  (could not quit {APPS[app]}, which the run started: {refused})", flush=True)
+                failed.append(f"could not {words}: {e}")
     finally:
         c.close()
-    deadline = time.monotonic() + seconds
-    while True:
-        still = [app for app in apps if app in running()]
-        if not still or time.monotonic() > deadline:
-            return [APPS[app] for app in still]
-        time.sleep(0.5)
+    if t.restore:
+        try:
+            settings_back(t)
+        except Exception as e:
+            failed.append(f"could not put back the settings the task's look changed: {e}")
+    return failed
+
+
+def quit_apps(apps, seconds=15):
+    """Apps the run started, quit by the driver (an Apple event to quit would itself need the grant), on a connection of
+    their own, and waited for: the ones still running after that, by name. One still running after `seconds` is asked
+    once more (System Settings let one quit go by on CI's runner, in 1 run of 25) and waited for again."""
+    still = list(apps)
+    for _ in range(2):
+        if not still:
+            return []
+        c = Client()
+        try:
+            for app in still:
+                try:
+                    refused = c.call("apps.terminate", {"id": app}).get("error")
+                except Exception as e:
+                    refused = e
+                if refused:
+                    print(f"  (could not quit {APPS[app]}, which the run started: {refused})", flush=True)
+        finally:
+            c.close()
+        deadline = time.monotonic() + seconds
+        while True:
+            still = [app for app in still if app in running()]
+            if not still or time.monotonic() > deadline:
+                break
+            time.sleep(0.5)
+    return [APPS[app] for app in still]
 
 
 def encode(timeline, path):
@@ -1898,7 +1995,7 @@ def main():
                 t.span[0] = t.rec.clock() if t.rec else None
                 try:
                     drive(t)
-                    t.say("done")
+                    t.say("Done")
                 except Failed as e:
                     error = str(e)
                 except BaseException as e:
@@ -1936,11 +2033,19 @@ def main():
                     if shield["asked"]:
                         interrupted = KeyboardInterrupt(shield["asked"])
                         error = error or f"stopped by {shield['asked']}"
-            elif app in started:  # the setup failed, so there is no snapshot to compare, but the app still quits
+            else:  # the setup failed, so there is no snapshot to compare, but what it changed is put back and the app quits
+                shield["on"] = True
                 try:
-                    left += [f"{name}, which the run started, did not quit" for name in quit_apps([app])]
-                except Exception as e:
-                    left.append(f"could not quit {APPS[app]}: {e}")
+                    left += undo_setup(t)
+                    if app in started:
+                        try:
+                            left += [f"{name}, which the run started, did not quit" for name in quit_apps([app])]
+                        except Exception as e:
+                            left.append(f"could not quit {APPS[app]}: {e}")
+                finally:
+                    shield["on"] = False
+                if shield["asked"]:
+                    interrupted = KeyboardInterrupt(shield["asked"])
             took =round((time.monotonic() - t.t0) * 1000)
             if t.rec:
                 t.say("passed" if error is None else "failed")

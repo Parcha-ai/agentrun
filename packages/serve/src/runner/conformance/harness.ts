@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { DEFER_CATALOG_OVER } from "@parcha/agentrun-kernel";
 import { AnswerTaken, dropPostgresSchema, openPostgresStore, openStore, RunFinal, type RunRow, type Store, type StoreRole, storeTarget, Unanswered } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
@@ -111,6 +112,15 @@ export function suiteTools(countFile?: string) {
     }),
   };
   return { tools, ran, letSlowGo: () => letGo(), slowStarted: started };
+}
+
+/** Catalog tools (an MCP server's, by wire name) that do nothing, enough of them to pass DEFER_CATALOG_OVER: a run with that
+ *  many has its catalog deferred (not listed) and is offered tools_search and tools_call, which the meta cases need. */
+export function fillerTools(count = DEFER_CATALOG_OVER + 1): Record<string, SuiteTool> {
+  return Object.fromEntries(Array.from({ length: count }, (_, index) => {
+    const name = `mcp__idle__tool_${index}`;
+    return [name, { name, replaySafe: true, ask: false, run: async () => "idle" } satisfies SuiteTool];
+  }));
 }
 
 const quiet: KernelHooks = { beforeIntent: async () => {}, beforeResult: async () => {} };
@@ -1074,13 +1084,14 @@ const CASES: readonly Case[] = [
     title: "tools_search finds the session's own tools by what they do, with their schemas, and never itself, tools_call or codemode",
     async body(subject, t) {
       const w = await world(subject, t);
-      const { tools } = suiteTools();
+      const { tools: suite } = suiteTools();
+      const tools = { ...suite, ...fillerTools() };
       await w.start("runner-a", { script: [{ call: "tools_search", args: { query: "asked" } }, { sayLastResult: true }], tools, hooks: quiet });
       await w.ended("ended");
       const said = await modelSaid(w);
       const names = [...said.matchAll(/"name":\s*"([^"]+)"/g)].map((match) => match[1]);
       assert.equal(names[0], "asked", `the tool named in the query ranks first: ${said}`);
-      assert.ok(names.every((name) => ["effect", "read", "slow", "asked"].includes(name!)), `only the session's own tools: ${said}`);
+      assert.ok(names.every((name) => name! in tools), `only the session's own tools: ${said}`);
       assert.match(said, /"input_schema"/, `each with its input schema: ${said}`);
     },
   },
@@ -1089,7 +1100,8 @@ const CASES: readonly Case[] = [
     title: "tools_call is asked about as the tool it calls: an ask parks the run, and the approved call runs once",
     async body(subject, t) {
       const w = await world(subject, t);
-      const { tools, ran } = suiteTools();
+      const { tools: suite, ran } = suiteTools();
+      const tools = { ...suite, ...fillerTools() };
       await w.start("runner-a", { script: [{ call: "tools_call", args: { name: "asked", args: {} } }, { sayLastResult: true }], tools, hooks: quiet });
       const parked = await w.ended("parked");
       assert.equal(ran.asked, 0, "the asked tool waits for its answer");
@@ -1107,7 +1119,8 @@ const CASES: readonly Case[] = [
     title: "a person's deny of a call made through tools_call refuses it in the gate's words: it never runs",
     async body(subject, t) {
       const w = await world(subject, t);
-      const { tools, ran } = suiteTools();
+      const { tools: suite, ran } = suiteTools();
+      const tools = { ...suite, ...fillerTools() };
       await w.start("runner-a", { script: [{ call: "tools_call", args: { name: "asked", args: {} } }, { sayLastResult: true }], tools, hooks: quiet });
       await w.ended("parked");
       await sendCommand(w.server, RUN, { kind: "deny", body: { approval: await w.askedCall(), note: "not now" } });
@@ -1170,10 +1183,13 @@ export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record
       ? { "length-ends-failed": `${facts.id} resumes an answer its output limit cut itself, up to ${facts.recoversCutAnswers} times in one turn (its adapter's facts: recoversCutAnswers ${facts.recoversCutAnswers})` }
       : {}),
     ...(facts.recoversCutAnswers === 0 ? { "length-mid-run": `a cut ends ${facts.id}'s turn, as pi's does (its adapter's facts: recoversCutAnswers 0)` } : {}),
+    ...(facts.ownToolSearch ? { "meta-search": OWN_TOOL_SEARCH(facts.id), "meta-call-park": OWN_TOOL_SEARCH(facts.id), "meta-call-deny": OWN_TOOL_SEARCH(facts.id) } : {}),
     ...(facts.ownCodemode ? { "meta-codemode-park": OWN_CODEMODE(facts.id), "meta-codemode-crash": OWN_CODEMODE(facts.id) } : {}),
   };
 }
 
+/** Why a harness that defers a run's MCP tools itself has no case of the host's tools_search or tools_call. */
+const OWN_TOOL_SEARCH = (id: string) => `${id} defers a run's MCP tools behind a tool search of its own (its adapter's facts: ownToolSearch), so the host offers no tools_search or tools_call beside it`;
 /** Why a harness that runs scripts itself has no case of the host's codemode. */
 const OWN_CODEMODE = (id: string) => `${id} runs the model's scripts in its own code mode (its adapter's facts: ownCodemode), so the host offers no codemode beside it`;
 /** The cases of the host's tools over a session's tools (runner/meta-tools.ts), which only the adapter loop gives. */

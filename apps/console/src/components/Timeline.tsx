@@ -170,8 +170,9 @@ function Row({ step, last, ended, waitingChip, files, onOpen }: { step: Step; la
 
 /** A tool call's computer calls (its result row's `computer_calls`: a code-mode script's many, a computer tool's one):
  *  closed, a line that says how many and how many failed; open, each call in the order it was made, how long after the
- *  first it started, what it did in words (callWords: "open TextEdit", "select all (⌘A); type into the text box") and how
- *  long it took. Never what was typed: the server keeps none of it. */
+ *  first it started, what it did in the words its step's row and a movie's caption use (callWords: "Opened TextEdit",
+ *  "Selected all (⌘A), typed into the text box"), a failed call's code, and how long it took. Never what was typed: the
+ *  server keeps none of it. */
 function ComputerCalls({ calls, dropped }: { calls: readonly ComputerCallRow[]; dropped: number }) {
   const [open, setOpen] = useState(false);
   const failed = calls.filter((call) => !call.ok).length;
@@ -190,6 +191,7 @@ function ComputerCalls({ calls, dropped }: { calls: readonly ComputerCallRow[]; 
             <li key={i} className="flex items-center gap-3 px-3 py-1.5">
               <span className="w-14 shrink-0 font-mono text-label text-muted-foreground">+{took(Math.max(0, Date.parse(call.started_at) - first))}</span>
               <span className={cn("min-w-0 flex-1 truncate text-body", !call.ok && "text-destructive-text")} title={callWords(call)}>{callWords(call)}</span>
+              {!call.ok && call.code && <span className="shrink-0 font-mono text-label text-destructive-text">{call.code}</span>}
               <span className="w-14 text-right font-mono text-label text-muted-foreground">{took(call.ms)}</span>
             </li>
           ))}

@@ -190,6 +190,9 @@ export interface CallStartData {
    *  until its agentrun.call.sent mark (KINDS.callSent). The bridge holds the call and hands the CLI nothing while it waits,
    *  so no waiting result shows for it, as on pi. */
   readonly parked?: true;
+  /** A tool that only nests calls (tools_call, codemode; HostTool.nests): its calls start after it, each its own, and it
+   *  runs again whole after a crash, so a start a crash left open is never ended interrupted (adapter-loop.ts). */
+  readonly nests?: true;
   /** The harness's working directory (a CLI's), which an absolute path in `input` is built from: the run's rows name a
    *  path under it by its name in the workspace (store-reads/journal.ts runTimeline). */
   readonly cwd?: string;

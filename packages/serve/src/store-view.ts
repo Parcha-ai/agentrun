@@ -258,7 +258,8 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
   // Its final answer whole (store-reads/journal.ts wholeAnswers), as main served a run's answer: a row's cut is no answer's.
-  const timelineOptions = { settled: terminal, redact: (text: string) => redacted(text, values) };
+  // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far.
+  const timelineOptions = { settled: terminal, ended: terminal, redact: (text: string) => redacted(text, values) };
   const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions), timelineOptions, wholeAnswerFor(values)));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
