@@ -36,6 +36,46 @@ export interface Hello {
 	device?: { maker: string; model: string };
 }
 
+/** Every method of the computer protocol (packages/computer's DAEMON_METHODS; a test holds the two equal). The wire's
+ *  processes group is `process.*`: `processes.start` is code mode's name for process.start, not a wire method. */
+export const PROTOCOL_METHODS: ReadonlySet<string> = new Set([
+	"hello",
+	"ping",
+	"exec.run",
+	"files.read",
+	"files.write",
+	"files.stat",
+	"files.list",
+	"files.mkdir",
+	"files.move",
+	"files.remove",
+	"tar.pull.begin",
+	"tar.pull.read",
+	"tar.pull.end",
+	"tar.push.begin",
+	"tar.push.write",
+	"tar.push.end",
+	"process.start",
+	"process.read",
+	"process.write",
+	"process.signal",
+	"process.resize",
+	"process.list",
+	"process.wait",
+	"screen.shot",
+	"screen.read",
+	"screen.watch",
+	"input.actions",
+	"apps.list",
+	"apps.install",
+	"apps.launch",
+	"apps.terminate",
+	"ui.observe",
+	"ui.act",
+	"deadline.extend",
+	"mount.sync",
+]);
+
 /** The group a method belongs to, so a task's setup and checks say what they need without a list written by hand. */
 export function groupOf(method: string): string | undefined {
 	if (method === "hello" || method === "ping" || method === "deadline.extend" || method === "mount.sync") return undefined;

@@ -38,13 +38,15 @@ async function echoGateway(t) {
 
 /** A server for `harness` whose scripted model makes the call each prompt names: `prompt(tool, args)`, the run's input
  *  that makes it; `offered()`, the tool names each model request offered (pi's and claude-agent's; codex's stand-in
- *  calls only the tools its MCP config enables, so its refusal is the offer). */
+ *  reports none, so its refusal is the offer); `wire(tool)`, the name the harness offers an MCP tool by (a host tool:
+ *  pi's `mcp__<server>__<tool>`, Claude Code's `mcp__hands__` before it, Codex's `mcp_<server>__<tool>`). */
 async function setup(t, harness, templates) {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const offeredLists = [];
   let prompt;
   let offered = () => offeredLists;
   let options = { faux: undefined };
+  let wire = (tool) => `mcp__fake__${tool}`;
   if (harness === "pi") {
     const file = join(await scratch(t), "offered.jsonl");
     withEnv(t, { [OFFERED_ENV]: file });
@@ -59,7 +61,7 @@ async function setup(t, harness, templates) {
         offeredLists.push(request.tools);
         if (Object.keys(request.results).length) return { text: `The tool said: ${Object.values(request.results)[0]}` };
         const asked = /CALL (\w+) (\{[^}]*\})/.exec(request.text);
-        return asked ? { tool: { name: `mcp__fake__${asked[1]}`, input: JSON.parse(asked[2]) } } : { text: "Noted." };
+        return asked ? { tool: { name: `mcp__hands__mcp__fake__${asked[1]}`, input: JSON.parse(asked[2]) } } : { text: "Noted." };
       },
     });
     t.after(() => anthropic.close());
@@ -71,6 +73,7 @@ async function setup(t, harness, templates) {
     delete process.env.AGENT_MODEL_BASE_URL;
     Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" });
     prompt = (tool, args) => `CALL ${tool} ${JSON.stringify(args)}`;
+    wire = (tool) => `mcp__hands__mcp__fake__${tool}`;
   }
   if (harness === "codex") {
     const standIn = join(await scratch(t), "codex-stand-in.mjs");
@@ -82,20 +85,21 @@ async function setup(t, harness, templates) {
       AGENT_MODEL: "gpt-test",
       AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
     }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
-    prompt = (tool, args) => `mcp fake ${tool} ${JSON.stringify(args)}`;
+    prompt = (tool, args) => `call mcp_fake__${tool} ${JSON.stringify(args)}`;
+    wire = (tool) => `mcp_fake__${tool}`;
   }
   const server = await serve(t, { ...options, templates, accounts: true, openSetup: true });
   const fake = await startFakeMcp();
   t.after(() => fake.close());
   assert.equal((await server.api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" }, toolkit: "fake" })).status, 200);
-  return { api: server.api, fake, prompt, offered };
+  return { api: server.api, fake, prompt, offered, wire };
 }
 
 for (const harness of HARNESSES) {
   test(`${harness}: a template applied under never with one of two MCP tools ticked: the unticked one is never offered, a call of it is refused and never sent; the ticked one runs with no one asked`, { timeout: 240_000 }, async (t) => {
     const dir = join(await scratch(t), "templates");
     twoToolPackage(dir, `two-tools-${harness}`, harness);
-    const { api, fake, prompt, offered } = await setup(t, harness, dir);
+    const { api, fake, prompt, offered, wire } = await setup(t, harness, dir);
     const applied = await whenFree(() => api("POST", `/templates/two-tools-${harness}/apply`, { grants: [TICKED] }));
     assert.equal(applied.status, 201, JSON.stringify(applied.body));
     const id = applied.body.agent_id;
@@ -108,7 +112,7 @@ for (const harness of HARNESSES) {
     const { last } = await follow(api, refused.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
     assert.notEqual(last.status, "input_required", "nothing asks: the call is refused outright");
     assert.deepEqual(callsOf(fake, "delete_thing"), [], "the unticked tool never reached the MCP server");
-    for (const tools of offered()) assert.ok(!tools.includes("mcp__fake__delete_thing"), `the unticked tool was offered: ${JSON.stringify(tools)}`);
+    for (const tools of offered()) assert.ok(!tools.includes(wire("delete_thing")), `the unticked tool was offered: ${JSON.stringify(tools)}`);
 
     // The ticked tool runs, unasked.
     const ran = await whenFree(() => api("POST", `/agents/${id}/runs`, { input: { content: prompt("add", { a: 2, b: 3 }) } }));
@@ -117,7 +121,7 @@ for (const harness of HARNESSES) {
     assert.equal(done.last.status, "completed", JSON.stringify(done.last));
     assert.equal(callsOf(fake, "add").length, 1, "the ticked tool ran once, with no one asked");
     assert.match((await api("GET", `/runs/${ran.body.run_id}`)).body.result?.final_answer ?? "", /5/);
-    if (harness !== "codex") assert.ok(offered().some((tools) => tools.includes("mcp__fake__add")), "the ticked tool was offered");
+    if (harness !== "codex") assert.ok(offered().some((tools) => tools.includes(wire("add"))), "the ticked tool was offered");
     // At the source: the apply never granted it.
     assert.ok(!agent.definition.tools.includes(UNTICKED), `the unticked tool is not the agent's: ${JSON.stringify(agent.definition.tools)}`);
   });

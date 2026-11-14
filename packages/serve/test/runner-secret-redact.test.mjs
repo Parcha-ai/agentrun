@@ -104,7 +104,6 @@ test("the adapter loop's own failed end: its journal end and the row say why wit
   /** A session that opens, then fails its turn with the key in the error, as a provider that echoes it would. */
   const echoing = {
     id: "echoing",
-    capabilities: () => ({}),
     check: () => [],
     async open() {
       return {
@@ -145,7 +144,6 @@ test("the runner's log holds no key: a run whose release throws with the key in 
   /** A session that answers at once: the run ends, then its release is let go. */
   const answering = {
     id: "answering",
-    capabilities: () => ({}),
     check: () => [],
     async open() {
       let state = "new";

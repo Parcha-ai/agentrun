@@ -39,8 +39,6 @@ export interface HarnessEntry {
   readonly steer: boolean;
   /** What one of its runs reserves in memory while its process lives, in MiB (host.ts). */
   readonly runMib: number;
-  /** Whether it binds a run's remote MCP servers. */
-  readonly mcp: boolean;
   /** A server too small for even one of its runs still runs one at a time (pi's, as before runs were admitted by memory). */
   readonly oneAlwaysFits: boolean;
   /** Its adapter's facts; none for pi, which runs in the run's own process on its own models. */
@@ -97,7 +95,6 @@ const PI: HarnessEntry = Object.freeze({
   id: DEFAULT_HARNESS,
   steer: true,
   runMib: 128,
-  mcp: true,
   oneAlwaysFits: true,
   runs: () => true,
   onWire: () => false,
@@ -118,7 +115,6 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
     id,
     steer: facts.steer,
     runMib: facts.runMib,
-    mcp: facts.mcp,
     oneAlwaysFits: false,
     facts,
     ...(installs ? { installs } : {}),
