@@ -872,7 +872,7 @@ export class HostedProvider implements ComputerProvider {
 	): Promise<Result<string[]> & { mount?: MountReadBack; user?: string }> {
 		let current = connection;
 		if (starting && this.#desktop) {
-			const shown = await startDisplay(connection.client, this.#desktop, { version: VERSION, vendor: this.id, signal });
+			const shown = await startDisplay(connection.client, this.#desktop, { version: VERSION, vendor: this.id, signal, windowManager: this.host.facts.windowManager === true });
 			if (!shown.ok) return shown;
 			const hello = await connection.client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: bounded(this.#timeouts.helloMs, signal) });
 			if (!hello.ok) return hello.error.code === "aborted" && !signal?.aborted ? this.#fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(this.#timeouts.helloMs)}`) : hello;
