@@ -172,6 +172,8 @@ test("each compile attempt is its own request id: never answered from the look-b
   const input = (requestId, entry) => ({ type: "input", requestId, entry });
   const ranges = reflectRanges([input(ids[0], 10), input(ids[2], 14), input(ids[3], 18), input(reflectRequestId("run-1", false, 2), 40), input(ids[4], 44)], [{ kind: "agentrun.end", id: 30 }, { kind: "agentrun.end", id: 60 }]);
   assert.deepEqual(ranges.map(({ from }) => from), [10, 40]);
+  // A later round's look-back has its own id, its compile turn that round's.
+  assert.deepEqual([reflectRequestId("run-1", false, 2), reflectRequestId("run-1", false, 2, "compile-1")], ["learn-reflect-run-1:round-2", "learn-reflect-run-1:round-2:compile-1"]);
 });
 
 test("the three-offers draft ask is gone: no DRAFT_AFTER_RUNS, no draftForOf, and the look-back's prompt keeps no workflow", () => {
