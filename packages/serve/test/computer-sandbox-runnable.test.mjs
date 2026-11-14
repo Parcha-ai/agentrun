@@ -94,6 +94,15 @@ for (const [provider, keys] of [["e2b", { E2B_API_KEY: "fake-test-key" }], ["mod
   });
 }
 
+test("Mode 2: an agent whose computer is an E2B desktop, its key saved, is warned at the save and refused at its run's start (409) before any computer is made: the desktop would mount the disk, and needs Archil's image", async (t) => {
+  const api = await server(t, { archil: true });
+  assert.equal((await api("PUT", "/computers/e2b/keys", { E2B_API_KEY: "fake-test-key" })).status, 200);
+  const said = await saveAndStart(api, "remote-e2b-desktop", { computer: { kind: "desktop", provider: "e2b" } });
+  const words = "An E2B desktop can't start in Mode 2 yet: it needs Archil's image in your E2B account, and this server can't put it there yet. Set this agent's computer to none (Settings → Computers).";
+  assert.deepEqual([...said.saved, ...said.refused], [["definition.computer", "not_set_up_here", words], ["definition.computer", "not_set_up_here", words]], JSON.stringify(said));
+  assert.deepEqual(said.started.slice(0, 2), [409, "agent_not_runnable"], JSON.stringify(said));
+});
+
 test("an agent whose computer is an e2b sandbox with no key saved is refused in Mode 2 in words that name Settings → Computers", async (t) => {
   const api = await server(t, { archil: true });
   const said = await saveAndStart(api, "remote-unkeyed", { computer: { kind: "sandbox", provider: "e2b" } });

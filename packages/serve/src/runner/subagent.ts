@@ -147,9 +147,12 @@ export function subagentTool(options: SubagentOptions): ToolRegistration {
       const chosen = chosenTools(args.tools ?? [], options);
       if ("refused" in chosen) return fail(chosen.refused);
       // The registrations the parent's agent enables, by session name: exactly the ones the call named are the child's.
+      // Past the deferral threshold the parent's catalog tools are deferred (offered through tools_search, never listed):
+      // they are its agent's `deferred`, not its `tools`, and a child that is given one is offered it outright, having
+      // no tools_search of its own (modelTools below names every tool it has, deferred ones too).
       const names = new Set(chosen.names);
       const parent = await api.agent(context);
-      const tools = parent.tools.filter((registration) => names.has(registration.name));
+      const tools = [...parent.tools, ...parent.deferred.filter((one) => !parent.tools.some((listed) => listed.name === one.name))].filter((registration) => names.has(registration.name));
       const missing = [...names].filter((name) => !tools.some((registration) => registration.name === name));
       if (missing.length) return fail(`subagent: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not bound in this run, so no subagent may have ${missing.length === 1 ? "it" : "them"}. Nothing ran.`);
       const release = await free.take(context.abortSignal);
@@ -166,7 +169,8 @@ export function subagentTool(options: SubagentOptions): ToolRegistration {
             // The call's effort, else the agent's own level (a task-owned conversation copies its owner's agent).
             ...(args.effort ? { thinkingLevel: args.effort } : {}),
             tools: tools as unknown as ToolRegistration[],
-            modelTools: null,
+            // Exactly its tools offered, a deferred one too.
+            modelTools: tools as unknown as ToolRegistration[],
             instructions: [options.preamble, SUBAGENT_INSTRUCTIONS].filter(Boolean).join("\n\n"),
           });
           return created.id;

@@ -1,4 +1,4 @@
-import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, refusedLabel, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
+import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, refusedLabel, savedPaths, saysFailure, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, saidSummary, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
 import type { ComputerCallRow } from "./computer.js";
@@ -665,8 +665,9 @@ function createProjector(options: TimelineOptions) {
     // is still read from the output as it came: one whose redacted output gives no words reads failed with no detail, never
     // ok, and never the detail as it came.
     const worded = shown.text === view.text ? outcome : outcomeOf(tool.name, { ...view, text: shown.text });
-    // A call refused before it ran is named refused already (refusedLabel): its row says why, never that it failed.
-    const failedSummary = refused(view) ? `${named}: ${failure(shown.text)}` : `${named} failed: ${failure(shown.text)}`;
+    // A call refused before it ran is named refused already (refusedLabel), and a computer step's label says it could not
+    // (saysFailure): its row says why, never that it failed.
+    const failedSummary = refused(view) || saysFailure(tool.name) ? `${named}: ${failure(shown.text)}` : `${named} failed: ${failure(shown.text)}`;
     return make("tool_result", conv, rowId, {
       summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : worded ? `${named}: ${saidOf(worded.text)}` : outcome?.failed ? `${named}: failed` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
       tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,

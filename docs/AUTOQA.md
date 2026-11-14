@@ -260,7 +260,7 @@ land (native and picked web search and tool settings, monid on every harness, th
 4. On claude-agent and codex, the host tools (`read`, `write`, `edit`, `web_fetch`, and
    `web_search` where it is not the harness's own) run and are journaled with their replay class; a `write` cut off by a
    crash comes back interrupted, never re-run.
-5. A `monid.run` is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
+5. A monid endpoint's call (`monid:<provider>/<endpoint>`) is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
    by name; an answer over 60,000 characters is filed under `work/evidence/monid/`.
 6. On pi with no native search, `web_search` searches through Parallel where the server holds a Parallel key (its fee a
    `Tool cost` line), else Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server, over IPv4;

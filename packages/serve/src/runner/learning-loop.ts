@@ -48,6 +48,9 @@ export interface KeptProposal {
   readonly triggered?: readonly { readonly source: string; readonly text: string }[];
   /** The commit of the learning folder's main the run started from (its pin's seed). */
   readonly seed?: string;
+  /** A file whose conflict base is not the seed, by its path (learning.ts Proposal): a revised workflow's, the commit of
+   *  main its compile ask read it at. */
+  readonly bases?: Readonly<Record<string, string>>;
   /** The draft the run's compile turn wrote (learn/compile.ts), by its name, and the notes it does the work of: marked
    *  `compiled_into` when the draft merges. */
   readonly compiled?: { readonly workflow: string; readonly from_notes: readonly string[] };
@@ -106,6 +109,9 @@ export interface MergeChange {
   readonly graded: Readonly<Record<string, string>>;
   /** The run's seed: a skill's or a draft's file not on main as it was on it is a conflict, never written over. */
   readonly seed?: string;
+  /** A file checked against another commit than the seed, by its path: a revised workflow's, the commit its compile ask
+   *  read it at. */
+  readonly bases?: Readonly<Record<string, string>>;
   /** New notes written over main's note of the same name, each superseding it by name (takenOnMain). */
   readonly replace?: readonly string[];
   /** Each skill re-filed as a note, retired on main in the same write (its SKILL.md, and the note that replaces it). */
@@ -291,7 +297,8 @@ const itemsByFile = (verdict: Verdict): Map<string, Verdict["items"][number]> =>
 /** The merge of `merging` (what the verdict kept), the one rule learningCommit's merge is made by: each note with
  *  the origin its item gives (`you` for the user's own words, else the run's) and held for its owner's OK when its item
  *  is pending; a skill's SKILL.md or a draft's README.md held when its item is (a draft's workflow.json is held by its
- *  README); and the seed the source run started from, so a skill's or draft's file changed on main since is a conflict. */
+ *  README); and the seed the source run started from, so a skill's or draft's file changed on main since is a conflict
+ *  (a revised workflow's file: changed since the commit its compile ask read it at, `bases`). */
 export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Verdict, graded: Readonly<Record<string, string>>, round = 1): MergeChange {
   const judged = itemsByFile(verdict);
   const notes = merging.notes.map(({ file, text }) => ({ path: file, text: mergedNote(text, { origin: judged.get(file)?.origin ?? "run" }) }));
@@ -307,7 +314,7 @@ export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Ver
   const compiled = merging.compiled && files.some(({ path }) => path === `workflows/${merging.compiled!.workflow}/workflow.json`) && merging.compiled.from_notes.length ? { workflow: merging.compiled.workflow, notes: [...merging.compiled.from_notes] } : undefined;
   return {
     kind: "merge", runId, ...(round > 1 ? { round } : {}), reason: verdict.reason || "The grader kept every new note.", files: [...notes, ...files],
-    ...(held.length ? { held } : {}), graded, ...(merging.seed ? { seed: merging.seed } : {}), ...(retire.length ? { retire } : {}), ...(compiled ? { compiled } : {}),
+    ...(held.length ? { held } : {}), graded, ...(merging.seed ? { seed: merging.seed } : {}), ...(merging.bases && Object.keys(merging.bases).length ? { bases: { ...merging.bases } } : {}), ...(retire.length ? { retire } : {}), ...(compiled ? { compiled } : {}),
   };
 }
 
