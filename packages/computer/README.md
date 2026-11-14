@@ -2779,8 +2779,8 @@ npm test -w @parcha/agentrun-computer               # unit tests: no Go, no Dock
 cd packages/computer/daemon && go vet ./... && go test ./...
 AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
 AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... [COMPUTER_DAYTONA_SNAPSHOT=<snapshot>] npm run test:daytona -w @parcha/agentrun-computer
-AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, a key the lead OKed
-AGENTRUN_COMPUTER_LIVE_E2B=1 npm run test:e2b -w @parcha/agentrun-computer       # also needs COMPUTER_E2B_API_KEY, a key the lead OKed, and the e2b package
+AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, for an account you can bill
+AGENTRUN_COMPUTER_LIVE_E2B=1 npm run test:e2b -w @parcha/agentrun-computer       # also needs COMPUTER_E2B_API_KEY, for an account you can bill, and the e2b package
 ```
 
 `npm test` also runs `test/local-chrome-live.test.mjs` on a real Chrome where one is on PATH (or `CHROME_PATH` names
