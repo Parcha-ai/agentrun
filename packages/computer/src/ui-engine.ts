@@ -350,13 +350,15 @@ const looksOf = (element: UiElement) => JSON.stringify([element.role, element.na
  * what is on the window counts, with its bounds held inside it as ui.observe shows them: System Settings rebuilds its
  * sidebar rows scrolled out of view each time its tree is read (so the list's content is a new height each time), and
  * Finder's status bar below the window counts the free disk space, which held every settle there to maxSettleMs too.
+ * Nor which element each is (its key): a person sees none of that, and System Settings makes its sidebar's row at the
+ * window's edge anew on every read, the same words in the same place.
  */
 const fingerprint = (view: UiView) =>
 	JSON.stringify([
 		view.window.id,
 		view.window.bounds,
 		view.elements.length > 0
-			? view.elements.filter((element) => onWindow(view, element.bounds)).map((element) => [element.key, looksOf({ ...element, bounds: insideWindow(element.bounds, view.window.bounds[2], view.window.bounds[3]) })])
+			? view.elements.filter((element) => onWindow(view, element.bounds)).map((element) => looksOf({ ...element, bounds: insideWindow(element.bounds, view.window.bounds[2], view.window.bounds[3]) }))
 			: view.frame,
 	]);
 /** The bounds (window points) reach into the window. */

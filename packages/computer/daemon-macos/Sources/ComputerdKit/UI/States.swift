@@ -46,16 +46,15 @@ struct View: Sendable {
 	/// the image's hash. Not the image when there is a tree: a blinking caret or a spinner redraws the window every half
 	/// second, which held every settle to maxSettleMs and counted as a step's effect. Not a node wholly outside the
 	/// window: System Settings rebuilds its sidebar rows scrolled out of view each time its tree is read, and Finder's
-	/// status bar below the window counts the free disk space, which held every settle there to maxSettleMs too.
+	/// status bar below the window counts the free disk space, which held every settle there to maxSettleMs too. Nor
+	/// which element a node is: a person sees none of that, and System Settings makes its sidebar's row at the window's
+	/// edge anew on every read, the same words in the same place.
 	var fingerprint: Int {
 		var h = Hasher()
 		h.combine(target.window.id)
 		h.combine(target.window.bounds.w)
 		h.combine(target.window.bounds.h)
-		for node in nodes where onWindow(node) {
-			h.combine(node.handle)
-			h.combine(looks(node))
-		}
+		for node in nodes where onWindow(node) { h.combine(looks(node)) }
 		if nodes.isEmpty { h.combine(frame) }
 		return h.finalize()
 	}

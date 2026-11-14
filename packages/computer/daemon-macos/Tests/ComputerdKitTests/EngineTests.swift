@@ -966,8 +966,9 @@ final class EngineTests: XCTestCase {
 
 	/// System Settings rebuilds its sidebar rows scrolled out of the window every time its tree is read: new elements,
 	/// at other heights, so the list's content, taller than the window, is a new height each read too. Finder's status
-	/// bar below the window counts the free disk space down. Nothing outside the window is what a person sees, so it
-	/// holds no settle (on CI each settle there ran out its 3 s over 4 looks) and is no step's effect.
+	/// bar below the window counts the free disk space down. Nothing outside the window is what a person sees, and
+	/// neither is which element a row is, so neither holds a settle (on CI each settle there ran out its 3 s over 4
+	/// looks) or is a step's effect.
 	func testWhatChangesOutsideTheWindowNeitherHoldsASettleNorVerifiesAStep() async throws {
 		os.add(50, "group", frame: Rect(108, 98, 178, 1000), parent: 2)
 		os.onSnapshot = { os in
@@ -977,6 +978,9 @@ final class EngineTests: XCTestCase {
 			os.remove(old + 1000)
 			os.add(old + 1001, "text", name: "Focus", frame: Rect(-50, 700, 0, 0), parent: 2)
 			os.elements[50]!.frame = Rect(108, 98, 178, 1000 + Double(old % 2) * 19)
+			// The row at the window's bottom edge: a new element each read, the same words in the same place.
+			os.remove(old + 2000)
+			os.add(old + 2001, "text", name: "Notifications", frame: Rect(123, 630, 105, 14), parent: 2)
 		}
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())
