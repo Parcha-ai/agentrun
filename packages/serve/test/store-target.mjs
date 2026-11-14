@@ -128,7 +128,7 @@ export async function connectionsLeft(schemas, waitMs = LEFT_OPEN_WAIT_MS) {
  *  time) those of a file's earlier tests pile up until a later test meets "too many clients". */
 async function endTest(scope) {
   tests.splice(tests.indexOf(scope), 1);
-  const failed = [];
+  const failed = scope.hookErrors.splice(0);
   for (const close of scope.closers.splice(0)) await Promise.resolve().then(close).catch((error) => failed.push(error));
   if (scope.schemas.length > 0) {
     const left = await connectionsLeft(scope.schemas);
@@ -140,12 +140,23 @@ async function endTest(scope) {
 }
 
 // Each test's end on Postgres (endTest). The hook added here is the test's first after-hook, so it runs first, and the
-// end it adds then runs last: after the test's own hooks, a failing test's too.
+// end it adds then runs last: after the test's own hooks, a failing test's too. node:test skips every after-hook still
+// to run once one throws, the end with them, so each of the test's own hooks runs caught: its error fails the test at
+// the end, after the rest of its hooks and the end have run. (beforeEach's context is the test's own.)
 if (onPostgres) {
   beforeEach((t) => {
-    const scope = { closers: [], schemas: [] };
+    const scope = { closers: [], schemas: [], hookErrors: [] };
     tests.push(scope);
-    t.after(() => t.after(() => endTest(scope)));
+    const after = t.after.bind(t);
+    t.after = (fn, options) =>
+      after(async function (...args) {
+        try {
+          await fn.apply(this, args);
+        } catch (error) {
+          scope.hookErrors.push(error);
+        }
+      }, options);
+    after(() => after(() => endTest(scope)));
   });
 }
 

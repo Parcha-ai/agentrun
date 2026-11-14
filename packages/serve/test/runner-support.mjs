@@ -66,7 +66,7 @@ export async function until(check, what, ms = 5_000) {
 
 // Stores close and their files go at the end of the test that opened them, after every after-hook of the test's own (its
 // runners' close: store-target.mjs's atTestEnd), and on Postgres no connection of theirs may outlive the test. A store
-// opened outside a test (a before-hook), or one whose test's own hook threw, closes once the file's tests are done.
+// opened outside a test (a before-hook) closes once the file's tests are done.
 const opened = [];
 after(async () => {
   for (const entry of [...opened]) await closeEntry(entry);
