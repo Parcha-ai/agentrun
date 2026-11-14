@@ -420,7 +420,9 @@ for (const harness of ["claude-agent", "codex"]) {
     // with its result), so the turn is read from the run, working with the person's message in.
     await follow(api, runId, ["working"], { deadlineMs: 30_000 });
     const sent = await api("POST", `/runs/${runId}/messages`, { content: "and then?" });
-    assert.deepEqual([sent.status, sent.body.mode], [202, "follow_up"], JSON.stringify(sent.body));
+    // claude-agent steers mid-turn (its facts), so the API answers steer; this faux session takes no steer, so the runner
+    // still sends it as the next turn. codex takes no message mid-turn: follow_up.
+    assert.deepEqual([sent.status, sent.body.mode], [202, harness === "claude-agent" ? "steer" : "follow_up"], JSON.stringify(sent.body));
     await writeFile(go, "");
     const rows = await completesOnlyAfter(api, runId, "Answer 2.");
     assert.deepEqual(rows.filter((r) => ["user_message", "final_answer", "text_block"].includes(r.kind)).map((r) => r.summary), ["You: hi", "Answer 1.", "You: and then?", "Answer 2."]);
