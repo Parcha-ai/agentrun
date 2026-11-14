@@ -55,10 +55,11 @@ function parkingCli(said) {
   };
 }
 
-/** A CLI run whose one call is the MCP tool, its spec's gate `gate`: once it parks, `meanwhile(server, file)` (an answer
- *  to its ask; `file`: the store's place, for `raw`), then its row once it rests at `state`. `cli(said)`: the stand-in, by
- *  default the one above. `ran`: each input the MCP server was sent; `said`: what the model was handed. */
-export async function parkedMcpRun(t, { gate, hooks = quiet, state = "ended", meanwhile, cli = parkingCli }) {
+/** A CLI run whose one call is the MCP tool, its spec's gate `gate`: once it parks, `offline(file)` with its runner closed
+ *  (`file`: the store's place, for `raw`; a new runner starts after), then `meanwhile(server)` (an answer to its ask), then
+ *  its row once it rests at `state`. `cli(said)`: the stand-in, by default the one above. `ran`: each input the MCP server
+ *  was sent; `said`: what the model was handed. */
+export async function parkedMcpRun(t, { gate, hooks = quiet, state = "ended", meanwhile, offline, cli = parkingCli }) {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   const ran = [];
@@ -75,7 +76,8 @@ export async function parkedMcpRun(t, { gate, hooks = quiet, state = "ended", me
     gate,
     mcp,
   }), { restartLimit: 3 });
-  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
+  const start = () => startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
+  let runner = start();
   t.after(() => runner.close());
   const rested = (want) => until(async () => {
     const now = await opened.server.runs.get("run-1");
@@ -83,7 +85,12 @@ export async function parkedMcpRun(t, { gate, hooks = quiet, state = "ended", me
   }, `the run ${want} and released`, 10_000);
   if (meanwhile) {
     await rested("parked");
-    await meanwhile(opened.server, opened.file);
+    if (offline) {
+      await runner.close();
+      await offline(opened.file);
+      runner = start();
+    }
+    await meanwhile(opened.server);
   }
   const row = await rested(state);
   return { ran, said, row, server: opened.server };

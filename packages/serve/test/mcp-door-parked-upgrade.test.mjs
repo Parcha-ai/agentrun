@@ -82,10 +82,9 @@ test("a run parked at an earlier version's MCP door runs the call once on the pe
   const { ran, said, row } = await parkedMcpRun(t, {
     gate: ask,
     cli: doorCli,
-    meanwhile: async (server, file) => {
-      await asTheDoorLeftIt(file);
-      await sendCommand(server, "run-1", { kind: "approve", body: { approval: "call-1" } });
-    },
+    // The earlier version's runner stops; the record is as it left it; this version's runner starts.
+    offline: asTheDoorLeftIt,
+    meanwhile: (server) => sendCommand(server, "run-1", { kind: "approve", body: { approval: "call-1" } }),
   });
   assert.deepEqual(ran, [{ path: "notes.md" }], "the allowed call ran once");
   assert.equal(said.length, 1, "one message");
@@ -98,10 +97,9 @@ test("a run parked at an earlier version's MCP door never runs the call on the p
   const { ran, said } = await parkedMcpRun(t, {
     gate: ask,
     cli: doorCli,
-    meanwhile: async (server, file) => {
-      await asTheDoorLeftIt(file);
-      await sendCommand(server, "run-1", { kind: "deny", body: { approval: "call-1", note: "not now" } });
-    },
+    // The earlier version's runner stops; the record is as it left it; this version's runner starts.
+    offline: asTheDoorLeftIt,
+    meanwhile: (server) => sendCommand(server, "run-1", { kind: "deny", body: { approval: "call-1", note: "not now" } }),
   });
   assert.deepEqual(ran, [], "never run");
   assert.equal(said.length, 1, "one message");
