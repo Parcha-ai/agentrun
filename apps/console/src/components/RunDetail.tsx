@@ -152,7 +152,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // a paused workflow (a pause blocks new work; its session can stay open). It is read until the run is over (completed,
   // failed, cancelled): an ended run has nothing to watch.
   const screenOpens = view.live || (run.status === "input_required" && run.state === "waiting") || run.status === "paused";
-  const { view: screen, held } = useRunScreen(readComputer, !view.final, computerEvery);
+  // A queued run's claim is starting its turn (and its desktop or phone): a screen seen live before is not this one.
+  const { view: screen, held } = useRunScreen(readComputer, !view.final, computerEvery, undefined, run.status === "queued");
   const machine = run.computer;
   // An ask names its computer, so the tab is there for it before the first read answers.
   const hasScreen = !!screen || !!machine || !!ask;

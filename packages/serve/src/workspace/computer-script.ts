@@ -63,8 +63,9 @@ export class ScriptGuard {
 
   /** Why `op` with `args` may not run now, or undefined when the gate lets it. The words start with what could not be
    *  done, on which computer ("could not run a shell command on the phone"), as the Timeline's row shows them; an ask
-   *  says why in a person's words and what to do instead. A phone's instead is its screen: the run's bash tool does not
-   *  run on a phone, so it is never offered there. */
+   *  says why in a person's words and what to do instead. A phone's instead is its screen, named as the script's
+   *  `computer` (script.ts bindComputer) and the run's tools name it: the run's bash tool does not run on a phone, so it
+   *  is never offered there. */
   async refusal(op: string, args: unknown): Promise<string | undefined> {
     const tool = HELD_AS[op];
     if (tool === undefined) return undefined;
@@ -78,7 +79,7 @@ export class ScriptGuard {
     const setting = SETTING[tool] ?? tool;
     const why = `this agent's ${WAITS[setting] ?? `${setting} calls`} wait for a person's OK (its ${setting} setting is ask), and a script can't stop to ask.`;
     const instead = this.kind === "phone"
-      ? `Do it on the phone's screen instead (computer.observe to read it, computer.act to tap and type), or ask the agent's owner to set ${setting} to allow.`
+      ? `Do it on the phone's screen instead: in a script, computer.app(id).observe() reads it and its press, type and click act on it (or call the computer_observe and computer_act tools), or ask the agent's owner to set ${setting} to allow.`
       : `Call the ${tool} tool itself, which can ask, or ask the agent's owner to set ${setting} to allow.`;
     return `${couldNot}: ${why} ${instead}`;
   }

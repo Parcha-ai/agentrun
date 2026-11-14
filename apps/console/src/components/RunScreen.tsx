@@ -44,7 +44,7 @@ export type ScreenView = Exclude<RunComputer, { state: "off" }> | { state: "sign
  *  opened (none, opening), a take-over waiting for the agent's step (pending), and for HURRY_MS after the page's own
  *  take-over or hand-back, whose answer is read right after its row is written, before the run applies it. So the first
  *  frame and who drives show when they happen, not up to a whole `every` later. */
-export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000, soon = Math.min(every, SOON_MS)): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
+export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000, soon = Math.min(every, SOON_MS), starting = false): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
   const [now, setNow] = useState<ScreenView | null>(null);
   // A caller the route refuses (401, 403) is read no more, whatever the run does.
   const [refused, setRefused] = useState(false);
@@ -63,8 +63,10 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
   const hurry = useRef<(() => void) | null>(null);
   // The desktop or phone this page saw live while the run goes. Its claim holds it from the run's start to its end, so
   // once it was live, an answer of opening (its viewer gone, the run not yet read as ended) is the one that was let go:
-  // released, never one to wait for. A follow-up's turn opens a new one, which is waited for.
+  // released, never one to wait for. A new turn opens a new one, which is waited for: the memory goes when the run ends,
+  // and when a turn's claim is `starting` it (the run queued: a follow-up after the run completed or was stopped).
   const wasLive = useRef<RunMachine["kind"] | null>(null);
+  useEffect(() => { if (starting) wasLive.current = null; }, [starting]);
   const has = !!read;
   useEffect(() => {
     if (!has || refused) return;

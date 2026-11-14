@@ -494,6 +494,22 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
     expect(p.panel()!.textContent).toContain("Waiting for the desktop. Its screen shows here once it is up.");
   });
 
+  it("a stopped run's desktop never reads as waited for; the follow-up's new desktop, booting while the run is queued, is waited for", async () => {
+    let gone = false;
+    const p = await screen(async () => (gone ? { state: "none", kind: "desktop", hold: "agent", session: "opening" } : DESKTOP_LIVE()), desktop, { tab: "screen" });
+    expect(p.panel()!.querySelector("iframe")).not.toBeNull();
+    // Stopped: the turn ends and its desktop is let go; the run stays open (input required, idle), so it is still read.
+    gone = true;
+    await p.show({ ...desktop, status: "input_required", state: "idle" } as Run);
+    await settle(100);
+    expect(p.panel()!.textContent).not.toContain("Waiting for the desktop");
+    // A follow-up: the run is queued while its claim starts a new desktop.
+    await p.show({ ...desktop, status: "queued", state: "working", computer: { kind: "desktop", provider: "e2b", state: "starting" } } as Run);
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("Waiting for the desktop. Its screen shows here once it is up.");
+    expect(p.panel()!.textContent).not.toContain("released");
+  });
+
   it("a phone opening at the run's start (never live on this page) still waits for it", async () => {
     const phone = { ...working, status: "queued", computer: { kind: "phone", provider: "phone-harness", state: "starting" } } as Run;
     const p = await screen(async () => ({ state: "none", kind: "phone", hold: "agent", session: "opening" }), phone, { tab: "screen" });

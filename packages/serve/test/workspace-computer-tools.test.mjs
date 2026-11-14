@@ -285,6 +285,12 @@ test("a phone's shell in a script, refused, says in a person's words what the ph
   assert.match(asked, /wait for a person's OK/, "why, in a person's words");
   assert.match(asked, /phone's screen instead/, "what to use instead: the screen, never the bash tool, which does not run on the phone");
   assert.doesNotMatch(asked, /Call the bash tool/);
+  // Only names that exist: the script's computer.app(id).observe() and the run's computer_observe and computer_act tools.
+  assert.match(asked, /computer\.app\(id\)\.observe\(\)/);
+  assert.match(asked, /computer_observe and computer_act tools/);
+  assert.doesNotMatch(asked, /computer\.(observe|act)\b/);
+  const phoneTools = run.registry.list().map((def) => def.name);
+  for (const name of ["computer_observe", "computer_act"]) assert.ok(phoneTools.includes(name), `${name} is a tool of a phone's run`);
   verdict = { deny: "bash is denied for this agent" };
   assert.equal((await call(tools, "computer_script", { code })).structured, "could not run a shell command on the phone: bash is denied for this agent");
   assert.equal(computer.calls.filter(([method]) => method === "exec.run").length, 0, "nothing ran on the phone");
