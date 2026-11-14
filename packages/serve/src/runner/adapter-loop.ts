@@ -2713,18 +2713,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
       const replayed = call.replayed === true;
       const decision = (await spec.gate?.(kernelCall, replayed ? { replayed } : {})) ?? "allow";
-      if (typeof decision === "object") return { deny: decision.deny };
       // Asked about by the name the gate gives (its settings key, as main's pending approval is named), else the call's own;
       // an MCP call by its catalog name (tool) either way, never pi's wire name, and so are its call and its price.
       const asked = spec.gate?.askedAs?.(tool) ?? tool;
-      // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts). A call a person
-      // was asked about and has not answered: the deny answers the ask first (deniedBySetting), a deny of theirs standing.
-      if (decision === "deny") {
-        const answer = spec.gate && (await askStands(call.callId)) ? await deniedBySetting({ ...call, tool }, asked) : undefined;
+      // A call a person was asked about and has not answered, refused now because its tool is set to deny (a bare "deny",
+      // or the gate's own words for it): the deny answers the ask first (deniedBySetting), a deny of theirs standing. The
+      // model reads the gate's words (main's, from refusal-words.ts) either way.
+      // The ask is read first: it is the claim's one journal read, the setting a store read.
+      if (decision !== "allow" && decision !== "ask" && spec.gate && (await askStands(call.callId)) && (decision === "deny" || (await spec.gate.permission?.(tool)) === "deny")) {
+        const answer = await deniedBySetting({ ...call, tool }, asked);
         if (answer === "park") return { park: true };
-        if (answer && answer.by !== "setting") return { deny: deniedText(asked, answer.note) };
-        return { deny: setToDenyText(asked, undefined, "server", replayed ? "unknown" : "no") };
+        if (answer.by !== "setting") return { deny: deniedText(asked, answer.note) };
       }
+      if (typeof decision === "object") return { deny: decision.deny };
+      if (decision === "deny") return { deny: setToDenyText(asked, undefined, "server", replayed ? "unknown" : "no") };
       // A call a person was asked about and has not answered, its setting at allow now: the setting answers the ask
       // (allowedBySetting), and the call runs without asking the person again.
       const bySetting = decision === "allow" && !!spec.gate && (await askStands(call.callId));
