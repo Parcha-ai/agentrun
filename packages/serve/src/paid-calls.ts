@@ -64,7 +64,8 @@ export type Ledger = {
   paid?: PaidBooking;
   /** The run's pause on the runner (the adapter loop's RunLedger.pause): a paid step of the agent's own that `paid`
    *  refused for room is handed to it, so the run pauses at its next request in the cap's words, as main's paidCall
-   *  pauses by default. A person's take-over books through no paid step (browser-cost.ts personTime) and never pauses. */
+   *  pauses by default. A person's take-over books through no paid step (browser-cost.ts personTime) and never pauses.
+   *  A refusal for good (stopRun) ends the run there instead. */
   pause?: (refusal: LedgerRefusal) => Promise<void>;
 };
 /** A cap refusal as the run's pause reads it: its words, and for room its figures. */
@@ -137,6 +138,13 @@ let paidSeq = 0;
 
 /** The run's one ledger the current call books on (Ledger.paid), when it has one: the runner's. */
 export const paidLedger = (): PaidBooking | undefined => ledgers.getStore()?.paid;
+
+/** Stops the run the current call books in, in `words`: handed to its pause (Ledger.pause) as a cap refusal no raise
+ *  could fix, so the run's next request is refused in them and the run ends failed in them, as a cap refusal for good
+ *  ends it. Its code is the cap's, so the refused request reads as the cap's refusal (no model error row of its own). */
+export const stopRun = async (words: string): Promise<void> => {
+  await ledgers.getStore()?.pause?.({ refuse: words, code: SPEND_CAP_REACHED, forGood: true });
+};
 
 /** One paid step on the run's one ledger `paid`, under call `call`: admitted at `holdUsd` (refused unsent: the cap's words,
  *  or why its hold could not be kept), then `run`, then settled at `chargeOf` its outcome (null: at its hold). One refused
