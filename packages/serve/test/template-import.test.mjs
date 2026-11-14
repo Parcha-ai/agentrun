@@ -118,6 +118,16 @@ test("a source reads as github:<owner>/<repo>[/<path>][@<ref>], or a github.com 
   }
 });
 
+test("a % that starts no escape is refused by its own sentence, naming it, in a github: source and a tree URL alike; an escape reads as its character", async () => {
+  const { parseSource } = await import("../dist/template-source.js");
+  const said = (source) => { try { parseSource(source); } catch (error) { return error.extra.fields[0].message; } return null; };
+  assert.equal(said("github:Parcha-ai/agentrun/packages/serve/templates/k%ZZb"), `"k%ZZb" has "%ZZ", which is no percent escape: a % is followed by two hex digits (%25 is a % itself).`);
+  assert.equal(said("https://github.com/acme/agents/tree/main/k%ZZb"), said("github:acme/agents/k%ZZb@main"));
+  assert.equal(said("github:acme/agents/kyb%"), `"kyb%" has "%", which is no percent escape: a % is followed by two hex digits (%25 is a % itself).`);
+  assert.equal(said("github:acme/agents/k%FFb"), `"k%FFb" has percent escapes that spell no text.`);
+  assert.deepEqual(parseSource("github:acme/agents/templates/k%79b@main"), parseSource("github:acme/agents/templates/kyb@main"));
+});
+
 test("an import from GitHub: a dry run shows the package whole and stores nothing; the first import from a publisher needs its trust; it is listed beside the bundled one, applied with its provenance, and kept across a restart", { timeout: 120_000 }, async (t) => {
   const github = await fauxGitHub(t);
   const server = await serve(t, { templateImportApi: github.url, runner: false });

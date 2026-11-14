@@ -191,6 +191,12 @@ describe("installing a template from GitHub", () => {
     expect(t.button(/^Install$/)).toBeUndefined();
   });
 
+  it("a refusal whose message is its one field's says that sentence once", async () => {
+    const said = "The package's folder \"k%ZZb\" is a path of plain names.";
+    const t = await open(undefined, { install: `${ID}@main`, imported: async () => { throw Object.assign(new ClientError(422, "input_invalid", said), { fields: [{ field: "source", reason: "bad_format", message: said }] }); } });
+    expect(t.host.querySelector('[role="alert"]')?.textContent).toBe(said);
+  });
+
   it("lists an imported package with its provenance, applies it by its id, and removes it", async () => {
     const t = await open(undefined, { templates: [REVIEWER, KYB_GH] });
     const card = [...t.host.querySelectorAll("article")][1];
