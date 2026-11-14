@@ -324,9 +324,11 @@ func TestUserNamespaceInitRefusesAnythingButTheChildsArguments(t *testing.T) {
 	}
 }
 
-// probe --sockets lists the unix sockets with a path it can connect to, the isolation fence's listing (no python3 in the
-// image needed): a socket this test listens on under /tmp is among them; without --sockets there is no list.
-func TestProbeSocketsListsAPathSocketItCanConnectTo(t *testing.T) {
+// probe --sockets lists the unix sockets with a path it can connect to and the TCP and UDP listeners of its network, the
+// isolation fence's listings (no python3 in the image needed): a socket this test listens on under /tmp is among the
+// first, and a TCP port it listens on among the second, held by this test's process, computerd's own program (this test
+// binary is computerd here, the probe started again as itself); without --sockets there is neither list.
+func TestProbeSocketsListsAPathSocketItCanConnectToAndTheListeners(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "probe-sockets-")
 	if err != nil {
 		t.Fatal(err)
@@ -338,6 +340,12 @@ func TestProbeSocketsListsAPathSocketItCanConnectTo(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	tcp, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcp.Close()
+	port := tcp.Addr().(*net.TCPAddr).Port
 	code, stdout, stderr := computerdOut(t, 60*time.Second, "probe", "--sockets")
 	if code != 0 {
 		t.Fatalf("probe --sockets: exit %d, stderr %q", code, stderr)
@@ -350,9 +358,21 @@ func TestProbeSocketsListsAPathSocketItCanConnectTo(t *testing.T) {
 			} `json:"sockets"`
 			Incomplete []string `json:"incomplete"`
 		} `json:"sockets"`
+		Listeners *struct {
+			Listeners []struct {
+				Protocol  string `json:"protocol"`
+				Port      int    `json:"port"`
+				Owner     string `json:"owner"`
+				Computerd bool   `json:"computerd"`
+			} `json:"listeners"`
+			Incomplete []string `json:"incomplete"`
+		} `json:"listeners"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("probe --sockets wrote %q: %v", stdout, err)
 	}
 	found := false
-	if err := json.Unmarshal([]byte(stdout), &report); err == nil && report.Sockets != nil {
+	if report.Sockets != nil {
 		for _, socket := range report.Sockets.Sockets {
 			found = found || (socket.Path == path && socket.Type == "stream")
 		}
@@ -360,9 +380,19 @@ func TestProbeSocketsListsAPathSocketItCanConnectTo(t *testing.T) {
 	if !found {
 		t.Fatalf("probe --sockets wrote %q; want %s among its sockets, a stream one", stdout, path)
 	}
+	held := fmt.Sprintf("pid %d (", os.Getpid())
+	listed := false
+	if report.Listeners != nil {
+		for _, one := range report.Listeners.Listeners {
+			listed = listed || (one.Protocol == "tcp" && one.Port == port && strings.HasPrefix(one.Owner, held) && one.Computerd)
+		}
+	}
+	if !listed {
+		t.Fatalf("probe --sockets wrote %q; want tcp port %d among its listeners, held by %s...), computerd's", stdout, port, held)
+	}
 	code, stdout, _ = computerdOut(t, 30*time.Second, "probe")
-	if code != 0 || strings.Contains(stdout, `"sockets"`) {
-		t.Fatalf("probe without --sockets: exit %d, %q; want no sockets list", code, stdout)
+	if code != 0 || strings.Contains(stdout, `"sockets"`) || strings.Contains(stdout, `"listeners"`) {
+		t.Fatalf("probe without --sockets: exit %d, %q; want no sockets list and no listeners list", code, stdout)
 	}
 }
 
