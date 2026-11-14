@@ -99,10 +99,10 @@ export function probeNotes(probe: ProbeReport, network: NetworkSpec | NetworkPol
 /** Every way hello differs from what the provider expects. */
 export function helloDrift(hello: HelloResult | null | undefined, expected: HelloExpected): string[] {
 	const found: string[] = [];
-	// Another protocol version is another wire. A hello with none is a daemon from before the protocol was versioned,
-	// which the version check below already refuses as another daemon.
-	if (hello?.protocol !== undefined && hello.protocol !== PROTOCOL_VERSION) {
-		found.push(`hello: the daemon speaks protocol ${text(hello.protocol)}, expected ${PROTOCOL_VERSION}`);
+	// Exact match (spec/computer/README.md, "Versioning"): the provider ships its daemon, so another protocol version or
+	// daemon version, older or newer, is another wire. A hello that names no protocol is refused too.
+	if (hello?.protocol !== PROTOCOL_VERSION) {
+		found.push(`hello: the daemon speaks protocol ${text(hello?.protocol)}, expected exactly ${PROTOCOL_VERSION}`);
 	}
 	if (hello?.version !== expected.version) found.push(`hello: the daemon reports version ${text(hello?.version)}, expected ${expected.version}`);
 	if (hello?.os !== "linux") found.push(`hello: the daemon reports os ${text(hello?.os)}, expected linux`);

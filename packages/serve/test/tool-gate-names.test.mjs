@@ -8,15 +8,15 @@ import { test } from "node:test";
 import { BROWSER_TOOL_NAMES } from "@parcha/pi-browser";
 import { wireName } from "../dist/catalog.js";
 import { BACKGROUND_TOOLS } from "../dist/background.js";
-import { REPLAY } from "../dist/host-tools.js";
+import { hostToolNames, isTableTool } from "../dist/tool-list.js";
 import * as gate from "../dist/tool-gate.js";
-import { permissionsOf, SERVE_OWN_TOOLS, TABLE_TOOLS } from "../dist/tool-plane.js";
+import { permissionsOf, SERVE_OWN_TOOLS } from "../dist/tool-plane.js";
 import { runnerGate } from "./gate-support.mjs";
 
 const { deniedText, noApproverText } = gate;
 /** The mapping, where the module has one; none (the red), every name maps to nothing. */
 const keyOf = (harness, name, servers) => (typeof gate.settingsKeyOf === "function" ? gate.settingsKeyOf(harness, name, servers) : undefined);
-const isKey = (key) => typeof key === "string" && (TABLE_TOOLS.includes(key) || SERVE_OWN_TOOLS.includes(key) || /^monid\.[a-z]+$/.test(key) || /^mcp:[a-z][a-z0-9-]*\/.+$/.test(key));
+const isKey = (key) => typeof key === "string" && (isTableTool(key) || SERVE_OWN_TOOLS.includes(key) || /^monid\.[a-z]+$/.test(key) || /^mcp:[a-z][a-z0-9-]*\/.+$/.test(key));
 const MONID = ["monid.discover", "monid.inspect", "monid.run"];
 /** A host tool's settings key: its own name, or for a legacy name the capability the tool plane folds it into; a
  *  background tool (background.ts) is held to bash's. */
@@ -32,12 +32,12 @@ const NAMES = {
     ["mcp__srv__echo", "mcp:srv/echo"],
   ],
   "claude-agent": [
-    ...Object.keys(REPLAY).flatMap((name) => [[name, folded(name)], [wireName(name), folded(name)], [`mcp__hands__${wireName(name)}`, folded(name)]]),
+    ...hostToolNames().flatMap((name) => [[name, folded(name)], [wireName(name), folded(name)], [`mcp__hands__${wireName(name)}`, folded(name)]]),
     ["WebSearch", "web_search"], ["WebFetch", "web_fetch"], ["Bash", "bash"],
     ["mcp__srv__echo", "mcp:srv/echo"],
   ],
   codex: [
-    ...Object.keys(REPLAY).flatMap((name) => [[name, folded(name)], [wireName(name), folded(name)]]),
+    ...hostToolNames().flatMap((name) => [[name, folded(name)], [wireName(name), folded(name)]]),
     ["web_search", "web_search"], ["shell", "bash"],
     // The adapter's own read of a skill's file, from the session's copy of the run's skills: read's key.
     ["read_skill_file", "read"],

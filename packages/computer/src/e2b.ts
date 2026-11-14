@@ -4,7 +4,7 @@
 // upload goes through envd's file API and every command (install, init's start, the stdio bridge) is a background
 // command as root. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts). Every SDK fact
 // used here is cited in the README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
-import type { CommandResult, Sandbox, SandboxInfo, SandboxOpts } from "e2b";
+import type { Sandbox, SandboxInfo, SandboxOpts } from "e2b";
 import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, ours } from "./hosted/provider.js";
@@ -36,6 +36,25 @@ export interface E2BConnectionOptions {
 /** The SDK's Sandbox class, the host's own `e2b` package's. Held as the SDK's type inside; the published type is `object`. */
 export type E2BSandboxClass = object;
 type SdkSandboxClass = typeof Sandbox;
+
+/**
+ * envd's Process.Start stream as exec reads it. A hand-typed slice: the SDK keeps Commands.rpc protected and exports
+ * none of the process proto types (ProcessEvent, StartRequest), so there is nothing to `import type`. Not exported.
+ */
+interface ProcessEvent {
+	event:
+		| { case: "start"; value: { pid: number } }
+		| { case: "data"; value: { output: { case: "stdout" | "stderr" | "pty"; value: Uint8Array } | { case: undefined; value?: undefined } } }
+		| { case: "end"; value: { exitCode: number; exited: boolean; status: string; error?: string } }
+		| { case: "keepalive"; value: object }
+		| { case: undefined; value?: undefined };
+}
+interface ProcessRpc {
+	start(
+		request: { process: { cmd: string; args: string[]; envs: Record<string, string> }; stdin: boolean },
+		options: { headers: Record<string, string>; signal: AbortSignal; timeoutMs: number },
+	): AsyncIterable<{ event?: ProcessEvent }>;
+}
 
 /** The E2B provider's options: the key and the SDK, then the shared adapter's (HostedOptions). */
 export interface E2BProviderOptions extends Omit<HostedOptions, "label" | "maxLifetimeMs"> {
@@ -118,6 +137,13 @@ const PUBLIC =
 	"publicStream is no longer an option: an E2B computer never takes public traffic, which would open every port in it to anyone with its address, and its screen is streamed through agentrun, never a vendor URL";
 /** envd's port in the sandbox (e2b@2.63.0 dist/index.mjs:1213, ConnectionConfig.envdPort). */
 const ENVD_PORT = 49983;
+/** envd's user for a process: root, as the SDK's authenticationHeader writes it (index.mjs:1896-1900). */
+const ROOT = `Basic ${Buffer.from("root:").toString("base64")}`;
+/** envd sends a keepalive event this often on a process stream, as the SDK asks (index.mjs:923, 5141). */
+const KEEPALIVE_HEADER = "Keepalive-Ping-Interval";
+const KEEPALIVE_S = "50";
+/** The Connect codes envd's process calls answer (connectrpc Code), as this provider's codes. */
+const CONNECT_CODES: Record<number, ComputerErrorCode> = { 1: "aborted", 3: "invalid", 4: "timeout", 5: "not_found", 7: "denied", 8: "limit", 16: "denied" };
 
 /** The mount kinds an E2B computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
 export const MOUNT: readonly MountKind[] = E2B.mounts;
@@ -127,7 +153,7 @@ export const CAPABILITIES: readonly KindCapabilities[] = E2B.capabilities;
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
 
-/** The SDK names its errors (index.mjs:86-360). */
+/** The SDK names its errors (index.mjs:86-360); Connect's carry a code. */
 function codeOf(error: unknown): ComputerErrorCode {
 	const name = (error as { name?: unknown } | null)?.name;
 	if (name === "AbortError") return "aborted";
@@ -136,6 +162,8 @@ function codeOf(error: unknown): ComputerErrorCode {
 	if (name === "InvalidArgumentError" || name === "TemplateError") return "invalid";
 	if (name === "RateLimitError" || name === "NotEnoughSpaceError") return "limit";
 	if (name === "TimeoutError" || name === "SandboxUnreachableError") return "timeout";
+	// envd's process stream, called through the SDK's Connect client (exec), throws Connect's own errors.
+	if (name === "ConnectError") return CONNECT_CODES[(error as { code?: unknown }).code as number] ?? "vendor";
 	return "vendor";
 }
 
@@ -382,46 +410,75 @@ class E2BHost implements MachineHost {
 	}
 
 	/**
-	 * A background command as root (index.mjs:5123-5146), its line the argv quoted. No command timeout, so envd never
-	 * kills it (start.go:39-44); no retained output, so a long one keeps no copy of its stdout (index.mjs:2708-2711).
-	 * Writes go one sendStdin at a time, in order; end is closeStdin; kill kills it and lets go of its stream.
+	 * A process as root through envd's Process.Start stream, as commands.run starts one (index.mjs:5123-5146): `bash -l -c`
+	 * and the argv quoted, root by the Basic header (authenticationHeader, index.mjs:1896-1900), and envd's keepalive
+	 * every 50 s. Its stdout and stderr are the bytes each data event carries, passed on as they come: commands.run would
+	 * decode them as UTF-8 text first. No deadline on the stream (timeoutMs 0, which the Connect transport reads as none,
+	 * connect-web connect-transport.js:145-150), so envd never ends it (start.go:39-44); the start alone is bounded by
+	 * ctx. Writes go one sendStdin at a time, in order; end is closeStdin; kill SIGKILLs it and lets go of its stream.
 	 */
 	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
 		const sandbox = await this.#sandbox(id, ctx);
 		const out = feed();
 		const err = feed();
 		const requestTimeoutMs = this.#requestMs;
-		const handle = await sandbox.commands.run(shellLine(argv), {
-			background: true,
-			stdin,
-			user: "root",
-			timeoutMs: 0,
-			requestTimeoutMs: ctx.timeoutMs,
-			retainOutput: false,
-			onStdout: (data) => out.push(new Uint8Array(Buffer.from(data, "utf8"))),
-			onStderr: (data) => err.push(new Uint8Array(Buffer.from(data, "utf8"))),
-		});
-		const exited = handle.wait().then(
-			(done) => done.exitCode,
-			(error: unknown) => {
-				const code = (error as Partial<CommandResult> | null)?.exitCode;
-				return typeof code === "number" ? code : -1;
-			},
-		);
-		void exited.then(() => {
+		const stream = new AbortController();
+		const events = (sandbox.commands as unknown as { rpc: ProcessRpc }).rpc.start(
+			{ process: { cmd: "/bin/bash", args: ["-l", "-c", shellLine(argv)], envs: {} }, stdin },
+			{ headers: { Authorization: ROOT, [KEEPALIVE_HEADER]: KEEPALIVE_S }, signal: stream.signal, timeoutMs: 0 },
+		)[Symbol.asyncIterator]();
+		// The start, within ctx: a stream that gives no start event in time, or the caller's abort, is let go of.
+		const startAbort = () => stream.abort(ctx.signal?.reason);
+		ctx.signal?.addEventListener("abort", startAbort, { once: true });
+		const startTimer = setTimeout(() => stream.abort(), ctx.timeoutMs);
+		let pid: number;
+		try {
+			const first = await events.next();
+			const event = first.done ? undefined : first.value.event?.event;
+			if (event?.case !== "start") throw new Error(`envd's process stream began with ${event?.case ?? "nothing"}, not its start`);
+			pid = event.value.pid;
+		} catch (error) {
+			const why = stream.signal.aborted ? (ctx.signal?.aborted ? "AbortError" : "TimeoutError") : undefined;
+			stream.abort();
+			if (why === undefined) throw error;
+			throw Object.assign(new Error(why === "AbortError" ? "the exec was aborted before envd started it" : `envd did not start the process within ${ctx.timeoutMs / 1000} s`), { name: why });
+		} finally {
+			clearTimeout(startTimer);
+			ctx.signal?.removeEventListener("abort", startAbort);
+		}
+		const exited = (async () => {
+			let code = -1;
+			try {
+				for (;;) {
+					const next = await events.next();
+					if (next.done) break;
+					const event = next.value.event?.event;
+					if (event?.case === "data") {
+						const { output } = event.value;
+						if (output.case === "stdout") out.push(output.value);
+						else if (output.case === "stderr") err.push(output.value);
+					} else if (event?.case === "end") {
+						code = event.value.exitCode;
+						break;
+					}
+				}
+			} catch {
+				// A stream that broke, or one kill let go of: no exit code was read.
+			}
 			out.end();
 			err.end();
-			void handle.disconnect().catch(() => {});
-		});
+			stream.abort();
+			return code;
+		})();
 		return ok({
 			stdout: out.iterable,
 			stderr: err.iterable,
-			write: (bytes) => sandbox.commands.sendStdin(handle.pid, bytes, { requestTimeoutMs }),
-			end: () => sandbox.commands.closeStdin(handle.pid, { requestTimeoutMs }),
+			write: (bytes) => sandbox.commands.sendStdin(pid, bytes, { requestTimeoutMs }),
+			end: () => sandbox.commands.closeStdin(pid, { requestTimeoutMs }),
 			wait: () => exited,
 			kill: async () => {
-				await handle.kill().catch(() => false);
-				await handle.disconnect().catch(() => {});
+				await sandbox.commands.kill(pid, { requestTimeoutMs }).catch(() => false);
+				stream.abort();
 				out.end();
 				err.end();
 			},
