@@ -28,11 +28,13 @@ export interface MachineHost {
 	/** One machine as the vendor reads it now; undefined once the vendor no longer has it (not found is that, or a HostError not_found). */
 	get(id: string, ctx: HostCall): Promise<Machine | undefined>;
 	/**
-	 * The machines of the account the vendor's listing shows for these labels, every page, within ctx.timeoutMs in all,
-	 * each as the listing reads it. It may answer more machines than carry all the labels (a vendor that filters by some,
-	 * or none): the adapter keeps those that do. A machine the vendor is deleting may still be listed; one it no longer
-	 * has is not. A listing may lag a create: two creates of one request on two provider instances can then both make a
-	 * machine, and the adapter deletes every one but the oldest (createdAt), so a vendor may see a second create deleted.
+	 * The machines of the account the vendor's listing shows for these labels, every page, within ctx.timeoutMs in all.
+	 * The listing finds; get answers: the adapter takes only the ids from it and reads each one it keeps by get, for its
+	 * state, labels and end, so a listing may be stale (one still showing a deleted machine, or an end from before a
+	 * timer moved: E2B's). It may answer more machines than carry all the labels (a vendor that filters by some, or
+	 * none): the adapter keeps those whose get does. A listing may lag a create: two creates of one request on two
+	 * provider instances can then both make a machine, and the adapter deletes every one but the oldest (createdAt), so
+	 * a vendor may see a second create deleted.
 	 */
 	list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]>;
 	/** Deletes a machine; not found is ok. It answers once the vendor took the delete: the adapter waits for gone. */

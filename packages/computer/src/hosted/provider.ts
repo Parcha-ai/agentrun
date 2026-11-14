@@ -81,9 +81,9 @@ export interface HostedTimeouts {
 	helloMs: number;
 	/** The probe, run through the daemon: it takes at most 20 s (10 s to connect, 10 s to answer, every target at once). */
 	probeMs: number;
-	/** One whole list, every page and every machine's read-back. */
+	/** One whole listing, every page; each listed machine's get after it has requestMs. */
 	listMs: number;
-	/** From a delete to a machine the vendor no longer has and no longer lists. */
+	/** From a delete to a machine get reads gone. */
 	goneMs: number;
 	/** The first pause between two reads while release waits; the pauses double up to 5 s. */
 	pollMs: number;
@@ -467,8 +467,7 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	async #createOnce(spec: ComputerSpec, name: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
-		const { listMs } = this.#timeouts;
-		const listed = await listedBy(this.host, "the listing by the request's name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, listMs, signal);
+		const listed = await foundBy(this.host, "the listing by the request's name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, this.#timeouts, signal);
 		if (!listed.ok) return listed;
 		const found = listed.value.filter((machine) => ours(machine.labels, name));
 		if (found.length > 1) return this.#fail("exists", `${found.length} machines carry the name ${name} (${found.map((m) => m.id).join(", ")}): create with a new request id`);
@@ -508,7 +507,7 @@ export class HostedProvider implements ComputerProvider {
 	 * same listing. Its value is the machine kept, or undefined when mine holds the name alone (or nothing is listed yet).
 	 */
 	async #converge(name: string, mine: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
-		const listed = await listedBy(this.host, "the listing by the request's name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, this.#timeouts.listMs, signal);
+		const listed = await foundBy(this.host, "the listing by the request's name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, this.#timeouts, signal);
 		if (!listed.ok) return listed;
 		const holders = listed.value.filter((machine) => ours(machine.labels, name) && alive(machine.state));
 		if (!holders.some((machine) => machine.id !== mine)) return ok(undefined);
@@ -692,11 +691,11 @@ export class HostedProvider implements ComputerProvider {
 	 * listedMs passes. Best effort, in words.
 	 */
 	async #deleteNamed(name: string): Promise<string> {
-		const { listedMs, pollMs, listMs } = this.#timeouts;
+		const { listedMs, pollMs } = this.#timeouts;
 		const until = Date.now() + listedMs;
 		let found: Machine[];
 		for (;;) {
-			const listed = await listedBy(this.host, "the listing by name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, listMs);
+			const listed = await foundBy(this.host, "the listing by name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, this.#timeouts);
 			if (!listed.ok) return `; a machine named ${name} may be left (${listed.error.message}), which ends at its deadline`;
 			found = listed.value.filter((machine) => ours(machine.labels, name));
 			if (found.length > 0 || Date.now() >= until) break;
@@ -1113,14 +1112,15 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Every computer this provider made that carries all of these labels, running or stopped, as the listing reads it:
-	 * no get of each. Its network is none, as create made it and the probe reads it from inside.
+	 * Every computer this provider made that carries all of these labels, running or stopped: the listing finds them, and
+	 * a get of each reads its state, labels and end (foundBy). Its network is none, as create made it and the probe reads
+	 * it from inside.
 	 */
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
 		const problem = filterProblem(labels);
 		if (problem) return this.#fail("invalid", problem);
 		const { listMs } = this.#timeouts;
-		const listed = await listedBy(this.host, "the listing", { ...labels, [COMPUTER_LABEL]: "1" }, listMs, signal);
+		const listed = await foundBy(this.host, "the listing", { ...labels, [COMPUTER_LABEL]: "1" }, this.#timeouts, signal);
 		if (!listed.ok) return listed.error.code === "timeout" ? this.#fail("timeout", `list did not finish within ${seconds(listMs)}: ${listed.error.message}`) : listed;
 		const infos: ComputerInfo[] = [];
 		for (const machine of listed.value) {
@@ -1250,7 +1250,7 @@ export class HostedProvider implements ComputerProvider {
 	 * delete reads the machine back to check it is this provider's, then deletes it, both never signalled, so a release
 	 * after an abort, or one aborted during the read, still sends the delete; it is idempotent: one the vendor no longer
 	 * has is ok. The vendor answers a delete before the machine is gone, so release then waits (#settle) until the vendor
-	 * reads it gone and no longer lists it, within goneMs and the caller's signal, the one step the signal ends. A running
+	 * reads it gone (get, twice running), within goneMs and the caller's signal, the one step the signal ends. A running
 	 * Archil computer lets go of the run's folder first (archilRelease: the final sync through computerd, then checkin as
 	 * root); the delete runs whatever that answers. A folder not let go cleanly loses nothing (every call that changed it
 	 * synced, and the next claim revokes the hold), so it is said through onNote, and the release succeeds once the
@@ -1299,18 +1299,44 @@ export class HostedProvider implements ComputerProvider {
  */
 export async function listedBy(host: MachineHost, what: string, labels: Record<string, string>, ms: number, signal?: AbortSignal): Promise<Result<Machine[]>> {
 	const listed = await hostCall(host, what, (ctx) => host.list(labels, ctx), ms, signal);
-	return listed.ok ? ok(listed.value.filter((machine) => Object.entries(labels).every(([key, value]) => machine.labels?.[key] === value))) : listed;
+	return listed.ok ? ok(listed.value.filter((machine) => carries(machine, labels))) : listed;
+}
+
+/** Whether a machine carries every one of these labels. */
+const carries = (machine: Machine, labels: Record<string, string>) => Object.entries(labels).every(([key, value]) => machine.labels?.[key] === value);
+
+/**
+ * The listing finds, get answers (MachineHost.list): the machines the host's listing by labels names, each as get reads
+ * it now, within requestMs. One get reads none of is no longer the vendor's, and one whose get carries not every label
+ * is not these labels': neither is answered. A read that fails fails the whole.
+ */
+export async function foundBy(
+	host: MachineHost,
+	what: string,
+	labels: Record<string, string>,
+	{ listMs, requestMs }: Pick<HostedTimeouts, "listMs" | "requestMs">,
+	signal?: AbortSignal,
+): Promise<Result<Machine[]>> {
+	const listed = await listedBy(host, what, labels, listMs, signal);
+	if (!listed.ok) return listed;
+	const reads = await Promise.all(listed.value.map(({ id }) => hostCall(host, `the read of ${id}`, (ctx) => host.get(id, ctx), requestMs, signal)));
+	const found: Machine[] = [];
+	for (const read of reads) {
+		if (!read.ok && read.error.code !== "not_found") return read;
+		if (read.ok && read.value !== undefined && carries(read.value, labels)) found.push(read.value);
+	}
+	return ok(found);
 }
 
 /**
- * Waits, through waitUntil, until the host reads a machine gone after its delete, by get and by its name's listing
- * alike, twice running: get answers none or gone, and the listing no longer shows it. Pauses double from pollMs to 5 s,
+ * Waits, through waitUntil, until get reads a machine gone after its delete, twice running: none, or gone. A listing
+ * may show a deleted machine for a while (MachineHost.list), so it is not read. Pauses double from pollMs to 5 s,
  * bounded by goneMs and the caller's signal; a failed read ends the wait with that error. Shared with the live sweep.
  */
 export async function settle(
 	host: MachineHost,
 	ref: ComputerRef,
-	{ requestMs, listMs, pollMs, goneMs, signal }: Pick<HostedTimeouts, "requestMs" | "listMs" | "pollMs" | "goneMs"> & { signal?: AbortSignal },
+	{ requestMs, pollMs, goneMs, signal }: Pick<HostedTimeouts, "requestMs" | "pollMs" | "goneMs"> & { signal?: AbortSignal },
 ): Promise<Result<void>> {
 	const fail = failOf(host);
 	type Read = { failed: Result<never> } | { settled: true } | { last: string };
@@ -1326,16 +1352,6 @@ export async function settle(
 		last = state ?? "gone (not found)";
 		if (state !== undefined && alive(state)) {
 			agreed = 0;
-			return { last };
-		}
-		const listed = await listedBy(host, "the listing by name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: ref.name }, listMs, readSignal);
-		if (!listed.ok) {
-			if (listed.error.code === "aborted") return { last };
-			return { failed: fail(listed.error.code, `release of ${ref.name}: the listing failed (${listed.error.message}); it last read ${last}`) };
-		}
-		if (listed.value.some((one) => one.id === ref.id)) {
-			agreed = 0;
-			last = `${last}, still listed`;
 			return { last };
 		}
 		return ++agreed >= LISTED_ROUNDS ? { settled: true } : { last };

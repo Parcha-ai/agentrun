@@ -1198,7 +1198,7 @@ returns the first state `done` accepts. Each read gets a signal that aborts at t
 read still pending then is not waited for, and one that throws is not done. Past the bound it returns a `timeout`, on
 the caller's abort an `aborted`, each naming `what` was waited for and the last state read (`describe`). It has no
 vendor's types: the shared adapter's release, a create that deletes its machine, and the one live sweep wait through it
-(`settleGone`, until a machine reads gone and is no longer listed), for every hosted vendor (Daytona's stop among them).
+(`settle`, until get reads a machine gone twice running), for every hosted vendor.
 
 ## Modal
 
@@ -1269,7 +1269,7 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
   counts them, its own at their longest, and refuses past it in words. An Archil computer's mount label records the
   folder's agent alone, as on every host: the folder's run is the `agentrun.run` label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal still
   lists after its terminate is polled and left out once `poll()` reads it finished.
-- **release** `delete` is `terminate()`, and the adapter waits until the sandbox reads gone and is no longer listed.
+- **release** `delete` is `terminate()`, and the adapter waits until the sandbox reads gone.
   `stop` is refused as `unsupported`: terminate is a sandbox's only end.
 - **GPU.** `capabilities().gpu` declares Modal's GPU types by its own names (guide/gpu): `T4`, `L4`, `A10`, `L40S`,
   `A100` (40 GB), `A100-40GB`, `A100-80GB`, `RTX-PRO-6000`, `H100`, `H200`, `B200`, `B300`, at most 8 to a computer.
@@ -1861,7 +1861,8 @@ of a computer at a time, each reading the deadline the one before it left, so a 
 timer under a longer one's (two providers extending one computer at once are not ordered). E2B has no call that
 changes metadata, so the deadline label stays as create wrote it, and the host reads E2B's own end in its place, up to
 the cap, once it is more than 2 s past where create set it (its start plus the timeout create gave, by E2B's clock, to
-the second E2B rounds to): `get` and `list` alike, so `list()` and `attach()` report it with no read of their own.
+the second E2B rounds to). `getInfo` reads the moved end; `Sandbox.list` may still show create's (read live 11-14),
+so `list()` and `attach()` report the end from `get`, as the adapter reads every listed machine.
 Extend never leaves E2B's end inside those 2 s, moving it at least 3 s past create's end, so an extend however short
 reads back.
 
@@ -1884,15 +1885,15 @@ words, whatever its value, and every sandbox is made with public traffic off.
 - `attach({ id })` or `attach({ labels })` reads the computer from E2B and, for a running computer, the daemon, as at
   create. `image` is the template create was asked for, from its label.
 - `list(labels)` asks E2B for the labels with `agentrun.computer=1` (`Sandbox.list`, running and paused sandboxes,
-  `index.d.mts:10289`), every page, with no read per sandbox; paused is `stopped`. One deadline, `listMs` (60 s) from
+  `index.d.mts:10289`), every page, for the ids: the adapter reads each one by `getInfo`, since the listing may still
+  show a killed sandbox or an end from before a timer moved; paused is `stopped`. One deadline, `listMs` (60 s) from
   the call, bounds every page; past it, `list()` is a timeout in words.
 - `connect(ref)` refuses a paused computer without connecting, since E2B's connect resumes one; it gives E2B a timeout
   a little under what is left, and E2B moves a running sandbox's timer only to a longer one (`index.d.mts:10250`), so
   connecting never moves the end.
 - `release(ref, "delete")` reads the sandbox back to check it is this provider's, then kills it (`index.mjs:5398-5410`;
   a sandbox E2B no longer has is done), both never signalled, so a release whose signal aborted first still kills;
-  then it waits through `waitUntil` until `getInfo` answers not found (`index.mjs:5431`) and the label listing no
-  longer shows it, twice running, with pauses doubling from `pollMs` to 5 s, within `goneMs` (120 s) and the caller's
+  then it waits through `waitUntil` until `getInfo` answers not found (`index.mjs:5431`), twice running, with pauses doubling from `pollMs` to 5 s, within `goneMs` (120 s) and the caller's
   signal, which ends only this wait.
   `release(ref, "stop")` is refused in words.
 - Every SDK call has its own bound and takes the caller's signal; the paginator takes it per page (`Sandbox.list`

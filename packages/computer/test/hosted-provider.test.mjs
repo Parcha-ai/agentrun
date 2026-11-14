@@ -56,8 +56,11 @@ const only = (fake) => {
 /** Nothing left behind: every machine the host made is deleted, and none lists. */
 async function nothingLeft(fake, what) {
 	assert.deepEqual(fake.live().map((m) => m.id), [], `${what}: every machine made was deleted`);
-	const listed = await fake.host.list({ [COMPUTER]: "1" }, { timeoutMs: 1_000 });
-	assert.deepEqual(listed, [], `${what}: none is listed`);
+	// The listing finds; get answers: a listing may still show a deleted machine, and get reads each gone.
+	for (const id of fake.machines.keys()) {
+		const read = await fake.host.get(id, { timeoutMs: 1_000 });
+		assert.ok(read === undefined || read.state === "gone", `${what}: get reads ${id} gone`);
+	}
 }
 
 // --- capabilities and check ---
@@ -575,10 +578,12 @@ test("the listing finds and get answers: a listing that keeps a deleted machine 
 
 // --- release ---
 
-test("release delete deletes the machine and waits until the host reads it gone and no longer lists it", async () => {
+test("release delete deletes the machine and waits until get reads it gone; a listing that still shows it neither holds the wait nor shows in list", async () => {
 	const { provider, fake } = setup({}, { lingers: { reads: 2, lists: 2 } });
 	const ref = made(await create(provider));
 	made(await provider.release(ref, "delete").then((r) => (r.ok ? { ok: true, value: true } : r)));
+	assert.deepEqual((await fake.host.list({ [COMPUTER]: "1" }, { timeoutMs: 1_000 })).map((m) => m.id), [ref.id], "the vendor's listing still shows it");
+	assert.deepEqual(made(await provider.list({})), [], "list reads it by get: gone");
 	await nothingLeft(fake, "release");
 	assert.equal((await provider.release(ref, "delete")).ok, true, "idempotent: a machine gone is ok");
 });
@@ -696,7 +701,7 @@ test("testConnection lists by the adapter's label and counts this provider's mac
 	assert.match(made(await provider.testConnection()).detail, /^Fakehost answered: 1 computer of this provider$/);
 });
 
-test("a listing as the vendor reads it (more machines than carry the labels): list keeps those with the labels from the listing alone, with no get; attach and a retry find theirs, and testConnection counts", async () => {
+test("a listing as the vendor reads it (more machines than carry the labels): list keeps those with the labels, each read by get; attach and a retry find theirs, and testConnection counts", async () => {
 	const { provider, fake } = setup();
 	const a = made(await provider.create({ ...SPEC, labels: { team: "a" } }, { requestId: "listing-a" }));
 	const b = made(await create(provider, { ...SPEC, labels: { team: "b" } }));
@@ -707,7 +712,7 @@ test("a listing as the vendor reads it (more machines than carry the labels): li
 	let before = gets();
 	const listed = made(await provider.list({ team: "a" }));
 	assert.deepEqual(listed.map((info) => [info.ref.id, info.network, info.state]), [[a.id, "none", "running"]]);
-	assert.equal(gets(), before, "no get: a listing is the machines as the vendor reads them");
+	assert.equal(gets(), before + 1, "one get, of the one listed machine that carries the labels: the listing finds, get answers");
 	fake.machines.get(b.id).state = "stopped";
 	assert.deepEqual(made(await provider.list({ team: "b" })).map((info) => [info.ref.id, info.state]), [[b.id, "stopped"]], "a stopped machine is listed, as the janitor needs");
 	fake.machines.get(b.id).state = "gone";
