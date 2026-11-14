@@ -98,6 +98,14 @@ test("the schema in force: content is reserved as a string, kept required when n
   assert.deepEqual(inputIssues({}, inForce, "target.input").map((i) => i.field), ["target.input.company"]);
 });
 
+test("a required text field left empty is said as missing, in a missing field's words; an optional one or a list's item keeps its length issue", () => {
+  const said = (input) => inputIssues(input, inputSchemaOf({ ...SUBJECT, properties: { ...SUBJECT.properties, note: { type: "string", minLength: 2 }, topics: { type: "array", items: { type: "string", minLength: 1 } } } })).map((i) => [i.field, i.reason, i.message]);
+  assert.deepEqual(said({ company: "" }), said({}));
+  assert.deepEqual(said({ company: "" }), [["input.company", "missing", "input.company is required"]]);
+  assert.deepEqual(said({ company: "x", note: "" }), [["input.note", "too_short", "input.note must not have fewer than 2 characters"]]);
+  assert.deepEqual(said({ company: "x", topics: [""] }), [["input.topics.0", "too_short", "input.topics.0 must not have fewer than 1 characters"]]);
+});
+
 test("the model reads the run's content, then the other fields as one fenced json block under Input:; a value holding a fence gets a longer one", () => {
   assert.equal(inputMessage({ content: "Check this company." }), "Check this company.");
   assert.equal(inputMessage({ content: "Check this company.", company: "Stripe, Inc.", topics: ["sanctions"] }), 'Check this company.\n\nInput:\n```json\n{\n  "company": "Stripe, Inc.",\n  "topics": [\n    "sanctions"\n  ]\n}\n```');

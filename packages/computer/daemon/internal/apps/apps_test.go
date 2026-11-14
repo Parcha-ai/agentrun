@@ -247,8 +247,8 @@ func TestAppsListLaunchAndTerminateOnADesktop(t *testing.T) {
 	}
 }
 
-// With a window manager (xfwm4 in a session bus of its own, as the desktops run it: src/desktop.ts WINDOW_MANAGER), the
-// app's window is inside the manager's frame: launch answers once it shows and the manager has made it the active
+// With a window manager (xfwm4 in a session bus of its own, as the desktops run it, src/desktop.ts WINDOW_MANAGER, here
+// without its namespaces; test/docker/desktop-xfwm4.docker.test.mjs runs WINDOW_MANAGER itself), the app's window is inside the manager's frame: launch answers once it shows and the manager has made it the active
 // window, and terminate ends it.
 func TestAppsUnderAWindowManager(t *testing.T) {
 	for _, program := range []string{"xfwm4", "dbus-run-session"} {
@@ -336,9 +336,11 @@ func TestAppsTerminateEndsALaunchWithNoWindow(t *testing.T) {
 	}
 }
 
-// An app starts with NO_AT_BRIDGE=1, so its toolkit (GTK) starts no accessibility bus: that bus is a socket of the user's
-// under its home (~/.cache/at-spi/bus_0), which the session bus the app's GDBus autolaunches would start for it.
-func TestAppsLaunchWithNoAccessibilityBus(t *testing.T) {
+// An app starts with no session bus (DBUS_SESSION_BUS_ADDRESS=disabled:), so it autolaunches none, and with
+// NO_AT_BRIDGE=1, so its toolkit (GTK) asks for no accessibility bus. On E2B Desktop, Mousepad's autolaunched bus
+// started gnome-keyring-daemon, a socket of the user's under its home (~/.cache/keyring-*/control), and an
+// at-spi-bus-launcher.
+func TestAppsLaunchWithNoSessionBus(t *testing.T) {
 	w := setup(t, 300*time.Millisecond)
 	if _, err := w.call("apps.launch", map[string]any{"id": "quiet"}); kindOf(err) != rpc.KindTimeout {
 		t.Fatalf("apps.launch quiet: %v, want timeout", err)
@@ -355,8 +357,10 @@ func TestAppsLaunchWithNoAccessibilityBus(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !slices.Contains(strings.Split(string(environ), "\x00"), "NO_AT_BRIDGE=1") {
-			t.Fatalf("the launched app's environment has no NO_AT_BRIDGE=1: %q", environ)
+		for _, want := range []string{"DBUS_SESSION_BUS_ADDRESS=disabled:", "NO_AT_BRIDGE=1"} {
+			if !slices.Contains(strings.Split(string(environ), "\x00"), want) {
+				t.Fatalf("the launched app's environment has no %s: %q", want, environ)
+			}
 		}
 		return
 	}

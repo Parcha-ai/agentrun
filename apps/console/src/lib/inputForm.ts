@@ -139,6 +139,9 @@ export const inputOf = (form: InputForm, content: string, text: ParameterText): 
 export const fieldOfIssue = (path: string, root = "input"): string | null => path.startsWith(`${root}.`) ? path.slice(root.length + 1).split(".")[0]! : null;
 
 const kindWords = (f: FieldSpec) => (f.type === "integer" ? "a whole number" : f.type === "number" ? "a number" : f.type === "boolean" ? "true or false" : "text");
+const LIST_OF: Record<FieldSpec["type"], string> = { string: "text", integer: "whole numbers", number: "numbers", boolean: "true or false" };
+/** What a field takes, in the words its refusals use: "text", "a whole number", a list's "a list of whole numbers". */
+export const fieldKind = (f: FieldSpec) => (f.array ? `a list of ${LIST_OF[f.type]}` : kindWords(f));
 
 /** What a run form says of a refused field, by its label (paramIssueWords' words for a parameter); a list's item is said
  *  as a line of it. A reason with no words here keeps the server's. */

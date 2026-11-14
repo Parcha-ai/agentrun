@@ -23,18 +23,20 @@ export type LearnedNode = { readonly label: string; readonly kind: string; reado
 /** One step guard's check (runner/step-guard.ts), on the node it guards: the step (its label, a child's prefixed), the
  *  guard's signal and threshold, the signals it read (raw probabilities: its own confidence `self`, Jev's yes `jev`),
  *  `p` (through the guard's fit when it has one; null when a signal it reads was missing, so it handed back) and whether
- *  it handed the job back. A run's rows are its metrics' `guards` (runner/workflow-first.ts pathMetrics). */
-export type GuardRow = { readonly node: string; readonly signal: "self" | "jev" | "both"; readonly self?: number; readonly jev?: number; readonly p: number | null; readonly threshold: number; readonly escalated: boolean };
+ *  it handed the job back. A run's rows are its metrics' `guards` (runner/workflow-first.ts pathMetrics), each naming
+ *  the workflow whose call made it (`workflow`: a run can call more than one, the next after the first hands back). */
+export type GuardRow = { readonly node: string; readonly signal: "self" | "jev" | "both"; readonly self?: number; readonly jev?: number; readonly p: number | null; readonly threshold: number; readonly escalated: boolean; readonly workflow?: string };
 
 /** A run's guard rows, from its root entries: every guard check of every learned_workflow call (LEARNED_NODES `guards`,
- *  never the capped trace's), in order. What its metrics keep as `guards`. */
+ *  never the capped trace's), in order, each with its call's workflow. What its metrics keep as `guards`. */
 export function guardsOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): GuardRow[] {
   const rows: GuardRow[] = [];
   for (const entry of entries) {
     if (entry.kind !== LEARNED_NODES) continue;
-    const guards = (entry.data as { guards?: unknown } | undefined)?.guards;
-    if (!Array.isArray(guards)) continue;
-    for (const row of guards) if (row && typeof row === "object") rows.push(row as GuardRow);
+    const data = entry.data as { guards?: unknown; workflow?: unknown } | undefined;
+    if (!Array.isArray(data?.guards)) continue;
+    const workflow = typeof data.workflow === "string" ? data.workflow : undefined;
+    for (const row of data.guards) if (row && typeof row === "object") rows.push(workflow ? { ...(row as GuardRow), workflow } : (row as GuardRow));
   }
   return rows;
 }
