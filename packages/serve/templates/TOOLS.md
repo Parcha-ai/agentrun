@@ -64,8 +64,8 @@ matching server is skipped with a warning that says how to set it up, or, with `
 and nothing is made.
 
 **Only what the owner ticks is granted.** The apply screen shows each entry's `reason` and a tick box for each of its
-tools, none ticked. `allow` lists the tools you ask the owner to tick ("The template asks you to allow this."); the owner's ticks
-(`grants` in the apply call) are the whole grant. A tool left unticked is not the agent's: no harness offers it, a
+tools, none ticked. `allow` lists the tools you ask the owner to tick; the owner's ticks (`grants` in the apply call)
+are the whole grant, and a tick grants a tool without allowing it (see [Ask](#ask)). A tool left unticked is not the agent's: no harness offers it, a
 call of it is refused, and `approvals: never` does not change that. Write the `reason` for the person deciding: what
 the tools read, what they write, and where the pins hold them.
 
@@ -77,7 +77,7 @@ under the run's cap before it is sent, and its charge is its own line in the run
 **Finding and combining.** Every run has `tools_search`, which finds the run's tools by what they do, and
 `codemode`, which runs a short JavaScript script that calls several of them in one step (`await tools.<name>(args)`;
 Codex uses its own code mode). You don't declare either. A call made through them is the tool's own call: asked about,
-pinned, priced and shown on the Timeline exactly as a direct call is. With many MCP tools, tell the model to search
+pinned and priced exactly as a direct call is. With many MCP tools, tell the model to search
 for what it needs rather than listing every tool in the instructions.
 
 ## Pin
@@ -106,25 +106,31 @@ could change any field, and write somewhere narrower instead (a note on the reco
 
 ## Ask
 
-- A tool the owner ticks runs without asking, held by its pins. Under `approvals: ask` (the default) the run asks its
-  person before any other tool that has no setting of its own: the monid tools, and an MCP tool the owner grants
-  later on the agent's page. Approvals come from the owner's signed-in session, on the run's page or
-  `POST /v2/runs/{id}/approvals/{approval_id}`.
-- `approvals: never` is your recommendation for a template that runs on triggers with nobody watching. It only skips
-  asking for tools the agent was granted. A deny and every pin still hold.
+- Ticking grants a tool; it doesn't allow it. Under `approvals: ask` (the default) a ticked write asks the owner before
+  it runs. A ticked read runs unasked where the owner turned on Allow reads for that server, and asks otherwise. A
+  destructive tool (`destructiveHint`) takes a second confirm, and a tool granted later follows the same rule. The
+  owner answers on the run's page or with `POST /v2/runs/{id}/approvals/{approval_id}`.
+- `approvals: never` is the owner's choice at apply, for runs nobody watches (triggers); the apply screen says so next
+  to Never. Recommend it in your README when the template must act unattended, and don't promise both "writes ask"
+  and unattended. It only lifts asks for granted tools: a deny and every pin still hold.
 - Pins are checked before anything is asked or run, whatever the setting, and again after an approval.
 - Each ticked write is a promise to the owner: make it narrow (pinned), say it in `reason`, and give the eval set a case
   where the input tries to send it elsewhere.
 
 ## Proven live
 
-These have run end to end against the real service, through the server's own gate, on pi, Claude Code and Codex:
+As of 2026-11-14, these have run end to end against the real service, through the server's own gate:
 
-- Composio `github` (a connected account): reads, a write pinned to one repository (`GITHUB_CREATE_AN_ISSUE`), and the
-  new-issue trigger `GITHUB_ISSUE_CREATED_TRIGGER` starting a run.
-- Composio `hackernews` (no account): reads. Composio's server leaves out `HACKERNEWS_GET_FRONTPAGE` even when it is
-  allowed; the preset's answer names such a tool under `not_served`.
+| Tools | What ran | Harnesses |
+|---|---|---|
+| Composio `github` (a connected account) | reads; `GITHUB_CREATE_AN_ISSUE` pinned to one repository, asked and refused | pi, Claude Code, Codex |
+| Composio `github` poll trigger `GITHUB_ISSUE_CREATED_TRIGGER` | a new issue started a run; use poll triggers, as the webhook type `GITHUB_ISSUE_ADDED_EVENT` needs admin rights on the repository | one run (a trigger starts a run whatever the harness) |
+| Composio `hackernews` (no account) | reads; `HACKERNEWS_GET_FRONTPAGE` is not served even when allowed, and the preset names such a tool under `not_served` | pi, Claude Code, Codex |
+| monid, litescrape `/github/repository` | `monid.run`, charged $0.00015 on its own cost line | pi, Claude Code, Codex |
 
-Every other toolkit is written against Composio's own listing of its actions. It works the same way (the gate and pins
-don't care which toolkit a tool comes from), but run your eval set against a real account before you publish, and say
-in the template's README which account type you tried.
+Through `tools_search` and `codemode`: proven on 2026-11-14, one script that read GitHub, ran a monid endpoint and was
+refused a pinned write, on all three harnesses (Codex in its own code mode).
+
+Listing only: `slack`, `gmail`, `googlecalendar`, `linear`, `hubspot`, `stripe` (actions checked against Composio's
+listing). Listing-only toolkits work the same way; their live proof is pending a test account. Run your eval set
+against a real account before you publish, and say in the template's README which account type you tried.
