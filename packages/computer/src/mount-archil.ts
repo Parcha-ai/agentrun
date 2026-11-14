@@ -26,7 +26,7 @@ export const ARCHIL_TOOL_UID = 2510;
 export const ARCHIL_SYNC_SOCKET = "/run/agentrun-archil/archil.sock";
 /** The archil client the image pins, the version the live checks ran. */
 export const ARCHIL_VERSION = "0.10.1-1793222256";
-/** The label (Daytona) or metadata (E2B) an Archil computer carries its mount in: kind and source, never the token. */
+/** The label (Daytona) or metadata (E2B) an Archil computer carries its mount in: never the token (archilLabels). */
 export const ARCHIL_MOUNT_LABEL = "agentrun.mount";
 
 /** An Archil mount, as a spec gives it. */
@@ -57,7 +57,7 @@ const DISK = /^(?:dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}\/[A-Za-z0-
  */
 export const ARCHIL_REGION = "[a-z0-9]+-[a-z0-9][a-z0-9-]{0,62}";
 const REGION = new RegExp(`^${ARCHIL_REGION}$`);
-const FOLDER = /^agents\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\/runs\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/work$/;
+const FOLDER = /^agents\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/runs\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/work$/;
 const TOKEN = /^[A-Za-z0-9._~+/=-]{16,4096}$/;
 
 /**
@@ -83,7 +83,7 @@ export function archilRefusals(spec: ComputerSpec): Refusal[] {
 	if (!REGION.test(text(mount.region))) refuse("mount", "mount.region is a provider, a dash and its region, such as aws-us-east-1");
 	const folder = FOLDER.exec(text(mount.folder));
 	if (folder === null) refuse("mount", "mount.folder is agents/<agent>/runs/<run>/work, nothing else");
-	else if (runWrong === undefined && folder[1] !== run) refuse("mount", `mount.folder is run ${folder[1]}'s folder, not the run this computer is labelled for (${RUN_LABEL})`);
+	else if (runWrong === undefined && folder[2] !== run) refuse("mount", `mount.folder is run ${folder[2]}'s folder, not the run this computer is labelled for (${RUN_LABEL})`);
 	if (!TOKEN.test(text(mount.token))) refuse("mount", "mount.token is not a disk token: 16 to 4096 of letters, digits and ._~+/=-");
 	return found;
 }
@@ -384,19 +384,23 @@ export function syncingClient(client: ComputerClient): ComputerClient {
 	};
 }
 
-/** The label an Archil computer carries its mount in: kind and source as JSON, never the token. */
+/**
+ * The label an Archil computer carries its mount in: kind, disk, region and the folder's agent as JSON, never the token.
+ * The folder's run is the computer's agentrun.run label (check holds them equal), so the label does not repeat it.
+ */
 export function archilLabels(mount: ArchilMount): Record<string, string> {
-	return { [ARCHIL_MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: mount.disk, region: mount.region, folder: mount.folder }) };
+	return { [ARCHIL_MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: mount.disk, region: mount.region, agent: FOLDER.exec(mount.folder)?.[1] ?? "" }) };
 }
 
-/** The mount a computer's label records, as written; undefined when there is none, or it is not one. */
+/** The mount a computer's labels record, its folder from the agent and agentrun.run; undefined when there is none, or it is not one. */
 export function recordedMount(labels: Record<string, string> | undefined): Omit<ArchilMount, "token"> | undefined {
 	const text = labels?.[ARCHIL_MOUNT_LABEL];
 	if (text === undefined) return undefined;
 	try {
-		const value = JSON.parse(text) as Record<string, unknown> | null;
-		const { kind, disk, region, folder } = value ?? {};
-		if (kind !== "archil" || typeof disk !== "string" || typeof region !== "string" || typeof folder !== "string") return undefined;
+		const { kind, disk, region, agent, ...rest } = (JSON.parse(text) ?? {}) as Record<string, unknown>;
+		const run = labels?.[RUN_LABEL];
+		const folder = `agents/${String(agent)}/runs/${String(run)}/work`;
+		if (kind !== "archil" || typeof disk !== "string" || typeof region !== "string" || typeof agent !== "string" || typeof run !== "string" || Object.keys(rest).length > 0 || !FOLDER.test(folder)) return undefined;
 		return { kind, disk, region, folder };
 	} catch {
 		return undefined;
