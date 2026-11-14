@@ -4,7 +4,15 @@ import type { Permission, SecretMeta } from "./v2";
 /** A tool as a remote MCP server lists it (`tools/list`, through the server's preview). */
 /** A tool as a server lists it; on a saved server's read, with its permission as this server applies it to an agent that
  *  sets none (`permission`, under the server's tool settings), the owner's default and those it may be set to. */
-export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[];
+/** What a tool does by its server's annotations (the server's read): read-only, destructive (marked destructiveHint),
+ *  or a write (any other, one its server says nothing about included). */
+export type ToolEffect = "read" | "write" | "destructive";
+export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[]; effect?: ToolEffect;
+  /** On a saved server's read: its permission is allow because of its server's Allow reads (the server's word). */
+  allow_reads?: true;
+  /** On a saved server's read: with no setting of its own, its server's Allow reads lets it run (the server's word), so
+   *  allow is its fallback, whatever its own setting says now. */
+  fallback_allow_reads?: true;
   /** A known meta tool (`grantable: false`, with the server's `reason`): never granted. */
   grantable?: false; reason?: string;
   /** Why a grant of it is refused where it would run, as the server says it (`*`: on every harness; else by harness id). */

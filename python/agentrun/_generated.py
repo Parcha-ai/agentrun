@@ -1622,6 +1622,7 @@ class _RunSummaryPending2Required(TypedDict):
 
 class RunSummaryPending2(_RunSummaryPending2Required, total=False):
     price: float | Literal["not metered"]
+    destructive: Literal[True]
 
 
 class _RunSummaryPending3Required(TypedDict):
@@ -2793,8 +2794,11 @@ class SaveComposioServerResponseServerToolsItem(_SaveComposioServerResponseServe
     annotations: dict[str, Any]
     grantable: Literal[False]
     reason: str
+    effect: Literal["read", "write", "destructive"]
     grant_problems: dict[str, str]
     permission: Literal["allow", "ask", "deny"]
+    allow_reads: Literal[True]
+    fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
 
@@ -2959,8 +2963,11 @@ class GetMcpServerResponseToolsItem(_GetMcpServerResponseToolsItemRequired, tota
     annotations: dict[str, Any]
     grantable: Literal[False]
     reason: str
+    effect: Literal["read", "write", "destructive"]
     grant_problems: dict[str, str]
     permission: Literal["allow", "ask", "deny"]
+    allow_reads: Literal[True]
+    fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
 
@@ -3021,8 +3028,11 @@ class ListMcpServersResponseServersItemToolsItem(_ListMcpServersResponseServersI
     annotations: dict[str, Any]
     grantable: Literal[False]
     reason: str
+    effect: Literal["read", "write", "destructive"]
     grant_problems: dict[str, str]
     permission: Literal["allow", "ask", "deny"]
+    allow_reads: Literal[True]
+    fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
 
@@ -3077,8 +3087,11 @@ class PreviewMcpServerResponseToolsItem(_PreviewMcpServerResponseToolsItemRequir
     annotations: dict[str, Any]
     grantable: Literal[False]
     reason: str
+    effect: Literal["read", "write", "destructive"]
     grant_problems: dict[str, str]
     permission: Literal["allow", "ask", "deny"]
+    allow_reads: Literal[True]
+    fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
 
@@ -3146,8 +3159,11 @@ class RefreshMcpServerResponseServerToolsItem(_RefreshMcpServerResponseServerToo
     annotations: dict[str, Any]
     grantable: Literal[False]
     reason: str
+    effect: Literal["read", "write", "destructive"]
     grant_problems: dict[str, str]
     permission: Literal["allow", "ask", "deny"]
+    allow_reads: Literal[True]
+    fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
 
@@ -3223,8 +3239,11 @@ class SaveMcpServerResponseToolsItem(_SaveMcpServerResponseToolsItemRequired, to
     annotations: dict[str, Any]
     grantable: Literal[False]
     reason: str
+    effect: Literal["read", "write", "destructive"]
     grant_problems: dict[str, str]
     permission: Literal["allow", "ask", "deny"]
+    allow_reads: Literal[True]
+    fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
 
@@ -3531,6 +3550,7 @@ class _RunPending2Required(TypedDict):
 
 class RunPending2(_RunPending2Required, total=False):
     price: float | Literal["not metered"]
+    destructive: Literal[True]
 
 
 class _RunPending3Required(TypedDict):
