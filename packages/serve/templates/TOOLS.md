@@ -77,8 +77,9 @@ under the run's cap before it is sent, and its charge is its own line in the run
 **Finding and combining.** Every run has `tools_search`, which finds the run's tools by what they do, and
 `codemode`, which runs a short JavaScript script that calls several of them in one step (`await tools.<name>(args)`;
 Codex uses its own code mode). You don't declare either. A call made through them is the tool's own call: asked about,
-pinned and priced exactly as a direct call is. With many MCP tools, tell the model to search
-for what it needs rather than listing every tool in the instructions.
+pinned and priced exactly as a direct call is. An MCP tool's result reaches a script as the server's text (Composio's
+is JSON in a string), so parse it before reading its fields. With many MCP tools, tell the model to search for what
+it needs rather than listing every tool in the instructions.
 
 ## Pin
 
@@ -126,7 +127,7 @@ As of 2026-11-14, these have run end to end against the real service, through th
 | Composio `github` (a connected account) | reads; `GITHUB_CREATE_AN_ISSUE` pinned to one repository, asked and refused | pi, Claude Code, Codex |
 | Composio `github` poll trigger `GITHUB_ISSUE_CREATED_TRIGGER` | a new issue started a run; use poll triggers, as the webhook type `GITHUB_ISSUE_ADDED_EVENT` needs admin rights on the repository | one run (a trigger starts a run whatever the harness) |
 | Composio `hackernews` (no account) | reads; `HACKERNEWS_GET_FRONTPAGE` is not served even when allowed, and the preset names such a tool under `not_served` | pi, Claude Code, Codex |
-| monid, litescrape `/github/repository` | `monid.run`, charged $0.00015 on its own cost line | pi, Claude Code, Codex |
+| monid, litescrape `/github/repository` | `monid.run` from a `codemode` script, a real charge of $0.00015 on its own cost line | pi, Claude Code, Codex |
 
 Through `tools_search` and `codemode`: proven on 2026-11-14, one script that read GitHub, ran a monid endpoint and was
 refused a pinned write, on all three harnesses (Codex in its own code mode).
