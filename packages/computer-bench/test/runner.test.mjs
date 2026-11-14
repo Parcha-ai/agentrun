@@ -227,6 +227,12 @@ test("a file check reads the whole file, chunk by chunk, so a match past the fir
 	);
 	assert.equal(found.status, "pass", found.reason);
 	assert.equal(absent.status, "fail");
+	// With no text to match, the first read proves the file is there: no more reads, however big it is.
+	const reads = [];
+	const counting = { call: (method, params, options) => (reads.push(method), world.call(method, params, options)) };
+	const [there] = await runChecks([{ id: "there", kind: "file", why: "it exists", path: "/tmp/big.txt" }], { wire: counting, signal });
+	assert.equal(there.status, "pass", there.reason);
+	assert.deepEqual(reads, ["files.read"]);
 });
 
 test("a budget stop that let the computer go is scored as budget once, never re-run as infra", async () => {

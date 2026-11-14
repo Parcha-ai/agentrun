@@ -130,6 +130,8 @@ export async function runCheck(check: Check, context: CheckContext): Promise<Che
 					return want ? done("fail", read.error.message, `${check.path} is not there`) : done("pass", `${check.path} is not there`);
 				}
 				if (!want) return done("fail", `${check.path} is there`, `${check.path} must not be there`);
+				// The first read proved it is there: only a text match needs the rest.
+				if (!check.text) return done("pass", `${check.path} is there`);
 				// One files.read answers a chunk: read on by offset to the end, so a match sees the whole file.
 				const chunks: Buffer[] = [];
 				let value = read.value as { data: string; eof?: boolean };
