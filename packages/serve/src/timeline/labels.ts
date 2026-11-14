@@ -191,3 +191,141 @@ registerLabel("browser_relaunch", () => "Started a fresh browser session", undef
 registerLabel("submit", () => "Submitted the answer", undefined, { name: "Submit the answer" });
 registerLabel("codemode", () => "Ran a script", { many: (n) => `Ran ${n} scripts` }, { name: "Run scripts" });
 registerLabel("request_sign_in", () => "Asked you to sign in", undefined, { name: "Ask you to sign in" });
+
+// A desktop's or a phone's tools (the computer surface's), as what the agent did there. An act's steps come from its
+// arguments, and each element's name from its answer: the answer's step line names the element it acted on as the
+// outline does (`2. press @e31 generic "Display": semantic, verified`, the surface's stepWords). Before the answer is in,
+// an element is "an element". Once it is in, only the steps that ran are said.
+
+/** An act's answer, line by line: whether each step names its element, the element's name, whether it is secure, and
+ *  the first refused step. */
+const STEP_LINE = /^(\d+)\. [a-z_.]+(?: into)?(?: (@\S+) [a-z]+(?: ("(?:[^"\\]|\\.)*"))?)?( \[secure\])?: (.*)$/;
+type ActLine = { element: boolean; name?: string; secure: boolean; refused?: string };
+/** A name in JSON's quotes, as the outline writes it. */
+const unquote = (quoted: string | undefined): string | undefined => {
+  if (quoted === undefined) return undefined;
+  try {
+    return str(JSON.parse(quoted));
+  } catch {
+    return undefined;
+  }
+};
+function actLines(text: string | undefined): Map<number, ActLine> {
+  const lines = new Map<number, ActLine>();
+  for (const line of (text ?? "").split("\n")) {
+    const match = STEP_LINE.exec(line);
+    if (!match) continue;
+    const name = unquote(match[3]);
+    const refused = /^refused \([^)]*\): (.*)$/.exec(match[5]!)?.[1];
+    lines.set(Number(match[1]), { element: match[2] !== undefined, ...(name ? { name } : {}), secure: match[4] !== undefined, ...(refused !== undefined ? { refused } : {}) });
+  }
+  return lines;
+}
+
+/** A text the agent typed or set, as a label shows it: whole, or only its length (never cut, so the timeline's
+ *  redactor, which matches a held value whole, never misses a piece of one). */
+const TEXT_SHOWN = 40;
+const typed = (text: string) => (text.length <= TEXT_SHOWN && !/[\r\n]/.test(text) ? `“${text}”` : `${text.length} characters`);
+const keyWords = (chord: string) => chord.split(/\+(?=.)/).filter((key) => key !== "").map((key) => key[0]!.toUpperCase() + key.slice(1)).join("+");
+
+/** A step in words: as done (`did`), and as tried for one the computer refused (`tried`). */
+type Said = { did: string; tried: string };
+const said = (did: string, act: string, rest = ""): Said => ({ did: `${did}${rest}`, tried: `Could not ${act}${rest}` });
+const NAV: Readonly<Record<string, [string, string]>> = { back: ["Went", "go"], home: ["Went", "go"], app_switch: ["Opened", "open"] };
+const NAV_WHERE: Readonly<Record<string, string>> = { back: " back", home: " home", app_switch: " the recent apps" };
+
+/** One step in words, its element named by `line` (the answer's) when it has one. A typed or set text shows only once
+ *  the answer's line names the field it went to and says it was no secure field: never while the call runs, for a step
+ *  that did not run, or for a type whose field is unknown. */
+function stepSaid(step: Obj, line: ActLine | undefined): Said {
+  const element = line?.name ? `“${line.name}”` : "an element";
+  const secure = line === undefined || !line.element || line.secure;
+  const point = (at: unknown) => (Array.isArray(at) && at.length === 2 ? `at ${at.map((n) => Math.round(Number(n))).join(", ")}` : element);
+  if ("press" in step) return said("Pressed", "press", ` ${element}`);
+  if ("set" in step) {
+    const value = str(step.value);
+    return said("Set", "set", secure || value === undefined ? ` ${element}` : value.length <= TEXT_SHOWN ? ` ${element} to ${typed(value)}` : ` ${element} (${value.length} characters)`);
+  }
+  if ("perform" in step) return said("Did", "do", ` ${str(step.action) ?? "an action"} on ${element}`);
+  if ("click" in step) {
+    const [did, act] = step.button === "right" ? ["Right-clicked", "right-click"] : step.count === 2 ? ["Double-clicked", "double-click"] : step.count === 3 ? ["Triple-clicked", "triple-click"] : ["Clicked", "click"];
+    return said(did, act, ` ${point(step.click)}`);
+  }
+  if ("type" in step) {
+    // The field it named, as its line names it (a type with no element names none: where it went is unknown).
+    const into = (line ? line.element : step.into !== undefined) ? ` into ${element}` : "";
+    return said("Typed", "type", secure ? (into || " text") : ` ${typed(str(step.type) ?? "")}${into}`);
+  }
+  if ("key" in step) return said("Pressed", "press", ` ${keyWords(str(step.key) ?? "a key")}`);
+  if ("nav" in step) {
+    const nav = str(step.nav) ?? "";
+    const [did, act] = NAV[nav] ?? ["Navigated", "navigate"];
+    return said(did, act, NAV_WHERE[nav] ?? "");
+  }
+  if ("scroll" in step) {
+    const [dx, dy] = [Number(step.dx ?? 0), Number(step.dy ?? 0)];
+    const way = dy > 0 ? "down" : dy < 0 ? "up" : dx > 0 ? "right" : dx < 0 ? "left" : "";
+    return said("Scrolled", "scroll", [...(line?.name ? [element] : []), ...(way ? [way] : [])].map((part) => ` ${part}`).join(""));
+  }
+  if ("drag" in step) return said("Dragged", "drag", " across the screen");
+  return said("Acted", "act");
+}
+
+/** At most this many steps are said; the rest are counted. */
+const STEPS_SAID = 3;
+const lower = (said: string) => said[0]!.toLowerCase() + said.slice(1);
+
+registerLabel(
+  "computer_act",
+  (a, result) => {
+    const steps: Obj[] = Array.isArray(a.steps) ? (a.steps as unknown[]).flatMap((step): Obj[] => { const given = obj(step); return given ? [given] : []; }) : [];
+    const expect = obj(a.expect);
+    if (steps.length === 0) {
+      const text = str(expect?.text);
+      return text !== undefined ? `Waited for ${expect?.gone === true ? "no more " : ""}${typed(text)}` : "Acted on the computer";
+    }
+    // While the call runs, the steps asked for; once its answer is in, the steps that ran (each has its line), a refused
+    // one as tried. An answer with no step line (the call failed) ran none that is known: its first step was tried.
+    const lines = result === undefined ? undefined : actLines(result.text);
+    const ran = lines === undefined ? steps : steps.filter((_, index) => lines.has(index + 1));
+    if (ran.length === 0) return stepSaid(steps[0]!, undefined).tried;
+    const words = ran.slice(0, STEPS_SAID).map((step, index) => {
+      const line = lines?.get(index + 1);
+      const told = stepSaid(step, line);
+      return line?.refused !== undefined ? told.tried : told.did;
+    });
+    const more = ran.length - words.length;
+    return [words[0]!, ...words.slice(1).map(lower), ...(more > 0 ? [`+${more} more`] : [])].join(", ");
+  },
+  { many: (n) => `Acted on the computer ${n} times` },
+  { name: "Act on the computer" },
+);
+// A step the computer refused ends the act there, the answer still a result: the act did not do what it was asked.
+registerOutcome("computer_act", (result) => {
+  for (const [index, line] of actLines(result.text)) if (line.refused !== undefined) return { failed: true, text: `step ${index} refused: ${line.refused}` };
+  return undefined;
+});
+
+/** An observation's head: `state s8 · com.android.settings "Settings" · window "Display" 360×640 pt`. */
+const OBSERVED = /^state \S+ · \S+(?: ("(?:[^"\\]|\\.)*"))? · window(?: ("(?:[^"\\]|\\.)*"))? /;
+registerLabel(
+  "computer_observe",
+  (_a, result) => {
+    const head = result && OBSERVED.exec(result.text);
+    const [app, window] = [unquote(head?.[1]), unquote(head?.[2])];
+    if (window && app && window !== app) return `Looked at ${window} in ${app}`;
+    return window || app ? `Looked at ${window || app}` : "Looked at the screen";
+  },
+  { many: (n) => `Looked at the screen ${n} times` },
+  { name: "Look at the computer" },
+);
+registerLabel("computer_screenshot", () => "Took a screenshot", { many: (n) => `Took ${n} screenshots` }, { name: "Take screenshots of the computer" });
+registerLabel(
+  "computer_script",
+  (a) => {
+    const title = str(a.title)?.replace(/\s+/g, " ").trim();
+    return title ? cut(title, 120) : "Ran a script on the computer";
+  },
+  { many: (n) => `Ran ${n} scripts on the computer` },
+  { name: "Run scripts on the computer" },
+);

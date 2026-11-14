@@ -14,7 +14,7 @@ import { after, test } from "node:test";
 import { readBackOf } from "@parcha/agentrun-computer";
 import { putSealedKey } from "../dist/server-keys.js";
 import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
-import { computerReadyWords } from "../dist/workspace/computer-deps.js";
+import { computerReadyWords, computerStartingWords } from "../dist/workspace/computer-deps.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { GPU_ARCHIL_KINDS, KINDS } from "./workspace-kinds-fixture.mjs";
 
@@ -99,7 +99,7 @@ function views(refusal) {
   return { open, opened, closed, holds };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, hostWhy } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
@@ -108,7 +108,7 @@ async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", 
   const providers = Object.fromEntries(["docker", "e2b", "daytona", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
-  const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode, kinds, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(hostWhy ? { hostWhy } : {}) });
+  const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode, kinds, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}) });
   return { root, record, run };
 }
 
@@ -189,6 +189,21 @@ test("once its computer is connected, the claim says what it is, from its hello:
   await (await sandbox.run()).release();
   assert.deepEqual(said[1], { provider: "Docker", kind: "sandbox", hello: { os: "linux", arch: "amd64" } }, "no version where the hello names none");
   assert.equal(computerReadyWords(said[1]), "The sandbox is ready: Linux (amd64), from Docker.");
+});
+
+test("before its computer is made the claim says it is starting one, so the run's timeline is never blank while a phone boots", async () => {
+  const PHONE = ["screen", "input.touch", "input.keys", "apps", "ui"];
+  const said = [];
+  const phone = await claim({ kind: "phone", provider: "phone-harness" }, {
+    keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: PHONE, machine: "android",
+    onStarting: (one) => void said.push(["starting", one, phone.record.created.length]),
+    onConnected: () => void said.push(["ready"]),
+  });
+  const answer = await phone.run();
+  assert.deepEqual(said, [["starting", { provider: "Phone harness", kind: "phone" }, 0], ["ready"]], "said once, before anything is made, then ready");
+  assert.equal(computerStartingWords(said[0][1]), "Starting a phone from Phone harness…");
+  await answer.release();
+  assert.equal(said.length, 2, "never at the release");
 });
 
 test("a provider whose program this machine lacks is refused in words before anything is rented", async () => {
