@@ -63,9 +63,9 @@ async function desktop({ ui = false } = {}) {
 }
 
 /** A pi run of `script` with code mode on `computer`, its gate `gate(call)`: the request bodies the provider got, and the
- *  server's store. */
-async function codemodeRun(t, script, computer, gate = () => "allow") {
-  const { server, runners: [store] } = await stores({ runners: 1 });
+ *  server's store. With `restartAt`, the first runner shuts down once it settles and a second one takes the run on. */
+async function codemodeRun(t, script, computer, gate = () => "allow", restartAt = undefined) {
+  const { server, runners: stores_ } = await stores({ runners: 2 });
   await queue(server, "run-1");
   const { tools } = suiteTools();
   const requests = [];
@@ -77,8 +77,15 @@ async function codemodeRun(t, script, computer, gate = () => "allow") {
     hooks: quiet,
     gate,
   }));
-  const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
+  const runner = startRunner({ store: stores_[0], createLoop: loop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
+  if (restartAt) {
+    await restartAt;
+    // A shutdown mid-script: the claim lets the run go, its codemode call's task unsettled in its journal.
+    await runner.close();
+    const next = startRunner({ store: stores_[1], createLoop: loop, name: "runner-b", ...TIMING });
+    t.after(() => next.close());
+  }
   await until(async () => {
     const now = await server.runs.get("run-1");
     return now.state === "ended" && now.runner === null && now;
@@ -152,6 +159,34 @@ test("code mode is held to the computer kind's setting: a deny on desktop refuse
   assert.equal(result.isError, true);
   assert.equal(result.text, deniedText(PI_CODEMODE_TOOL), "refused in the gate's words, before the script ran");
   assert.equal(computer.calls.length, before, "nothing reached the computer");
+});
+
+test("a code-mode script replayed after a restart: a replayed call is not made again nor recorded twice; the row holds the calls the rerun made (the shutdown sealed the journal before the cut attempt's record)", async (t) => {
+  const { computer, script } = await desktop();
+  const before = computer.calls.length;
+  // The first click never answers on the first runner: it shuts down with the script waiting on it.
+  let stuck;
+  const reached = new Promise((resolve) => (stuck = resolve));
+  let clicks = 0;
+  computer.overrides["input.actions"] = ({ actions }) => {
+    clicks += 1;
+    if (clicks === 1) {
+      stuck();
+      return new Promise(() => {});
+    }
+    return { done: actions.length };
+  };
+  const code = "await computer.screen.shot();\nawait computer.input.act([{ type: 'click', at: [10, 10] }]);\nreturn (await computer.screen.shot()).width;";
+  const { requests, server } = await codemodeRun(t, [{ call: PI_CODEMODE_TOOL, args: { code } }, { say: "done" }], script, () => "allow", reached);
+  assert.equal(lastResult(requests).isError, false, lastResult(requests).text);
+  const rows = await runTimeline(server, "run-1", BACKGROUND_CONTEXT);
+  const made = computer.calls.slice(before).map(([method]) => method);
+  assert.deepEqual(made, ["screen.shot", "input.actions", "input.actions", "screen.shot"], "the replay never shot the screen again: its first shot's result was handed back");
+  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === PI_CODEMODE_TOOL);
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === call?.tool_use_id);
+  assert.ok(result, `its result row: ${JSON.stringify(rows.map((row) => [row.kind, row.tool_name]))}`);
+  assert.deepEqual((result.computer_calls ?? []).map((one) => [one.method, one.ok]), [["input.actions", true], ["screen.shot", true]], `the rerun's calls, once each; the replayed shot not again: ${JSON.stringify(result.computer_calls)}`);
+  assert.equal(rows.filter((row) => row.computer_calls).length, 1, "on that row only");
 });
 
 test("a code-only computer (no computer_script listed to declare `computer`): the codemode tool's own description declares it, as computer_script's would; with computer_script listed it declares nothing twice", async () => {
