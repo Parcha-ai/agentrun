@@ -38,20 +38,20 @@ export const MANIFEST = "agent.md";
 /** A package's model tier, mapped to the server's own (model.ts Tier: AGENT_MODEL_FAST, AGENT_MODEL, AGENT_MODEL_STRONG). */
 export const MODEL_TIERS: Readonly<Record<string, Tier>> = { fast: "fast", balanced: "default", strong: "strong" };
 const SCALAR_TYPES = ["string", "number", "integer", "boolean"] as const;
-export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "schema"] as const;
+/** A case's grader types. The answer's output schema is no grader's: every graded run of a package with `output` is held
+ *  to it by the server's own verdict (template-eval.ts outputVerdict). */
+export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists"] as const;
 /** The entries of a package's `computer` preference list: `shell`, a computer that gives the agent a shell here (bash);
  *  `none`, no shell, the file tools alone. Apply takes the first this server meets now (pickComputer). */
 export const COMPUTER_ENTRIES = ["shell", "none"] as const;
 export type ComputerEntry = (typeof COMPUTER_ENTRIES)[number];
-const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "category", "tags", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "checkout", "parameters", "inputs", "secrets", "budget", "learning", "approvals", "triggers", "output", "checks"];
+const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "category", "tags", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "checkout", "parameters", "inputs", "secrets", "budget", "learning", "approvals", "triggers", "output"];
 /** What a package is for, shown on a marketplace page and the console's list: display only, never applied. */
 export const CATEGORIES = ["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] as const;
 const TAG = /^[a-z0-9-]{1,32}$/;
 const MAX_TAGS = 8;
 /** An MCP need's reason: one line, shown on the apply screen beside its tools. */
 const MAX_REASON = 280;
-/** The files an examples/<name>/ folder holds: the run's input, its answer, and the answer as a reader sees it. */
-const EXAMPLE_FILES = ["input.json", "output.json", "output.md"];
 /** An input's or a parameter's types: a scalar, or a list of one. */
 export const INPUT_TYPES = [...SCALAR_TYPES, "array"] as const;
 /** What a string input's or parameter's value is: a form asks for it as such, and the server checks the JSON Schema
@@ -125,9 +125,6 @@ export type Package = {
   /** What it is for and its tags (CATEGORIES, TAG): display only. */
   category?: (typeof CATEGORIES)[number];
   tags: string[];
-  /** examples/<name>/, each checked (its input against the input schema, its answer against the output schema): shown on
-   *  a marketplace page, never given to the agent. */
-  examples: string[];
   /** Harness ids in the order the package prefers them; absent, any (the server's default). */
   harness?: string[];
   /** The agent's tier and the model it prefers on it; `fast` and `strong`, the model it prefers for each of those tiers
@@ -165,7 +162,6 @@ export type Package = {
   output?: { schema: string };
   /** The output schema's JSON, parsed (GET /v2/templates shows it). */
   outputSchema?: Json;
-  checks: string[];
   instructions: string;
   /** Skill files by path under the agent's skills folder (`review/SKILL.md`), each rule beside each SKILL.md. */
   skills: Record<string, string>;
@@ -231,14 +227,18 @@ const filled = (value: unknown, given: Record<string, unknown>): unknown =>
   : isObject(value) ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, filled(item, given)]))
   : value;
 
-/** A trigger's target.input filled: a value that is one placeholder alone takes the parameter's value with its type (a
- *  list stays a list, an integer an integer), and is dropped when the parameter was given none, so the input schema sees
- *  the field absent; other text is filled as text. */
+/** Text filled from `given`, the one rule a trigger's input and a pin share: text that is one placeholder alone takes the
+ *  parameter's value with its type (a list stays a list, an integer an integer), undefined when it was given none; other
+ *  text is filled as text. Each caller keeps its own rule for a value given none. */
+const typedFilled = (text: string, given: Record<string, unknown>): unknown => {
+  const whole = WHOLE.exec(text);
+  return whole ? givenOf(given, whole[1]!) : filled(text, given);
+};
+
+/** A trigger's target.input filled (typedFilled): a whole placeholder given no value is dropped, so the input schema
+ *  sees the field absent. */
 const inputFilled = (value: unknown, given: Record<string, unknown>): unknown => {
-  if (typeof value === "string") {
-    const whole = WHOLE.exec(value);
-    return whole ? givenOf(given, whole[1]!) : filled(value, given);
-  }
+  if (typeof value === "string") return typedFilled(value, given);
   if (Array.isArray(value)) return value.map((item) => inputFilled(item, given)).filter((item) => item !== undefined);
   if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, inputFilled(item, given)]).filter(([, item]) => item !== undefined));
   return value;
@@ -269,25 +269,19 @@ function pinOf(pin: unknown, server: string, tools: readonly string[], at: strin
   return out;
 }
 
-/** A pin's scalar filled from the apply's `given` parameters: text that is one placeholder alone takes the parameter's
- *  value as given (its type kept: an integer pins an integer); other text is filled as text. `empty`: the parameters its
- *  placeholders name that were given no value (absent, or ""), so the pin cannot hold what the owner meant. */
+/** A pin's scalar filled from the apply's `given` parameters (typedFilled: an integer pins an integer), a list's items
+ *  as text. `empty`: the parameters its placeholders name that were given no value (absent, or ""), so the pin cannot
+ *  hold what the owner meant. */
 function scalarFilled(value: PinScalar, given: Record<string, unknown>): { value: PinScalar; empty: string[] } {
   if (typeof value !== "string") return { value, empty: [] };
-  const named = [...value.matchAll(PLACEHOLDER)].map((match) => match[1]!);
-  const empty = named.filter((name) => unset(givenOf(given, name)));
-  const whole = WHOLE.exec(value);
-  if (whole && !empty.length) {
-    const one = given[whole[1]!];
-    if (typeof one === "string" || typeof one === "number" || typeof one === "boolean") return { value: one, empty };
-  }
-  return { value: filled(value, given) as string, empty };
+  const empty = [...value.matchAll(PLACEHOLDER)].map((match) => match[1]!).filter((name) => unset(givenOf(given, name)));
+  const one = typedFilled(value, given);
+  return { value: !empty.length && (typeof one === "string" || typeof one === "number" || typeof one === "boolean") ? one : (filled(value, given) as string), empty };
 }
 /** A pin's value filled (scalarFilled), each of a one-of list's in its order. One placeholder alone of a list parameter
  *  pins the list as a one-of: any of the values the owner gave. */
 function pinFilled(value: PinValue, given: Record<string, unknown>): { value: PinValue; empty: string[] } {
-  const whole = typeof value === "string" ? WHOLE.exec(value) : null;
-  const list = whole ? givenOf(given, whole[1]!) : undefined;
+  const list = typeof value === "string" ? typedFilled(value, given) : undefined;
   if (Array.isArray(list) && list.length) return { value: list as PinValue, empty: [] };
   if (!Array.isArray(value)) return scalarFilled(value as PinScalar, given);
   const each = value.map((one) => scalarFilled(one, given));
@@ -495,21 +489,19 @@ export function readPackage(from: string | PackageFiles): Package {
   if (src.kind("") !== "dir") throw new PackageError(dir, ["it is not a folder: a package is one"]);
   if (kind(MANIFEST) !== "file") throw new PackageError(dir, [`${MANIFEST}: missing: a package is a folder with agent.md (its manifest in the front matter, the agent's instructions in the body)`]);
   for (const entry of src.entries("")) {
-    if (entry.isDirectory() && !["skills", "rules", "evals", "examples"].includes(entry.name)) bad(`${entry.name}/`, "a package's folders are skills/, rules/, evals/ and examples/");
+    if (entry.isDirectory() && !["skills", "rules", "evals"].includes(entry.name)) bad(`${entry.name}/`, "a package's folders are skills/, rules/ and evals/");
   }
   // Bounded before anything is read: a file, the files together, and how many there are.
   // The agent's files' bytes (evals/ is the package's own test data, never part of an agent) under POST /v2/agents'
   // limits, an eval's file under MAX_EVAL_FILE_BYTES alone; every file, evals/ too, counts toward MAX_PACKAGE_FILES. A
   // file under evals/ an agent is given all the same (the answer's schema, which becomes its output_schema and is in its
-  // instructions) keeps the agent's limits: checked once the manifest names it, before it is read. examples/ is never an
-  // agent's either: each of its files keeps a package file's own limit.
+  // instructions) keeps the agent's limits: checked once the manifest names it, before it is read.
   const listed = files("");
-  const all = listed.filter((path) => !path.startsWith("evals/") && !path.startsWith("examples/"));
+  const all = listed.filter((path) => !path.startsWith("evals/"));
   const sizes = all.map((path) => [path, src.size(path)] as const);
   const agentBytes = sizes.reduce((sum, [, size]) => sum + size, 0);
   const limits = [
     ...listed.filter((path) => path.startsWith("evals/") && src.size(path) > MAX_EVAL_FILE_BYTES).map((path) => `${path}: is over ${MAX_EVAL_FILE_BYTES} bytes, an eval file's limit`),
-    ...listed.filter((path) => path.startsWith("examples/") && src.size(path) > MAX_FILE_BYTES).map((path) => `${path}: is over ${MAX_FILE_BYTES} bytes, a package file's limit`),
     ...sizes.filter(([, size]) => size > MAX_FILE_BYTES).map(([path]) => `${path}: is over ${MAX_FILE_BYTES} bytes, a package file's limit`),
     ...(agentBytes > MAX_PACKAGE_BYTES ? [`the package's files are over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit`] : []),
     ...(listed.length > MAX_PACKAGE_FILES ? [`the package holds over ${MAX_PACKAGE_FILES} files`] : []),
@@ -625,7 +617,6 @@ export function readPackage(from: string | PackageFiles): Package {
       }
     }
   }
-  const checks = list(f.checks, "checks", (check) => NAME.test(check));
   const instructions = manifest?.body.trim() ?? "";
   if (manifest && !instructions) bad(MANIFEST, "its body is empty: the body is the agent's instructions");
   for (const value of strings([instructions, triggers, f.display_name, mcp.map((need) => need.pin)])) {
@@ -714,39 +705,6 @@ export function readPackage(from: string | PackageFiles): Package {
       const grader = front(`${at}/${path}`);
       if (!grader) continue;
       if (!(GRADER_TYPES as readonly unknown[]).includes(grader.data.type)) bad(`${at}/${path}`, `type is one of ${GRADER_TYPES.join(", ")}`);
-      else if (grader.data.type === "schema" && !inside(grader.data.schema)) bad(`${at}/${path}`, "a schema grader names its schema: a JSON Schema file in the package");
-    }
-  }
-
-  // examples/<name>/: a run's input (input.json, checked against the input schema in force), its answer (output.json,
-  // checked against the output schema when the package has one) and, optionally, that answer as a reader sees it
-  // (output.md). Shown on a marketplace page; never given to the agent, never applied.
-  const examples: string[] = [];
-  const answerCheck = isObject(outputSchema) ? schemaCheck(outputSchema) : undefined;
-  for (const entry of kind("examples") === "dir" ? src.entries("examples") : []) {
-    const at = `examples/${entry.name}`;
-    if (!entry.isDirectory() || !NAME.test(entry.name)) {
-      bad(at, "examples/ holds only example folders, each named in lowercase letters, digits and dashes");
-      continue;
-    }
-    examples.push(entry.name);
-    const own = files(at).map((path) => path.slice(at.length + 1));
-    for (const path of own.filter((p) => !EXAMPLE_FILES.includes(p))) bad(`${at}/${path}`, `an example holds ${EXAMPLE_FILES.slice(0, -1).join(", ")} and ${EXAMPLE_FILES.at(-1)} only`);
-    const json = (file: string): { value: unknown } | undefined => {
-      if (!own.includes(file)) return bad(at, `has no ${file}`), undefined;
-      try {
-        return { value: JSON.parse(text(`${at}/${file}`)) };
-      } catch {
-        return bad(`${at}/${file}`, "is not JSON"), undefined;
-      }
-    };
-    const input = json("input.json");
-    if (input && !isObject(input.value)) bad(`${at}/input.json`, "is not a JSON object: it is a run's input");
-    else if (input) for (const issue of inputIssues(input.value as Json, inputSchemaOf(inputSchema))) bad(`${at}/input.json`, `${issue.message}, as a run's input is`);
-    const output = json("output.json");
-    if (output && answerCheck && "check" in answerCheck) {
-      const wrong = answerCheck.check(output.value);
-      if (wrong.length) bad(`${at}/output.json`, `does not match the output schema: ${wrong.slice(0, 3).join("; ")}`);
     }
   }
 
@@ -754,10 +712,10 @@ export function readPackage(from: string | PackageFiles): Package {
   const p: Package = {
     id: name, origin: null, name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
-    ...(typeof f.category === "string" ? { category: f.category as NonNullable<Package["category"]> } : {}), tags, examples,
+    ...(typeof f.category === "string" ? { category: f.category as NonNullable<Package["category"]> } : {}), tags,
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as NonNullable<Package["model"]> } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
     ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
-    triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), checks, instructions, skills, evals,
+    triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
   // /v2/agents and POST /v2/triggers check their bodies (all but the agent the trigger names, which an apply makes). A
@@ -810,7 +768,7 @@ export function packageView(p: Package) {
   return {
     id: p.id, bundled: p.origin === null, source: p.origin?.source ?? null, sha: p.origin?.sha ?? null, publisher: p.origin?.publisher ?? null,
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
-    category: p.category ?? null, tags: p.tags, examples: p.examples,
+    category: p.category ?? null, tags: p.tags,
     output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
     harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, checkout: p.checkout ?? null,
     mcp: p.mcp.map(({ source, toolkit, tools, required, reason, allow, pin }) => ({ source, toolkit, required, reason: reason ?? null, tools: tools.map((name) => ({ name, tool: mcpToolName(toolkit, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, input_schema: p.inputSchema ?? null, secrets: p.secrets,
