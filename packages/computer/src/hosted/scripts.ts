@@ -100,8 +100,15 @@ export const INIT_LOG = `${SOCKET_DIR}-init.log`;
 const START_SCRIPT = ["# agentrun-computer: start", "l=$1; shift", ROOT, `exec $p sh -c 'exec >"$0" 2>&1 </dev/null; setsid "$@" &' "$l" "$@"`].join("\n");
 
 /**
- * Takes others' access off every path unix socket the vendor's patterns ($@, each a shell pattern with no space) name,
- * as root: what init does itself under /run (daemon/internal/isolate CloseSystemSockets), for a vendor's socket
+ * The session buses a vendor's own processes leave in /tmp (Daytona's D-Bus, /tmp/dbus-Y8OW6E3FDx), which no network
+ * namespace cuts: every child host's create closes them to the computer's user before init starts. The window
+ * manager's bus is its own, at an abstract address, so closing these takes nothing from it.
+ */
+export const SESSION_BUSES: readonly string[] = ["/tmp/dbus-*"];
+
+/**
+ * Takes others' access off every path unix socket the patterns ($@, each a shell pattern with no space) name, as
+ * root: what init does itself under /run (daemon/internal/isolate CloseSystemSockets), for a vendor's socket
  * elsewhere. The owner's and group's access stays, so the vendor's own service keeps its socket; the computer's user
  * is neither. A link is never followed. Prints `closed <path>` for each socket it closed and `failed <path>` for one
  * it could not; any failure fails the script, and create then refuses the computer.
@@ -170,8 +177,8 @@ export interface HostedCommands {
 	install: string[];
 	/** child: init's start, detached; it answers once init is started. */
 	start: string[];
-	/** child: the vendor's sockets (HostFacts.vendorSockets) closed to others, run before start; none when it names none. */
-	sockets?: string[];
+	/** child: the session buses in /tmp (SESSION_BUSES) closed to others, run before start. */
+	sockets: string[];
 	stdio: string[];
 	log: string[];
 	/** pid1: the machine's command. */
@@ -182,8 +189,8 @@ export interface HostedCommands {
  * The adapter's commands for one computer. Init's flags are the child's (childCommands) for both modes: --own-network
  * always, the display and the most deadline.extend may move the deadline to when given. waitS bounds a pid1 entrypoint's
  * wait for the daemon (and gate, for an Archil computer); with atomic, install moves the daemon into place last, and only
- * once it reads sha256, when given, then writes nonce, when given, to the marker the entrypoint waits for. vendorSockets
- * (HostFacts') gives a child its sockets command.
+ * once it reads sha256, when given, then writes nonce, when given, to the marker the entrypoint waits for. sockets are
+ * the patterns a child's sockets command closes (default SESSION_BUSES).
  */
 export function hostedCommands({
 	staging = "",
@@ -196,8 +203,8 @@ export function hostedCommands({
 	gate,
 	sha256 = "",
 	nonce = "",
-	vendorSockets = [],
-}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string; vendorSockets?: readonly string[] } = {}): HostedCommands {
+	sockets = SESSION_BUSES,
+}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string; sockets?: readonly string[] } = {}): HostedCommands {
 	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
 	if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
 	const initArgs = ["init", "--deadline", deadline, "--user", user, "--own-network", ...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline])];
@@ -206,7 +213,7 @@ export function hostedCommands({
 		start: argvOf(START_SCRIPT, [INIT_LOG, ...argvOf(INIT_SCRIPT, init)]),
 		stdio: argvOf(STDIO_SCRIPT, [DAEMON_IN_COMPUTER, SOCKET_DIR]),
 		log: argvOf(LOG_SCRIPT, [INIT_LOG]),
-		...(vendorSockets.length === 0 ? {} : { sockets: argvOf(SOCKETS_SCRIPT, vendorSockets) }),
+		sockets: argvOf(SOCKETS_SCRIPT, sockets),
 		entrypoint: argvOf(ENTRYPOINT_SCRIPT, [DAEMON_IN_COMPUTER, String(waitS), WORK, display, nonce, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs]),
 	};
 }

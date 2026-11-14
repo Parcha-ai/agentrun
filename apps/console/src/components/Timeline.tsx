@@ -3,6 +3,7 @@ import { type ReactNode, useState } from "react";
 import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { callWords, type ComputerCallRow } from "@timeline/computer";
 import { nameOf } from "@timeline/labels";
+import { isFeedbackRow } from "@timeline/origin";
 import { Chip } from "@/components/ui/chip";
 import { Spinner } from "@/components/ui/spinner";
 import { chargeWords, clock, markdown, openLinkedFile } from "@/lib/format";
@@ -99,7 +100,8 @@ function toolWords(id: string): string {
 /** A tool's name as the label says it: an MCP server's tool as `<server> · <tool>`, a browser tool by its name, any
  *  other in words. */
 const toolName = (tool: string | null | undefined) => (tool ? (mcpToolLabel(tool) ?? (BROWSER.has(tool) ? nameOf(tool) : toolWords(tool))) : tool);
-const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : fromTrigger(row) ? (triggerParts(row).who ?? "Trigger") :
+// A grade's words (a feedback round's first row) are the reviewer's, never a message the job's turn took.
+const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : fromTrigger(row) ? (triggerParts(row).who ?? "Trigger") : isFeedbackRow(row) ? "Your grade" :
   ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval", learning: "Learning" } as Partial<Record<string, string>>)[row.kind] ?? row.kind;
 
 /** A waiting row's chip, by what the run waits on now (its `pending.kind`, the run page's to pass: a row carries no kind

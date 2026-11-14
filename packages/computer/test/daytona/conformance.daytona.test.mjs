@@ -13,7 +13,7 @@ import { conformanceImage, conformanceNotes, createDriftedProvider, createProvid
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DAYTONA === "1" && Boolean(process.env.COMPUTER_DAYTONA_API_KEY);
 const SNAPSHOT = LIVE ? conformanceImage() : undefined;
-const skip = LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DAYTONA=1 and COMPUTER_DAYTONA_API_KEY (an OKed key) to run on real Daytona";
+const skip = LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DAYTONA=1 and COMPUTER_DAYTONA_API_KEY (for an account you can bill) to run on real Daytona";
 
 describe("the conformance suite on Daytona", { skip }, () => {
 	let report;

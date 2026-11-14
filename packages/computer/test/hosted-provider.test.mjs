@@ -11,7 +11,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, computerNameFor as nameOf } from "../dist/index.js";
 import { HostError } from "../dist/host.js";
-import { DAEMON, DESKTOP_GROUPS, deferred, fakeHost, LINUX_GROUPS, NotFound, VERSION } from "./fake-host.mjs";
+import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescriptor, LINUX_GROUPS, NotFound, VERSION } from "./fake-host.mjs";
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
 const { hostedCommands } = await import("../dist/hosted/scripts.js");
@@ -22,8 +22,12 @@ const NAME = "agentrun.computer.name";
 const DEADLINE = "agentrun.computer.deadline";
 const MAX = "agentrun.computer.max-deadline";
 const SPEC = { image: "img", lifetimeMs: 600_000, network: "none" };
-/** A pid1 host that takes a spec's user. */
-const USER_FACTS = { daemon: "pid1", specFields: ["user"], user: ["uid"] };
+/** A pid1 host that takes a spec's user (its capabilities' user). */
+const USER_FACTS = { daemon: "pid1", user: ["uid"] };
+const GPU_LABEL = "agentrun.computer.gpu";
+const H100 = { type: "H100", count: 1 };
+/** The fake's descriptor with one H100, as Daytona's offers. */
+const WITH_GPU = { descriptor: gpuDescriptor({ types: ["H100"], max: 1 }) };
 const HOUR = 3_600_000;
 const ACCEPTED_NOTE = "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443, 8.8.8.8:443";
 const INSTALLER_NOTE = "the daemon was installed by root (uid 0), as root";
@@ -36,8 +40,9 @@ test.after(() => rmSync(dir, { recursive: true, force: true }));
 /** Short bounds, so the waits in these tests take milliseconds. */
 const TIMEOUTS = { requestMs: 2_000, createMs: 2_000, uploadMs: 2_000, execMs: 2_000, helloMs: 1_000, probeMs: 1_000, listMs: 2_000, goneMs: 500, pollMs: 5, listedMs: 500, listedStableMs: 0, mountMs: 2_000 };
 
-function setup(options = {}, fakeOptions = {}) {
-	const fake = fakeHost(fakeOptions);
+/** The fake host and a provider over it; a descriptor given goes on the host, which carries it (src/host.ts). */
+function setup({ descriptor, ...options } = {}, fakeOptions = {}) {
+	const fake = fakeHost({ ...fakeOptions, ...(descriptor === undefined ? {} : { descriptor }) });
 	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, ...options });
 	return { fake, provider };
 }
@@ -65,7 +70,7 @@ async function nothingLeft(fake, what) {
 
 // --- capabilities and check ---
 
-test("capabilities come from the host's descriptor and facts and the adapter's options alone", () => {
+test("capabilities come from the host's descriptor (network, mounts, the kind's groups and GPUs), its facts and the adapter's options alone", () => {
 	const { provider } = setup({ kind: "desktop" });
 	assert.deepEqual(provider.capabilities(), {
 		kind: "desktop",
@@ -90,16 +95,24 @@ test("capabilities come from the host's descriptor and facts and the adapter's o
 	assert.equal(setup({}, { timer: "none" }).provider.extend, undefined, "no extend where the host has none");
 	assert.throws(() => setup({ maxLifetimeMs: 25 * HOUR }), /at most 86400000 ms, the longest Fakehost keeps a computer/);
 	assert.throws(() => setup({ daemonUser: "0:0" }), /root or in root's group/);
+	// The descriptor is the network's and the mounts' one source: the host's facts name neither.
+	const unmounted = setup({ descriptor: { ...FAKE_DESCRIPTOR, mounts: [], unmounted: { archil: "Archil mounts don't work on Fakehost" } } }).provider;
+	assert.deepEqual(unmounted.capabilities().mount, []);
+	assert.match(unmounted.check({ ...SPEC, mount: { kind: "archil", disk: "d", region: "r", folder: "f", token: "t" } })[0].message, /Archil mounts don't work on Fakehost/);
+	assert.deepEqual(setup(WITH_GPU).provider.capabilities().gpu, { types: ["H100"], max: 1 }, "the kind's GPUs, from its configuration");
+	assert.equal(setup({ ...WITH_GPU, kind: "desktop" }).provider.capabilities().gpu, undefined, "a desktop configuration offers none");
+	assert.throws(() => setup({ descriptor: { ...FAKE_DESCRIPTOR, capabilities: [FAKE_DESCRIPTOR.capabilities[0]] }, kind: "desktop" }), /Fakehost offers no desktop computer/);
 });
 
-test("check() refuses, with no host call, what no hosted computer is: open, an allowlist, sizes, a user, a workdir, the adapter's own labels, a lifetime past the cap", () => {
+test("check() refuses, with no host call, what no hosted computer is: open, an allowlist, pids, a user, a workdir, the adapter's own labels, a lifetime past the cap; sizes are the host's to refuse", () => {
 	const { provider, fake } = setup({ maxLifetimeMs: HOUR });
 	assert.deepEqual(provider.check({ ...SPEC, labels: { run: "r1" } }), []);
 	const fields = (spec) => provider.check(spec).map((r) => r.field);
 	assert.deepEqual(fields({ ...SPEC, image: "" }), ["image"]);
 	assert.deepEqual(fields({ ...SPEC, network: "open" }), ["network"]);
 	assert.deepEqual(fields({ ...SPEC, network: { allow: ["example.com"] } }), ["network"]);
-	for (const field of ["cpus", "memoryMb", "pids", "workdir"]) assert.deepEqual(fields({ ...SPEC, [field]: field === "workdir" ? "/tmp" : 2 }), [field]);
+	for (const field of ["pids", "workdir"]) assert.deepEqual(fields({ ...SPEC, [field]: field === "workdir" ? "/tmp" : 2 }), [field]);
+	assert.deepEqual(fields({ ...SPEC, cpus: 2, memoryMb: 1024 }), [], "the host's check refuses a size it does not take: this one has none");
 	assert.deepEqual(fields({ ...SPEC, user: "0" }), ["user"]);
 	assert.deepEqual(fields({ ...SPEC, labels: { [COMPUTER]: "2" } }), ["labels"]);
 	assert.deepEqual(fields({ ...SPEC, labels: { [`${COMPUTER}.x`]: "2" } }), ["labels"]);
@@ -109,10 +122,7 @@ test("check() refuses, with no host call, what no hosted computer is: open, an a
 	assert.deepEqual(fake.calls, []);
 });
 
-test("a host's own rules (check) and label budget are held at check()", () => {
-	const { provider } = setup({}, { facts: { labelRules: { max: 7 } } });
-	assert.deepEqual(provider.check({ ...SPEC, labels: { a: "1", b: "2" } }), []);
-	assert.match(provider.check({ ...SPEC, labels: { a: "1", b: "2", c: "3" } })[0].message, /takes 7 labels, 5 of them the provider's own: 3 is 1 too many/);
+test("a host's own rules (check) are held at check()", () => {
 	const fake = fakeHost();
 	const strict = new HostedProvider({ ...fake.host, check: (spec) => (spec.image === "bad" ? [{ field: "image", message: "not a vendor image" }] : []) }, { daemonPath: DAEMON_PATH });
 	assert.deepEqual(strict.check({ ...SPEC, image: "bad" }), [{ field: "image", message: "not a vendor image" }]);
@@ -143,7 +153,8 @@ test("create names the computer from its request id, makes the machine with the 
 	const { request } = m;
 	assert.equal(request.name, ref.name);
 	assert.equal(request.lifetimeMs, 600_000);
-	assert.equal(request.network, "none");
+	assert.equal(request.egress, false, "no way out: the vendor's network is none");
+	assert.equal(request.network, undefined, "network none always: egress is the one word");
 	assert.equal(request.command, undefined, "a child host's machine runs the vendor's own first process");
 	assert.equal(request.labels.team, "a");
 	assert.equal(request.labels[COMPUTER], "1");
@@ -156,33 +167,31 @@ test("create names the computer from its request id, makes the machine with the 
 	assert.equal(m.init.display, ":0");
 	assert.equal(m.init.max, request.labels[MAX]);
 	const runs = runsOf(fake, m.id);
-	assert.deepEqual(runs.slice(0, 3), ["run install", "run start", "run stdio"], "the daemon installed, init started detached, then the bridge");
+	assert.deepEqual(runs.slice(0, 4), ["run install", "run sockets", "run start", "run stdio"], "the daemon installed, /tmp's session buses closed, init started detached, then the bridge");
 	assert.ok(runs.includes("daemon process.start"), "the X server started through the daemon");
 	assert.ok(runs.includes("daemon exec.run"), "the probe ran");
 	assert.deepEqual(fake.uploads.map(({ through }) => through), ["upload"], "the daemon went in through the host's file API");
 });
 
-test("a child host's own sockets (vendorSockets) are closed to the computer's user before init starts, and said in the notes; one that will not close refuses the computer", async () => {
+test("every child host's session buses in /tmp (D-Bus, /tmp/dbus-*) are closed to the computer's user before init starts, with no fact naming them, and said in the notes; one that will not close refuses the computer", async () => {
 	const sockets = ["/tmp/dbus-Y8OW6E3FDx", "/tmp/dbus-AAAAAAAAAA", "/tmp/.X11-unix/X0", "/tmp/sub/dbus-nested"];
-	const { provider, fake } = setup({}, { facts: { vendorSockets: ["/tmp/dbus-*"] }, sockets });
+	const { provider, fake } = setup({}, { sockets });
+	assert.equal(fake.host.facts.vendorSockets, undefined, "no host fact names them");
 	const ref = made(await create(provider));
-	assert.deepEqual(ref.notes, [INSTALLER_NOTE, "Fakehost's own sockets closed to the computer's user: /tmp/dbus-AAAAAAAAAA, /tmp/dbus-Y8OW6E3FDx", ACCEPTED_NOTE]);
+	assert.deepEqual(ref.notes, [INSTALLER_NOTE, "session buses in /tmp closed to the computer's user: /tmp/dbus-AAAAAAAAAA, /tmp/dbus-Y8OW6E3FDx", ACCEPTED_NOTE]);
 	const runs = runsOf(fake, only(fake).id);
 	assert.deepEqual(runs.slice(0, 4), ["run install", "run sockets", "run start", "run stdio"], "closed after the install, before init starts");
-	assert.deepEqual(hostedCommands({ vendorSockets: ["/tmp/dbus-*"] }).sockets?.slice(4), ["/tmp/dbus-*"], "each pattern one argument, as given");
-	const none = setup({}, { facts: { vendorSockets: ["/tmp/dbus-*"] } });
-	assert.equal(made(await create(none.provider)).notes[1], "Fakehost's own sockets closed to the computer's user: none found (/tmp/dbus-*)");
-	const failing = setup({}, { facts: { vendorSockets: ["/tmp/dbus-*"] }, sockets, socketsFail: "/tmp/dbus-Y8OW6E3FDx" });
+	assert.deepEqual(hostedCommands().sockets?.slice(4), ["/tmp/dbus-*"], "each pattern one argument");
+	const none = setup();
+	assert.deepEqual(made(await create(none.provider)).notes, [INSTALLER_NOTE, ACCEPTED_NOTE], "none found: nothing said");
+	assert.ok(runsOf(none.fake, only(none.fake).id).includes("run sockets"), "run all the same");
+	const failing = setup({}, { sockets, socketsFail: "/tmp/dbus-Y8OW6E3FDx" });
 	const refused = await create(failing.provider);
 	assert.equal(refused.error?.code, "refused");
-	assert.match(refused.error.message, /closing Fakehost's own sockets to the computer's user failed \(exit 1\): closed \/tmp\/dbus-AAAAAAAAAA\nfailed \/tmp\/dbus-Y8OW6E3FDx/);
+	assert.match(refused.error.message, /closing the session buses in \/tmp to the computer's user failed \(exit 1\): closed \/tmp\/dbus-AAAAAAAAAA\nfailed \/tmp\/dbus-Y8OW6E3FDx/);
 	assert.ok(!failing.fake.events.some(({ what }) => what === "run start"), "init never started");
-	await nothingLeft(failing.fake, "a computer whose vendor sockets would not close");
-	const plain = setup();
-	made(await create(plain.provider));
-	assert.ok(!runsOf(plain.fake, only(plain.fake).id).includes("run sockets"), "a host that names none runs no sockets script");
-	assert.equal(hostedCommands().sockets, undefined);
-	const pid1 = setup({}, { facts: { ...USER_FACTS, vendorSockets: ["/tmp/dbus-*"] }, sockets });
+	await nothingLeft(failing.fake, "a computer whose session buses would not close");
+	const pid1 = setup({}, { facts: USER_FACTS, sockets });
 	made(await create(pid1.provider));
 	assert.ok(!runsOf(pid1.fake, only(pid1.fake).id).includes("run sockets"), "a pid1 host's init is its main process: no sockets script");
 });
@@ -205,7 +214,7 @@ test("the sockets script, run by sh: each socket a pattern names loses others' a
 		symlinkSync(target, join(root, "dbus-link"));
 		writeFileSync(join(root, "dbus-file"), "");
 		chmodSync(join(root, "dbus-file"), 0o666);
-		const argv = hostedCommands({ vendorSockets: [`${root}/dbus-*`, `${root}/absent-*`] }).sockets;
+		const argv = hostedCommands({ sockets: [`${root}/dbus-*`, `${root}/absent-*`] }).sockets;
 		const out = execFileSync(argv[0], argv.slice(1), { env: { PATH: `${bin}:${process.env.PATH}` }, encoding: "utf8" });
 		assert.equal(out, `closed ${bus}\n`);
 		assert.equal(statSync(bus).mode & 0o777, 0o770, "others lose read, write and search; the owner and group keep theirs");
@@ -354,39 +363,37 @@ test("a retry of a request whose computer ended, stopped or was deleted is refus
 	assert.equal(fake.creates(), 1, "never a second machine under one name");
 });
 
-test("a retry is held to the GPUs its computer reads back: a GPU request that finds its computer made without one, or the other way round, is refused as exists", async () => {
-	const H100 = { type: "H100", count: 1 };
-	const { provider, fake } = setup({}, { facts: { gpu: { types: ["H100"], max: 1 } } });
+test("a retry is held to the GPUs its computer's label records, on a host that reads no GPU back: a GPU request that finds its computer made without one, or the other way round, is refused as exists", async () => {
+	const { provider, fake } = setup(WITH_GPU);
 	const plain = made(await provider.create(SPEC, { requestId: "cpu-first" }));
 	const gpu = await provider.create({ ...SPEC, gpu: H100 }, { requestId: "cpu-first" });
 	assert.equal(gpu.error?.code, "exists", "a GPU request never gets the computer made without one");
 	assert.match(gpu.error.message, new RegExp(`${plain.name} was made for this request with another spec, so it is not returned: gpu: asked \\{"type":"H100","count":1\\}, read back nothing`));
 	const withGpu = made(await provider.create({ ...SPEC, gpu: H100 }, { requestId: "gpu-first" }));
+	assert.equal(fake.machines.get(withGpu.id).labels[GPU_LABEL], "H100:1", "create records the GPUs in the adapter's own label");
+	assert.equal(fake.machines.get(plain.id).labels[GPU_LABEL], undefined, "and none for a computer with none");
+	assert.deepEqual(made(await provider.attach({ id: withGpu.id })).spec.gpu, H100, "attach reads them from the label");
 	const none = await provider.create(SPEC, { requestId: "gpu-first" });
 	assert.equal(none.error?.code, "exists", "a request without a GPU never gets the GPU computer");
 	assert.match(none.error.message, /gpu: asked nothing, read back \{"type":"H100","count":1\}/);
 	assert.equal(made(await provider.create({ ...SPEC, gpu: H100 }, { requestId: "gpu-first" })).id, withGpu.id, "the same spec gets the same computer");
 	assert.equal(made(await provider.create(SPEC, { requestId: "cpu-first" })).id, plain.id);
 	assert.equal(fake.creates(), 2, "never a second machine under one name");
+	// A restarted provider reads the same label: the GPUs need no vendor read-back.
+	const after = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	assert.equal((await after.create({ ...SPEC, gpu: H100 }, { requestId: "cpu-first" })).error?.code, "exists");
+	assert.equal(made(await after.create({ ...SPEC, gpu: H100 }, { requestId: "gpu-first" })).id, withGpu.id);
 });
 
-test("a retry from a restarted provider, of a sized request on a host that takes sizes but reads none back (Modal), finds the computer the first made", async () => {
-	const fake = fakeHost({ facts: { specFields: ["cpus", "memoryMb"] } });
+test("a retry from a restarted provider, of a sized request, finds the computer the first made: the request carries the spec's sizes, and none is read back", async () => {
+	const fake = fakeHost();
 	const spec = { ...SPEC, cpus: 4, memoryMb: 8192 };
 	const before = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	const ref = made(await before.create(spec, { requestId: "sized-unread" }));
+	assert.deepEqual([only(fake).request.cpus, only(fake).request.memoryMb], [4, 8192], "the spec's sizes, as given");
+	assert.equal(only(fake).request.workdir, undefined, "no workdir: no host takes one");
 	const after = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	assert.equal(made(await after.create(spec, { requestId: "sized-unread" })).id, ref.id, "a size read back as nothing is not a drift");
-	assert.equal(fake.creates(), 1, "never a second machine under one name");
-});
-
-test("a retry from a restarted provider, of a GPU request on a host that reads no GPUs back (Modal), finds the computer the first made", async () => {
-	const H100 = { type: "H100", count: 1 };
-	const fake = fakeHost({ facts: { gpu: { types: ["H100"], max: 1 }, gpuReadBack: false } });
-	const before = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
-	const ref = made(await before.create(SPEC, { requestId: "gpu-unread" }));
-	const after = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
-	assert.equal(made(await after.create({ ...SPEC, gpu: H100 }, { requestId: "gpu-unread" })).id, ref.id, "GPUs the vendor reads none of are not a drift");
 	assert.equal(fake.creates(), 1, "never a second machine under one name");
 });
 
@@ -518,7 +525,7 @@ test("create tries the bridge again while init is not yet listening", async () =
 
 // --- the deadline ---
 
-test("a lifetime past the cap is refused before any host call; extend moves the vendor's timer, then init's deadline, never earlier, never past the cap", async () => {
+test("a lifetime past the cap is refused before any host call; extend asks the host's extend for the new end, reads the deadline back, then moves init's, never earlier, never past the cap", async () => {
 	const { provider, fake } = setup({ maxLifetimeMs: HOUR });
 	const refused = await create(provider, { ...SPEC, lifetimeMs: HOUR + 1 });
 	assert.equal(refused.error?.code, "refused");
@@ -526,16 +533,19 @@ test("a lifetime past the cap is refused before any host call; extend moves the 
 	const ref = made(await create(provider));
 	const m = only(fake);
 	const before = Date.parse(m.init.deadline);
+	const asked = Date.now() + 20 * 60_000;
 	const longer = made(await provider.extend(ref, 20 * 60_000));
 	assert.ok(longer.deadline.getTime() > before);
-	assert.equal(m.init.deadline, longer.deadline.toISOString(), "init took the end the vendor read back");
+	assert.ok(Math.abs(longer.deadline.getTime() - asked) < 1_000, "the end asked: now plus the ttl");
+	assert.equal(m.init.deadline, longer.deadline.toISOString(), "init took the deadline the host read back");
 	assert.equal(m.endsAt.toISOString(), longer.deadline.toISOString());
+	assert.equal(m.labels[DEADLINE], longer.deadline.toISOString(), "the one deadline label, as the host's extend wrote it");
 	const timers = () => fake.calls.filter(([name]) => name === "extend").length;
 	const timersBefore = timers();
 	const shorter = await provider.extend(ref, 60_000);
 	assert.equal(shorter.error?.code, "refused", "an extend to an earlier deadline is refused");
 	assert.match(shorter.error.message, /earlier/);
-	assert.equal(timers(), timersBefore, "the vendor's timer was never called");
+	assert.equal(timers(), timersBefore, "the host's extend was never called");
 	assert.equal(m.init.deadline, longer.deadline.toISOString(), "the deadline did not move");
 	const past = await provider.extend(ref, 2 * HOUR);
 	assert.equal(past.error?.code, "limit");
@@ -602,6 +612,30 @@ test("the listing finds and get answers: a listing that keeps a deleted machine 
 	assert.deepEqual(made(await other.list({})).map((info) => info.ref.id), [again.id]);
 });
 
+test("a janitor host's extend writes its own deadline label: the adapter reads it back and moves init's deadline to it", async () => {
+	const fake = fakeHost({ facts: { lifetime: "janitor" } });
+	const written = [];
+	fake.host.extend = async (id, endsAt) => {
+		written.push(endsAt.toISOString());
+		fake.machines.get(id).labels[DEADLINE] = endsAt.toISOString();
+	};
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	assert.equal(provider.capabilities().lifetime, "janitor");
+	const ref = made(await create(provider));
+	assert.equal(only(fake).request.lifetimeMs, 600_000, "every request carries the lifetime: a janitor's host may ignore it");
+	const moved = made(await provider.extend(ref, 30 * 60_000));
+	assert.deepEqual(written, [moved.deadline.toISOString()]);
+	assert.equal(only(fake).init.deadline, moved.deadline.toISOString());
+	// One whose label does not read back as an ISO time moved nothing it can say: init's deadline stays.
+	fake.host.extend = async () => {};
+	const before = only(fake).init.deadline;
+	fake.machines.get(ref.id).labels[DEADLINE] = "soon";
+	const unread = await provider.extend(ref, 40 * 60_000);
+	assert.equal(unread.ok, false);
+	assert.match(unread.error.message, /reads back no deadline/);
+	assert.equal(only(fake).init.deadline, before);
+});
+
 // --- release ---
 
 test("release delete deletes the machine and waits until get reads it gone; a listing that still shows it neither holds the wait nor shows in list", async () => {
@@ -648,7 +682,7 @@ test("release never touches a machine that is not this provider's, and refuses s
 });
 
 test("release stop is refused for every hosted computer, in words, and nothing is asked of the host: a computer here is deleted, never stopped and kept", async () => {
-	const { provider, fake } = setup({}, { facts: { gpu: { types: ["H100"], max: 1, stopDeletes: true } } });
+	const { provider, fake } = setup({ descriptor: gpuDescriptor({ types: ["H100"], max: 1, stopDeletes: true }) });
 	assert.deepEqual(provider.capabilities().release, ["delete"]);
 	assert.equal(provider.capabilities().stopDeletes, undefined, "no stop, so no stop that deletes");
 	for (const spec of [SPEC, { ...SPEC, gpu: { type: "H100", count: 1 } }]) {
@@ -952,7 +986,7 @@ test("Archil: install, then preflight, mount with the token on stdin alone, and 
 	const { provider, fake } = setup({}, { box: { reached: [] } });
 	const ref = made(await create(provider, ARCHIL_SPEC));
 	const m = only(fake);
-	assert.equal(m.request.network, "open", "the vendor's network is root's, to reach Archil");
+	assert.equal(m.request.egress, true, "egress: the vendor's network is root's, to reach Archil");
 	const runs = runsOf(fake, m.id);
 	const at = (what) => runs.indexOf(what);
 	assert.ok(at("run install") < at("run preflight") && at("run preflight") < at("run mount") && at("run mount") < at("run serve") && at("run serve") < at("run start"), runs.join(", "));
@@ -983,9 +1017,32 @@ test("Archil: the mount's label records the folder's agent alone, since agentrun
 const ownLongest = (image, more = {}) => ({ [COMPUTER]: "1", [NAME]: "computer-000000000000", [DEADLINE]: new Date(0).toISOString(), "agentrun.computer.image": image, [MAX]: new Date(0).toISOString(), ...more });
 const pairBytes = (labels) => Object.entries(labels).reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
 
-test("labelRules.maxBytes: the adapter prices the caller's labels with its own at their longest, names and values (pairs) or the JSON of them (json), at check() and at create, before any host call", async () => {
+test("facts.labels.count: the adapter counts the caller's labels with its own as create gives them, at check() with no host call, and create refuses the same words before any host call", async () => {
+	const own = Object.keys(ownLongest(SPEC.image)).length;
+	const { provider, fake } = setup({}, { facts: { labels: { count: own + 2 } } });
+	assert.deepEqual(provider.check({ ...SPEC, labels: { a: "1", b: "2" } }), [], "at the bound");
+	const spec = { ...SPEC, labels: { a: "1", b: "2", c: "3" } };
+	const over = provider.check(spec);
+	assert.deepEqual(over, [{ field: "labels", message: `a Fakehost computer carries at most ${own + 2} labels, the adapter's own among them, and this one's would carry ${own + 3}, ${own} of them the adapter's: give at most 2 labels` }]);
+	assert.deepEqual(fake.calls, [], "check made no host call");
+	const refused = await create(provider, spec);
+	assert.equal(refused.error?.code, "refused");
+	assert.equal(refused.error.message, `labels: ${over[0].message}`);
+	assert.deepEqual(fake.calls, [], "create made no host call");
+	// An Archil mount's label and a GPU's count as create gives them; a count past the bound is the labels' to fix, even on an Archil computer.
+	const archil = setup({}, { facts: { labels: { count: own + 1 + Object.keys(ARCHIL_SPEC.labels).length } } });
+	assert.deepEqual(archil.provider.check(ARCHIL_SPEC), []);
+	const more = archil.provider.check({ ...ARCHIL_SPEC, labels: { ...ARCHIL_SPEC.labels, a: "1" } });
+	assert.deepEqual(more.map(({ field }) => field), ["labels"]);
+	assert.match(more[0].message, new RegExp(`, ${own + 1} of them the adapter's`));
+	const gpu = setup({ ...WITH_GPU }, { facts: { labels: { count: own + 1 } } });
+	assert.deepEqual(gpu.provider.check({ ...SPEC, gpu: H100 }), []);
+	assert.match(gpu.provider.check({ ...SPEC, gpu: H100, labels: { a: "1" } })[0]?.message ?? "", new RegExp(`, ${own + 1} of them the adapter's: give at most 0 labels`));
+});
+
+test("facts.labels.bytes: the adapter prices the caller's labels with its own at their longest, names and values, at check() and at create, before any host call", async () => {
 	const own = pairBytes(ownLongest(SPEC.image));
-	const pairs = setup({}, { facts: { labelRules: { maxBytes: own + 10, measure: "pairs" } } });
+	const pairs = setup({}, { facts: { labels: { bytes: own + 10 } } });
 	assert.deepEqual(pairs.provider.check({ ...SPEC, labels: { a: "123456789" } }), [], "10 bytes fit");
 	const over = pairs.provider.check({ ...SPEC, labels: { a: "1234567890" } });
 	assert.deepEqual(over.map(({ field }) => field), ["labels"]);
@@ -997,22 +1054,17 @@ test("labelRules.maxBytes: the adapter prices the caller's labels with its own a
 	assert.deepEqual(pairs.fake.calls, [], "no host call");
 	// Archil: the mount's own label is priced too, and the mount is the field.
 	const archilOwn = pairBytes(ownLongest(ARCHIL_SPEC.image, { "agentrun.mount": JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }) })) + pairBytes(ARCHIL_SPEC.labels);
-	const archil = setup({}, { facts: { labelRules: { maxBytes: archilOwn, measure: "pairs" } } });
+	const archil = setup({}, { facts: { labels: { bytes: archilOwn } } });
 	assert.deepEqual(archil.provider.check(ARCHIL_SPEC), [], "an Archil computer's labels at the bound fit");
 	const long = archil.provider.check({ ...ARCHIL_SPEC, mount: { ...MOUNT, folder: "agents/a12/runs/r1/work" } });
 	assert.deepEqual(long.map(({ field }) => field), ["mount"]);
 	assert.match(long[0].message, /agentrun\.mount \d+/);
 	noToken(long, "the refusal of the labels' size");
-	// json: the caller's and the adapter's labels as one JSON object.
-	const json = JSON.stringify({ a: "x", ...ownLongest(SPEC.image) }).length;
-	const asJson = setup({}, { facts: { labelRules: { maxBytes: json, measure: "json" } } });
-	assert.deepEqual(asJson.provider.check({ ...SPEC, labels: { a: "x" } }), []);
-	const jsonOver = asJson.provider.check({ ...SPEC, labels: { a: "xx" } });
-	assert.deepEqual(jsonOver.map(({ field }) => field), ["labels"]);
-	assert.match(jsonOver[0].message, new RegExp(`come to at most ${json} bytes, as JSON, and this computer's would come to ${json + 1}`));
-	// The count of labels takes the adapter's own from the same labels: five, and the mount's.
-	const counted = setup({}, { facts: { labelRules: { max: 8 } } });
-	assert.match(counted.provider.check({ ...ARCHIL_SPEC, labels: { ...ARCHIL_SPEC.labels, x: "1" } })[0].message, /takes 8 labels, 6 of them the provider's own: 3 is 1 too many/);
+	// A GPU computer's label is priced too.
+	const gpuOwn = pairBytes(ownLongest(SPEC.image, { [GPU_LABEL]: "H100:1" }));
+	const gpu = setup({ ...WITH_GPU }, { facts: { labels: { bytes: gpuOwn } } });
+	assert.deepEqual(gpu.provider.check({ ...SPEC, gpu: H100 }), [], "at the bound");
+	assert.match(gpu.provider.check({ ...SPEC, gpu: H100, labels: { a: "" } })[0].message, new RegExp(`${GPU_LABEL} 27`));
 });
 
 test("Archil: a higher epoch fences the create: nothing mounted, init never starts, and the machine is deleted", async () => {
@@ -1318,16 +1370,22 @@ test("a host that takes a spec's user: attach reads the user back from inside, n
 	assert.equal(m.deleted, false, "attach leaves a drifted computer as it is");
 });
 
-test("a host's runtime: the probe's kernel is held to it at create, gVisor exactly where the host runs one", async () => {
-	const gvisor = setup({}, { facts: { ...USER_FACTS, runtime: () => "gvisor" } });
+test("the declared isolation: the probe's kernel is held to it at create, gVisor exactly where capabilities (or a GPU computer's) say gvisor, with no runtime hook", async () => {
+	const gvisor = setup({}, { facts: { ...USER_FACTS, isolation: "gvisor" } });
+	assert.equal(gvisor.fake.host.facts.runtime, undefined);
 	const refused = await create(gvisor.provider);
 	assert.equal(refused.error?.code, "refused");
-	assert.match(refused.error.message, /runtime: declared gVisor \(a GPU computer\), read back another kernel \("6\.1\.102"\)/);
+	assert.match(refused.error.message, /runtime: declared gVisor, read back another kernel \("6\.1\.102"\)/);
 	await nothingLeft(gvisor.fake, "a computer of another runtime");
-	const vm = setup({}, { facts: { ...USER_FACTS, runtime: () => "vm" }, box: { kernel: "4.19.0-gvisor" } });
+	const vm = setup({}, { facts: { ...USER_FACTS, isolation: "vm" }, box: { kernel: "4.19.0-gvisor" } });
 	const other = await create(vm.provider);
 	assert.match(other.error?.message ?? "", /runtime: declared vm, read back gVisor/);
-	made(await create(setup({}, { facts: { ...USER_FACTS, runtime: () => "gvisor" }, box: { kernel: "4.19.0-gvisor" } }).provider));
+	made(await create(setup({}, { facts: { ...USER_FACTS, isolation: "gvisor" }, box: { kernel: "4.19.0-gvisor" } }).provider));
+	made(await create(setup({}, { box: { kernel: "4.19.0-gvisor" } }).provider), "a microvm is held to no kernel");
+	// A GPU computer on a vm host whose GPUs run on gVisor (Modal's): gVisor for it alone.
+	const gpu = setup({ descriptor: gpuDescriptor({ types: ["H100"], max: 1, isolation: "gvisor" }) }, { facts: { ...USER_FACTS, isolation: "vm" } });
+	assert.match((await create(gpu.provider, { ...SPEC, gpu: H100 })).error?.message ?? "", /runtime: declared gVisor \(a GPU computer\), read back another kernel/);
+	made(await create(gpu.provider));
 });
 
 test("a fence made inside a user namespace is said in create's notes", async () => {

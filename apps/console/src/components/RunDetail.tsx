@@ -10,7 +10,8 @@ import { ScreenPanel, useRunScreen } from "@/components/RunScreen";
 import { ComputerAskCard } from "@/components/ComputerAskCard";
 import { Button } from "@/components/ui/button";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
-import { RunUsed, useRunUsed } from "@/components/RunUsed";
+import { RunGrade, type SentGrade, sentGrade } from "@/components/RunGrade";
+import { RunUsed, useRunLearning } from "@/components/RunUsed";
 import { Timeline, Working } from "@/components/Timeline";
 import { Tabs } from "@/components/ui/tabs";
 import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
@@ -20,7 +21,7 @@ import { BY_THE_MINUTE } from "@/lib/computers";
 import { type LearningDiff, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { latest, NO_ANSWER, pendingQuestion } from "@/lib/viewing";
-import type { ComputerHoldAnswer, Computers, HandBackOutcome, Run, RunComputer, RunFile, RunLearningRead, TimelineRow } from "@/lib/v2";
+import type { ComputerHoldAnswer, Computers, GradeAnswer, GradeBody, HandBackOutcome, Run, RunComputer, RunFile, RunLearningRead, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
   run: Run;
@@ -63,6 +64,9 @@ export type RunDetailProps = {
   onHandBack?: (outcome?: HandBackOutcome) => Promise<ComputerHoldAnswer>;
   /** Reads the computer kinds and providers (GET /v2/computers): whether the run's provider is metered. */
   readComputers?: () => Promise<Computers>;
+  /** Grades the ended run's answer (PUT /v2/runs/{id}/grade) and reads the run again: the Grade control, on a run that
+   *  learns. */
+  onGrade?: (body: GradeBody) => Promise<GradeAnswer>;
 };
 type Tab = "graph" | "report" | "timeline" | "files" | "screen";
 
@@ -101,7 +105,7 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, outputSchema, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readComputer, computerEvery, onTakeOver, onHandBack, readComputers }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, outputSchema, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readComputer, computerEvery, onTakeOver, onHandBack, readComputers, onGrade }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   // The agent's ask at its computer: a message is no answer to it, but one to a working run.
@@ -144,8 +148,19 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const close = () => { reads.cancel(); setOpen(null); };
   // What the run's learning changed: read once, shown under the report and under the timeline's look-back.
   const changes = useRunChanges(run, readLearningDiff);
-  // The learned skills and workflows it used: read once, and again when it ends; shown beside what it changed.
-  const used = useRunUsed(run, view.final, readLearning);
+  // The run's learning, read once, again when it ends and again after a grade: the learned skills and workflows it used,
+  // and its grade.
+  const { read: learning, graded } = useRunLearning(run, view.final, readLearning);
+  // The grade this page sent and what came of it: kept here, with the learning read, so the Grade control a tab switch
+  // unmounts shows it again (the read alone never says which round a grade opened).
+  const [sent, setSent] = useState<SentGrade | null>(null);
+  const grade = onGrade && (async (body: GradeBody) => {
+    const endedBefore = run.ended_at;
+    const answer = await onGrade(body);
+    setSent(sentGrade(answer, body, endedBefore));
+    graded(answer);
+    return answer;
+  });
   // The run's screen, one tab for every kind of computer: while GET /computer has one (not `off`), or the run read names
   // the run's computer (a sandbox's too, or one the live view has no answer for yet).
   // The run can still open its computer while it is queued or working, waits on its question with its process held, or is
@@ -235,7 +250,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
             <p className="font-mono text-body text-muted-foreground">{NO_ANSWER}{view.canMessage ? " Send a follow-up below to ask for one." : ""}</p>
           )}
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} ended={runEnded(run.status)} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} files={files} onOpen={show} />}
-          {(tab === "report" || tab === "timeline") && <RunUsed used={used} agentId={run.agent_id} />}
+          {(tab === "report" || tab === "timeline") && <RunGrade run={run} graded={learning?.graded ?? null} sent={sent} onGrade={grade}onOpenTimeline={tab === "timeline" ? undefined : () => setTab("timeline")} />}
+          {(tab === "report" || tab === "timeline") && <RunUsed used={learning?.used ?? null} agentId={run.agent_id} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}
           {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered}

@@ -4,7 +4,7 @@
 // body or an unknown run is refused. GET /agents/{id}/learning/promotions lists the records, none before any replay.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { started } from "./learn-support.mjs";
+import { ended, LEARN, learner, made, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 
@@ -38,6 +38,35 @@ test("a person grades an ended run; the agent's promotions read empty until a le
   assert.deepEqual([promotions.status, promotions.body], [200, { agent: "grader", promotions: [], serving: [] }]);
   meets("/agents/{agent_id}/learning/promotions", "get", promotions.body);
   assert.equal((await api("GET", "/agents/nobody/learning/promotions")).status, 404);
+});
+
+// The console's Grade control reads a run's grade back from GET /runs/{id}/learning (`graded`): absent before one, then
+// the newest, a later grade replacing it. A wrong grade with words on a run the agent finished opens a look-back.
+test("a run's learning read says its grade: none before one, then the newest, never its expected", async (t) => {
+  const { api, baseUrl } = await serve(t, { learning: "on", faux: LEARN });
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const meets = (value) => assert.deepEqual(schemaProblems(doc, doc.paths["/runs/{run_id}/learning"].get.responses["200"].content["application/json"].schema, value), [], JSON.stringify(value));
+  await made(api, learner("graded-read"));
+  const run = await started(api, "graded-read", "What is 6 times 7?");
+  await ended(api, run);
+  const before = await api("GET", `/runs/${run}/learning`);
+  assert.equal(before.status, 200, JSON.stringify(before.body));
+  assert.ok(!("graded" in before.body), JSON.stringify(before.body));
+  meets(before.body);
+
+  const right = await api("PUT", `/runs/${run}/grade`, { correct: true, expected: { answer: 42 } });
+  assert.deepEqual([right.status, right.body.feedback], [200, null], "a right grade with no words asks nothing more");
+  const read = (await api("GET", `/runs/${run}/learning`)).body;
+  assert.deepEqual(read.graded, { correct: true, source: "feedback", graded_at: right.body.graded_at });
+  meets(read);
+
+  const wrong = await api("PUT", `/runs/${run}/grade`, { correct: false, label: "Review: the answer is 42, said as a number." });
+  assert.deepEqual([wrong.status, wrong.body.feedback], [200, "look_back"], JSON.stringify(wrong.body));
+  await ended(api, run);
+  const again = (await api("GET", `/runs/${run}/learning`)).body;
+  assert.deepEqual(again.graded, { correct: false, source: "feedback", graded_at: wrong.body.graded_at }, "the newer grade replaces the older");
+  assert.ok(again.learned?.some((note) => note.file === "reviewed.md"), `the look-back kept the reviewer's words: ${JSON.stringify(again)}`);
+  meets(again);
 });
 
 // Review on #2644 (round 4, security): every text of a promotion record the route returns is cut of the host's secrets as
