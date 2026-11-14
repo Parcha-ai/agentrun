@@ -22,6 +22,9 @@ import { type ArchilMount, archilLabels } from "./mount-archil.js";
 import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
+/** The ssh2 slice types, as this entry has always exported them (they live in hosted/ssh.ts). */
+export type { Ssh2Channel, Ssh2Client, Ssh2ConnectConfig, Ssh2Module, Ssh2Readable } from "./hosted/ssh.js";
+
 /** A WebSocket as this provider uses one: Node's global WebSocket (undici), which takes headers, or the same slice. */
 export interface WebSocketLike {
 	binaryType: string;
