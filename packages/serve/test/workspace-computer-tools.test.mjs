@@ -266,9 +266,38 @@ test("a script's shell and files are held to the run's gate: a denied bash, a de
   verdict = { deny: "bash is denied for this agent" };
   assert.match((await call(tools, "computer_script", { code })).structured, /bash is denied for this agent/);
   verdict = "ask";
-  assert.match((await call(tools, "computer_script", { code: "try { await computer.files.write('/workspace/a.txt', 'x'); return 'wrote'; } catch (error) { return String(error.message); }" })).structured, /write setting asks a person first/);
+  assert.match((await call(tools, "computer_script", { code: "try { await computer.files.write('/workspace/a.txt', 'x'); return 'wrote'; } catch (error) { return String(error.message); }" })).structured, /^could not write a file on the desktop: .*its write setting is ask/);
   assert.deepEqual(seen.at(-1), ["write", { path: "/workspace/a.txt" }]);
   assert.equal(computer.calls.filter(([method]) => method === "files.write").length, 0, "a refused write sent nothing");
+  await run.end();
+});
+
+test("a phone's shell in a script, refused, says in a person's words what the phone could not do and what to do instead, never the setting's name alone", async () => {
+  const root = scratch();
+  const computer = fakeScreen(root);
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer, hello: helloOf("phone", ["exec", ...PHONE_GROUPS]) }, { mode: 1, context: ctx });
+  const tools = run.hostTools(run.kindTools);
+  const code = "try { await computer.shell.run('getprop ro.build.version.release'); return 'ran'; } catch (error) { return String(error.message); }";
+  let verdict = "ask";
+  run.computer.guard.install(async () => verdict);
+  const asked = (await call(tools, "computer_script", { code })).structured;
+  assert.match(asked, /^could not run a shell command on the phone: /, "it starts with what the phone could not do, as the timeline row shows it");
+  assert.match(asked, /wait for a person's OK/, "why, in a person's words");
+  assert.match(asked, /phone's screen instead/, "what to use instead: the screen, never the bash tool, which does not run on the phone");
+  assert.doesNotMatch(asked, /Call the bash tool/);
+  // Only names that exist: the script's computer.app(id).observe() and the run's computer_observe and computer_act tools.
+  assert.match(asked, /computer\.app\(id\)\.observe\(\)/);
+  assert.match(asked, /computer_observe and computer_act tools/);
+  assert.doesNotMatch(asked, /computer\.(observe|act)\b/);
+  const phoneTools = run.registry.list().map((def) => def.name);
+  for (const name of ["computer_observe", "computer_act"]) assert.ok(phoneTools.includes(name), `${name} is a tool of a phone's run`);
+  verdict = { deny: "bash is denied for this agent" };
+  assert.equal((await call(tools, "computer_script", { code })).structured, "could not run a shell command on the phone: bash is denied for this agent");
+  assert.equal(computer.calls.filter(([method]) => method === "exec.run").length, 0, "nothing ran on the phone");
+  // Thrown out of the script, the timeline row reads it.
+  const thrown = await call(tools, "computer_script", { code: "await computer.shell.run('id'); return 1;" });
+  assert.equal(thrown.isError, true);
+  assert.match(thrown.text, /could not run a shell command on the phone/);
   await run.end();
 });
 
@@ -288,7 +317,7 @@ test("a script's processes.start is held as bash_background (bash's setting; a r
   const [, ran] = await (async () => { await call(tools, "computer_script", { code: "await computer.shell.run('xdotool getactivewindow'); return 1;" }); return computer.calls.filter(([method]) => method === "exec.run").at(-1); })();
   assert.equal(ran.env.DISPLAY, ":0", "a desktop's shell.run opens on its display too");
   verdict = "ask";
-  assert.match((await call(tools, "computer_script", { code })).structured, /bash_background setting asks a person first/);
+  assert.match((await call(tools, "computer_script", { code })).structured, /^could not start a program on the desktop: .*its bash setting is ask/);
   assert.equal(computer.calls.filter(([method]) => method === "process.start").length, 1, "a refused start sent nothing");
   await run.end();
 });

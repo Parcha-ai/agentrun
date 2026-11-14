@@ -34,7 +34,7 @@ import { lstat, readFile, rm } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { bm25, queryOf } from "./learn/relevance.js";
-import { decodedStrings, type DraftDryRun, frontMatter, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, learnedStatus, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, learnedSecretShapes, redactLearned, servedSkill, servedSkills, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
+import { decodedStrings, type DraftDryRun, frontMatter, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, learnedStatus, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, learnedSecretShapes, redactLearned, servedSkill, servedSkills, SKILL_NAME, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { learningInit, type LearningFolder, learningWorkspace, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { readSeed as readFolderSeed } from "./learn/seed-check.js";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
@@ -323,8 +323,6 @@ function compactSchema(schema: unknown, schemas: Record<string, unknown>, depth 
 export const LEARNED_SKILLS_BUDGET = 256 * 1024;
 /** Where a run's harness finds its skills in its work: the revision's, and the learned ones laid beside them. */
 const RUN_SKILLS = [".agents", "skills"] as const;
-/** A learned skill's folder: the shared skills convention's name (lowercase letters, digits and single dashes). */
-const SKILL_NAME = /^(?=.{1,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
 /** A file's path inside a learned skill, as every adapter takes one (agentrun-kernel skillProblems). */
 const SKILL_FILE_PATH = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\/){0,4}[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
 /** A skill the agent wrote, as a seed holds it: its name, its files' bytes together, and each file's text by its path

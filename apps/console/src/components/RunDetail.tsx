@@ -107,7 +107,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // The agent's ask at its computer: a message is no answer to it, but one to a working run.
   const ask = askOf(run);
   const askMode = ask ? (harnessSteers && messages.steer ? "steer" as const : messages.follow_up ? "follow_up" as const : null) : null;
-  const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
+  const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review, run.computer);
   const view = budget ? { ...state, canMessage: false, messageMode: null } : ask ? { ...state, canMessage: askMode !== null, messageMode: askMode } : state;
   const defaultTab: Tab = graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline";
   const [picked, setTab] = useState<Tab>(initial ?? defaultTab);
@@ -152,7 +152,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // a paused workflow (a pause blocks new work; its session can stay open). It is read until the run is over (completed,
   // failed, cancelled): an ended run has nothing to watch.
   const screenOpens = view.live || (run.status === "input_required" && run.state === "waiting") || run.status === "paused";
-  const { view: screen, held } = useRunScreen(readComputer, !view.final, computerEvery);
+  // A queued run's claim is starting its turn (and its desktop or phone): a screen seen live before is not this one.
+  const { view: screen, held } = useRunScreen(readComputer, !view.final, computerEvery, undefined, run.status === "queued");
   const machine = run.computer;
   // An ask names its computer, so the tab is there for it before the first read answers.
   const hasScreen = !!screen || !!machine || !!ask;
