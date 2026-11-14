@@ -682,6 +682,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
     ...(deps.boxAllowSet ? { boxAllowSet: true as const } : {}),
     ...(fileIds.length ? { files: fileIds } : {}),
     ...(learning ? { learning } : {}),
+    ...(body.workflow_first === false ? { workflowFirst: false as const } : {}),
     ...(trigger ? { trigger } : {}),
     ...(from ? { inputOrigin: from } : {}),
     ...(model ? { model } : {}),

@@ -187,7 +187,7 @@ export async function runHands(workspace: Workspace, claimed: RunComputer | unde
   const tools = Object.fromEntries([...fileTools(), bashTool()].map((tool) => [tool.name, tool]));
   const read = mounted === undefined ? tools.read! : readAnywhereInComputer(tools.read!, attached, names, env);
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
-  const guard = new ScriptGuard({ env: policyEnv(options.bashPolicy), prelude });
+  const guard = new ScriptGuard({ env: policyEnv(options.bashPolicy), prelude }, computer?.kind);
   const own = await portsOf(computer, guard);
   const { ports, kinds, groups, script, card, prelude: scriptPrelude } = options.hold !== undefined && own.ports.computer ? { ...own, ports: options.hold(own.ports) } : own;
   return {

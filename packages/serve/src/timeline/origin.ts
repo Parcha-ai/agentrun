@@ -9,7 +9,8 @@ export const TRIGGER_LABELS: Readonly<Record<TriggerSource, string>> = { schedul
 
 /** Who wrote a user-role message that the person did not type. The model reads the message as it reads any; only its
  *  attribution differs, so the Timeline never shows it as "You".
- *  - `server`, for a reason. `approval_declined`: a person's message that declined a call waiting for approval, which the
+ *  - `server`, for a reason. `handed_back`: a learned workflow that ran first on the run handed the job back to its
+ *    agent (runner/workflow-first.ts), the agent's first input saying what it found. `approval_declined`: a person's message that declined a call waiting for approval, which the
  *    server's resume carries as the deny note; `said` is their words, whole, which the Timeline shows as theirs beside
  *    the server's row. `output_retry`: the one turn a run is asked again when its answer's json misses its agent's output
  *    schema (answer-json.ts outputRetryWords).
@@ -20,8 +21,8 @@ export type MessageOrigin =
   | { kind: "server"; reason: ServerReason }
   | { kind: "server"; reason: "approval_declined"; said: string }
   | { kind: "trigger"; trigger_id: string; source: TriggerSource; owner: boolean };
-type ServerReason = "cap_raised" | "approval" | "output_retry";
-const REASONS: ReadonlySet<string> = new Set<ServerReason>(["cap_raised", "approval", "output_retry"]);
+type ServerReason = "cap_raised" | "approval" | "handed_back" | "output_retry";
+const REASONS: ReadonlySet<string> = new Set<ServerReason>(["cap_raised", "approval", "handed_back", "output_retry"]);
 const SOURCES: ReadonlySet<string> = new Set(TRIGGER_SOURCES);
 
 /** An entry kind that names the origin of the next user entry in its conversation whose text is exactly `text`: written
