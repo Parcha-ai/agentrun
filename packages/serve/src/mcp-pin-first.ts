@@ -70,15 +70,32 @@ export async function pinFirst(revision: { readonly id: string; readonly kind: s
  *  server can't be listed. `appOrigin`: a test's fake GitHub MCP (McpServersOverStore.appOrigin). */
 export function registryListing(store: Parameters<typeof mcpServersOverStore>[0], sealKey: Buffer, { loopback = false, network, githubApp, appOrigin }: { loopback?: boolean; network?: OAuthNetwork; githubApp?: GithubAppAccess; appOrigin?: string } = {}): (server: string, stop?: AbortSignal) => Promise<PinListing> {
   let registry: Promise<McpServersOverStore> | undefined;
+  // The listing tokens minted and not yet revoked, and how many listings are under way: no one holds a listing token
+  // after its listing (the claim's cleanup reaches only githubTokens' tokens), so once no listing is under way, each is
+  // revoked at GitHub, whether the listing answered or failed.
+  const minted: string[] = [];
+  let listing = 0;
   const open = async () => {
     const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
     const opened = mcpServersOverStore(store, { [SEAL_KEY_ENV]: sealKey.toString("base64") }, version, network);
     opened.attach("", "", loopback);
     if (appOrigin) opened.appOrigin = appOrigin;
-    if (githubApp) opened.appToken = () => listingToken(githubApp);
+    if (githubApp) opened.appToken = async () => {
+      const got = await listingToken(githubApp);
+      if ("token" in got) minted.push(got.token);
+      return got;
+    };
     return opened;
   };
-  return async (server, stop) => (await (registry ??= open())).pinListing(server, stop);
+  return async (server, stop) => {
+    listing += 1;
+    try {
+      return await (await (registry ??= open())).pinListing(server, stop);
+    } finally {
+      listing -= 1;
+      if (!listing) await Promise.all(minted.splice(0).map((token) => githubApp?.revoke?.(token).catch(() => undefined)));
+    }
+  };
 }
 
 /** A token to list a github_app server's tools with, from the run's App access: its repository, metadata read alone; or
