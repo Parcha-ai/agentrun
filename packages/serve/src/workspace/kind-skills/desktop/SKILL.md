@@ -80,7 +80,8 @@ file from Finder into a Mail message), or anything outside every window.
 **Only the tools you were given.** An agent's computer setting may leave some out: a code-only agent has its script
 tool and no `computer_observe`, `computer_act` or `computer_screenshot`; a tools-only agent has those and no script
 tool; an agent whose exec is off has no `computer.shell`, no `computer.processes` and no bash. Where the desktop has
-the `apps` group it opens apps with `computer.apps`; otherwise it uses the desktop's own launcher through the screen.
+the `apps` group a script opens apps with `computer.apps`, and on a desktop with no ui group the tools open the app they
+name (below); otherwise it uses the desktop's own launcher through the screen.
 Use what your tool list shows.
 
 ## How to work: observe, then act by ref, then check
@@ -118,7 +119,8 @@ target, and take another screenshot to see what your steps did. Click a field be
 
 Open an app from a script with `computer.apps.open("mousepad")`, by its id, its name or its program: it answers once
 the app's window shows in front, and the app stays open. `computer.apps.list()` names the apps the desktop has (the
-text editor, the terminal, Firefox). `computer.shell.run` ends everything its command started when it returns, so an
+text editor, the terminal, Firefox). With the tools, name the app: `computer_observe` or `computer_act` with
+`app: "org.xfce.mousepad"` opens it, or brings it in front, first. A screenshot with no app in front lists the ids. `computer.shell.run` ends everything its command started when it returns, so an
 app it starts closes at once; `computer.processes.start` keeps a program that is not one of the listed apps.
 
 ## Habits that work

@@ -17,6 +17,7 @@ import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/in
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
+import { META_TOOLS } from "./meta-tool-names.js";
 import { localFolderOf } from "./workspace/local.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
@@ -800,7 +801,7 @@ export const missingEnv = (entry: ToolEntry, env: NodeJS.ProcessEnv): string[] =
 export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}, noBox?: string, refused: Readonly<Record<string, string>> = {}, runnerShell: ReadonlySet<string> = new Set()) => {
   const views = explainsView(env, settings);
   const picked = withDefaults(settings);
-  return Object.entries(TOOLS).map(([name, entry]) => {
+  const table = Object.entries(TOOLS).map(([name, entry]) => {
     const view = (PICKABLE as readonly string[]).includes(name) ? views[name as Pickable] : undefined;
     const plane = view?.resolves;
     const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
@@ -815,7 +816,17 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
     return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
+  // The host tools over a run's own tools (META_TOOLS): not in the table, never granted or named by a node (`meta`), listed
+  // so the owner sees them and their setting (allow or deny; a deny is not offered at all).
+  const meta = [...META_TOOLS].map((name) => ({ name, summary: META_SUMMARY[name]!, blurb: blurbOf(name)!, nodes: false, calls: false, meta: true as const, available: true, harnesses: [...HARNESSES], ...serverGate(name, settings) }));
+  return [...table, ...meta];
 };
+
+const META_SUMMARY: Readonly<Record<string, string>> = Object.freeze({
+  tools_search: "Finds one of the run's tools by what it does, when the run lists only some of them.",
+  tools_call: "Calls one of the run's tools by its name, one the run does not list.",
+  codemode: "Runs a script that calls the run's tools.",
+});
 
 /** Tests only (--faux, with the fake browser's $FAUX_BROWSER_LOG): each model call that starts waiting for the person to
  *  hand the browser back is logged (`{"op":"model_waits"}`) as it starts to wait, so a test hands back once the agent's call

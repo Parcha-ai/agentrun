@@ -1,12 +1,14 @@
 // Where a run's model comes from. An agentic revision names one as "provider/model-id", or names none and runs on this
 // host's default (`AGENT_MODEL`). A workflow's model node names a tier, and the host maps it: fast to
 // `AGENT_MODEL_FAST`, strong to `AGENT_MODEL_STRONG`, each falling back to the default. With `--faux` every model is the
-// faux module's (no key, no network); with `AGENT_MODEL_BASE_URL` every model id goes to that one OpenAI Responses
-// gateway; otherwise pi-ai's providers serve it, each with its keys from the server's secrets (PROVIDER_KEYS): the
+// faux module's (no key, no network); with `AGENT_MODEL_BASE_URL` every model id goes to that one gateway, a Claude model
+// on Anthropic's Messages API and any other on OpenAI's Responses API (gatewayWire); otherwise pi-ai's providers serve
+// it, each with its keys from the server's secrets (PROVIDER_KEYS): the
 // launcher hands the server every one, and a run's process those of its model's provider, never in an environment.
 import { withLocalModels } from "./local-models.js";
 import { pathToFileURL } from "node:url";
 import type { ModelCost, Provider, ProviderStreams } from "@earendil-works/pi-ai";
+import type { Wire } from "@parcha/agentrun-kernel";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
 import type { Revision } from "./agent-rows.js";
@@ -401,10 +403,15 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
     return { models, model, byTier, unpriced };
   }
   // One base rule for every harness (provider.ts' gatewayBase): one trailing /v1 off, then the API under <base>/v1, so
-  // <gw>/api and <gw>/api/v1 both reach <gw>/api/v1/responses, as OpenRouter serves it.
-  const baseUrl = `${gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL!)}/v1`;
-  const { openAIResponsesApi } = await import("@earendil-works/pi-ai/api/openai-responses.lazy");
-  const priced = await gatewayPrices(env, byTier, namedBy);
+  // <gw>/api and <gw>/api/v1 both reach <gw>/api/v1/responses and <gw>/api/v1/messages, as OpenRouter serves them. pi-ai's
+  // Responses client takes the base with its /v1, its Messages client adds /v1/messages itself.
+  const base = gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL!);
+  const baseUrl = `${base}/v1`;
+  const [{ openAIResponsesApi }, { anthropicMessagesApi }] = await Promise.all([import("@earendil-works/pi-ai/api/openai-responses.lazy"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);
+  const catalog = await catalogPrices();
+  const namedOf = new Map([...byTier].map(([tier, model]) => [model.modelId, namedBy.get(tier)]));
+  const wireOf = (id: string): Wire => gatewayWire(catalog, id, namedOf.get(id));
+  const priced = await gatewayPrices(env, byTier, namedBy, catalog);
   const priceOf = (id: string): ModelCost => {
     const cost = priced.get(id);
     if (cost) return cost;
@@ -412,18 +419,42 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
     unpriced.add(id);
     return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   };
-  // `models` is priced first, which fills `unpriced`, and `api` is chosen by it.
+  // `models` is priced first, which fills `unpriced`, and `api` is chosen by it. Each model on its wire (gatewayWire), and
+  // the provider's client per wire, which pi-ai picks by the model's `api`.
+  const gatewayModels = ids.map((id) => {
+    const cost = priceOf(id);
+    const shared = { id, name: id, provider: MODEL_PROVIDER, reasoning: true, input: ["text", "image"] as ("text" | "image")[], cost, contextWindow: 128_000, maxTokens: 32_000 };
+    return wireOf(id) === "anthropic-messages" ? { ...shared, api: "anthropic-messages", baseUrl: base } : { ...shared, api: "openai-responses", baseUrl, compat: { supportsDeveloperRole: false } };
+  });
+  const each = <A extends ProviderStreams>(api: A): A => (unpriced.size ? unpricedApi(api, unpriced, ai) : api);
   models.setProvider(createProvider({
     id: MODEL_PROVIDER,
     baseUrl,
     auth: { apiKey: { name: GATEWAY_KEY_ENV, resolve: async () => ({ auth: { apiKey: env[GATEWAY_KEY_ENV] || "none" }, source: GATEWAY_KEY_ENV }) } },
-    models: ids.map((id) => ({
-      id, name: id, api: "openai-responses", provider: MODEL_PROVIDER, baseUrl, reasoning: true, input: ["text", "image"] as ("text" | "image")[],
-      cost: priceOf(id), contextWindow: 128_000, maxTokens: 32_000, compat: { supportsDeveloperRole: false },
-    })),
-    api: unpriced.size ? unpricedApi(openAIResponsesApi(), unpriced, ai) : openAIResponsesApi(),
-  }));
+    models: gatewayModels,
+    api: { "openai-responses": each(openAIResponsesApi()), "anthropic-messages": each(anthropicMessagesApi()) },
+  } as never));
   return { models, model, byTier, unpriced };
+}
+
+/**
+ * The wire a gateway model (`id`, as the gateway is sent it; `named`, the provider a revision's ref named) goes on: a
+ * Claude model on Anthropic's Messages API, any other on OpenAI's Responses API. The one fact is the model's vendor, read
+ * from the id serve already has: the provider segment before the model's own id (`anthropic/claude-sonnet-5.5`, a ref's
+ * named provider when ids go bare), else, where the id names none (`claude-opus-5-5`), Anthropic's provider in pi-ai's
+ * catalog listing it in either version form (catalogPrices). Why: the Responses API has no cache_control, so through a
+ * gateway's bridge from it to Anthropic a Claude model reads no prompt cache (the same 12.5k-token prompt sent twice read 0
+ * cached tokens), where on Messages pi-ai marks the system prompt, the last tool and the last user block, and the second
+ * read is cached. Every gateway serve ships for serves Messages beside Responses under the same base: LiteLLM's proxy, and
+ * OpenRouter (`<base>/v1/messages`, as pi-ai's own OpenRouter entries for Claude send).
+ */
+export function gatewayWire(catalog: ReadonlyMap<string, readonly Listed[]>, id: string, named: string | undefined): Wire {
+  const segments = id.split("/");
+  const own = segments.at(-1)!;
+  const vendor = segments.length > 1 ? segments.at(-2) : named;
+  if (vendor !== undefined) return vendor === "anthropic" ? "anthropic-messages" : "openai-responses";
+  const anthropic = [own, ...flippedForms(own)].some((form) => (catalog.get(form) ?? []).some((entry) => entry.provider === "anthropic"));
+  return anthropic ? "anthropic-messages" : "openai-responses";
 }
 
 /** The price of each gateway model of `byTier` (its tiers' models, `namedBy` the provider a ref named), in USD per million
@@ -432,14 +463,15 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
  *  takes the default's. With none set, pi-ai's catalog prices it (catalogPrice), from a metered entry alone: a $0 one (a
  *  plan's, a free tier's) never prices it (#2339). An id with no price
  *  is absent: its answers carry no total (unpricedApi) and a harness books it unknown (adapters.ts priceOf), so the run's
- *  cost reads unknown, never $0, and a cap refuses it (blockersOf refuses a capped run on it before it starts). */
-async function gatewayPrices(env: NodeJS.ProcessEnv, byTier: ReadonlyMap<Tier, ModelRef>, namedBy: ReadonlyMap<Tier, string>): Promise<Map<string, ModelCost>> {
+ *  cost reads unknown, never $0, and a cap refuses it (blockersOf refuses a capped run on it before it starts). `listed`:
+ *  the catalog (catalogPrices') when the caller has read it already. */
+async function gatewayPrices(env: NodeJS.ProcessEnv, byTier: ReadonlyMap<Tier, ModelRef>, namedBy: ReadonlyMap<Tier, string>, listed?: ReadonlyMap<string, readonly Listed[]>): Promise<Map<string, ModelCost>> {
   const prices = new Map<string, { given: string | undefined; named: string | undefined }>();
   for (const tier of ["default", "fast", "strong"] as const) {
     const id = byTier.get(tier)?.modelId;
     if (id !== undefined && !prices.has(id)) prices.set(id, { given: (tier !== "default" && env[`${TIER_ENV[tier]}_PRICE`]) || env.AGENT_MODEL_PRICE || undefined, named: namedBy.get(tier) });
   }
-  const catalog = [...prices.values()].some((price) => price.given === undefined) ? await catalogPrices() : new Map<string, Listed[]>();
+  const catalog = listed ?? ([...prices.values()].some((price) => price.given === undefined) ? await catalogPrices() : new Map<string, Listed[]>());
   const out = new Map<string, ModelCost>();
   for (const [id, { given, named }] of prices) {
     if (given === undefined) {

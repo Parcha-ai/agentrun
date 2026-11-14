@@ -299,7 +299,7 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
 }
 
 /** A replay run's record (metrics.replay): the graded run it replayed and how its workflow ended there. */
-export type ReplayMetrics = { readonly of: string; readonly outcome: ReplayOutcome; readonly skipped?: { readonly tool: string; readonly step: string } };
+export type ReplayMetrics = { readonly of: string; readonly outcome: ReplayOutcome; readonly skipped?: { readonly tool: string; readonly step: string; readonly unmarked?: true } };
 /** How a replay run's workflow ended on its input: `skipped_write`, stopped at a write the graded run's recording does not
  *  have (learn/replay-calls.ts SKIPPED_WRITE), never run. */
 export type ReplayOutcome = "answered" | "handed_back" | "failed" | "skipped_write";

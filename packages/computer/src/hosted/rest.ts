@@ -130,11 +130,11 @@ export function rest(options: RestOptions): Rest {
 
 /**
  * Every item of a paged listing. next gets the cursor of the page to read (none for the first) and answers its items and
- * what follows: a cursor string, true for "more, no cursor needed" (a vendor SDK's paginator), or nothing at the end.
- * A cursor that comes back twice, or a listing past max pages, is a failure: this provider would miss machines.
+ * the cursor of the page after it, or nothing at the end. A cursor that comes back twice, or a listing past max pages,
+ * is a failure: this provider would miss machines.
  */
 export async function allPages<T>(
-	next: (cursor: string | undefined) => Promise<Result<{ items: T[]; next?: string | boolean }>>,
+	next: (cursor: string | undefined) => Promise<Result<{ items: T[]; next?: string }>>,
 	max: number,
 	of: { vendor: string; what: string },
 ): Promise<Result<T[]>> {
@@ -146,12 +146,10 @@ export async function allPages<T>(
 		if (!read.ok) return read;
 		found.push(...read.value.items);
 		const after = read.value.next;
-		if (after === undefined || after === false || after === "") return ok(found);
-		if (typeof after === "string") {
-			if (seen.has(after)) return vendorFail(of.vendor, `${of.what}'s cursor ${after} came back twice`);
-			seen.add(after);
-			cursor = after;
-		}
+		if (after === undefined || after === "") return ok(found);
+		if (seen.has(after)) return vendorFail(of.vendor, `${of.what}'s cursor ${after} came back twice`);
+		seen.add(after);
+		cursor = after;
 	}
 	return vendorFail(of.vendor, `${of.what} ran past ${max} pages`);
 }

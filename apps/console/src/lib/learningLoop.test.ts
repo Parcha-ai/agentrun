@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { binsOf, compiledInto, guardFor, guardsOfText, kindOf, markersOf, replayLine, standingOf, stoppedOf, storyOf } from "./learningLoop";
+import { binsOf, compiledInto, guardFor, guardsOfText, kindOf, markersOf, proofOf, proven, replayLine, standingOf, stoppedOf, storyOf } from "./learningLoop";
 import type { CostRun, LearningCost, LearningLoop, Promotion } from "./v2";
 
 // The loop's arithmetic for the Learning tab, on an invented invoice-sorter agent: promotion records on the run axis,
@@ -62,6 +62,25 @@ describe("a revision's standing and numbers", () => {
     // Every input skipped: nothing was scored, the record's reason says why.
     const reason = "every one of its 5 graded inputs needs a write the recording doesn't have: a replay never runs a write, so nothing was replayed";
     expect(replayLine(record({ decided: "hold", reason, replay: { ...REPLAY, n: 0, agree: 0, skipped_write: 5 } }))).toBe(reason);
+  });
+  it("names the MCP tools with no readOnlyHint that skipped inputs; a destructive tool's skip keeps the write words", () => {
+    const tools = [{ tool: "mcp:web/browse", inputs: 9, no_read_only_hint: true }, { tool: "mcp:web/fetch_page", inputs: 4, no_read_only_hint: true }, { tool: "mcp:web/wipe", inputs: 1, no_read_only_hint: false }];
+    expect(replayLine(record({ replay: { ...REPLAY, skipped_write: 14, skipped_tools: tools } }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back, 13 skipped: browse and fetch_page have no readOnlyHint, 1 skipped: needs a write the recording doesn't have");
+    // Every skip from unmarked tools: no write words.
+    expect(replayLine(record({ replay: { ...REPLAY, skipped_write: 13, skipped_tools: tools.slice(0, 2) } }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back, 13 skipped: browse and fetch_page have no readOnlyHint");
+    expect(replayLine(record({ replay: { ...REPLAY, skipped_write: 1, skipped_tools: [tools[2]!] } }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back, 1 skipped: needs a write the recording doesn't have");
+  });
+  it("says what a promotion was decided on: replayed n/of, 0 replays answered, not replayed, refit rows; only a scored one is proven", () => {
+    const of = Array.from({ length: 20 }, (_, i) => `g${i}`);
+    const replayed = record({ replay: { ...REPLAY, of, n: 18 } });
+    const dry = record({ source: "dry_run", reason: "no graded input it fits: promoted on its passing dry run" });
+    const none = record({ decided: "hold", replay: { ...REPLAY, of, n: 0, agree: 0, skipped_write: 20 } });
+    const refit = record({ source: "refit", replay: { ...REPLAY, n: 25 } });
+    expect([replayed, none, dry, refit, record({ decided: "replaying" }), record({ decided: "hold", source: "graded" })].map(proofOf)).toEqual(["replayed 18/20", "0 replays answered", "not replayed", "refit on 25 rows", null, null]);
+    expect([replayed, dry, none, refit].map(proven)).toEqual([true, false, false, true]);
+    expect(standingOf(replayed, { serving: "a".repeat(16) })).toEqual({ word: "Serving", tone: "success", proof: "replayed 18/20" });
+    expect(standingOf(dry, { serving: "a".repeat(16) })).toEqual({ word: "Serving", tone: "plain", proof: "not replayed" });
+    expect(standingOf(none)).toEqual({ word: "Held", tone: "warning", proof: "0 replays answered" });
   });
 });
 
