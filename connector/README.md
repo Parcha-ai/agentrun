@@ -1,26 +1,19 @@
-# AgentRun source observer
+# AgentRun source connector
 
-This is the existing AgentRun Python CLI for explicit metadata observation of sessions that an existing terminal, backend or job queue already starts. It supports hosted AgentRun's connector protocol. It does not take over execution or import agent definitions.
+This is the existing AgentRun Python CLI with an opt-in OSS remote execution mode. The default `connect`, `discover`, `daemon` and telemetry commands retain their metadata-only hosted observer behavior. `remote` is separate: it imports the selected native setup as an AgentRun agent and allows the destination to run it on its source machine.
 
-This development CLI is installed from a reviewed source checkout and requires Python 3.12+:
+This development CLI is not the currently published npm release. Install it from the same reviewed source checkout as the OSS server. Python 3.12+ and Node 24.22.3+ are required; live execution also needs the source machine’s existing signed-in Claude Code or Codex CLI. History-only import reads the selected project’s local logs without requiring native sign-in.
 
 ```sh
 uv tool install ./connector
-agentrun discover
-agentrun connect --origin https://your-console.example
+npm run build
 ```
 
-Choose only the sessions, projects or harness subscriptions to observe. The CLI prompts for the destination API key, exchanges it for a connector-scoped credential, and retains only that scoped credential. For unattended enrollment, `--credential-file` accepts an origin-bound JSON file containing `origin` and `api_key`, owned by the source user and mode 0600; `--credential-env` names a securely injected environment variable. Never put credentials in a prompt, URL or command argument. Remove temporary enrollment material after successful connection.
-
-Polling uses the existing observer daemon. For native telemetry, `agentrun setup --target deployment` describes the externally supervised Collector configuration. Review generated private configuration and harness fragments before applying them to a new harness process. Preserve the application's prompts, tools, permissions, existing hooks and tracing destination. A separate Collector needs a reachable receiver; generated fragments default to loopback.
-
-`agentrun status` reports local state. Verify delivery at the destination too. `agentrun daemon stop` stops the polling daemon; an external Collector must be stopped through its supervisor. `agentrun disconnect` revokes the connection. Keep its state directory private and persistent, and supply `--state-dir` to select a separate observer installation.
-
-For remote execution, also install the matching Node runtime (Node 24.22.3+). The installed `agentrun-serve remote-bridge` command provides the local native bridge. A checkout can use `--bridge /absolute/path/to/packages/serve/dist/native/remote-worker-bridge.js`. This source-owned executable path is never supplied by the destination.
+The installed `agentrun-serve remote-bridge` command supplies native discovery, launch and learning through the existing AgentRun runtime. When working from a checkout instead of an installed runtime, pass `--bridge /absolute/path/to/packages/serve/dist/native/remote-worker-bridge.js` to discovery, connection or worker commands. This is a local executable path chosen by the source-machine operator; it is never supplied by the remote server.
 
 ## Connect an existing setup
 
-Create a short-lived enrollment token through the authenticated OSS API at `POST /v2/connectors/enrollment`. On the source machine:
+In the OSS console, choose **Connect agent → Another machine** and create a short-lived enrollment token. On the source machine:
 
 ```sh
 agentrun remote discover --project /work/project --runtime claude-code
@@ -37,7 +30,7 @@ The imported agent uses ordinary AgentRun revisions and learning controls. Turn 
 
 ## Choose live runs, history, or both
 
-Choose the same capabilities in the authenticated `POST /v2/connectors/enrollment` request and on the source machine. The server grants a maximum capability; the source CLI must explicitly opt in too.
+Choose the same scope in the console enrollment dialog and on the source machine. The server grants a maximum capability; the source CLI must explicitly opt in too.
 
 ```sh
 # Preview only the selected project/runtime. No enrollment or upload.
@@ -71,7 +64,7 @@ agentrun remote worker --state-dir /private/project-connector --foreground
 agentrun remote disconnect --state-dir /private/project-connector
 ```
 
-`--no-start` on connect saves/imports the setup without starting the worker. A foreground worker is suitable for an existing service supervisor; no system service is installed automatically. `remote worker` without `--foreground` starts a detached worker. The lock, not a stale PID file, determines whether one is running. Revoking the connector through the owner API or disconnecting it stops execution at the next poll. Keep the source state directory private and persistent. A new destination or replacement connector uses a new state directory.
+`--no-start` on connect saves/imports the setup without starting the worker. A foreground worker is suitable for an existing service supervisor; no system service is installed automatically. `remote worker` without `--foreground` starts a detached worker. The lock, not a stale PID file, determines whether one is running. Revoking the connector from the console or disconnecting it stops execution at the next poll. Keep the source state directory private and persistent. A new destination or replacement connector uses a new state directory.
 
 Remote execution shares the task prompt, results, tool activity, token usage and bounded standing-instruction evidence needed for learning. It is not metadata-only observation. Only locally selected targets may execute; the destination cannot choose an arbitrary directory, binary or environment. Native permissions remain in force. Interactive approval cannot be answered by this bridge, so the run fails visibly and must be continued in the native CLI.
 
@@ -82,8 +75,10 @@ Commands carry renewable leases and deadlines. Losing a lease, revocation, cance
 ```sh
 uv pip install --python /path/to/venv/python './connector[test]'
 PYTHONPATH=connector/src /path/to/venv/python -m unittest discover -s connector/tests -v
+node --test packages/serve/test/remote-worker-bridge.test.mjs
 ```
 
-Tests use synthetic local peers and fixtures. The optional Collector integration test requires its external test binary; no live agent account or model call is required.
+Tests use local synthetic network peers and native CLI fixtures, never paid models or user session data. The Collector integration test requires its external test binary. Live verification is a separate opt-in exercise against a selected destination and source project.
 
 Polling sequence checkpoints persist across disconnects and destination changes; pending metadata is still discarded at those boundaries. The receiver can retain a session's last sequence across re-enrollment, so only the next fresh observation is sent with a higher sequence. Upgrades seed this checkpoint from existing local session rows before clearing them. A checkpoint already erased by an older version cannot be reconstructed locally: if an earlier destination cycle already caused updates to be ignored, reconnect with a separate state directory (a new installation identity). Invalid or exhausted checkpoints also require a separate state directory; they never wrap or reset.
+

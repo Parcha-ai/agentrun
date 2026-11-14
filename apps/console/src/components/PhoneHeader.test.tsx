@@ -49,13 +49,18 @@ describe("the agent page's header on a phone", () => {
     expect(classes(header)).toContain("max-sm:py-3");
   });
 
-  it("Edit with your coding agent sits beside Edit, its icon alone and its words read", async () => {
+  it("the shared Edit action stays compact, named and beside the local editor on a phone", async () => {
     const host = await agentPage();
-    const handoff = [...host.querySelectorAll("header button")].find((b) => b.textContent?.includes("Edit with your coding agent"))!;
-    expect(handoff.closest("[data-phone-row]")).not.toBeNull();
-    expect(handoff.getAttribute("title")).toBe("Edit with your coding agent");
-    expect(classes(handoff)).toEqual(expect.arrayContaining(["max-sm:w-8", "max-sm:px-0"]));
-    expect(classes([...handoff.querySelectorAll("span")].find((s) => s.textContent === "Edit with your coding agent"))).toContain("max-sm:sr-only");
+    const group = host.querySelector('header [aria-label="Edit agent options"]')!;
+    expect(group.closest("[data-phone-row]")).not.toBeNull();
+    const handoff = group.querySelector<HTMLButtonElement>('button[aria-label="Edit agent"]');
+    expect(handoff).not.toBeNull();
+    expect(classes([...handoff!.querySelectorAll("span")].find((s) => s.textContent === "Edit agent"))).toContain("sr-only");
+    const dropdown = group.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Edit agent"]')!;
+    await act(async () => dropdown.click());
+    const menu = document.querySelector('[role="menu"]')!;
+    for (const label of ["Claude Code app", "Claude Code CLI", "Codex app", "Codex CLI"]) expect(menu.textContent).toContain(label);
+    expect(menu.querySelector('a')?.getAttribute("href")).toContain("operation=edit-agent");
   });
 
   it("the revision's facts fold into one line that opens them; 640 px and up show the list as before", async () => {

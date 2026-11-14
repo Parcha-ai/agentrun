@@ -1,9 +1,10 @@
+import { ConnectExistingAgents, NativeConnections } from "@/components/NativeConnections";
+import { backendSdkOf } from "@/lib/backendSdk";
 import { Picker } from "@/components/ui";
 import { Code } from "lucide-react";
 import { BuildAgent } from "@/components/BuildAgent";
 import { RunsRequest } from "@/components/RunsRequest";
 import { AgentRequest, type AgentOperation } from "@/components/AgentRequest";
-import { backendSdkOf } from "@/lib/backendSdk";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
@@ -14,7 +15,6 @@ import { Settings, type SettingsPage } from "@/components/Settings";
 import { ToolsPage } from "@/components/ToolsPage";
 import { GitHubPage } from "@/components/GitHubPage";
 import { McpServersPage } from "@/components/McpServersPage";
-import { ModelKeyCard } from "@/components/ModelKeyCard";
 import { useSecrets } from "@/lib/secrets";
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { WebhookPage } from "@/components/WebhookPage";
@@ -58,11 +58,15 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { nativeConnect?: boolean; connectionSource?: "server" | "remote"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
+  if (h === "#/agents/connect" || h.startsWith("#/agents/connect?")) {
+    const source = new URLSearchParams(h.split("?")[1] ?? "").get("source");
+    return { section: "agents", nativeConnect: true, ...(source === "remote" ? { connectionSource: source } : {}) };
+  }
   if (h === "#/agents/new") return { section: "agents", agent: null };
   // An agent's notes, pointed at from a run: its Learning tab with each `note` to show.
   m = h.match(/^#\/agents\/([^/?]+)\/learning\?(.*)$/);
@@ -435,12 +439,6 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   // names were read (made here, then tried in the Playground) is named from the Playground's own list, read on opening it.
   const agentName = (id: string) => names[id] ?? agents?.find((a) => a.agent_id === id)?.definition.name ?? (namesRead ? id : "");
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string; route_prefix?: string | null } } | null;
-  // Whether a key saved in the first screen's card (ModelKeyCard) gives this server its model, so the start-here step can
-  // point at the card: no model ready for want of a key, no AGENT_MODEL named (its provider's key may not be among the
-  // card's), no gateway (a provider's key names no gateway model), and the key routes there. Anything else keeps the
-  // step's own setup text.
-  const keyCardSavesModel = caps?.models.ready === false && caps.models.needs !== "model" && !caps.models.default && caps.models.source !== "gateway"
-    && !!caps.features?.tool_keys?.routes;
   // The server lists its tools as objects (name, available, missing).
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [] };
   // The capabilities with a choice of provider (providers/1): Settings → Tools, and an agent's tool settings.
@@ -658,7 +656,6 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
           {imported.state !== "running" && <Button type="button" size="xs" onClick={() => setImported(null)}>Dismiss</Button>}
         </p>
       )}
-      {caps?.models.ready === false && where.section !== "mission" && where.section !== "playground" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true} />}
     </>}>
       {where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
@@ -673,14 +670,13 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
         : where.section === "mission"
         // The first screen asks for a model key while the server says no agent that names no model runs here yet.
         ? <div className="flex h-full flex-col">
-            {caps?.models.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
                 asking={needs && askingRead ? needs.asking.length : null} failed={needs && failedRead ? failureCount(needs.failed) : null} live={needs && liveRead ? needs.live.length : null}
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} failedAll={mission?.runs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
-                  keyCard={keyCardSavesModel} /> : undefined} />
+                  keySettings={caps?.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} /> : undefined} />
             </div>
           </div>
         : where.section === "templates"
@@ -710,7 +706,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
             </>}
           </section>
         : where.section === "agents"
-        ? where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
+        ? where.nativeConnect ? <NativeConnections v2={v2} go={go} initialSource={where.connectionSource} />
+          : where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
           : where.agent === null ? <BuildAgent origin={location.origin} v2={v2} />
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} notes={where.notes} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).

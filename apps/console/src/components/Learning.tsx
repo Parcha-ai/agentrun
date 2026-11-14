@@ -1,3 +1,5 @@
+import { agentHash } from "@/components/AgentPage";
+import { NativeLearningSwitch } from "@/components/NativeAgent";
 import { BookOpen, ChevronDown, Hourglass, Layers, Pencil, Plus, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { workflowGraph } from "@dsl/graph";
@@ -332,7 +334,11 @@ function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }
 
 /** The learning switch on the tab: a new revision with `learning` on or off, made on the agent as the server has it
  *  now, shown as it goes and put back if the save fails. */
-function SavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
+function SavedSwitch(props: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
+  return props.agent.definition.native ? <div className="p-4"><NativeLearningSwitch agent={props.agent} v2={props.v2} learning={props.server} onAgent={props.onAgent} /></div> : <ManagedSavedSwitch {...props} />;
+}
+
+function ManagedSavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [trouble, setTrouble] = useState<unknown>(null);
   const [shown, setShown] = useState<boolean | null>(null);
@@ -548,7 +554,7 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
         </div>
       </header>
       {said && <div className="px-5 pt-3">{said}</div>}
-      {made && <p className="px-5 pt-3 text-body" role="status">Made the agent <a href={`#/agents/${encodeURIComponent(made.agent_id)}`} className="font-mono underline underline-offset-2">{made.definition.name}</a>. Open it to run it.</p>}
+      {made && <p className="px-5 pt-3 text-body" role="status">Made the agent <a href={agentHash(made.agent_id)} className="font-mono underline underline-offset-2">{made.definition.name}</a>. Open it to run it.</p>}
       {open && (readError !== null ? <div className="px-5 pt-3"><ProblemCard problem={problem(readError, label)} onRetry={() => void load()} className="" /></div>
         : text === null ? <div className="px-5 pt-3" role="status" aria-label={`Loading ${label}`}><div aria-hidden className="h-16 bg-muted motion-safe:animate-pulse" /></div>
         : kind === "skill" ? <Body text={bodyOf(text)} />

@@ -138,7 +138,7 @@ describe("AgentEditPage, a new agent from a starter", () => {
 });
 
 describe("AgentsPage, where an agent's card goes", () => {
-  it("opens the agent's page from its card, its Runs tab from its History icon, and the editor from its Edit icon", async () => {
+  it("opens the agent's page and runs, while Edit offers coding agents or the definition playground", async () => {
     const went: string[] = [];
     const v2 = { listAgents: async () => ({ agents: [agentAt("r1", "Answer.")], next_cursor: null }) };
     const host = document.body.appendChild(document.createElement("div"));
@@ -148,8 +148,10 @@ describe("AgentsPage, where an agent's card goes", () => {
     const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
     click([...host.querySelectorAll("li button")].find((b) => b.textContent?.includes("Calc") && !b.getAttribute("aria-label")));
     click(host.querySelector('[aria-label="Edit Calc"]'));
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Claude Code CLI");
+    expect(document.querySelector('[role="menu"] a')?.getAttribute("href")).toBe("#/playground?operation=edit-agent&agent=calc");
     click(host.querySelector('[aria-label="Runs of Calc"]'));
-    expect(went).toEqual(["#/agents/calc", "#/agents/calc/edit", "#/agents/calc/runs"]);
+    expect(went).toEqual(["#/agents/calc", "#/agents/calc/runs"]);
   });
 });
 
@@ -172,19 +174,15 @@ describe("AgentEditPage, a new agent", () => {
 });
 
 describe("AgentsPage's coding-agent handoff", () => {
-  async function list(archived: boolean) {
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    const v2 = { listAgents: async () => ({ agents: [agentAt("r1", "Answer.")], next_cursor: null }) };
-    act(() => root!.render(createElement(AgentsPage, { v2: v2 as never, archived, go: () => {} })));
-    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    return [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Build with your coding agent");
-  }
-  it("offers Build with your coding agent beside New agent, and not among the archived agents", async () => {
-    const build = await list(false);
-    expect(build).toBeDefined();
-    expect(build!.nextElementSibling?.textContent?.trim()).toBe("New agent");
-    act(() => root?.unmount());
-    expect(await list(true)).toBeUndefined();
+  it("offers Build an agent and the native connect dropdown without opening a legacy editor", async () => {
+    const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+    const v2 = { listAgents: async () => ({ agents: [], next_cursor: null }) };
+    await act(async () => root!.render(createElement(AgentsPage, { v2: v2 as never, archived: false, go: () => {} })));
+    const button = (label: string) => [...host.querySelectorAll("button")].find((control) => control.textContent === label);
+    expect(button("Build an agent")).toBeDefined(); expect(button("Connect agent")).toBeDefined(); expect(button("New agent")).toBeUndefined();
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Connect agent"]')!.click());
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Claude Code CLI");
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Codex app");
+    expect(document.querySelector('[role="menu"] a')?.getAttribute("href")).toBe("#/agents/connect");
   });
 });
