@@ -11,8 +11,9 @@ the run (Computerd's policy.json lets it touch only the six apps and see the scr
 and the Mac unpaired). The agent is pi's code mode on the computer surface. MODEL is a model as serve names one
 (anthropic/claude-sonnet-5-5, openrouter/openai/gpt-6.1-terra), its key in this environment, or faux: a scripted model
 (agent-faux.mjs) for the TextEdit task alone, which proves the path with no key. The harness makes each task's sandbox
-and checks the outcome as the scripted task does; the movie follows the app's front window, captioned with the agent's
-own words and each script's first comment.
+and checks the outcome as the scripted task does; the movie follows the app's front window, captioned with each
+computer call the agent's scripts made, at the time it started, in the words the console's run page shows for it
+(call-words.mjs), then the agent's answer.
 
 TASK is a task's id (mac.notes.new-note, ...); none runs them all. Without --movie nothing is recorded (no frames, no
 movie). --movie works only on a demo machine, and refuses before anything is made otherwise: a CI runner
@@ -33,7 +34,10 @@ pinned, else the one it last observed) before it is written anywhere, and every 
 painted black (window-frames.swift). A frame is kept only when the window list read before it and the one read after it
 agree (the window did not move, and nothing came in front or left), and the list, read every 10 ms in between, never
 changed for the window, so a frame never shows a window the cut did not know of (one that lived under 10 ms could
-still slip through). Until the task has a window, no frame is kept. The Dock's own window, which covers the display at
+still slip through). Until the task has a window, no frame is kept, and a frame counts only while the window is key:
+the recorder brings the task's app to the front (Recorder), so the movie shows the window as a person working in it
+sees it, not greyed. TextEdit's font and window size are set for the movie (TEXTEDIT_LOOK) and put back by the
+teardown. The Dock's own window, which covers the display at
 the Dock's level and is clear but for the Dock, is not painted: anything the Dock draws in it (Mission Control's
 thumbnails, say) would show in a frame.
 
@@ -190,7 +194,7 @@ class Cropper:
         self.ask({"op": "park"})
 
     def crop(self, data, place, path):
-        return self.ask({"op": "crop", "jpeg": base64.b64encode(data).decode(), "bounds": place["bounds"], "above": place["above"], "out": path, "quality": 70})
+        return self.ask({"op": "crop", "jpeg": base64.b64encode(data).decode(), "bounds": place["bounds"], "above": place["above"], "out": path, "quality": 90})
 
     def close(self):
         try:
@@ -202,23 +206,41 @@ class Cropper:
 
 class Recorder(threading.Thread):
     """The live view, from screen.watch on a connection of its own, each frame stamped with the run's clock and cut to
-    the task's window before it is written (see the top of this file). aim() answers the task's window id, or None."""
+    the task's window before it is written (see the top of this file). aim() answers the task's window id, or None.
 
-    def __init__(self, folder, clock, aim, cropper):
+    A frame counts only while the window is key: an app driven in the background draws its window greyed, which is not
+    what a person working in it sees. So while the window shows and is not key, the recorder brings the task's app to
+    the front (apps.launch, on its own connection, at most once a second), and the movie starts at the first frame
+    after it came. A frame with the window not key (Computerd sends back an app that comes forward in the first seconds
+    of a background launch) is not kept: the movie holds the frame before it."""
+
+    def __init__(self, folder, clock, aim, cropper, app):
         super().__init__(daemon=True)
-        self.folder, self.clock, self.aim, self.cropper = folder, clock, aim, cropper
+        self.folder, self.clock, self.aim, self.cropper, self.app = folder, clock, aim, cropper, app
         self.frames, self.captions, self.errors = [], [], []
         # Frames not kept, by why: the sequence's first, no window yet, the window not on screen, the window moved, a
-        # window in front came or went, the window list changed and changed back between the two reads, or the cut
-        # failed.
+        # window in front came or went, the window list changed and changed back between the two reads, the window not
+        # key, or the cut failed.
         self.dropped = {}
+        # When the recorder last brought the app forward (the monotonic clock), and how many times it did. Once the task
+        # ended (let_go) it brings nothing forward: an apps.launch during the teardown would start again an app it quits.
+        self.raised, self.raises = None, 0
+        self.forwarding = threading.Event()
+        self.forwarding.set()
+        self.forward_lock = threading.Lock()
         # The windows painted over in kept frames, by owner, layer and size, and how many frames each was in.
         self.painted = {}
         self.halt = threading.Event()
         os.makedirs(folder, exist_ok=True)
 
-    def caption(self, text):
-        self.captions.append((self.clock(), text))
+    def caption(self, text, at=None):
+        self.captions.append((self.clock() if at is None else at, text))
+
+    def let_go(self):
+        """The task ended: the app is no longer brought forward, and an apps.launch on its way has answered."""
+        self.forwarding.clear()
+        with self.forward_lock:
+            pass
 
     def place(self):
         """Where the task's window is, "no window yet" before the task has one, or "not on screen"."""
@@ -227,14 +249,29 @@ class Recorder(threading.Thread):
             return "no window yet"
         return self.cropper.where(window) or "not on screen"
 
+    def forward(self, c):
+        """The task's app to the front, unless the recorder asked for that less than a second ago (the app takes a
+        moment to come, and the frames between say whether it did)."""
+        with self.forward_lock:
+            now = time.monotonic()
+            if not self.forwarding.is_set() or (self.raised is not None and now - self.raised < 1):
+                return
+            self.raised = now
+            self.raises += 1
+            reply = c.call("apps.launch", {"id": self.app, "background": False})
+        if "error" in reply:
+            self.errors.append(f"bring {APPS[self.app]} forward: {reply['error'].get('message')}")
+
     def run(self):
         c = Client()
         seq = None
         try:
             while not self.halt.is_set():
                 before = self.place()
+                if not isinstance(before, str) and not before.get("key"):
+                    self.forward(c)
                 # The first call only learns the sequence: screen.watch may answer it with a frame taken before the task.
-                reply = c.call("screen.watch", {"after": seq or 0, "waitMs": 0 if seq is None else 250, "maxWidth": 1280, "quality": 70})
+                reply = c.call("screen.watch", {"after": seq or 0, "waitMs": 0 if seq is None else 250, "maxWidth": 1280, "quality": 85})
                 r = reply.get("result")
                 if r is None:
                     self.errors.append(json.dumps(reply.get("error")))
@@ -263,6 +300,8 @@ class Recorder(threading.Thread):
                     why = "in front"
                 elif before["changes"] != after["changes"]:
                     why = "came and went"  # a window, say, in front only between the two reads
+                elif not (before.get("key") and after.get("key")):
+                    why = "not key"
                 if why is None:
                     path = os.path.join(self.folder, f"{len(self.frames):05d}.jpg")
                     try:
@@ -658,7 +697,10 @@ class Task:
         aim = lambda: self.window or self.shown  # noqa: E731
         if agent:  # the agent's window is the app's front one: the harness pins none
             aim = lambda: cropper.front(APPS[app])  # noqa: E731
-        self.rec = Recorder(os.path.join(self.folder, "frames"), lambda: time.monotonic() - self.t0, aim, cropper) if cropper else None
+        self.rec = Recorder(os.path.join(self.folder, "frames"), lambda: time.monotonic() - self.t0, aim, cropper, app) if cropper else None
+        # Settings domains the task's fixture changed for the movie, each with its whole old content (`defaults export`),
+        # put back by the teardown. Kept in memory only: a person's settings never reach a file.
+        self.restore = []
 
     def say(self, text):
         print(f"  {self.id}: {text}", flush=True)
@@ -873,8 +915,41 @@ def sandbox_folder(t, short):
     return folder
 
 
+# TextEdit's plain text font and the size of a window it opens, in characters and lines of that font. Its defaults (Menlo
+# 11, a window 75 characters by 30 lines) put the totals file's three short lines, 6 px tall, in the corner of a 673 by
+# 439 point window: a movie cut to that window, played at 1080p, could not be read. At 28 points in a window that fits
+# the lines, it reads.
+TEXTEDIT_LOOK = [("NSFixedPitchFont", "-string", "Menlo-Regular"), ("NSFixedPitchFontSize", "-float", "28"),
+                 ("WidthInChars", "-int", "22"), ("HeightInChars", "-int", "6")]
+
+
+def textedit_look(t):
+    """With --movie, TextEdit's settings for the movie's look (TEXTEDIT_LOOK), before the task opens its file. The whole
+    domain as it was is kept in memory and put back by the teardown (settings_back). TextEdit reads them when it makes a
+    window: on CI it starts for the task, the run having quit it after the sweep."""
+    if not t.rec:
+        return
+    domain = "com.apple.TextEdit"
+    old = subprocess.run(["/usr/bin/defaults", "export", domain, "-"], capture_output=True, timeout=30)
+    if old.returncode != 0:
+        raise Failed(f"defaults export {domain}: {old.stderr.decode(errors='replace').strip()}")
+    t.restore.append((domain, old.stdout))
+    for key, kind, value in TEXTEDIT_LOOK:
+        subprocess.run(["/usr/bin/defaults", "write", domain, key, kind, value], check=True, capture_output=True, timeout=30)
+
+
+def settings_back(t):
+    """The settings domains the task's fixture changed, each put back whole, as it was."""
+    while t.restore:
+        domain, old = t.restore.pop()
+        done = subprocess.run(["/usr/bin/defaults", "import", domain, "-"], input=old, capture_output=True, timeout=30)
+        if done.returncode != 0:
+            raise Failed(f"defaults import {domain}: {done.stderr.decode(errors='replace').strip()}")
+
+
 def textedit_edit_number(t):
     """mac.textedit.edit-number: change one number in a text file and save it; the rest of the file stays."""
+    textedit_look(t)
     folder = sandbox_folder(t, "textedit")
     path = f"{folder}/totals-{RUN}.txt"
     before = "Apples: 3\nPears: 41\nPlums: 7\n"
@@ -1218,7 +1293,6 @@ FAUX = os.path.join(here, "agent-faux.mjs")
 INSTRUCTIONS = (
     "You work on a Mac through code mode: `computer` in your scripts is the Mac. Do the task you are given, then say in "
     "one sentence what you did. Open a file or a folder with computer.apps.open(appId, { url, background: true }). "
-    "Start every script with a // comment that says in a few plain words what it does: people watching the run read it. "
     "Touch nothing the task does not name."
 )
 # Each model's name in a movie's title and file name.
@@ -1330,13 +1404,13 @@ class Serve:
         shutil.rmtree(self.data, ignore_errors=True)
 
 
-def first_comment(code):
-    """A script's first // comment: what it does, in the agent's words."""
-    for line in (code or "").splitlines():
-        line = line.strip()
-        if line.startswith("//"):
-            return line.lstrip("/ ").strip()
-    return None
+def call_words(calls):
+    """Each computer call as the line a person reads ("open TextEdit", "select all (⌘A); type into the text box"), by
+    serve's own words for it (call-words.mjs): the console's run page shows the same lines."""
+    done = subprocess.run(["node", os.path.join(here, "call-words.mjs")], input=json.dumps(calls), capture_output=True, text=True, timeout=60)
+    if done.returncode != 0:
+        raise Failed(f"call-words.mjs: {done.stderr.strip()[-300:]}")
+    return json.loads(done.stdout)
 
 
 def first_sentence(text):
@@ -1350,8 +1424,9 @@ def epoch(stamp):
 
 
 def agent_run(t, serve, model, prompt):
-    """One run of the agent on the task: made, followed on its timeline to its end, each row printed and captioned at
-    its own time (the agent's words, each script's first comment, a failed script's error). Answers what the run did."""
+    """One run of the agent on the task: made, followed on its timeline to its end, each row printed, and the movie
+    captioned with each computer call its scripts made at the time the call started (serve keeps them on the script's
+    result row), a failed script's error, and the answer. Answers what the run did."""
     t.say(f"the agent gets the task: {prompt}")
     # The recorder's clock is monotonic from the task's start: a row's wall time maps onto it.
     wall0 = time.time() - (time.monotonic() - t.t0)
@@ -1379,18 +1454,23 @@ def agent_run(t, serve, model, prompt):
             if row["id"] in seen:
                 continue
             seen.add(row["id"])
+            # Captions: each computer call, at the time it started, in serve's words for it; a failed script; the
+            # answer. The agent's own words and its scripts are printed, not captioned: they are its plan, and the
+            # movie says what it did.
             kind, words = row.get("kind"), None
-            if kind == "text_block":
-                words = first_sentence(row.get("text"))
-            elif kind == "tool_use":
+            if kind == "tool_use":
                 did["scripts"] += row.get("tool_name") == "codemode"
-                words = first_comment(row.get("tool_input_preview")) or row.get("summary")
             elif kind == "tool_result":
                 calls = row.get("computer_calls") or []
                 did["computerCalls"] += len(calls)
+                lines = call_words(calls) if calls else []
                 print(f"    {row.get('tool_name')} {row.get('tool_status')}: {len(calls)} computer calls"
-                      + "".join(f"\n      {x['method']} {x['ms']} ms" + (f" [{', '.join(s['do'] + ' ' + s.get('route', s.get('error', '')) for s in x['steps'])}]" if x.get("steps") else "")
-                                + (f" expect {x['expect']}" if x.get("expect") else "") + ("" if x["ok"] else f" {x.get('code')}") for x in calls), flush=True)
+                      + "".join(f"\n      +{epoch(x['started_at']) - wall0:.2f} s {line}: {x['method']} {x['ms']} ms"
+                                + (f" [{', '.join(s['do'] + ' ' + s.get('route', s.get('error', '')) for s in x['steps'])}]" if x.get("steps") else "")
+                                + (f" expect {x['expect']}" if x.get("expect") else "") + ("" if x["ok"] else f" {x.get('code')}") for x, line in zip(calls, lines)), flush=True)
+                if t.rec:
+                    for x, line in zip(calls, lines):
+                        t.rec.caption(line, epoch(x["started_at"]) - wall0)
                 if row.get("tool_status") == "failed":
                     print(f"      {(row.get('tool_result_preview') or '')[:500]}".replace("\n", "\n      "), flush=True)
                     did["failedScripts"] += 1
@@ -1400,9 +1480,10 @@ def agent_run(t, serve, model, prompt):
                 if kind == "final_answer":
                     did["answer"] = (row.get("text") or "")[:400]
             if kind in ("tool_use", "text_block", "final_answer", "error"):
-                print(f"    [{kind}] {(row.get('tool_input_preview') if kind == 'tool_use' else words) or ''}".replace("\n", "\n      "), flush=True)
+                shown = {"tool_use": row.get("tool_input_preview"), "text_block": first_sentence(row.get("text"))}.get(kind, words)
+                print(f"    [{kind}] {shown or ''}".replace("\n", "\n      "), flush=True)
             if words and t.rec:
-                t.rec.captions.append((epoch(row["timestamp"]) - wall0, words))
+                t.rec.caption(words, epoch(row["timestamp"]) - wall0)
         after = page.get("next_after", after)
         ended = page.get("status") in ("completed", "failed", "cancelled")
         if ended and page.get("final", True):
@@ -1435,6 +1516,7 @@ def poll(label, read, want, seconds=10):
 
 
 def agent_textedit(t):
+    textedit_look(t)
     folder = sandbox_folder(t, "textedit")
     path = f"{folder}/totals-{RUN}.txt"
     t.write(path, "Apples: 3\nPears: 41\nPlums: 7\n", "write the totals file")
@@ -1594,6 +1676,8 @@ def teardown(t):
             ("delete the task's Notes folder and its notes", lambda: osa(c, REMOVE_FOLDERS, NAME)),
             ("delete the task's files", remove_files),
         ]
+        if t.restore:
+            parts.append(("put back the settings the task's look changed", lambda: settings_back(t)))
         for words, part in parts:
             t.say(f"teardown: {words}")
             try:
@@ -1806,6 +1890,8 @@ def main():
                 error, before = f"before the task: {e!r}", None
                 if isinstance(e, KeyboardInterrupt):
                     interrupted = e
+                if t.rec:
+                    t.rec.let_go()
             if before is not None:
                 # The movie runs from here to the task's end: the setup before and the teardown after are not the task.
                 t.span[0] = t.rec.clock() if t.rec else None
@@ -1821,6 +1907,7 @@ def main():
                 finally:
                     shield["on"] = True
                     if t.rec:
+                        t.rec.let_go()
                         if error is not None:
                             t.say(f"failed: {error}"[:160])
                         t.span[1] = t.rec.clock() + 1.5  # the end, held a moment
@@ -1874,11 +1961,12 @@ def main():
                 entry["agent"] = t.agent
             if t.rec:
                 entry["framesDropped"] = t.rec.dropped
+                entry["broughtForward"] = t.rec.raises
                 entry["paintedOver"] = t.rec.painted
                 if t.rec.errors:
                     entry["recorderErrors"] = t.rec.errors[:5]
             report.append(entry)
-            dropped = f" (not kept: {', '.join(f'{n} {why}' for why, n in t.rec.dropped.items()) or 'none'})" if t.rec else ""
+            dropped = f" (not kept: {', '.join(f'{n} {why}' for why, n in t.rec.dropped.items()) or 'none'}; brought forward {t.rec.raises}x)" if t.rec else ""
             print(f"{'PASS' if error is None else 'FAIL'} {tid}: {took} ms, {entry['acts']} acts, {entry['steps']} steps, {frames} frames{dropped}, movie {t.movie}" + (f"\n  {error}" if error else ""), flush=True)
             if t.rec and t.rec.errors:
                 print(f"  recorder: {'; '.join(t.rec.errors[:3])}", flush=True)
