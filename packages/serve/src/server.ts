@@ -1552,7 +1552,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // not passed; the worker reads them from the store over the port (sealed rows it opens with the seal key among these
         // secrets), the same cut as the CLI's import, where a saved key and the server's own of the same name may differ.
         workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = name === SEAL_KEY_ENV ? seal.text : secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
-        // Started from a string (its launcher runs node --input-type=module -e), the server's flags are given again
+        // Started from a string (node --input-type=module -e, as a test or a `--` command may), the server's flags are given again
         // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
         // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
         // runner's child holds many).

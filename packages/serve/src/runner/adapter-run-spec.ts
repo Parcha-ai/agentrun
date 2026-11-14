@@ -276,7 +276,7 @@ export type RunPermissions = {
   readonly decide: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals; maxToolCalls?: number } }, root: RunFiles, shell?: ShellPlace, mcpServers: readonly string[] = []): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals; maxToolCalls?: number } }, root: RunFiles, shell?: ShellPlace, mcpServers: readonly string[] = [], options: { readonly computerCodemode?: boolean } = {}): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
@@ -285,7 +285,8 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // default (tool-gate.ts defaultPermission): bash asks first, the background tools are refused. The run's MCP servers
   // (mcpServersOf its grants), so a harness naming an MCP tool its own way (OpenCode's `<server>_<tool>`) is held to that
   // tool's settings, never to a table tool's of the same shape.
-  const gate = runGate({ root: folder, work: folder, ...(shell === undefined ? {} : { computer: shell === "computer" }), mcpServers }, claim.runId, revision, () => current, approvers);
+  // pi's code mode on a desktop or a phone (pi-computer.ts) owns the name `codemode` there: held to the kind's setting.
+  const gate = runGate({ root: folder, work: folder, ...(shell === undefined ? {} : { computer: shell === "computer" }), mcpServers, ...(options.computerCodemode ? { computerCodemode: true } : {}) }, claim.runId, revision, () => current, approvers);
   // The run's learned workflows, once its spec has read them (learn): a learned_workflow call is asked about its MCP nodes.
   let learned: readonly LearnedWorkflow[] = [];
   const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], options: Parameters<NonNullable<AdapterRunSpec["gate"]>>[1] = {}) => {
@@ -523,7 +524,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
   // The gate names the run's folder by its Workspace (Mode 2: its folder on the run's disk, never this machine's folder at
   // the same path), for its path checks; it reads nothing in it.
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted));
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted), { computerCodemode: Boolean(tools.computer) });
   // What a script's shell and files are held to: this gate, so a denied bash or write holds inside computer_script and codemode.
   tools.computer?.guard.install(async (tool, args) => {
     await gate.permissions.refresh();
