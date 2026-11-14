@@ -57,6 +57,18 @@ test("a save's read of the listing or an inspect refused for the rate (429) is r
   assert.equal(ran.status, 429, "a run, which may charge, is not sent again");
 });
 
+test("an endpoint's input keeps its local references: each part's $ref rebased to where the part sits in the tool's input", async () => {
+  const person = { type: "object", properties: { name: { type: "string" } } };
+  const body = { $schema: "https://json-schema.org/draft/2020-12/schema", $defs: { Person: person }, type: "object", properties: { who: { $ref: "#/$defs/Person" }, nested: { $ref: "#" }, named: { $ref: "#person" }, remote: { $ref: "https://example.test/s.json#/x" } } };
+  const withRefs = async (url, init) => {
+    const res = await fakeMonid(url, init);
+    if (new URL(url).pathname !== "/v1/inspect") return res;
+    return new Response(JSON.stringify({ ...(await res.json()), input: { body } }), { status: 200 });
+  };
+  const pinned = await pinMonid([ENRICH], { key: KEY, fetch: withRefs });
+  assert.deepEqual(pinned.pin[ENRICH].input.properties.body, { $defs: { Person: person }, type: "object", properties: { who: { $ref: "#/properties/body/$defs/Person" }, nested: { $ref: "#/properties/body" }, named: { $ref: "#person" }, remote: { $ref: "https://example.test/s.json#/x" } } });
+});
+
 test("a run: a sync provider's output with its cost in dollars; an async one read until COMPLETED; each sent once", async () => {
   const now = await monid().run({ provider: "faux", endpoint: "/person/enrich", input: { body: { name: "Ada" } } });
   assert.deepEqual([now.status, now.output, now.cost], ["COMPLETED", { full_name: "Ada" }, { value: 0.003, currency: "USD" }]);

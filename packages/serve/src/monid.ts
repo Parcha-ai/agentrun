@@ -220,15 +220,23 @@ export const heldOf = (price: unknown): { usd: number; usage?: true } => {
   return usd === undefined ? { usd: MONID_USAGE_CEILING_USD, usage: true } : { usd };
 };
 
+/** `schema` moved from a document's root to the JSON pointer `at`: each local reference to a place in it (`#`, `#/…`)
+ *  rebased onto `at`, so `#/$defs/Person` reads `#/properties/body/$defs/Person`. */
+const rebased = (schema: unknown, at: string): unknown => {
+  if (Array.isArray(schema)) return schema.map((item) => rebased(item, at));
+  if (!isObject(schema)) return schema;
+  return Object.fromEntries(Object.entries(schema).map(([key, value]) => [key, key === "$ref" && typeof value === "string" && (value === "#" || value.startsWith("#/")) ? `#${at}${value.slice(1)}` : rebased(value, at)]));
+};
+
 /** An endpoint's input schema as one tool's (inspect's `input`: `pathParams`, `queryParams`, `body`, each a JSON
- *  Schema): an object of those parts, each required that requires a field. */
+ *  Schema): an object of those parts, each required that requires a field, its local references rebased. */
 function inputSchema(input: unknown): Json {
   const parts = isObject(input) ? input : {};
   const properties: Record<string, Json> = {};
   const required: string[] = [];
   for (const part of ["pathParams", "queryParams", "body"]) {
     if (!isObject(parts[part])) continue;
-    const { $schema: _schema, ...schema } = parts[part] as Json;
+    const { $schema: _schema, ...schema } = rebased(parts[part], `/properties/${part}`) as Json;
     properties[part] = schema;
     if (Array.isArray(schema.required) && schema.required.length) required.push(part);
   }
