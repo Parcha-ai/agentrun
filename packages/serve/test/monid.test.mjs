@@ -8,11 +8,12 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { wireName } from "../dist/catalog.js";
-import { holdsInFlight, paidCall, useSpend } from "../dist/cap.js";
-import { chargeOf, CLIP, monidClient, monidText } from "../dist/monid.js";
+import { FAUX_ENV } from "../dist/model.js";
+import { chargeOf, CLIP, FAUX_MONID_ENV, MONID_KEY_ENV, monidClient, monidRegistration, monidText } from "../dist/monid.js";
+import { bookedIn } from "../dist/paid-calls.js";
 import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
 import fakeMonid, { calls, KEY } from "./fixtures/faux-monid.mjs";
-import { agent, client, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, follow, scratch, serve, toolLedger, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -79,44 +80,35 @@ test("what a run charged: its cost; nothing when monid charged nothing; unknown,
   assert.equal(await charged("/person/enrich", { fetch: async () => { throw new Error("offline"); } }), null, "it may have gone ahead");
 });
 
-test("under a cap, a paid call is refused before it is sent unless the spend plus what it is held at fits, as a model request is; paid calls go one at a time; with no cap it runs", async (t) => {
-  let spent = 1.5;
-  const added = [];
-  let sent = 0;
-  const call = async () => (sent++, { status: "COMPLETED", cost: { value: 0.2, currency: "USD" } });
-  const quoted = (usd) => ({ usd, basis: "the price monid_inspect quoted" });
-  useSpend({ cap: 2, spent: () => spent, add: (usd) => void (added.push(usd), (spent += usd)) });
-  t.after(() => useSpend(undefined));
-  const refused = await paidCall("monid_run", call, chargeOf, quoted(0.7));
-  assert.match(refused.refused, /^spend_cap_reached: Not sent: this run has spent \$1\.50 of its \$2 cap, and the next step, monid_run, could cost up to \$0\.70 \(the price monid_inspect quoted\)\. Raise the cap to at least \$2\.20 to continue\.$/);
-  assert.equal(sent, 0, "refused, not sent");
-  assert.deepEqual([(await paidCall("monid_run", call, chargeOf, quoted(0.4))).result?.status, sent, added], ["COMPLETED", 1, [0.2]], "0.4 fits: it runs");
-  // Two at once: the first is checked (1.5 + 0.4), sent and charged (1.7) before the second is checked (1.7 + 0.4 > 2).
-  spent = 1.5;
-  const [first, second] = await Promise.all([paidCall("monid_run", call, chargeOf, quoted(0.4)), paidCall("monid_run", call, chargeOf, quoted(0.4))]);
-  assert.deepEqual([first.result?.status, sent, typeof second.refused], ["COMPLETED", 2, "string"]);
-  const allowance = await paidCall("monid_run", call, chargeOf, { usd: 1, basis: "no price was quoted for it in this run, so it counts at the $1 allowance; monid_inspect gives its price" });
-  assert.match(allowance.refused, /counts at the \$1 allowance; monid_inspect gives its price/);
-  spent = null;
-  assert.match((await paidCall("monid_run", call, chargeOf, quoted(0))).refused, /What the run has spent is unknown, so its cap of \$2 cannot be kept/);
-  assert.equal(sent, 2, "no refusal was sent");
-  useSpend(undefined);
-  assert.equal((await paidCall("monid_run", call, chargeOf, quoted(100))).result?.status, "COMPLETED", "with no cap, it runs");
-});
-
-test("another harness's paid-call check holds each model request still in flight at its worst case until its cost is booked", () => {
-  const holds = holdsInFlight();
-  holds.admitted(0.4);
-  holds.started(1);
-  holds.admitted(0.25);
-  holds.started(2);
-  assert.equal(holds.total(), 0.65);
-  holds.ended(1);
-  assert.equal(holds.total(), 0.25);
-  holds.admitted(undefined);
-  holds.started(3);
-  holds.ended(2);
-  assert.equal(holds.total(), 0, "one admitted with no figure (no cap) holds nothing");
+test("under a cap, monid.run is refused before it is sent unless the run's spend plus what it holds and what the run is held at fits, as a model request is; one held counts against the next; with no cap it runs", async (t) => {
+  const work = await scratch(t);
+  const env = { [FAUX_ENV]: "1", [FAUX_MONID_ENV]: FAUX_MONID, [MONID_KEY_ENV]: KEY };
+  const tool = monidRegistration("run", env, () => localWorkspace(work));
+  const from = calls.length;
+  let ids = 0;
+  const run = (paid, endpoint = "/person/enrich") => {
+    const callId = `c${(ids += 1)}`;
+    return bookedIn({ call: callId, paid }, () => tool.execute({ provider: "faux", endpoint, input: { name: "Ada" } }, { callId, commit: async () => {} }, { abortSignal: new AbortController().signal }));
+  };
+  const said = (result) => JSON.parse(result.output[0].text);
+  // No inspect quoted it: held at the $1 allowance.
+  const full = await toolLedger(2);
+  await full.spend(1.5);
+  const refused = await run(full);
+  assert.equal(refused.isError, true);
+  assert.equal(said(refused).error, "spend_cap_reached: Not sent: this run has spent $1.50 of its $2 cap, and the next step, monid_run, could cost up to $1 (no price was quoted for it in this run, so it counts at the $1 allowance; monid_inspect gives its price). Raise the cap to at least $2.50 to continue.");
+  assert.deepEqual(sent(from), [], "refused, not sent");
+  // $0.50 spent: the allowance fits, it runs, and is booked at what monid charged ($0.003 for the faux /person/enrich).
+  const room = await toolLedger(2);
+  await room.spend(0.5);
+  assert.equal(said(await run(room)).status, "COMPLETED", "0.5 + 1 fits: it runs");
+  assert.deepEqual([sent(from), Math.round((room.spentUsd() - 0.5) * 1e6) / 1e6, room.heldUsd()], [["POST /v1/run"], 0.003, 0]);
+  // Two at once: the first is held ($1), so the second is checked against it (0.5 + 1 + 1 > 2) and refused unsent.
+  const both = await toolLedger(2);
+  await both.spend(0.5);
+  const [first, second] = await Promise.all([run(both, "/person/enrich"), run(both, "/person/enrich")]);
+  assert.deepEqual([[first, second].filter((r) => !r.isError).length, [first, second].filter((r) => r.isError && /spend_cap_reached/.test(said(r).error)).length, sent(from).length], [1, 1, 2]);
+  assert.equal(said(await run(await toolLedger(undefined))).status, "COMPLETED", "with no cap, it runs");
 });
 
 test("/usage by meter during a monid run in flight: tokens are the run's model cost, and no tool charge is reported until the call settles", { timeout: 90_000 }, async (t) => {

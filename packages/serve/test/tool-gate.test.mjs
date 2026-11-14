@@ -15,7 +15,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
-import { REPLAY } from "../dist/host-tools.js";
+import { hostToolNames } from "../dist/tool-list.js";
 import { BOX_WORK } from "../dist/place.js";
 import { deniedText } from "../dist/tool-gate.js";
 import { liveSettings, runnerGate } from "./gate-support.mjs";
@@ -139,7 +139,9 @@ function readsInOrder(rows, callId, at, { answered = true } = {}) {
 }
 
 test("the gate's settings: ask offered where the kernel runs the approved call itself and for catalog tools; the owner's defaults; settings it takes, an MCP server's wildcard among them; web_search under ask and deny", () => {
-  for (const name of Object.keys(REPLAY)) assert.ok(permissionsOf(name).includes("ask"), `${name}: the kernel runs its approved call`);
+  // ask_person is a host tool on the CLI harnesses too, and allow or deny there as on pi: approving a question to the person
+  // would ask them twice.
+  for (const name of hostToolNames().filter((name) => name !== "ask_person")) assert.ok(permissionsOf(name).includes("ask"), `${name}: the kernel runs its approved call`);
   for (const name of ["browser", "ask_person", "pdf_pages", "llm"]) assert.deepEqual([...permissionsOf(name)], ["allow", "deny"], name);
   for (const name of ["monid.run", "mcp:srv/echo"]) assert.deepEqual([...permissionsOf(name)], ["allow", "ask", "deny"], name);
   for (const name of Object.keys(TOOLS).filter((name) => !isCatalog(name))) assert.ok(!isCatalog(name), name);

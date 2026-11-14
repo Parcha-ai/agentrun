@@ -4,7 +4,7 @@
 // bridge, the read-back and the probe, labels, list and attach, the deadline and extend, delete-then-wait-gone, the
 // sweep of a lost create, the Archil mount, and the words of every refusal. These doc comments are the contract a new
 // vendor reads (PROVIDERS.md, "The eight members").
-import type { MountKind } from "./mount.js";
+import type { MountKind, Unmounted } from "./mount.js";
 import type { ComputerCapabilities, ComputerSpec, GpuCapability, GpuSpec, NetworkForm, NetworkPolicy, Refusal } from "./provider.js";
 import type { ComputerErrorCode, Result } from "./result.js";
 
@@ -35,8 +35,19 @@ export interface MachineHost {
 	delete(id: string, ctx: HostCall): Promise<Result<void>>;
 	/**
 	 * Starts argv in the machine as root (the vendor's own command user when it is root, else one with passwordless
-	 * sudo), the vendor's agent's own process, outside the computer's tools. With opts.stdin, the process reads what
-	 * write() gives until end(). No command timeout: the adapter kills it, or it ends. Answers once it has started.
+	 * sudo), the vendor's agent's own process, outside the computer's tools, and answers once it has started.
+	 *
+	 * exec is the whole protocol: the adapter installs and starts its daemon through it, then talks to the daemon over
+	 * one exec'd process's stdin and stdout for the computer's whole life (the stdio bridge, spec/computer/stdio.md). So:
+	 * - Two-way and live. Each write() reaches the process's stdin as it is written, and stdout and stderr bytes come
+	 *   back as the process writes them, while it runs. Not request and response, never held until the process exits.
+	 * - Byte-exact. Every byte value 0-255, both ways: no UTF-8 decode or encode, no newline translation, no terminal,
+	 *   nothing added or dropped. A client that hands output over as text breaks this (E2B's commands.run does).
+	 * - No timeout. The process runs until it exits or kill() ends it: a vendor's command timeout, and any idle timeout
+	 *   on the stream, are off.
+	 * - stdout and stderr stay apart. wait() answers the process's own exit code. kill() ends the process itself.
+	 * With opts.stdin, the process reads what write() gives until end(). The exec pre-check (conformance --exec-stream,
+	 * src/conformance/exec-stream.ts) checks each of these on a machine made by hand, with exec alone.
 	 */
 	exec(id: string, argv: readonly string[], opts: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>>;
 	/**
@@ -173,6 +184,8 @@ export interface HostFacts {
 	network: NetworkForm[];
 	/** The mount kinds it takes: of its descriptor's. */
 	mounts?: MountKind[];
+	/** Why it takes none of these mount kinds, each in check()'s words: of its descriptor's. */
+	unmounted?: Unmounted;
 	/** How release may end one; "stop" needs host.stop. */
 	release: Array<"stop" | "delete">;
 	stopDeletes?: boolean;

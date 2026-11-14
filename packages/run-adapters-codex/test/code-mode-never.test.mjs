@@ -605,15 +605,12 @@ test("code mode: a crash after a nested MCP write completed, before the exec's r
   let writes = 0;
   let holding;
   const held = new Promise((resolve) => { holding = resolve; });
-  // The session's MCP server, as a host's gateway gives it: Codex's own MCP client reaches it at the session proxy.
-  const mcp = {
-    servers: [{ name: 'fake', tools: [{ name: 'write', description: 'Write a line once.', inputSchema: { type: 'object', properties: { line: { type: 'string' } }, required: ['line'] } }] }],
-    call: async () => { writes += 1; return { content: [{ type: 'text', text: 'wrote' }] }; },
-  };
+  // The run's MCP tool, as a host's gateway gives it: a host tool like any other, offered to Codex as mcp_fake__write.
+  const mcpWrite = { name: 'mcp__fake__write', description: 'Write a line once.', inputSchema: { type: 'object', properties: { line: { type: 'string' } }, required: ['line'] }, replay: 'never', call: async () => { writes += 1; return { text: 'wrote' }; } };
   const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
-  const spec = { key: 'step:code-mcp-never', label: 'write', system: [], tools: [hold], mcp, context: 'fresh' };
+  const spec = { key: 'step:code-mcp-never', label: 'write', system: [], tools: [mcpWrite, hold], context: 'fresh' };
   const store = memorySessionStore();
-  const write = `text('write: ' + JSON.stringify(await tools.mcp__fake__write({ line: 'once' })));`;
+  const write = `text('write: ' + JSON.stringify(await tools.mcp_fake__write({ line: 'once' })));`;
   // The recovered turn's model writes the script again, under a new exec and so new nested ids.
   const { seen, fetch } = provider([[exec('call_js', `${write}\nawait tools.hold({});\ntext('held');`)], [exec('call_js2', write)]]);
 

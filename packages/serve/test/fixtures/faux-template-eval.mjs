@@ -13,7 +13,7 @@
 //   AGENTRUN_TEST_EVAL_COUNTER names).
 // - `Hold until stopped.`: with AGENTRUN_TEST_EVAL_HOLD set, the run writes that file once it holds, so a test knows the
 //   run is in its turn, then holds until the turn is stopped; unset, it answers at once.
-// The end-of-run learning turn is answered "No notes.".
+// The end-of-run learning turn is answered "No notes.", and the output contract's retry with the answer it last gave.
 //
 // The grader agent (its instructions are template-eval.ts GRADER_INSTRUCTIONS) passes a run when every line of its
 // rubric that says `Pass if the answer contains "<text>".` holds of the <answer> it was given (or of the <target>, when it
@@ -91,6 +91,9 @@ export default function reply(context, faux) {
   const users = context.messages.filter((m) => m.role === "user").map((m) => textOf(m.content));
   const last = users.at(-1) ?? "";
   if (last.startsWith("The task is done. Before the run ends")) return faux.message("No notes.");
+  // The output contract's one retry (an answer with no json block meeting the package's schema): the same answer again,
+  // so a run's answer, and a flaky count, are as the run first wrote them.
+  if (last.startsWith("Your final JSON did not match the output schema:")) return faux.message(textOf(context.messages.findLast((m) => m.role === "assistant")?.content ?? ""));
   const input = users[0] ?? "";
   const results = context.messages.filter((m) => m.role === "toolResult");
   const next = nextCall(input, results.map((result) => textOf(result.content)));

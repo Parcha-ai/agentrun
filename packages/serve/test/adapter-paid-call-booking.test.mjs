@@ -102,7 +102,7 @@ test("a paid monid run is admitted on the run's ledger naming monid as who charg
   const paid = { admit: async (request) => void admitted.push(request), settle: async () => undefined };
   const tool = monidRegistration("run", env, () => localWorkspace(work));
   try {
-    await bookedIn({ call: "call-1", record: async () => {}, paid }, () => tool.execute({ provider: "faux", endpoint: "/person/enrich", input: {} }, { callId: "call-1" }, ctx));
+    await bookedIn({ call: "call-1", paid }, () => tool.execute({ provider: "faux", endpoint: "/person/enrich", input: {} }, { callId: "call-1" }, ctx));
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

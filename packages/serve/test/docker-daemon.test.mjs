@@ -9,9 +9,9 @@ import { computerReadiness } from "../dist/workspace/index.js";
 import { KINDS, PROVIDERS } from "./workspace-kinds-fixture.mjs";
 
 /** Mode 1 (run folders on this server's disk): a vendor sandbox can't reach them until Archil is on. */
-const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
+const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
 /** Mode 2 (run folders on Archil): a vendor sandbox mounts them. */
-const NO_DOCKER_SANDBOX_ARCHIL = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal, E2B or Agent37 for a sandbox.";
+const NO_DOCKER_SANDBOX_ARCHIL = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Modal, E2B or Agent37 for a sandbox.";
 /** Either mode: a desktop holds no run folder, so any vendor's works. */
 const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. E2B, Agent37, Orgo or boxd for a desktop.";
 
@@ -28,8 +28,8 @@ test("the words name only what works in the server's mode, of the vendors this s
   const e2bOnly = PROVIDERS.filter((one) => one.id === "docker" || one.id === "e2b");
   assert.equal(noDockerWords("sandbox", e2bOnly, 1), "No Docker on this server: Render and most hosted services run none. A vendor sandbox (E2B) needs Archil turned on in Settings → Workspace.");
   assert.equal(noDockerWords("sandbox", e2bOnly, 2), "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. E2B for a sandbox.");
-  // A sandbox that can't mount Archil is never named for one: it could not hold the run's folder in either mode.
-  const unmounted = PROVIDERS.filter((one) => one.id === "docker").concat(PROVIDERS.filter((one) => one.id === "daytona").map((one) => ({ ...one, mounts: [] })));
+  // A sandbox that can't mount Archil (Daytona's) is never named for one: it could not hold the run's folder in either mode.
+  const unmounted = PROVIDERS.filter((one) => one.id === "docker" || one.id === "daytona");
   for (const mode of [1, 2]) assert.equal(noDockerWords("sandbox", unmounted, mode), "No Docker on this server: Render and most hosted services run none. Pick another kind of computer, or none.");
 });
 

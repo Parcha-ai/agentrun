@@ -775,7 +775,7 @@ class SqliteStore implements Store {
         });
       },
       fire: async (firing, run, { launch } = {}) =>
-        db.transaction(async (tx) => {
+        this.#queued(await db.transaction(async (tx) => {
           const at = now();
           await d.lockRow(tx, "triggers", "id", firing.triggerId);
           // Never a run of an archived agent: the archive's commit is read here, in the transaction that would start it.
@@ -797,7 +797,7 @@ class SqliteStore implements Store {
           }
           if ((await tx.runCounted("UPDATE triggers SET last_run_id = ?, failures_in_a_row = 0, updated_at = ? WHERE id = ?", run.id, at, firing.triggerId)) === 0) throw new StoreConstraint(`no trigger ${firing.triggerId}`);
           return runOf(row!);
-        }),
+        })),
     };
 
     this.runs = {
@@ -807,20 +807,20 @@ class SqliteStore implements Store {
         if (origin || launch) {
           // The run, its origin and its launch row in one transaction: the key -> run link holds even if the kept response
           // never lands, and a run never exists without the launch it was started with.
-          return db.transaction(async (tx) => {
+          return this.#queued(await db.transaction(async (tx) => {
             const at = now();
             const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, at);
             if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
             if (launch) await writeLaunch(tx, id, launch, at);
             return runOf(row!);
-          });
+          }));
         }
         const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, now()] }]);
-        return runOf(result!.rows[0] as RunRecord);
+        return this.#queued(runOf(result!.rows[0] as RunRecord));
       },
       createInline: async ({ agent, revision, run, launch }) => {
         const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
-        return db.transaction(async (tx) => {
+        const made = await db.transaction(async (tx) => {
           const at = now();
           // Hold the external reference, so two first uses of the same expert serialize (SQLite's one writer already does).
           await d.lockKey(tx, `external:${agent.ref}`);
@@ -848,6 +848,7 @@ class SqliteStore implements Store {
           await writeLaunch(tx, run.id, launch, at);
           return runOf(row!);
         });
+        return this.#queued(made);
       },
       get: async (id) => {
         const row = await db.get<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`, id);
@@ -1732,8 +1733,14 @@ class SqliteStore implements Store {
     return commandOf(result.rows[0] as CommandRecord);
   }
 
-  watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" }) => void): () => void {
+  watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" | "queued" }) => void): () => void {
     return watchCommandsAt(this.where, listener);
+  }
+
+  /** `run`, just committed queued: this process's runners are told it is claimable now (watchCommands' "queued"). */
+  #queued<R extends { readonly id: string }>(run: R): R {
+    wakeCommands(this.where, { runId: run.id, what: "queued" });
+    return run;
   }
 
   async answerOf(runId: string, commandId: number): Promise<{ readonly value: unknown } | undefined> {

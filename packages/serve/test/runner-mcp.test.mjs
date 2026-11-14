@@ -279,7 +279,9 @@ test("R8: a server whose URL changed since the run was pinned refuses each call 
 
 test("R9: a priced MCP call the run's cap has no room for is refused unsent and parks the run on a raise", async (t) => {
   const script = [{ call: "mcp__fake__paid", args: { query: "q" } }, { sayLastResult: true }];
-  const { row, sent, fake, server } = await mcpRun(t, { script, grants: ["mcp:fake/paid"], settings: { "mcp:fake/paid": { permission: "allow" } }, prices: { paid: 0.5 }, capUsd: 0.1 });
+  const { row, sent, fake, server } = await mcpRun(t, { script, grants: ["mcp:fake/paid"], settings: { "mcp:fake/paid": { permission: "allow" } }, prices: { paid: 0.5 }, capUsd: 0.3 });
+  // A cap with room to answer (its wrap-up reserve, a step and an answer of a request with the run's tools listed) and none
+  // for the call's price.
   assert.equal(row.state, "parked", JSON.stringify(row));
   assert.equal(toolCalls(fake).length, 0, "nothing sent");
   // The model's next request is refused with the call's refusal (the turn ends on it), so the provider never reads the
@@ -378,7 +380,7 @@ test("R11: a command row handed to a running loop makes its MCP credentials fres
   const hostTools = { wait: { name: "wait", replaySafe: false, run: async () => (events.push("tool"), toolRuns(), await waiting, "waited") } };
   const script = [{ call: "wait", args: {} }, { say: "done" }];
   const running = mcpRun(t, {
-    script, grants: ["mcp:fake/add"], hostTools, events, network, auth: "oauth",
+    script, grants: ["mcp:fake/add"], hostTools, settings: { wait: { permission: "allow" } }, events, network, auth: "oauth",
     seal: (url) => sealedOAuth(url, oauthSet(`not-a-secret-${"valid-access"}`, Date.now() + 3_600_000)),
     onCommand: (command) => command.kind === "steer" && steerTaken(),
     before: async (opened) => void ((server = opened.server), (fakeUrl = opened.fake.url)),

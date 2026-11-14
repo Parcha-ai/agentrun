@@ -13,10 +13,9 @@
 // run's folder, after a deny and a pin and before an allow or an ask, so approvals "never" lifts none of it; an approved
 // call is decided again before it runs.
 //
-// An ask has one way to wait, every tool's alike (the owner's ruling of 11-04): it PARKS. The runner's loop answers the
-// call with waitingText and ends the turn, as ask_person's does; the run goes needs_input with the pending approval. On
-// an answer the loop runs the approved call once, through the journal, and resumes the session with a message naming the
-// call (resumeText). One call waits at a time: another asked meanwhile is refused.
+// An ask has one way to wait, every tool's alike (the owner's ruling of 11-04): it PARKS. The runner's loop holds the
+// call and the run goes needs_input with the pending approval. On an answer the loop runs the approved call once, through
+// the journal, and the session goes on with its result. One call waits at a time: another asked meanwhile is refused.
 //
 // The answer: POST /v2/runs/{id}/approvals/{approval_id} { decision: "allow" | "deny", note? } -> 204. The first answer
 // wins; the same answer again is 204, a conflicting one 409. Only the owner's password session answers (server.ts), never
@@ -30,9 +29,11 @@ import { LEARNED_DIR } from "./learning.js";
 import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
 import type { Workspace } from "./workspace/workspace.js";
 import { builtinHarness } from "./harness-table.js";
+import { META_TOOLS } from "./meta-tool-names.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { SHELL_TOOLS } from "./background.js";
-import { DECISION_PROVIDER_KEYS, SERVE_OWN_TOOLS, TABLE_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
+import { DECISION_PROVIDER_KEYS, KIND_KEYS, SERVE_OWN_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
+import { isTableTool, isToolRow, tableTools } from "./tool-list.js";
 import { deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
@@ -56,11 +57,14 @@ export const isCatalogTool = (name: string): boolean => name.startsWith("monid."
  *  settings page, capabilities), which reads the computer's defaults. */
 export type ShellWhere = { readonly computer?: boolean };
 
-/** The owner's defaults (11-01): a built-in kernel tool allow; a third-party catalog tool ask. On a run with no computer,
+const isBuiltin = (name: string): boolean => isToolRow(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name);
+
+/** The owner's defaults: a built-in of this server (a row of the tool list, its own tools, a computer kind's key, a
+ *  decision provider's) allows; anything else asks, so a new source never defaults to allow. On a run with no computer,
  *  the kernel's ruled rule (defaultPermissionOf): bash asks first, and the background tools, which need a computer, are
  *  refused. */
 export const defaultPermission = (name: string, where: ShellWhere = {}): Permission => {
-  if (isCatalogTool(name)) return "ask";
+  if (isCatalogTool(name) || !isBuiltin(name)) return "ask";
   return where.computer === false ? defaultPermissionOf(name, { computer: false }) : "allow";
 };
 
@@ -117,7 +121,7 @@ export function nameMapOf(harness: string, mcpServers: readonly string[] = []): 
   const names = new Map<string, string>();
   const name = (own: string, key: string): void => void (names.has(own) || names.set(own, key));
   for (const [own, key] of Object.entries(SHELL_FAMILY)) name(own, key);
-  for (const own of [...TABLE_TOOLS, ...SERVE_OWN_TOOLS, ...DECISION_PROVIDER_KEYS]) name(own, own);
+  for (const own of [...tableTools(), ...SERVE_OWN_TOOLS, ...DECISION_PROVIDER_KEYS]) name(own, own);
   const alias = facts?.toolAlias?.exec(READ_SKILL_FILE) ?? null;
   name(READ_SKILL_FILE, alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : "read");
   for (const [own, keys] of KIND_TOOLS) name(own, keys[0]!);
@@ -288,9 +292,6 @@ function settingFrom(name: string, server: PermissionSettings, agent: Permission
  *  workflow's call nodes'. */
 export const permissionOf = (name: string, server: PermissionSettings, agent: PermissionSettings = {}, approvals: Approvals = "ask"): Permission => permissionFrom(name, server, agent, approvals).permission;
 
-/** A call's answer as the model reads it: its text, and whether it failed. */
-export type ToolAnswer = { text: string; isError: boolean };
-
 /** An approval's price for the person who answers it: USD where the tool declares one (booked through the spend cap's
  *  paidCall), else "not metered" (an unpriced MCP call, the owner's ruling of 11-04). */
 export type ApprovalPrice = number | "not metered";
@@ -315,8 +316,6 @@ export type PendingApproval = {
 export { type DenyFrom, deniedText, denyPlace, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
 /** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
 export const noApproverText = (tool: string, ran: "no" | "unknown" = "no"): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
-/** A parked call's answer: the run pauses here. */
-export const waitingText = (tool: string): string => `This ${tool} call waits for a person's approval; the run pauses here and continues with the result when they answer.`;
 
 /** The Timeline row of a call that waits for an approval. */
 export const APPROVAL_ROW = "tool_approval_requested" as const;
@@ -348,36 +347,14 @@ export function previewOf(text: string): string {
   const bytes = Buffer.from(text, "utf8");
   return bytes.length <= ARGS_PREVIEW_BYTES ? bytes.toString("utf8") : `${bytes.subarray(0, ARGS_PREVIEW_BYTES - 3).toString("utf8").replace(/\uFFFD+$/, "")}…`;
 }
-/** `args` as JSON, at most ARGS_PREVIEW_BYTES: the request's own record of them, never shown as it is. */
-export const argsPreview = (args: unknown): string => previewOf(JSON.stringify(args ?? {}) ?? "");
-
-/** How the gate's resume message starts: the server knows its row by it, and redacts the row whole (runs.ts). */
-export const RESUME_PREFIX = "[tool approval] ";
-
-/** The one message that resumes a session once a person answered: it names the call it answers (its tool, call id and
- *  arguments), so the model tells it from a person's new input, and carries the call's result, or the refusal. */
-/** The head of the gate's resume message: the call it answers, its arguments as shown (`shown`, redacted whole then cut,
- *  runs.ts) cut again at 300 characters, and the words that say it is not the person's. The one source of it: the resume
- *  writes it, and the Timeline strips exactly it from the row a person opens (runs.ts resumeShows). */
-export function resumeHead(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string): string {
-  const args = shown.length > 300 ? `${shown.slice(0, 299)}…` : shown;
-  return `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
-}
-/** The last line of a CLI's resume message (one, after every call it answers): the message arrives as a new turn, and a
- *  model that reads only results there answers about the approval, not the person's request (Claude Code, live). */
-export const RESUME_GO_ON = "Go on with the person's request from where you stopped, using these results; don't call these tools again for them.";
-export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
-  const head = resumeHead(request, shown);
-  return decision === "allow" ? `${head} They allowed it, and it ran${result.isError ? " and failed" : ""}. Its result:\n${result.text}` : `${head}\n${result.text}`;
-}
 
 /** The gate of the run `runId` whose folder is `where`, on its pinned revision. `serverSettings`: the server's tool
  *  settings as the runner read them from the one store at the claim (tool-plane.ts loadToolSettings), read at each call as
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
  *  claim). The gate reads nothing of the run's own files: they are the agent's to write. `mcpServers`: the run's MCP
  *  servers (mcpServersOf its grants), so a harness's own name for an MCP tool is held to that tool's settings. */
-export function runGate(where: { root: string; work: string; computer?: boolean; mcpServers?: readonly string[] }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.mcpServers ? { mcpServers: where.mcpServers } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+export function runGate(where: { root: string; work: string; computer?: boolean; mcpServers?: readonly string[]; computerCodemode?: boolean }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.mcpServers ? { mcpServers: where.mcpServers } : {}), ...(where.computerCodemode ? { computerCodemode: true } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
 /** A run's folder as its spec names it: the run's Workspace (Mode 2: its folder on the run's disk, never a folder of this
@@ -390,7 +367,7 @@ export class RunGate {
   /** `readServerSettings`: the server's tool settings, read at each call; `overrides`: the pinned revision's own;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on); `approvals`: the
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
-  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; mcpServers?: readonly string[]; computer?: boolean }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; mcpServers?: readonly string[]; computer?: boolean; /** The run's `codemode` is pi's on a desktop or a phone (runner/adapters/pi-computer.ts), not the host's. */ computerCodemode?: boolean },private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
   private names?: NameMap;
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
@@ -406,6 +383,11 @@ export class RunGate {
    *  the call is run again after an earlier attempt that may have been sent (a replay-safe call rerun after a crash), so a
    *  refusal says whether it took effect is not known, never that nothing was sent. */
   async decide(name: string, args: unknown, options: { readonly replayed?: boolean } = {}): Promise<"allow" | "ask" | { deny: string }> {
+    // tools_search, tools_call and the host's codemode (runner/meta-tools.ts) run: each call they make is asked about here
+    // as its own tool, by its own name. pi's code mode on a run with a desktop or a phone is not the host's: its scripts
+    // reach the computer themselves, so it is held to the kind's setting (KIND_TOOLS).
+    const own = name.replace(/^mcp__hands__/, "");
+    if (META_TOOLS.has(own) && !(own === CODEMODE_TOOL_NAME && this.where.computerCodemode)) return "allow";
     const key = this.keyOf(name) ?? name;
     const tool = this.askedAs(name);
     const ran = options.replayed ? "unknown" : "no";

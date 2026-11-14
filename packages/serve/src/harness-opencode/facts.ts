@@ -17,8 +17,6 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   // One run's memory, measured with the server's (host.ts): OpenCode's server beside the run's process.
   runMib: 704,
   // OpenAI's reasoning efforts stop at xhigh.
-  // Its MCP client is not bound to the session's remote MCP servers yet.
-  mcp: false,
   thinking: Object.freeze(["low", "medium", "high", "xhigh"] as const),
   // OpenCode's model requests carry no provider-hosted tool: no search of its own.
   ownModel: false,

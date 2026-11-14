@@ -43,7 +43,7 @@ export function McpToolPicker({ servers, tools, harness, harnesses, onChange, on
         <section key={s.name} aria-label={`MCP server ${s.name}`}>
           <p className="caps mb-2 text-label font-semibold text-muted-foreground">{s.name} · MCP server</p>
           {/* A tool its server's read says no price meters: its calls run outside the run's cost and cap. */}
-          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantProblem(s.name, t, harness) ?? (t.permission === "deny" ? SERVER_DENY : undefined), s.not_metered?.includes(t.name) ? "not metered" : undefined)))}
+          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantProblem(t, harness) ?? (t.permission === "deny" ? SERVER_DENY : undefined), s.not_metered?.includes(t.name) ? "not metered" : undefined)))}
         </section>
       ))}
       {stale.length > 0 && (

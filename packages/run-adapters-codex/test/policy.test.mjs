@@ -660,14 +660,13 @@ test("web search live: the count is the terminal event's own; an earlier event's
   assert.deepEqual(await book({ output: [reasoning] }), unknown);
 });
 
-test("a remote MCP server's granted tools pass in the namespace the pinned CLI offers them in (mcp__<server>); its other tools, another server's and a bare name do not", () => {
-  const policy = codexPolicy({ model: 'm', tools: ['lookup'], mcpTools: ['mcp__fake__add'] });
+test("a run's MCP tool passes as the host tool it is (mcp_<server>__<tool>, the name Codex is given it); an MCP server's namespace of Codex's own never does, nor a bare name", () => {
+  const policy = codexPolicy({ model: 'm', tools: ['lookup', 'mcp_fake__add'] });
   const fn = (name) => ({ type: 'function', name, description: name, parameters: { type: 'object', properties: {} } });
-  // As Codex 0.164 sent a granted server through a loopback proxy: one namespace per server, each tool by its own name.
-  const body = { model: 'x', input: [], tools: [fn('lookup'), { type: 'namespace', name: 'mcp__fake', description: '', tools: [fn('add'), fn('delete_thing')] }, { type: 'namespace', name: 'mcp__other', description: '', tools: [fn('add')] }, fn('add')] };
+  // A namespace as Codex 0.164 sends a server of its own MCP client's: one per server, each tool by its own name.
+  const body = { model: 'x', input: [], tools: [fn('lookup'), fn('mcp_fake__add'), { type: 'namespace', name: 'mcp__fake', description: '', tools: [fn('add'), fn('lookup')] }, fn('add')] };
   const out = policy.apply(body);
-  assert.deepEqual(out.tools.map((tool) => (tool.type === 'namespace' ? `${tool.name}:${tool.tools.map((t) => t.name).join(',')}` : tool.name)), ['lookup', 'mcp__fake:add']);
-  assert.equal(codexPolicy({ model: 'm', tools: ['lookup'] }).apply(body).tools.length, 1, 'with no grant, no MCP tool passes');
+  assert.deepEqual(out.tools.map((tool) => tool.name), ['lookup', 'mcp_fake__add']);
 });
 
 test("a stopped Responses request's hidden reasoning, as the policy reads it from the body: its effort's budget; with no effort (or no reasoning object), its max_output_tokens, the conservative side; with effort none, none", () => {
