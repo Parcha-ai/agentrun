@@ -27,7 +27,7 @@ import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
 import { promotedOf } from "../learn/compile.js";
-import { gradesOf, promotionsOf } from "../learn/promote.js";
+import { gradesOf, gradeView, promotionsOf } from "../learn/promote.js";
 import { GENERAL_NO_BUDGET, GENERAL_NO_ROOM, GENERAL_UNCHECKED } from "../learn/general.js";
 import type { LearningProposal, Store } from "../store/store.js";
 
@@ -642,8 +642,10 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const learning = withNotes(end, started, read) as Learning;
   const current = holdsForOk(learning) && row && statuses ? currentLearning(learning, await statuses(row.agentId)) : learning;
   const body = runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled, used: learnedUseOf(started, reflect, rows, callArgsOf(entries), laidOf(entries), nativeSkillLoads(entries)) }, shown, secrets);
-  // The run's own grade (PUT /runs/{id}/grade), as its agent keeps it: right or wrong, who gave it and when. Never its
-  // `expected` (a person's words, uncut), nor its label (not kept).
+  // The run's own grade (PUT /runs/{id}/grade), as its agent keeps it and the PUT answered it, with the round it opened.
+  // Never its `expected` (a person's words, uncut), nor its label (not kept).
   const grade = row ? (await gradesOf(store.settings, row.agentId).catch(() => [])).find((one) => one.run === runId) : undefined;
-  return grade ? { ...body, graded: { correct: grade.correct, source: grade.source, graded_at: grade.at } } : body;
+  if (!grade) return body;
+  const { expected: _, ...graded } = gradeView(grade);
+  return { ...body, graded };
 }

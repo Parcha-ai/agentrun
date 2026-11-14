@@ -8,6 +8,7 @@
 // orchestration is runner/promotion.ts, the threshold refit learn/refit.ts.
 import type { GuardRow } from "../learned-nodes.js";
 import type { RunPath } from "../learning-cost.js";
+import type { FeedbackRound } from "../runner/feedback-round.js";
 import type { Settings } from "../store/store.js";
 import { answerJson } from "../answer-json.js";
 import { workflowNodes } from "./workflow-nodes.js";
@@ -42,6 +43,9 @@ export interface Grade {
   /** Its place among the agent's grades, one more than the grade put before it (a re-grade takes a new one): a cursor a
    *  serving digest's check counts new grades from (PromotionRecord.checked) that the GRADES_KEPT trim never moves back. */
   readonly seq?: number;
+  /** The feedback round the grade opened its run again on, null for none (runner/feedback-round.ts keepGrade). Set only
+   *  once the round opened, so a kept grade never names a round that didn't. */
+  readonly feedback?: FeedbackRound | null;
 }
 
 /** What a replay says (learn/refit.ts scoreRows), the shape the promotion record keeps (SPEC: replay {n, agree, agent_acc, wf_acc, delta}):
@@ -160,6 +164,13 @@ export const putGrade = async (settings: Pick<Settings, "get" | "putIfAbsent" | 
     return [...items.filter((one) => one.run !== grade.run), kept].slice(-GRADES_KEPT);
   });
   return kept;
+};
+
+/** Marks the kept grade `grade` (its run, given at its `at`) with the feedback round it opened, in place: its `seq` stays,
+ *  so a serving digest's check never counts it twice. A newer grade of the run is left as it is. The grade, marked. */
+export const markGradeRound = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, grade: Grade, feedback: FeedbackRound): Promise<Grade> => {
+  await updateKept<Grade>(settings, gradesKey(agentId), (items) => items.map((one) => (one.run === grade.run && one.at === grade.at ? { ...one, feedback } : one)));
+  return { ...grade, feedback };
 };
 
 /** The agent's promotion records, oldest first. */
@@ -509,8 +520,8 @@ export function recordOnly(workflowText: string): string {
  *  alone on at least one input (one that hands back every input scores the agent's own accuracy, and would never serve). */
 export const clears = (score: Pick<ReplayScore, "delta" | "n" | "handed_back">): boolean => score.delta >= -PROMOTE_BAR - 1e-9 && answersAlone(score);
 
-/** A grade as the API answers it (PUT /runs/{id}/grade). */
+/** A grade as the API answers it (PUT /runs/{id}/grade; GET /runs/{id}/learning's `graded`, without `expected`). */
 export const gradeView = (grade: Grade) => ({
   run_id: grade.run, correct: grade.correct, ...(grade.expected ? { expected: grade.expected } : {}), source: grade.source, graded_at: grade.at,
-  path: grade.path, workflow: grade.workflow ?? null, workflow_digest: grade.digest ?? null,
+  path: grade.path, workflow: grade.workflow ?? null, workflow_digest: grade.digest ?? null, feedback: grade.feedback ?? null,
 });

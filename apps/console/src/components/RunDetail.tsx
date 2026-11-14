@@ -10,7 +10,7 @@ import { ScreenPanel, useRunScreen } from "@/components/RunScreen";
 import { ComputerAskCard } from "@/components/ComputerAskCard";
 import { Button } from "@/components/ui/button";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
-import { RunGrade, type SentGrade, sentGrade } from "@/components/RunGrade";
+import { RunGrade } from "@/components/RunGrade";
 import { RunUsed, useRunLearning } from "@/components/RunUsed";
 import { Timeline, Working } from "@/components/Timeline";
 import { Tabs } from "@/components/ui/tabs";
@@ -148,16 +148,11 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const close = () => { reads.cancel(); setOpen(null); };
   // What the run's learning changed: read once, shown under the report and under the timeline's look-back.
   const changes = useRunChanges(run, readLearningDiff);
-  // The run's learning, read once, again when it ends and again after a grade: the learned skills and workflows it used,
-  // and its grade.
+  // The run's learning, read once and again when it ends: the learned skills and workflows it used, and its grade with the
+  // round it opened. A grade this page sends is taken into it from the PUT's answer, so a tab switch still shows it.
   const { read: learning, graded } = useRunLearning(run, view.final, readLearning);
-  // The grade this page sent and what came of it: kept here, with the learning read, so the Grade control a tab switch
-  // unmounts shows it again (the read alone never says which round a grade opened).
-  const [sent, setSent] = useState<SentGrade | null>(null);
   const grade = onGrade && (async (body: GradeBody) => {
-    const endedBefore = run.ended_at;
     const answer = await onGrade(body);
-    setSent(sentGrade(answer, body, endedBefore));
     graded(answer);
     return answer;
   });
@@ -250,7 +245,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
             <p className="font-mono text-body text-muted-foreground">{NO_ANSWER}{view.canMessage ? " Send a follow-up below to ask for one." : ""}</p>
           )}
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} ended={runEnded(run.status)} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} files={files} onOpen={show} />}
-          {(tab === "report" || tab === "timeline") && <RunGrade run={run} graded={learning?.graded ?? null} sent={sent} onGrade={grade}onOpenTimeline={tab === "timeline" ? undefined : () => setTab("timeline")} />}
+          {(tab === "report" || tab === "timeline") && <RunGrade run={run} graded={learning?.graded ?? null} onGrade={grade} onOpenTimeline={tab === "timeline" ? undefined : () => setTab("timeline")} />}
           {(tab === "report" || tab === "timeline") && <RunUsed used={learning?.used ?? null} agentId={run.agent_id} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}

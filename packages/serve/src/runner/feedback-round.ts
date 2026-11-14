@@ -13,7 +13,7 @@
 // A grade with neither asks for nothing more. The server writes the round's steer (server.ts gradeRun, runs.reopen); the
 // adapter loop takes it (adapter-loop.ts steer: a FEEDBACK entry, no turn), and the end-of-run step reads it
 // (learning-end.ts: heard, never "nothing new"; adapter-loop.ts askEndOfRun: feedbackAsk before the prompt).
-import type { Grade } from "../learn/promote.js";
+import { type Grade, markGradeRound, putGrade } from "../learn/promote.js";
 import type { RunPath } from "../learning-cost.js";
 import { readLaunchBody } from "../run-launch.js";
 import { RunFinal, type Store } from "../store/store.js";
@@ -100,4 +100,14 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
     if (error instanceof RunFinal) return null;
     throw error;
   }
+}
+
+/** A grade's write (PUT /runs/{id}/grade): keeps `grade` for agent `agentId` naming no round, opens its run again on the
+ *  round it asks for (openFeedbackRound), and only then marks the kept grade with that round. The grade is kept first, so
+ *  the round's end reads it; the round is named last, so a reopen that fails (thrown, or a run that can't be opened again)
+ *  leaves a grade naming none, never one claiming a round that didn't open. The grade as kept. */
+export async function keepGrade(store: Pick<Store, "runs" | "agents" | "settings">, agentId: string, grade: Grade, label: string | undefined): Promise<Grade> {
+  const kept = await putGrade(store.settings, agentId, { ...grade, feedback: null });
+  const feedback = await openFeedbackRound(store, kept, label);
+  return feedback ? markGradeRound(store.settings, agentId, kept, feedback) : kept;
 }

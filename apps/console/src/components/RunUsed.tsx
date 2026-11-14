@@ -4,26 +4,23 @@ import { Chip } from "@/components/ui/chip";
 import { learningHash } from "@/lib/learning";
 import type { GradeAnswer, LearnedUse, Run, RunLearningRead } from "@/lib/v2";
 
-/** The run's learning (GET /v2/runs/{id}/learning), read for a run that learns, once, again when it ends (a skill read
- *  late counts; a grade's feedback round ends it again) and again after a grade it took (a grade that opens no round
- *  leaves the run ended): what its job did with the learned skills and workflows its agent gave it (`used`) and its
- *  grade (`graded`). `read` is null while unread, when the read failed, or for a run with nothing to read it from.
- *  `graded` takes a grade's answer (PUT /v2/runs/{id}/grade) into the read at once, then reads it again; a read still in
- *  flight from before it never lands. */
+/** The run's learning (GET /v2/runs/{id}/learning), read for a run that learns, once and again when it ends (a skill read
+ *  late counts; a grade's feedback round ends it again): what its job did with the learned skills and workflows its agent
+ *  gave it (`used`) and its grade (`graded`, with the round it opened). `read` is null while unread, when the read failed,
+ *  or for a run with nothing to read it from. `graded` takes a grade's answer (PUT /v2/runs/{id}/grade) into the read: the
+ *  read's own shape, without `expected`. A grade changes nothing else the read says, so it is not read again for it. */
 export function useRunLearning(run: Pick<Run, "run_id" | "learning">, ended: boolean, read?: () => Promise<RunLearningRead>): { read: RunLearningRead | null; graded: (answer: GradeAnswer) => void } {
   const learns = !!read && !!run.learning;
   const [got, setGot] = useState<RunLearningRead | null>(null);
-  const [grades, setGrades] = useState(0);
   useEffect(() => {
     if (!learns) return;
     let live = true;
     // A reader that throws at once shows nothing, as one that rejects: these panels are never the page's error.
     Promise.resolve().then(() => read!()).then((r) => { if (live) setGot(r ?? null); }, () => { if (live) setGot(null); });
     return () => { live = false; };
-  }, [run.run_id, learns, ended, grades]); // eslint-disable-line react-hooks/exhaustive-deps
-  const graded = useCallback((answer: GradeAnswer) => {
-    setGot((was) => (was ? { ...was, graded: { correct: answer.correct, source: answer.source, graded_at: answer.graded_at } } : was));
-    setGrades((n) => n + 1);
+  }, [run.run_id, learns, ended]); // eslint-disable-line react-hooks/exhaustive-deps
+  const graded = useCallback(({ expected: _, ...answer }: GradeAnswer) => {
+    setGot((was) => (was ? { ...was, graded: answer } : was));
   }, []);
   return { read: learns ? got : null, graded };
 }

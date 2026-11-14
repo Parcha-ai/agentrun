@@ -73,9 +73,9 @@ import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
-import { LABEL_MAX, openFeedbackRound } from "./runner/feedback-round.js";
+import { keepGrade, LABEL_MAX } from "./runner/feedback-round.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { type Grade, GRADE_SOURCES, type GradeSource, gradeView, promotionsOf, promotionsShown, putGrade } from "./learn/promote.js";
+import { type Grade, GRADE_SOURCES, type GradeSource, gradeView, promotionsOf, promotionsShown } from "./learn/promote.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -3136,10 +3136,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           run: row.id, correct: body.correct, ...(body.expected !== undefined ? { expected: body.expected as Record<string, unknown> } : {}), source: (body.source as GradeSource | undefined) ?? "feedback", at: new Date().toISOString(), path,
           ...(typeof m.workflow === "string" ? { workflow: m.workflow } : {}), ...(typeof m.workflow_digest === "string" ? { digest: m.workflow_digest } : {}),
         };
-        await putGrade(store.settings, row.agentId, grade);
-        // What the grade asks of the run's learning (runner/feedback-round.ts): nothing, a revision ask, or a look-back.
-        const feedback = await openFeedbackRound(store, grade, typeof body.label === "string" ? body.label : undefined);
-        return send(res, 200, { ...gradeView(grade), feedback });
+        // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, a revision ask, or a look-back.
+        return send(res, 200, gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined)));
       }
       case "archiveRun":
       case "unarchiveRun": {

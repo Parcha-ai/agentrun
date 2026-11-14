@@ -26,22 +26,27 @@ const read = (graded?: RunGraded): RunLearningRead => ({
 });
 const answer = (body: GradeBody, feedback: GradeAnswer["feedback"]): GradeAnswer => ({ run_id: "run-g", correct: body.correct, source: "feedback", graded_at: "2026-11-14T10:05:00.000Z", path: "agent", workflow: null, workflow_digest: null, feedback });
 
+/** A grade as the learning read gives it back: the PUT's answer without `expected`. */
+const gradedOf = (over: Partial<RunGraded> = {}): RunGraded => ({ run_id: "run-g", correct: false, source: "feedback", graded_at: "2026-11-14T10:02:00.000Z", path: "agent", workflow: null, workflow_digest: null, feedback: null, ...over });
+
 async function open(r: Run, { graded, grade }: { graded?: RunGraded; grade?: (body: GradeBody) => Promise<GradeAnswer> } = {}) {
   const sent: GradeBody[] = [];
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  // The server's side: the learning read gives back the newest grade it took, and counts how often it was read.
+  // The server's side: the learning read gives back the newest grade it took. A grade that opens a round opens the run
+  // again, and the page reads the run again before the answer returns (LiveRun's grade).
   let stored = graded;
-  const reads = { n: 0 };
+  const show = (next: Run) => root!.render(createElement(RunDetail, { ...props, run: next }));
   const props = { run: r, agentName: "Invoice sorter", messages: messageFeatures, harnessSteers: true, rows: [], files: [], tab: "report" as const,
-    readLearning: async () => { reads.n++; return read(stored); },
+    readLearning: async () => read(stored),
     onGrade: async (body: GradeBody) => {
       sent.push(body);
-      const a = grade ? await grade(body) : answer(body, body.label ? "look_back" : null);
-      stored = { correct: a.correct, source: a.source, graded_at: a.graded_at };
+      const { expected: _, ...a } = grade ? await grade(body) : answer(body, body.label ? "look_back" : null);
+      stored = a;
+      if (a.feedback) show({ ...r, status: "working", state: "working", ended_at: null });
       return a;
     } };
-  act(() => root!.render(createElement(RunDetail, props)));
+  act(() => show(r));
   await settle();
   const section = () => host.querySelector('section[aria-label="Grade"]') as HTMLElement | null;
   const button = (name: string) => [...(section()?.querySelectorAll("button") ?? [])].find((b) => b.textContent === name) as HTMLButtonElement | undefined;
@@ -50,7 +55,7 @@ async function open(r: Run, { graded, grade }: { graded?: RunGraded; grade?: (bo
   const type = async (box: HTMLTextAreaElement, text: string) => {
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, text); box.dispatchEvent(new Event("input", { bubbles: true })); });
   };
-  const rerender = async (next: Run) => { act(() => root!.render(createElement(RunDetail, { ...props, run: next }))); await settle(); };
+  const rerender = async (next: Run) => { act(() => show(next)); await settle(); };
   // A tab of the run page, by the start of its label ("Files 0").
   const tab = async (name: string) => {
     const b = [...host.querySelectorAll('[role="tab"]')].find((t) => t.textContent?.startsWith(name)) as HTMLButtonElement | undefined;
@@ -58,7 +63,7 @@ async function open(r: Run, { graded, grade }: { graded?: RunGraded; grade?: (bo
     await act(async () => { b!.click(); });
     await settle();
   };
-  return { host, sent, reads, section, button, click, boxes, type, rerender, tab };
+  return { host, sent, section, button, click, boxes, type, rerender, tab };
 }
 
 /** A grade's answer that opened a `revise` round: a learned workflow gave the answer alone. */
@@ -115,7 +120,7 @@ describe("a run's page, the Grade control", () => {
     const text = t.section()!.textContent ?? "";
     expect(text).toContain("Graded wrong");
     expect(text).not.toContain("Reviewing");
-    expect(text).toContain("Kept for this agent. A look-back needs words.");
+    expect(t.section()!.querySelector('[role="status"]')?.textContent).toBe("Kept for this agent.");
   });
 
   it("refuses a correct answer that is not a JSON object before sending, in words", async () => {
@@ -128,7 +133,7 @@ describe("a run's page, the Grade control", () => {
   });
 
   it("shows a graded run's grade read back, reviewing while the run is open again, and a re-grade replaces it", async () => {
-    const graded: RunGraded = { correct: false, source: "feedback", graded_at: "2026-11-14T10:02:00.000Z" };
+    const graded = gradedOf({ feedback: "look_back" });
     const open1 = await open(run({ status: "working", state: "working", ended_at: null }), { graded });
     let text = open1.section()!.textContent ?? "";
     expect(text).toContain("Graded wrong");
@@ -149,7 +154,7 @@ describe("a run's page, the Grade control", () => {
   });
 
   it("says a finished round's outcome after a reload, from the grade read back", async () => {
-    const t = await open(run(), { graded: { ...answer({ correct: false }, "look_back"), graded_at: "2026-11-14T10:02:00.000Z" } });
+    const t = await open(run(), { graded: gradedOf({ feedback: "look_back" }) });
     const text = t.section()!.textContent ?? "";
     expect(text).toContain("Graded wrong");
     expect(text).not.toContain("Reviewing");
@@ -160,7 +165,7 @@ describe("a run's page, the Grade control", () => {
 
   it("is still reviewing after a reload while the round's learning settles: no Grade again until it has", async () => {
     const settling = run({ learning: { ...LEARNS!, state: "reflecting", reason: null } });
-    const t = await open(settling, { graded: { ...answer({ correct: false }, "look_back"), graded_at: "2026-11-14T10:02:00.000Z" } });
+    const t = await open(settling, { graded: gradedOf({ feedback: "look_back" }) });
     const text = t.section()!.textContent ?? "";
     expect(text).toContain("Reviewing");
     expect(text).toContain("The agent is looking back on your words.");
@@ -170,12 +175,9 @@ describe("a run's page, the Grade control", () => {
     expect(t.button("Grade again")).toBeTruthy();
   });
 
-  it("keeps a grade it sent across a tab switch: the run's learning is read again after it, and the round it opened stays said", async () => {
-    // Right on an ungraded run: the run stays ended, so only the grade itself reads the learning again.
+  it("keeps a grade it sent across a tab switch, and the round it opened stays said", async () => {
     const t = await open(run());
-    const before = t.reads.n;
     await t.click("Right");
-    expect(t.reads.n).toBeGreaterThan(before);
     await t.tab("Files");
     expect(t.section()).toBeNull();
     await t.tab("Report");
@@ -200,7 +202,7 @@ describe("a run's page, the Grade control", () => {
   });
 
   it("shows a re-grade, not the grade it replaced, after a tab switch", async () => {
-    const t = await open(run(), { graded: { correct: false, source: "feedback", graded_at: "2026-11-14T10:02:00.000Z" } });
+    const t = await open(run(), { graded: gradedOf() });
     expect(t.section()!.textContent).toContain("Graded wrong");
     await t.click("Grade again");
     await t.click("Right");

@@ -3,7 +3,8 @@
 // words and the correct answer. The server answers the grade with a look-back round (`feedback: look_back`); the control
 // says the agent is looking back, then that it looked back once the run has ended again; the Timeline shows the grade's
 // words as "Your grade" and the round's learning row, which kept the reviewer's note (faux-learn keeps a "Review: "
-// message as reviewed.md). Reading the page again shows the grade read back, with Grade again. E2E_SHOTS=<dir> saves the
+// message as reviewed.md). Reading the page again shows the grade read back with the round it opened, so the round's
+// outcome is still said, with Grade again. E2E_SHOTS=<dir> saves the
 // control and the Timeline at two widths.
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -93,10 +94,13 @@ export default {
       check(learning.graded?.correct === false && learning.learned?.some((n) => n.file === "reviewed.md"), `${width}px: the run's learning after the round: ${JSON.stringify(learning)}`);
       await shoot(page.locator("main"), `grade-timeline-${width}.png`);
 
-      // Read again: the grade read back, with Grade again.
+      // Read again: the grade read back with the round it opened (`graded.feedback`), so the round's outcome is still
+      // said (role="status"), with Grade again.
+      check(learning.graded?.feedback === "look_back", `${width}px: the learning read's grade: ${JSON.stringify(learning.graded)}`);
       await page.reload();
       const again = page.getByRole("region", { name: "Grade" });
       await again.getByText("Graded wrong").waitFor({ timeout: 15_000 });
+      await again.getByRole("status").waitFor();
       await again.getByRole("button", { name: "Grade again" }).waitFor();
       check(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)), `${width}px: the page scrolls sideways`);
     }

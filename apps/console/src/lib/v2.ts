@@ -184,7 +184,8 @@ export type RaiseAnswer = Answer<"raiseRunCap">;
  *  (`expected`). Its answer says the feedback round the run opened again on (`feedback`), if any. */
 export type GradeBody = Body<"gradeRun">;
 export type GradeAnswer = Answer<"gradeRun">;
-/** A run's grade as GET /v2/runs/{id}/learning reads it back (`graded`): the newest. */
+/** A run's grade as GET /v2/runs/{id}/learning reads it back (`graded`): the newest, as the PUT answered it without
+ *  `expected`, with the round it opened (`feedback`). */
 export type RunGraded = NonNullable<NonNullable<RunLearningRead>["graded"]>;
 
 /** A recorded response (src/fixtures): what the server answered, exactly. The console's own, not a wire type. */
