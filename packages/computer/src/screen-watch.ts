@@ -150,6 +150,8 @@ export function watchScreen(connection: ComputerConnection, options: WatchOption
 
 	// A computer that lists screen.ahead takes a second ask while the first waits (after one past the newest frame): two
 	// are kept in flight, so its frames come at its own pace, not one each round trip. Else one, after each ack.
+	// Why it exists: with one ask in flight each frame waits a full round trip, about 7 fps (kit-10, 5-run medians:
+	// E2B 7.00 one ask vs 12.96 two, Agent37 6.15 vs 14.53).
 	const depth = connection.hello?.features?.["screen.ahead"] === true ? 2 : 1;
 	type Ask = { promise: Promise<Result<ScreenWatchResult>>; answer?: Result<ScreenWatchResult> };
 
