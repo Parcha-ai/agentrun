@@ -48,12 +48,12 @@
     "items": {
       "type": "array",
       "minItems": 0,
-      "maxItems": 100,
-      "description": "the items this run checked, each in the owner's words: the depends-on list as learned notes and the run's message change it",
+      "maxItems": 2000,
+      "description": "the items this run checked, each in the owner's words: the depends-on list as learned notes and the run's message change it. The limits are the depends_on parameter's (4000 characters in all), so any list the template accepts fits here whole",
       "items": {
         "type": "string",
         "minLength": 1,
-        "maxLength": 400
+        "maxLength": 4000
       }
     },
     "versions": {
@@ -136,7 +136,7 @@
           "affects": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 400,
+            "maxLength": 4000,
             "description": "the item it touches, in the owner's words"
           },
           "what_to_do": {
