@@ -289,6 +289,30 @@ test("a Windows computer runs a string command in cmd", async () => {
 	assert.deepEqual(calls.at(-1).params.argv, ["cmd.exe", "/d", "/s", "/c", "dir"]);
 });
 
+test("a Linux desktop's shell and processes open on its display, and processes.start keeps what it starts", async () => {
+	assert.deepEqual(opsOf(["exec", "processes"]), ["shell.run", "processes.start"]);
+	const { surface, calls } = surfaceOf({ os: "linux", groups: ["exec", "processes", "screen", "input.pointer", "input.keys"], display: ":0" });
+	await surface.call("shell.run", { command: "xdotool getactivewindow" });
+	assert.deepEqual(calls.at(-1).params, { argv: ["sh", "-c", "xdotool getactivewindow"], timeoutMs: 60_000, env: { DISPLAY: ":0" } });
+	// The call's own DISPLAY wins.
+	await surface.call("shell.run", { command: "true", env: { DISPLAY: ":3", GREETING: "hi" } });
+	assert.deepEqual(calls.at(-1).params.env, { DISPLAY: ":3", GREETING: "hi" });
+	const started = await surface.call("processes.start", { command: "mousepad", cwd: "/tmp" });
+	assert.deepEqual(calls.at(-1), { method: "process.start", params: { argv: ["sh", "-c", "mousepad"], cwd: "/tmp", env: { DISPLAY: ":0" }, orphans: "keep" } });
+	assert.deepEqual(started.value, { pid: 4242 });
+	assert.match(started.text, /4242/);
+	await surface.call("processes.start", { command: ["xterm", "-geometry", "80x24"] });
+	assert.deepEqual(calls.at(-1).params.argv, ["xterm", "-geometry", "80x24"]);
+	await assert.rejects(surface.call("processes.start", { command: 7 }), (error) => error.kind === "invalid");
+	// No display (a sandbox): the call's env alone.
+	const plain = surfaceOf({ os: "linux", groups: ["exec", "processes"] });
+	await plain.surface.call("processes.start", { command: "sleep 9" });
+	assert.deepEqual(plain.calls.at(-1).params, { argv: ["sh", "-c", "sleep 9"], orphans: "keep" });
+	const names = await runScript(surface, "return Object.keys(computer)");
+	assert.deepEqual([...names], ["card", "screen", "input", "shell", "processes"]);
+	assert.deepEqual(await runScript(surface, `return await computer.processes.start("mousepad")`), { pid: 4242 });
+});
+
 test("chords split on +, and a trailing + is the plus key", () => {
 	assert.deepEqual(chordKeys("ctrl+shift+t"), ["ctrl", "shift", "t"]);
 	assert.deepEqual(chordKeys("ctrl++"), ["ctrl", "+"]);

@@ -16,12 +16,13 @@ export type SurfaceOp =
 	| "apps.list"
 	| "apps.open"
 	| "shell.run"
+	| "processes.start"
 	| "files.read"
 	| "files.write"
 	| "files.list"
 	| "files.stat";
 
-export const SURFACE_OPS: readonly SurfaceOp[] = ["observe", "act", "screenshot", "input.act", "apps.list", "apps.open", "shell.run", "files.read", "files.write", "files.list", "files.stat"];
+export const SURFACE_OPS: readonly SurfaceOp[] = ["observe", "act", "screenshot", "input.act", "apps.list", "apps.open", "shell.run", "processes.start", "files.read", "files.write", "files.list", "files.stat"];
 
 /** One call's answer: the value a script gets, the text a model reads, and the images that go with it. */
 export interface SurfaceAnswer {
@@ -89,6 +90,7 @@ export function opsOf(groups: readonly string[]): SurfaceOp[] {
 		"apps.list": has("apps"),
 		"apps.open": has("apps"),
 		"shell.run": has("exec"),
+		"processes.start": has("processes"),
 		"files.read": has("files"),
 		"files.write": has("files"),
 		"files.list": has("files"),
@@ -378,12 +380,24 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 		return entries.map((entry) => infoOf(entry.path, entry));
 	}
 
-	async function run(args: { command?: unknown; cwd?: string; timeoutMs?: number; env?: Record<string, string> }, signal?: AbortSignal): Promise<RunResult> {
-		const command = args.command;
+	/** A command's argv: a string in the shell (cmd on Windows), a list as given. */
+	function argvOf(command: unknown): string[] {
 		const argv = typeof command === "string" ? (card.os === "windows" ? ["cmd.exe", "/d", "/s", "/c", command] : ["sh", "-c", command]) : Array.isArray(command) && command.every((part) => typeof part === "string") ? (command as string[]) : undefined;
 		if (!argv || argv.length === 0) throw new SurfaceError("invalid", "command is a string (run by the shell) or a list: the program and its arguments");
+		return argv;
+	}
+
+	/** A program's env: on a desktop with an X display, its DISPLAY (the daemon gives its programs none: protocol.ts
+	 *  ExecRunParams), so an app opens where the screen is; the call's own variables over it. */
+	function envOf(given: Record<string, string> | undefined): { env?: Record<string, string> } {
+		const env = { ...(hello.display ? { DISPLAY: hello.display } : {}), ...(given ?? {}) };
+		return Object.keys(env).length > 0 ? { env } : {};
+	}
+
+	async function run(args: { command?: unknown; cwd?: string; timeoutMs?: number; env?: Record<string, string> }, signal?: AbortSignal): Promise<RunResult> {
+		const argv = argvOf(args.command);
 		const timeoutMs = Math.min(Math.max(1, args.timeoutMs ?? DEFAULT_RUN_MS), MAX_RUN_MS);
-		const result = await call("exec.run", { argv, timeoutMs, ...(args.cwd ? { cwd: args.cwd } : {}), ...(args.env ? { env: args.env } : {}) }, signal);
+		const result = await call("exec.run", { argv, timeoutMs, ...(args.cwd ? { cwd: args.cwd } : {}), ...envOf(args.env) }, signal);
 		return {
 			stdout: Buffer.from(result.stdout, "base64").toString("utf8"),
 			stderr: Buffer.from(result.stderr, "base64").toString("utf8"),
@@ -433,6 +447,12 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 			case "shell.run": {
 				const value = await run(args, signal);
 				return { value, text: jsonText(value), images: [] };
+			}
+			case "processes.start": {
+				const argv = argvOf(args.command);
+				// orphans "keep": what the program starts (a launcher that forks its app and exits) runs on too.
+				const started = await call("process.start", { argv, ...(typeof args.cwd === "string" && args.cwd ? { cwd: args.cwd } : {}), ...envOf(args.env as Record<string, string> | undefined), orphans: "keep" }, signal);
+				return { value: { pid: started.pid }, text: `started ${argv.join(" ")} (pid ${started.pid})`, images: [] };
 			}
 			case "files.read": {
 				const value = await readFile(pathOf(args), args.encoding as string | undefined, signal);
