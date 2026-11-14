@@ -18,7 +18,7 @@ import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } 
 import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh.js";
 import { dateOf, DOMAIN, driftOf, isWhole, sizeOf } from "./hosted/values.js";
 import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";
-import { type ComputerErrorCode, ok, type Result } from "./result.js";
+import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
 
 /** The ssh2 slice types, as this entry has always exported them (they live in hosted/ssh.ts). */
 export type { Ssh2Channel, Ssh2Client, Ssh2ConnectConfig, Ssh2Module, Ssh2Readable } from "./hosted/ssh.js";
@@ -126,15 +126,9 @@ const DEFAULT_CREATE_MS = 300_000;
 const TUNNEL_HIGH_WATER = 1024 * 1024;
 const TUNNEL_POLL_MS = 10;
 
-/** An answer of Agent37's REST API that is not a success, as the code its status and the envelope's stable code (docs: errors) make. */
-export class Agent37Error extends Error {
-	override name = "Agent37Error";
-	readonly code: ComputerErrorCode;
-	constructor(code: ComputerErrorCode, message: string) {
-		super(message);
-		this.code = code;
-	}
-}
+const fail = failFor(AGENT37.id);
+/** An id held to Agent37's form before it reaches a URL or a host name: an id is also a DNS label here. */
+const notInstance = (id: string) => fail("not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
 
 /** The SSH tunnel's WebSocket closed or failed before it opened, or while it carried the stream. */
 export class Agent37TunnelError extends SshTunnelError {
@@ -170,7 +164,6 @@ const CODES: Record<string, ComputerErrorCode> = {
 
 function codeOf(error: unknown): ComputerErrorCode {
 	const { level } = (error ?? {}) as { level?: unknown };
-	if (error instanceof Agent37Error) return error.code;
 	// ssh2 names the stage that failed (lib/client.js): the instance's sshd refused the key, or the handshake timed out.
 	if (level === "client-authentication") return "denied";
 	if (level === "client-timeout") return "timeout";
@@ -358,7 +351,6 @@ class Agent37Host implements MachineHost {
 
 	/** The SSH stream to an instance's sshd: a binary WebSocket the edge opens for the workspace key (cli.js wsHandshake), as a Duplex. */
 	#tunnel(id: string): SshTunnel {
-		if (!INSTANCE_ID.test(id)) throw new Agent37Error("not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
 		const host = `${id}-${AGENT37_SSH_PORT}.${this.#proxyDomain}`;
 		const ws = new this.#WebSocket(`wss://${host}/`, { headers: { "X-Agent37-Key": this.#apiKey } });
 		ws.binaryType = "arraybuffer";
@@ -366,23 +358,16 @@ class Agent37Host implements MachineHost {
 	}
 
 	/** argv as root over SSH (hosted/ssh.ts): one connection per instance through its tunnel, shared by its execs. */
-	exec(id: string, argv: readonly string[], opts: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
-		return this.#ssh.exec(id, argv, opts, ctx);
+	async exec(id: string, argv: readonly string[], opts: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
+		return INSTANCE_ID.test(id) ? this.#ssh.exec(id, argv, opts, ctx) : notInstance(id);
 	}
 
-	/** One REST call, bounded by ctx; a failure throws Agent37Error in Agent37's words. */
-	async #rest<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body: object | undefined, ctx: HostCall): Promise<T> {
+	/** One REST call, bounded by ctx: its JSON answer, or a failure in Agent37's words. */
+	async #rest<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body: object | undefined, ctx: HostCall): Promise<Result<T>> {
 		const answer = await this.#client.call(method, this.#client.url(path), { ...(body === undefined ? {} : { json: body }), timeoutMs: ctx.timeoutMs }, ctx.signal);
-		if (!answer.ok) throw new Agent37Error(answer.error.code, answer.error.message);
+		if (!answer.ok) return answer;
 		const parsed = jsonOf(answer.value.bytes);
-		if (parsed === null) throw new Agent37Error("vendor", `${method} ${path} answered ${answer.value.status} with no JSON body`);
-		return parsed as T;
-	}
-
-	/** An instance's REST path, its id held to Agent37's form first: an id is also a DNS label here. */
-	#path(id: string): string {
-		if (!INSTANCE_ID.test(id)) throw new Agent37Error("not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
-		return `/v1/instances/${id}`;
+		return parsed === null ? fail("vendor", `${method} ${path} answered ${answer.value.status} with no JSON body`) : ok(parsed as T);
 	}
 
 	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes. The adapter holds metadata to 4 KB (labelRules). */
@@ -423,13 +408,16 @@ class Agent37Host implements MachineHost {
 			},
 			ctx,
 		);
-		if (typeof made?.id !== "string" || !INSTANCE_ID.test(made.id)) throw new Agent37Error("vendor", `POST /v1/instances answered no instance id: ${show(made?.id)}`);
-		return ok({ id: made.id });
+		if (!made.ok) return made;
+		const id = made.value?.id;
+		return typeof id === "string" && INSTANCE_ID.test(id) ? ok({ id }) : fail("vendor", `POST /v1/instances answered no instance id: ${show(id)}`);
 	}
 
 	/** GET /v1/instances/{id}; 404 is not_found, which the adapter reads as none (docs: instances/get). */
 	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
-		return ok(machineOf(await this.#rest<Agent37Instance>("GET", this.#path(id), undefined, ctx), this.#declared));
+		if (!INSTANCE_ID.test(id)) return notInstance(id);
+		const got = await this.#rest<Agent37Instance>("GET", `/v1/instances/${id}`, undefined, ctx);
+		return got.ok ? ok(machineOf(got.value, this.#declared)) : got;
 	}
 
 	/**
@@ -438,10 +426,12 @@ class Agent37Host implements MachineHost {
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
 		void labels;
-		const listed = await this.#rest<{ data?: unknown; has_more?: unknown; next_cursor?: unknown }>("GET", "/v1/instances", undefined, ctx);
-		if (!Array.isArray(listed.data)) throw new Agent37Error("vendor", "GET /v1/instances answered no data list");
+		const answer = await this.#rest<{ data?: unknown; has_more?: unknown; next_cursor?: unknown }>("GET", "/v1/instances", undefined, ctx);
+		if (!answer.ok) return answer;
+		const listed = answer.value;
+		if (!Array.isArray(listed?.data)) return fail("vendor", "GET /v1/instances answered no data list");
 		if (listed.has_more === true || (listed.next_cursor !== undefined && listed.next_cursor !== null)) {
-			throw new Agent37Error("vendor", "GET /v1/instances answered a page with more after it, which Agent37 documents none of: this provider would miss machines");
+			return fail("vendor", "GET /v1/instances answered a page with more after it, which Agent37 documents none of: this provider would miss machines");
 		}
 		return ok((listed.data as Agent37Instance[]).filter((instance) => typeof instance?.id === "string").map((instance) => machineOf(instance, this.#declared)));
 	}
@@ -451,23 +441,20 @@ class Agent37Host implements MachineHost {
 	 * instances/delete). Once taken, this host's SSH connections to the instance are ended, channels and all.
 	 */
 	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
-		try {
-			await this.#rest("DELETE", this.#path(id), undefined, { timeoutMs: ctx.timeoutMs });
-		} catch (error) {
-			// A 404 means the instance is gone already: its connections end too, then the adapter reads not_found as done.
-			if (codeOf(error) === "not_found") this.#ssh.closeAll(id);
-			throw error;
-		}
-		this.#ssh.closeAll(id);
-		return ok(undefined);
+		if (!INSTANCE_ID.test(id)) return notInstance(id);
+		const removed = await this.#rest<void>("DELETE", `/v1/instances/${id}`, undefined, { timeoutMs: ctx.timeoutMs });
+		// A 404 means the instance is gone already: its connections end too, then the adapter reads not_found as done.
+		if (removed.ok || removed.error.code === "not_found") this.#ssh.closeAll(id);
+		return removed;
 	}
 
 	/** The janitor's deadline label moved: GET, then PATCH of the whole metadata, which replaces the stored object (docs: instances/edit). */
 	async extend(id: string, endsAt: Date, ctx: HostCall): Promise<Result<void>> {
-		const path = this.#path(id);
+		if (!INSTANCE_ID.test(id)) return notInstance(id);
+		const path = `/v1/instances/${id}`;
 		const instance = await this.#rest<Agent37Instance>("GET", path, undefined, ctx);
-		await this.#rest("PATCH", path, { metadata: { ...(instance.metadata ?? {}), [DEADLINE_LABEL]: endsAt.toISOString() } }, ctx);
-		return ok(undefined);
+		if (!instance.ok) return instance;
+		return this.#rest<void>("PATCH", path, { metadata: { ...(instance.value.metadata ?? {}), [DEADLINE_LABEL]: endsAt.toISOString() } }, ctx);
 	}
 }
 

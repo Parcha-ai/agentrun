@@ -63,7 +63,7 @@ import { type ComputerError, failFor, ok, type Result } from "../result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "../screen-watch.js";
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
-import { bounded, CALL_SLACK_MS, codeOfError, hostCall, type Opened, openBridge, pause, race, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
+import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, uploadThroughExec } from "./process.js";
 import { isWhole } from "./values.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf } from "./scripts.js";
 
@@ -474,7 +474,7 @@ export class HostedProvider implements ComputerProvider {
 
 	async #createOnce(spec: ComputerSpec, name: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
 		const { listMs } = this.#timeouts;
-		const listed = await listedBy(this.host, "the listing by the request's name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, listMs, signal);
+		const listed = await listedBy(this.host, "the listing by the request's name", byName(name), listMs, signal);
 		if (!listed.ok) return listed;
 		const found = listed.value.filter((machine) => ours(machine.labels, name));
 		if (found.length > 1) return this.#fail("exists", `${found.length} machines carry the name ${name} (${found.map((m) => m.id).join(", ")}): create with a new request id`);
@@ -514,7 +514,7 @@ export class HostedProvider implements ComputerProvider {
 	 * same listing. Its value is the machine kept, or undefined when mine holds the name alone (or nothing is listed yet).
 	 */
 	async #converge(name: string, mine: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
-		const listed = await listedBy(this.host, "the listing by the request's name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, this.#timeouts.listMs, signal);
+		const listed = await listedBy(this.host, "the listing by the request's name", byName(name), this.#timeouts.listMs, signal);
 		if (!listed.ok) return listed;
 		const holders = listed.value.filter((machine) => ours(machine.labels, name) && alive(machine.state));
 		if (!holders.some((machine) => machine.id !== mine)) return ok(undefined);
@@ -637,24 +637,15 @@ export class HostedProvider implements ComputerProvider {
 		};
 		const runtime = this.host.facts.runtime?.(request);
 		const { createMs } = this.#timeouts;
-		// Never cancelled, only raced: an aborted call could leave a machine made whose id never came back.
-		let creating: Promise<Result<{ id: string }>>;
-		try {
-			creating = Promise.resolve(this.host.create(request, { timeoutMs: createMs }));
-		} catch (error) {
-			return this.#fail(codeOfError(this.host, error), `${this.#label}'s create failed: ${words(error)}`);
-		}
-		const raced = await race(this.host, creating, `${this.#label}'s create`, createMs + CALL_SLACK_MS, signal);
-		const created: Result<{ id: string }> = raced.ok ? raced.value : raced;
+		// Never signalled, only raced: an aborted call could leave a machine made whose id never came back. One that lands
+		// after this gave up is deleted by its id; one whose answer never comes, by its name.
+		const created = await hostCall(this.host, `${this.#label}'s create`, (ctx) => this.host.create(request, { timeoutMs: ctx.timeoutMs }), createMs, signal, (made) =>
+			made.ok ? this.#kill(made.value.id) : this.#deleteNamed(name),
+		);
 		if (!created.ok) {
 			const { code, message } = created.error;
 			if (code === "aborted" || code === "timeout") {
-				// One that lands is deleted by its id; one whose answer never comes, by its name.
 				this.#end(name);
-				creating.then(
-					async (made) => void (made.ok ? await this.#kill(made.value.id) : await this.#deleteNamed(name)),
-					async () => void (await this.#deleteNamed(name)),
-				);
 				return this.#fail(code, `${message}; a machine it makes after this is deleted as it lands, and ${this.#label} ends it by ${deadline} either way`);
 			}
 			// A create the vendor refused made nothing. One that failed otherwise may have: it goes by its name.
@@ -692,7 +683,7 @@ export class HostedProvider implements ComputerProvider {
 		const until = Date.now() + listedMs;
 		let found: Machine[];
 		for (;;) {
-			const listed = await listedBy(this.host, "the listing by name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, listMs);
+			const listed = await listedBy(this.host, "the listing by name", byName(name), listMs);
 			if (!listed.ok) return `; a machine named ${name} may be left (${listed.error.message}), which ends at its deadline`;
 			found = listed.value.filter((machine) => ours(machine.labels, name));
 			if (found.length > 0 || Date.now() >= until) break;
@@ -964,7 +955,7 @@ export class HostedProvider implements ComputerProvider {
 		const until = Date.now() + listedMs;
 		let since: number | undefined;
 		for (let hits = 0; ; ) {
-			const listed = await listedBy(this.host, "the listing by name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: ref.name }, listMs, signal);
+			const listed = await listedBy(this.host, "the listing by name", byName(ref.name), listMs, signal);
 			if (!listed.ok) return listed;
 			if (listed.value.some((machine) => machine.id === ref.id)) {
 				hits += 1;
@@ -1345,6 +1336,9 @@ export class HostedProvider implements ComputerProvider {
  * The host's listing by labels, bounded by ms: only the machines that carry every one of them, since a vendor's listing
  * may answer more (MachineHost.list).
  */
+/** The labels a listing by one computer's name asks for. */
+const byName = (name: string): Record<string, string> => ({ [COMPUTER_LABEL]: "1", [NAME_LABEL]: name });
+
 export async function listedBy(host: MachineHost, what: string, labels: Record<string, string>, ms: number, signal?: AbortSignal): Promise<Result<Machine[]>> {
 	const listed = await hostCall(host, what, (ctx) => host.list(labels, ctx), ms, signal);
 	return listed.ok ? ok(listed.value.filter((machine) => Object.entries(labels).every(([key, value]) => machine.labels?.[key] === value))) : listed;
@@ -1401,7 +1395,7 @@ export async function settle(
 			}
 			return { last };
 		}
-		const listed = await listedBy(host, "the listing by name", { [COMPUTER_LABEL]: "1", [NAME_LABEL]: ref.name }, listMs, readSignal);
+		const listed = await listedBy(host, "the listing by name", byName(ref.name), listMs, readSignal);
 		if (!listed.ok) {
 			if (listed.error.code === "aborted") return { last };
 			return { failed: fail(listed.error.code, `${doing} of ${ref.name}: the listing failed (${listed.error.message}); it last read ${last}`) };
