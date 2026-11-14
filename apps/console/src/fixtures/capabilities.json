@@ -132,45 +132,6 @@
         ]
       },
       {
-        "name": "monid.discover",
-        "summary": "Search monid's catalog of paid data endpoints in plain words: { results: [{ provider, endpoint, description, score, price }] }.",
-        "nodes": false,
-        "calls": false,
-        "available": false,
-        "missing": [
-          "MONID_API_KEY"
-        ],
-        "harnesses": [
-          "pi"
-        ]
-      },
-      {
-        "name": "monid.inspect",
-        "summary": "One monid endpoint before it runs: the JSON Schemas of its input (path, query, body), its price, notes and documentation.",
-        "nodes": false,
-        "calls": false,
-        "available": false,
-        "missing": [
-          "MONID_API_KEY"
-        ],
-        "harnesses": [
-          "pi"
-        ]
-      },
-      {
-        "name": "monid.run",
-        "summary": "Run one monid endpoint, paid per call from the monid wallet: its output, price and cost; a slow provider is waited for, about two minutes at most.",
-        "nodes": false,
-        "calls": false,
-        "available": false,
-        "missing": [
-          "MONID_API_KEY"
-        ],
-        "harnesses": [
-          "pi"
-        ]
-      },
-      {
         "name": "pdf_pages",
         "summary": "A workflow call: { path, maxPages?, dpi? } -> { name, pageCount, dpi, pages: [{ page, image }], text }; the document's first pages drawn as PNGs under work/pages/<stem>/<dpi>/ (the dpi lowered so a page's long side is at most 1568 px), from the server's documents (--documents) or the run's work directory.",
         "nodes": false,

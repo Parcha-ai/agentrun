@@ -17,7 +17,7 @@ import { findOpenCode } from "../dist/harness-opencode/binary.js";
 
 test("the start's probe of the harnesses, a save and a run check of a codex revision check each harness's binary once", { timeout: 120_000 }, async (t) => {
   // A gateway's model for codex (nothing is sent to it) and an Anthropic key for claude-agent: no real key.
-  withEnv(t, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, AGENT_MODEL_PRICE: "1,2,0.5", ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` }, ["AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "OPENAI_API_KEY", "CODEX_BIN", "AGENTRUN_SERVE_CODEX_STANDIN", "AGENTRUN_CLAUDE_AGENT_EXECUTABLE", "MONID_API_KEY"]);
+  withEnv(t, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, AGENT_MODEL_PRICE: "1,2,0.5", ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` }, ["AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "OPENAI_API_KEY", "CODEX_BIN", "AGENTRUN_SERVE_CODEX_STANDIN", "AGENTRUN_CLAUDE_AGENT_EXECUTABLE", "MONID_API_KEY", "PARALLEL_API_KEY"]);
   const asked = new Map();
   const real = { execFile: childProcess.execFile, execFileSync: childProcess.execFileSync };
   const count = (file, args) => {
@@ -40,11 +40,12 @@ test("the start's probe of the harnesses, a save and a run check of a codex revi
   const offers = (await api("GET", "/capabilities")).body.harnesses;
   const codex = offers.find((offer) => offer.id === "codex");
   if (!codex.available) return t.skip(`codex does not run here: ${codex.reason}`);
-  // A save checks the revision's model on codex; its run is refused after the same check, for a tool this server lacks.
-  const saved = await api("POST", "/agents", agent("coder", { harness: "codex", tools: ["monid.run"] }));
+  // A save checks the revision's model on codex; its run is refused after the same check, for a key this server lacks
+  // (web_search on Parallel, with no Parallel key).
+  const saved = await api("POST", "/agents", agent("coder", { harness: "codex", tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }));
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   const run = await api("POST", "/agents/coder/runs", { input: { content: "hi" } });
-  assert.deepEqual([run.status, run.body.error?.code, run.body.error?.details?.missing], [409, "agent_not_runnable", { "monid.run": ["MONID_API_KEY"] }]);
+  assert.deepEqual([run.status, run.body.error?.code, run.body.error?.details?.missing], [409, "agent_not_runnable", { web_search: ["PARALLEL_API_KEY"] }]);
   const claude = offers.find((offer) => offer.id === "claude-agent");
   assert.deepEqual(Object.fromEntries(asked), { codex: 1, ...(claude.available || asked.has("claude") ? { claude: 1 } : {}) }, `each binary checked once (${JSON.stringify(offers.map((offer) => [offer.id, offer.available, offer.reason ?? null]))})`);
 });
@@ -60,7 +61,7 @@ test("the start's probe, a save and a run check of an opencode revision check Op
   const bin = join(dir, "opencode");
   await symlink(installed.path, bin);
   // A gateway's model for opencode (nothing is sent to it): no real key.
-  withEnv(t, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, AGENT_MODEL_PRICE: "1,2,0.5", OPENCODE_BIN: bin }, ["AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "OPENAI_API_KEY", "AGENTRUN_SERVE_OPENCODE_STANDIN", "MONID_API_KEY"]);
+  withEnv(t, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, AGENT_MODEL_PRICE: "1,2,0.5", OPENCODE_BIN: bin }, ["AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "OPENAI_API_KEY", "AGENTRUN_SERVE_OPENCODE_STANDIN", "MONID_API_KEY", "PARALLEL_API_KEY"]);
   let asked = 0;
   let read = 0;
   const isOpenCode = (path) => path === bin;
@@ -97,11 +98,12 @@ test("the start's probe, a save and a run check of an opencode revision check Op
   const { api } = await serve(t, { faux: undefined });
   const opencode = (await api("GET", "/capabilities")).body.harnesses.find((offer) => offer.id === "opencode");
   if (!opencode.available) return t.skip(`opencode does not run here: ${opencode.reason}`);
-  // A save checks the revision's model on opencode; its run is refused after the same check, for a tool this server lacks.
-  const saved = await api("POST", "/agents", agent("opener", { harness: "opencode", tools: ["monid.run"] }));
+  // A save checks the revision's model on opencode; its run is refused after the same check, for a key this server lacks
+  // (web_search on Parallel, with no Parallel key).
+  const saved = await api("POST", "/agents", agent("opener", { harness: "opencode", tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }));
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   const run = await api("POST", "/agents/opener/runs", { input: { content: "hi" } });
-  assert.deepEqual([run.status, run.body.error?.code, run.body.error?.details?.missing], [409, "agent_not_runnable", { "monid.run": ["MONID_API_KEY"] }]);
+  assert.deepEqual([run.status, run.body.error?.code, run.body.error?.details?.missing], [409, "agent_not_runnable", { web_search: ["PARALLEL_API_KEY"] }]);
   assert.deepEqual({ versions: asked, reads: read }, { versions: 1, reads: 1 }, "OpenCode's binary checked once: one --version, its bytes read once");
 });
 

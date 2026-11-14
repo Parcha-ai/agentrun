@@ -134,9 +134,6 @@ export interface AdapterRunSpec {
   /** The gate's answer for a call, before its intent: run it, refuse it, or ask a person (the run parks). A refusal may
    *  carry the words the model reads (`{ deny }`: where the deny was set, a pin's words); a bare "deny" gets generic ones. */
   readonly gate?: SpecGate;
-  /** What an asked call costs, for its approval card (main's tool gate options.price): dollars, or "not metered";
-   *  undefined when it has none (the ask says null). */
-  readonly approvalPrice?: (call: ToolCall) => ApprovalPrice | undefined;
   /** The run's one cap (the kernel's runCap, built by the loop from the run's own sessions): every paid request of the
    *  run, its model requests, its paid tool calls and its decisions, is admitted and booked through it. An uncapped run
    *  gives capUsd: () => undefined. */
@@ -1921,7 +1918,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const bySetting = now === "allow" && (await askStands(toolContext.callId));
               if (now === "ask" || bySetting) {
                 const call = { callId: toolContext.callId, tool: name, args: (args ?? {}) as Record<string, unknown> };
-                const price = mcp?.priceOf(name) ?? spec.approvalPrice?.({ ...call, tool: name as never }) ?? null;
+                const price = mcp?.priceOf(name) ?? null;
                 const answer = bySetting ? await allowedBySetting(call, price, asked) : await answerOf(call, price, asked);
                 if (answer === "park") return await heldUntilAborted(toolContext.signal);
                 if (!answer.approved) return { text: refusedText(asked, answer.note?.trim() ? answer.note : undefined, "unknown"), isError: true };
@@ -2766,7 +2763,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const args = shown ? { ...shown, ...Object.fromEntries(Object.entries((call.args ?? {}) as Record<string, unknown>).filter(([key]) => !Object.hasOwn(shown, key))) } : call.args;
       // The call on the record before its ask (beforeAsk), with the input its model gave it.
       await beforeAsk?.(call);
-      const price = mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null;
+      // Its price on the card: a catalog tool's (an MCP tool's, a monid endpoint's pinned price), else none.
+      const price = mcp?.priceOf(tool) ?? null;
       const answer = bySetting ? await allowedBySetting({ ...call, tool, args }, price, asked) : await answerOf({ ...call, tool, args }, price, asked);
       if (answer === "park") return { park: true };
       // A call a person approved: what it runs inside its own call (a learned workflow's MCP nodes set to ask) runs as

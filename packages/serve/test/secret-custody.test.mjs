@@ -333,9 +333,11 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   const without = (...names) => RUN_SECRETS.filter((name) => !names.includes(name) && !MODEL_KEYS.includes(name));
   for (const name of [...TOOL_KEYS, ...MODEL_KEYS]) assert.ok(RUN_SECRETS.includes(name), `${name} is among a run's secrets`);
 
-  assert.deepEqual(await secretsOf(agentic(["monid.run"])), without(...BROWSER));
+  // A monid endpoint, or a provider's every endpoint, is unlocked by monid's key (its row's monid:*).
+  assert.deepEqual(await secretsOf(agentic(["monid:faux/person/enrich"])), without(...BROWSER));
   assert.deepEqual(await secretsOf(agentic(["read", "browser"])), without("MONID_API_KEY"));
-  assert.deepEqual(await secretsOf(agentic(["monid.discover", "browser"])), without());
+  assert.deepEqual(await secretsOf(agentic(["monid:apollo/*", "browser"])), without());
+  assert.deepEqual(await secretsOf(agentic(["monid.run", "monidx:faux/x"])), without(...TOOL_KEYS), "a name only like monid's unlocks nothing");
   assert.deepEqual(await secretsOf(agentic(["read", "web_fetch", "ask_person"])), without(...TOOL_KEYS));
   assert.deepEqual(await secretsOf(agentic([])), without(...TOOL_KEYS));
   // Only a `tool` row's fields are scoped by the tools: a row of another kind (a model's) leaves its field to the model,
@@ -350,9 +352,9 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   // definition lists, nor data shaped like a node.
   const browsing = answerFlow();
   browsing.root.steps[0].tools = ["browser"];
-  assert.deepEqual(await secretsOf(workflow(browsing, ["browser", "monid.run"])), without("MONID_API_KEY"));
+  assert.deepEqual(await secretsOf(workflow(browsing, ["browser", "monid:faux/person/enrich"])), without("MONID_API_KEY"));
   const calling = answerFlow();
-  calling.root.steps.unshift({ node: "map", label: "each", itemsPath: "question", as: "found", resultPath: "found", maxConcurrency: 1, body: { node: "call", label: "find", via: "tool", tool: "monid.run", args: { q: "{item}" }, out: "Answer", as: "answer", deadline_s: 20 } });
+  calling.root.steps.unshift({ node: "map", label: "each", itemsPath: "question", as: "found", resultPath: "found", maxConcurrency: 1, body: { node: "call", label: "find", via: "tool", tool: "monid:faux/person/enrich", args: { body: { name: "{item}" } }, out: "Answer", as: "answer", deadline_s: 20 } });
   assert.deepEqual(await secretsOf(workflow(calling)), without(...BROWSER));
   const shaped = answerFlow();
   shaped.root.steps[0].state = { example: { node: "extract", tools: ["browser"] } };

@@ -558,15 +558,15 @@ test("every package this server ships applies on a server with nothing saved: no
   assert.match((await api("GET", `/agents/${on.body.agent_id}`)).body.definition.instructions, /OpenSanctions index: true\./);
 });
 
-test("the keyed-tool check above sees a tool that needs a key: a package granting monid.run is warned, the warning the check reads", async (t) => {
+test("a package granting a monid endpoint where there is no monid key is refused at its apply, in words naming the key, so the 201 the check above holds each package to sees it", async (t) => {
   withEnv(t, {}, ["MONID_API_KEY"]);
   const dir = join(await scratch(t), "templates");
   mkdirSync(join(dir, "keyed"), { recursive: true });
-  writeFileSync(join(dir, "keyed", "agent.md"), "---\nname: keyed\nversion: 1.0.0\ndescription: Grants a tool that needs a key.\ntools: [monid.run]\n---\nRun.\n");
+  writeFileSync(join(dir, "keyed", "agent.md"), "---\nname: keyed\nversion: 1.0.0\ndescription: Grants a tool that needs a key.\ntools: [\"monid:faux/person/enrich\"]\n---\nRun.\n");
   const { api } = await serve(t, { templates: dir });
   const applied = await api("POST", "/templates/keyed/apply", {});
-  assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  assert.equal(keyedWarnings(applied.body).length, 1, JSON.stringify(applied.body.warnings));
+  assert.notEqual(applied.status, 201, JSON.stringify(applied.body));
+  assert.match(JSON.stringify(applied.body), /no monid key here to read it with: save the monid key in Settings → Tool keys first/);
 });
 
 test("a package's writes are bounded: each MCP tool it lists is a known read or write, a write is never in its allow, and in a package that runs unattended every write is pinned or bounded by a stated rule", () => {

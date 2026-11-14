@@ -1,7 +1,7 @@
 // A paid tool call booked on the runner's one ledger (paid-calls.ts Ledger.paid: the kernel cap's paidCalls on the run's
 // TOOL_SESSION, which the adapter loop sets under each host tool call) books as main books it: held at its price before it
-// is sent, settled at what it charged, and a later claim, which reads the run's records, still counts it. monid.run at
-// what monid reported ($0.003 for the faux /person/enrich), a priced MCP call at its owner's price ($0.05).
+// is sent, settled at what it charged, and a later claim, which reads the run's records, still counts it. A pinned monid
+// endpoint at what monid reported ($0.003 for the faux /person/enrich), a priced MCP call at its owner's price ($0.05).
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,8 +11,10 @@ import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { BROWSER_CHARGED, browserSpend } from "../dist/browser-cost.js";
 import { mcpGateway } from "../dist/mcp-gateway.js";
 import { FAUX_ENV } from "../dist/model.js";
-import { FAUX_MONID_ENV, MONID_KEY_ENV, monidRegistration } from "../dist/monid.js";
+import { FAUX_MONID_ENV, MONID_KEY_ENV } from "../dist/monid.js";
 import { bookedIn, paidRequest, parallelSearchFee } from "../dist/paid-calls.js";
+import { monidForClaim } from "../dist/runner/monid-run.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 
@@ -26,15 +28,15 @@ const T0 = Date.parse("2026-11-09T04:00:00Z");
 const claimOn = async (store) => cap.runCap({ sessions: store, capUsd: () => 1, now: () => T0, modelOf: () => undefined }).tools(await store.open(cap.TOOL_SESSION));
 const near = (actual, expected, what) => assert.ok(typeof actual === "number" && Math.abs(actual - expected) < 1e-9, `${what}: ${actual}, not ${expected}`);
 
-test("monid.run on the run's one ledger books what monid reported, and a later claim still counts it", async (t) => {
+test("a pinned monid endpoint on the run's one ledger books what monid reported, and a later claim still counts it", async (t) => {
   const work = await mkdtemp(join(tmpdir(), "ledger-monid-"));
   t.after(() => rm(work, { recursive: true, force: true }));
   const store = memorySessionStore();
   const paid = await claimOn(store);
-  const tool = monidRegistration("run", { [FAUX_ENV]: "1", [FAUX_MONID_ENV]: FAUX_MONID, [MONID_KEY_ENV]: MONID_KEY }, () => work);
-  const api = { callId: "c1", commit: async () => {} };
-  const result = await bookedIn({ call: "c1", paid }, () => tool.execute({ provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }, api, { abortSignal: new AbortController().signal }));
-  near(paid.spentUsd(), 0.003, `this claim's ledger (the call answered ${JSON.stringify(result?.content?.[0]?.text ?? result).slice(0, 160)})`);
+  const pin = { "monid:faux/person/enrich": { description: "Enrich a person.", input: { type: "object" }, usd: 0.003 } };
+  const { tools: [tool] } = monidForClaim(pin, { [FAUX_ENV]: "1", [FAUX_MONID_ENV]: FAUX_MONID, [MONID_KEY_ENV]: MONID_KEY }, () => localWorkspace(work));
+  const result = await bookedIn({ call: "c1", paid }, () => tool.call({ body: { name: "Ada" } }, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
+  near(paid.spentUsd(), 0.003, `this claim's ledger (the call answered ${JSON.stringify(result?.text ?? result).slice(0, 160)})`);
   near((await claimOn(store)).spentUsd(), 0.003, "the next claim");
 });
 

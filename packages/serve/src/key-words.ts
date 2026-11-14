@@ -4,10 +4,12 @@
 import { MODEL_KEYS } from "./model.js";
 
 /** Each tool key a person may save, fixed here: its fields (BROWSERBASE_PROJECT_ID is no secret, and is kept the same
- *  way), and what it may unlock: tools by name, and `decisions.<id>`, a workflow's decision provider. */
+ *  way), and what it may unlock: tools by name, `<source>:*` every tool of a catalog source, and `decisions.<id>`, a
+ *  workflow's decision provider. */
 export const TOOL_KEY_ROWS = [
   { id: "parallel", kind: "tool", label: "Parallel", fields: ["PARALLEL_API_KEY"], unlocks: ["web_fetch", "web_search", "decisions.parallel"] },
-  { id: "monid", kind: "tool", label: "Monid", fields: ["MONID_API_KEY"], unlocks: ["monid.discover", "monid.inspect", "monid.run"] },
+  // Every monid endpoint (`monid:<provider>/<endpoint>`, a provider's wildcard too): `<source>:*` unlocks a source's tools.
+  { id: "monid", kind: "tool", label: "Monid", fields: ["MONID_API_KEY"], unlocks: ["monid:*"] },
   { id: "browserbase", kind: "tool", label: "Browserbase", fields: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], unlocks: ["browser"] },
   // The browser's other vendor (tool-plane.ts BROWSER_KEYS): a run's browser is the one its plane picks.
   { id: "kernel", kind: "tool", label: "Kernel", fields: ["KERNEL_API_KEY"], unlocks: ["browser"] },

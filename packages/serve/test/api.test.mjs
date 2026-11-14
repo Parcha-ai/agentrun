@@ -26,8 +26,7 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.equal(body.features.timeline.live_workflow_rows, false);
   assert.equal(body.features.tool_permissions, true, "a tool setting carries a permission, which the tool gate holds every call to");
   const keyed = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"].filter((name) => !process.env[name]).length === 0 || !!process.env.KERNEL_API_KEY;
-  const monid = !!process.env.MONID_API_KEY;
-  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["bash", false, false, false], ["bash_background", false, false, false], ["bash_output", false, false, false], ["bash_input", false, false, false], ["bash_signal", false, false, false], ["bash_list", false, false, false], ["ask_person", true, false, false], ["web_fetch", true, true, true], ["web_search", true, true, true], ["browser", keyed, false, false], ["monid.discover", monid, false, false], ["monid.inspect", monid, false, false], ["monid.run", monid, false, false], ["subagent", true, false, false], ["pdf_pages", true, false, true], ["llm", true, false, true]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run; bash and the background tools run in no box on a server that has none");
+  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["bash", false, false, false], ["bash_background", false, false, false], ["bash_output", false, false, false], ["bash_input", false, false, false], ["bash_signal", false, false, false], ["bash_list", false, false, false], ["ask_person", true, false, false], ["web_fetch", true, true, true], ["web_search", true, true, true], ["browser", keyed, false, false], ["subagent", true, false, false], ["pdf_pages", true, false, true], ["llm", true, false, true]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run; bash and the background tools run in no box on a server that has none");
   assert.ok(body.tools.every((t) => typeof t.summary === "string" && t.summary));
   // The browser runs on either vendor's keys, which no one list of variables says: its reason names both (tool-plane.ts).
   assert.match(body.tools.find((t) => t.name === "browser").reason ?? "", keyed ? /^$/ : /BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID.*KERNEL_API_KEY/, "what browser lacks here, by name");
@@ -274,7 +273,7 @@ test("a thinking level is one of the levels, exactly; never off", () => {
 test("a tool's missing variables are named, never their values", async () => {
   const { toolsView, TOOLS } = await import("../dist/tools.js");
   assert.ok(Object.isFrozen(TOOLS));
-  assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["bash", undefined], ["bash_background", undefined], ["bash_output", undefined], ["bash_input", undefined], ["bash_signal", undefined], ["bash_list", undefined], ["ask_person", undefined], ["web_fetch", undefined], ["web_search", undefined], ["browser", undefined], ["monid.discover", ["MONID_API_KEY"]], ["monid.inspect", ["MONID_API_KEY"]], ["monid.run", ["MONID_API_KEY"]], ["subagent", undefined], ["pdf_pages", undefined], ["llm", undefined]]);
+  assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["bash", undefined], ["bash_background", undefined], ["bash_output", undefined], ["bash_input", undefined], ["bash_signal", undefined], ["bash_list", undefined], ["ask_person", undefined], ["web_fetch", undefined], ["web_search", undefined], ["browser", undefined], ["subagent", undefined], ["pdf_pages", undefined], ["llm", undefined]]);
   // web_search needs no key: Codex's own search; claude-agent on auto and pi with no model named, Exa's keyless search
   // (Claude's own search is an explicit pick); Parallel picked
   // without its key, missing.
@@ -284,6 +283,5 @@ test("a tool's missing variables are named, never their values", async () => {
   const off = toolsView({}, { web_search: { provider: "off" } }).find((t) => t.name === "web_search");
   assert.deepEqual([off.available, off.reason], [false, "web_search is turned off in settings"], "off: the server's reason, the one a client shows");
   assert.equal(toolsView({}, { web_search: { provider: "parallel" } }).find((t) => t.name === "web_search").reason, "parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)");
-  assert.equal(toolsView({}).find((t) => t.name === "monid.discover").reason, "Needs a Monid key: save one in Settings → Tool keys (or set MONID_API_KEY where the server starts)");
   for (const t of toolsView({}, { web_search: { provider: "off" } })) assert.equal(typeof t.reason === "string" && t.reason.length > 0, !t.available, `${t.name}: a reason exactly when it is unavailable`);
 });

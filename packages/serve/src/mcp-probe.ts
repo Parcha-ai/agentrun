@@ -13,8 +13,8 @@ import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject, unknownFields } from "./validate.js";
 
 /** The names AgentRun's own tools are called by, which no MCP server takes: claude-agent calls the kernel's host tools
- *  as `mcp__hands__<tool>`, and monid's are `monid_<tool>` (tool-gate.ts settingsKeyOf reads both as AgentRun's). */
-const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];
+ *  as `mcp__hands__<tool>` (tool-gate.ts settingsKeyOf reads it as AgentRun's). */
+const RESERVED_MCP_NAMES: readonly string[] = ["hands"];
 /** `per_run`: the server keeps no credential; each run's caller hands one with the run (mcp_auth), held for that run alone. */
 export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth", "github_app", "per_run"] as const;
 /** Where an owner updates a saved MCP server, as people read it. */

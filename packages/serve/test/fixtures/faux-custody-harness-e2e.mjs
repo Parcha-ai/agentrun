@@ -11,7 +11,7 @@ export function script() {
     writeFileSync(process.env.CUSTODY_E2E_ENV_REPORT, JSON.stringify({ env: process.env, environ }));
   }
   return [
-    { call: "monid_inspect", args: { provider: "faux", endpoint: "/person/enrich" }, usd: 0.001 },
+    { call: "monid__faux__person__enrich", args: { body: { name: "Ada" } }, usd: 0.001 },
     { call: "mcp__docs__add", args: { a: 2, b: 3 }, usd: 0.001 },
     { call: "write", args: { path: "notes.txt", content: "What I saw: the tools answered." }, usd: 0.001 },
     { say: "Saw the tools' answers.", usd: 0.001 },

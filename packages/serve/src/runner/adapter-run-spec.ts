@@ -84,7 +84,8 @@ import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
-import { monidApprovalPrice } from "../monid.js";
+import type { MonidPin } from "../monid.js";
+import { monidForClaim, monidSessionNames, withMonid } from "./monid-run.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -225,6 +226,8 @@ type RevisionBody = {
   readonly tools?: readonly string[];
   readonly toolSettings?: unknown;
   readonly harness?: string;
+  /** Its monid endpoints as monid listed them at the save (monid.ts MonidPin). */
+  readonly monidPin?: MonidPin;
   readonly approvals?: Approvals;
   readonly skills?: Record<string, unknown>;
   /** What the server checks out in the run's folder before its first turn (pr-checkout.ts). */
@@ -655,7 +658,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const tiers = new Map<string, LearnedTier>([...[...tierRoutes].filter(([tier]) => !isSubagentRoute(tier)).map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
   // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate).
   gate.learn(workflows);
-  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp, () => route.model, replay)).map((tool) => answersCut(tool, cut));
+  // The run's monid endpoints (monid-run.ts), one host tool each from its revision's pin, on the claim's keys and beside
+  // its MCP tools in the loop's one catalog seam; their answers pass the run's one redactor as the other non-hand tools'.
+  const monid = monidForClaim(body.monidPin, toolEnv, () => ws.workspace);
+  const catalog = withMonid(mcp, monid && { ...monid, tools: monid.tools.map((tool) => answersCut(tool, cut)) });
+  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, catalog, () => route.model, replay)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
@@ -677,7 +684,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     const browserNames = native.filter((extension) => extension.name !== "ask_person").flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name));
     piTools.push(subagentTool({
       granted,
-      sessionNames: (catalog) => (catalog === BROWSER_TOOL ? browserNames : [wireName(catalog)]),
+      sessionNames: (catalog) => (catalog === BROWSER_TOOL ? browserNames : monidSessionNames(catalog, body.monidPin) ?? [wireName(catalog)]),
       tier: (tier) => {
         const why = tierWhy.get(tier);
         if (why !== undefined) return { why };
@@ -742,14 +749,13 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The gate's answer with its words (adapterRunGate, RunGate.decide): a deny names where it was set and that nothing was
     // sent or charged, and a pinned MCP tool's call outside its pin is refused before it is asked or sent.
     gate,
-    // monid.run's card shows what the call is held at (monid.ts monidApprovalPrice), as an MCP tool's shows its price.
-    approvalPrice: monidApprovalPrice(toolEnv),
     runCap,
     // The answer's schema: a miss is asked again once (adapter-loop.ts, the output contract's retry).
     ...(body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {}),
     ...(cap ? { cap } : {}),
-    // The run's MCP for a harness with its own client (mcp-run.ts), the session the adapter mounts; absent when none.
-    ...(mcp ? { mcp } : {}),
+    // The run's MCP for a harness with its own client (mcp-run.ts), with its monid endpoints beside it (monid-run.ts):
+    // the catalog tools the session mounts; absent when none.
+    ...(catalog ? { mcp: catalog } : {}),
     // The run's end-of-run step, when it learns (the spec's, which the loop prefers over its deps': adapter-loop.ts stepOf).
     ...(endOfRun ? { endOfRun } : {}),
     ...(start ? { learningLaid: laidOf(seedLaid) } : {}),

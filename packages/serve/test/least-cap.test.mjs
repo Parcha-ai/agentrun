@@ -39,9 +39,10 @@ for (const harness of ["pi", "claude-agent"]) {
   test(`${harness}: a run paused at a paid call's refusal serves least_cap_usd, the cap its words name`, { timeout: 90_000 }, async (t) => {
     withEnv(t, { MONID_API_KEY: KEY });
     const { api } = await serve(t, { fauxMonid: FAUX_MONID, ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS) }) });
-    const ask = "Run monid's /person/enrich, called again after a raise.";
+    // A dear faux endpoint: held at its $1 price, past the $0.50 cap.
+    const ask = "Run monid's /person/lookup, called again after a raise.";
     const id = `least-paid-${harness}`;
-    assert.equal((await api("POST", "/agents", agent(id, { ...(harness === "pi" ? {} : { harness, instructions: ask }), tools: ["monid.run"], tool_settings: { "monid.run": { permission: "allow" } } }))).status, 201);
+    assert.equal((await api("POST", "/agents", agent(id, { ...(harness === "pi" ? {} : { harness, instructions: ask }), tools: ["monid:faux/person/lookup"], tool_settings: { "monid:faux/person/lookup": { permission: "allow" } } }))).status, 201);
     const { run_id } = (await api("POST", `/agents/${id}/runs`, { input: { content: ask }, max_cost_usd: 0.5 })).body;
     await follow(api, run_id, SETTLED);
     const { pending } = (await api("GET", `/runs/${run_id}`)).body;

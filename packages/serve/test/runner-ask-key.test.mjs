@@ -1,6 +1,6 @@
 // A call a person is asked about is named by its settings key, as main names a pending approval (tool-gate.ts enter: the
 // request's tool is settingsKeyOf's key, a shell tool its own name), never by the name the tool has on the wire
-// (monid_discover, mcp__door__lookup). Pinned at the one writer, the ask entry the adapter loop writes, so every reader
+// (monid__faux__person__enrich, mcp__door__lookup). Pinned at the one writer, the ask entry the adapter loop writes, so every reader
 // of it (the run's pending approval and its card, which an "always" answer pins by, its approval row) has that one
 // name. Through the runner with the gate the dispatch builds (adapterRunGate, RunGate.decide), on pi through the adapter
 // and on a CLI harness (codex, a scripted stand-in that calls the session's gate).
@@ -47,10 +47,17 @@ function askingCli(tool) {
   };
 }
 
+/** A monid endpoint's wire name, read back to its catalog name by the claim's catalog seam (runner/monid-run.ts
+ *  catalogOf), as the spec builder joins it to the run's MCP. */
+const MONID_WIRE = "monid__faux__person__enrich";
+const MONID_NAME = "monid:faux/person/enrich";
+const catalogSeam = { tools: [], catalogOf: (name) => (name === MONID_WIRE ? MONID_NAME : undefined), priceOf: () => undefined, fresh: async () => {}, release: () => {} };
+
 /** One run whose call of `tool` (its wire name) is set to ask by its settings key; parked on it: the ask entry and what
  *  the run's view serves as its pending approval. `harness`: the revision's harness ("pi", or "codex" for the CLI). */
 async function askedRun(t, tool, harness) {
-  const key = settingsKeyOf(harness, tool);
+  const key = tool === MONID_WIRE ? MONID_NAME : settingsKeyOf(harness, tool);
+  const mcp = tool === MONID_WIRE ? { mcp: catalogSeam } : {};
   const opened = await stores({ runners: 1 });
   await opened.server.settings.put("tool-settings", { [key]: { permission: "ask" } });
   await queue(opened.server, "run-1");
@@ -60,8 +67,8 @@ async function askedRun(t, tool, harness) {
   const base = harness === "pi" ? piAdapterSpec({ script: [{ call: tool, args: { q: "acme" } }, { say: "done" }], tools, hooks: quiet }) : undefined;
   const loop = createAdapterLoop(async (claim, run) => {
     const gate = await adapterRunGate(opened.runners[0], claim, revision, root);
-    if (base) return { ...(await base(claim, run)), gate };
-    return { adapter: askingCli(tool), session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Look it up.", record: "loop", hooks: quiet, gate };
+    if (base) return { ...(await base(claim, run)), gate, ...mcp };
+    return { adapter: askingCli(tool), session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Look it up.", record: "loop", hooks: quiet, gate, ...mcp };
   });
   const runner = startRunner({ store: opened.runners[0], createLoop: loop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
@@ -75,7 +82,7 @@ async function askedRun(t, tool, harness) {
 }
 
 for (const [harness, label] of [["pi", "pi through the adapter"], ["codex", "a CLI harness (codex)"]]) {
-  for (const tool of ["monid_discover", "mcp__door__lookup"]) {
+  for (const tool of [MONID_WIRE, "mcp__door__lookup"]) {
     test(`${label}: a ${tool} call asked about is named by its settings key on the ask entry, the one name its readers serve`, async (t) => {
       const { key, ask } = await askedRun(t, tool, harness);
       assert.notEqual(key, tool, "the case's tool has a settings key apart from its wire name");

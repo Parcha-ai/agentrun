@@ -1,50 +1,87 @@
-// monid's catalog on one key: the client against the tests' fake monid (fixtures/faux-monid.mjs), what a run charged and
-// the cap's check before one, the three table tools in capabilities and at a save, on every harness, and a pi run whose
-// model calls them by their wire names and whose cost books the charge (another harness's run: harness-run.test.mjs and
-// monid-saved-key.test.mjs). No network, no real key.
+// monid's catalog on one key: the client against the tests' fake monid (fixtures/faux-monid.mjs), what a call is held
+// at and what it charged, the cap's check before one, and a pinned endpoint's run on claude-agent on the saved key (the
+// save's pin: monid-save.test.mjs; a pinned endpoint through the loop: runner-monid-endpoint.test.mjs). No network, no
+// real key.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { wireName } from "../dist/catalog.js";
 import { FAUX_ENV } from "../dist/model.js";
-import { chargeOf, CLIP, FAUX_MONID_ENV, MONID_KEY_ENV, monidClient, monidRegistration, monidText } from "../dist/monid.js";
+import { chargeOf, CLIP, FAUX_MONID_ENV, heldOf, MONID_KEY_ENV, monidClient, monidText, pinMonid } from "../dist/monid.js";
 import { bookedIn } from "../dist/paid-calls.js";
+import { monidForClaim } from "../dist/runner/monid-run.js";
 import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
-import fakeMonid, { calls, KEY } from "./fixtures/faux-monid.mjs";
+import fakeMonid, { calls, KEY, LISTING } from "./fixtures/faux-monid.mjs";
 import { agent, client, follow, scratch, serve, toolLedger, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
-/** The faux model priced on output only: a request's worst case is about $1.64 whatever its input. */
-const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
-const NAMES = ["monid.discover", "monid.inspect", "monid.run"];
-/** monid's tools allowed: a catalog tool asks by default (tool-gate.ts), and these runs are about monid, not the gate. */
-const ALLOWED = Object.fromEntries(NAMES.map((name) => [name, { permission: "allow" }]));
+const ENRICH = "monid:faux/person/enrich";
+const SLOW = "monid:faux/slow";
+/** A catalog tool asks by default (tool-gate.ts); these runs are about monid, not the gate. */
+const allowed = (...names) => Object.fromEntries(names.map((name) => [name, { permission: "allow" }]));
 const sleeps = [];
 /** The client on the fake, its waits recorded and skipped. */
 const monid = (extra = {}) => monidClient({ key: KEY, fetch: fakeMonid, sleep: async (ms) => void sleeps.push(ms), ...extra });
 const sent = (from) => calls.slice(from).map((call) => `${call.method} ${call.path}`);
 
-test("discover and inspect pass monid's answer through; one over 60,000 characters is cut, the whole filed under evidence/monid/", async (t) => {
+test("the listing is read page by page and an endpoint inspected as monid answers; a short answer is its JSON, whole", async (t) => {
   const work = await scratch(t);
-  const found = await monid().discover({ query: "enrich a person", limit: 2 });
-  assert.deepEqual([found.count, found.results[0].endpoint, found.results[0].price.amount.value], [2, "/person/enrich", 0.003]);
+  const first = await monid().endpoints(undefined);
+  const second = await monid().endpoints(first.cursor);
+  assert.deepEqual([...first.items, ...second.items].map((item) => item.endpoint), LISTING.slice(0, 4).map((item) => item.endpoint));
   const shown = await monid().inspect({ provider: "faux", endpoint: "/person/enrich" });
   assert.deepEqual(shown.input.body.required, ["name"]);
-  assert.equal(await monidText(shown, localWorkspace(work), "inspect"), JSON.stringify(shown), "a short answer is its JSON, whole");
-  const wide = await monid().discover({ query: "everything at once" });
-  const text = await monidText(wide, localWorkspace(work), "discover");
-  const where = /the whole answer is in the run's files at (evidence\/monid\/discover-[^\]\s]+\.json)\]$/.exec(text)?.[1];
-  assert.ok(where, text.slice(-200));
-  assert.equal(text.indexOf("\n[cut at"), CLIP);
-  assert.deepEqual(JSON.parse(await readFile(join(work, where), "utf8")), wide);
+  assert.equal(await monidText(shown, localWorkspace(work), "inspect"), JSON.stringify(shown));
+  assert.match((await monid().inspect({ provider: "faux", endpoint: "/nowhere" })).error, /not found for provider 'faux'/);
+});
+
+test("a save's read of the listing or an inspect refused for the rate (429) is read again after monid's Retry-After; a run never is", async () => {
+  // monid answers each first listing page, first inspect and first run with a 429.
+  const limited = new Set();
+  const rated = async (url, init) => {
+    const path = new URL(url).pathname;
+    if (!limited.has(path)) {
+      limited.add(path);
+      return new Response(JSON.stringify({ message: "Rate limited. Retry after 3s." }), { status: 429, headers: { "retry-after": "3" } });
+    }
+    return fakeMonid(url, init);
+  };
+  const waits = [];
+  const pinned = await pinMonid(["monid:faux/*"], { key: KEY, fetch: rated, sleep: async (ms) => void waits.push(ms) });
+  assert.ok(pinned && "pin" in pinned, JSON.stringify(pinned));
+  assert.ok(pinned.pin[ENRICH], "pinned once monid answered");
+  assert.deepEqual(waits, [3000, 3000], "the listing's page and the first inspect, each waited out once");
+  const ran = await monidClient({ key: KEY, fetch: rated, sleep: async (ms) => void waits.push(ms) }).run({ provider: "faux", endpoint: "/person/enrich", input: { body: { name: "Ada" } } });
+  assert.equal(ran.status, 429, "a run, which may charge, is not sent again");
+});
+
+test("an endpoint's input keeps its local references: each part's $ref rebased to where the part sits in the tool's input", async () => {
+  const person = { type: "object", properties: { name: { type: "string" } } };
+  const body = { $schema: "https://json-schema.org/draft/2020-12/schema", $defs: { Person: person }, type: "object", properties: { who: { $ref: "#/$defs/Person" }, nested: { $ref: "#" }, named: { $ref: "#person" }, remote: { $ref: "https://example.test/s.json#/x" } } };
+  const withRefs = async (url, init) => {
+    const res = await fakeMonid(url, init);
+    if (new URL(url).pathname !== "/v1/inspect") return res;
+    return new Response(JSON.stringify({ ...(await res.json()), input: { body } }), { status: 200 });
+  };
+  const pinned = await pinMonid([ENRICH], { key: KEY, fetch: withRefs });
+  assert.deepEqual(pinned.pin[ENRICH].input.properties.body, { $defs: { Person: person }, type: "object", properties: { who: { $ref: "#/properties/body/$defs/Person" }, nested: { $ref: "#/properties/body" }, named: { $ref: "#person" }, remote: { $ref: "https://example.test/s.json#/x" } } });
+  // A schema with its own $id is a resource of its own: its local references resolve inside it, and stay as they are.
+  const own = { $id: "https://example.test/body", $defs: { Person: person }, type: "object", properties: { who: { $ref: "#/$defs/Person" } } };
+  const inner = { type: "object", properties: { card: { $id: "https://example.test/card", $defs: { Person: person }, $ref: "#/$defs/Person" }, who: { $ref: "#/$defs/Person" } }, $defs: { Person: person } };
+  for (const [given, expected] of [[own, own], [inner, { ...inner, properties: { ...inner.properties, who: { $ref: "#/properties/body/$defs/Person" } } }]]) {
+    const named = async (url, init) => {
+      const res = await fakeMonid(url, init);
+      if (new URL(url).pathname !== "/v1/inspect") return res;
+      return new Response(JSON.stringify({ ...(await res.json()), input: { body: given } }), { status: 200 });
+    };
+    assert.deepEqual((await pinMonid([ENRICH], { key: KEY, fetch: named })).pin[ENRICH].input.properties.body, expected);
+  }
 });
 
 test("a run: a sync provider's output with its cost in dollars; an async one read until COMPLETED; each sent once", async () => {
-  const now = await monid().run({ provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } });
+  const now = await monid().run({ provider: "faux", endpoint: "/person/enrich", input: { body: { name: "Ada" } } });
   assert.deepEqual([now.status, now.output, now.cost], ["COMPLETED", { full_name: "Ada" }, { value: 0.003, currency: "USD" }]);
   sleeps.length = 0;
   const from = calls.length;
@@ -71,7 +108,7 @@ test("a refusal is an error in words: the wallet (402), the workspace's budget (
 });
 
 test("what a run charged: its cost; nothing when monid charged nothing; unknown, never $0, when it may have charged", async () => {
-  const charged = async (endpoint, extra = {}, signal) => chargeOf(await monid(extra).run({ provider: "faux", endpoint, input: { name: "Ada" } }, signal));
+  const charged = async (endpoint, extra = {}, signal) => chargeOf(await monid(extra).run({ provider: "faux", endpoint, input: { body: { name: "Ada" } } }, signal));
   assert.deepEqual(await Promise.all(["/person/enrich", "/tweets", "/missing"].map((endpoint) => charged(endpoint))), [0.003, 0.012, 0], "reported: a micro-dollar charge in dollars, a provider's error at $0");
   assert.deepEqual(await Promise.all(["/wallet", "/budget"].map((endpoint) => charged(endpoint))), [undefined, undefined], "refused as sent, or blocked: never ran");
   assert.equal(await charged("/person/enrich", { key: "not-a-secret" }), undefined, "a wrong key runs nothing");
@@ -80,33 +117,56 @@ test("what a run charged: its cost; nothing when monid charged nothing; unknown,
   assert.equal(await charged("/person/enrich", { fetch: async () => { throw new Error("offline"); } }), null, "it may have gone ahead");
 });
 
-test("under a cap, monid.run is refused before it is sent unless the run's spend plus what it holds and what the run is held at fits, as a model request is; one held counts against the next; with no cap it runs", async (t) => {
+test("what one call is held at: a per-call price; a matrix's dearest variant; a tiered price's default and every tier; nothing for a price by usage", () => {
+  const usd = (value) => ({ value, currency: "USD" });
+  assert.equal(heldOf({ type: "PER_CALL", amount: usd(0.026) }), 0.026);
+  assert.equal(heldOf({ type: "PER_UNIT_MATRIX", variants: [{ price: { type: "PER_CALL", amount: usd(0.01) } }, { price: { type: "PER_CALL", amount: usd(0.04) } }] }), 0.04);
+  assert.equal(heldOf({ type: "TIERED", default: { type: "PER_CALL", amount: usd(0.01) }, tiers: [{ price: { type: "PER_CALL", amount: usd(0.02) } }] }), 0.03);
+  for (const price of [{ type: "PER_RESULT", amount: usd(0.001) }, { type: "PER_UNIT", amount: usd(0.5), per: 1, unit: "credit" }, { type: "METERED", amount: usd(0.1), per: { unit: "MINUTE", count: 1 } }, { type: "PER_CALL", amount: { value: 1, currency: "EUR" } }, { type: "TIERED", default: { type: "PER_RESULT", amount: usd(0.1) }, tiers: [] }, { type: "PER_UNIT_MATRIX", variants: [{ price: { type: "PER_CALL", amount: usd(0.01) } }, { price: { type: "PER_RESULT", amount: usd(0.001) } }] }, undefined]) {
+    assert.equal(heldOf(price), undefined, JSON.stringify(price));
+  }
+});
+
+test("a call is sent with maxCost in whole micro-dollars, rounded down; monid's refusal for it is no charge", async () => {
+  const from = calls.length;
+  const refused = await monid().run({ provider: "faux", endpoint: "/person/enrich", input: { body: { name: "Ada" } }, maxCost: 0.0029999 });
+  assert.equal(calls[from].body.maxCost, 0.002999, "never more than it was given");
+  assert.match(refused.error, /monid answered 400: Run not started: estimated cost ~\$0\.003 is above maxCost \$0\.002999/);
+  assert.equal(chargeOf(refused), undefined, "refused as sent: charged nothing");
+  const ran = await monid().run({ provider: "faux", endpoint: "/person/enrich", input: { body: { name: "Ada" } }, maxCost: 0.01 + 0.02 });
+  assert.equal(calls.at(-1).body.maxCost, 0.03, "a sum's float noise is not a micro-dollar less");
+  assert.equal(chargeOf(ran), 0.003);
+});
+
+test("under a cap, a pinned endpoint is refused before it is sent unless the run's spend plus what it holds and what the call is held at fits, as a model request is; one held counts against the next; with no cap it runs", async (t) => {
   const work = await scratch(t);
   const env = { [FAUX_ENV]: "1", [FAUX_MONID_ENV]: FAUX_MONID, [MONID_KEY_ENV]: KEY };
-  const tool = monidRegistration("run", env, () => localWorkspace(work));
+  // A dear endpoint, held at its $1 price.
+  const LOOKUP = "monid:faux/person/lookup";
+  const pin = { [LOOKUP]: { description: "Look a person up.", input: { type: "object" }, usd: 1 } };
+  const { tools: [tool] } = monidForClaim(pin, env, () => localWorkspace(work));
   const from = calls.length;
   let ids = 0;
-  const run = (paid, endpoint = "/person/enrich") => {
+  const run = (paid) => {
     const callId = `c${(ids += 1)}`;
-    return bookedIn({ call: callId, paid }, () => tool.execute({ provider: "faux", endpoint, input: { name: "Ada" } }, { callId, commit: async () => {} }, { abortSignal: new AbortController().signal }));
+    return bookedIn({ call: callId, paid }, () => tool.call({ body: { name: "Ada" } }, { callId, signal: new AbortController().signal, attempt: 0 }));
   };
-  const said = (result) => JSON.parse(result.output[0].text);
-  // No inspect quoted it: held at the $1 allowance.
+  const said = (result) => JSON.parse(result.text);
   const full = await toolLedger(2);
   await full.spend(1.5);
   const refused = await run(full);
   assert.equal(refused.isError, true);
-  assert.equal(said(refused).error, "spend_cap_reached: Not sent: this run has spent $1.50 of its $2 cap, and the next step, monid_run, could cost up to $1 (no price was quoted for it in this run, so it counts at the $1 allowance; monid_inspect gives its price). Raise the cap to at least $2.50 to continue.");
+  assert.match(said(refused).error, /^spend_cap_reached: Not sent: this run has spent \$1\.50 of its \$2 cap, and the next step, monid:faux\/person\/lookup, could cost up to \$1 \(the price monid listed for it when the agent was saved\)\. Raise the cap to at least \$2\.50 to continue\.$/);
   assert.deepEqual(sent(from), [], "refused, not sent");
-  // $0.50 spent: the allowance fits, it runs, and is booked at what monid charged ($0.003 for the faux /person/enrich).
+  // $0.50 spent: its price fits, it runs, and is booked at what monid charged ($1, its price).
   const room = await toolLedger(2);
   await room.spend(0.5);
   assert.equal(said(await run(room)).status, "COMPLETED", "0.5 + 1 fits: it runs");
-  assert.deepEqual([sent(from), Math.round((room.spentUsd() - 0.5) * 1e6) / 1e6, room.heldUsd()], [["POST /v1/run"], 0.003, 0]);
+  assert.deepEqual([sent(from), Math.round((room.spentUsd() - 0.5) * 1e6) / 1e6, room.heldUsd()], [["POST /v1/run"], 1, 0]);
   // Two at once: the first is held ($1), so the second is checked against it (0.5 + 1 + 1 > 2) and refused unsent.
   const both = await toolLedger(2);
   await both.spend(0.5);
-  const [first, second] = await Promise.all([run(both, "/person/enrich"), run(both, "/person/enrich")]);
+  const [first, second] = await Promise.all([run(both), run(both)]);
   assert.deepEqual([[first, second].filter((r) => !r.isError).length, [first, second].filter((r) => r.isError && /spend_cap_reached/.test(said(r).error)).length, sent(from).length], [1, 1, 2]);
   assert.equal(said(await run(await toolLedger(undefined))).status, "COMPLETED", "with no cap, it runs");
 });
@@ -115,7 +175,7 @@ test("/usage by meter during a monid run in flight: tokens are the run's model c
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname, fauxMonid: FAUX_MONID });
-  assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("slow", { tools: [SLOW], tool_settings: allowed(SLOW) }))).status, 201);
   const run = await api("POST", "/agents/slow/runs", { input: { content: "Run monid's /slow." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const id = run.body.run_id;
@@ -127,7 +187,7 @@ test("/usage by meter during a monid run in flight: tokens are the run's model c
   }
   const cost = (await api("GET", `/runs/${id}`)).body.cost.usd;
   const meters = (await api("GET", "/usage?group_by=meter")).body.lines.map((line) => [line.meter, line.usd, line.unpriced_runs]);
-  assert.deepEqual(meters, [["tokens", cost, 0]], "the model cost alone: never the held $1, never a negative token meter");
+  assert.deepEqual(meters, [["tokens", cost, 0]], "the model cost alone: never what the call is held at, never a negative token meter");
   assert.ok((await api("POST", `/runs/${id}/cancel`, {})).status < 300);
 });
 
@@ -192,35 +252,25 @@ test("a run's answer over 60,000 characters is cut, the whole of it filed as evi
   assert.deepEqual(JSON.parse(await readFile(join(work, "evidence", "monid", `${huge.runId}.json`), "utf8")), huge);
 });
 
-test("capabilities list the three, on every harness: missing MONID_API_KEY on a keyless server, available with it", async (t) => {
-  assert.deepEqual(NAMES.map(wireName), ["monid_discover", "monid_inspect", "monid_run"], "the names pi registers");
-  withEnv(t, {}, ["MONID_API_KEY"]);
-  const listed = async () => (await client((await serve(t)).baseUrl)("GET", "/capabilities")).body.tools.filter((tool) => NAMES.includes(tool.name));
-  assert.deepEqual((await listed()).map((tool) => [tool.name, tool.available, tool.missing, tool.nodes, tool.calls, tool.harnesses]), NAMES.map((name) => [name, false, ["MONID_API_KEY"], false, false, ["pi", "claude-agent", "codex", "opencode"]]));
-  process.env.MONID_API_KEY = KEY;
-  assert.deepEqual((await listed()).map((tool) => [tool.name, tool.available, tool.missing]), NAMES.map((name) => [name, true, undefined]));
+test("capabilities list no monid tool: an endpoint is granted by name, monid:<provider>/<endpoint>, and pinned at the save", async (t) => {
+  withEnv(t, { MONID_API_KEY: KEY });
+  const tools = (await client((await serve(t)).baseUrl)("GET", "/capabilities")).body.tools.map((tool) => tool.name);
+  assert.deepEqual(tools.filter((name) => /monid/.test(name)), []);
 });
 
-test("a revision naming the three saves with a warning on a keyless server and its run is 409, on pi and claude-agent alike; with the key the claude-agent one runs", { timeout: 60_000 }, async (t) => {
+test("a pinned endpoint's run is 409 on claude-agent while the saved monid key is gone, and runs on it once the key is back", { timeout: 60_000 }, async (t) => {
   withEnv(t, {}, ["MONID_API_KEY"]);
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
-  const saved = await api("POST", "/agents", agent("finder", { tools: NAMES }));
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: KEY } })).status, 204);
+  const saved = await api("POST", "/agents", agent("finder-claude", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: ["read", ENRICH], tool_settings: allowed(ENRICH) }));
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
-  assert.deepEqual(saved.body.warnings.map((w) => [w.field, w.reason]), NAMES.map((_, i) => [`definition.tools[${i}]`, "not_set_up_here"]));
-  const run = await api("POST", "/agents/finder/runs", { input: { content: "hi" } });
-  assert.deepEqual([run.status, run.body.error.code, run.body.error.details.missing], [409, "agent_not_runnable", Object.fromEntries(NAMES.map((name) => [name, ["MONID_API_KEY"]]))]);
-  const claude = agent("finder-claude", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: ["read", "monid.run"], tool_settings: ALLOWED });
-  const keyless = await api("POST", "/agents", claude);
-  assert.equal(keyless.status, 201, JSON.stringify(keyless.body));
-  assert.deepEqual(keyless.body.warnings.map((w) => [w.field, w.message]), [["definition.tools[1]", "The tool monid.run needs a Monid key: save one in Settings → Tool keys (or set MONID_API_KEY where the server starts)."]], "the key, never that it runs on pi only");
+  assert.deepEqual(saved.body.warnings, [], "the key, read at the save, pinned it");
+  assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
   const refused = await api("POST", "/agents/finder-claude/runs", { input: { content: "hi" } });
-  assert.deepEqual([refused.status, refused.body.error.details.unbound, refused.body.error.details.missing], [409, [], { "monid.run": ["MONID_API_KEY"] }]);
-  // A server reads its environment as it starts: the next one has the key.
-  process.env.MONID_API_KEY = KEY;
-  const keyed = (await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID })).api;
-  assert.deepEqual([(await keyed("POST", "/agents", claude)).body.warnings], [[]]);
-  const ran = await keyed("POST", "/agents/finder-claude/runs", { input: { content: "hi" } });
+  assert.deepEqual([refused.status, refused.body.error.details.unbound, refused.body.error.details.missing], [409, [], { [ENRICH]: ["MONID_API_KEY"] }]);
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: KEY } })).status, 204);
+  const ran = await api("POST", "/agents/finder-claude/runs", { input: { content: "hi" } });
   assert.equal(ran.status, 202, JSON.stringify(ran.body));
-  const { rows } = await follow(keyed, ran.body.run_id, ["completed"], { deadlineMs: 55_000 });
-  assert.deepEqual(rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_status), ["success"], "monid_run ran on claude-agent");
+  const { rows } = await follow(api, ran.body.run_id, ["completed"], { deadlineMs: 55_000 });
+  assert.deepEqual(rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_status), ["success"], "monid:faux/person/enrich ran on claude-agent");
 });

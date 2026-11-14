@@ -1,29 +1,34 @@
-// monid (monid.ai): one key, and a catalog of paid data endpoints from many providers behind three calls. An agent finds
-// an endpoint in plain words (discover), reads its input schemas and price (inspect), and runs it (run), paid per call
-// from the key's workspace wallet. Three table tools here (tools.ts), on every harness: pi binds each, another harness
-// runs each as a host tool (host-tools.ts), both under its wire name (catalog.ts: `monid.run` is `monid_run`), as a
-// model API takes no dot in a tool's name.
+// monid (monid.ai): one key, and a listing of paid data endpoints from many providers. An agent is granted endpoints by
+// name, `monid:<provider>/<endpoint>` or a provider's `monid:<provider>/*` (tool-names.ts), and each granted endpoint is
+// one tool of its own, on every harness: its description, input and price as monid listed them when the agent was saved.
+//
+// At the save (server.ts saveable, the one check of a create, an edit and an inline run): each grant is read against
+// monid's listing (a provider's wildcard: every endpoint it lists, GET /v1/endpoints; one endpoint: POST /v1/inspect),
+// and the pin (MonidPin) is stamped on the revision. A grant monid does not list is refused in words, so is one that
+// cannot be read now (no key, monid unreachable). A run reads its revision's pin and never monid's listing.
+//
+// Only an endpoint with a fixed price is pinned. One priced by usage (per result, per unit, metered) costs what it
+// used, known only once it has run, and monid bounds no such call's charge: maxCost checks monid's estimate, which such a
+// call can pass (monid's API reference, POST /v1/run). No hold could keep a run's cap, so it is refused as a named grant
+// and left out of a provider's wildcard, each in words (unboundedWords).
+//
+// At a run (runner/monid-run.ts): each pinned endpoint is one host tool, by its catalog name (its wire name on the
+// harness, catalog.ts wireName). The gate asks about it by that name, its card shows its pinned price, and a call is a
+// paid step on the run's one ledger (paid-calls.ts paidStep) named by it: held at the pinned price before it is sent,
+// refused unsent unless that fits the cap with what the run has spent and holds, then settled once at what monid says it
+// charged, else at its hold unless monid says it charged nothing. It is sent with its hold as maxCost: monid refuses it
+// unrun when it now prices it above the pin, so a fixed-price call is never charged past what it was held at.
 //
 // A run is sent once and never again: it spends money, and a request that failed after it left may have run. An async
 // provider answers 202 with a run id, read again every POLL_MS until it ends, for at most WAIT_MS in all; a run the
 // caller stops, or one that outlasts the wait, is asked to stop. Every answer reaches the model as JSON, cut at CLIP
 // characters, the whole of it then filed under the run's work/evidence/monid/.
-//
-// What a run charged is the run's spend, on the run's one ledger (paid-calls.ts paidStep): admitted before it is sent at
-// the price an inspect quoted (else an allowance), refused unsent unless that, with what the run has spent and holds,
-// fits the cap, then settled once at its cost if monid reports one, else at its hold unless monid says it charged
-// nothing. A run with no run's ledger to book it on is never sent. discover and inspect cost nothing, and are never
-// refused.
 import { randomUUID } from "node:crypto";
-import { localWorkspace, type Workspace, workspaceErrorWords } from "./workspace/index.js";
-import type { TSchema } from "typebox";
-import { defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import { registerLabel } from "./timeline/index.js";
+import { type Workspace, workspaceErrorWords } from "./workspace/index.js";
 import { wireName } from "./catalog.js";
-import { fauxFetch } from "./decisions.js";
-import { paidLedger, paidStep, unbookedRefusal } from "./paid-calls.js";
-import { forModel } from "./result.js";
-import type { ToolEntry } from "./tools.js";
+import { formatToolName, parseToolName } from "./tool-names.js";
+import { redacted } from "./key-refusal.js";
+import type { MonidPinBody } from "./store/agent-body.js";
 import { isObject, type Json } from "./validate.js";
 
 export const MONID_KEY_ENV = "MONID_API_KEY";
@@ -33,9 +38,17 @@ export const FAUX_MONID_ENV = "AGENTRUN_SERVE_FAUX_MONID";
 export const MONID_API = "https://api.monid.ai";
 /** The most characters of one answer the model reads. */
 export const CLIP = 60_000;
+/** The most endpoints one provider's wildcard pins: a provider that lists more is granted endpoint by endpoint. */
+export const MONID_WILDCARD_MAX = 50;
 const TERMINAL = ["COMPLETED", "FAILED", "BLOCKED", "STOPPED", "TIMED_OUT"];
 /** The shortest limit a read of a run gets near the deadline: it outlives the deadline by this much at most. */
 const MIN_READ_MS = 100;
+/** How many inspects a save has out at once. */
+const INSPECTS_AT_ONCE = 8;
+/** A save's read of the listing or an inspect, refused for the rate (429) or failed by monid (5xx), is read again after
+ *  what monid says to wait (Retry-After, 2 s when it says nothing, at most READ_WAIT_MS), READ_TRIES times in all. */
+const READ_TRIES = 4;
+const READ_WAIT_MS = 10_000;
 
 /** monid's answer, or `error` saying why there is none, with the HTTP `status` when one came. */
 export type MonidAnswer = Json & { error?: string };
@@ -97,42 +110,53 @@ function outcome(status: number, record: Json): MonidAnswer {
 /** What a run's answer says monid charged, in USD: its cost; else undefined when monid charged nothing (UNCHARGED), and
  *  null for every other answer, which may have been charged (one with no cost, FAILED, TIMED_OUT, a run stopped by its
  *  caller or the wait, a run whose sending failed): never $0 for a charge no one knows, and counted by the cap at what
- *  the run was held at (paidCall). A cost in another currency is unknown too. */
+ *  the run was held at (paidStep). A cost in another currency is unknown too. */
 export function chargeOf(answer: MonidAnswer): number | null | undefined {
   const cost = money(answer.cost);
   if (cost) return cost.currency === "USD" ? cost.value : null;
   return (answer as { [UNCHARGED]?: true })[UNCHARGED] ? undefined : null;
 }
 
-/** monid's three calls on `key`, each answering what the model reads, never throwing. */
+/** monid's calls on `key`, each answering what its caller reads, never throwing. */
 export function monidClient(options: MonidOptions) {
   const { key, requestMs = 30_000, pollMs = 2_000, waitMs = 150_000, sleep = pause } = options;
   const send = options.fetch ?? fetch;
-  const call = async (method: string, path: string, body: Json | undefined, signal?: AbortSignal, ms = requestMs): Promise<{ status: number; body: Json }> => {
+  const call = async (method: string, path: string, body: Json | undefined, signal?: AbortSignal, ms = requestMs): Promise<{ status: number; body: Json; retryAfter?: number }> => {
     const limit = AbortSignal.timeout(ms);
     try {
       const res = await send(`${MONID_API}${path}`, { method, headers: { authorization: `Bearer ${key}`, ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: signal ? AbortSignal.any([signal, limit]) : limit });
       const text = await res.text();
       const json: unknown = (() => { try { return JSON.parse(text); } catch { return undefined; } })();
-      return { status: res.status, body: isObject(json) ? json : { message: text.slice(0, 500) } };
+      const retryAfter = Number(res.headers?.get?.("retry-after") ?? NaN);
+      return { status: res.status, body: isObject(json) ? json : { message: text.slice(0, 500) }, ...(retryAfter >= 0 ? { retryAfter } : {}) };
     } catch (error) {
       return { status: 0, body: { message: signal?.aborted ? "stopped by the caller" : limit.aborted ? `no answer in ${ms / 1000} s` : String((error as Error)?.message ?? error) } };
     }
   };
-  const read = async (path: string, args: Json, signal?: AbortSignal): Promise<MonidAnswer> => {
-    const res = await call("POST", path, args, signal);
-    return res.status >= 200 && res.status < 300 ? res.body : failure(res.status, res.body);
+  const answer = (res: { status: number; body: Json }): MonidAnswer => (res.status >= 200 && res.status < 300 ? res.body : failure(res.status, res.body));
+  /** A save's read, safe to repeat (READ_TRIES). */
+  const read = async (method: string, path: string, body: Json | undefined, signal?: AbortSignal) => {
+    for (let tries = 1; ; tries++) {
+      const res = await call(method, path, body, signal);
+      if ((res.status !== 429 && res.status < 500) || tries >= READ_TRIES || signal?.aborted) return res;
+      await sleep(Math.min(READ_WAIT_MS, (res.retryAfter ?? 2) * 1000), signal);
+    }
   };
   const stop = async (runId: string, why: string): Promise<MonidAnswer> => {
     const res = await call("POST", `/v1/runs/${encodeURIComponent(runId)}/stop`, undefined, undefined, 10_000);
     return { error: `the run ${why}; ${res.status === 202 ? "monid was asked to stop it" : `monid refused to stop it (${res.status || "no answer"})`}, and a metered endpoint bills what it used before the stop`, runId };
   };
   return {
-    discover: (args: { query: string; limit?: number; minScore?: number }, signal?: AbortSignal) => read("/v1/discover", args, signal),
-    inspect: (args: { provider: string; endpoint: string }, signal?: AbortSignal) => read("/v1/inspect", args, signal),
-    async run(args: { provider: string; endpoint: string; input?: Json }, signal?: AbortSignal): Promise<MonidAnswer> {
+    /** One page of monid's listing (GET /v1/endpoints): `items`, and `cursor` for the next page when there is one. */
+    endpoints: async (cursor: string | undefined, signal?: AbortSignal) => answer(await read("GET", `/v1/endpoints?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, undefined, signal)),
+    inspect: async (args: { provider: string; endpoint: string }, signal?: AbortSignal) => answer(await read("POST", "/v1/inspect", args, signal)),
+    /** One run, `maxCost` its most in USD when given: monid refuses a run whose estimate is above it, unrun and
+     *  uncharged (400 MAX_COST_EXCEEDED). It is sent in whole micro-dollars (monid takes at most 6 decimals), rounded
+     *  down, so it never allows more than given. */
+    async run(args: { provider: string; endpoint: string; input?: Json; maxCost?: number }, signal?: AbortSignal): Promise<MonidAnswer> {
       const deadline = Date.now() + waitMs;
-      const first = await call("POST", "/v1/run", { provider: args.provider, endpoint: args.endpoint, input: args.input ?? {} }, signal, waitMs);
+      const maxCost = args.maxCost === undefined ? {} : { maxCost: Math.floor(args.maxCost * 1e6 + 1e-6) / 1e6 };
+      const first = await call("POST", "/v1/run", { provider: args.provider, endpoint: args.endpoint, input: args.input ?? {}, ...maxCost }, signal, waitMs);
       if (first.status === 0) return { error: `${first.body.message}: the run may have gone ahead at monid, and is not sent again` };
       if (first.status !== 202 || typeof first.body.runId !== "string") return outcome(first.status, first.body);
       const runId = first.body.runId;
@@ -171,109 +195,152 @@ export async function monidText(answer: MonidAnswer, work: Workspace, label: str
   return `${cut}the whole answer is in the run's files at evidence/monid/${name}]`;
 }
 
-const KINDS = ["discover", "inspect", "run"] as const;
-type Kind = (typeof KINDS)[number];
-const [DISCOVER, INSPECT, RUN] = KINDS.map((kind) => wireName(`monid.${kind}`));
-// What a person reads for each call, in a run's timeline, and what each tool is called where calls are counted.
-const endpointOf = (a: Record<string, unknown>) => (typeof a.provider === "string" && typeof a.endpoint === "string" ? ` ${a.provider} ${a.endpoint}` : "");
-registerLabel(DISCOVER, (a) => (typeof a.query === "string" ? `Searched monid's catalog for "${a.query.slice(0, 60)}"` : "Searched monid's catalog"), undefined, { name: "Search monid's catalog" });
-registerLabel(INSPECT, (a) => `Looked up the monid endpoint${endpointOf(a)}`, undefined, { name: "Look up a monid endpoint" });
-registerLabel(RUN, (a) => `Ran the monid endpoint${endpointOf(a)}`, undefined, { name: "Run a monid endpoint" });
-const named = { provider: { type: "string", minLength: 1, description: `The provider's slug, as ${DISCOVER} gave it.` }, endpoint: { type: "string", minLength: 1, description: `The endpoint's path, as ${DISCOVER} gave it.` } };
-const SPECS: Record<Kind, { summary: string; description: string; properties: Json; required: string[]; replay: "safe" | "unsafe" }> = {
-  discover: {
-    summary: "Search monid's catalog of paid data endpoints in plain words: { results: [{ provider, endpoint, description, score, price }] }.",
-    description: `Search monid's catalog of paid data endpoints (people and company data, web and social media scrapers, search, and more, from many providers) with a plain-language query of what you need. Answers JSON: results, each a provider, an endpoint, what it does, a relevance score and its price. Next, ${INSPECT} the result that fits, then ${RUN} it.`,
-    properties: { query: { type: "string", minLength: 1, maxLength: 1000, description: "What you need, in a short plain sentence." }, limit: { type: "integer", minimum: 1, maximum: 40, description: "How many results (default 5)." }, minScore: { type: "number", minimum: 0, maximum: 1, description: "The lowest relevance to keep (default 0.2)." } },
-    required: ["query"], replay: "safe",
-  },
-  inspect: {
-    summary: "One monid endpoint before it runs: the JSON Schemas of its input (path, query, body), its price, notes and documentation.",
-    description: `Read one monid endpoint before you run it: the JSON Schemas of its input (pathParams, queryParams, body), its price, notes and documentation link. Then ${RUN} it with input that fits those schemas.`,
-    properties: named, required: ["provider", "endpoint"], replay: "safe",
-  },
-  run: {
-    summary: "Run one monid endpoint, paid per call from the monid wallet: its output, price and cost; a slow provider is waited for, about two minutes at most.",
-    description: `Run one monid endpoint with its input, once ${INSPECT} has shown what it takes and what it costs. Each call is paid from the monid wallet: call it once per answer you need, never to retry a failure, which says why. Answers JSON: the run's output, its price and cost. A slow provider is waited for, about two minutes at most.`,
-    properties: { ...named, input: { type: "object", description: `The endpoint's input as one object, shaped by the schemas ${INSPECT} gave; {} when it takes none.` } },
-    required: ["provider", "endpoint"], replay: "unsafe",
-  },
-};
+/** One pinned endpoint, as monid listed it at the save: what its tool says, the JSON Schema of its input
+ *  (`{ pathParams?, queryParams?, body? }`, as POST /v1/run takes it), and what one call is held at in USD: its fixed
+ *  price (heldOf), sent with the call as its maxCost. */
+export type MonidPinned = MonidPin[string];
+/** A revision's monid pin: each granted endpoint by its catalog name, `monid:<provider>/<endpoint>`. */
+export type MonidPin = MonidPinBody;
 
-/** What a run is held at when no inspect in this run's process quoted its price: an allowance, not a price, set high on
- *  purpose. A crash between sending a run and recording its charge leaves the cap counting it, so a cap errs toward
- *  refusing sooner, never toward passing unseen. */
-export const MONID_RUN_ALLOWANCE_USD = 1;
-/** Each run's quotes, by the environment its calls are given (one object per run: main's run process hands process.env,
- *  the runner hands each claim its own), so one run's inspect never prices another run's call. */
-const quotesByRun = new WeakMap<NodeJS.ProcessEnv, Map<string, number>>();
-/** Each endpoint's per-call price in USD, as an inspect in the run whose calls are given `env` quoted it. */
-const quotesOf = (env: NodeJS.ProcessEnv): Map<string, number> => {
-  let quotes = quotesByRun.get(env);
-  if (!quotes) quotesByRun.set(env, (quotes = new Map()));
-  return quotes;
-};
-/** What a monid.run of `args` is held at in the run whose calls are given `env`: the quote, else the allowance. */
-const holdOf = (env: NodeJS.ProcessEnv, args: unknown): { quote: number | undefined; held: number } => {
-  const quote = quotesOf(env).get(quoteKey(args));
-  return { quote, held: quote ?? MONID_RUN_ALLOWANCE_USD };
-};
-/** The price an approval card shows for a monid.run: its hold, the same figure the call is booked at (spec.approvalPrice).
- *  The loop names a call by the harness's name for it (monid_run) or the catalog's (monid.run). */
-export const monidApprovalPrice = (env: NodeJS.ProcessEnv) => (call: { tool: string; args: unknown }): number | undefined => (call.tool === RUN || call.tool === "monid.run" ? holdOf(env, call.args).held : undefined);
-const quoteKey = (args: unknown) => JSON.stringify([(args as Json).provider, (args as Json).endpoint]);
-
-/** monid's tool `kind` for a run, under its wire name: the key and the faux hook read from `env` (the run's process's,
- *  with its secrets) at each call, an answer too long for the model filed under `work()`, read at the call. A run is a
- *  paid step on the run's one ledger (paidStep), held at its quoted price or the allowance and settled by its charge: a
- *  crash between the two leaves the cap counting the held figure, never $0; with no ledger it is refused unsent. pi binds
- *  it (monidTool); another harness runs it as a host tool (host-tools.ts). */
-export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () => Workspace): ToolRegistration {
-  const { description, properties, required, replay } = SPECS[kind];
-  return defineTool({
-    name: wireName(`monid.${kind}`), description, replay,
-    parameters: { type: "object", additionalProperties: false, properties, required } as unknown as TSchema,
-    execute: async (args, api, context) => {
-      const faux = await fauxFetch(env, FAUX_MONID_ENV);
-      const client = monidClient({ key: env[MONID_KEY_ENV] ?? "", ...(faux ? { fetch: faux } : {}) });
-      const call = () => client[kind](args as never, context?.abortSignal);
-      // What the run is held at on the ledger: the price an inspect quoted, else the allowance.
-      const { quote, held } = holdOf(env, args);
-      const basis = quote !== undefined ? `the price ${INSPECT} quoted` : `no price was quoted for it in this run, so it counts at the $${MONID_RUN_ALLOWANCE_USD} allowance; ${INSPECT} gives its price`;
-      // A run on the run's one ledger (paid-calls.ts Ledger.paid): settled at what it charged ($0 when monid charged nothing,
-      // at its hold when it may have and did not say). With no ledger it is never sent.
-      const onLedger = kind === "run" ? paidLedger() : undefined;
-      const paid = kind !== "run"
-        ? { result: await call() }
-        : !onLedger
-          ? { refused: unbookedRefusal(RUN) }
-          : await paidStep(onLedger, api.callId, { name: RUN, holdUsd: held, basis, by: "monid" }, call, (outcome) => {
-            if (!("result" in outcome)) return null;
-            const usd = chargeOf(outcome.result);
-            return usd === undefined ? 0 : usd;
-          });
-      if ("refused" in paid) return forModel(JSON.stringify({ error: paid.refused }), { isError: true });
-      const answer = paid.result;
-      const price = kind === "inspect" && isObject(answer.price) && answer.price.type === "PER_CALL" ? money(answer.price.amount) : undefined;
-      if (price?.currency === "USD") quotesOf(env).set(quoteKey(args), price.value);
-      const cost = money(answer.cost);
-      return forModel(await monidText(answer, work(), kind), { isError: answer.error !== undefined, ...(cost ? { details: { cost } } : {}) });
-    },
-  }) as unknown as ToolRegistration;
+/** The fixed USD price of one call priced `price` (monid's listing): a per-call amount; the dearest variant of a matrix
+ *  of fixed prices; a tiered price's default and every tier added up (tiers add, so all of them is the most one call
+ *  can be charged). Undefined for a price by usage, or one in another currency. */
+function fixedUsd(price: unknown): number | undefined {
+  if (!isObject(price)) return undefined;
+  const of = (parts: readonly unknown[]) => (parts.every((part) => fixedUsd(part) !== undefined) ? parts.map((part) => fixedUsd(part)!) : undefined);
+  if (price.type === "PER_CALL") {
+    const amount = money(price.amount);
+    return amount?.currency === "USD" && amount.value >= 0 ? amount.value : undefined;
+  }
+  const variants = Array.isArray(price.variants) ? of(price.variants.map((variant) => (isObject(variant) ? variant.price : undefined))) : undefined;
+  if (price.type === "PER_UNIT_MATRIX") return variants?.length ? Math.max(...variants) : undefined;
+  if (price.type === "TIERED" && Array.isArray(price.tiers)) {
+    const parts = of([...(price.default === undefined ? [] : [price.default]), ...price.tiers.map((tier) => (isObject(tier) ? tier.price : undefined))]);
+    return parts?.reduce((sum, usd) => sum + usd, 0);
+  }
+  return undefined;
 }
 
+/** What one call of an endpoint priced `price` is held at: its fixed price (fixedUsd); undefined when it has none, an
+ *  endpoint no hold can keep a cap for (unboundedWords). */
+export const heldOf = (price: unknown): number | undefined => fixedUsd(price);
 
-/** The table's entry for `monid.<kind>`: it needs MONID_API_KEY, and no workflow node names it yet. */
-export const monidTool = (kind: Kind): ToolEntry => ({
-  summary: SPECS[kind].summary,
-  needs: [MONID_KEY_ENV],
-  nodes: false,
-  bind: async (host) => {
-    // An answer too long for the model is filed in the run's own Workspace (in Mode 2, on the run's disk, where its read
-    // looks), else in the local folder the run works in.
-    const tool = monidRegistration(kind, host.env, () => host.workspace ?? localWorkspace(host.where.work));
-    const extension = defineExtension({ name: `monid-${kind}`, tools: [tool] });
-    host.install(extension);
-    return { tools: [tool], extensions: [extension] };
-  },
-});
+/** How monid prices `price`, in words: "per result (PER_RESULT)", "per 1 credit (PER_UNIT)". monid states every price
+ *  in USD (its API reference). */
+function priceWords(price: unknown): string {
+  if (!isObject(price)) return "with no stated price";
+  const type = typeof price.type === "string" ? price.type : "of no type";
+  if (type === "PER_RESULT") return `per result (${type})`;
+  if (type === "PER_UNIT" && typeof price.unit === "string") return `per ${typeof price.per === "number" ? price.per : 1} ${price.unit} (${type})`;
+  if (type === "METERED") return `by metered use (${type})`;
+  if (type === "TIERED" || type === "PER_UNIT_MATRIX") return `partly by usage (${type})`;
+  return `by usage (${type})`;
+}
+
+/** Why the endpoint `tool`, priced `price` (no fixed USD price: heldOf is undefined), cannot be granted. */
+export const unboundedWords = (tool: string, price: unknown) =>
+  `${tool} cannot be granted: monid prices it ${priceWords(price)}, so what one call costs is known only after it has run, and monid does not bound it (a run's maxCost checks only monid's estimate, which a call priced by usage can pass). A run's cap could not be kept: grant endpoints monid prices per call.`;
+
+/** `schema` moved from a document's root to the JSON pointer `at`: each local reference to a place in it (`#`, `#/…`)
+ *  rebased onto `at`, so `#/$defs/Person` reads `#/properties/body/$defs/Person`. A schema with its own `$id` is a
+ *  resource of its own, whose local references resolve inside it: it and all under it are left as they are. */
+const rebased = (schema: unknown, at: string): unknown => {
+  if (Array.isArray(schema)) return schema.map((item) => rebased(item, at));
+  if (!isObject(schema) || typeof schema.$id === "string") return schema;
+  return Object.fromEntries(Object.entries(schema).map(([key, value]) => [key, key === "$ref" && typeof value === "string" && (value === "#" || value.startsWith("#/")) ? `#${at}${value.slice(1)}` : rebased(value, at)]));
+};
+
+/** An endpoint's input schema as one tool's (inspect's `input`: `pathParams`, `queryParams`, `body`, each a JSON
+ *  Schema): an object of those parts, each required that requires a field, its local references rebased. */
+function inputSchema(input: unknown): Json {
+  const parts = isObject(input) ? input : {};
+  const properties: Record<string, Json> = {};
+  const required: string[] = [];
+  for (const part of ["pathParams", "queryParams", "body"]) {
+    if (!isObject(parts[part])) continue;
+    const { $schema: _schema, ...schema } = rebased(parts[part], `/properties/${part}`) as Json;
+    properties[part] = schema;
+    if (Array.isArray(schema.required) && schema.required.length) required.push(part);
+  }
+  return { type: "object", additionalProperties: false, properties, ...(required.length ? { required } : {}) };
+}
+
+/** Why a save's monid grants cannot be pinned, each by its grant; or the pin, with each endpoint a wildcard left out
+ *  (`leftOut`, by the wildcard's grant: the save's warnings). */
+export type MonidPinOutcome = { pin: MonidPin; leftOut: { tool: string; message: string }[] } | { refused: { tool: string; message: string }[] };
+
+/** The monid grants among `grants` pinned against monid's listing on `key` (pinned at a save, never at a run): each
+ *  provider's wildcard read as the endpoints monid lists for it now (at most MONID_WILDCARD_MAX), each endpoint inspected
+ *  for its description, input and price. A grant monid lists nothing for is refused, as is every grant when there is no
+ *  key or monid cannot be read. An endpoint with no fixed price (heldOf) is refused as a named grant, and left out of a
+ *  wildcard, which is refused when it leaves none. Undefined when no grant is monid's. */
+export async function pinMonid(grants: readonly string[], options: { key: string | undefined; fetch?: typeof fetch; signal?: AbortSignal; sleep?: MonidOptions["sleep"] }): Promise<MonidPinOutcome | undefined> {
+  const named = grants.flatMap((tool) => {
+    const parsed = parseToolName(tool);
+    return parsed?.kind === "monid" || parsed?.kind === "monid-provider" ? [{ tool, parsed }] : [];
+  });
+  if (!named.length) return undefined;
+  if (!options.key) return { refused: named.map(({ tool }) => ({ tool, message: `${tool} is pinned to what monid lists when the agent is saved, and there is no monid key here to read it with: save the monid key in Settings → Tool keys first.` })) };
+  const client = monidClient({ key: options.key, ...(options.fetch ? { fetch: options.fetch } : {}), ...(options.sleep ? { sleep: options.sleep } : {}) });
+  // monid's own words, which a save's refusal returns to its caller: the key they were read with cut from them, in
+  // every form a run's error is redacted of (key-refusal.ts redacted).
+  const key = options.key;
+  const said = (error: unknown) => redacted(String(error), [key]);
+  const refused: { tool: string; message: string }[] = [];
+  // Each endpoint to pin, by catalog name: the grants' own, then each wildcard's provider's as monid lists them, with
+  // the wildcard (`from`) when no grant names it.
+  const wanted = new Map<string, { provider: string; endpoint: string; from?: string }>();
+  const providers = new Set(named.flatMap(({ parsed }) => (parsed.kind === "monid-provider" ? [parsed.provider] : [])));
+  if (providers.size) {
+    const listed = new Map<string, string[]>();
+    // Every page, a bounded number of them: monid's listing is not filtered by provider.
+    for (let cursor: string | undefined, page = 0; (page === 0 || cursor) && page < 500; page++) {
+      const res = await client.endpoints(cursor, options.signal);
+      if (res.error !== undefined) return { refused: named.map(({ tool }) => ({ tool, message: `${tool} could not be pinned: monid's listing could not be read (${said(res.error)}).` })) };
+      for (const item of Array.isArray(res.items) ? res.items : []) {
+        if (isObject(item) && typeof item.provider === "string" && typeof item.endpoint === "string" && providers.has(item.provider)) listed.set(item.provider, [...(listed.get(item.provider) ?? []), item.endpoint]);
+      }
+      cursor = typeof res.cursor === "string" && res.cursor ? res.cursor : undefined;
+    }
+    for (const { tool, parsed } of named) {
+      if (parsed.kind !== "monid-provider") continue;
+      const endpoints = listed.get(parsed.provider) ?? [];
+      if (!endpoints.length) refused.push({ tool, message: `monid lists no endpoint of a provider ${parsed.provider}.` });
+      else if (endpoints.length > MONID_WILDCARD_MAX) refused.push({ tool, message: `monid lists ${endpoints.length} endpoints of ${parsed.provider}, more than the ${MONID_WILDCARD_MAX} one grant may pin: grant its endpoints by name, monid:${parsed.provider}/<endpoint>.` });
+      else for (const path of endpoints) wanted.set(formatToolName({ kind: "monid", provider: parsed.provider, endpoint: path.replace(/^\//, "") }), { provider: parsed.provider, endpoint: path, from: tool });
+    }
+  }
+  for (const { tool, parsed } of named) if (parsed.kind === "monid") wanted.set(tool, { provider: parsed.provider, endpoint: `/${parsed.endpoint}` });
+  // Each endpoint inspected, INSPECTS_AT_ONCE at a time.
+  const pin: Record<string, MonidPinned> = {};
+  const leftOut: { tool: string; endpoint: string; message: string }[] = [];
+  const queue = [...wanted];
+  const inspectOne = async (): Promise<void> => {
+    for (let next = queue.shift(); next; next = queue.shift()) {
+      const [tool, at] = next;
+      const res = await client.inspect(at, options.signal);
+      const usd = heldOf(res.price);
+      if (res.status === 404) refused.push({ tool, message: `monid lists no endpoint ${at.endpoint} of a provider ${at.provider}.` });
+      else if (res.error !== undefined) refused.push({ tool, message: `${tool} could not be pinned: monid's listing of it could not be read (${said(res.error)}).` });
+      else if (usd === undefined && at.from) leftOut.push({ tool: at.from, endpoint: tool, message: `${tool} is left out of ${at.from}: ${unboundedWords(tool, res.price)}` });
+      else if (usd === undefined) refused.push({ tool, message: unboundedWords(tool, res.price) });
+      else pin[tool] = { description: [res.description, res.summary].find((said): said is string => typeof said === "string" && said.trim() !== "")?.trim() ?? `${at.provider} ${at.endpoint}, an endpoint of monid's.`, input: inputSchema(res.input), usd };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(INSPECTS_AT_ONCE, queue.length) }, inspectOne));
+  leftOut.sort((a, b) => (a.endpoint < b.endpoint ? -1 : a.endpoint > b.endpoint ? 1 : 0));
+  // A wildcard whose every endpoint was left out pins nothing: refused, with why for each.
+  for (const { tool, parsed } of named) {
+    if (parsed.kind !== "monid-provider" || refused.some((one) => one.tool === tool)) continue;
+    const left = leftOut.filter((one) => one.tool === tool);
+    if (left.length && !Object.keys(pin).some((endpoint) => wanted.get(endpoint)?.provider === parsed.provider)) refused.push({ tool, message: `${tool} pins nothing: every endpoint monid lists of ${parsed.provider} is priced by usage. ${left.map((one) => one.message).join(" ")}` });
+  }
+  // Two endpoints the harnesses would call by one name (wireName folds `.` and `/`): neither could be told apart.
+  const wires = new Map<string, string>();
+  for (const tool of Object.keys(pin).sort()) {
+    const other = wires.get(wireName(tool));
+    if (other) refused.push({ tool, message: `${tool} and ${other} are called by one name on every harness (${wireName(tool)}): grant one of them by name.` });
+    wires.set(wireName(tool), tool);
+  }
+  return refused.length ? { refused } : { pin: Object.fromEntries(Object.keys(pin).sort().map((tool) => [tool, pin[tool]!])), leftOut: leftOut.map(({ tool, message }) => ({ tool, message })) };
+}

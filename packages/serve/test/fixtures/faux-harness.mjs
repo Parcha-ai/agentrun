@@ -255,15 +255,17 @@ export function script(spec, session = {}) {
   // monid's run called, then the turn holds with no request open (writing the signal) until it is stopped; the next
   // turn's request answers. A hold keeps its place in the script, so it holds once, and that place is the answer after.
   const holdSignal = /Run monid's \/person\/enrich, then hold the turn \(signal (\S+)\)\./.exec(text)?.[1];
-  if (holdSignal) return [{ call: "monid_run", args: { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }, usd: 0.001 }, hangOnceSignalled(holdSignal, { say: "Ran.", usd: 0.001 })];
+  if (holdSignal) return [{ call: "monid__faux__person__enrich", args: { body: { name: "Ada" } }, usd: 0.001 }, hangOnceSignalled(holdSignal, { say: "Ran.", usd: 0.001 })];
   // monid's run called, then called again (once a raised cap's follow-up opens the next turn), then the answer.
-  if (/Run monid's \/person\/enrich, called again after a raise\./.test(text)) {
-    const call = { call: "monid_run", args: { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }, usd: 0.001 };
+  const again = /Run monid's \/(\S+), called again after a raise\./.exec(text)?.[1];
+  if (again) {
+    const call = { call: `monid__faux__${again.replaceAll("/", "__")}`, args: { body: { name: "Ada" } }, usd: 0.001 };
     return [call, call, { say: "Ran.", usd: 0.001 }];
   }
-  // monid's run, called as a harness calls it: by its wire name.
-  const endpoint = /Run monid's (\S+) on Ada\./.exec(text)?.[1];
-  if (endpoint) return [{ call: "monid_run", args: { provider: "faux", endpoint, input: { name: "Ada" } }, usd: 0.001 }, { say: "Ran.", usd: 0.001 }];
+  // A faux endpoint of monid's, called as a harness calls it: by its wire name (monid:faux/person/enrich is
+  // monid__faux__person__enrich).
+  const endpoint = /Run monid's \/(\S+) on Ada\./.exec(text)?.[1];
+  if (endpoint) return [{ call: `monid__faux__${endpoint.replaceAll("/", "__")}`, args: { body: { name: "Ada" } }, usd: 0.001 }, { say: "Ran.", usd: 0.001 }];
   if (/Say your thinking\./.test(text)) return [{ say: `Thinking ${spec.thinking}.`, usd: 0.001 }];
   if (/Price unknown\./.test(text)) return [{ say: "Priced unknown.", usd: null }];
   // A first request that costs the amount the line names, then an answer: a cap that leaves too little after the first

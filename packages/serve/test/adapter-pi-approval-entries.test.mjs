@@ -37,7 +37,8 @@ async function parkedRun(t, { price, noResume = false, setting } = {}) {
   const clock = { at: ASKED_AT };
   const loop = createAdapterLoop(async (claim, run) => ({
     ...(await spec(claim, run)),
-    ...(price !== undefined ? { approvalPrice: (call) => (call.tool === "asked" ? price : undefined) } : {}),
+    // Its price as a catalog tool's card reads it (the spec's catalog seam, AdapterRunSpec.mcp priceOf).
+    ...(price !== undefined ? { mcp: { tools: [], catalogOf: () => undefined, priceOf: (name) => (name === "asked" ? price : undefined), fresh: async () => {}, release: () => {} } } : {}),
     // The tool's setting as `setting.now` reads it at each call (the server's gate): "ask", then perhaps "allow" or "deny".
     // As the server's gate (adapter-run-spec.ts adapterRunGate) does, a deny is refused in its own words, and the
     // setting itself is read by `permission`.

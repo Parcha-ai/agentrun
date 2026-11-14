@@ -17,7 +17,7 @@ import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
 import type { PinScalar, PinValue } from "./tool-gate.js";
-import { formatToolName, isMcpName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName, parseToolName } from "./tool-names.js";
+import { formatToolName, isMcpName, isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpToolName, MONID_NAME_WORDS, parseToolName } from "./tool-names.js";
 import { pinIssues, sortedPin } from "./tool-plane.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { BOUND_TOOLS, toolOf } from "./tools.js";
@@ -528,7 +528,8 @@ export function readPackage(from: string | PackageFiles): Package {
   if (f.effort !== undefined && !(THINKING_LEVELS as readonly unknown[]).includes(f.effort)) bad(MANIFEST, `effort is one of ${THINKING_LEVELS.join(", ")}`);
   const tools = f.tools === undefined ? undefined : list(f.tools, "tools");
   if (tools?.some(isMcpName)) bad(MANIFEST, "tools grants no MCP tool: mcp lists them, by server");
-  for (const tool of tools?.filter((tool) => !isMcpName(tool) && !BOUND_TOOLS.includes(tool)) ?? []) bad(MANIFEST, `tools: ${tool} is not a tool this server binds (${BOUND_TOOLS.join(", ")})`);
+  // A monid endpoint (monid:<provider>/<endpoint> or monid:<provider>/*) is granted as written and pinned at the apply's save.
+  for (const tool of tools?.filter((tool) => !isMcpName(tool) && !(isMonidName(tool) && parseToolName(tool)) && !BOUND_TOOLS.includes(tool)) ?? []) bad(MANIFEST, isMonidName(tool) ? `tools: ${MONID_NAME_WORDS(tool)}` : `tools: ${tool} is not a tool this server binds (${BOUND_TOOLS.join(", ")})`);
   const mcp: McpNeed[] = [];
   // Each need by where its tools come from (source, toolkit), never by a saved server's name: the package names its tools
   // mcp:<toolkit>/<tool>, and apply maps the toolkit to the server the owner saved for it.
@@ -1036,7 +1037,7 @@ const MCP_NAME_IN_TEXT = new RegExp(`(?<![A-Za-z0-9_.:/-])mcp:${SERVER_PART}/(?:
  *  way. Any other name, or one outside the grammar, as it is. */
 export function onServerName(name: string, servers: Readonly<Record<string, string>>): string {
   const parsed = parseToolName(name);
-  if (!parsed || parsed.kind === "plain" || !Object.hasOwn(servers, parsed.server)) return name;
+  if (!parsed || (parsed.kind !== "mcp" && parsed.kind !== "mcp-server") || !Object.hasOwn(servers, parsed.server)) return name;
   return formatToolName({ ...parsed, server: servers[parsed.server]! });
 }
 
