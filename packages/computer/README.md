@@ -712,8 +712,7 @@ was deleted.
   `create` gives the daemon `DISPLAY` (`display`, default `:0`), then starts the X server through it with
   `process.start` (`server`, default `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`), as the computer's user and as any
   program: computerd stays PID 1 and starts nothing itself, and the server is one process in its table that ends with
-  the computer. A `windowManager` (an argv, default none) starts the same way once the display answers, with `DISPLAY`;
-  one that cannot start, or ends within 1 s of starting, fails create with its last words. `create` waits (`timeoutMs`, default 30 s) until hello declares the display, then runs the drift check;
+  the computer. It runs no window manager. `create` waits (`timeoutMs`, default 30 s) until hello declares the display, then runs the drift check;
   a server that ends first, with its last words on stderr, or a display that is not up in time deletes the computer in
   words.
 - `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (`checkLifetime`: at most

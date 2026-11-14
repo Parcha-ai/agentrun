@@ -182,7 +182,7 @@ export default function reply(context, faux) {
   assert.equal((await api("POST", "/agents", agent("reader", { tools: ["read"] }))).status, 201);
   const run = await api("POST", "/agents/reader/runs", { input: { content: "Read the notes." }, file_ids: [a.file_id, b.file_id] });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  assert.equal(run.body.file_ids, undefined, "the contract's Run has no file_ids");
+  assert.deepEqual([run.body.input, run.body.file_ids], [{ content: "Read the notes." }, [a.file_id, b.file_id]], "the run serves the input and the files it was started with, in order");
   const work = join(runDir(server.data, run.body.run_id), "work");
   // Copied when the runner claims the run, before its first turn: the run reads them.
   await follow(api, run.body.run_id, ["completed"]);

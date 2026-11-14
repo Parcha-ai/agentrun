@@ -185,6 +185,8 @@ export interface HostFacts {
 	 * for each socket these name, as root, before init starts, since a network namespace does not cut a path socket.
 	 */
 	vendorSockets?: string[];
+	/** Whether its desktops run WINDOW_MANAGER (xfwm4, which its image has) once the display answers. Default none. */
+	windowManager?: boolean;
 	/** Whether get reads the network back from the vendor. */
 	networkReadBack: boolean;
 	/**
