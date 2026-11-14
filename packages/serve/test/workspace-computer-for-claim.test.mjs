@@ -90,23 +90,25 @@ function views(refusal) {
   const opened = [];
   const closed = [];
   const holds = [];
+  const gones = [];
   const open = async (args) => {
     holds.push(args.hold);
+    gones.push(args.gone);
     const watched = await args.watch({ frame() {}, ended() {} }, { signal: new AbortController().signal });
     opened.push({ kind: args.kind, input: args.input, tag: args.tag, claim: args.claim, sealKey: Buffer.isBuffer(args.sealKey), hold: typeof args.hold?.take, watched: watched.ok });
     if (refusal) return { ok: false, refused: refusal, message: `the store refused the viewer (${refusal})` };
     return { ok: true, view: { close: (why) => void closed.push(why) } };
   };
-  return { open, opened, closed, holds };
+  return { open, opened, closed, holds, gones };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, epoch = 3 } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, epoch = 3, attach } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const record = { created: [], released: [], options: [], ...(existing ? { existing } : {}) };
-  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}) })]));
+  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}), ...(attach ? { attach } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
   const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { mode, kinds, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}) });
@@ -162,6 +164,26 @@ test("a desktop opens one proxied live view under the claim with its hold, and o
   assert.equal(hold.take(), false, "the hold is closed");
   assert.equal(await asking, "the run's computer was let go before the person answered");
   assert.deepEqual(record.released, [["c1", "delete"]]);
+});
+
+test("a desktop's view is told whether its computer is gone by the provider's attach on its id: not_found or gone is gone; a computer still there, or a read that failed otherwise, is not", async () => {
+  const answers = [];
+  const asked = [];
+  const attach = async (ref) => (asked.push(ref), answers.shift());
+  const view = views();
+  const { run } = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: ["screen", "input.pointer", "input.keys"], view, attach });
+  const answer = await run();
+  const [gone] = view.gones;
+  assert.equal(typeof gone, "function", "the view is given the question");
+  answers.push(
+    { ok: true, value: { id: "c1", name: "c1", spec: { image: "i", user: "1000:1000", network: "none" } } },
+    { ok: false, error: { code: "vendor", vendor: "e2b", message: "E2B answered 503" } },
+    { ok: false, error: { code: "not_found", message: "no E2B computer has the id c1" } },
+    { ok: false, error: { code: "gone", message: "c1 is going" } },
+  );
+  assert.deepEqual([await gone(), await gone(), await gone(), await gone()], [false, false, true, true]);
+  assert.deepEqual(asked, [{ id: "c1" }, { id: "c1" }, { id: "c1" }, { id: "c1" }], "asked by the computer's own id");
+  await answer.release();
 });
 
 test("a phone's view is opened with its platform, as the phone says it: android, or ios", async () => {
