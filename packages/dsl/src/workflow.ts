@@ -2990,6 +2990,19 @@ type Doc = Record<string, unknown>;
 const docOf = (value: unknown): Doc | undefined => (value && typeof value === "object" && !Array.isArray(value) ? (value as Doc) : undefined);
 /** A node that writes its value under its `as`, else its label (mergeStageDelta, runCallNode, runPickNode, runSiftNode). */
 const writesItsKey = (node: Doc, at: WritesAt) => at.wrote(typeof node.as === "string" && node.as !== "" ? node.as : node.label, OTHER_WROTE);
+/** The state keys an `ask` predicate reads (evaluatePredicate): the head of each `{path}` its `state` and its `images`
+ *  interpolate, both `state` and the key after it for a `{state.…}` reference (interpolateValue tries either). With no
+ *  `state` it reads the whole state, the input with it: no key list, so none. */
+function askHeads(ask: Doc): string[] {
+  if (ask.state === undefined) return [];
+  const heads: string[] = [];
+  for (const m of JSON.stringify([ask.state, ask.images ?? null]).matchAll(/\{([a-zA-Z0-9_.$]+)\}/g)) {
+    const [head, next] = m[1]!.split(".");
+    heads.push(head!);
+    if (head === "state" && next) heads.push(next);
+  }
+  return heads;
+}
 
 /** What each node kind writes to the state when runNodeBody (below) runs it: the writers of every key after the node runs
  *  from `at.state`. One entry per kind, so a new kind says here what it writes. A chain runs its steps in order; a route
@@ -3036,8 +3049,8 @@ const NODE_WRITES: { readonly [K in WorkflowNodeKind]: (node: Doc, at: WritesAt)
     if (typeof node.label !== "string") return at.state;
     let when = docOf(node.when);
     while (when?.predicate === "not") when = docOf(when.of);
-    const writers = typeof when?.path === "string" ? writersOf(at.state, when.path.split(".")[0]!) : OTHER_WROTE;
-    at.escalate(node.label, writers.size === 1 && writers.has("judge"));
+    const heads = when?.predicate === "ask" ? askHeads(when) : typeof when?.path === "string" ? [when.path.split(".")[0]!] : [];
+    at.escalate(node.label, heads.length > 0 && heads.every((head) => { const writers = writersOf(at.state, head); return writers.size === 1 && writers.has("judge"); }));
     return at.state;
   },
   code: (node, at) => {
@@ -3066,7 +3079,7 @@ function walkWriters(value: unknown, state: StateWriters, prefix: string, verdic
 
 /** The escalate nodes of a workflow document that read a judge's output, by label as a run names its step (a child's
  *  `parent/child`, as WorkflowDeps.softEscalate is asked): each whose `when` (under any number of `not`s) reads a field a
- *  judge node wrote, the judge being the step that last wrote that path's head on every path a run can take to the
+ *  judge node wrote (an `ask` predicate: every key its `state` reads, and it reads at least one), the judge being the step that last wrote that path's head on every path a run can take to the
  *  escalate (a judge an extract overwrites, one in only some of a route's branches, one a code node with no `as` may have
  *  overwritten, are not). A judge's field is one model's opinion of a draft the workflow already wrote, so a host that
  *  measures the check may record it instead of obeying it (WorkflowDeps.softEscalate) and read the draft past it. A
