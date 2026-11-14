@@ -49,8 +49,8 @@ The protocol is published as a spec, [`spec/computer/`](../../spec/computer/READ
 The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods, `tar.*`, the `process.*` methods and
 `deadline.extend`; hello reports kind `linux` and groups `["exec", "files", "processes"]` (see [The protocol
 extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)). With an X display it also answers
-`screen.shot`, `screen.read` and `input.actions`, and reports kind `desktop` with `screen`, `input.pointer` and
-`input.keys` (see [The X11 shim](#the-x11-shim)).
+`screen.shot`, `screen.read`, `input.actions` and the `apps.*` methods, and reports kind `desktop` with `screen`,
+`input.pointer`, `input.keys` and `apps` (see [The X11 shim](#the-x11-shim)).
 
 ```text
 → {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me"}}
@@ -96,7 +96,9 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   of its own to give (Modal), or whose images' privilege tools cannot be relied on (Daytona). Init starts as root,
   makes `$HOME` and the socket's directory that user's alone (0700, never through a symbolic link), and becomes uid:gid
   with no supplementary groups, dropping its privileges on the way as below: from there it is the daemon a Docker
-  computer runs. `--user 0:0` is root with no capability. Without
+  computer runs. With `DISPLAY` set (a desktop), init first gives a uid and gid with no entry in `/etc/passwd` and
+  `/etc/group` one, named `agentrun-tool` (or `agentrun-<id>` when that name is taken), home `$HOME`, shell `/bin/sh`:
+  a desktop's programs look their user up (D-Bus's session bus, a terminal's shell). `--user 0:0` is root with no capability. Without
   root, init refuses `--user` in words; a Docker computer is given its user by `docker run --user` and never passes it.
 - `computerd init ... --user <uid:gid> --own-network` is how every remote provider starts init (Daytona, E2B, Modal).
   A remote vendor runs its own agent in the computer beside the daemon's programs (Daytona's toolbox on 2280, E2B's
@@ -437,7 +439,7 @@ in the kernel's tool registry, keyed by these groups.
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS` (optional) | archil | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | none (`unmounted`: archil) | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
@@ -589,11 +591,26 @@ by its rectangle), so a longer one ends the connection before anything is alloca
 `aborted`.
 
 - The display is reached when it is first asked for, and again after it goes: hello declares `screen`,
-  `input.pointer` and `input.keys`, and kind `desktop`, only while the display answers with XTEST. So a provider may
-  start its X server through `process.start` after init is up. With no display (`DISPLAY` unset, nothing answering, no
-  XTEST) nothing is declared, and each method is `unsupported`, saying why.
+  `input.pointer`, `input.keys` and `apps`, and kind `desktop`, only while the display answers with XTEST. So a
+  provider may start its X server through `process.start` after init is up. With no display (`DISPLAY` unset, nothing
+  answering, no XTEST) nothing is declared, and each method is `unsupported`, saying why.
 - Programs get no `DISPLAY` from the daemon (exec and process environments stay minimal): one that should show on the
-  display is given it in `env`.
+  display is given it in `env`. An app the `apps` group opens is given it.
+- `apps` (`daemon/internal/apps`) answers as a Mac's does, the same methods and the same answers. `apps.list` reads the
+  desktop files of `$XDG_DATA_HOME/applications` and each of `$XDG_DATA_DIRS` (default `~/.local/share`, then
+  `/usr/local/share` and `/usr/share`), as the Desktop Entry spec says: the apps there are, by their desktop file ids
+  (`org.xfce.mousepad`), with their names; hidden and `NoDisplay` entries, and a `TryExec` that is not there, are left
+  out. Its `foreground` is the app of the window manager's active window, else of the top window. `apps.launch({ id,
+  url? })` takes an id, a name (`Mousepad`) or a program (`mousepad`), starts the entry's `Exec` (`url` in its `%u`/`%f`
+  field; an entry with none refuses a `url` as `invalid`) as `process.start` does with orphans `keep`, with `DISPLAY`,
+  and answers `{}` once a new window of the app shows, raised and focused (through the window manager's
+  `_NET_ACTIVE_WINDOW` when one runs, waiting up to 2 s for it to be the active window), so keys typed right after
+  reach it; none within 10 s is `timeout`, "no window within 10 s", and the app runs on. An
+  app already running with a window is brought to the front and answers at once, unless a `url` is given. A
+  window is the app's by the launch that made it (`_NET_WM_PID` and the process's parents), else by its `WM_CLASS`
+  (the entry's `StartupWMClass`, its id's last part or its program). `background` is `unsupported`: a Linux desktop
+  opens an app in front. `apps.terminate` sends TERM, then KILL, to the app's launches and its windows' processes, and
+  answers once none of its windows shows and none of its launches runs, a launch that never showed a window included.
 - `screen.shot` is a PNG of the root window or a region inside it (one outside is `invalid`), with `scale` 1 and
   `cursor` from `QueryPointer`. A connection holds one shot, until it is read to its end or the next shot; a
   `screen.read` of another id is `not_found`.
@@ -688,12 +705,13 @@ was deleted.
 
 - `capabilities()` declares kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, `maxLifetimeMs`
   of 30 days, and `mount: ["bind"]` (below); there is no `extend()` or `stream()`, and init gets no `--max-deadline`.
-- `new DockerProvider({ daemonPath, desktop: {} })` makes desktops: kind `desktop`, with `screen`, `input.pointer` and
-  `input.keys` too, on an image with an X server (`test/fixtures/desktop/Dockerfile` is Alpine and Xvfb, 48 MB).
+- `new DockerProvider({ daemonPath, desktop: {} })` makes desktops: kind `desktop`, with `screen`, `input.pointer`,
+  `input.keys` and `apps` too, on an image with an X server (`test/fixtures/desktop/Dockerfile` is Alpine, Xvfb and xterm, the stock app `apps.launch-terminate` opens, about 50 MB).
   `create` gives the daemon `DISPLAY` (`display`, default `:0`), then starts the X server through it with
   `process.start` (`server`, default `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`), as the computer's user and as any
   program: computerd stays PID 1 and starts nothing itself, and the server is one process in its table that ends with
-  the computer. `create` waits (`timeoutMs`, default 30 s) until hello declares the display, then runs the drift check;
+  the computer. A `windowManager` (an argv, default none) starts the same way once the display answers, with `DISPLAY`;
+  one that cannot start, or ends within 1 s of starting, fails create with its last words. `create` waits (`timeoutMs`, default 30 s) until hello declares the display, then runs the drift check;
   a server that ends first, with its last words on stderr, or a display that is not up in time deletes the computer in
   words.
 - `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (`checkLifetime`: at most
@@ -887,7 +905,7 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   `{ other: "<words>" }` for a mount at `/workspace` the provider never makes. An Archil mount's `epoch` is the
   computer's `agentrun.epoch` label (Archil's hold on a folder carries none); an Archil mount with no epoch reads back
   as `{ other }`, in words. The token is never in a label, a read-back or an error.
-- **An Archil egress gateway (Daytona, `archilEgress` / `DAYTONA_ARCHIL_EGRESS`).** For a target whose runners reach
+- **An Archil egress gateway (`HostedOptions.archilEgress`).** For a target whose runners reach
   Archil only through a gateway, `<IPv4 gateway>:<mount lane>:<data lane>` (such as `10.60.0.40:18100:42050`, parcha-proxy's
   archil-egress). The helper's mount then starts `computerd archil-relay` on the computer's loopback (127.0.0.1:3129) and
   an nftables table of its own (`inet agentrun_archil`) that redirects root's TCP to 8100 (the mount endpoint) and 32050
@@ -1371,6 +1389,10 @@ the sandbox from its default snapshot; the provider never guesses a snapshot's n
 image it was asked for in the label `agentrun.computer.image`, beside the deadline's in the provider's own namespace,
 and attach reports that as `image` and the resolved snapshot apart, as `snapshot`.
 
+Daytona takes no mount of the run's folder: Archil's client hangs on its sandboxes (its FUSE session never answers a
+`statx` of the mountpoint), so `capabilities().mount` is `[]` and `check()` refuses an Archil mount up front, code
+`refused`, in the descriptor's `unmounted.archil` words, before anything is asked of Daytona.
+
 ### Lifetimes
 
 Every sandbox ends at its TTL (`ttlMinutes`, from `lifetimeMs`). Two options bound it further, each sent on every create
@@ -1760,8 +1782,13 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    whose start answers after the call gave up on it (its bound passed, or the caller aborted) is killed as it lands.
 6. A desktop's X server, `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`, starts through the daemon with
    `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
-   shared with Docker). Hello re-checks the display on every call, so `connect()` refuses a desktop whose X server has
-   gone (it reads back kind `linux`).
+   shared with Docker). Then xfwm4, which the template has, starts the same way on it (`dbus-run-session -- xfwm4
+   --compositor=off --sm-client-disable`, `WINDOW_MANAGER`: xfwm4 reads its settings over a session bus and exits
+   without one), so the apps an agent opens are framed and focused. The template has no passwd entry for 2510, and a
+   session bus closes every connection of a uid it cannot look up, so a desktop's init, still root, first names the
+   user `agentrun-tool` (home the computer's, shell `/bin/sh`), as the box image does (`daemon.NameUser`). A window
+   manager that ends within a second of its start fails create with its last words. Hello re-checks the
+   display on every call, so `connect()` refuses a desktop whose X server has gone (it reads back kind `linux`).
 
 envd runs as root and obeys anyone with the API key, as Daytona's toolbox does, and answers on 49983 (`e2b@2.63.0`
 `dist/index.mjs:1213`, `envdPort`) inside the sandbox; the computer's daemon runs as 2510:2510 with no capability in
@@ -2044,9 +2071,10 @@ kernel `4.19.0-gvisor`): root has no `CAP_SYS_ADMIN`, and init made its namespac
 `create({ kind: "desktop", ... })` (serve builds the descriptor's desktop configuration so) makes a desktop: the
 adapter gives init `DISPLAY` and starts `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp` through the daemon as the tool
 user (`src/desktop.ts`), as on E2B, so the X server is one process in init's table, in its own network namespace, and
-ends with the computer. Its default image is `agentrun-box` (`AGENT37_BOX_TEMPLATE`): `box/Dockerfile` (the archil
-client, the helper, the tool user, FUSE, no sudo) plus Xvfb, built as a template of the key's own workspace by
-`box/build-agent37.mjs`:
+ends with the computer; xfwm4 starts the same way once the display answers. Its default image is `agentrun-box`
+(`AGENT37_BOX_TEMPLATE`): `box/Dockerfile` (the archil client, the helper, the tool user, FUSE, no sudo) plus Xvfb,
+xfwm4, and the apps E2B Desktop has that are cheap to carry (Xfce's terminal and Mousepad, Firefox ESR, xdotool),
+which the `apps` group lists and opens, built as a template of the key's own workspace by `box/build-agent37.mjs`:
 
 ```sh
 AGENT37_API_KEY=... node packages/computer/box/build-agent37.mjs   # prints template=agentrun-box

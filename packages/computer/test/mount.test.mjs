@@ -48,6 +48,14 @@ test("checkMount refuses a mount kind the provider does not declare, in words, w
 	}
 });
 
+test("checkMount gives the provider's own reason for a kind it doesn't take (unmounted), that sentence alone, and the shared words for another", () => {
+	const unmounted = { archil: "Archil mounts don't work here yet: Archil's client hangs on its sandboxes" };
+	assert.deepEqual(computer.checkMount(ARCHIL, [], unmounted), [{ field: "mount", message: unmounted.archil }]);
+	assert.deepEqual(computer.checkMount({ ...ARCHIL, folder: "" }, [], unmounted), [{ field: "mount", message: unmounted.archil }], "the kind is refused before its fields are read");
+	assert.match(computer.checkMount({ kind: "bind", path: dir }, [], unmounted)[0].message, /declares no mount kind/);
+	assert.deepEqual(computer.checkMount(ARCHIL, ["archil"], { bind: "no host folder here" }), [], "a declared kind is taken");
+});
+
 test("checkMount refuses what is not a mount, or a kind it does not know, in words", () => {
 	for (const mount of [null, "bind", 1, [], { path: dir }, { kind: "nfs", path: dir }]) {
 		const found = refusals(mount, ["bind", "archil"]);
