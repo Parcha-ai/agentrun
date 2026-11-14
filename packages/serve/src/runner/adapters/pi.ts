@@ -86,11 +86,11 @@ export interface PiAdapterOptions {
    *  Messages or OpenAI's Responses) at `origin`, its credential, sent as `auth` says (Messages' default x-api-key;
    *  Responses' is always a bearer token). `api` is the one source of the session's wire: its policy, pi-ai's client and
    *  its port all read it. */
-  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key" };
+  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly plan?: boolean; readonly refused?: (credential: string) => Promise<void> };
   /** The model pi asks for. */
   readonly model: string;
   /** The catalog's entry for the model: whether it reasons, its window and its output ceiling, as pi-ai's model of it. */
-  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown };
+  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean };
   /** The price of a request's usage, for the proxy's booking. */
   readonly price?: (model: string, usage: never) => number | null;
   /** The proxy's upstream fetch (a test's scripted origin). */
@@ -189,6 +189,7 @@ async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: r
     model: route.model,
     origin: route.provider.origin,
     credential: async () => (await route.provider.credential()) ?? "",
+    ...(route.provider.refused ? { credentialRefused: route.provider.refused } : {}),
     ...(price ? { price: price as never } : {}),
     ...(route.provider.headers ? { headers: route.provider.headers } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
@@ -253,9 +254,11 @@ function searchesAllowed(body: Record<string, unknown>, isSearch: (tool: Record<
 export async function policyFor(provider: PiAdapterOptions["provider"], model: string, tools: readonly string[], webSearch = false): Promise<ProviderPolicy> {
   if (provider.api === "anthropic-messages") return piPolicy(model, tools, provider.auth, webSearch);
   // Loaded when a session of its wire opens, as the runner loads the codex harness.
-  const { codexPolicy, webSearchUsd } = (await import("@parcha/agentrun-harness-codex")) as { codexPolicy(options: { model: string; tools: readonly string[]; webSearch?: "live" }): ProviderPolicy; webSearchUsd(model: string): number | undefined };
-  if (!webSearch) return codexPolicy({ model, tools });
-  return searchOnce(codexPolicy({ model, tools, webSearch: "live" }), codexPolicy({ model, tools }), webSearchUsd(model));
+  const { codexPolicy, webSearchUsd } = (await import("@parcha/agentrun-harness-codex")) as { codexPolicy(options: { model: string; tools: readonly string[]; webSearch?: "live"; plan?: boolean }): ProviderPolicy; webSearchUsd(model: string): number | undefined };
+  // A ChatGPT plan's route keeps the plan's rules (codexPolicy's `plan`).
+  const plan = provider.plan ? { plan: true } : {};
+  if (!webSearch) return codexPolicy({ model, tools, ...plan });
+  return searchOnce(codexPolicy({ model, tools, webSearch: "live", ...plan }), codexPolicy({ model, tools, ...plan }), webSearchUsd(model));
 }
 
 /** Codex's live-search policy (`live`) as pi's session takes it. The Codex CLI offers its search on every request; pi

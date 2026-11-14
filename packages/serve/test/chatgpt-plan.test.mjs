@@ -12,7 +12,7 @@ import { MODEL_KEYS } from "../dist/model.js";
 import { agent, follow, journalOf, serve, serverLog, withEnv } from "./support.mjs";
 
 const CODEX_FAKE = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
-const CODEX_STAND_IN = { AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [CODEX_FAKE], env: { FAKE_CODEX_MODEL: "remote" } }) };
+const CODEX_STAND_IN = { AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [CODEX_FAKE], env: { FAKE_CODEX_MODEL: "responses" } }) };
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SEAL_KEY", "AGENTRUN_SERVE_DEFAULT_MODEL", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", ...MODEL_KEYS.map((row) => row.field)];
 const SCOPE = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 const CALLBACK = "http://127.0.0.1:1455/auth/callback";
@@ -273,12 +273,23 @@ test("two readers of one sign-in renew it once; a refresh token spent elsewhere 
   assert.equal(await a.token(), one, "a renewed token is kept and sealed: no second refresh");
   assert.equal(openai.refreshes, 1);
 
+  // OpenAI answered 401 to the token the row still holds: the next token renews it, once. A 401 to a token another reader
+  // has since replaced renews nothing: the row's new one is sent.
+  await a.refused(one);
+  const renewed = await a.token();
+  assert.equal(openai.refreshes, 2, "a refused token is renewed");
+  assert.notEqual(renewed, one);
+  await b.refused(one);
+  assert.equal(await b.token(), renewed, "a 401 to a token already replaced sends the row's new one");
+  assert.equal(openai.refreshes, 2, "and renews nothing");
+  const spentRow = { ...credential, access: renewed, refresh: openai.issued.at(-2).refresh };
+
   // Another holder wrote back a row with the refresh token already spent: OpenAI refuses it for good (reused), and no
   // reader tries again.
-  await putSealedKey(store, sealKey, PLAN_ROW, row(credential));
-  await assert.rejects(a.token(), (error) => error instanceof PlanUnavailable && /expired/.test(error.message) && !error.message.includes(credential.refresh));
-  assert.equal(openai.refreshes, 2);
+  await putSealedKey(store, sealKey, PLAN_ROW, row(spentRow));
+  await assert.rejects(a.token(), (error) => error instanceof PlanUnavailable && /expired/.test(error.message) && !error.message.includes(spentRow.refresh));
+  assert.equal(openai.refreshes, 3);
   await assert.rejects(b.token(), PlanUnavailable);
-  assert.equal(openai.refreshes, 2, "an expired sign-in is never refreshed again");
+  assert.equal(openai.refreshes, 3, "an expired sign-in is never refreshed again");
   assert.equal((await b.load()).view().state, "expired");
 });

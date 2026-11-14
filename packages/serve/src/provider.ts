@@ -13,6 +13,7 @@ import type { Wire } from "@parcha/agentrun-kernel";
 import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef } from "./model.js";
 import { WIRES } from "./wires.js";
 import { modelFormWhy } from "./model-form.js";
+import { EXPIRED, PLAN_ORIGIN, PLAN_PROVIDER, planOf, SIGNED_OUT } from "./chatgpt-plan.js";
 
 // Each wire's own settings live in a leaf module (wires.ts), which the harness table reads as it loads.
 export { WIRES };
@@ -104,7 +105,9 @@ export function anthropicModelId(model: ModelRef): string {
  *  path), its key, read per request, how the endpoint takes it, the model id sent, and the catalog entry that prices it.
  *  `who`: the harness, for a refusal's words. Throws a HarnessUnavailable where the run cannot go: a model of another
  *  vendor, a key that is not set (its `keys` name the ones that would fix it), or an endpoint a key may not go to. */
-export type Provider = { origin: string; credential: () => string; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef };
+/** `billing: "plan"`: a ChatGPT plan's route (chatgpt-plan.ts), billed to the plan, never priced here; its credential is
+ *  the plan's token, asked at each request, and `refused` tells the plan OpenAI answered 401 to one it sent. */
+export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void> };
 
 /** OpenRouter's key, read per request, refused by name where it is not set. */
 function openRouterKey(env: NodeJS.ProcessEnv, who: string, named: string): () => string {
@@ -134,6 +137,12 @@ export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef,
     const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : ANTHROPIC_ORIGIN;
     if (!env.ANTHROPIC_API_KEY) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY.`, undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.`, undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
     return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", modelId: own } };
+  }
+  // A ChatGPT plan's model: OpenAI's Responses API on the plan's token, whatever else is set.
+  if (model.provider === PLAN_PROVIDER) {
+    const plan = planOf(env);
+    if (plan?.state !== "signed_in") throw new HarnessUnavailable(plan?.state === "expired" ? EXPIRED : SIGNED_OUT);
+    return { origin: PLAN_ORIGIN, credential: () => plan.token(), auth: "bearer", modelId: model.modelId, priceModel: model, billing: "plan", refused: (sent) => plan.refused(sent) };
   }
   if (env.AGENT_MODEL_BASE_URL) return gatewayProvider(env, model);
   if (model.provider === "openrouter" && model.modelId.startsWith("openai/")) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, who, named), auth: "bearer", modelId: model.modelId, priceModel: model };

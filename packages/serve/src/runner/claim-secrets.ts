@@ -13,6 +13,7 @@ import type { RunLaunch } from "../run-launch.js";
 import { keysFor, needsOf, RUN_SECRETS } from "../run-secrets.js";
 import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
 import { getSealedKey } from "../server-keys.js";
+import { planOf, planReaderOf, withPlan } from "../chatgpt-plan.js";
 import type { SealedKeys } from "../store/store.js";
 import { handsParallel } from "../tool-plane.js";
 import type { Revision } from "../agent-rows.js";
@@ -24,7 +25,8 @@ const CANDIDATES: readonly string[] = [...new Set([...RUN_SECRETS, ...DECISION_K
 /** What claimSecrets reads the keys from: the one store (its sealed keys) and the runner's seal key, and the runner's base
  *  environment (its own, with no server secret in it: those are the store's). */
 export interface ClaimSecretsDeps {
-  readonly store: { readonly sealedKeys: Pick<SealedKeys, "get"> };
+  /** `put` and `remove` for the ChatGPT sign-in alone, which a run renews and seals again (chatgpt-plan.ts). */
+  readonly store: { readonly sealedKeys: Pick<SealedKeys, "get" | "put" | "remove"> };
   /** The runner's seal key: with none, no saved key is opened, and only the environment's values are read. */
   readonly sealKey: Buffer | undefined;
   readonly env?: NodeJS.ProcessEnv;
@@ -45,7 +47,9 @@ export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, l
   for (const name of keysFor(scoped, working)) if (working[name] !== undefined) env[name] = working[name];
   const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false });
   for (const [name, value] of Object.entries(decision)) env[name] = value;
-  return env;
+  // The server's ChatGPT sign-in, read from the store for this claim: its token is asked at each request the run's model
+  // proxy sends (chatgpt-plan.ts), never put on the environment its tools run under (a symbol no spawn copies).
+  return withPlan(env, await planReaderOf(deps.store, deps.sealKey));
 }
 
 /** Every candidate secret in a working environment over the runner's base, read for one claim and scoped by its caller, so
@@ -133,7 +137,8 @@ export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv)
     if (!fill.has(name)) Object.defineProperty(out, name, Object.getOwnPropertyDescriptor(env, name)!);
   }
   for (const [name, value] of fill) Object.defineProperty(out, name, { value, enumerable: false, writable: false, configurable: false });
-  return out;
+  // The claim's ChatGPT sign-in (claimSecrets), else the runner's own.
+  return withPlan(out, planOf(opened) ?? planOf(env));
 }
 
 /** Every model key the server holds, for a model route with no revision to scope it by (a learning run's grade): each

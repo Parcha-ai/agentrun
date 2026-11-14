@@ -52,6 +52,10 @@ export interface CodexProvider {
   origin: string;
   /** The provider key, read per request in this process. It never reaches Codex's process. */
   credential: () => Promise<string> | string;
+  /** A person's ChatGPT plan (`credential` its access token), whose rules the proxy keeps (codexPolicy's `plan`). */
+  plan?: boolean;
+  /** Told the credential a request was sent with when the provider answered 401 to it (ModelProxyOptions.credentialRefused). */
+  refused?: (credential: string) => void | Promise<void>;
 }
 
 /** Codex's own web search, as a session may turn it on: `live` (it searches the web as it runs). */
@@ -240,6 +244,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
               ...(options.log ? { log: options.log } : {}),
               ...(options.price ? { price: options.price } : {}),
               ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+              ...(options.provider.plan ? { plan: true } : {}),
+              ...(options.provider.refused ? { credentialRefused: options.provider.refused } : {}),
               ...(options.fetch ? { fetch: options.fetch } : {}),
             },
           }),
@@ -310,11 +316,12 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       // Started once the session's drive is open, the last step that can fail: an open that fails leaves no listener.
       const search = options.webSearch === "live";
       const hostPort = await startModelProxy({
-        policy: codexPolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), ...(search ? { webSearch: "live" as const, ...(searchAllowed ? { searchAllowed } : {}) } : {}) }),
+        policy: codexPolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), ...(options.provider.plan ? { plan: true } : {}), ...(search ? { webSearch: "live" as const, ...(searchAllowed ? { searchAllowed } : {}) } : {}) }),
         hooks: io.models,
         model: modelFor(spec),
         origin: options.provider.origin,
         credential: async () => (await options.provider.credential()) ?? "",
+        ...(options.provider.refused ? { credentialRefused: options.provider.refused } : {}),
         ...(options.price ? { price: search ? withWebSearches(options.price) : options.price } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.fetch ? { fetch: options.fetch } : {}),
