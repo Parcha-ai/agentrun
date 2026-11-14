@@ -41,6 +41,7 @@ import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMIS
 import { BROWSER_VENDOR_IDS, DECISION_PROVIDER_KEYS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS } from "./tool-plane.js";
 import { tableTools } from "./tool-list.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
+import { LABEL_KEY, MAX_LABEL_VALUE, MAX_LABELS } from "./run-labels.js";
 import { BASH_POLICIES } from "./bash-read-only.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
@@ -50,6 +51,22 @@ import { ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_SUBPROTOCOL, MAX_LINE_BYTES
 import { PAIR_TRIES_PER_MINUTE, PAIRED_NAME_MAX } from "./computer-attach.js";
 
 type Json = Record<string, unknown>;
+
+/** runlabels/1: a run's labels, given at its start and served on every read of it (run-labels.ts). */
+const RUN_LABELS: Json = {
+  type: "object",
+  maxProperties: MAX_LABELS,
+  propertyNames: { pattern: LABEL_KEY.source },
+  additionalProperties: { type: "string", minLength: 1, maxLength: MAX_LABEL_VALUE },
+  "x-agentrun-serve": "runlabels/1",
+};
+/** runlabels/1: GET /runs' and GET /agents/{agent_id}/runs' filter on a run's labels. */
+const LABEL_PARAMETER: Json = {
+  name: "label", in: "query", required: false,
+  description: "Only runs holding this label: `<key>:<value>`, split at the first `:` (a key holds none). Once per request; a second `label`, or one that does not read as a label, is 400.",
+  schema: { type: "string" },
+  "x-agentrun-serve": "runlabels/1",
+};
 
 /** Why each capability this server turns off answers 501, by the route's capability. */
 export const UNSUPPORTED: Readonly<Record<string, string>> = {
@@ -1524,6 +1541,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         { name: "revision", in: "query", required: false, description: "Only runs of this revision.", schema: { type: "string" } },
         { name: "status", in: "query", required: false, description: "Only runs with this status.", schema: ref("schemas/RunStatus") },
         { name: "archived", in: "query", required: false, description: "true lists only archived runs; false, the default, the others.", schema: { type: "boolean" } },
+        LABEL_PARAMETER,
       ],
       responses: { "200": json(ref("schemas/RunList"), "One page of runs, newest first."), ...errors(400, 401, 429, 500) },
     },
@@ -2372,6 +2390,7 @@ const RUN_FIELDS: Record<string, Json> = {
   revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
   kind: { enum: ["agentic", "workflow"], description: "The revision's kind: an agentic run, or a workflow run.", "x-agentrun-serve": "serve/1" },
   archived_at: { type: ["string", "null"], description: "When the run, or its agent, was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
+  labels: { ...RUN_LABELS, description: "The labels the run was started with (RunCreate.labels), as given; `{}` when none. Always sent by a server that keeps labels (`runlabels/1`); absent from an earlier one's answer." },
 };
 /** What a run waits on, one field for every kind, told apart by `kind`: a question it asked a person, or a tool call
  *  that waits for approval. */
@@ -2497,6 +2516,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   RunCreate: {
     mcp_auth: { ...MCP_RUN_AUTH, description: `${MCP_RUN_AUTH.description as string} Each names a saved MCP server whose \`auth.type\` is per_run (422 at \`mcp_auth.<server>\` otherwise, no run made). Sealed into the run's launch for its life, read at each claim, and erased by the write that ends it; never in its saved body, its timeline, its view or an Idempotency-Key's fingerprint (a retry with a new credential answers the first request's run).` },
     cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` },
+    labels: { ...RUN_LABELS, description: `The caller's own labels for the run: at most ${MAX_LABELS} keys, each 1 to 63 letters, digits, \`.\`, \`_\`, \`-\` or \`/\` starting with a letter or a digit; each value text of 1 to ${MAX_LABEL_VALUE} characters with no control character. Kept on the run as given, served on every read of it (\`labels\` on Run and RunSummary) and matched by GET /runs' \`label\`; set once, at the start. The server reads nothing else from them: put no secret in one. Another shape is 422 under \`labels\` or \`labels.<key>\`. Absent: none.` },
     workflow_first: {
       type: "boolean",
       description: "Whether a run of an agent that learns may start on one of its learned workflows. On (absent or true), a run whose input fits exactly one active learned workflow (its input schema has a required field, and the run's input passes it) runs that workflow first, with no turn of the agent's model: its answer is the run's answer, and if it hands the job back (it escalates, a step fails), the same run goes on with the agent, given what the workflow found. The run keeps which path it took: `workflow`, `handed_back` or `agent`. false: the agent takes the run from its first turn.",
@@ -3183,6 +3203,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   listAgents.parameters = [...listAgents.parameters, { name: "archived", in: "query", required: false, description: "true lists only archived agents; false, the default, the others.", schema: { type: "boolean" } }];
   listAgents["x-agentrun-serve-changed"] = { archived: "archivedparam/1" };
   changed.push("GET /agents");
+  // GET /agents/{agent_id}/runs takes GET /runs' `label` filter too (server.ts runsPage, shared by both routes).
+  const listAgentRuns = (doc.paths["/agents/{agent_id}/runs"] as Json).get as Json & { parameters: Json[] };
+  listAgentRuns.parameters = [...listAgentRuns.parameters, LABEL_PARAMETER];
+  listAgentRuns["x-agentrun-serve-changed"] = { ...(listAgentRuns["x-agentrun-serve-changed"] as Json | undefined), label: "runlabels/1" };
+  changed.push("GET /agents/{agent_id}/runs");
   // GET /agents/{agent_id} always sends the agent's `tools` (server.ts getAgent; [] before it has a revision), which the
   // agent in a list, a create or a save does not: its 200 is the contract's Agent with `tools` required.
   const getAgent = (doc.paths["/agents/{agent_id}"] as Json).get as Json & { responses: Record<string, Json & { content: Record<string, Json> }> };

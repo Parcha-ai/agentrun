@@ -56,7 +56,7 @@ test("a run's own archive time: archive sets it, unarchive clears it, and a list
 test("a run's imported_from reads back as { source, session }, and a run of none reads null", async (t) => {
   // The read contract: runOf parses the column; Store.importRun (a later commit) is its writer.
   assert.deepEqual(
-    runOf({ id: "r", agent_id: "a", revision_id: "v", state: "ended", epoch: 1, runner: null, claimed_until: null, wake_at: null, backoff_until: null, cost_usd: null, metrics: null, summary: null, started_at: 0, ended_at: 1, outcome: "completed", archived_at: null, imported_from: JSON.stringify({ source: "codex", session: "s-1" }), sign_in_handed: null }).importedFrom,
+    runOf({ id: "r", agent_id: "a", revision_id: "v", state: "ended", epoch: 1, runner: null, claimed_until: null, wake_at: null, backoff_until: null, cost_usd: null, metrics: null, summary: null, started_at: 0, ended_at: 1, outcome: "completed", archived_at: null, imported_from: JSON.stringify({ source: "codex", session: "s-1" }), sign_in_handed: null, labels: null }).importedFrom,
     { source: "codex", session: "s-1" },
   );
   const { store } = await storeOn(t);

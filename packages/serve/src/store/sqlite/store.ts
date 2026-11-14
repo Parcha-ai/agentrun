@@ -14,7 +14,7 @@ import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, SCHEMA_VERSION } from "..
 import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
-  type JournalReads, type LaunchSealedWrite, type UpdatedRun,
+  type JournalReads, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
@@ -146,6 +146,18 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
   createdAt: r.created_at, updatedAt: r.updated_at,
 });
 const json = (value: unknown): string => JSON.stringify(value ?? null);
+/** A UTF-16 surrogate standing alone (in `u` mode a whole pair is one code point, so only a lone half matches). */
+const LONE_SURROGATE = /[\ud800-\udfff]/u;
+/** A run's labels as its column holds them: keys sorted, so the same labels are the same text; null for none. A key or value
+ *  holding a lone surrogate is refused (TypeError), nothing written: JSON.stringify keeps it as a `\ud800` escape that
+ *  Postgres' json check takes but json_each_text cannot decode, so every later label search scanning the run would fail. */
+const labelsColumn = (labels: RunLabels | undefined): string | null => {
+  for (const [key, value] of Object.entries(labels ?? {})) {
+    if (LONE_SURROGATE.test(key) || LONE_SURROGATE.test(value)) throw new TypeError(`a run's label ${JSON.stringify(key)} holds a lone UTF-16 surrogate: a label is whole Unicode characters`);
+  }
+  const keys = Object.keys(labels ?? {}).sort();
+  return keys.length === 0 ? null : JSON.stringify(Object.fromEntries(keys.map((key) => [key, labels![key]])));
+};
 
 type McpServerRecord = {
   name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; server_info: string | null; instructions: string | null; sealed: Uint8Array | null;
@@ -806,25 +818,26 @@ class SqliteStore implements Store {
     };
 
     this.runs = {
-      create: async ({ id, agentId, revisionId, origin }, launch) => {
+      create: async ({ id, agentId, revisionId, origin, labels }, launch) => {
         // sign_in_handed is not written here: the runner writes it at its claim (runs.update under the epoch fence).
-        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
+        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING ${RUN_COLUMNS}`;
+        const labelled = labelsColumn(labels);
         if (origin || launch) {
           // The run, its origin and its launch row in one transaction: the key -> run link holds even if the kept response
           // never lands, and a run never exists without the launch it was started with.
           return this.#queued(await db.transaction(async (tx) => {
             const at = now();
-            const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, at);
+            const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, at);
             if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
             if (launch) await writeLaunch(tx, id, launch, at);
             return runOf(row!);
           }));
         }
-        const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, now()] }]);
+        const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, labelled, now()] }]);
         return this.#queued(runOf(result!.rows[0] as RunRecord));
       },
       createInline: async ({ agent, revision, run, launch }) => {
-        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`;
+        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING ${RUN_COLUMNS}`;
         const made = await db.transaction(async (tx) => {
           const at = now();
           // Hold the external reference, so two first uses of the same expert serialize (SQLite's one writer already does).
@@ -848,7 +861,7 @@ class SqliteStore implements Store {
             await tx.run("UPDATE agents SET current_revision = ?, name = ?, description = ? WHERE id = ?", revisionId, agent.name, agent.description ?? null, mapped.id);
           }
           // The run, its origin and its launch, in the same transaction as the agent and the revision.
-          const row = await tx.get<RunRecord>(insert, run.id, mapped.id, revisionId, at);
+          const row = await tx.get<RunRecord>(insert, run.id, mapped.id, revisionId, labelsColumn(run.labels), at);
           if (run.origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", run.origin.key, run.id, run.origin.fingerprint ?? null, at);
           await writeLaunch(tx, run.id, launch, at);
           return runOf(row!);
@@ -860,7 +873,7 @@ class SqliteStore implements Store {
         return row && runOf(row);
       },
       launch: (runId) => readLaunch(db, runId),
-      list: async ({ agentId, revisionId, state, archived, limit }) => {
+      list: async ({ agentId, revisionId, state, archived, labels, limit }) => {
         // A built-in learning run (a run's grade and merge, queued with its kept learning) is no run of a person's: no list,
         // count, stat or notice names it.
         const where: string[] = [NOT_A_LEARNING_RUN];
@@ -869,6 +882,8 @@ class SqliteStore implements Store {
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
         if (state !== undefined) (where.push("state = ?"), params.push(state));
         if (archived !== undefined) where.push(`archived_at IS ${archived ? "NOT NULL" : "NULL"}`);
+        // Each label, key and value bound as parameters (never spliced into a JSON path), all of them held.
+        for (const [key, value] of Object.entries(labels ?? {})) (where.push(d.jsonObjectHas("labels")), params.push(key, value));
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
         if (bounded) params.push(limit);
         const rows = await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, id DESC${bounded ? " LIMIT ?" : ""}`, ...params);
