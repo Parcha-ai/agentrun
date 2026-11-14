@@ -1,5 +1,5 @@
 // A run's first request after a new claim (an approval, a deny, a raise: each ends the claim that parked) is priced from
-// the session's previous request as the claim before it left it, by when that request ended on the cap's clock: warm
+// the session's recent requests as the claim before it left them, by when they ended on the cap's clock: warm
 // under CACHE_WARM_MS (4 minutes), its cache read at the cache-read price and only what the body grew by at full price;
 // cold after it, its whole bound uncached. Never cold only because the claim is new. Through the adapter loop on a real
 // store, pi on a scripted origin, the cap's clock a test's: one call the gate asks about, answered after 1 or 5 minutes.
@@ -91,14 +91,16 @@ for (const decision of ["allow", "deny"]) {
   });
 }
 
-test("the previous request is kept on the session as the cap's figures, and a record that does not read as one prices cold", async () => {
-  const { previousIn } = await import("../dist/runner/adapter-loop.js");
+test("the recent requests are kept on the session as the cap's figures, and one that does not read as one is left out", async () => {
+  const { recentIn } = await import("../dist/runner/adapter-loop.js");
   const kept = { model: PRICED.id, cachedTokens: 0, inputTokens: 100, boundTokens: 4_000, endedAt: T0 };
-  const record = (data) => ({ kind: "agentrun.cap.previous", data });
-  assert.deepEqual(previousIn([record(kept)]), kept);
-  assert.deepEqual(previousIn([record({ ...kept, boundTokens: 1 }), record(kept)]), kept, "the newest");
-  assert.equal(previousIn([record(kept), record(null)]), undefined, "history reset");
-  for (const bad of [{ ...kept, cachedTokens: -1 }, { ...kept, endedAt: Number.NaN }, { ...kept, model: 7 }, "x"]) assert.equal(previousIn([record(bad)]), undefined, JSON.stringify(bad));
-  assert.equal(previousIn([]), undefined);
+  const smaller = { ...kept, boundTokens: 1_000, counted: true };
+  const record = (data) => ({ kind: "agentrun.cap.recent", data });
+  assert.deepEqual(recentIn([record([kept, smaller])]), [kept, smaller]);
+  assert.deepEqual(recentIn([record([smaller]), record([kept])]), [kept], "the newest record");
+  assert.deepEqual(recentIn([record([kept]), record([])]), [], "none kept");
+  for (const bad of [{ ...kept, cachedTokens: -1 }, { ...kept, endedAt: Number.NaN }, { ...kept, model: 7 }, "x", null]) assert.deepEqual(recentIn([record([bad, kept])]), [kept], JSON.stringify(bad));
+  assert.deepEqual(recentIn([record(null)]), []);
+  assert.deepEqual(recentIn([]), []);
   assert.equal(cap.CACHE_WARM_MS, 4 * 60_000, "the window these cases straddle");
 });

@@ -30,7 +30,7 @@ export function priced(request: ModelCapRequest, mode: CapMode, now: number) {
   const price = request.model.price;
   if (bound === undefined || price === null) return undefined;
   const asked = outputAsked(request);
-  const { cost, worst } = requestPrice(pricingOf(price), bound, request.previous, now, mode, request.model.id, request.feeUsd ?? 0);
+  const { cost, worst } = requestPrice(pricingOf(price), bound, request.recent, now, mode, request.model.id, request.feeUsd ?? 0);
   return { asked, cost, worst, least: asked === undefined ? 0 : outputLeast(request, asked) };
 }
 

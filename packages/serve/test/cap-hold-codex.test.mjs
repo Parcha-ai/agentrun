@@ -4,8 +4,10 @@
 //   - with each tool call made while its request still streams (Codex starts a call before its response ends; Claude
 //     Code books its cost after its calls): the request is admitted at an output whose worst case leaves the wrap-up's
 //     reserve free, so the call is not refused for the reserve. A cap too small for both still refuses it.
+//   - with a smaller request of the session's own between two of its main requests (Codex's while a tool runs): the
+//     next main request is priced from the conversation's last (warm), and no wrap-up comes on a $0.07 job.
 //   - with an approval and with a deny mid-run: the run parks, its claim ends, and the first request of the claim the
-//     answer opens is priced from the session's previous request (warm), never as if the session had none (cold).
+//     answer opens is priced from the session's recent requests (warm), never as if the session had none (cold).
 // In each, no request is held past what the cap leaves.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -71,6 +73,27 @@ for (const harness of HARNESSES) {
     // Each request that streamed a call was sent with less than its 32,000 tokens, never under its least, so its worst
     // case and the reserve fit what was left as its call ran.
     for (const one of held.slice(0, 4)) assert.ok(one.outputTokensMax >= 3_072 && one.outputTokensMax < 32_000, `turn ${one.turn}: ${one.outputTokensMax}`);
+    neverPast(held, 0.5, harness);
+  });
+
+  test(`${harness}: a smaller request of the session's own between two of its main requests (Codex's while a tool runs) leaves the next main request priced warm, with no wrap-up, never past the cap`, { timeout: 120_000 }, async (t) => {
+    const { api, store } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: SONNET });
+    const runId = await start(api, `smaller-${harness}`, harness, "Grow a Codex-shaped context for 4 requests, with a smaller request after request 2.", 0.5);
+    await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 100_000 });
+    const run = (await api("GET", `/runs/${runId}`)).body;
+    assert.deepEqual([run.status, run.result?.final_answer], ["completed", "Grown, Codex-shaped."], JSON.stringify(run.pending ?? run.error));
+    assert.ok(run.cost.usd > 0.04 && run.cost.usd < 0.1, `about $0.07: $${run.cost.usd}`);
+    const held = await heldOf(store, runId);
+    t.diagnostic(`holds: ${JSON.stringify(held.map((one) => [one.outputTokensMax, Number(one.heldUsd.toFixed(4)), Number(one.boundUsd.toFixed(4))]))}`);
+    // Requests 0, 1 and 2, the smaller one, then request 3: read cold it would hold its 53,200 bytes at $2.50 a million
+    // ($0.133) beside its output; warm from request 2, the largest recent request no bigger than it, about $0.012.
+    assert.equal(held.length, 6, "four main requests, the smaller one and the answer");
+    const next = held[4];
+    const coldHold = cold(3, next.outputTokensMax);
+    assert.ok(next.heldUsd < coldHold - 0.1, `the main request after the smaller one is priced warm: $${next.heldUsd} vs $${coldHold} cold`);
+    const journal = await journalOf(store, runId);
+    assert.deepEqual(journal.filter((entry) => entry.kind === "agentrun.cap_wrapup").map((entry) => entry.data.words), [], "no wrap-up on a $0.07 job");
+    assert.deepEqual(journal.filter((entry) => entry.kind === "faux.result" && entry.data.refused).map((entry) => entry.data), [], "no call refused");
     neverPast(held, 0.5, harness);
   });
 

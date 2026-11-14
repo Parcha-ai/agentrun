@@ -64,7 +64,7 @@ import { COMPUTER_CALLS, type ComputerCallRecord, recordingCalls } from "../comp
 import { channelCallOf, type LoopComputer, runChannelCall } from "./computer-channel.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, FIT_TOLERANCE, noteFor, overCapOf, paidRefusal, type PricedRequest, type Previous, previousAfter, requestFigures, runCap, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, FIT_TOLERANCE, noteFor, overCapOf, paidRefusal, type PricedRequest, type RecentRequest, recentAfter, requestFigures, runCap, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap's config, as its spec gives it: the kernel runCap's options but its sessions (the loop's own), and
@@ -445,14 +445,18 @@ const cliErrorAnswer = (harness: string, error: string, at: number) => ({
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 });
 
-/** The session's previous request as its newest KINDS.capPrevious record kept it; none when there is none, history reset
- *  (null), or the record does not read as one (each figure a finite number of 0 or more): priced uncached, never under. */
-export function previousIn(records: readonly SessionRecord[]): Previous | undefined {
-  const kept = records.findLast((record) => record.kind === KINDS.capPrevious)?.data as Partial<Previous> | null | undefined;
-  if (!kept || typeof kept !== "object" || typeof kept.model !== "string") return undefined;
+/** The session's recent requests as its newest KINDS.capRecent record kept them: each that reads as one (a model, and each
+ *  figure a finite number of 0 or more); none without a record. One that does not read is left out: a request is then
+ *  priced from another or uncached, never under its worst. */
+export function recentIn(records: readonly SessionRecord[]): RecentRequest[] {
+  const kept = records.findLast((record) => record.kind === KINDS.capRecent)?.data;
+  if (!Array.isArray(kept)) return [];
   const figure = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
-  if (!figure(kept.cachedTokens) || !figure(kept.inputTokens) || !figure(kept.boundTokens) || !figure(kept.endedAt)) return undefined;
-  return { model: kept.model, cachedTokens: kept.cachedTokens, inputTokens: kept.inputTokens, boundTokens: kept.boundTokens, endedAt: kept.endedAt, ...(typeof kept.counted === "boolean" ? { counted: kept.counted } : {}) };
+  return kept.flatMap((data) => {
+    const one = (data ?? {}) as Partial<RecentRequest>;
+    if (typeof one !== "object" || typeof one.model !== "string" || !figure(one.cachedTokens) || !figure(one.inputTokens) || !figure(one.boundTokens) || !figure(one.endedAt)) return [];
+    return [{ model: one.model, cachedTokens: one.cachedTokens, inputTokens: one.inputTokens, boundTokens: one.boundTokens, endedAt: one.endedAt, ...(typeof one.counted === "boolean" ? { counted: one.counted } : {}) }];
+  });
 }
 
 /** The turns a session's records booked (its runner.turn records), in order. */
@@ -1456,12 +1460,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const besideNow = async (): Promise<number | null> => (specNow?.runCap?.beside ? await specNow.runCap.beside() : 0);
         const sessions = Object.assign(journalSessions(harness, context, { flush: () => deps.flush() }), { beside: besideNow });
         let capBuilt: RunCap | undefined;
-        /** The session's previous request, as the cap's `expected` pricing reads it (the kernel's Previous): the last of the
-         *  harness's own requests that answered, its input as its usage reported it (read from or written to the cache, and
-         *  the rest) and its input bound, and when it ended. Kept on the session (KINDS.capPrevious), so a new claim after an
-         *  approval, a deny or a park starts from it (seeded below, once the session's records are read), and its first
-         *  request is warm or cold by when that answer ended, as within a claim. None before one has: a cache miss. */
-        let previous: Previous | undefined;
+        /** The session's recent requests, as the cap's `expected` pricing reads them (the kernel's recentAfter and
+         *  warmFrom): the harness's own requests that answered under CACHE_WARM_MS ago, each one's input as its usage
+         *  reported it (read from or written to the cache, and the rest), its input bound and when it ended. Kept on the
+         *  session (KINDS.capRecent), so a new claim after an approval, a deny or a park starts from them (seeded below,
+         *  once the session's records are read), and its first request is warm or cold by when they ended, as within a
+         *  claim. None before one has: a cache miss. */
+        let recent: RecentRequest[] = [];
         /** What the run keeps back beside a request of its own session while it streams (RunCapOptions.keepBackUsd), set
          *  once the wrap-up's reserve is known (below): a tool call it makes mid-stream finds room for the steps after it. */
         let keepBackOf: RunCapOptions["keepBackUsd"];
@@ -1470,24 +1475,25 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const theCap = (): RunCap => {
           if (!specNow?.runCap) throw new Error("the run's spec gives no cap (AdapterRunSpec.runCap)");
           // The cap each admission reads is the run's now (capNow): a raise taken on this claim or an earlier one.
-          // Its previous request is the session's own (requestEnded), unless the spec names one (a test's warm cache).
+          // Its recent requests are the session's own (requestEnded), unless the spec names them (a test's warm cache).
           const { beside: _beside, ...config } = specNow.runCap;
-          return (capBuilt ??= runCap({ sessions, previousOf: (model) => (previous?.model === model ? previous : undefined), keepBackUsd: (request, asked) => keepBackOf?.(request, asked), ...config, capUsd: capNow }));
+          return (capBuilt ??= runCap({ sessions, recentOf: (model) => recent.filter((one) => one.model === model), keepBackUsd: (request, asked) => keepBackOf?.(request, asked), ...config, capUsd: capNow }));
         };
         /** A request of this claim ended (`request_end`): one of the harness's own (no host label, no side call) that
-         *  answered with its input reported is the session's previous request from now, kept on the session (`keep`, the
-         *  model session's writer) for a later claim. A write that fails leaves the later claim the older one, or none:
-         *  priced as before, never under. */
+         *  answered with its input reported is one of the session's recent requests from now, kept on the session
+         *  (`keep`, the model session's writer) for a later claim. A write that fails leaves the later claim the older
+         *  ones, or none: priced from them or uncached, never under the worst. */
         const requestEnded = async (turn: number, usage: ModelUsage, how: Ended | undefined, keep: SessionWriter): Promise<void> => {
           const asked = askedFor.get(turn);
           askedFor.delete(turn);
           if (!asked?.own || asked.bound === undefined || usage.cut || (how !== undefined && how.end !== "answered")) return;
           const cachedTokens = (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
           if (!(usage.input >= 0 && cachedTokens >= 0 && usage.input + cachedTokens > 0)) return;
-          // A smaller request than the previous on the same model is a compaction or another conversation's (a child of the
-          // run, whose requests the proxy cannot tell from the root's): history resets (previousAfter), never sticks.
-          previous = previousAfter(previous, { model: asked.model, cachedTokens, inputTokens: usage.input, boundTokens: asked.bound, counted: asked.counted, endedAt: (specNow?.runCap?.now ?? Date.now)() });
-          await keep.append([{ kind: KINDS.capPrevious, data: (previous ?? null) as unknown as JsonValue }]).catch(() => undefined);
+          // A smaller request than the last (a CLI's own while a tool runs, a compaction's, a child's that the proxy cannot
+          // tell from the root's) is kept beside the others, never in their place: each request is priced from the one
+          // whose bound fits it best (warmFrom), so none resets the conversation's history.
+          recent = recentAfter(recent, { model: asked.model, cachedTokens, inputTokens: usage.input, boundTokens: asked.bound, counted: asked.counted, endedAt: (specNow?.runCap?.now ?? Date.now)() });
+          await keep.append([{ kind: KINDS.capRecent, data: recent as unknown as JsonValue }]).catch(() => undefined);
         };
         const flushed = { flush: () => deps.flush() };
         const earlierDecisions = sessionSpendOf(await sessions.read(DECISION_SESSION)).spentUsd;
@@ -1653,7 +1659,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           return { ...pending, refuse: text, figures };
         };
         const beforeRequest: BeforeRequest = async (request) => {
-          // Kept until it ends, so its answer can be the session's previous request (requestEnded): on its model as the cap
+          // Kept until it ends, so its answer can be one of the session's recent requests (requestEnded): on its model as the cap
           // prices it (RunCap.asked), which a CLI's request names as its provider does, so the next request finds it.
           askedFor.set(request.turn, { model: specNow?.runCap ? theCap().asked(request).model.id : request.model, ...(request.inputTokensMax === undefined ? {} : { bound: request.inputTokensMax }), counted: request.inputTokensCounted === true, own: request.host === undefined && !request.side && !request.unanswered });
           // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused,
@@ -1750,9 +1756,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // them (`host`), nor the harness's own side call on a smaller model (`side`, a title request), nor one a crash cut
         // (booked at its hold and bound, the worst case), one never sent, given back, owed or stopped.
         const claimRecords = await writer.read();
-        // The previous request an earlier claim or pass kept (KINDS.capPrevious): this claim's first request is priced
-        // from it, warm or cold by when it ended, never as if the session had no history.
-        previous = previousIn(claimRecords);
+        // The recent requests an earlier claim or pass kept (KINDS.capRecent): this claim's first request is priced from
+        // them, warm or cold by when they ended, never as if the session had no history.
+        recent = recentIn(claimRecords);
         const claimHosts = sessionSpendOf(claimRecords).hosts;
         /** The turns of requests that are no main-model request of the harness's own: read from the records, then each
          *  admitted side call's (its ticket's turn), so a live answer's cost is judged the same as a restart's. */

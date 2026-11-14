@@ -16,7 +16,7 @@ const SOL = Object.freeze({ id: "gpt-6.1-sol", api: "openai-responses", price: {
 function codexRequest(k, { ago = 10_000 } = {}) {
   const prompt = (n) => 10_000 + 1_100 * n;
   const previous = k === 0 ? undefined : { model: SOL.id, cachedTokens: prompt(k - 1) - 3, inputTokens: 3, boundTokens: prompt(k - 1) * 4, endedAt: T0 - ago };
-  return { kind: "model", id: `turn-${k}`, model: SOL, inputTokens: prompt(k) * 4, outputAsked: 32_000, outputTokensLeast: 3_072, ...(previous ? { previous } : {}) };
+  return { kind: "model", id: `turn-${k}`, model: SOL, inputTokens: prompt(k) * 4, outputAsked: 32_000, outputTokensLeast: 3_072, ...(previous ? { recent: [previous] } : {}) };
 }
 const state = (capUsd, spentUsd, keepUsd) => ({ capUsd, spentUsd, heldUsd: 0, mode: "expected", now: T0, ...(keepUsd === undefined ? {} : { keepUsd }) });
 /** Serve's reserve for `request` (wrap-up.ts reserveFor): one typical step (step 0's, before any is priced) and its least. */
@@ -43,7 +43,8 @@ test("hold, bound and what a stop counts are priced at the output sent, as witho
   const request = codexRequest(3);
   const kept = capRule.judge(request, state(0.5, 0.03, reserveOf(request)));
   const pricing = pricingOf(SOL.price);
-  const input = { cached: request.previous.cachedTokens, fresh: request.previous.inputTokens + (request.inputTokens - request.previous.boundTokens) };
+  const [previous] = request.recent;
+  const input = { cached: previous.cachedTokens, fresh: previous.inputTokens + (request.inputTokens - previous.boundTokens) };
   assert.ok(Math.abs(kept.heldUsd - pricing(input, kept.outputTokensMax)) < 1e-12, "held at its warm input and the output sent");
   assert.ok(Math.abs(kept.worstUsd - pricing({ cached: 0, fresh: request.inputTokens }, kept.outputTokensMax)) < 1e-12, "its worst all uncached at that output");
   assert.ok(Math.abs(kept.boundUsd - (kept.worstUsd - kept.heldUsd)) < 1e-12);
@@ -106,7 +107,7 @@ test("beforeRequestOf asks the host's keep-back for each model request, priced a
   const before = beforeRequestOf({
     capUsd: () => 0.5,
     modelOf: () => SOL,
-    previousOf: () => codexRequest(3).previous,
+    recentOf: () => codexRequest(3).recent,
     now: () => T0,
     keepBackUsd: (request, asked) => (told.push({ turn: request.turn, asked }), reserveOf(asked)),
   });
@@ -115,9 +116,9 @@ test("beforeRequestOf asks the host's keep-back for each model request, priced a
   assert.equal(told.length, 1);
   assert.equal(told[0].turn, 4);
   assert.equal(told[0].asked.inputTokens, inputTokens);
-  assert.ok(told[0].asked.previous, "priced warm, from the session's previous request");
+  assert.ok(told[0].asked.recent, "priced warm, from the session's recent requests");
   assert.ok(answer.outputTokensMax < 32_000);
   assert.ok(0.03 + answer.holdUsd + answer.boundUsd + reserveOf(told[0].asked) <= 0.5 + FIT_TOLERANCE);
-  const plain = await beforeRequestOf({ capUsd: () => 0.5, modelOf: () => SOL, previousOf: () => codexRequest(3).previous, now: () => T0, keepBackUsd: () => undefined })({ model: "gpt-6.1-sol", spentUsd: 0.03, inFlight: [], inputTokensMax: inputTokens, outputTokensAsked: 32_000, outputTokensLeast: 3_072, turn: 4, maxTurns: null, key: "k", label: "k" });
+  const plain = await beforeRequestOf({ capUsd: () => 0.5, modelOf: () => SOL, recentOf: () => codexRequest(3).recent, now: () => T0, keepBackUsd: () => undefined })({ model: "gpt-6.1-sol", spentUsd: 0.03, inFlight: [], inputTokensMax: inputTokens, outputTokensAsked: 32_000, outputTokensLeast: 3_072, turn: 4, maxTurns: null, key: "k", label: "k" });
   assert.equal(plain.outputTokensMax, 32_000, "a host that keeps none back gets the rule as it was");
 });
