@@ -63,7 +63,7 @@ export default {
         if (shots) await markExample(page.getByTestId("held-out-test"));
         if (shots && width === WIDTHS[0]) await page.getByTestId("held-out-test").screenshot({ path: join(shots, `held-out-${theme}-${width}.png`) });
         const headline = await card.locator("h3 + p").textContent();
-        check(/before learning, .* after takeover: 7\.0x cheaper/.test(headline ?? ""), `${theme} ${width}px: the headline says ${headline}`);
+        check(/before takeover, .* all-in after: 7\.0x cheaper/.test(headline ?? ""), `${theme} ${width}px: the headline says ${headline}`);
         const m = await page.evaluate(measure);
         check(m, `${theme} ${width}px: no chart`);
         if (m.plotWidth > m.cardWidth + 0.5) wrong.push(`${theme} ${width}px: the plot is ${m.plotWidth}px in a ${m.cardWidth}px card`);
