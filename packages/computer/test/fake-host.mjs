@@ -103,7 +103,8 @@ const START = Date.now();
  *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
  *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager does not start) or
  *    "manager dies" (it ends at once);
- *  - lingers: { reads, lists } after a delete; fileApi: false for a host with no upload;
+ *  - lingers: { reads, lists, state } after a delete, a lingering read in state (running unless given); fileApi: false
+ *    for a host with no upload;
  *  - timer: "ok" (extend moves the end and the deadline label: the vendor's timer, or with lifetime janitor the label
  *    alone, rounded up to a whole second), "limit" (extend throws a HostError limit, nothing moves), or "none" (a host
  *    with no extend);
@@ -236,6 +237,8 @@ export function fakeHost({
 				if (m.box.probe === "no-accepted") delete report.accepted;
 				return result({ exitCode: 0, stdout: Buffer.from(`${JSON.stringify(report)}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 			}
+			// A command still running: its answer comes once it ends, which a test never lets it.
+			if (argv[0] === "sleep") return undefined;
 			return result({ exitCode: 0, stdout: Buffer.from(`${argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 		}
 		if (method === "process.start") {
@@ -423,8 +426,11 @@ export function fakeHost({
 				queueMicrotask(() => proc.exit(1, "computerd stdio: no daemon listens at /run/agentrun/computerd.sock (connect: no such file or directory)\n"));
 				return proc;
 			}
+			m.bridges = [...(m.bridges ?? []), proc];
 			let buffered = "";
 			proc.onWrite = async (bytes) => {
+				// A machine that vanished under a hung transport: what is sent is taken, and nothing ever answers.
+				if (m.hung) return;
 				buffered += bytes.toString("utf8");
 				let at;
 				while ((at = buffered.indexOf("\n")) >= 0) {
@@ -435,6 +441,7 @@ export function fakeHost({
 					fake.events.push({ machine: m.id, what: `daemon ${request.method}` });
 					await onStep(request.method, m);
 					const reply = answer(m, request);
+					if (reply === undefined) continue;
 					proc.out.push(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...reply })}\n`);
 				}
 			};
@@ -519,7 +526,7 @@ export function fakeHost({
 			await step("get", ctx, m);
 			if (m?.deleted && m.lingering?.reads > 0) {
 				m.lingering.reads--;
-				return { ...view(m), state: "running" };
+				return { ...view(m), state: m.lingering.state };
 			}
 			if (gone(m)) return undefined;
 			if (m.startingReads > 0 && --m.startingReads === 0) m.state = "running";
@@ -542,7 +549,7 @@ export function fakeHost({
 			if (gone(m) || m.deleted) return;
 			m.deleted = true;
 			fake.events.push({ machine: id, what: "delete" });
-			if (lingers) m.lingering = { reads: lingers.reads ?? 0, lists: lingers.lists ?? 0 };
+			if (lingers) m.lingering = { reads: lingers.reads ?? 0, lists: lingers.lists ?? 0, state: lingers.state ?? "running" };
 		},
 		async exec(id, argv, ctx) {
 			const m = machines.get(id);
@@ -588,6 +595,18 @@ export function fakeHost({
 	fake.release = async () => {
 		for (const one of held.splice(0)) one.resolve();
 		await new Promise((done) => setTimeout(done, 10));
+	};
+	/**
+	 * A machine deleted out from under the adapter, by the vendor's own API: get reads it gone and the listing leaves it
+	 * out. stream "end": every bridge into it ends, as a VM that died closes its exec streams; "hang": the bridges stay
+	 * open and nothing answers, as a dead tunnel nobody has noticed yet.
+	 */
+	fake.vanish = (id, stream = "end") => {
+		const m = machines.get(id);
+		m.deleted = true;
+		fake.events.push({ machine: id, what: `vanish (${stream})` });
+		if (stream === "hang") m.hung = true;
+		else for (const bridge of m.bridges ?? []) bridge.exit(255);
 	};
 	/** Every machine not deleted. */
 	fake.live = () => [...machines.values()].filter((m) => !m.deleted);

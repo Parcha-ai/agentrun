@@ -119,14 +119,13 @@ const ECHO = /^\{"jsonrpc":"2\.0",("id":\d+,)?"method":/;
 const decoder = new TextDecoder();
 
 /**
- * A sandbox's state as the adapter reads a machine's: failed is gone; one Daytona is destroying (or was asked to
- * destroy) is stopped until it reads destroyed, since the wait after a delete reads get alone and Daytona still has it;
- * stopping and pausing are stopped. A destroyed one get and list leave out.
+ * A sandbox's state as the adapter reads a machine's: failed, destroying and asked to destroy are gone (none of them
+ * starts again); stopping and pausing are stopped. A destroyed one get and list leave out, and the wait after a delete
+ * waits for that.
  */
 function stateOf(sb: Sandbox): Machine["state"] {
 	const state = sb.state ?? "";
-	if (FAILED.has(state)) return "gone";
-	if (GONE.has(state) || sb.desiredState === "destroyed") return "stopped";
+	if (GONE.has(state) || sb.desiredState === "destroyed" || FAILED.has(state)) return "gone";
 	if (state === "started") return "running";
 	return STARTING.has(state) ? "starting" : "stopped";
 }

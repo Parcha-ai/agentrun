@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { settingsKeyOf } from "../dist/tool-gate.js";
 import { runnerGate } from "./gate-support.mjs";
 
-const DENY = Object.fromEntries(["bash", "read", "browser", "desktop", "monid.run", "mcp:srv/echo", "web_search"].map((key) => [key, { permission: "deny" }]));
+const DENY = Object.fromEntries(["bash", "read", "browser", "desktop", "monid:faux/*", "mcp:srv/echo", "web_search"].map((key) => [key, { permission: "deny" }]));
 const ROWS = [
   // table, own and decision tools: themselves
   ["pi", [], "read", "read", "allow", "deny"],
@@ -33,10 +33,12 @@ const ROWS = [
   ["opencode", [], "read_skill_file", "read", "allow", "deny"],
   ["opencode", ["read"], "read_skill_file", "mcp:read/skill_file", "ask", "ask"],
   ["claude-agent", ["read"], "mcp__hands__read_skill_file", "read", "allow", "deny"],
-  // the open families: catalog names, MCP aliases, monid wire names, OpenCode's alias for a configured server only
-  ["pi", [], "monid.run", "monid.run", "ask", "deny"],
-  ["pi", [], "monid_run", "monid.run", "ask", "deny"],
-  ["claude-agent", [], "mcp__hands__monid_run", "monid.run", "ask", "deny"],
+  // the open families: catalog names (a monid endpoint's denied by its provider's wildcard), MCP aliases, OpenCode's alias
+  // for a configured server only. A monid endpoint's wire name is read back to its catalog name by the loop (its
+  // ClaimMcp.catalogOf) before the gate is asked: alone, it is no name the gate maps, and asks.
+  ["pi", [], "monid:faux/person/enrich", "monid:faux/person/enrich", "ask", "deny"],
+  ["claude-agent", [], "monid:faux/person/enrich", "monid:faux/person/enrich", "ask", "deny"],
+  ["pi", [], "monid__faux__person__enrich", undefined, "ask", "ask"],
   ["pi", [], "mcp:srv/echo", "mcp:srv/echo", "ask", "deny"],
   ["pi", [], "mcp__srv__echo", "mcp:srv/echo", "ask", "deny"],
   ["claude-agent", [], "mcp__hands__mcp__srv__echo", "mcp:srv/echo", "ask", "deny"],

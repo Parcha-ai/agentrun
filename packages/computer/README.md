@@ -1197,7 +1197,7 @@ returns the first state `done` accepts. Each read gets a signal that aborts at t
 read still pending then is not waited for, and one that throws is not done. Past the bound it returns a `timeout`, on
 the caller's abort an `aborted`, each naming `what` was waited for and the last state read (`describe`). It has no
 vendor's types: the shared adapter's release, a create that deletes its machine, and the one live sweep wait through it
-(`settle`, until get reads a machine gone twice running), for every hosted vendor.
+(`settle`, until get answers none for a machine twice running; one read `gone` is still going), for every hosted vendor.
 
 ## Modal
 
@@ -1268,7 +1268,7 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
   `labelBytes`): the adapter's `check()` counts them, its own at their longest, and refuses past it in words. An Archil computer's mount label records the
   folder's agent alone, as on every host: the folder's run is the `agentrun.run` label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal still
   lists after its terminate is polled and left out once `poll()` reads it finished.
-- **release** `delete` is `terminate()`, and the adapter waits until the sandbox reads gone.
+- **release** `delete` is `terminate()`, and the adapter waits until get answers none (`poll()` reads it finished).
   `stop` is refused as `unsupported`: terminate is a sandbox's only end.
 - **GPU.** `capabilities().gpu` declares Modal's GPU types by its own names (guide/gpu): `T4`, `L4`, `A10`, `L40S`,
   `A100` (40 GB), `A100-40GB`, `A100-80GB`, `RTX-PRO-6000`, `H100`, `H200`, `B200`, `B300`, at most 8 to a computer.
@@ -1542,22 +1542,25 @@ the TTL.
   create was asked for (`"default"` stays `"default"`), from its label; the daemon's user, the network, `/work`, the
   deadline and, with one, the GPU.
 - `list(labels)` asks Daytona for `agentrun.computer=1` alone, every page, for the ids; the adapter keeps those whose
-  `GET /sandbox/{id}` carries the other labels. A sandbox that is `destroyed`, `error` or `build_failed` is gone and
-  left out. `started` is `running`; the states on the way to it are starting, and left out; one Daytona is destroying,
-  or was asked to destroy, is `stopped` until it reads `destroyed`, as is every other state (`stopping`, `pausing`,
-  `stopped`, `archived`, `paused`).
+  `GET /sandbox/{id}` carries the other labels. A sandbox that is `destroying`, `destroyed`, `error` or `build_failed`,
+  or whose desired state is `destroyed`, is gone and left out: none of them starts again. `started` is `running`; the
+  states on the way to it are starting, and left out; every other state (`stopping`, `pausing`, `stopped`, `archived`,
+  `paused`) is `stopped`.
 - `network(ref)` is the adapter's probe from inside; `network(ref, policy)` refuses any policy but the one the
   computer has, with `refused` and no request.
 - `release(ref, "delete")` deletes: retried on a 5xx, checked against the sandbox, with a forced stop before the last
   attempt. It is idempotent, and refuses a sandbox that is not this provider's. `release(ref, "stop")` is refused as
   `unsupported`, with no request: a Daytona computer is deleted, never stopped and kept.
 - Daytona is asynchronous: it answers a delete by setting the sandbox's desired state to `destroyed`, and the sandbox
-  gets there later, through `destroying`. Its listing trails it. So release waits until `GET /sandbox/{id}` reads the
-  computer gone, twice running: a 404 or `destroyed`, never a desired state alone. It polls with pauses that double from `pollMs` up to 5 s, bounded by the `goneMs` timeout (120 s unset)
+  gets there later, through `destroying`. Its listing trails it. So release waits until `GET /sandbox/{id}` no longer
+  finds the computer, twice running: a 404 or `destroyed`. A sandbox still `destroying`, or with the desired state
+  alone, reads gone to every other caller but holds this wait. It polls with pauses that double from `pollMs` up to
+  5 s, bounded by the `goneMs` timeout (120 s unset)
   and by the signal `release(ref, how, { signal })` takes. When the bound runs out, release fails in words naming the
   last state Daytona read: it never reports a release it has not seen done. A create that deletes the sandbox it made
   (a failure, an abort) waits the same way before it returns.
-- `connect(ref)` refuses a computer that is not `started`, and a daemon whose hello is not the provider's.
+- `connect(ref)` answers `gone` for a sandbox that is going (destroying, or asked to destroy), refuses one that is
+  not `started`, and a daemon whose hello is not the provider's.
 - Every call has its own timeout and takes the caller's signal; reads, the upload and deletes are retried (three tries,
   backoff from `timeouts.retryMs`, 500 ms unset); creates, session commands and input are not.
 

@@ -92,7 +92,7 @@ export function proofOf(record: Promotion): string | null {
   if (record.source === "dry_run") return "not replayed";
   if (record.source === "refit") return r ? `refit on ${r.n} ${r.n === 1 ? "row" : "rows"}` : null;
   if (record.source !== "replay" || !r || record.decided === "replaying" || record.decided === "superseded") return null;
-  return r.n ? `replayed ${r.n}${r.of ? `/${r.of.length}` : ""}` : "0 replays answered";
+  return r.n ? `replayed ${r.n}${r.of?.length ? `/${r.of.length}` : ""}` : "0 replays answered";
 }
 
 /** Whether a record was decided on evidence: a replay or a refit that scored at least one graded input. */

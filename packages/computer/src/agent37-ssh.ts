@@ -37,6 +37,7 @@ export interface Ssh2ConnectConfig {
 	privateKey: string;
 	readyTimeout: number;
 	keepaliveInterval: number;
+	keepaliveCountMax: number;
 }
 
 /** The slice of an ssh2 Client this provider uses. */
@@ -57,8 +58,15 @@ export interface Ssh2Module {
 	Client: new () => Ssh2Client;
 }
 
-/** ssh2's keepalive: the CLI's ServerAliveInterval is 60 s (cli.js:32); the edge never sees an idle tunnel. */
-const KEEPALIVE_MS = 30_000;
+/**
+ * ssh2's keepalive, which also keeps the edge from seeing an idle tunnel (the CLI's ServerAliveInterval is 60 s, cli.js:32).
+ * ssh2 pings every KEEPALIVE_MS and ends the connection at the tick after KEEPALIVE_COUNT_MAX pings went unanswered
+ * (ssh2@1.17.0 lib/client.js sendKA), so a dead tunnel is noticed at most KEEPALIVE_MS × (KEEPALIVE_COUNT_MAX + 1) =
+ * 15 s after its last answer, and every channel on it (the daemon's bridge among them) ends. ssh2's default count of 3
+ * with a 30 s interval took 97 s on a deleted instance. Both are set: the bound never rests on ssh2's default.
+ */
+const KEEPALIVE_MS = 5_000;
+const KEEPALIVE_COUNT_MAX = 2;
 /**
  * How long a kill waits for its own kill command, then for its channel to close before wait() answers -1 anyway; and
  * how long an ended SSH connection has to close before its tunnel is dropped.
@@ -228,7 +236,7 @@ export class SshExec {
 				new Promise<void>((resolve, reject) => {
 					client.once("ready", resolve);
 					client.once("error", reject);
-					client.connect({ sock: duplex, username: "root", privateKey: this.#privateKey, readyTimeout: timeoutMs, keepaliveInterval: KEEPALIVE_MS });
+					client.connect({ sock: duplex, username: "root", privateKey: this.#privateKey, readyTimeout: timeoutMs, keepaliveInterval: KEEPALIVE_MS, keepaliveCountMax: KEEPALIVE_COUNT_MAX });
 				}),
 				quitted,
 			]);

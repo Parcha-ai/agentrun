@@ -217,12 +217,14 @@ test("the status mapping: every Agent37 status is one of the adapter's states, a
 		sleeping: "stopped",
 		failed: "gone",
 		deleting: "gone",
-		deleted: "gone",
 	};
 	for (const [status, state] of Object.entries(states)) {
 		rest.instances.get(value.id).status = status;
 		assert.equal((await host.get(value.id, CTX)).state, state, status);
 	}
+	// A deleted instance is one Agent37 no longer has: none, as a 404 is, so the wait after a delete ends on it.
+	rest.instances.get(value.id).status = "deleted";
+	assert.equal(await host.get(value.id, CTX), undefined, "deleted");
 	rest.instances.get(value.id).status = "melting";
 	const odd = (await host.get(value.id, CTX));
 	assert.equal(odd.state, "gone");
@@ -532,6 +534,27 @@ test("a connection that died is never handed out: the next exec opens a fresh on
 	await assert.rejects(host.exec(value.id, ["true"], CTX), /open failure/i);
 	assert.equal(fake.ws.opened.length, 5, "once more, no more");
 	assert.ok(await until(() => fake.sshd.state.live === 0), "the refusing connections ended, none holding them");
+});
+
+test("a dead tunnel is noticed within 15 s: each connection sets ssh2's keepalive interval and its count, and the two bound it", async (t) => {
+	const seen = [];
+	const { Client } = (await import("ssh2")).default;
+	class Recording extends Client {
+		connect(config) {
+			seen.push(config);
+			return super.connect(config);
+		}
+	}
+	const { host } = await setup(t, { ssh2: { Client: Recording } });
+	const value = await host.create(request(), CTX);
+	assert.equal((await run(host, value.id, ["true"])).code, 0);
+	assert.equal(seen.length, 1);
+	const { keepaliveInterval, keepaliveCountMax } = seen[0];
+	assert.equal(typeof keepaliveInterval, "number", "the interval is set");
+	assert.equal(typeof keepaliveCountMax, "number", "the count is set, never ssh2's default of 3");
+	// ssh2 ends the connection at the tick after keepaliveCountMax pings went unanswered: interval × (count + 1) after
+	// the last answer (ssh2@1.17.0 lib/client.js sendKA).
+	assert.ok(keepaliveInterval > 0 && keepaliveInterval * (keepaliveCountMax + 1) <= 15_000, `${keepaliveInterval} ms × (${keepaliveCountMax} + 1) is within 15 s`);
 });
 
 test("a connection with no channel left waits a moment for the next exec, then ends; delete ends it at once, channels and all", async (t) => {

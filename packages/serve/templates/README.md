@@ -61,9 +61,9 @@ its listing declares, so an alias the server takes for a pinned argument that th
 `to` beside `recipient_email`) is refused without a pin of its own.
 `market-monitor` pins `SLACK_SEND_MESSAGE`'s `channel` and `GMAIL_SEND_EMAIL`'s `recipient_email` to its `channel`
 parameter (and keeps `cc`, `bcc`, `extra_recipients` and `from_email` out), and `inbound-lead` pins
-`SLACK_SEND_MESSAGE`'s `channel` to its `slack_channel` (both Composio actions). A name the action also takes the
-destination by (Slack's `channel_id`, Gmail's `to`) is pinned absent beside it too, though neither listing declares it, so the
-gate refuses it anyway. `market-monitor`'s `channel` takes a Slack channel id or an email address: each
+`SLACK_SEND_MESSAGE`'s `channel` to its `slack_channel` (both Composio actions). Neither pins the name the action
+also takes the destination by (Slack's `channel_id`, Gmail's `to`): neither listing declares it, so the gate refuses
+it. `market-monitor`'s `channel` takes a Slack channel id or an email address: each
 pin applies only to its own tool, so a channel id leaves no address `GMAIL_SEND_EMAIL` can send to and an address no
 channel Slack can post in, and its skill sends with the tool that matches the destination's kind. A send whose
 destination parameter apply was not given is set to deny, so it never runs, with a `pins.<tool>` warning that names

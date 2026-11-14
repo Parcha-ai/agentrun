@@ -290,13 +290,13 @@ test("the read-back: Daytona's states as the adapter's, its end, its GPUs and it
 		["pausing", "stopped"],
 		["stopped", "stopped"],
 		["archived", "stopped"],
-		["destroying", "stopped"],
+		["destroying", "gone"],
 		["error", "gone"],
 	]) {
 		assert.equal((await read({ state })).state, want, state);
 	}
-	// The wait after a delete reads get alone: a sandbox Daytona is still destroying is not gone until it reads destroyed.
-	assert.equal((await read({ state: "started", desiredState: "destroyed" })).state, "stopped", "asked to destroy, still started: not gone yet");
+	// A sandbox being destroyed cannot start again: it reads gone, while the wait after a delete waits for Daytona's 404.
+	assert.equal((await read({ state: "started", desiredState: "destroyed" })).state, "gone", "asked to destroy, still started: going");
 	assert.equal((await read({ state: "error", errorReason: "no capacity" })).why, "no capacity");
 	assert.equal((await read({ state: "build_failed" })).why, "Daytona reads the sandbox build_failed, with no reason given", "a failed sandbox with no reason still carries a why");
 	assert.equal((await read({ state: "destroying" })).why, undefined);
@@ -322,6 +322,27 @@ test("list: the adapter's label alone is asked for, every page followed, destroy
 	const infos = await provider.list({ team: "a" });
 	assert.deepEqual(infos.value.map((info) => [info.ref.id, info.network]), [["sb-1", "none"]]);
 	assert.equal(rec.requests.filter((r) => r.path === "/api/sandbox/sb-1").length, 1, "one get of the listed computer kept: the listing finds, get answers");
+});
+
+test("a sandbox Daytona is destroying is gone: connect answers gone and list leaves it out; release still waits for Daytona's 404", async () => {
+	const going = sandbox({ state: "destroying", desiredState: "destroyed" });
+	const { provider } = setup({ "GET /api/sandbox": { body: { items: [going] } }, [`GET /api/sandbox/${REF.id}`]: { body: going } });
+	const connected = await provider.connect(REF);
+	assert.equal(connected.error?.code, "gone", JSON.stringify(connected));
+	assert.match(connected.error.message, /is going/);
+	assert.deepEqual((await provider.list({})).value, [], "a going sandbox is not listed, stopped or otherwise");
+
+	let deleted = false;
+	let destroying = 3;
+	const released = setup({
+		[`GET /api/sandbox/${REF.id}`]: () => (!deleted ? { body: sandbox() } : destroying-- > 0 ? { body: going } : { status: 404, body: { statusCode: 404, message: "not found" } }),
+		[`DELETE /api/sandbox/${REF.id}`]: () => {
+			deleted = true;
+			return { status: 200 };
+		},
+	});
+	assert.deepEqual(await released.provider.release(REF, "delete"), { ok: true, value: undefined });
+	assert.ok(destroying < 0, "release ended only once Daytona answered 404, not while it read the sandbox destroying");
 });
 
 test("every request carries the key passed in, the source header and no redirect, whatever DAYTONA_ or COMPUTER_DAYTONA_ names hold; a refused key is never echoed", async () => {

@@ -60,6 +60,7 @@ import {
 	type ReleaseHow,
 	runLifetimeMs,
 } from "../provider.js";
+import type { DaemonMethod, DaemonMethods } from "../protocol.js";
 import { type ComputerError, failFor, ok, type Result } from "../result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "../screen-watch.js";
 import { countTested } from "../test-connection.js";
@@ -84,7 +85,7 @@ export interface HostedTimeouts {
 	probeMs: number;
 	/** One whole listing, every page; each listed machine's get after it has requestMs. */
 	listMs: number;
-	/** From a delete to a machine get reads gone. */
+	/** From a delete to get answering none for the machine. */
 	goneMs: number;
 	/** The first pause between two reads while release waits; the pauses double up to 5 s. */
 	pollMs: number;
@@ -646,7 +647,7 @@ export class HostedProvider implements ComputerProvider {
 		return ok({ ref: { id: created.value.id, name }, made: { deadline, maxDeadline, labels, daemon, sha256, commands, user } });
 	}
 
-	/** Deletes a machine create gives up on, then waits, under the caller's signal, until the vendor reads it gone. */
+	/** Deletes a machine create gives up on, then waits, under the caller's signal, until get answers none for it. */
 	async #abandon(ref: ComputerRef, error: { code: ComputerError["code"]; message: string; vendor?: string }, signal?: AbortSignal, mounted = false): Promise<Result<never>> {
 		this.#end(ref.name);
 		// A computer create made whole (its Archil folder mounted) lets go of the folder first, as release does.
@@ -897,9 +898,11 @@ export class HostedProvider implements ComputerProvider {
 		return { version: VERSION, ...(uid === undefined || gid === undefined ? {} : { uid, gid }), arch: this.host.facts.arch, kind, groups };
 	}
 
-	/** One stdio bridge into the machine, after hello, unchecked. */
-	#open(ref: ComputerRef, signal?: AbortSignal, helloMs = this.#timeouts.helloMs): Promise<Opened> {
-		return openBridge(this.host, ref.id, { argv: hostedCommands().stdio, name: ref.name, version: VERSION, requestMs: this.#timeouts.requestMs, helloMs, ...(signal ? { signal } : {}) });
+	/** One stdio bridge into the machine, after hello, unchecked; its client says so once the machine is deleted. */
+	async #open(ref: ComputerRef, signal?: AbortSignal, helloMs = this.#timeouts.helloMs): Promise<Opened> {
+		const { requestMs } = this.#timeouts;
+		const opened = await openBridge(this.host, ref.id, { argv: hostedCommands().stdio, name: ref.name, version: VERSION, requestMs, helloMs, ...(signal ? { signal } : {}) });
+		return opened.ok ? ok(deletedSaid(this.host, ref, this.#label, requestMs, opened.value)) : opened;
 	}
 
 	/** #open, tried again while the bridge finds no daemon listening, until hello or helloMs in all. */
@@ -1210,8 +1213,8 @@ export class HostedProvider implements ComputerProvider {
 	/**
 	 * delete reads the machine back to check it is this provider's, then deletes it, both never signalled, so a release
 	 * after an abort, or one aborted during the read, still sends the delete; it is idempotent: one the vendor no longer
-	 * has is ok. The vendor answers a delete before the machine is gone, so release then waits (#settle) until the vendor
-	 * reads it gone (get, twice running), within goneMs and the caller's signal, the one step the signal ends. A running
+	 * has is ok. The vendor answers a delete before the machine is gone, so release then waits (#settle) until get
+	 * answers none (twice running), within goneMs and the caller's signal, the one step the signal ends. A running
 	 * Archil computer lets go of the run's folder first (archilRelease: the final sync through computerd, then checkin as
 	 * root); the delete runs whatever that answers. A folder not let go cleanly loses nothing (every call that changed it
 	 * synced, and the next claim revokes the hold), so it is said through onNote, and the release succeeds once the
@@ -1237,7 +1240,7 @@ export class HostedProvider implements ComputerProvider {
 
 	/**
 	 * The one delete: machine's folder let go first (where it is a running Archil computer, as read; none for undefined),
-	 * then the host's delete, then the wait until the vendor reads it gone. The callers word what failed.
+	 * then the host's delete, then the wait until get answers none for it. The callers word what failed.
 	 */
 	async #remove(ref: ComputerRef, machine: Machine | undefined, signal?: AbortSignal): Promise<{ letGo: Result<void>; gone: Result<void> }> {
 		const letGo = await this.#letGoOf(ref, machine, signal);
@@ -1310,10 +1313,82 @@ async function readMachine(host: MachineHost, id: string, ms: number, signal?: A
 	return !read.ok && read.error.code === "not_found" ? ok(undefined) : read;
 }
 
+/** What reading answers, or undefined once a signal aborts first: a caller that stopped waiting never waits on a read. */
+function untilAborted<T>(reading: Promise<T>, signals: readonly (AbortSignal | undefined)[]): Promise<T | undefined> {
+	const given = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+	if (given.length === 0) return reading;
+	const signal = AbortSignal.any(given);
+	if (signal.aborted) return Promise.resolve(undefined);
+	return new Promise((settle) => {
+		const onAbort = () => settle(undefined);
+		signal.addEventListener("abort", onAbort, { once: true });
+		reading.then((value) => {
+			signal.removeEventListener("abort", onAbort);
+			settle(value);
+		});
+	});
+}
+
 /**
- * Waits, through waitUntil, until get reads a machine gone after its delete, twice running: none, or gone. A listing
- * may show a deleted machine for a while (MachineHost.list), so it is not read. Pauses double from pollMs to 5 s,
- * bounded by goneMs and the caller's signal; a failed read ends the wait with that error. Shared with the live sweep.
+ * A connection that says its computer was deleted (the vendor's own API can delete it mid-run). Once its client answers
+ * gone (the stream ended or failed), the machine is read once, and that one read answers every call in flight at that
+ * moment and every later call. A machine the vendor no longer has, or reads gone with no why (going), makes each of them
+ * not_found in these words; one still there, a failed one, or a read that failed, leaves the client's own answer, as does
+ * a caller's abort or a close during the read. A call with no answer by its own timeout answers timeout at once, as the
+ * client says; the machine is read beside it, and a deleted one ends the connection, so every call still waiting on the
+ * hung transport and every later call answers not_found. A connection its caller closed is never read back.
+ */
+function deletedSaid(host: MachineHost, ref: ComputerRef, label: string, requestMs: number, connection: ComputerConnection): ComputerConnection {
+	const { client } = connection;
+	const closing = new AbortController();
+	let deleted: ComputerError | undefined;
+	let ended: Promise<ComputerError | undefined> | undefined;
+	let checking: Promise<ComputerError | undefined> | undefined;
+	const read = async (): Promise<ComputerError | undefined> => {
+		const got = await readMachine(host, ref.id, requestMs, closing.signal);
+		// Gone with no why is being deleted; a failed machine (gone with its why) keeps the client's own answer.
+		if (got.ok && (got.value === undefined || (got.value.state === "gone" && got.value.why === undefined)) && deleted === undefined && !closing.signal.aborted) {
+			const how = got.value === undefined ? `${label} no longer has it` : `${label} reads it going`;
+			deleted = { code: "not_found", message: `the computer ${ref.name} (${ref.id}) was deleted: ${how}` };
+			// Every call still waiting on the transport settles now, with these words, as later ones do.
+			void connection.close();
+		}
+		return deleted;
+	};
+	const close = () => {
+		closing.abort();
+		return connection.close();
+	};
+	return {
+		...connection,
+		client: {
+			async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }): Promise<Result<DaemonMethods[M]["result"]>> {
+				if (deleted) return { ok: false, error: deleted };
+				const answered = await client.call(method, params, options);
+				if (answered.ok) return answered;
+				if (deleted) return { ok: false, error: deleted };
+				if (closing.signal.aborted) return answered;
+				if (answered.error.code === "timeout") {
+					checking ??= read().finally(() => (checking = undefined));
+					return answered;
+				}
+				if (answered.error.code !== "gone") return answered;
+				const found = await untilAborted((ended ??= read()), [options?.signal, closing.signal]);
+				return found ? { ok: false, error: found } : answered;
+			},
+			close() {
+				void close();
+			},
+		},
+		close,
+	};
+}
+
+/**
+ * Waits, through waitUntil, until get answers none for a machine after its delete, twice running: the vendor no longer
+ * has it. A machine read gone is still going (a vendor still destroying it), so it holds the wait like any other state.
+ * A listing may show a deleted machine for a while (MachineHost.list), so it is not read. Pauses double from pollMs to
+ * 5 s, bounded by goneMs and the caller's signal; a failed read ends the wait with that error. Shared with the live sweep.
  */
 export async function settle(
 	host: MachineHost,
@@ -1332,7 +1407,7 @@ export async function settle(
 		}
 		const state = got.value?.state;
 		last = state ?? "gone (not found)";
-		if (state !== undefined && alive(state)) {
+		if (state !== undefined) {
 			agreed = 0;
 			return { last };
 		}
