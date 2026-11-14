@@ -57,7 +57,9 @@ test("the tool user is agentrun-tool, uid and gid 2510, and the helper's serve n
 });
 
 test("no sudo: the image installs none and has no sudoers file, its user is root, and the build checks that the tool user has no way to root", () => {
-  assert.ok(!/\bsudo\b/.test(INSTRUCTIONS.filter((line) => line.startsWith("RUN") && line.includes("apt-get install")).join(" ")), "no sudo package");
+  const installed = INSTRUCTIONS.flatMap((line) => [...line.matchAll(/apt-get install -y -qq --no-install-recommends (.*?) >\/dev\/null/g)].map((match) => match[1]));
+  assert.ok(installed.length >= 2, "the base's packages and the desktop's");
+  assert.ok(!/\bsudo\b/.test(installed.join(" ")), "no sudo package");
   assert.ok(!INSTRUCTIONS.some((line) => line.startsWith("COPY") && line.includes("sudoers")), "no sudoers file is copied");
   assert.ok(!/\bdaytona\b/.test(INSTRUCTIONS.join("\n")), "no daytona user, and nothing granted to one");
   const users = INSTRUCTIONS.filter((line) => line.startsWith("USER "));
@@ -374,16 +376,22 @@ function fakeBuilds({ description, fail } = {}) {
   return { fetch, calls };
 }
 
-test("the Agent37 build's recipe is box/Dockerfile plus Xvfb, xfwm4 and the apps, named agentrun-box, its hash over every copied file and the desktop's lines", async () => {
+test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, each checked, with no sudo; the Agent37 build is the same recipe, named agentrun-box, by recipe.mjs's hash", async () => {
   const { AGENT37_BOX_TEMPLATE } = await import("../dist/index.js");
   const { WINDOW_MANAGER } = await import("../dist/desktop.js");
   const { DESKTOP_APPS } = await import("../dist/conformance/cases/apps.js");
+  const { recipeHash } = await import("../box/recipe.mjs");
   assert.equal(agent37Build.NAME, AGENT37_BOX_TEMPLATE, "the descriptor's desktop image is the template this builds");
   const copied = INSTRUCTIONS.filter((line) => line.startsWith("COPY ")).map((line) => line.split(/\s+/)[1]);
   assert.deepEqual([...agent37Build.RECIPE].sort(), ["Dockerfile", ...copied].sort());
-  assert.ok(agent37Build.DESKTOP.includes(`apt-get install -y -qq --no-install-recommends ${agent37Build.DESKTOP_PACKAGES.join(" ")} >/dev/null`));
-  for (const name of ["xvfb", "xfwm4", "xfce4-terminal", "mousepad", "firefox-esr", "xdotool"]) assert.ok(agent37Build.DESKTOP_PACKAGES.includes(name), name);
-  const programs = agent37Build.DESKTOP.match(/for x in ([^;]*); do command -v "\$x"/)?.[1].split(" ") ?? [];
+  const desktop = INSTRUCTIONS.find((line) => line.startsWith("RUN ") && line.includes("xvfb"));
+  assert.ok(desktop, "the Dockerfile installs the desktop");
+  const packages = desktop.match(/apt-get install -y -qq --no-install-recommends (.*?) >\/dev\/null;/)?.[1].trim().split(/\s+/) ?? [];
+  for (const name of ["xvfb", "xfwm4", "x11-xserver-utils", "xfce4-terminal", "mousepad", "firefox-esr", "xdotool"]) assert.ok(packages.includes(name), name);
+  assert.ok(!packages.some((name) => /vnc|sudo/.test(name)), "no VNC server and no sudo");
+  assert.ok(!INSTRUCTIONS.some((line) => /^(CMD|ENTRYPOINT) /.test(line) && /Xvfb|xfwm4/.test(line)), "nothing of the desktop starts with the image");
+  assert.ok(INSTRUCTIONS.indexOf(desktop) < INSTRUCTIONS.findIndex((line) => line.startsWith("RUN ") && line.includes("dpkg -s sudo")), "the sudo guard runs after the desktop's packages");
+  const programs = desktop.match(/for x in ([^;]*); do command -v "\$x"/)?.[1].split(" ") ?? [];
   assert.ok(programs.includes("Xvfb"), "the build checks the X server is there");
   // The window manager's programs beyond Debian's essential ones (unshare, util-linux's, and sh).
   assert.equal(WINDOW_MANAGER[0], "unshare");
@@ -392,14 +400,16 @@ test("the Agent37 build's recipe is box/Dockerfile plus Xvfb, xfwm4 and the apps
     assert.ok(WINDOW_MANAGER.some((arg) => arg.includes(`${program} `)), `the window manager runs ${program}`);
     assert.ok(programs.includes(program), `the build checks the window manager's ${program} is there`);
   }
-  const checked = agent37Build.DESKTOP.match(/for app in ([^;]*); do/)?.[1].split(" ") ?? [];
+  const checked = desktop.match(/for app in ([^;]*); do/)?.[1].split(" ") ?? [];
   assert.ok(checked.some((app) => DESKTOP_APPS.includes(app)), "the build checks a desktop file the conformance apps case opens");
-  assert.match(agent37Build.DESKTOP, /! command -v sudo/, "the desktop's packages bring no sudo, checked");
+  // E2B's builder adds sudo before the recipe's steps: a sudo check here would refuse its build before the guard takes it away.
+  assert.doesNotMatch(desktop, /command -v sudo/, "the desktop's no-sudo check is the guard's, after it");
+  assert.equal(agent37Build.DESKTOP, undefined, "no second recipe: the desktop is box/Dockerfile's");
   const recipe = agent37Build.recipeOf();
-  assert.match(recipe.hash, /^[0-9a-f]{12}$/);
+  assert.equal(recipe.hash, recipeHash(), "one hash: the published image's, the E2B template's and the Agent37 template's");
   const context = untar(agent37Build.contextOf(recipe));
   assert.deepEqual(Object.keys(context).sort(), ["Dockerfile", "agentrun-archil"]);
-  assert.equal(context.Dockerfile.body, DOCKERFILE + agent37Build.DESKTOP, "the context's Dockerfile is box/Dockerfile, then the desktop's lines");
+  assert.equal(context.Dockerfile.body, DOCKERFILE, "the context's Dockerfile is box/Dockerfile itself");
   assert.equal(context.Dockerfile.mode, 0o644);
   assert.equal(context["agentrun-archil"].body, HELPER);
   assert.equal(context["agentrun-archil"].mode, 0o755);

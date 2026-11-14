@@ -2069,16 +2069,16 @@ adapter gives init `DISPLAY` and starts `Xvfb :0 -screen 0 1280x800x24 -nolisten
 user (`src/desktop.ts`), as on E2B, so the X server is one process in init's table, in its own network namespace, and
 ends with the computer; xfwm4 starts the same way once the display answers, its session bus out of the user's reach, as
 on E2B. Its default image is `agentrun-box`
-(`AGENT37_BOX_TEMPLATE`): `box/Dockerfile` (the archil client, the helper, the tool user, FUSE, no sudo) plus Xvfb,
-xfwm4, and the apps E2B Desktop has that are cheap to carry (Xfce's terminal and Mousepad, Firefox ESR, xdotool),
-which the `apps` group lists and opens, built as a template of the key's own workspace by `box/build-agent37.mjs`:
+(`AGENT37_BOX_TEMPLATE`): `box/Dockerfile` (the archil client, the helper, the tool user, FUSE, no sudo, and its
+desktop: Xvfb, xfwm4, and the apps E2B Desktop has that are cheap to carry, Xfce's terminal and Mousepad, Firefox ESR,
+xdotool), which the `apps` group lists and opens, built as a template of the key's own workspace by `box/build-agent37.mjs`:
 
 ```sh
 AGENT37_API_KEY=... node packages/computer/box/build-agent37.mjs   # prints template=agentrun-box
 ```
 
-Agent37 keeps a template's revisions under one name, so the name is fixed and the recipe's hash (the Dockerfile, the
-helper and the desktop's lines in the script) is in the template's description: a workspace whose template names the
+Agent37 keeps a template's revisions under one name, so the name is fixed and the recipe's hash (`box/recipe.mjs`: the
+Dockerfile and the helper, the published image's hash too) is in the template's description: a workspace whose template names the
 hash already is built nothing, and a changed recipe publishes a new revision, which every instance made after it starts
 from. The script's calls: `GET /v1/templates/agentrun-box`, then `POST /v1/template-builds` (`name`, `size_bytes`,
 `description`), a `PUT` of the gzipped context (the Dockerfile and the helper at its root) to the presigned

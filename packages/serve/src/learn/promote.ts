@@ -44,7 +44,7 @@ export interface Grade {
   readonly seq?: number;
 }
 
-/** What a replay says, the shape the promotion record keeps (SPEC: replay {n, agree, agent_acc, wf_acc, delta}):
+/** What a replay says (learn/refit.ts scoreRows), the shape the promotion record keeps (SPEC: replay {n, agree, agent_acc, wf_acc, delta}):
  *  `n` inputs; `agree`, how many the workflow answered alone with the agent's recorded answer; `agent_acc`, the agent's
  *  recorded answers' accuracy; `wf_acc`, the workflow's, a hand-back counting as the agent's answer; `delta` = wf_acc -
  *  agent_acc; `handed_back`, how many it handed back (it answered n - handed_back alone: answersAlone). Accuracies to
@@ -287,7 +287,7 @@ export function trimPromotions(items: readonly PromotionRecord[]): PromotionReco
  *  did on it: answered alone (`answer`), handed back (it escalated: an escalate node or a guard), or failed (a step failed,
  *  on a credential or tool the replay lacked among them, or its output off its schema; no workflow, a stale digest, a run
  *  that did not end completed); with its guard rows, read record-only (recordOnly) so each step's p is known. A failed
- *  row is no evidence either way (replayScore leaves it out): the replay ran without what the run it replays had. A
+ *  row is no evidence either way (learn/refit.ts refitRowsOf leaves it out): the replay ran without what the run it replays had. A
  *  skipped one (`skipped_write`) is none either: its workflow stopped at a write the graded run's recording does not have,
  *  which a replay never runs (learn/replay-calls.ts), the one named in `skipped`. */
 export interface ReplayRow {
@@ -489,7 +489,7 @@ export const RECORD_ONLY_THRESHOLD = 1e-9;
 
 /** A workflow's text with every guard's threshold at RECORD_ONLY_THRESHOLD: each guard still reads its signals and
  *  records its row. What a replay runs, so every step's p is known for the refit and the serving thresholds are applied
- *  after (replayScore). The text unchanged when it has no guard. */
+ *  after (learn/refit.ts scoreRows). The text unchanged when it has no guard. */
 export function recordOnly(workflowText: string): string {
   let doc: unknown;
   try {
@@ -503,40 +503,6 @@ export function recordOnly(workflowText: string): string {
     any = true;
   });
   return any ? JSON.stringify(doc) : workflowText;
-}
-
-/** Whether a replayed input would have been handed back serving at `thresholds` (by step; a step not named keeps its
- *  row's): it did not answer alone, or one of its guards read no p, or a p under its step's threshold (a soft escalate
- *  that fired among them: its row's p 0). */
-export function escalates(row: Pick<ReplayRow, "outcome" | "guards">, thresholds: ReadonlyMap<string, number>): boolean {
-  if (row.outcome !== "answered") return true;
-  return row.guards.some((guard) => guard.p === null || guard.p < (thresholds.get(guard.node) ?? guard.threshold));
-}
-
-const round = (value: number) => Math.round(value * 1e4) / 1e4;
-
-/** The replayed inputs a replay scores: those its workflow answered or handed back, never one it failed on or skipped. */
-export const scoredRows = (rows: readonly ReplayRow[]): ReplayRow[] => rows.filter((row) => row.outcome === "answered" || row.outcome === "handed_back");
-
-/** What a replay says at the serving `thresholds`, over the inputs it answered or handed back (scoredRows: a failed or
- *  skipped one is no evidence): each the workflow would have answered alone graded by answerCorrect, each it would have handed back the
- *  agent's recorded answer and grade. */
-export function replayScore(all: readonly ReplayRow[], thresholds: ReadonlyMap<string, number>): ReplayScore {
-  const rows = scoredRows(all);
-  let [agentRight, wfRight, agree, handed] = [0, 0, 0, 0];
-  for (const row of rows) {
-    if (row.recorded.correct) agentRight += 1;
-    if (escalates(row, thresholds)) {
-      handed += 1;
-      if (row.recorded.correct) wfRight += 1;
-      continue;
-    }
-    if (answerCorrect(row.answer, row.recorded)) wfRight += 1;
-    if (sameAnswer(row.answer, row.recorded.answer)) agree += 1;
-  }
-  const n = rows.length;
-  const [agent_acc, wf_acc] = n ? [round(agentRight / n), round(wfRight / n)] : [0, 0];
-  return { n, agree, agent_acc, wf_acc, delta: round(wf_acc - agent_acc), handed_back: handed };
 }
 
 /** Whether a score clears the bar: the workflow's accuracy at most PROMOTE_BAR under the agent path's, and it answered

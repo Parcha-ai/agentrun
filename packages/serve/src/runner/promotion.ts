@@ -2,7 +2,7 @@
 // input serves first only when its digest is promoted (learn/promote.ts). A digest with no record yet is replayed on the
 // agent's last REPLAY_INPUTS graded inputs (runs a person or an eval graded, PUT /runs/{id}/grade, whose answer was the
 // agent's): each a queued replay run of its own (RunLaunch.replay, at workflow cost, its guards record-only), the agent
-// taking the runs meanwhile. A later claim that finds every replay run ended scores them (replayScore at the serving
+// taking the runs meanwhile. A later claim that finds every replay run ended scores them (learn/refit.ts scoreRows at the serving
 // thresholds: a hand-back is the agent's recorded answer) and promotes the digest when it is within PROMOTE_BAR of the
 // agent path and answers alone on at least one input, else holds it; a held digest gets one refit over the replay's rows
 // (learn/refit.ts: its guards' thresholds, and its guards and recorded escalates on or off), a new revision that serves
@@ -51,11 +51,11 @@ import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/j
 import type { McpPin } from "../mcp-gateway.js";
 import { recordedCalls, type ReplayCalls, replayCalls, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
-import { answersAlone, championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, replayingOf, replayScore, answerCorrect, scoredRows, skippedToolsOf, thresholdsOf } from "../learn/promote.js";
+import { answersAlone, championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, replayingOf, skippedToolsOf, thresholdsOf } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
-import { type RefitRow, refitGuards } from "../learn/refit.js";
+import { type RefitRow, refitGuards, refitRowsOf, scoreRows } from "../learn/refit.js";
 import { type FirstChoice, fits, type Promoted, servedOf, workflowDigest } from "./workflow-first.js";
 import { learningCommit } from "../learn/commit.js";
 import type { LearningFolder } from "../learn/folder.js";
@@ -435,9 +435,10 @@ const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ?
 
 /** The replay's rows, once every replay run ended (or REPLAY_DEADLINE_MS passed: one not ended is failed, no evidence);
  *  undefined while one is at work or not created yet (its record is reserved before its runs are created: a run missing
- *  is a launch still under way, or one a later claim finishes, relaunch). With what the replay runs cost (null when one's
- *  is unknown), and how many reserved runs were never created by the deadline (`unstarted`). */
-async function replayRows(deps: PromotionDeps, record: PromotionRecord): Promise<{ rows: ReplayRow[]; cost: number | null; unstarted: number } | undefined> {
+ *  is a launch still under way, or one a later claim finishes, relaunch). With the rows it scores (`scored`, refitRowsOf:
+ *  the ones its workflow answered or handed back), what the replay runs cost (null when one's is unknown), and how many
+ *  reserved runs were never created by the deadline (`unstarted`). */
+async function replayRows(deps: PromotionDeps, record: PromotionRecord): Promise<{ rows: ReplayRow[]; scored: RefitRow[]; cost: number | null; unstarted: number } | undefined> {
   const { store, context } = deps;
   const now = (deps.now ?? Date.now)();
   const grades = new Map((await gradesOf(store.settings, deps.agentId)).map((grade) => [grade.run, grade]));
@@ -466,7 +467,7 @@ async function replayRows(deps: PromotionDeps, record: PromotionRecord): Promise
       guards: Array.isArray(m.guards) ? (m.guards as GuardRow[]) : [],
     });
   }
-  return { rows, cost: cost === null ? null : Math.round(cost * 1e6) / 1e6, unstarted: runs.filter((row) => !row).length };
+  return { rows, scored: refitRowsOf(rows), cost: cost === null ? null : Math.round(cost * 1e6) / 1e6, unstarted: runs.filter((row) => !row).length };
 }
 
 /** A replaying digest's decision, once its replay runs ended: promote within the bar when it answered alone at least once,
@@ -480,8 +481,8 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
   // replay ran without, say) is no evidence either way, never the agent's answer in its name.
   // Skipped: the inputs whose workflow needed a write the graded run's recording does not have (learn/replay-calls.ts): a
   // replay never runs one, so they are no evidence either, and never wrong.
-  const scored = scoredRows(read.rows);
-  const score = replayScore(scored, thresholdsOf(workflow.workflow));
+  const scored = read.scored;
+  const score = scoreRows(scored, thresholdsOf(workflow.workflow));
   const ok = scored.length >= REPLAY_MIN && clears(score);
   const pts = (value: number) => `${(value * 100).toFixed(1)}%`;
   const skipped = read.rows.filter((row) => row.outcome === "skipped_write").length;
@@ -517,16 +518,10 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
   if (!ok && scored.length >= REPLAY_MIN) {
     // Held: one refit over the replay's scored rows (each step's p known: its guards read record-only, its judge-driven
     // escalates recorded). One with neither changes nothing.
-    await refitAndWrite(deps, workflow, digest, scored.map(replayRefitRow), "its replay held it", scored);
+    await refitAndWrite(deps, workflow, digest, scored, "its replay held it");
   }
   return decided.record;
 }
-
-/** A replayed input as a refit row: answered alone only when every guard read a p (record-only, none handed back). */
-const replayRefitRow = (row: ReplayRow): RefitRow => {
-  const answered = row.outcome === "answered" && row.guards.every((guard) => guard.p !== null);
-  return { guards: row.guards, answered, wfCorrect: answered ? answerCorrect(row.answer, row.recorded) : null, agentCorrect: row.recorded.correct ? 1 : 0 };
-};
 
 /** A serving digest, checked once per REFIT_EVERY more graded runs it served: its thresholds refit over those runs and its
  *  replay's rows (a new revision when they move and still clear the bar), and held when its graded runs' accuracy fell
@@ -554,9 +549,11 @@ async function stillServing(deps: PromotionDeps, workflow: LearnedWorkflow, dige
     const guards = Array.isArray(m.guards) ? (m.guards as GuardRow[]) : [];
     rows.push(grade.path === "workflow" ? { guards, answered: true, wfCorrect: grade.correct, agentCorrect: agentAcc } : { guards, answered: false, wfCorrect: null, agentCorrect: grade.correct ? 1 : 0 });
   }
-  const replayed = record.source === "replay" && record.runs?.length ? scoredRows((await replayRows(deps, record))?.rows ?? []) : [];
-  const all = [...rows, ...replayed.map(replayRefitRow)];
-  const wrote = await refitAndWrite(deps, workflow, digest, all, `${plural(served.length, "graded run")} it served`, replayed);
+  const replayed = record.source === "replay" && record.runs?.length ? (await replayRows(deps, record))?.scored ?? [] : [];
+  const wrote = await refitAndWrite(deps, workflow, digest, [...rows, ...replayed], `${plural(served.length, "graded run")} it served`);
+  // What actually happened on the served runs: the recorded grades (a workflow-path grade is the workflow's answer, a
+  // handed-back one the agent's). Recorded, not rescored: the guards on a run may belong to other workflows the agent called
+  // after a hand-back, and rescoring over them would count a right answer as a hand-back at the agent's accuracy.
   const servedAcc = served.filter((grade) => grade.correct).length / served.length;
   if (!wrote && servedAcc < agentAcc - PROMOTE_BAR - 1e-9) {
     const reason = `${plural(served.length, "graded run")} it served were right ${(servedAcc * 100).toFixed(1)}% of the time, more than ${PROMOTE_BAR * 100} pts under the agent's ${(agentAcc * 100).toFixed(1)}% by hand`;
@@ -570,7 +567,7 @@ async function stillServing(deps: PromotionDeps, workflow: LearnedWorkflow, dige
 /** One refit of `workflow` over `rows`; when it moves a guard and the rows clear the bar at the new thresholds, the new
  *  text is written as a new revision (a merge from the claim's seed) and promoted with the rows' numbers. True when one
  *  was written. */
-async function refitAndWrite(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, rows: RefitRow[], why: string, replayed: readonly ReplayRow[]): Promise<boolean> {
+async function refitAndWrite(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, rows: RefitRow[], why: string): Promise<boolean> {
   if (!deps.commit || rows.length < REPLAY_MIN) return false;
   const now = deps.now ?? Date.now;
   const refit = refitGuards(workflow.workflow, rows, iso(now()));
@@ -583,14 +580,11 @@ async function refitAndWrite(deps: PromotionDeps, workflow: LearnedWorkflow, dig
     deps.log(`workflow-first: ${workflow.name}'s refit did not land on its learning folder; it keeps its thresholds`);
     return false;
   }
-  // What the new revision agrees on: its moved thresholds, and no row of a guard or escalate it switched off.
-  const off = new Set(refit.guards.filter((one) => one.threshold === null).map((one) => one.node));
-  const kept = replayed.map((row) => (off.size ? { ...row, guards: row.guards.filter((guard) => !off.has(guard.node)) } : row));
-  const agree = kept.length ? replayScore(kept, new Map(refit.guards.flatMap((one) => (one.threshold === null ? [] : [[one.node, one.threshold] as const])))).agree : 0;
+  const { n, agree, agent_acc, wf_acc, delta, handed_back } = refit;
   await recordPromotion(deps.store.settings, deps.agentId, {
     workflow: workflow.name, digest: next, at: iso(now()), decided: "promote", source: "refit",
     reason: `${reason}: the workflow ${(refit.wf_acc * 100).toFixed(1)}%, the agent ${(refit.agent_acc * 100).toFixed(1)}% on those rows`,
-    replay: { n: refit.n, agree, agent_acc: refit.agent_acc, wf_acc: refit.wf_acc, delta: refit.delta, handed_back: refit.handed_back, of: replayed.map((row) => row.of) },
+    replay: { n, agree, agent_acc, wf_acc, delta, handed_back, of: rows.flatMap((row) => (row.of === undefined ? [] : [row.of])) },
     refit: { from: digest, guards: refit.guards }, commit: landed,
   }, (was) => was === undefined);
   deps.log(`workflow-first: ${reason}; the new revision (${next}) serves from the next run`);

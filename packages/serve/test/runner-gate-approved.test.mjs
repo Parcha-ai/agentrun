@@ -82,7 +82,7 @@ test("(a) a deny the server set while the call waited holds over the approval: r
 
 test("(b) a pin the server set while the call waited, which the call's arguments do not hold, holds over the approval: refused with the pin's words, never run", async (t) => {
   const { ran, said } = await approvedAfter(t, {
-    tool: "mcp__fake__send_message",
+    tool: "mcp:fake/send_message",
     args: { channel_id: "C0999", text: "hi" },
     before: { "mcp:fake/send_message": { permission: "ask" } },
     meanwhile: { "mcp:fake/send_message": { permission: "ask", pin: { channel_id: "C0123" } } },
