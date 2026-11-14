@@ -219,6 +219,11 @@ test("runShellOf, read off the setting, is the shell runHands gives the run over
     [{ kind: "phone", provider: "phone-harness" }, 2, "local"],
     [{ kind: "browser", provider: "browserbase" }, 1, "none"],
     [{ kind: "browser", provider: "browserbase" }, 2, "local"],
+    // exec false: the agent gets no shell and starts no program, whether or not its desktop could mount the folder.
+    [{ kind: "desktop", provider: "docker", exec: false }, 1, "none"],
+    [{ kind: "desktop", provider: "e2b", exec: false }, 2, "none"],
+    [{ kind: "desktop", provider: "orgo", exec: false }, 2, "none"],
+    [{ kind: "phone", provider: "phone-harness", exec: false }, 2, "none"],
   ];
   for (const [setting, mode, shell] of table) {
     const label = `${setting.kind} ${setting.provider ?? ""} in Mode ${mode}`;
@@ -231,6 +236,7 @@ test("runShellOf, read off the setting, is the shell runHands gives the run over
     await started.release();
   }
   assert.deepEqual(new Set(table.map(([setting]) => setting.kind)), new Set(Object.keys(KIND_REGISTRY.SETTING_KINDS)), "every setting kind is in the table");
+  assert.equal((await resolve({ kind: "desktop", provider: "docker", exec: false }, 1)).mounts, false, "a desktop whose agent has no exec is never given the run's folder");
   for (const [setting, mode] of [[{ kind: "sandbox", provider: "daytona" }, 1], [{ kind: "sandbox", provider: "docker" }, 2], [{ kind: "laptop", provider: "docker" }, 1], [{ kind: "desktop" }, 2], [{ kind: "phone", provider: "nokia" }, 2]]) {
     assert.ok("refused" in (await resolve(setting, mode)), `${setting.kind} in Mode ${mode} is refused`);
     assert.equal(runShellOf(setting, mode, KIND_REGISTRY), "none", `a refused setting runs nothing: ${setting.kind} ${setting.provider ?? ""} in Mode ${mode}`);

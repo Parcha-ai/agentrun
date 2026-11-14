@@ -100,10 +100,22 @@ function answerOf(output: readonly CodemodeOutputItem[], value: unknown): Shown 
   return { text: words.join("\n") || "(the script returned nothing and showed nothing)", images: [...imagesIn(value), ...shown] };
 }
 
-/** computer_script's executor for a computer that is `card`: each script in its own isolate, its computer calls through
- *  the call's hands, the shell's and the files' held to `guard`. */
-export function computerScriptExecutor(card: Card, guard: ScriptGuard): Executor {
+/** What a script that reaches for a shell is told when its agent's computer has exec off. */
+export const NO_PROGRAMS_WORDS = "this agent's computer runs no programs: its exec setting is off, so its scripts have no computer.shell and no computer.processes. Drive it through what it shows: its screen, its input and its apps.";
+
+/** The one line that binds `computer` in a script for a computer that is `card` (the surface's scriptPrelude). With
+ *  `exec: false` (the agent's setting, run-tools.ts AgentComputer) the card has no exec or processes group, so
+ *  `computer.shell` and `computer.processes` are absent, and reaching for either throws NO_PROGRAMS_WORDS instead of a
+ *  bare TypeError: `computer` is the surface's own object behind a Proxy whose get refuses those two names. */
+export function scriptPreludeOf(card: Card, options: { readonly exec?: false } = {}): string {
   const prelude = scriptPrelude(card);
+  if (options.exec !== false) return prelude;
+  return `const computer = ((bound) => new Proxy(bound, { get(target, key, receiver) { if (key === "shell" || key === "processes") throw new Error(${JSON.stringify(NO_PROGRAMS_WORDS)}); return Reflect.get(target, key, receiver); } }))((() => { ${prelude} return computer; })());`;
+}
+
+/** computer_script's executor over the script `prelude` (scriptPreludeOf): each script in its own isolate, its
+ *  computer calls through the call's hands, the shell's and the files' held to `guard`. */
+export function computerScriptExecutor(prelude: string, guard: ScriptGuard): Executor {
   return async (args, call): Promise<ToolAnswer> => {
     const { code, timeoutMs } = (args ?? {}) as ScriptArgs;
     if (typeof code !== "string" || code.trim() === "") return { text: "", error: "computer_script needs code: the body of an async function, with `computer` bound" };
