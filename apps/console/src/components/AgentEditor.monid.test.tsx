@@ -104,6 +104,30 @@ describe("the Tools step's monid row", () => {
     expect(page.puts.at(-1)!.definition.tools).toEqual(["read", "monid:keenable/v1/search"]);
   });
 
+  it("a saved grant unticked and saved keeps its card, unticked, and ticking it again puts it back in the next save", async () => {
+    const page = await editPage(["read", "monid:keenable/v1/search", "monid:exa/*"]);
+    await act(async () => { page.card("monid:exa/*")!.click(); });
+    await page.save();
+    expect(page.puts.at(-1)!.definition.tools).toEqual(["read", "monid:keenable/v1/search"]);
+    // The saved revision no longer names it; the card stays, to tick again without typing the name.
+    expect(page.card("monid:exa/*")?.checked).toBe(false);
+    await act(async () => { page.card("monid:exa/*")!.click(); });
+    await page.save();
+    expect(page.puts.at(-1)!.definition.tools).toEqual(["read", "monid:keenable/v1/search", "monid:exa/*"]);
+  });
+
+  it("a new grant unticked keeps its card through a step change and back, and ticking it again puts it back in the save", async () => {
+    const page = await editPage(["read"]);
+    await page.grant("monid:exa/*");
+    await act(async () => { page.card("monid:exa/*")!.click(); });
+    await act(async () => { button(page.host, /Context/).click(); });
+    await act(async () => { button(page.host, /Tools & skills/).click(); });
+    expect(page.card("monid:exa/*")?.checked).toBe(false);
+    await act(async () => { page.card("monid:exa/*")!.click(); });
+    await page.save();
+    expect(page.puts.at(-1)!.definition.tools).toEqual(["read", "monid:exa/*"]);
+  });
+
   it("refuses a name outside monid's grammar before a save, in the server's words, and adds monid: when it was left off", async () => {
     const page = await editPage(["read"]);
     await page.grant("monid:Exa/*");
