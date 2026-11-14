@@ -37,7 +37,7 @@ async function runWith(t, calls, { ended = true } = {}) {
     await add({ kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: call.id, name: call.tool, arguments: call.args }], timestamp: (at += 100) }] });
     await add({ kind: "agentrun.ask", data: { callId: call.id, tool: call.tool, args: call.args, requestedAt: iso((at += 100)) } });
     if (!call.answer) continue;
-    await add({ kind: "agentrun.answer", data: { callId: call.id, approved: call.answer.approved, ...(call.answer.note !== undefined ? { note: call.answer.note } : {}), ...(call.answer.by ? { by: call.answer.by } : {}) } });
+    await add({ kind: "agentrun.answer", data: { callId: call.id, approved: call.answer.approved, ...(call.answer.decision ? { decision: call.answer.decision } : {}), ...(call.answer.note !== undefined ? { note: call.answer.note } : {}), ...(call.answer.by ? { by: call.answer.by } : {}), ...(call.answer.superseded ? { superseded: call.answer.superseded } : {}) } });
     await add({ kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: call.id, toolName: call.tool, content: [{ type: "text", text: call.result.text }], isError: call.result.isError, ...(call.result.details ? { details: call.result.details } : {}), timestamp: (at += 100) }] });
   }
   if (ended) await add({ kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }], timestamp: (at += 100) }] });
@@ -87,6 +87,39 @@ test("a denied call reads held, then your approval, then 'You declined <tool>: <
   assert.equal(one.after[1]?.text, `You declined web_fetch.\n${refusal}`);
   assert.equal(readFor(rows, "c2").after[1]?.summary, "AgentRun: You declined web_fetch.");
   assert.equal(rows.some((row) => /:saved:/.test(row.id)), false, "no Saved row for a call that never ran");
+});
+
+test("an allowed call that ran shows its outcome like any call, plus that it ran once you allowed it; never 'Held for your approval'", async (t) => {
+  const store = await runWith(t, [fetchCall("c1", { approved: true }, { text: "fetched the page", isError: false }), fetchCall("c2", { approved: true, by: "setting" }, { text: "fetched again", isError: false })]);
+  const rows = await timelineOverStore(store, "run-1", deps);
+  const shown = JSON.stringify(rows.map((r) => [r.kind, r.summary, r.tool_status]));
+  for (const [id, words] of [["c1", "ran once you allowed it"], ["c2", "ran, as its setting allows it"]]) {
+    const own = rows.filter((row) => row.tool_use_id === id && (row.kind === "tool_use" || row.kind === "tool_result"));
+    assert.equal(own.some((row) => row.summary === "Held for your approval"), false, `${id}: ${shown}`);
+    const result = own.find((row) => row.kind === "tool_result");
+    // The result line the timeline gives any call that ran, its status kept, and the words of how it came to run.
+    assert.equal(result?.tool_status, "success", `${id}: ${shown}`);
+    assert.match(result?.summary ?? "", new RegExp(`^web_fetch.*\\(${words.replace(/[(),]/g, "\\$&")}\\)$`), `${id}: ${shown}`);
+  }
+});
+
+test("a call allowed by the person, its tool set to deny on this server before it ran: every row says it was refused by that deny, and the person's allow shows", async (t) => {
+  const refusal = "Permission denied: web_fetch is set to deny on this server. It was not run: nothing was sent and nothing was charged. Don't retry it.";
+  const store = await runWith(t, [
+    fetchCall("c1", { approved: false, decision: "deny", by: "setting", superseded: { decision: "allow", answeredAt: iso(T0 + 5_000) } }, { text: refusal, isError: true, details: { "agentrun.refused": true } }),
+    fetchCall("c2", { approved: false, decision: "deny", by: "setting" }, { text: refusal, isError: true, details: { "agentrun.refused": true } }),
+  ]);
+  const rows = await timelineOverStore(store, "run-1", deps);
+  const shown = JSON.stringify(rows.map((r) => [r.kind, r.summary]));
+  assert.equal(/ended while it waited|Withdrawn|Held for your approval/.test(shown), false, shown);
+  const one = readFor(rows, "c1");
+  assert.deepEqual(one.own.map(([, s]) => s), ["Not run: its tool is now set to deny on this server", "Not run: its tool is now set to deny on this server"], shown);
+  assert.equal(one.after[0]?.summary, 'Denied by the tool\'s setting on this server: web_fetch {"url":"https://example.test"}');
+  assert.equal(one.after[1]?.summary, "AgentRun: You allowed web_fetch, but it is now set to deny on this server, so it was not run");
+  assert.equal(one.after[1]?.text, `You allowed web_fetch, but it is now set to deny on this server, so it was not run.\n${refusal}`);
+  assert.equal(readFor(rows, "c2").after[1]?.summary, "AgentRun: web_fetch was not run: it is now set to deny on this server");
+  // The refused call's result row reads refused, as any refused call's does.
+  assert.equal(rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "c1")?.refused, true, shown);
 });
 
 test("a note is redacted whole, its links' query values elided, cut to its first line at 200 code points", async (t) => {

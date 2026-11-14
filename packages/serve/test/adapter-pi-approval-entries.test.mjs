@@ -129,6 +129,32 @@ test("a call the person declined, its tool's setting at allow by the next claim,
   assert.deepEqual(await w.answers(), [{ callId: ask.callId, approved: false, decision: "deny", answeredAt: "2026-11-08T12:05:30.250Z", note: "not on a Friday" }]);
 });
 
+test("a call the person allowed, its tool set to deny on this server since: refused unrun in the deny's words, and the person's allow is journaled with the deny that won", async (t) => {
+  const setting = { now: "ask" };
+  const w = await parkedRun(t, { setting });
+  const [ask] = await w.asks();
+  setting.now = "deny";
+  w.clock.at = ANSWERED_AT;
+  const allow = await sendCommand(w.opened.server, "run-1", { kind: "approve", body: { approval: ask.callId } });
+  await w.settled("ended");
+  assert.equal(w.ran.asked, 0, "the deny set since wins over the person's allow: it never ran");
+  assert.deepEqual(await w.answers(), [{ callId: ask.callId, approved: false, decision: "deny", by: "setting", answeredAt: "2026-11-08T12:05:30.250Z", superseded: { decision: "allow", answeredAt: "2026-11-08T12:05:30.250Z" } }]);
+  assert.ok((await w.opened.server.commands("run-1", allow.id - 1)).find((command) => command.id === allow.id).takenAt !== null, "the person's allow row is taken");
+});
+
+test("a call still waiting on its person, its tool set to deny since, as the run is claimed again: the deny answers the ask, so it never reads withdrawn", async (t) => {
+  const setting = { now: "ask" };
+  const w = await parkedRun(t, { setting });
+  const [ask] = await w.asks();
+  setting.now = "deny";
+  w.clock.at = ANSWERED_AT;
+  // A steer wakes the run with no answer (as the settings flip wakes it on the server).
+  await sendCommand(w.opened.server, "run-1", { kind: "steer", body: { text: "go on" } });
+  await w.settled("ended");
+  assert.equal(w.ran.asked, 0, "refused by the deny: it never ran");
+  assert.deepEqual(await w.answers(), [{ callId: ask.callId, approved: false, decision: "deny", by: "setting", answeredAt: "2026-11-08T12:05:30.250Z" }]);
+});
+
 // The race the parked claim above can't reach (it reads its rows before pi's session recovers): a takeover. A runner
 // claims the parked run and dies at once, so the person's deny is written and left untaken while the run reads running;
 // once that claim's lease runs out, the next claim comes from running, and pi starts the call's task again while its
