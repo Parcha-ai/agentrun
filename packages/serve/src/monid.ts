@@ -9,21 +9,19 @@
 // caller stops, or one that outlasts the wait, is asked to stop. Every answer reaches the model as JSON, cut at CLIP
 // characters, the whole of it then filed under the run's work/evidence/monid/.
 //
-// What a run charged is the run's spend (cap.ts): marked before it is sent at the price an inspect quoted (else an
-// allowance), then booked once in the run's records as a TOOL_COST (`monid.run`, charged by monid), its cost if monid
-// reports one, else unknown unless monid says it charged nothing, which the cap counts at what the run was held at; and
-// under a cap a run is refused before it is sent unless the run's spend plus what it is held at fits. discover and
-// inspect cost nothing, and are never refused.
+// What a run charged is the run's spend, on the run's one ledger (paid-calls.ts paidStep): admitted before it is sent at
+// the price an inspect quoted (else an allowance), refused unsent unless that, with what the run has spent and holds,
+// fits the cap, then settled once at its cost if monid reports one, else at its hold unless monid says it charged
+// nothing. A run with no run's ledger to book it on is never sent. discover and inspect cost nothing, and are never
+// refused.
 import { randomUUID } from "node:crypto";
 import { localWorkspace, type Workspace, workspaceErrorWords } from "./workspace/index.js";
 import type { TSchema } from "typebox";
-import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
-import type { Context } from "@earendil-works/chord/context";
-import { registerLabel, TOOL_COST } from "./timeline/index.js";
-import { paidCall } from "./cap.js";
+import { defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
+import { registerLabel } from "./timeline/index.js";
 import { wireName } from "./catalog.js";
 import { fauxFetch } from "./decisions.js";
-import { holdRefusal, paidLedger, paidStep, writeHold } from "./paid-calls.js";
+import { paidLedger, paidStep, unbookedRefusal } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import type { ToolEntry } from "./tools.js";
 import { isObject, type Json } from "./validate.js";
@@ -216,15 +214,12 @@ const quotesOf = (env: NodeJS.ProcessEnv): Map<string, number> => {
   return quotes;
 };
 const quoteKey = (args: unknown) => JSON.stringify([(args as Json).provider, (args as Json).endpoint]);
-/** A record on the run's root, where its spend is read on every harness (cap.ts, harness-app.ts). */
-const record = (api: ToolExecutionApi, kind: string, data: Record<string, string | number | null>, context: Context) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context);
 
 /** monid's tool `kind` for a run, under its wire name: the key and the faux hook read from `env` (the run's process's,
- *  with its secrets) at each call, an answer too long for the model filed under `work()`, read at the call. A run goes
- *  through the run's cap (paidCall), is marked before it is sent (TOOL_STARTED, held at its quoted price or the
- *  allowance) and settled by its charge (TOOL_COST): a crash between the two leaves the cap counting the held figure
- *  and the run's cost unknown, never $0. pi binds it (monidTool); another harness runs it as a host tool
- *  (host-tools.ts), whose `api` commits to the run's store as pi's does. */
+ *  with its secrets) at each call, an answer too long for the model filed under `work()`, read at the call. A run is a
+ *  paid step on the run's one ledger (paidStep), held at its quoted price or the allowance and settled by its charge: a
+ *  crash between the two leaves the cap counting the held figure, never $0; with no ledger it is refused unsent. pi binds
+ *  it (monidTool); another harness runs it as a host tool (host-tools.ts). */
 export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () => Workspace): ToolRegistration {
   const { description, properties, required, replay } = SPECS[kind];
   return defineTool({
@@ -234,35 +229,22 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
       const faux = await fauxFetch(env, FAUX_MONID_ENV);
       const client = monidClient({ key: env[MONID_KEY_ENV] ?? "", ...(faux ? { fetch: faux } : {}) });
       const call = () => client[kind](args as never, context?.abortSignal);
-      const label = { tool: "monid.run", charged_by: "monid", call: api.callId };
-      // What the run is held at, under the cap and on its mark: the price an inspect quoted, else the allowance.
+      // What the run is held at on the ledger: the price an inspect quoted, else the allowance.
       const quote = quotesOf(env).get(quoteKey(args));
       const held = quote ?? MONID_RUN_ALLOWANCE_USD;
       const basis = quote !== undefined ? `the price ${INSPECT} quoted` : `no price was quoted for it in this run, so it counts at the $${MONID_RUN_ALLOWANCE_USD} allowance; ${INSPECT} gives its price`;
-      const send = async (): Promise<MonidAnswer> => {
-        try {
-          await writeHold((kind, data) => record(api, kind, data, context), { ...label, heldUsd: held });
-        } catch (error) {
-          return uncharged({ error: holdRefusal(RUN, error) });
-        }
-        const answer = await call();
-        // Settled at what it charged: $0 only when monid charged nothing, null (unknown) when it may have and did not say.
-        // Paid for, it answers even when this cannot be written, never a failure the model would retry.
-        const usd = chargeOf(answer);
-        const settle = { ...label, usd: usd === undefined ? 0 : usd };
-        await record(api, TOOL_COST, settle, context).catch(() => undefined);
-        return answer;
-      };
-      // On the runner's one ledger (paid-calls.ts Ledger.paid): held there at the same figure and settled at the same charge
-      // ($0 when monid charged nothing, at its hold when it may have and did not say), in place of this process's spend.
+      // A run on the run's one ledger (paid-calls.ts Ledger.paid): settled at what it charged ($0 when monid charged nothing,
+      // at its hold when it may have and did not say). With no ledger it is never sent.
       const onLedger = kind === "run" ? paidLedger() : undefined;
-      const paid = onLedger
-        ? await paidStep(onLedger, api.callId, { name: RUN, holdUsd: held, basis, by: label.charged_by }, call, (outcome) => {
-          if (!("result" in outcome)) return null;
-          const usd = chargeOf(outcome.result);
-          return usd === undefined ? 0 : usd;
-        })
-        : kind === "run" ? await paidCall(RUN, send, chargeOf, { usd: held, basis }) : { result: await call() };
+      const paid = kind !== "run"
+        ? { result: await call() }
+        : !onLedger
+          ? { refused: unbookedRefusal(RUN) }
+          : await paidStep(onLedger, api.callId, { name: RUN, holdUsd: held, basis, by: "monid" }, call, (outcome) => {
+            if (!("result" in outcome)) return null;
+            const usd = chargeOf(outcome.result);
+            return usd === undefined ? 0 : usd;
+          });
       if ("refused" in paid) return forModel(JSON.stringify({ error: paid.refused }), { isError: true });
       const answer = paid.result;
       const price = kind === "inspect" && isObject(answer.price) && answer.price.type === "PER_CALL" ? money(answer.price.amount) : undefined;

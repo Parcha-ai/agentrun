@@ -506,7 +506,7 @@ const browserTool: ToolEntry = {
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
     const price = browserPrice(providerName, host.env);
     // On the runner, the run's ledger (host.ledger): each call held and settled on its booking, and a session's release one
-    // more request there, never this process's own spend. Undefined on the old per-run process: browserSpend's own then.
+    // more request there. With none, every browser call is refused unsent (browserSpend).
     const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.ledger?.paid, pause: host.ledger?.pause, flush: host.ledger?.flush });
     // The run's own Workspace, the one its read opens (on the runner: Mode 1's local folder, Mode 2's folder on the run's
     // disk): the browser files its evidence there, and browser_upload chooses from it.

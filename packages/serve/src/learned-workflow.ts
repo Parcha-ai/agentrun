@@ -301,7 +301,7 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       const { name, input } = (args ?? {}) as { name?: unknown; input?: unknown };
       const flow = run.workflows.find((workflow) => workflow.name === name);
       if (!flow) return forModel(`No learned workflow of this agent is named ${JSON.stringify(name)}. Its workflows: ${names.join(", ")}.`, { isError: true });
-      const ledger = ledgerOf(api, context);
+      const ledger = ledgerOf(api.callId);
       // Which of its nodes ran, kept beside the call in the run's journal (LEARNED_NODES), for its timeline row; a trace
       // that can't be kept never fails the call. A call stopped part way keeps the nodes that ended before it stopped,
       // written outside the stopped call's context, and still ends as a stop.
@@ -412,7 +412,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     if (permission === "deny") throw new Error(deniedText(tool!, undefined, run.denyFrom(tool!)));
     if (permission === "ask") throw new Error(`This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
     // Its paid requests booked under the tool's call, as a call of its own: the node, its execution path, its item in a map.
-    const booked = ledger ? { ledger: { call: callId, record: ledger.record } } : {};
+    const booked = ledger ? { ledger: { ...ledger, call: callId } } : {};
     return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...(run.search ? { search: run.search } : {}), ...booked });
   };
   // Each node as it ends, by the DSL's own event: what the call's timeline row shows of it.
