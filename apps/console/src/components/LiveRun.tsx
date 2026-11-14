@@ -128,10 +128,10 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   };
 
   // A take-over or a hand-back of the run's computer (an ask's answer among them): its answer goes back to the Screen tab
-  // (who drives, or the refusal), and the run and its timeline are read again after it either way: an answered ask moves
-  // the run on.
+  // (who drives, or the refusal) as soon as it comes, and the run and its timeline are read again after it either way (an
+  // answered ask moves the run on), without the tab waiting for that read.
   const computerMove = async <T,>(go: () => Promise<T>): Promise<T> => {
-    try { return await go(); } finally { await refresh(); setFollows((n) => n + 1); }
+    try { return await go(); } finally { void refresh(); setFollows((n) => n + 1); }
   };
 
   // A workflow run's graph is read here, outside the tabs, so the header's cost (its totals) stays current whichever tab is

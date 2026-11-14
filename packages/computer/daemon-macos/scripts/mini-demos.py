@@ -1,14 +1,26 @@
-"""The Mac mini's five demo tasks, on Notes, Safari, Finder, TextEdit and Calendar. Each is driven through
+"""The Mac's six demo tasks, on Notes, Safari, Finder, TextEdit, Calendar and System Settings. Each is driven through
 the running Computerd's own computerd command by ui.observe and ui.act with batched steps. Each call's latency is
 logged. With --movie, each is recorded from screen.watch to a movie of its own window, with the step on screen.
 
-    python3 -I mini-demos.py PATH/TO/computerd COMPUTERD_HOME OUT_DIR [--movie] [--ask-grants] [TASK ...]
+    python3 -I mini-demos.py PATH/TO/computerd COMPUTERD_HOME OUT_DIR [--movie] [--ask-grants] [--answer-alerts]
+        [--agent=MODEL ...] [TASK ...]
 
-TASK is a task's id (mac.notes.new-note, ...); none runs all five. Without --movie nothing is recorded (no frames, no
+--agent=MODEL (repeatable: one run of each task per model) has an agent do the tasks in place of the script: the task
+in plain words to an agent on agentrun-serve, started here from packages/serve's build, with this Mac paired to it for
+the run (Computerd's policy.json lets it touch only the six apps and see the screen; the old policy is put back after,
+and the Mac unpaired). The agent is pi's code mode on the computer surface. MODEL is a model as serve names one
+(anthropic/claude-sonnet-5-5, openrouter/openai/gpt-6.1-terra), its key in this environment, or faux: a scripted model
+(agent-faux.mjs) for the TextEdit task alone, which proves the path with no key. The harness makes each task's sandbox
+and checks the outcome as the scripted task does; the movie follows the app's front window, captioned with the agent's
+own words and each script's first comment.
+
+TASK is a task's id (mac.notes.new-note, ...); none runs them all. Without --movie nothing is recorded (no frames, no
 movie). --movie works only on a demo machine, and refuses before anything is made otherwise: a CI runner
 (GITHUB_ACTIONS=true), or a user whose login name starts with "agentrun-demo" (a dedicated demo account, made by a
-person). Nothing else unlocks it. --ask-grants raises Computerd's Automation prompts for the five apps, for a person at the Mac to answer, and
-exits. Writes, under OUT_DIR:
+person). Nothing else unlocks it. --ask-grants raises Computerd's Automation prompts for the five scripted apps, for a person at the Mac to answer, and
+exits. --answer-alerts (CI only) takes one screen shot, which raises the screen capture alert, answers the system's
+alerts (see clear_alerts), and exits: before the conformance cases, whose fixture could not come in front of it. Writes,
+under OUT_DIR:
 
     demos.json             every task's calls: method, params, ms, the steps' routes, the expect, the error, and what it left
     demos.md               the table: task, calls, steps, ms, result, left behind
@@ -41,7 +53,7 @@ person's, is left as it is. Calendar and Notes are asked about (snapshot, teardo
 would start them.
 
 Before each task the harness takes a snapshot of what it can see: every calendar with its count of today's events,
-every Notes folder with its count of notes, the onscreen windows of the five apps by id, and the sandbox root. Only
+every Notes folder with its count of notes, the onscreen windows of the six apps by id, and the sandbox root. Only
 names, counts and ids: never an event's, note's or file's contents; the calendars and folders only while Calendar and
 Notes run. After the teardown it takes it again, and any difference is the task's "left", Calendar or Notes started or
 quit during the task among them. The run's last line is "N/5 pass, K left behind"; the exit code is 1 unless every
@@ -52,29 +64,39 @@ script itself looks for, so a person's own titles never reach a file. On a CI ru
 nothing of a person's, nothing is redacted, so a failure's words can be read.
 
 The ids are the computer bench's mac-dev ids (packages/computer-bench/suites/mac-dev), and each task checks what the
-bench's task checks.
+bench's task checks; mac.settings.about is this file's own (what Safari's task shows, with no WebKit: a CI runner's
+WebKit draws no page).
 """
 
 import base64
 import contextlib
+import datetime
 import fcntl
 import json
 import os
 import pwd
+import re
+import secrets
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
-flags = {a for a in sys.argv[1:] if a.startswith("--")}
+flags = {a for a in sys.argv[1:] if a.startswith("--") and not a.startswith("--agent=")}
+models = [a[len("--agent="):] for a in sys.argv[1:] if a.startswith("--agent=")]
 if len(args) < 3:
     sys.exit(__doc__)
-if flags - {"--movie", "--ask-grants"}:
-    sys.exit(f"unknown option {' '.join(sorted(flags - {'--movie', '--ask-grants'}))}\n{__doc__}")
+if flags - {"--movie", "--ask-grants", "--answer-alerts"}:
+    sys.exit(f"unknown option {' '.join(sorted(flags - {'--movie', '--ask-grants', '--answer-alerts'}))}\n{__doc__}")
+if "faux" in models and len(models) > 1:
+    sys.exit("--agent=faux runs alone: its server answers every model request from the faux module")
 helper, home, out = args[0], args[1], os.path.abspath(args[2])
 only = set(args[3:])
 movie = "--movie" in flags
@@ -97,7 +119,11 @@ PREFIX = "AgentRun demo "
 NAME = PREFIX + RUN
 # /tmp is a link to /private/tmp: Finder and TextEdit answer with the real path, so the root is named by it.
 ROOT = "/private/tmp/agentrun-demos"
-APPS = {"com.apple.iCal": "Calendar", "com.apple.Notes": "Notes", "com.apple.finder": "Finder", "com.apple.TextEdit": "TextEdit", "com.apple.Safari": "Safari"}
+APPS = {"com.apple.iCal": "Calendar", "com.apple.Notes": "Notes", "com.apple.finder": "Finder", "com.apple.TextEdit": "TextEdit", "com.apple.Safari": "Safari",
+        "com.apple.systempreferences": "System Settings"}
+# The apps the sandbox's AppleScript drives, whose Automation grants Computerd needs. System Settings' task makes and
+# checks nothing by AppleScript.
+AUTOMATED = [app for app in APPS if app != "com.apple.systempreferences"]
 
 
 class Client:
@@ -155,6 +181,14 @@ class Cropper:
         reply = self.ask({"op": "where", "window": str(window)})
         return reply if reply.get("bounds") else None
 
+    def front(self, owner):
+        """The app's front window's id, by its owner name in the window list, or None: an agent's task names none."""
+        return self.ask({"op": "front", "owner": owner}).get("window")
+
+    def park(self):
+        """The real pointer to the display's corner, out of the movie (a demo machine's pointer is no one's)."""
+        self.ask({"op": "park"})
+
     def crop(self, data, place, path):
         return self.ask({"op": "crop", "jpeg": base64.b64encode(data).decode(), "bounds": place["bounds"], "above": place["above"], "out": path, "quality": 70})
 
@@ -178,6 +212,8 @@ class Recorder(threading.Thread):
         # window in front came or went, the window list changed and changed back between the two reads, or the cut
         # failed.
         self.dropped = {}
+        # The windows painted over in kept frames, by owner, layer and size, and how many frames each was in.
+        self.painted = {}
         self.halt = threading.Event()
         os.makedirs(folder, exist_ok=True)
 
@@ -232,6 +268,8 @@ class Recorder(threading.Thread):
                     try:
                         self.cropper.crop(data, before, path)
                         self.frames.append((at, path))
+                        for who in before.get("who", []):
+                            self.painted[who] = self.painted.get(who, 0) + 1
                     except RuntimeError as e:  # a window off the main display, say: that frame is not kept
                         why = "cut failed"
                         self.errors.append(str(e))
@@ -242,11 +280,17 @@ class Recorder(threading.Thread):
         finally:
             c.close()
 
-    def finish(self):
+    def finish(self, title="", span=(None, None)):
+        """The timeline frames-to-movie.swift reads: the movie's title, its span (the task, without its setup and
+        teardown), each frame and caption by time, the end."""
         self.halt.set()
         self.join(timeout=5)
-        end = self.clock()
+        end = span[1] if span[1] is not None else self.clock()
         with open(os.path.join(self.folder, "timeline.txt"), "w") as f:
+            if title:
+                f.write(f"title {' '.join(title.split())}\n")
+            if span[0] is not None:
+                f.write(f"start {span[0]:.3f}\n")
             for at, path in self.frames:
                 f.write(f"frame {at:.3f} {path}\n")
             for at, text in self.captions:
@@ -285,10 +329,10 @@ def can_automate(c, ask=False):
     """Computerd's grants the sandbox needs, by what they are for: granted, denied, unasked, not running. Automation of
     each app, and Calendars (Privacy & Security > Calendars), since Calendar's AppleScript reads the store for the
     process that sent the event: without it the snapshot waited on Calendar with no answer."""
-    words = exec_run(c, ["/usr/bin/swift", os.path.join(here, "can-automate.swift")] + (["--ask"] if ask else []) + list(APPS), 600000)
+    words = exec_run(c, ["/usr/bin/swift", os.path.join(here, "can-automate.swift")] + (["--ask"] if ask else []) + AUTOMATED, 600000)
     names = dict(APPS, calendars="calendar data")
     pairs = (line.split(" ", 1) for line in words.splitlines() if " " in line)
-    return {(f"Automation of {names[k]}" if k in APPS else names.get(k, k)): v for k, v in pairs}
+    return {(f"Automation of {names[k]}" if k in AUTOMATED else names.get(k, k)): v for k, v in pairs}
 
 
 # The onscreen windows of every app, by id, through CoreGraphics from JavaScript for Automation's bridge: no Apple event,
@@ -328,7 +372,7 @@ function run(argv) {
 
 
 def running():
-    """Which of the five apps run now (apps.list lists the installed ones too)."""
+    """Which of the six apps run now (apps.list lists the installed ones too)."""
     done = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", RUNNING_JS, *APPS], capture_output=True, text=True, timeout=30)
     if done.returncode != 0:
         raise Failed(f"the running apps: {done.stderr.strip()[-300:]}")
@@ -597,7 +641,7 @@ def redact(node):
 class Task:
     """One run of one task: its calls, timed, its observations, its movie's captions, and what it made."""
 
-    def __init__(self, c, tid, app, cropper):
+    def __init__(self, c, tid, app, cropper, agent=False):
         self.c, self.id, self.app = c, tid, app
         self.calls, self.notes = [], []
         self.observed = 0
@@ -605,9 +649,15 @@ class Task:
         # The window the task last observed: the movie's frames are cut to it until the task pins one.
         self.shown = None
         self.inspector = False
+        # What the agent's run did (--agent): its model, run id, scripts, computer calls, cost and answer.
+        self.agent = None
         self.folder = os.path.join(out, tid)
         self.t0 = time.monotonic()
+        # The movie's start and end on the recorder's clock: the task itself, without its setup and teardown.
+        self.span = [None, None]
         aim = lambda: self.window or self.shown  # noqa: E731
+        if agent:  # the agent's window is the app's front one: the harness pins none
+            aim = lambda: cropper.front(APPS[app])  # noqa: E731
         self.rec = Recorder(os.path.join(self.folder, "frames"), lambda: time.monotonic() - self.t0, aim, cropper) if cropper else None
 
     def say(self, text):
@@ -811,7 +861,7 @@ def first_run(task, tree):
     return tree, pressed
 
 
-# --- the five tasks ---------------------------------------------------------------------------------------------------
+# --- the six tasks ----------------------------------------------------------------------------------------------------
 # Each one is (prepare, drive): prepare opens the app and its first-run sheets before the snapshot; drive makes the
 # task's sandbox and does the task in it.
 
@@ -938,6 +988,26 @@ def safari_follow_link(t):
     back = find(tree["nodes"], role="button", name="Go back") or need(t, tree["nodes"], "the Back button", role="button", contains="back")
     t.act([{"press": back["ref"]}], "go back (the Back button)", expect={"text": "Quarterly report", "timeoutMs": 10000})
     t.notes.append("followed the link by its name and came back by the Back button")
+
+
+def settings_about(t):
+    """mac.settings.about: in System Settings, open General and then About by their names, read the macOS version
+    there, and go back. What Safari's task shows (a place reached by a named link, and left by Back) with no WebKit,
+    which draws no page on a CI runner (see smoke.sh). It makes nothing, so it leaves nothing."""
+    version = t.run_exec(["/usr/bin/sw_vers", "-productVersion"], "the macOS version (sw_vers)").strip()
+    t.launch()
+    t.wait_for("General", "wait for System Settings' sidebar")
+    tree = t.observe()
+    general = need(t, tree["nodes"], "General in the sidebar", name="General")
+    t.act([{"click": general["ref"]}], "open General", expect={"text": "Software Update", "timeoutMs": 10000})
+    tree = t.observe("observe General")
+    about = need(t, tree["nodes"], "About in General", name="About")
+    t.act([{"click": about["ref"]}], "open About", expect={"text": version, "timeoutMs": 10000})
+    t.notes.append(f"About shows macOS {version}")
+    tree = t.observe("observe About")
+    back = find(tree["nodes"], role="button", name="Back") or need(t, tree["nodes"], "the Back button", role="button", contains="back")
+    t.act([{"press": back["ref"]}], "go back (the Back button)", expect={"text": "Software Update", "timeoutMs": 10000})
+    t.notes.append("followed General, then About, by their names, and came back by the Back button")
 
 
 def notes_prepare(t):
@@ -1084,12 +1154,22 @@ def calendar_new_event(t):
     # the default calendar, with its inspector open; the inspector's calendar menu moves it into the task's calendar.
     add = need(t, tree["nodes"], "the Add Event button", role="button", name="Add Event")
     t.inspector = True  # from here on the teardown closes the inspector first (see close_inspector)
-    t.act([{"press": add["ref"]}], "press Add Event")
-    tree = t.observe("observe the quick event field")
-    boxes = [n for n in tree["nodes"] if n.get("role") == "textbox"]
-    field = next((n for n in boxes if "focused" in (n.get("flags") or [])), None) or next((n for n in boxes if "Event" in (n.get("name") or "")), None)
-    typing = {"type": title, "into": field["ref"]} if field is not None else {"type": title}
-    t.act([typing, {"key": "enter"}], "type the event's title, enter", expect={"text": title, "timeoutMs": 10000})
+    # The quick event field reads what is typed a moment after it shows (as in calendar_setup_quick_event): enter at
+    # once closed it with no event made, once in four CI runs (the window then held no field and no event). So the
+    # title, a pause, then enter; and the field opened again once when no event came of it.
+    for attempt in (1, 2):
+        t.act([{"press": add["ref"]}], "press Add Event" + (" again" if attempt > 1 else ""))
+        tree = t.observe("observe the quick event field")
+        boxes = [n for n in tree["nodes"] if n.get("role") == "textbox"]
+        field = next((n for n in boxes if "focused" in (n.get("flags") or [])), None) or next((n for n in boxes if "Event" in (n.get("name") or "")), None)
+        typing = {"type": title, "into": field["ref"]} if field is not None else {"type": title}
+        t.act([typing], "type the event's title")
+        time.sleep(1)
+        if t.act([{"key": "enter"}], "enter makes the event", expect={"text": title, "timeoutMs": 6000}, must=attempt > 1):
+            break
+        print("    no event came of the quick event field: it opens again", flush=True)
+        tree = t.observe()
+        add = need(t, tree["nodes"], "the Add Event button", role="button", name="Add Event")
     tree = t.observe("observe the event's inspector")
     menu = need(t, tree["nodes"], "the inspector's calendar menu", id="calendar-button")
     t.act([{"press": menu["ref"]}], "open the event's calendar menu")
@@ -1118,7 +1198,356 @@ TASKS = [
     ("mac.finder.rename-file", "com.apple.finder", None, finder_rename_file),
     ("mac.textedit.edit-number", "com.apple.TextEdit", None, textedit_edit_number),
     ("mac.calendar.new-event", "com.apple.iCal", calendar_prepare, calendar_new_event),
+    ("mac.settings.about", "com.apple.systempreferences", None, settings_about),
 ]
+# Each movie's title, in plain words.
+TITLES = {
+    "mac.settings.about": "System Settings: open General, then About, read the macOS version, and go back",
+    "mac.notes.new-note": "Notes: write a new note, its title and a line, in a folder of its own",
+    "mac.safari.follow-link": "Safari: follow a link by its name, then go back",
+    "mac.finder.rename-file": "Finder: rename draft.txt to final.txt",
+    "mac.textedit.edit-number": "TextEdit: change Pears from 41 to 42, and save the file",
+    "mac.calendar.new-event": "Calendar: make an event in a calendar of its own",
+}
+
+
+# --- an agent does the tasks (--agent=MODEL) ---------------------------------------------------------------------------
+
+SERVE_CLI = os.path.normpath(os.path.join(here, "..", "..", "..", "serve", "dist", "cli.js"))
+FAUX = os.path.join(here, "agent-faux.mjs")
+INSTRUCTIONS = (
+    "You work on a Mac through code mode: `computer` in your scripts is the Mac. Do the task you are given, then say in "
+    "one sentence what you did. Open a file or a folder with computer.apps.open(appId, { url, background: true }). "
+    "Start every script with a // comment that says in a few plain words what it does: people watching the run read it. "
+    "Touch nothing the task does not name."
+)
+# Each model's name in a movie's title and file name.
+MODEL_NAMES = {"faux": "a scripted model", "anthropic/claude-sonnet-5-5": "Sonnet 5.5", "openrouter/anthropic/claude-sonnet-5.5": "Sonnet 5.5",
+               "openrouter/openai/gpt-6.1-terra": "GPT-6.1 Terra"}
+
+
+def model_name(model):
+    return MODEL_NAMES.get(model, model.split("/")[-1])
+
+
+class Serve:
+    """agentrun-serve on this Mac, the platform the agent runs on: one for the run, with a data directory, a port and a
+    token of its own. Computerd is paired with it for the run, and unpaired after (close)."""
+
+    def __init__(self, faux):
+        if not os.path.isfile(SERVE_CLI):
+            raise Failed(f"packages/serve is not built ({SERVE_CLI}): node scripts/build-workspaces.mjs --only @parcha/agentrun-serve")
+        self.data = tempfile.mkdtemp(prefix="agentrun-demo-serve-")
+        self.token = "ar_test_" + secrets.token_hex(20)
+        self.log = open(os.path.join(out, "serve.log"), "w")
+        argv = ["node", SERVE_CLI, "--data", os.path.join(self.data, "agents"), "--port", "0"] + (["--faux", FAUX] if faux else [])
+        env = dict(os.environ, AGENTRUN_ACCOUNTS="0", AGENTRUN_TOKEN=self.token)
+        self.p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=self.log, stdin=subprocess.DEVNULL, text=True, env=env)
+        self.url, self.computer, self.policy = None, None, None
+        killer = threading.Timer(120, self.p.kill)
+        killer.start()
+        banner = re.compile(r"agentrun-serve on (http://127\.0\.0\.1:\d+)/v2 ")
+        try:
+            while self.url is None:
+                line = self.p.stdout.readline()
+                if not line:
+                    raise Failed(f"agentrun-serve ended before it listened: {self.tail()}")
+                self.log.write(line)
+                found = banner.search(line)
+                self.url = found.group(1) if found else None
+        finally:
+            killer.cancel()
+        threading.Thread(target=self.drain, daemon=True).start()
+        print(f"agentrun-serve on {self.url}" + (" (faux model)" if faux else ""), flush=True)
+
+    def drain(self):
+        for line in self.p.stdout:
+            self.log.write(line)
+            self.log.flush()
+
+    def tail(self):
+        self.log.flush()
+        with open(self.log.name) as f:
+            return " / ".join(f.read().strip().splitlines()[-5:])
+
+    def api(self, method, path, body=None, timeout=30):
+        request = urllib.request.Request(f"{self.url}/v2{path}", method=method, data=None if body is None else json.dumps(body).encode(),
+                                         headers={"authorization": f"Bearer {self.token}", "content-type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as r:
+                return r.status, json.loads(r.read() or b"null")
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read() or b"null")
+            except ValueError:
+                return e.code, None
+
+    def pair(self):
+        """Computerd paired with this server for the run, its policy first: the six apps, and the screen. The owner's
+        policy as it was is kept, and put back by close. A Mac already paired with a server is refused before anything
+        changes: pairing again would replace its token, and close's unpair would leave it paired with nothing."""
+        attach = os.path.join(home, "attach.json")
+        if os.path.exists(attach):
+            raise Failed(f"this Mac is paired with a server ({attach}): --agent pairs it with its own, and would drop that pairing; run it where Computerd is not paired")
+        policy = os.path.join(home, "policy.json")
+        self.policy = open(policy, "rb").read() if os.path.exists(policy) else b""
+        with open(policy, "w") as f:
+            json.dump({"apps": sorted(APPS), "server": ["screen"]}, f)
+        status, made = self.api("POST", "/computers/pairings", {})
+        if status != 201:
+            raise Failed(f"POST /computers/pairings: {status} {made}")
+        done = subprocess.run([helper, "pair", self.url, made["code"], f"agentrun-demo-{RUN}"], env=dict(os.environ, COMPUTERD_HOME=home),
+                              capture_output=True, text=True, timeout=60)
+        if done.returncode != 0:
+            raise Failed(f"computerd pair: {(done.stderr or done.stdout).strip()}")
+        deadline = time.monotonic() + 30
+        while True:
+            _, listed = self.api("GET", "/computers")
+            online = [one for one in (listed or {}).get("paired") or [] if one.get("online")]
+            if online:
+                self.computer = online[0]["id"]
+                print(f"paired: {self.computer}, groups {online[0].get('groups')}", flush=True)
+                return
+            if time.monotonic() > deadline:
+                raise Failed(f"the paired Mac is not online after 30 s: {listed}")
+            time.sleep(0.5)
+
+    def close(self):
+        if self.policy is not None:
+            subprocess.run([helper, "unpair"], env=dict(os.environ, COMPUTERD_HOME=home), capture_output=True, timeout=30)
+            policy = os.path.join(home, "policy.json")
+            if self.policy:
+                with open(policy, "wb") as f:
+                    f.write(self.policy)
+            elif os.path.exists(policy):
+                os.unlink(policy)
+        self.p.terminate()
+        try:
+            self.p.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            self.p.kill()
+        self.log.close()
+        shutil.rmtree(self.data, ignore_errors=True)
+
+
+def first_comment(code):
+    """A script's first // comment: what it does, in the agent's words."""
+    for line in (code or "").splitlines():
+        line = line.strip()
+        if line.startswith("//"):
+            return line.lstrip("/ ").strip()
+    return None
+
+
+def first_sentence(text):
+    text = " ".join((text or "").split())
+    found = re.match(r"(.+?[.!?])(\s|$)", text)
+    return (found.group(1) if found else text)[:160]
+
+
+def epoch(stamp):
+    return datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+
+
+def agent_run(t, serve, model, prompt):
+    """One run of the agent on the task: made, followed on its timeline to its end, each row printed and captioned at
+    its own time (the agent's words, each script's first comment, a failed script's error). Answers what the run did."""
+    t.say(f"the agent gets the task: {prompt}")
+    # The recorder's clock is monotonic from the task's start: a row's wall time maps onto it.
+    wall0 = time.time() - (time.monotonic() - t.t0)
+    agent = f"mac-demo-{RUN}-{secrets.token_hex(3)}"
+    # The Mac its one computer: no box and no shell.
+    definition = {"id": agent, "version": 1, "name": agent, "instructions": INSTRUCTIONS, "skills": [], "tools": [], "harness": "pi",
+                  "computer": {"kind": "desktop", "provider": serve.computer}}
+    if model != "faux":
+        definition["model"] = model
+    status, made = serve.api("POST", "/agents", {"definition": definition})
+    if status != 201:
+        raise Failed(f"POST /agents: {status} {made}")
+    status, started = serve.api("POST", f"/agents/{agent}/runs", {"input": {"content": prompt}})
+    if status not in (200, 201, 202):
+        raise Failed(f"POST /agents/{agent}/runs: {status} {started}")
+    run = started["run_id"]
+    print(f"    run {run} ({model})", flush=True)
+    did = {"model": model, "run": run, "scripts": 0, "computerCalls": 0, "failedScripts": 0, "usd": None, "answer": None}
+    seen, after, deadline = set(), 0, time.monotonic() + 600
+    while True:
+        status, page = serve.api("GET", f"/runs/{run}/timeline?wait_ms=2000" + (f"&after={after}" if after else ""), timeout=30)
+        if status != 200:
+            raise Failed(f"the run's timeline: {status} {page}")
+        for row in page.get("rows") or []:
+            if row["id"] in seen:
+                continue
+            seen.add(row["id"])
+            kind, words = row.get("kind"), None
+            if kind == "text_block":
+                words = first_sentence(row.get("text"))
+            elif kind == "tool_use":
+                did["scripts"] += row.get("tool_name") == "codemode"
+                words = first_comment(row.get("tool_input_preview")) or row.get("summary")
+            elif kind == "tool_result":
+                calls = row.get("computer_calls") or []
+                did["computerCalls"] += len(calls)
+                print(f"    {row.get('tool_name')} {row.get('tool_status')}: {len(calls)} computer calls"
+                      + "".join(f"\n      {x['method']} {x['ms']} ms" + (f" [{', '.join(s['do'] + ' ' + s.get('route', s.get('error', '')) for s in x['steps'])}]" if x.get("steps") else "")
+                                + (f" expect {x['expect']}" if x.get("expect") else "") + ("" if x["ok"] else f" {x.get('code')}") for x in calls), flush=True)
+                if row.get("tool_status") == "failed":
+                    print(f"      {(row.get('tool_result_preview') or '')[:500]}".replace("\n", "\n      "), flush=True)
+                    did["failedScripts"] += 1
+                    words = "the script failed: " + first_sentence(row.get("tool_result_preview") or "")
+            elif kind in ("final_answer", "error"):
+                words = first_sentence(row.get("text") or row.get("summary"))
+                if kind == "final_answer":
+                    did["answer"] = (row.get("text") or "")[:400]
+            if kind in ("tool_use", "text_block", "final_answer", "error"):
+                print(f"    [{kind}] {(row.get('tool_input_preview') if kind == 'tool_use' else words) or ''}".replace("\n", "\n      "), flush=True)
+            if words and t.rec:
+                t.rec.captions.append((epoch(row["timestamp"]) - wall0, words))
+        after = page.get("next_after", after)
+        ended = page.get("status") in ("completed", "failed", "cancelled")
+        if ended and page.get("final", True):
+            did["status"] = page["status"]
+            break
+        if time.monotonic() > deadline:
+            serve.api("POST", f"/runs/{run}/cancel", {})
+            raise Failed(f"the agent's run {run} did not end in 10 minutes")
+    # The cost from the ended run's whole timeline: its usage row keeps its id as the cost grows, and a page after the
+    # row was first read may not carry it again.
+    _, whole = serve.api("GET", f"/runs/{run}/timeline", timeout=30)
+    usage = [row for row in (whole or {}).get("rows") or [] if row.get("kind") == "usage"]
+    if usage:
+        did["usd"] = (usage[-1].get("usage") or {}).get("usd")
+    t.notes.append(f"agent: {model_name(model)}, run {run} {did['status']}, {did['scripts']} scripts, {did['computerCalls']} computer calls"
+                   + (f", ${did['usd']:.3f}" if isinstance(did["usd"], (int, float)) else ""))
+    t.agent = did
+    if did["status"] != "completed":
+        _, read = serve.api("GET", f"/runs/{run}")
+        raise Failed(f"the agent's run {did['status']}: {((read or {}).get('error') or {}).get('message') or did['answer'] or 'no answer'}")
+    return did
+
+
+def poll(label, read, want, seconds=10):
+    """read() until it answers want, at most seconds; the last answer."""
+    deadline = time.monotonic() + seconds
+    while (got := read()) != want and time.monotonic() < deadline:
+        time.sleep(0.5)
+    return got
+
+
+def agent_textedit(t):
+    folder = sandbox_folder(t, "textedit")
+    path = f"{folder}/totals-{RUN}.txt"
+    t.write(path, "Apples: 3\nPears: 41\nPlums: 7\n", "write the totals file")
+    want = ["Apples: 3", "Pears: 42", "Plums: 7"]
+
+    def check():
+        read = lambda: base64.b64decode((t.c.call("files.read", {"path": path}).get("result") or {}).get("data", "")).decode(errors="replace").splitlines()  # noqa: E731
+        if (got := poll("the totals file", read, want)) != want:
+            raise Failed(f"the totals file holds {got}, not {want}")
+        t.notes.append("the totals file saved with Pears: 42, the other lines kept")
+    return f"Open the file {path} in TextEdit, change Pears from 41 to 42, and save it.", check
+
+
+def agent_finder(t):
+    folder = sandbox_folder(t, "finder")
+    t.write(f"{folder}/draft.txt", "the draft\n", "write draft.txt")
+    t.write(f"{folder}/other.txt", "another file\n", "write other.txt")
+    want = ["final.txt", "other.txt"]
+
+    def check():
+        listed = lambda: sorted(n for n in (os.path.basename(e.get("path") or "") for e in (t.c.call("files.list", {"path": folder}).get("result") or {}).get("entries", [])) if not n.startswith("."))  # noqa: E731
+        if (got := poll("the folder", listed, want)) != want:
+            raise Failed(f"the folder holds {got}, not {want}")
+        t.notes.append("the folder holds final.txt and other.txt")
+    return f"In Finder, open the folder {folder} and rename draft.txt in it to final.txt.", check
+
+
+def agent_notes(t):
+    t.say("make the task's Notes folder (AppleScript)")
+    t.run_exec(["/usr/bin/osascript", "-e", MAKE_FOLDER, NAME], "make the task's folder")
+    title, line = f"{NAME} groceries", "Oat milk and eggs"
+    count = """on run argv
+  tell application "Notes" to return count (notes of folder (item 1 of argv) whose name is (item 2 of argv) and plaintext contains (item 3 of argv))
+end run"""
+
+    def check():
+        if (got := poll("the note", lambda: t.run_exec(["/usr/bin/osascript", "-e", count, NAME, title, line], "count the note").strip(), "1")) != "1":
+            raise Failed(f"the task's folder holds {got} notes titled {title!r} with the line {line!r}, not 1")
+        t.notes.append(f"the note \"{title}\" with its line is in the task's folder")
+    return f"In Notes, write a new note in the folder \"{NAME}\": its first line \"{title}\", its second line \"{line}\".", check
+
+
+def agent_calendar(t):
+    t.say("make the task's calendar (AppleScript)")
+    t.run_exec(["/usr/bin/osascript", "-e", MAKE_CALENDAR, NAME], "make the calendar")
+    t.inspector = True  # the teardown closes an inspector the agent left open, before it deletes the calendar
+    title = event_title(RUN)
+    count = """on run argv
+  set today to current date
+  set time of today to 0
+  tell application "Calendar" to return count (events of calendar (item 1 of argv) whose summary is (item 2 of argv) and start date ≥ today and start date < today + 1 * days)
+end run"""
+
+    def check():
+        if (got := poll("the event", lambda: t.run_exec(["/usr/bin/osascript", "-e", count, NAME, title], "count the event").strip(), "1")) != "1":
+            where = f"; the calendars holding it: {osa(t.c, EVENT_CALENDARS, title).strip() or 'none'}" if CI else ""
+            raise Failed(f"the task's calendar holds {got} events titled {title!r} today, not 1{where}")
+        t.notes.append(f"the event \"{title}\" is in the task's calendar, today")
+    return f"In Calendar, add an event titled \"{title}\" today, in the calendar \"{NAME}\".", check
+
+
+def agent_settings(t):
+    version = t.run_exec(["/usr/bin/sw_vers", "-productVersion"], "the macOS version (sw_vers)").strip()
+
+    def check():
+        if version not in ((t.agent or {}).get("answer") or ""):
+            raise Failed(f"the agent's answer does not name macOS {version}: {(t.agent or {}).get('answer')!r}")
+        # Back on General: its list (Software Update) shows, which About's page does not.
+        if not find(t.observe("check: back on General")["nodes"], name="Software Update"):
+            raise Failed("System Settings is not back on General: no Software Update on screen")
+        t.notes.append(f"the agent read macOS {version} from About, and went back to General")
+    return "In System Settings, open General, then About, and tell me which macOS version this Mac runs. Then go back to General.", check
+
+
+# The agent's tasks: the scripted ones' ids and sandboxes, in plain words. Safari's is not among them: a runner's
+# WebKit draws no page (see smoke.sh), so its movie would show an empty window; System Settings' shows the same thing.
+AGENT_TASKS = [
+    ("mac.notes.new-note", "com.apple.Notes", notes_prepare, agent_notes),
+    ("mac.finder.rename-file", "com.apple.finder", None, agent_finder),
+    ("mac.textedit.edit-number", "com.apple.TextEdit", None, agent_textedit),
+    ("mac.calendar.new-event", "com.apple.iCal", calendar_prepare, agent_calendar),
+    ("mac.settings.about", "com.apple.systempreferences", None, agent_settings),
+]
+
+
+def agent_tasks(serve):
+    """Each agent task once per model, as the main loop runs a task: (id, app, prepare, drive), the movie's title in
+    TITLES."""
+    tasks = []
+    for model in models:
+        slug = re.sub(r"[^a-z0-9]+", "-", model.split("/")[-1].lower()).strip("-")
+        for tid, app, prepare, setup in AGENT_TASKS:
+            if model == "faux" and tid != "mac.textedit.edit-number":
+                continue
+
+            def drive(t, setup=setup, model=model):
+                prompt, check = setup(t)
+                agent_run(t, serve, model, prompt)
+                t.say("check the outcome")
+                check()
+            TITLES[f"{tid}.{slug}"] = f"{model_name(model)}: {AGENT_PROMPTS[tid]}"
+            tasks.append((f"{tid}.{slug}", app, prepare, drive))
+    return tasks
+
+
+# Each agent task's movie title, after the model's name.
+AGENT_PROMPTS = {
+    "mac.notes.new-note": "write a note in its own Notes folder",
+    "mac.finder.rename-file": "rename draft.txt to final.txt in Finder",
+    "mac.textedit.edit-number": "change Pears from 41 to 42 in TextEdit, and save",
+    "mac.calendar.new-event": "add an event to its own calendar",
+    "mac.settings.about": "read the macOS version from System Settings' About",
+}
 
 
 def close_inspector(c, t):
@@ -1260,6 +1689,51 @@ def lock():
     return f
 
 
+ALERT_BUTTONS = ("OK", "Close", "Don't Allow", "Deny", "Cancel", "Not Now", "Later", "Ignore", "Dismiss")
+# macOS 26's screen capture alert for Computerd itself, which seed-tcc.sh's replayd approvals no longer keep away:
+# "“Computerd” is requesting to bypass the system private window picker and directly access your screen and audio",
+# with Allow and Open System Settings only. Computerd's Screen Recording is seeded already; Allow answers it so.
+OWN_CAPTURE_ALERT = "“Computerd” is requesting to bypass the system private window picker"
+
+
+def clear_alerts(c, wait=0):
+    """CI only, on a throwaway runner: a system alert (UserNotificationCenter's) sits mid-screen in front of every
+    demo's window. Its words are printed and it is answered by its dismissing button (Allow for Computerd's own screen
+    capture alert), so no movie shows it. Waits up to wait seconds for one to show. On a person's Mac an alert is
+    theirs to answer, and nothing here runs."""
+    until = time.monotonic() + wait
+    while "com.apple.UserNotificationCenter" not in running_ids(["com.apple.UserNotificationCenter"]):
+        if time.monotonic() >= until:
+            print("  no system alert is on screen", flush=True)
+            return
+        time.sleep(1)
+    for _ in range(3):
+        if "com.apple.UserNotificationCenter" not in running_ids(["com.apple.UserNotificationCenter"]):
+            return
+        r = c.call("ui.observe", {"target": {"app": "com.apple.UserNotificationCenter"}})
+        if "error" in r:
+            # Still running a moment after its alert was answered, with no window: nothing is on screen.
+            if (r["error"].get("data") or {}).get("kind") != "not_found":
+                print(f"  (the system alert could not be read: {r['error'].get('message')})", flush=True)
+            return
+        nodes = r["result"].get("nodes", [])
+        words = [n.get("name") or n.get("value") for n in nodes if n.get("role") in ("text", "statictext", "heading") and (n.get("name") or n.get("value"))]
+        print(f"  a system alert is on screen: {' / '.join(words)[:400]}", flush=True)
+        names = ("Allow",) if any(OWN_CAPTURE_ALERT in w for w in words) else ALERT_BUTTONS
+        button = next((n for name in names for n in nodes if n.get("role") == "button" and n.get("name") == name), None)
+        if button is None:
+            print(f"  (no button to dismiss it among: {[n.get('name') for n in nodes if n.get('role') == 'button']})", flush=True)
+            return
+        reply = c.call("ui.act", {"target": {"app": "com.apple.UserNotificationCenter"}, "steps": [{"press": button["ref"]}]})
+        print(f"  answered it {button['name']!r}: {json.dumps(reply.get('error') or (reply.get('result') or {}).get('steps'))}", flush=True)
+        time.sleep(1)
+
+
+def running_ids(ids):
+    done = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", RUNNING_JS, *ids], capture_output=True, text=True, timeout=30)
+    return set(json.loads(done.stdout or "[]")) if done.returncode == 0 else set()
+
+
 def main():
     for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(s, stop)
@@ -1267,7 +1741,16 @@ def main():
     c = Client()
     hello = c.call("hello", {"client": "mini-demos"}).get("result") or {}
     print(f"Computerd on {hello.get('device', {}).get('model')}, macOS {hello.get('osVersion')}, features {json.dumps(hello.get('features'))}", flush=True)
+    if "--answer-alerts" in flags:
+        if not CI:
+            sys.exit("--answer-alerts runs on CI runners only: on a person's Mac an alert is theirs to answer")
+        shot = c.call("screen.shot", {})
+        print(f"one screen shot, to raise the capture alert: {'error ' + shot['error'].get('message', '') if 'error' in shot else 'taken'}", flush=True)
+        clear_alerts(c, wait=8)
+        sys.exit(0)
     print(f"run {RUN}: sandboxes named {NAME!r}", flush=True)
+    if CI:
+        clear_alerts(c)
     # The apps not running before the run are the run's own: started for the grants and the sweep, quit after it, started
     # again by their own task and quit at the end of its teardown, so no window of theirs sits in front of a later task.
     # An app that was running before the run (a person's) is left as it is.
@@ -1275,6 +1758,7 @@ def main():
     report = []
     interrupted = None
     cropper = None
+    serve = None
     try:
         for app in started:
             c.call("apps.launch", {"id": app, "background": True})
@@ -1298,15 +1782,19 @@ def main():
         still = quit_apps(started)
         if still:
             raise Failed(f"{', '.join(still)}, which the run started, did not quit after the sweep")
+        if models:
+            serve = Serve(faux=models == ["faux"])
+            serve.pair()
         if movie:
             cropper = Cropper()
-        for tid, app, prepare, drive in TASKS:
-            if only and tid not in only:
+        for tid, app, prepare, drive in agent_tasks(serve) if models else TASKS:
+            if only and not any(tid == one or tid.startswith(one + ".") for one in only):
                 continue
-            t = Task(c, tid, app, cropper)
+            t = Task(c, tid, app, cropper, agent=bool(models))
             os.makedirs(t.folder, exist_ok=True)
             print(f"{tid} ({APPS[app]})", flush=True)
             if t.rec:
+                cropper.park()
                 t.rec.start()
                 time.sleep(0.5)
             error, left = None, []
@@ -1319,8 +1807,11 @@ def main():
                 if isinstance(e, KeyboardInterrupt):
                     interrupted = e
             if before is not None:
+                # The movie runs from here to the task's end: the setup before and the teardown after are not the task.
+                t.span[0] = t.rec.clock() if t.rec else None
                 try:
                     drive(t)
+                    t.say("done")
                 except Failed as e:
                     error = str(e)
                 except BaseException as e:
@@ -1329,6 +1820,11 @@ def main():
                         interrupted = e
                 finally:
                     shield["on"] = True
+                    if t.rec:
+                        if error is not None:
+                            t.say(f"failed: {error}"[:160])
+                        t.span[1] = t.rec.clock() + 1.5  # the end, held a moment
+                        time.sleep(1.5)
                     try:
                         if error is not None and not interrupted:
                             print(f"  {error}")
@@ -1361,7 +1857,7 @@ def main():
             if t.rec:
                 t.say("passed" if error is None else "failed")
                 time.sleep(1)
-                timeline = t.rec.finish()
+                timeline = t.rec.finish(TITLES.get(tid, ""), t.span)
                 frames = len(t.rec.frames)
                 t.movie = encode(timeline, os.path.join(out, f"{tid}.mp4")) if frames else "not made: no frame of the task's window"
             else:
@@ -1374,8 +1870,11 @@ def main():
                 "observes": sum(1 for x in t.calls if x["method"] == "ui.observe"),
                 "frames": frames, "movie": t.movie, "notes": t.notes, "calls": t.calls,
             }
+            if t.agent:
+                entry["agent"] = t.agent
             if t.rec:
                 entry["framesDropped"] = t.rec.dropped
+                entry["paintedOver"] = t.rec.painted
                 if t.rec.errors:
                     entry["recorderErrors"] = t.rec.errors[:5]
             report.append(entry)
@@ -1383,6 +1882,8 @@ def main():
             print(f"{'PASS' if error is None else 'FAIL'} {tid}: {took} ms, {entry['acts']} acts, {entry['steps']} steps, {frames} frames{dropped}, movie {t.movie}" + (f"\n  {error}" if error else ""), flush=True)
             if t.rec and t.rec.errors:
                 print(f"  recorder: {'; '.join(t.rec.errors[:3])}", flush=True)
+            if t.rec and t.rec.painted:
+                print(f"  painted over: {json.dumps(t.rec.painted)}", flush=True)
             print(f"  left: {json.dumps(left)}", flush=True)
             if interrupted:
                 break
@@ -1396,6 +1897,11 @@ def main():
             print(f"  (could not quit the apps the run started: {e})", flush=True)
         if cropper:
             cropper.close()
+        if serve:
+            try:
+                serve.close()
+            except Exception as e:
+                print(f"  (could not stop agentrun-serve or unpair: {e})", flush=True)
         c.close()
         os.unlink(LOCK)
         held.close()

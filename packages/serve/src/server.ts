@@ -124,7 +124,7 @@ import { permissionFrom } from "./tool-gate.js";
 import { isMcpWildcard, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageTiers, packageView, pickComputer, readPackages, type ShellHere, type TemplatesDeps } from "./templates.js";
-import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
+import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, inputSchemaOf, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, loadToolSettings, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { wakeAnsweredBySetting } from "./settings-wake.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
@@ -1938,7 +1938,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), ...(tiers.modelTiers ? { modelTiers: tiers.modelTiers } : {}), mcp: saved, defaultTools, grants, held: denied, ...(chosenApprovals ? { approvals: chosenApprovals } : {}), ...(pick ? { computer: pick } : {}) }, templateDeps);
     // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
     // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>).
-    const refusedTriggers = madeTriggerIssues(made.triggers, Date.now());
+    const refusedTriggers = madeTriggerIssues(made.triggers, Date.now(), pkg.inputSchema);
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
@@ -1999,28 +1999,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return { applied, minted };
   }
 
-  /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
-   *  with the documented run bodies; a workflow run's its workflow's input schema, never the agentic example. Each value
+  /** A run create's issues told from the input this server checks (explain.ts): an agentic run's input schema in force
+   *  (`{content: string}` with none), with the documented run bodies;a workflow run's its workflow's input schema, never the agentic example. Each value
    *  suggested must pass this route's own checks of the body, the workflow's input check among them. */
   async function explainRun(issues: InputIssue[], body: Json, revision: Revision | null | undefined): Promise<InputIssue[]> {
     const dsl = revision?.kind === "workflow" ? await import("@parcha/agentrun-dsl") : undefined;
     const workflow = dsl && revision?.kind === "workflow" ? revision.body.workflow : undefined;
     const declared = workflow?.input?.schemaId === undefined ? undefined : workflow.schemas[workflow.input.schemaId];
-    const input = !dsl ? DEFAULT_INPUT_SCHEMA : declared ? (dsl.resolveSchemaForWorkflow(workflow!, declared) as Json) : { type: "object" };
+    const typed = revision?.kind === "agentic" ? inputSchemaOf((revision.body as { inputSchema?: unknown }).inputSchema) : DEFAULT_INPUT_SCHEMA;
+    const input = !dsl ? typed : declared ? (dsl.resolveSchemaForWorkflow(workflow!, declared) as Json) : { type: "object" };
     const base = deref(openapi, { $ref: "#/components/schemas/RunCreate" }) ?? {};
     const schema = { ...base, properties: { ...(base.properties as Json), input } };
     const check = (sent: unknown) => {
       const value = isObject(sent) ? sent : {};
       const issues = runBodyIssues(value);
       if (!revision || !isObject(value.input)) return issues;
-      return [...issues, ...(dsl ? workflowInputIssues(dsl.validateWorkflow, revision, value.input) : inputIssues(value.input, DEFAULT_INPUT_SCHEMA as Json))];
+      return [...issues, ...(dsl ? workflowInputIssues(dsl.validateWorkflow, revision, value.input) : inputIssues(value.input, typed))];
     };
     return explain(issues, openapi, schema, { examples: dsl ? [] : examplesOf("createRun"), body, check });
   }
 
-  /** A run's input: an agentic run's `{content: string}`, a workflow run's what its workflow's input schema takes. */
+  /** A run's input: an agentic run's what its revision's input schema in force takes (`{content: string}` with none), a
+   *  workflow run's what its workflow's input schema takes. */
   async function inputIssuesOf(revision: Revision, input: Json) {
-    if (revision.kind === "agentic") return inputIssues(input, DEFAULT_INPUT_SCHEMA as Json);
+    if (revision.kind === "agentic") return inputIssues(input, inputSchemaOf((revision.body as { inputSchema?: unknown }).inputSchema));
     const { validateWorkflow } = await import("@parcha/agentrun-dsl");
     return workflowInputIssues(validateWorkflow, revision, input);
   }

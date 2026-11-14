@@ -110,6 +110,10 @@ are raw input at its pixels: `click`, `type`, `key`, `scroll` and `drag` at poin
 expect. `press`, `set` and `perform` are refused. Take the points from the latest screenshot, aim at the middle of a
 target, and take another screenshot to see what your steps did. Click a field before typing into it.
 
+Open an app from a script with `computer.processes.start("mousepad")`: it opens on the desktop's screen and stays
+open. `computer.shell.run` ends everything its command started when it returns, so an app it starts closes at once.
+`shell.run("command -v firefox gedit xterm")` shows which apps the desktop has.
+
 ## Habits that work
 
 - **The keyboard is exact.** `super+a` (Mac) or `ctrl+a` selects all, `escape` closes a menu or a dialog, `enter`
