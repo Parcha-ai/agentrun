@@ -1216,7 +1216,7 @@ const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600
 ```
 
 Modal runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/modal.ts` is Modal's `MachineHost`,
-its SDK slice (`ModalSdk`: apps, images, sandboxes and five methods of a sandbox) and the client it is made with, and
+the SDK's types (`import type`, erased at build) and the client it is made with, and
 `src/hosted/provider.ts` does everything below that is not Modal's own. `create` takes the caller's request id
 (`{ requestId }`, serve's is the run's claim): the computer's name is `computer-` and the first 12 hex digits of its
 sha256, and a retry of the same request finds the computer the first made instead of making a second. A Modal sandbox
@@ -1721,7 +1721,7 @@ const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: 
 ```
 
 E2B runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/e2b.ts` is E2B's `MachineHost`, its
-SDK slice and the mapping of a sandbox to a machine, and `src/hosted/provider.ts` does everything below that is not
+SDK types (`import type`, erased at build) and the mapping of a sandbox to a machine, and `src/hosted/provider.ts` does everything below that is not
 E2B's own. `create` takes the caller's request id (`{ requestId }`, serve's is the run's claim): the computer's name is
 `computer-` and the first 12 hex digits of its sha256, and a retry of the same request finds the computer the first
 made instead of making a second.
@@ -1730,8 +1730,8 @@ An E2B computer is a sandbox made from an E2B template, by default `desktop`, E2
 Xfce, x11vnc and noVNC, e2b-dev/desktop `template/template.py:3-65`). It is kind `desktop`: computerd starts the X
 server itself, as on a Docker desktop, and its X11 shim drives it. With `kind: "linux"` it is kind `linux`
 on any template, `base` by default, with no display: the same provider, minus the X server, so it costs nothing to
-offer. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, of which `src/e2b.ts` names
-only the slice it calls (`E2BSandboxClass`) and imports nothing at load; the package is the host's to install, as
+offer. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, whose types `src/e2b.ts` imports
+as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import; the package is the host's to install, as
 Modal's is. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
 and with no bound or abort (`@e2b/desktop@2.5.0` `dist/index.mjs:387-415`), and the provider needs none of its other
 calls.
