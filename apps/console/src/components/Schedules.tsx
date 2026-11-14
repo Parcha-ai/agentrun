@@ -1,5 +1,6 @@
 import { ArrowLeft, CalendarClock, Copy, GitPullRequest, KeyRound, Pause, Pencil, Play, Plus, Trash2, Webhook, Zap } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { AcceptEditor, ConditionList, EVENT_HINTS, Said } from "@/components/AcceptEditor";
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
@@ -15,11 +16,12 @@ import { runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, githubWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
+import { ACCEPT_LIMITS, acceptFields, type RuleDraft, ruleDraftOf } from "@/lib/accept";
+import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf } from "@/lib/schedules";
 import type { Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 
-/** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or a schedule's editor
- *  (`edit`). */
+/** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or its editor
+ *  (`edit`: a schedule's whole, a webhook's or GitHub trigger's filter). */
 export type ScheduleView = { trigger?: string | null; kind?: "schedule" | "webhook" | "github"; edit?: boolean };
 type PageProps = { v2: Client; go: (hash: string) => void; agentName: (id: string) => string };
 /** `minEvery`: the shortest interval the server takes (capabilities' features.triggers.min_every_s), when it says. */
@@ -285,7 +287,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
           {!(done && "ran" in done) && <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>}
-          {!hook && !gh && <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> Edit</Button>}
+          <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> {hook || gh ? "Edit filter" : "Edit"}</Button>
           {hook && hook.source.signature === "composio" && (!givingSecret ? <Button size="sm" onClick={() => setGivingSecret(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Set secret</Button> : (
             <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); void giveSecret(); }}>
               <Input name="secret" type="password" autoComplete="off" aria-label="Composio's webhook secret" className="w-64" value={given} onChange={(e) => setGiven(e.target.value)} />
@@ -355,7 +357,9 @@ function ScheduleEdit({ v2, go, id, minEvery, now }: FormProps & { id: string })
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
   useEffect(() => { v2.getTrigger(id).then(setTrigger, (e) => setError(problem(e, "the trigger"))); }, [v2, id, tries]);
-  if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} /> : <ListSkeleton label="Loading the schedule" rows={4} />;
+  if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} /> : <ListSkeleton label="Loading the trigger" rows={4} />;
+  // A webhook's or GitHub trigger's filter is edited alone: its address, secret and run stay as they are.
+  if (isWebhookTrigger(trigger) || isGitHubTrigger(trigger)) return <FilterForm v2={v2} go={go} trigger={trigger} />;
   // Never an editor for another kind of trigger: its save would rebuild it as a schedule that starts runs.
   if (!isScheduleTrigger(trigger)) return <NotASchedule />;
   return <ScheduleForm v2={v2} go={go} trigger={trigger} minEvery={minEvery} now={now} />;
@@ -568,11 +572,11 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
   const keys = useRef(keeper()).current;
   useEffect(() => { allAgents(v2).then(setAgents, () => setAgents([])); }, [v2]);
   const set = <K extends keyof WebhookDraft>(k: K) => (value: WebhookDraft[K]) => setDraft((d) => ({ ...d, [k]: value }));
-  const shown = new Set(["name", "source.signature", "target.agent_id", "target.input", "target.max_cost_usd"]);
   const agentCapRaw = (agents ?? []).find((a) => a.agent_id === draft.agentId)?.definition.max_cost_usd;
   const agentCap = typeof agentCapRaw === "number" && agentCapRaw > 0 ? agentCapRaw : undefined;
   const save = async (e: FormEvent) => {
     e.preventDefault();
+    const shown = new Set(["name", "source.signature", "target.agent_id", "target.input", "target.max_cost_usd", ...acceptFields(draft.accept.map((r) => r.where.length))]);
     const { body, issues: missing } = webhookBodyOf(draft, agentCap !== undefined);
     setRest([]);
     if (!body) { setIssues(missing ?? {}); return; }
@@ -627,6 +631,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
           {issues["source.signature"] && <p className="mt-1 text-small text-destructive-text" role="alert" data-issue="source.signature">{issues["source.signature"]}</p>}
         </fieldset>
         {draft.signature === "composio" && <p className="text-small text-muted-foreground">Composio makes this webhook's secret when you register the trigger's URL as your project's webhook subscription: set it on the trigger then.</p>}
+        <WebhookFilter signature={draft.signature} rules={draft.accept} onChange={set("accept")} issues={issues} cap={null} />
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
@@ -677,12 +682,11 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
   }, [v2, tries]);
   useEffect(() => { allAgents(v2).then(setAgents, () => setAgents([])); }, [v2]);
   const set = <K extends keyof GitHubDraft>(k: K) => (value: GitHubDraft[K]) => setDraft((d) => ({ ...d, [k]: value }));
-  const toggle = (key: string) => setDraft((d) => ({ ...d, events: d.events.includes(key) ? d.events.filter((e) => e !== key) : [...d.events, key] }));
-  const shown = new Set(["name", "source.accept", "target.agent_id", "target.input", "target.max_cost_usd"]);
   const agentCapRaw = (agents ?? []).find((a) => a.agent_id === draft.agentId)?.definition.max_cost_usd;
   const agentCap = typeof agentCapRaw === "number" && agentCapRaw > 0 ? agentCapRaw : undefined;
   const save = async (e: FormEvent) => {
     e.preventDefault();
+    const shown = new Set(["name", "target.agent_id", "target.input", "target.max_cost_usd", ...acceptFields(githubRulesOf(draft).map((r) => r.where.length))]);
     const { body, issues: missing } = githubBodyOf(draft, agentCap !== undefined);
     setRest([]);
     if (!body) { setIssues(missing ?? {}); return; }
@@ -719,21 +723,7 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-body text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
       <div className="mt-5 space-y-5">
         <Field label="Name" field="name" issue={issues.name}><Input name="name" value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="review PRs" /></Field>
-        <fieldset className="min-w-0">
-          <legend className="caps text-label text-muted-foreground">Events</legend>
-          <div className="mt-1 space-y-1">
-            {GITHUB_EVENTS.map(({ event, action, label }) => {
-              const key = `${event}:${action}`;
-              return (
-                <label key={key} className="flex items-center gap-2 text-body">
-                  <input type="checkbox" name="event" value={key} checked={draft.events.includes(key)} onChange={() => toggle(key)} className="accent-primary" />
-                  {label} <span className="font-mono text-label text-muted-foreground">{event} {action}</span>
-                </label>
-              );
-            })}
-          </div>
-          {issues["source.accept"] && <p className="mt-1 text-small text-destructive-text" role="alert" data-issue="source.accept">{issues["source.accept"]}</p>}
-        </fieldset>
+        <GitHubEvents picks={draft} onChange={(picks) => setDraft((d) => ({ ...d, ...picks }))} issues={issues} />
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
@@ -748,6 +738,124 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       <div className="mt-6 flex flex-wrap gap-2">
         <Button type="submit" size="lg" variant="solid" disabled={saving}>{saving ? "Creating" : "Create GitHub trigger"}</Button>
         <Button type="button" size="lg" variant="ghost" onClick={() => go("#/triggers")}>Cancel</Button>
+      </div>
+    </form>
+  );
+}
+
+/** What a webhook's runs do with its filter and its cap (`max_active_runs`, serve's triggers.ts): with no filter a
+ *  request while its last run is going is skipped; with one, each request it takes is its own run (its adapter's
+ *  `concurrent`). A cap holds either way, and a request past it waits; taking the filter away keeps the cap. */
+function runsWords(filtered: boolean, cap: number | null): string {
+  const capped = cap !== null ? `, up to ${cap} at once; past that, a request waits for one of them to end` : "";
+  if (!filtered) return cap !== null ? `Every signed request starts a run${capped}.` : "Every signed request starts a run. One that comes while its last run is still going is skipped.";
+  return `With a filter, each request it takes starts its own run${cap !== null ? capped : ", even while an earlier run is still going"}. Any other request is answered and starts nothing.`;
+}
+
+/** A webhook's filter: rules typed by event name, with what each signature scheme calls an event, and what the filter
+ *  changes about its runs. */
+function WebhookFilter({ signature, rules, onChange, issues, cap }: { signature: WebhookDraft["signature"]; rules: RuleDraft[]; onChange: (rules: RuleDraft[]) => void; issues: Record<string, string>; cap: number | null }) {
+  return (
+    <fieldset className="min-w-0">
+      <legend className="caps text-label text-muted-foreground">Filter <span className="font-normal normal-case">(optional)</span></legend>
+      <div className="mt-2 space-y-3">
+        <Said issues={issues} field="source.accept" />
+        <AcceptEditor name="accept" rules={rules} onChange={onChange} issues={issues} room={ACCEPT_LIMITS.rules - rules.length} eventHint={EVENT_HINTS[signature]}
+          eventPlaceholder={signature === "github" ? "issues" : signature === "composio" ? "GITHUB_ISSUE_ADDED_EVENT" : "issue.opened"} />
+        <p className="text-small text-muted-foreground" role="note">{runsWords(rules.length > 0, cap)}</p>
+      </div>
+    </fieldset>
+  );
+}
+
+/** A GitHub trigger's events: the picker's events and actions, each picked event with its conditions, then rules for
+ *  any other GitHub event, typed as a webhook's are. Sent in that order (githubRulesOf), which is how each issue finds its
+ *  place. */
+function GitHubEvents({ picks, onChange, issues }: { picks: GitHubPicks; onChange: (picks: GitHubPicks) => void; issues: Record<string, string> }) {
+  const toggle = (key: string) => onChange({ ...picks, events: picks.events.includes(key) ? picks.events.filter((e) => e !== key) : [...picks.events, key] });
+  const picked = GITHUB_EVENT_NAMES.filter((event) => picks.events.some((key) => key.startsWith(`${event}:`)));
+  return (
+    <>
+      <fieldset className="min-w-0">
+        <legend className="caps text-label text-muted-foreground">Events</legend>
+        <div className="mt-1 space-y-3">
+          {GITHUB_EVENT_NAMES.map((name) => {
+            const i = picked.indexOf(name);
+            const at = `source.accept[${i}]`;
+            return (
+              <div key={name} data-github-event={name} className="space-y-1">
+                {GITHUB_EVENTS.filter((e) => e.event === name).map(({ event, action, label }) => {
+                  const key = `${event}:${action}`;
+                  return (
+                    <label key={key} className="flex items-center gap-2 text-body">
+                      <input type="checkbox" name="event" value={key} checked={picks.events.includes(key)} onChange={() => toggle(key)} className="accent-primary" />
+                      {label} <span className="font-mono text-label text-muted-foreground">{event} {action}</span>
+                    </label>
+                  );
+                })}
+                {i >= 0 && (
+                  <div className="ml-6 space-y-1 pt-1">
+                    {[at, `${at}.event`, `${at}.actions`].map((field) => <Said key={field} issues={issues} field={field} />)}
+                    <ConditionList name={`github-${name}`} at={at} where={picks.where[name] ?? []} onChange={(where) => onChange({ ...picks, where: { ...picks.where, [name]: where } })} issues={issues} label={`Only when, for ${name}`} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {issues["source.accept"] && <p className="mt-1 text-small text-destructive-text" role="alert" data-issue="source.accept">{issues["source.accept"]}</p>}
+      </fieldset>
+      <fieldset className="min-w-0">
+        <legend className="caps text-label text-muted-foreground">Other events <span className="font-normal normal-case">(optional)</span></legend>
+        <p className="mb-2 mt-1 text-small text-muted-foreground">Any other GitHub event, by its name.</p>
+        <AcceptEditor name="other" rules={picks.other} onChange={(other) => onChange({ ...picks, other })} issues={issues} offset={picked.length} room={ACCEPT_LIMITS.rules - picked.length - picks.other.length}
+          eventHint={EVENT_HINTS.github} eventPlaceholder="issues" addLabel="Add another event" />
+      </fieldset>
+    </>
+  );
+}
+
+/** A webhook's or GitHub trigger's filter, edited: a PATCH of its source, its kind and signature as they were and the new
+ *  `accept` (none, on a webhook: every signed request fires again). Its URL, secret and run stay. A save that changes
+ *  nothing sends nothing. */
+function FilterForm({ v2, go, trigger }: { v2: Client; go: (hash: string) => void; trigger: WebhookTrigger | GitHubTrigger }) {
+  const hook = isWebhookTrigger(trigger) ? trigger : null;
+  const [rules, setRules] = useState<RuleDraft[]>(() => (hook ? (hook.source.accept ?? []).map(ruleDraftOf) : []));
+  const [picks, setPicks] = useState<GitHubPicks>(() => (hook ? { events: [], where: {}, other: [] } : githubPicksOf((trigger as GitHubTrigger).source.accept)));
+  const [issues, setIssues] = useState<Record<string, string>>({});
+  const [rest, setRest] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const { source, issues: found } = hook ? webhookSourceOf(hook.source, rules) : githubSourceOf(picks);
+    setRest([]);
+    if (Object.keys(found).length) { setIssues(found); return; }
+    setIssues({}); setSaving(true);
+    try {
+      if (!same(source, trigger.source)) await v2.updateTrigger(trigger.id, { source });
+      go(hashOf(trigger.id));
+    } catch (err) {
+      const refused = issuesOf(err);
+      const shown = acceptFields(hook ? rules.map((r) => r.where.length) : githubRulesOf(picks).map((r) => r.where.length));
+      setIssues(Object.fromEntries(Object.entries(refused.fields).filter(([k]) => shown.has(k))));
+      setRest([...refused.rest, ...Object.entries(refused.fields).filter(([k]) => !shown.has(k)).map(([, v]) => v)]);
+      setSaving(false);
+    }
+  };
+  const Icon = hook ? Webhook : GitPullRequest;
+  return (
+    <form onSubmit={(e) => void save(e)} className="max-w-2xl p-5 md:p-8" noValidate>
+      <a href={hashOf(trigger.id)} className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> {trigger.name}</a>
+      <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Icon className="size-5 text-primary-text" aria-hidden />Edit filter</h1>
+      <p className="mt-2 text-body text-muted-foreground">{hook ? "Which signed requests start a run. Its URL and secret stay as they are." : "Which events from this server's GitHub App start a run."}</p>
+      {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-body text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
+      <div className="mt-5 space-y-5">
+        {hook ? <WebhookFilter signature={hook.source.signature ?? "standard"} rules={rules} onChange={setRules} issues={issues} cap={trigger.max_active_runs ?? null} />
+          : <GitHubEvents picks={picks} onChange={setPicks} issues={issues} />}
+      </div>
+      <div className="mt-6 flex flex-wrap gap-2">
+        <Button type="submit" size="lg" variant="solid" disabled={saving}>{saving ? "Saving" : "Save filter"}</Button>
+        <Button type="button" size="lg" variant="ghost" onClick={() => go(hashOf(trigger.id))}>Cancel</Button>
       </div>
     </form>
   );
