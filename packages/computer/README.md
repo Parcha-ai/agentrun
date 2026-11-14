@@ -96,7 +96,9 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   of its own to give (Modal), or whose images' privilege tools cannot be relied on (Daytona). Init starts as root,
   makes `$HOME` and the socket's directory that user's alone (0700, never through a symbolic link), and becomes uid:gid
   with no supplementary groups, dropping its privileges on the way as below: from there it is the daemon a Docker
-  computer runs. `--user 0:0` is root with no capability. Without
+  computer runs. With `DISPLAY` set (a desktop), init first gives a uid and gid with no entry in `/etc/passwd` and
+  `/etc/group` one, named `agentrun-tool` (or `agentrun-<id>` when that name is taken), home `$HOME`, shell `/bin/sh`:
+  a desktop's programs look their user up (D-Bus's session bus, a terminal's shell). `--user 0:0` is root with no capability. Without
   root, init refuses `--user` in words; a Docker computer is given its user by `docker run --user` and never passes it.
 - `computerd init ... --user <uid:gid> --own-network` is how every remote provider starts init (Daytona, E2B, Modal).
   A remote vendor runs its own agent in the computer beside the daemon's programs (Daytona's toolbox on 2280, E2B's
@@ -1778,7 +1780,10 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
    shared with Docker). Then xfwm4, which the template has, starts the same way on it (`dbus-run-session -- xfwm4
    --compositor=off --sm-client-disable`, `WINDOW_MANAGER`: xfwm4 reads its settings over a session bus and exits
-   without one), so the apps an agent opens are framed and focused. Hello re-checks the
+   without one), so the apps an agent opens are framed and focused. The template has no passwd entry for 2510, and a
+   session bus closes every connection of a uid it cannot look up, so a desktop's init, still root, first names the
+   user `agentrun-tool` (home the computer's, shell `/bin/sh`), as the box image does (`daemon.NameUser`). A window
+   manager that ends within a second of its start fails create with its last words. Hello re-checks the
    display on every call, so `connect()` refuses a desktop whose X server has gone (it reads back kind `linux`).
 
 envd runs as root and obeys anyone with the API key, as Daytona's toolbox does, and answers on 49983 (`e2b@2.63.0`
