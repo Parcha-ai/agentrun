@@ -77,7 +77,7 @@ test("a summary that errs after its response began counts at its hold; with noth
 test("a cache miss books its real cost, past the cap by no more than the bound it was sent with", async () => {
   const previous = { model: SONNET.id, cachedTokens: 90_000, inputTokens: 10_000, boundTokens: 100_000, endedAt: T0 - 1_000 };
   const { cap } = capOn(0.1);
-  const request = modelRequest(SONNET, 100_000, 4_096, { previous });
+  const request = modelRequest(SONNET, 100_000, 4_096, { recent: [previous] });
   const admitted = await cap.admit(request);
   // The cache missed: billed uncached, its worst case at the output it was sent with.
   await cap.settle(request.id, { end: "answered", usd: admitted.worstUsd });
