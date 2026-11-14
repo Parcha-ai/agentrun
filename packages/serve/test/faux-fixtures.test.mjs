@@ -2,7 +2,9 @@
 // on their port, a stranger's too: another process on the box probes loopback ports with a bare `GET /` and no body (F3,
 // a Go HTTP client). The upstream answers a request with no JSON body 400 and files no call for it; the gateway keeps its
 // contract for a GET under its API paths (404, recorded: faux-gateway.test.mjs), answers one outside them (`GET /`) 404
-// unrecorded, and a POST with no JSON body 400, unrecorded. Neither throws into the test.
+// unrecorded, and a POST with no JSON body 400, unrecorded. Neither throws into the test. Every other fake that keeps
+// the requests it got (the MCP, OAuth, Composio and git fakes, serve's Responses endpoint) answers the bare `GET /` 404
+// and keeps it out of its log, so a count or a list of a fake's requests is the code under test's alone.
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -10,7 +12,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import fakeUpstream from "./fixtures/faux-upstream.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { scratch, withEnv } from "./support.mjs";
+import { startFakeComposio } from "./fixtures/fake-composio.mjs";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
+import { gitHttp } from "./fixtures/git-http.mjs";
+import { responsesEndpoint, scratch, withEnv } from "./support.mjs";
 
 /** A bare request with no body, as the stranger's probe sends it. */
 const probe = (url) => fetch(`${url}/`, { method: "GET", headers: { connection: "close" } });
@@ -54,4 +60,52 @@ test("the fake gateway answers a bare GET / with no body 404, unrecorded, mid-te
   assert.equal(garbled.status, 400, "a POST that is no model request is refused");
   await garbled.text();
   assert.deepEqual(gw.requests.map((request) => [request.method, request.path]), [["POST", "/v1/messages"]], "only the test's own request is recorded: the stranger's GET / and the garbled POST are not");
+});
+
+/** The stranger's probe at `origin`, mid-test: a fake answers it 404 and its log (`read()`) is what it was before. */
+async function unheard(origin, read) {
+  const before = JSON.stringify(read());
+  const stranger = await probe(origin);
+  await stranger.text();
+  assert.equal(stranger.status, 404, "a bare GET / is no fake's");
+  assert.equal(JSON.stringify(read()), before, "the stranger's GET / is not in its log");
+}
+
+test("the fake MCP server logs its client's requests and never a stranger's bare GET /", async (t) => {
+  const mcp = await startFakeMcp();
+  t.after(() => mcp.close());
+  const listed = await fetch(mcp.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+  await listed.text();
+  assert.deepEqual(mcp.log.map((entry) => entry.method), ["tools/list"], "its client's request is logged");
+  await unheard(new URL(mcp.url).origin, () => mcp.log);
+});
+
+test("the fake OAuth server logs its client's requests and never a stranger's bare GET /", async (t) => {
+  const as = await startFakeOAuth();
+  t.after(() => as.close());
+  await (await fetch(`${as.issuer}/.well-known/oauth-authorization-server`)).text();
+  assert.deepEqual(as.log.map((entry) => entry.path), ["/.well-known/oauth-authorization-server"], "its client's request is logged");
+  await unheard(as.issuer, () => as.log);
+});
+
+test("the fake Composio counts its client's calls and never a stranger's bare GET /", async (t) => {
+  const composio = await startFakeComposio({ toolkits: {} });
+  t.after(() => composio.close());
+  await (await fetch(`${composio.baseUrl}/api/v3/auth_configs`, { headers: { "x-api-key": composio.apiKey } })).text();
+  assert.deepEqual(composio.calls.map((call) => call.path), ["/api/v3/auth_configs"], "its client's call is counted");
+  await unheard(new URL(composio.baseUrl).origin, () => composio.calls);
+});
+
+test("the git smart HTTP server lists its client's requests and never a stranger's bare GET /", async (t) => {
+  const git = await gitHttp(t, await scratch(t));
+  await (await fetch(`${git.url}/acme/widgets.git/info/refs?service=git-upload-pack`)).text();
+  assert.deepEqual(git.seen.map((one) => one.url), ["/acme/widgets.git/info/refs?service=git-upload-pack"], "its client's request is listed");
+  await unheard(git.url, () => git.seen);
+});
+
+test("serve's Responses endpoint lists its client's requests and never a stranger's bare GET /", async (t) => {
+  const endpoint = await responsesEndpoint(t, "42", 10);
+  await (await fetch(`${endpoint.url}/v1/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "m", input: "hi", stream: true }) })).text();
+  assert.deepEqual(endpoint.asked, ["POST /v1/responses"], "its client's request is listed");
+  await unheard(endpoint.url, () => endpoint.asked);
 });
