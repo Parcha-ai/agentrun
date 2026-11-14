@@ -98,3 +98,17 @@ test("a preset row the owner edited to another service (same path shape, another
   assert.equal(s.composio.calls.filter((call) => call.method === "DELETE").length, 0);
   assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "our row is gone");
 });
+
+test("a preset row moved to another address keeps the toolkit the same save names, and is url's, not Composio's", async (t) => {
+  const s = await setup(t);
+  const other = await startFakeMcp({ path: "/v3/mcp/x/mcp" });
+  t.after(() => other.close());
+  const named = await s.api("PUT", "/settings/mcp-servers/hn", { url: other.url, toolkit: "gmail", auth: { type: "headers", headers: { "x-api-key": "another-service-key" } } });
+  assert.equal(named.status, 200, JSON.stringify(named.body));
+  const read = await s.api("GET", "/settings/mcp-servers/hn");
+  assert.equal(read.body.source, "url", "it is no longer Composio's");
+  assert.equal(read.body.toolkit, "gmail", "the toolkit the owner named in that save is kept");
+  const cleared = await s.api("PUT", "/settings/mcp-servers/hn", { url: other.url, toolkit: null, auth: { type: "headers", headers: { "x-api-key": "another-service-key" } } });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).body.toolkit, null);
+});
