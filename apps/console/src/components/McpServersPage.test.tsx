@@ -682,10 +682,16 @@ describe("Settings → MCP servers, a server's tool settings", () => {
     { name: "open_issue", input_schema: { type: "object" }, effect: "write", ...gate() },
     { name: "delete_repo", input_schema: { type: "object" }, effect: "destructive", ...gate() },
   ] as unknown as McpServer["tools"];
-  /** A server whose tool settings are `settings`, kept as each PUT replaces them. */
-  function withSettings(settings: Record<string, unknown>) {
+  /** A server whose tool settings are `settings`, kept as each PUT replaces them. Its read of gh marks each read-only
+   *  tool `allow_reads` while gh's wildcard carries it, as the server does (`marks: false`: a read that marks none). */
+  function withSettings(settings: Record<string, unknown>, { marks = true } = {}) {
     let now = settings;
     const s = server([[saved({ name: "gh", tools: MARKED })]], (c) => {
+      if (c.method === "GET" && c.path === "/v2/settings/mcp-servers") {
+        const on = marks && (now["mcp:gh/*"] as { allow_reads?: true } | undefined)?.allow_reads === true;
+        const tools = MARKED.map((t) => (on && t.effect === "read" && !now[`mcp:gh/${t.name}`] ? { ...t, permission: "allow", allow_reads: true } : t));
+        return json(200, { servers: [saved({ name: "gh", tools: tools as McpServer["tools"] })] });
+      }
       if (c.path !== "/v2/settings/tools") return undefined;
       if (c.method === "PUT") now = c.body as Record<string, unknown>;
       return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" }, browser: { provider: "kernel" }, ...now });
@@ -714,10 +720,27 @@ describe("Settings → MCP servers, a server's tool settings", () => {
     expect(p.row("gh").querySelector('button[role="switch"]')!.getAttribute("aria-checked")).toBe("true");
     expect(valueOf(permission(p, "get_repo"))).toBe("allow");
     expect(valueOf(permission(p, "open_issue"))).toBe("ask");
+    // Where each allow comes from, in words: Allow reads, never "default", which would read as every server allowing reads.
+    expect(permission(p, "get_repo").textContent).toBe("allow (allow reads)");
+    expect(permission(p, "open_issue").textContent).toBe("ask (default)");
     // Off again: the field goes, the rest stays.
     await act(async () => { p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!.click(); });
     await p.settle();
     expect(s.settings()).toEqual({ "mcp:other/*": { permission: "deny" }, "mcp:gh/*": { permission: "ask" } });
+  });
+
+  it("the switch and its label are one line: the label beside the switch, which it names", async () => {
+    const p = await open(withSettings({}).v2, { choices: CHOICES });
+    const toggle = p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!;
+    const label = document.getElementById(toggle.getAttribute("aria-labelledby")!)!;
+    expect(label.textContent).toBe("Allow reads");
+    expect(label.parentElement).toBe(toggle.parentElement);
+  });
+
+  it("an allow by Allow reads is the server's word: a read that doesn't mark the tool so leaves it at its default, whatever the wildcard holds", async () => {
+    const p = await open(withSettings({ "mcp:gh/*": { allow_reads: true } }, { marks: false }).v2, { choices: CHOICES });
+    expect(valueOf(permission(p, "get_repo"))).toBe("ask");
+    expect(permission(p, "get_repo").textContent).toBe("ask (default)");
   });
 
   it("setting a destructive tool to allow takes a second click: nothing is saved until it is confirmed, and Keep asking saves nothing", async () => {

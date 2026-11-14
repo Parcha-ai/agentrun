@@ -112,7 +112,7 @@ test("settings: allow_reads is kept on an MCP server's wildcard in the server's 
   assert.ok(JSON.stringify(doc).includes("allow_reads"), "documented");
 });
 
-test("a saved server's read marks each tool read, write or destructive, and gives a read-only tool allow under allow_reads", async (t) => {
+test("a saved server's read marks each tool read, write or destructive, gives a read-only tool allow under allow_reads, and says that allow is allow_reads' (allow_reads: true on the tool), never on a tool its own setting or a deny holds", async (t) => {
   const { api } = await serve(t);
   await addFake(t, api);
   const before = (await api("GET", "/settings/mcp-servers/fake")).body.tools;
@@ -123,6 +123,16 @@ test("a saved server's read marks each tool read, write or destructive, and give
   const after = (await api("GET", "/settings/mcp-servers/fake")).body.tools;
   assert.deepEqual(["add", "note", "delete_thing"].map((name) => of(after, name).permission), ["allow", "ask", "ask"]);
   assert.equal((await api("GET", "/settings/mcp-servers")).body.servers[0].tools.find((tool) => tool.name === "add").permission, "allow");
+  assert.equal(of(before, "add").allow_reads, undefined, "not before the switch is on");
+  assert.deepEqual(["add", "note", "delete_thing", "slow_write"].map((name) => of(after, name).allow_reads), [true, undefined, undefined, undefined]);
+  // A tool's own setting beats the rule: the read says its own word, and no allow_reads.
+  assert.equal((await api("PUT", "/settings/tools", { ...READS, "mcp:fake/add": { permission: "ask" } })).status, 200);
+  const own = of((await api("GET", "/settings/mcp-servers/fake")).body.tools, "add");
+  assert.deepEqual([own.permission, own.allow_reads], ["ask", undefined]);
+  // A deny on the wildcard holds over it.
+  assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { permission: "deny", allow_reads: true } })).status, 200);
+  const denied = of((await api("GET", "/settings/mcp-servers/fake")).body.tools, "add");
+  assert.deepEqual([denied.permission, denied.allow_reads], ["deny", undefined]);
 });
 
 test("pi: under allow_reads a read-only tool runs with no approval; a write parks; a destructive call parks marked destructive and its allow needs confirm_destructive; a deny on the server's wildcard still refuses the read", { timeout: 180_000 }, async (t) => {
