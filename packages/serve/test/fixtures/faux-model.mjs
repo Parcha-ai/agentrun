@@ -213,7 +213,9 @@ function replyTo(context, faux) {
   // Quotes what its system prompt says from "End your final answer" on (the output contract, agent-output-schema.test.mjs),
   // else NO CONTRACT.
   if (first === "Quote the output contract.") {
-    const system = context.systemPrompt ?? "";
+    // pi carries the run's system sections as system messages too (as "Use the skill that fits:" reads them below).
+    const sectionText = (part) => (typeof part === "string" ? part : Array.isArray(part) ? part.map((p) => (typeof p?.text === "string" ? p.text : "")).join("") : "");
+    const system = [context.systemPrompt ?? "", ...context.messages.filter((m) => m.role === "system").flatMap((m) => [textOf(m), ...Object.values(m.sections ?? {}).map(sectionText)])].join("\n");
     const at = system.indexOf("End your final answer");
     return faux.message(at < 0 ? "NO CONTRACT" : system.slice(at));
   }

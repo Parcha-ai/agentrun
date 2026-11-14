@@ -14,7 +14,8 @@ code-review/
   evals/<case>/prompt.md   a case's run input (front matter: description, runs, max_cost_usd, ...)
   evals/<case>/graders/*.md   front matter `type`: llm, regex, tool_used, file_exists or schema (with `schema: <file>`)
   evals/<case>/case.yaml, evals/<case>/fixtures/   optional
-  findings.schema.json     any other file the manifest names
+  skills/review/findings.schema.json   any other file the manifest names (here the answer's schema, which the
+                           reviewers' guides beside it read too)
 ```
 
 Links and other special files are refused anywhere in the folder, and its only folders are `skills/`, `rules/` and
@@ -185,7 +186,7 @@ The report gives each run's cost and each `llm` grade's, as their run records sa
 | `learning` | `true` or `false`: whether the agent's runs learn. |
 | `approvals` | `ask` (the default: the agent asks its person before a tool runs) or `never` (it runs unattended). The package's recommendation, shown as `approvals_default` for the apply screen; a template whose job runs on triggers says `never`. Deny settings and pins hold either way. |
 | `triggers` | `POST /v2/triggers` bodies with no `agent_id` (the target is a `start_run`), each with a `name`, unique in the package: the key an upgrade will match triggers by. |
-| `output` | `{schema: <file>}`: the JSON Schema of the agent's answer, a file in the package. It ships beside each SKILL.md, as a rule does, so the agent reads it there: the skill names it. |
+| `output` | `{schema: <file>}`: the JSON Schema of the agent's answer, a file in the package. It becomes the agent's `output_schema`: the runner puts it in the instructions on every harness and asks once more when an answer misses it. A string property with `contentMediaType: "text/markdown"` is a report the console renders as Markdown. A skill that reads the schema itself keeps the file in its own folder. |
 | `checks` | Names of structural checks of a run's answer; none runs yet. |
 
 The check is whole: the package is compiled with a sample of each parameter, and the agent body and each trigger body are

@@ -31,11 +31,19 @@ const CLAIM_BOOKKEEPING: ReadonlySet<string> = new Set([KINDS.sessionKey, HOST_P
 
 /** A raised run's follow-up is the server's message (the kernel cap's followUpOf), never the person's. */
 const CAP_RAISED_ORIGIN: MessageOrigin = { kind: "server", reason: "cap_raised" };
+/** The output contract's one retry turn is the server's message too, under one request id per run: pi places it once from
+ *  its submission, a CLI's record writes it once, and a claim that finds it on the record never asks again. */
+const OUTPUT_RETRY_ORIGIN: MessageOrigin = { kind: "server", reason: "output_retry" };
+const OUTPUT_RETRY_REQUEST = "agentrun:output-retry";
+/** Whether the run was asked its one retry already: the input entry the retry's send wrote (pi's submission, a CLI's record). */
+const outputRetried = (entries: readonly { readonly kind?: string; readonly data?: unknown }[]): boolean =>
+  entries.some((entry) => entry.kind === KINDS.input && (originOf((entry.data as { origin?: unknown } | undefined)?.origin) as { reason?: string } | undefined)?.reason === OUTPUT_RETRY_ORIGIN.reason);
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
-import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { outputMiss, outputRetryWords } from "../answer-json.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold } from "./computer-journal.js";
@@ -180,6 +188,10 @@ export interface AdapterRunSpec {
    *  the session through the loop's gate, a command row makes them fresh again, and the pass's end lets them go. Absent:
    *  the run grants no MCP tool. */
   readonly mcp?: ClaimMcp;
+  /** The JSON Schema the run's final answer's last json block meets (its revision's definition.output_schema). An answer
+   *  that misses it is asked again once, in the same session under the same cap (the output contract's retry); absent:
+   *  the run's answer is never checked here. */
+  readonly outputSchema?: unknown;
 }
 
 /** A tool host's lifecycle, as its bindings registered it: run by the adapter loop (AdapterRunSpec.lifecycle). */
@@ -1206,6 +1218,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     await session!.send(next.text, { id: next.requestId, ...(next.origin ? { origin: next.origin } : {}) });
     await specNow?.hooks?.afterMessageSent?.();
     await cliRecord?.message(next.text, next.origin);
+    return session!.turnEnd();
+  };
+
+  /** The output contract's one retry (AdapterRunSpec.outputSchema): the server's message saying why the answer missed the
+   *  schema, sent as a turn of its own on the same session, its requests admitted and booked by the run's one cap as any
+   *  turn's. A CLI's record writes it first (once, under its request id), so a runner lost after the send never asks again;
+   *  pi's submission carries its origin and is placed once under that id. Its turn's end is what this gives. */
+  const sendOutputRetry = async (why: string): Promise<TurnEnd> => {
+    const text = outputRetryWords(deps.redact ? deps.redact(why) : why);
+    await cliRecord?.followUp(text, OUTPUT_RETRY_REQUEST, OUTPUT_RETRY_ORIGIN);
+    await session!.send(text, { id: OUTPUT_RETRY_REQUEST, origin: OUTPUT_RETRY_ORIGIN });
+    await specNow?.hooks?.afterMessageSent?.();
     return session!.turnEnd();
   };
 
@@ -2289,6 +2313,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             const steered = cut ? undefined : steeredIn.shift();
             if (steered !== undefined) {
               turn = turnOfRequest(harness, root, steered);
+              continue;
+            }
+            // The output contract: an answer whose last json block misses the agent's output schema is asked again, once,
+            // in the same session, never a second time (outputRetried reads the record, so a later claim does not ask
+            // either), and not once the run is wrapping up at its cap (the room left is its answer's, and a retry that
+            // could not fit would park the run for the retry's sake). The run's result then says why (output_error).
+            const miss = cut || spec.outputSchema === undefined || outputRetried(settledEntries) ? undefined : outputMiss(lastAnswerText(settledEntries), spec.outputSchema);
+            if (miss !== undefined && !(await wrapUp())) {
+              turn = sendOutputRetry(miss);
               continue;
             }
             data = cut ? { state: "failed", summary: cut } : { state: "ended" };

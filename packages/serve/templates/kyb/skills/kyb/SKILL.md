@@ -199,8 +199,7 @@ company's own site says so ("the company states").
 
 ### 9. Return
 
-Exactly one fenced `json` block that meets `kyb.schema.json` (beside this SKILL.md: read it before you answer), and
-nothing after it.
+Exactly one fenced `json` block that meets the output schema in your instructions, and nothing after it.
 
 **Size.** The whole answer must fit well inside the model's output limit, and your reasoning counts against the same
 limit: aim for under 15,000 characters of JSON. An answer cut off mid-string is lost whole. So:

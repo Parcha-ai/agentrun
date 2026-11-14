@@ -36,6 +36,7 @@ import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { environmentLine } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
+import { outputContract } from "../answer-json.js";
 import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
@@ -228,6 +229,8 @@ type RevisionBody = {
   readonly model?: string;
   /** The model of each of its tiers it names (a subagent's: runner/subagent.ts), absent for the host's tier model. */
   readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>;
+  /** The JSON Schema its final answer's last json block meets (definition.output_schema), absent for none. */
+  readonly outputSchema?: unknown;
 };
 
 /** What the runner routes a claimed run on: the launch's model as its start pinned it, sent as pinned, with the
@@ -635,13 +638,14 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
   // pi installs it before every other section), then the revision's instructions with what the agent learned laid in
   // (learning.ts laidLearned, from the launch's learning start — the # Learned section decided once at launch, so the runner
-  // reads no learning folder), its own skills through skills.ts promptOf, then the effort guidance (the launch's effort,
-  // never this process's environment). The one path for every harness.
+  // reads no learning folder), its own skills through skills.ts promptOf, the output schema it answers in (answer-json.ts
+  // outputContract, the CLI spec's too), then the effort guidance (the launch's effort, never this process's environment).
+  // The one path for every harness.
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section, start.use === true) : (body.instructions ?? "");
   const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
-  const system = [environmentLine(), checkout?.note, instructions, guidance].filter((line): line is string => Boolean(line));
+  const system = [environmentLine(), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
 
   // The subagent tool, one of the session's own tools (no extension of its own): a child's tools are a subset of the
   // revision's grants (each by its session name: an MCP tool's wire name, the browser's registrations), its model the
@@ -717,6 +721,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // monid.run's card shows what the call is held at (monid.ts monidApprovalPrice), as an MCP tool's shows its price.
     approvalPrice: monidApprovalPrice(toolEnv),
     runCap,
+    // The answer's schema: a miss is asked again once (adapter-loop.ts, the output contract's retry).
+    ...(body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {}),
     ...(cap ? { cap } : {}),
     // The run's MCP for a harness with its own client (mcp-run.ts), the session the adapter mounts; absent when none.
     ...(mcp ? { mcp } : {}),

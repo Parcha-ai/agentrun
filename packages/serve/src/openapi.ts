@@ -2447,6 +2447,13 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     trigger: RUN_TRIGGER,
   },
+  RunResult: {
+    output_error: {
+      type: "string",
+      description: "Why `output` is null on an agentic run whose agent has an `output_schema`: the final answer still had no json block meeting it after the one retry. Absent when the output met the schema, the agent has none, or the run is a workflow's.",
+      "x-agentrun-serve": "outputcontract/1",
+    },
+  },
   RunError: {
     details: {
       type: "object", additionalProperties: false, required: ["reason"],
@@ -2969,7 +2976,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   definition.properties.max_cost_usd = { ...definition.properties.max_cost_usd, "x-agentrun-serve-note": "The agent's default cap of each run started without a max_cost_usd of its own (a run's own wins), kept with its revision: above 0 sets it, 0 clears it (no default), and an edit that leaves the field out keeps the agent's, so leaving a field out never removes a spend limit. An agentic definition's or a workflow's alike." };
   definition.properties.output_schema = { ...definition.properties.output_schema, "x-agentrun-serve-note": "An agentic definition's alone (a workflow's output is its workflow's): the JSON Schema its final answer's last fenced json block meets, at most 64 KiB, refused at save when it does not compile. A completed run's result.output is that block's value when it meets the schema, else null. An edit that leaves the field out keeps the agent's. A template's answer schema (its manifest's `output`) is set here at apply." };
   const runResult = schemas.RunResult as Json & { properties: Record<string, Json> };
-  runResult.properties.output = { ...runResult.properties.output, "x-agentrun-serve-note": "A workflow run's output, as its workflow ended; an agentic run's, its final answer's last fenced json block when it meets the agent's output_schema, else null (no schema, no block, not JSON, or a value the schema refuses)." };
+  runResult.properties.output = { ...runResult.properties.output, "x-agentrun-serve-note": "A workflow run's output, as its workflow ended; an agentic run's, its final answer's last fenced json block when it meets the agent's output_schema, else null (no schema, no block, not JSON, or a value the schema refuses). The runner gives the model the schema in its instructions on every harness, and asks once more, in the same session under the same cap, when the answer misses it; output_error says why one still missed." };
   // instructions XOR workflow (validate.ts): a workflow revision has none. version, skills and tools: this server
   // mints or keeps them when a write leaves them out (agents-store.ts definitionOf), so none of the four is required of a
   // write; only instructions ever misses from an answer (a workflow revision's), so Definition keeps the rest required.
