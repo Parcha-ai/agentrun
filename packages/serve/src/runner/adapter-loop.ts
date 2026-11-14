@@ -3141,7 +3141,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     await releaseHost(on);
     await bookingsSettled();
     const patch = await endPatchOf(base);
-    const data: EndData = { ...base, ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}) };
+    // A person's stop that came while the end waited (its host's release, its bookings, its patch's reads, up to
+    // END_PATCH_MS on a busy store) is this end's, as a stop during any earlier await of the end path is: the run ends
+    // stopped and the end takes its row, never written completed with the stop left to be refused (refuseLeftovers).
+    // Set by stop() during those awaits: read past the narrowing TypeScript did before them.
+    const late = stopReason as StopReason | undefined;
+    const lateStop = late?.kind === "command" && !take.includes(late.commandId) ? late : undefined;
+    if (lateStop) take = [...take, lateStop.commandId];
+    const data: EndData = { ...base, ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}), ...(lateStop ? stopEnd(lateStop.cancel) : {}) };
     const run = {
       state: data.state,
       // An end's summary is its own: with none, a wait's summary the row still says (a question's, a hand-over's: HELD_WAITS

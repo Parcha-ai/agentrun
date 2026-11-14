@@ -68,7 +68,9 @@ async function setup(t, timing = STEADY) {
   const endEntries = () => entriesOf("agentrun.end");
   /** Each end entry of the run, its data. */
   const endsOf = () => read("SELECT json_extract(record, '$.data') AS data FROM pi_entries WHERE run_id = ? AND json_extract(record, '$.kind') = 'agentrun.end'", "run-1").map((row) => JSON.parse(row.data));
-  return { server, start, until, toldRows, endEntries, entriesOf, endsOf };
+  /** The run's command rows: kind, taken or not, and why refused. */
+  const commandsOf = () => read("SELECT kind, taken_at IS NOT NULL AS taken, refused FROM commands WHERE run_id = ? ORDER BY id", "run-1");
+  return { server, start, until, toldRows, endEntries, entriesOf, endsOf, commandsOf };
 }
 
 /** The adapter loop on `spec`, its spec naming the run's agent and carrying `extra` (endPatch, harnessReady), its deps
@@ -228,6 +230,35 @@ test("pi through the adapter: an end patch whose reader stalls cannot hold a per
   await server.command("run-1", { kind: "stop" });
   const row = await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
   assert.deepEqual([row.costUsd, row.metrics], [null, null], "never left as an earlier end stored them, never $0");
+});
+
+// The end's patch waits (up to END_PATCH_MS) on its reads, after the job completed: a person's stop that comes then is
+// the end's, never ignored for a completed end and then refused as a leftover.
+test("pi through the adapter: a person's stop while the end waits on its patch ends the run stopped, its command taken, the patch's cost kept", async (t) => {
+  const { server, start, until, endsOf, commandsOf } = await setup(t);
+  let patchAsked;
+  const asked = new Promise((resolve) => (patchAsked = resolve));
+  let answerPatch;
+  const answered = new Promise((resolve) => (answerPatch = resolve));
+  const endPatch = async () => (patchAsked(), await answered, { costUsd: 0.5, metrics: { requests: 1 } });
+  let stopSeen;
+  const seen = new Promise((resolve) => (stopSeen = resolve));
+  const loop = loopWith(piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet }), { endPatch });
+  // The loop's stop, as the runner hands it on: told once the loop has it (its stop is recorded before its first await).
+  const seeing = (deps) => {
+    const inner = loop(deps);
+    return { ...inner, stop: (reason) => { const stopping = inner.stop(reason); stopSeen(); return stopping; } };
+  };
+  await start(seeing, "runner-a");
+  await asked;
+  await server.command("run-1", { kind: "stop" });
+  await seen;
+  answerPatch();
+  const row = await until((r) => r.runner === null && (r.state === "stopped" || r.state === "ended"), "the run did not end");
+  assert.deepEqual([row.state, row.summary, row.outcome], ["stopped", "stopped by a person", "stopped"], `the stop's end, never a completed one: ${JSON.stringify(row)}`);
+  assert.deepEqual([row.costUsd, row.metrics], [0.5, { requests: 1 }], "the patch read while the end waited");
+  assert.deepEqual(endsOf().map((end) => end.state), ["stopped"], "one end, the stop's");
+  assert.deepEqual(commandsOf(), [{ kind: "stop", taken: 1, refused: null }], "the stop taken by the end, never refused as a leftover");
 });
 
 test("pi through the adapter: a mark committed through harnessReady's commit is in the run's journal, and refused once the run's claim is gone", async (t) => {
