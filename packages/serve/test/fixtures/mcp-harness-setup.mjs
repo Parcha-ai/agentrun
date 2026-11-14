@@ -35,7 +35,9 @@ async function echoGateway(t) {
 }
 
 /** A server for `harness` (its templates from `templates`) whose scripted model makes the call each prompt names:
- *  `prompt(tool, args)`, the run's input that makes it (args may nest objects); `offered()`, the tool names each model
+ *  `prompt(tool, args)`, the run's input that makes it (args may nest objects); `host(tool, args)`, the input that calls
+ *  the run's host tool `tool` (tools_call, codemode) by its bare name, as the harness offers it (Claude Code's under
+ *  `mcp__hands__`); from inside one, an MCP tool is named by its host name, `mcp__<server>__<tool>`; `offered()`, the tool names each model
  *  request offered (pi's and claude-agent's; codex's stand-in reports none, so its refusal is the offer); `wire(tool)`,
  *  the name the harness offers an MCP tool by (a host tool: pi's `mcp__<server>__<tool>`, Claude Code's `mcp__hands__`
  *  before it, Codex's `mcp_<server>__<tool>`). `tools`: tools added to the fake's before it is saved, by name. */
@@ -46,11 +48,13 @@ export async function harnessSetup(t, harness, templates, { tools = {} } = {}) {
   let offered = () => offeredLists;
   let options = { faux: undefined };
   let wire = (tool) => `mcp__fake__${tool}`;
+  let host;
   if (harness === "pi") {
     const file = join(await scratch(t), "offered.jsonl");
     withEnv(t, { [OFFERED_ENV]: file });
     options = { faux: FAUX_OFFERED };
     prompt = (tool, args) => `Call mcp__fake__${tool} with ${JSON.stringify(args)}`;
+    host = (tool, args) => `Call ${tool} with ${JSON.stringify(args)}`;
     offered = () => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
   }
   if (harness === "claude-agent") {
@@ -58,6 +62,8 @@ export async function harnessSetup(t, harness, templates, { tools = {} } = {}) {
     // tools are deferred behind the CLI's ToolSearch, so it searches first (withToolSearch), as a real model does.
     const answer = withToolSearch((request) => {
       if (Object.keys(request.results).length) return { text: `The tool said: ${Object.values(request.results)[0]}` };
+      const own = /CALLHOST (\w+) (\{.*\})/.exec(request.text);
+      if (own) return { tool: { name: `mcp__hands__${own[1]}`, input: JSON.parse(own[2]) } };
       const asked = /CALL (\w+) (\{.*\})/.exec(request.text);
       return asked ? { tool: { name: `mcp__hands__mcp__fake__${asked[1]}`, input: JSON.parse(asked[2]) } } : { text: "Noted." };
     });
@@ -76,6 +82,7 @@ export async function harnessSetup(t, harness, templates, { tools = {} } = {}) {
     delete process.env.AGENT_MODEL_BASE_URL;
     Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" });
     prompt = (tool, args) => `CALL ${tool} ${JSON.stringify(args)}`;
+    host = (tool, args) => `CALLHOST ${tool} ${JSON.stringify(args)}`;
     wire = (tool) => `mcp__hands__mcp__fake__${tool}`;
   }
   if (harness === "codex") {
@@ -89,6 +96,7 @@ export async function harnessSetup(t, harness, templates, { tools = {} } = {}) {
       AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
     }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
     prompt = (tool, args) => `call mcp_fake__${tool} ${JSON.stringify(args)}`;
+    host = (tool, args) => `call ${tool} ${JSON.stringify(args)}`;
     wire = (tool) => `mcp_fake__${tool}`;
   }
   const server = await serve(t, { ...options, templates, accounts: true, openSetup: true });
@@ -96,5 +104,5 @@ export async function harnessSetup(t, harness, templates, { tools = {} } = {}) {
   t.after(() => fake.close());
   Object.assign(fake.tools, tools);
   assert.equal((await server.api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
-  return { api: server.api, fake, prompt, offered, wire };
+  return { api: server.api, fake, prompt, host, offered, wire };
 }
