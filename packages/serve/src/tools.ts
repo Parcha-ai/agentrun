@@ -5,7 +5,7 @@
 // run's folder or its computer. `bash` and the background tools may be named only by an agent whose place is a box
 // (runnable.ts).
 import { blurbOf } from "./tool-blurbs.js";
-import { LEARNED_MCP_TOOL } from "./learn/skills.js";
+import { mcpNameOf, mcpToolName, parseToolName } from "./tool-names.js";
 import type { TSchema } from "typebox";
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -697,11 +697,11 @@ export const allows = (allowed: readonly string[], name: string): boolean => all
 
 /** The tools a run's learned workflow may name (learn/check.ts at learn time, learned-workflow.ts at a call): those of the
  *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS, and each MCP tool granted by its own name,
- *  skills.ts LEARNED_MCP_TOOL: a wildcard is read against its server's listing first, mcpGrantsListed), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
+ *  tool-names.ts mcpNameOf: a wildcard is read against its server's listing first, mcpGrantsListed), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
  *  learned model node runs without tools (learn/skills.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
  *  exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
 export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane, options: LearnedMcp = {}): string[] =>
-  [...new Set(granted.filter((name) => (options.mcp === true && LEARNED_MCP_TOOL.test(name)) || (allows(CALL_TOOLS, name) && !isUnavailable(plane?.[name as Pickable]))))];
+  [...new Set(granted.filter((name) => (options.mcp === true && mcpNameOf(name) !== undefined) || (allows(CALL_TOOLS, name) && !isUnavailable(plane?.[name as Pickable]))))];
 
 /** `mcp: true` at learn time (the end-of-run step's draft tools, a person's write): an MCP tool the revision grants by its
  *  own name may be named. Without it (the runtime's read at a call, learned-workflow.ts), none is: the run's MCP tools are
@@ -719,9 +719,9 @@ export type LearnedMcp = { readonly mcp?: boolean; readonly approvers?: boolean 
 export function mcpGrantsListed(granted: readonly string[], listed: (server: string) => readonly string[]): string[] {
   const out = new Set<string>();
   for (const name of granted) {
-    const wildcard = /^mcp:([^/]+)\/\*$/.exec(name);
-    if (!wildcard) out.add(name);
-    else for (const tool of listed(wildcard[1]!)) out.add(`mcp:${wildcard[1]}/${tool}`);
+    const parsed = parseToolName(name);
+    if (parsed?.kind !== "mcp-server") out.add(name);
+    else for (const tool of listed(parsed.server)) out.add(mcpToolName(parsed.server, tool));
   }
   return [...out];
 }
@@ -740,7 +740,7 @@ export const learnedDraftTools = (granted: readonly string[], permission: (name:
     // An MCP tool set to ask is offered where someone can answer: its learned_workflow call asks once, naming its MCP
     // tools, before any node runs (#2424). A table tool set to ask is not: its call node can't wait for an approval.
     if (setting === "allow") return true;
-    if (setting === "ask" && options.approvers === true && LEARNED_MCP_TOOL.test(name)) return (asked.push(name), true);
+    if (setting === "ask" && options.approvers === true && mcpNameOf(name) !== undefined) return (asked.push(name), true);
     gated[name] = setting;
     // A deny comes from a layer or the default, never from approvals, which only ever allows.
     if (setting === "deny" && from) deniedBy[name] = from(name) as DenyFrom;

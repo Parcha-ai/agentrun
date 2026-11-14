@@ -213,6 +213,14 @@ const quotesOf = (env: NodeJS.ProcessEnv): Map<string, number> => {
   if (!quotes) quotesByRun.set(env, (quotes = new Map()));
   return quotes;
 };
+/** What a monid.run of `args` is held at in the run whose calls are given `env`: the quote, else the allowance. */
+const holdOf = (env: NodeJS.ProcessEnv, args: unknown): { quote: number | undefined; held: number } => {
+  const quote = quotesOf(env).get(quoteKey(args));
+  return { quote, held: quote ?? MONID_RUN_ALLOWANCE_USD };
+};
+/** The price an approval card shows for a monid.run: its hold, the same figure the call is booked at (spec.approvalPrice).
+ *  The loop names a call by the harness's name for it (monid_run) or the catalog's (monid.run). */
+export const monidApprovalPrice = (env: NodeJS.ProcessEnv) => (call: { tool: string; args: unknown }): number | undefined => (call.tool === RUN || call.tool === "monid.run" ? holdOf(env, call.args).held : undefined);
 const quoteKey = (args: unknown) => JSON.stringify([(args as Json).provider, (args as Json).endpoint]);
 
 /** monid's tool `kind` for a run, under its wire name: the key and the faux hook read from `env` (the run's process's,
@@ -230,8 +238,7 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
       const client = monidClient({ key: env[MONID_KEY_ENV] ?? "", ...(faux ? { fetch: faux } : {}) });
       const call = () => client[kind](args as never, context?.abortSignal);
       // What the run is held at on the ledger: the price an inspect quoted, else the allowance.
-      const quote = quotesOf(env).get(quoteKey(args));
-      const held = quote ?? MONID_RUN_ALLOWANCE_USD;
+      const { quote, held } = holdOf(env, args);
       const basis = quote !== undefined ? `the price ${INSPECT} quoted` : `no price was quoted for it in this run, so it counts at the $${MONID_RUN_ALLOWANCE_USD} allowance; ${INSPECT} gives its price`;
       // A run on the run's one ledger (paid-calls.ts Ledger.paid): settled at what it charged ($0 when monid charged nothing,
       // at its hold when it may have and did not say). With no ledger it is never sent.

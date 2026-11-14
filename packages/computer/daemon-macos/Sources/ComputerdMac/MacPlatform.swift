@@ -21,7 +21,6 @@ public enum MacPlatform {
 			backgroundFeature: Feature.all(sky.feature, post),
 			foreground: ForegroundRoute(accessibility: ax),
 			foregroundFeature: post,
-			navFeature: .off("macOS has no system back, home or app switcher: use the app's own controls or a key chord such as super+["),
 			raw: HIDInput.shared,
 			person: PersonWatch.shared
 		)

@@ -68,31 +68,12 @@ final class HIDInput: RawInput, @unchecked Sendable {
 
 	func scroll(at point: Point, dx: Double, dy: Double, pixels: Bool) async throws {
 		let flags = held
+		// Points go out whole; wheel clicks are counted whole.
+		let (x, y) = pixels ? (dx.rounded(), dy.rounded()) : (dx, dy)
 		try await InputQueue.run {
-			func wheel(_ x: Double, _ y: Double, _ units: CGScrollEventUnit) throws {
-				try InputQueue.checkCancelled()
-				guard let e = CGEvent(scrollWheelEvent2Source: nil, units: units, wheelCount: 2, wheel1: Int32(-y), wheel2: Int32(-x), wheel3: 0) else {
-					throw RPCError.unsupported("the system made no scroll event")
-				}
-				e.location = CGPoint(x: point.x, y: point.y)
-				e.flags = flags
-				e.post(tap: .cghidEventTap)
-				InputQueue.pause(pixels ? 10 : 5)
-			}
-			if pixels {
-				// In pieces of at most 100 points, as a trackpad sends them.
-				var (left, down) = (dx.rounded(), dy.rounded())
-				while left != 0 || down != 0 {
-					let x = max(-100, min(100, left))
-					let y = max(-100, min(100, down))
-					try wheel(x, y, .pixel)
-					left -= x
-					down -= y
-				}
-			} else {
-				// One wheel click per event, as a mouse wheel turns.
-				for _ in 0..<Int(abs(dy)) { try wheel(0, dy > 0 ? 1 : -1, .line) }
-				for _ in 0..<Int(abs(dx)) { try wheel(dx > 0 ? 1 : -1, 0, .line) }
+			try Gestures.scroll(at: CGPoint(x: point.x, y: point.y), dx: x, dy: y, pixels: pixels, fail: { RPCError.unsupported($0) }) {
+				$0.flags = flags
+				$0.post(tap: .cghidEventTap)
 			}
 		}
 	}
@@ -156,11 +137,9 @@ final class HIDInput: RawInput, @unchecked Sendable {
 					InputQueue.pause(5)
 					continue
 				}
-				for (i, e) in try Keycodes.textEvents(piece, source: nil).enumerated() {
-					try InputQueue.checkCancelled()
-					e.flags = flags
-					e.post(tap: .cghidEventTap)
-					if i % 2 == 1 { InputQueue.pause(5) }
+				try Gestures.text(Keycodes.textEvents(piece, source: nil)) {
+					$0.flags = flags
+					$0.post(tap: .cghidEventTap)
 				}
 			}
 		}
