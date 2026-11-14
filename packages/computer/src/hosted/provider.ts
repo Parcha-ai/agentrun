@@ -156,6 +156,8 @@ const DEFAULTS: HostedTimeouts = {
 	listedStableMs: 1_000,
 	mountMs: 120_000,
 };
+/** The adapter's timeouts, the caller's over its defaults: what a host reads for its own requestMs or pollMs. */
+export const timeoutsOf = (timeouts: Partial<HostedTimeouts> = {}): HostedTimeouts => ({ ...DEFAULTS, ...timeouts });
 /** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
 const ARCHIL_USER = `${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}`;
 const RELEASE_POLL_MAX_MS = 5_000;
@@ -299,7 +301,7 @@ export class HostedProvider implements ComputerProvider {
 		if (user === null || Number(user[1]) > MAX_ID || Number(user[2]) > MAX_ID) throw new Error(`the daemon user ${daemonUser} must be uid:gid in numbers, such as 1000:1000`);
 		// The numbers, not the text: "00" is root as much as "0" is.
 		if (Number(user[1]) === 0 || Number(user[2]) === 0) throw new Error(`the daemon user ${daemonUser} is root or in root's group; ${a(label)} computer's daemon runs as neither`);
-		const merged = { ...DEFAULTS, ...timeouts };
+		const merged = timeoutsOf(timeouts);
 		// AbortSignal.timeout and Node's timers take whole ms up to 2^31 - 1 (a fraction throws, a longer one fires at
 		// once), and a call's race adds CALL_SLACK_MS to its bound: refused here, before any machine exists. The listing's
 		// stability window alone may be 0: two consecutive polls, with no time between them asked for.

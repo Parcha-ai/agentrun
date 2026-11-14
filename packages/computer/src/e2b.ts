@@ -7,9 +7,9 @@
 import type { Sandbox, SandboxInfo, SandboxOpts } from "e2b";
 import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL } from "./hosted/provider.js";
+import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, timeoutsOf } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
-import { dateOf, driftOf, isWhole, show } from "./hosted/values.js";
+import { dateOf, DOMAIN, driftOf, isWhole, show } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
@@ -83,7 +83,6 @@ export interface E2BOptions extends Omit<E2BProviderOptions, "Sandbox"> {
 /** Not a literal, so no type checker or bundler resolves the SDK from this package. */
 const E2B_PACKAGE: string = "e2b";
 const DEFAULT_DOMAIN = "e2b.app";
-const DOMAIN = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 /** The connection options every SDK call is given. Exported for the test that hands them to the real SDK. */
 export function connectionOptions({ apiKey, domain }: { apiKey: string; domain: string }): E2BConnectionOptions {
@@ -110,12 +109,9 @@ function ambientProblem(): string | undefined {
  * never echoing the key.
  */
 export async function create(options: E2BOptions): Promise<E2BProvider> {
-	const { apiKey, Sandbox: given, ...rest } = options ?? ({} as E2BOptions);
-	if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the E2B API key, is required: the provider reads no environment, so the caller passes it");
-	const ambient = ambientProblem();
-	if (ambient) throw new Error(ambient);
+	const { Sandbox: given, ...rest } = options ?? ({} as E2BOptions);
 	const Sandbox = given ?? ((await import(E2B_PACKAGE)) as { Sandbox: E2BSandboxClass }).Sandbox;
-	return new E2BProvider({ ...rest, apiKey, Sandbox });
+	return new E2BProvider({ ...rest, Sandbox });
 }
 
 /** The conformance CLI's module for E2B: its live switch, the run's 30-minute cap, its template and the drifted twin. */
@@ -132,7 +128,6 @@ const MAX_PAGES = 100;
 const PAGE = 100;
 /** E2B's end, read back, is its start plus the timeout create gave it, to the second it rounds to (index.mjs:502-504). */
 const END_SLACK_MS = 2_000;
-const DEFAULT_REQUEST_MS = 30_000;
 const PUBLIC =
 	"publicStream is no longer an option: an E2B computer never takes public traffic, which would open every port in it to anyone with its address, and its screen is streamed through agentrun, never a vendor URL";
 /** envd's port in the sandbox (e2b@2.63.0 dist/index.mjs:1213, ConnectionConfig.envdPort). */
@@ -158,7 +153,7 @@ function codeOf(error: unknown): ComputerErrorCode {
 	if (name === "AuthenticationError") return "denied";
 	if (name === "InvalidArgumentError" || name === "TemplateError") return "invalid";
 	if (name === "RateLimitError" || name === "NotEnoughSpaceError") return "limit";
-	if (name === "TimeoutError" || name === "SandboxUnreachableError") return "timeout";
+	if (name === "SandboxUnreachableError") return "timeout";
 	// envd's process stream, called through the SDK's Connect client (exec), throws Connect's own errors.
 	if (name === "ConnectError") return CONNECT_CODES[(error as { code?: unknown }).code as number] ?? "vendor";
 	return "vendor";
@@ -478,16 +473,12 @@ export class E2BProvider extends HostedProvider {
 		// A caller who still names the option is told it is gone, whatever its value: it once let public traffic in.
 		if (typeof options === "object" && options !== null && Object.hasOwn(options, "publicStream")) throw new Error(PUBLIC);
 		const { apiKey, Sandbox, domain = DEFAULT_DOMAIN, kind = "desktop", maxLifetimeMs = HOBBY_MAX_MS, ...rest } = options;
-		if (typeof apiKey !== "string" || apiKey === "") throw new Error("an E2B API key is required");
+		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the E2B API key, is required: the provider reads no environment, so the caller passes it");
 		const lacks = ["create", "connect", "getInfo", "setTimeout", "kill", "list"].filter((name) => typeof (Sandbox as unknown as Record<string, unknown>)?.[name] !== "function");
 		if (lacks.length > 0) throw new Error(`options.Sandbox must be the e2b SDK's Sandbox class; it lacks ${lacks.join(", ")}`);
 		const ambient = ambientProblem();
 		if (ambient) throw new Error(ambient);
 		if (typeof domain !== "string" || !DOMAIN.test(domain)) throw new Error(`the E2B domain must be a host name such as ${DEFAULT_DOMAIN}, not ${JSON.stringify(domain)}`);
-		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > PRO_MAX_MS) {
-			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 h (${PRO_MAX_MS} ms), E2B Pro's longest sandbox; Hobby's is 1 h`);
-		}
-		const requestMs = rest.timeouts?.requestMs ?? DEFAULT_REQUEST_MS;
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, label: "E2B", kind, maxLifetimeMs });
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), timeoutsOf(rest.timeouts).requestMs), { ...rest, label: "E2B", kind, maxLifetimeMs });
 	}
 }

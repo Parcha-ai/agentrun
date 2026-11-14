@@ -5,11 +5,10 @@
 // Every Daytona fact used here is cited in the README's Daytona section.
 import { randomBytes } from "node:crypto";
 import { PassThrough } from "node:stream";
-import { fileURLToPath } from "node:url";
 import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, DAYTONA_NO_ARCHIL, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./descriptors/daytona.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
+import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, timeoutsOf } from "./hosted/provider.js";
 import { boundOf, pause as sleep } from "./hosted/process.js";
 import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
@@ -120,8 +119,6 @@ export const CAPABILITIES: readonly KindCapabilities[] = DAYTONA.capabilities;
  * module the settings it reads. Throws in words when an option is missing or wrong, never echoing the key.
  */
 export function create(options: DaytonaProviderOptions): DaytonaProvider {
-	const { apiKey } = options ?? ({} as DaytonaProviderOptions);
-	if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Daytona API key, is required: the provider reads no environment, so the caller passes it");
 	return new DaytonaProvider(options);
 }
 
@@ -131,9 +128,7 @@ export const conformance = () => import("./conformance/daytona.js");
 const DEFAULT_API_URL = "https://app.daytona.io/api";
 /** autoDeleteInterval when autoDeleteMinutes is unset: negative is disabled. */
 const NO_AUTO_DELETE = -1;
-const DEFAULT_REQUEST_MS = 30_000;
 const DEFAULT_RETRY_MS = 500;
-const DEFAULT_POLL_MS = 1_000;
 const RETRY_ATTEMPTS = 3;
 const DELETE_ATTEMPTS = 4;
 /** How long a command's log stream may trail its exit code before the host stops reading it. */
@@ -725,10 +720,9 @@ export class DaytonaProvider extends HostedProvider {
 			webSocket,
 			pause,
 			timeouts = {},
-			daemonPath,
 			...rest
 		} = options ?? ({} as DaytonaProviderOptions);
-		if (typeof apiKey !== "string" || apiKey === "") throw new Error("a Daytona API key is required");
+		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Daytona API key, is required: the provider reads no environment, so the caller passes it");
 		if ((rest as { archilEgress?: unknown }).archilEgress !== undefined) throw new Error(`${DAYTONA_NO_ARCHIL}, so it takes no archilEgress`);
 		const base = new URL(apiUrl);
 		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);
@@ -741,7 +735,7 @@ export class DaytonaProvider extends HostedProvider {
 		if (autoDeleteMinutes !== undefined) minutes("autoDeleteMinutes", autoDeleteMinutes);
 		const { retryMs = DEFAULT_RETRY_MS, ...hostedTimeouts } = timeouts;
 		if (!isWhole(retryMs) || retryMs <= 0) throw new Error(`timeouts.retryMs must be a whole number of ms above 0, not ${retryMs}`);
-		const requestMs = hostedTimeouts.requestMs ?? DEFAULT_REQUEST_MS;
+		const { requestMs, pollMs } = timeoutsOf(hostedTimeouts);
 		const host = new DaytonaHost({
 			rest: new DaytonaRest(apiUrl, apiKey, fetcher ?? fetch, requestMs, retryMs, pause),
 			webSocket: webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as WebSocketLike),
@@ -751,8 +745,8 @@ export class DaytonaProvider extends HostedProvider {
 			gpu: daytonaGpuSnapshot(gpuSnapshot),
 			autoStop: autoStopMinutes,
 			autoDelete: autoDeleteMinutes ?? NO_AUTO_DELETE,
-			pollMs: hostedTimeouts.pollMs ?? DEFAULT_POLL_MS,
+			pollMs,
 		});
-		super(host, { ...rest, label: "Daytona", kind: "linux", timeouts: hostedTimeouts, daemonPath: daemonPath || fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url)) });
+		super(host, { ...rest, label: "Daytona", kind: "linux", timeouts: hostedTimeouts });
 	}
 }

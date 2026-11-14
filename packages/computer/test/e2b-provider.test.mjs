@@ -131,7 +131,7 @@ test("maxLifetimeMs is Hobby's 1 h by default, Pro's 24 h at most, and check() r
 	assert.match(refused[0].message, /at most 1 h/);
 	const pro = setup({ maxLifetimeMs: 24 * HOUR }).provider;
 	assert.deepEqual(pro.check({ ...SPEC, lifetimeMs: 2 * HOUR }), []);
-	assert.throws(() => setup({ maxLifetimeMs: 24 * HOUR + 1 }), /24 h/);
+	assert.throws(() => setup({ maxLifetimeMs: 24 * HOUR + 1 }), /at most 86400000 ms, the longest E2B keeps a computer/);
 	assert.throws(() => setup({ maxLifetimeMs: 0 }), /maxLifetimeMs/);
 	assert.deepEqual(rec.calls, []);
 });

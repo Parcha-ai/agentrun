@@ -16,7 +16,7 @@ import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, Machine
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
 import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh.js";
-import { dateOf, driftOf, isWhole, show, sizeOf } from "./hosted/values.js";
+import { dateOf, DOMAIN, driftOf, isWhole, show, sizeOf } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";
@@ -111,7 +111,6 @@ const AGENT37_TTYD_PORT = 7681;
 const INSTANCE_ID = /^[a-z0-9]{10}$/;
 /** A template name (cli.js:18), with an optional @<version> pin (docs: templates, pin a template version). */
 const TEMPLATE = /^[a-z][a-z0-9-]{1,62}(@[A-Za-z0-9._-]{1,64})?$/;
-const DOMAIN = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const DAY_MS = 24 * 60 * 60_000;
 /** The instance shapes Agent37 makes, cpu and memory in GB (docs: instance-sizing): 4 vCPU is every type's ceiling. */
 const SHAPES: ReadonlyArray<{ cpu: number; memory: number }> = [
@@ -125,7 +124,6 @@ const MAX_CPUS = 4;
 const METADATA_MAX_BYTES = 4096;
 /** A VM boots inside the create's POST, which answers once it runs (docs: instances/create, Defaults). */
 const DEFAULT_CREATE_MS = 300_000;
-const DEFAULT_REQUEST_MS = 30_000;
 /** How much a tunnel may hold unsent before a write waits for it (the WebSocket's bufferedAmount). */
 const TUNNEL_HIGH_WATER = 1024 * 1024;
 const TUNNEL_POLL_MS = 10;
@@ -492,13 +490,11 @@ function ssh2Problem(ssh2: unknown): string | undefined {
  * reads), and ssh2 is the host's package unless given. Throws in words when an option is missing or wrong, never echoing a key.
  */
 export async function create(options: Agent37Options): Promise<Agent37Provider> {
-	const { apiKey, sshKey, ssh2: given, ...rest } = options ?? ({} as Agent37Options);
-	if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Agent37 API key, is required: the provider reads no environment, so the caller passes it");
-	if (typeof sshKey !== "string" || sshKey === "") throw new Error("options.sshKey, the private half of an SSH key registered on the Agent37 workspace, is required: its contents, never a path");
+	const { ssh2: given, ...rest } = options ?? ({} as Agent37Options);
 	// ssh2 is CommonJS: its Client is a named export of the module, and of its default.
 	const loaded = given ?? ((await import(SSH2_PACKAGE)) as Partial<Ssh2Module> & { default?: Ssh2Module });
 	const ssh2 = typeof loaded.Client === "function" ? (loaded as Ssh2Module) : (loaded as { default?: Ssh2Module }).default;
-	return new Agent37Provider({ ...rest, apiKey, sshKey, ssh2: ssh2 as Ssh2Module });
+	return new Agent37Provider({ ...rest, ssh2: ssh2 as Ssh2Module });
 }
 
 /** The conformance CLI's module for Agent37: its live switch, the run's cap, its template and the drifted twin. */
@@ -520,11 +516,10 @@ export class Agent37Provider extends HostedProvider {
 			proxyDomain = DEFAULT_PROXY_DOMAIN,
 			type = "vm",
 			region = "us",
-			maxLifetimeMs = DAY_MS,
 			timeouts = {},
 			...rest
 		} = options ?? ({} as Agent37ProviderOptions);
-		if (typeof apiKey !== "string" || apiKey === "") throw new Error("an Agent37 API key is required");
+		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Agent37 API key, is required: the provider reads no environment, so the caller passes it");
 		const privateKey = typeof sshKey === "string" ? pemOf(sshKey) : undefined;
 		if (privateKey === undefined) throw new Error("options.sshKey must be the contents of an SSH private key (-----BEGIN ... PRIVATE KEY-----), never a path");
 		const problem = ssh2Problem(ssh2);
@@ -543,7 +538,7 @@ export class Agent37Provider extends HostedProvider {
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);
 		if (region !== "us" && type !== "vm") throw new Error(`Agent37 runs type default in us alone: ${region} takes type vm`);
 		const host = new Agent37Host({ apiKey, sshKey: privateKey, ssh2, fetch: fetcher, WebSocket, apiUrl: api.href.replace(/\/+$/, ""), proxyDomain, type, region });
-		super(host, { ...rest, label: "Agent37", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
+		super(host, { ...rest, label: "Agent37", timeouts: { createMs: DEFAULT_CREATE_MS, ...timeouts } });
 	}
 }
 

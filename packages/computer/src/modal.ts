@@ -388,7 +388,7 @@ class ModalHost implements MachineHost {
  */
 export class ModalProvider extends HostedProvider {
 	constructor(options: ModalProviderOptions) {
-		const { app, maxLifetimeMs = MAX_LIFETIME_MS, timeouts = {}, ...rest } = options ?? ({} as ModalProviderOptions);
+		const { app, timeouts = {}, ...rest } = options ?? ({} as ModalProviderOptions);
 		const sdk = options?.sdk as SdkClient | undefined;
 		const lacks = [
 			["apps.fromName", sdk?.apps?.fromName],
@@ -399,9 +399,6 @@ export class ModalProvider extends HostedProvider {
 		].filter(([, fn]) => typeof fn !== "function");
 		if (lacks.length > 0) throw new Error(`options.sdk must be a Modal client; it lacks ${lacks.map(([name]) => name).join(", ")}`);
 		if (typeof app !== "string" || app.trim() === "") throw new Error("options.app, the Modal app's name, is required");
-		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_LIFETIME_MS) {
-			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 hours (${MAX_LIFETIME_MS} ms), Modal's longest timeout`);
-		}
-		super(new ModalHost(sdk as SdkClient, app), { ...rest, label: "Modal", kind: "linux", maxLifetimeMs, timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
+		super(new ModalHost(sdk as SdkClient, app), { ...rest, label: "Modal", kind: "linux", timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
 	}
 }
