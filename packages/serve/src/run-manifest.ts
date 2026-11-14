@@ -66,6 +66,21 @@ export async function inputFiles(given: Workspace | string): Promise<ManifestFil
   return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
+/** The text a run's input is sent to its model as, on every harness: its `content`, then, after a blank line, its other
+ *  fields (an agent's typed input, definition.input_schema) as one fenced json block under the line `Input:`, so the
+ *  model reads each field by its name and its value as given, never as prose a value could break out of. The fence is
+ *  longer than any run of backticks in the JSON, so no value ends the block. No other field: the content alone. */
+export function inputMessage(input: unknown): string {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return "";
+  const { content, ...fields } = input as Record<string, unknown>;
+  const text = typeof content === "string" ? content : "";
+  if (!Object.keys(fields).length) return text;
+  const json = JSON.stringify(fields, null, 2);
+  const fence = "`".repeat(Math.max(3, ...[...json.matchAll(/`+/g)].map((run) => run[0].length + 1)));
+  const block = `Input:\n${fence}json\n${json}\n${fence}`;
+  return text ? `${text}\n\n${block}` : block;
+}
+
 /** The run's first message: `content`, then, after a blank line, the files given to it, when it has any: as many named
  *  as keep the message within `budget` (FIRST_MESSAGE_BYTES), else only how many, else no line at all, so the line never
  *  turns a message the run took into one its door refuses. */

@@ -126,5 +126,6 @@ test("an applied kyb agent's runs take typed input and refuse an input its schem
   const ok = await api("POST", `/agents/${id}/runs`, { input: { company: "Stripe, Inc.", country: "US", reason: "vendor" }, max_cost_usd: 1 });
   assert.equal(ok.status, 202, JSON.stringify(ok.body));
   const { rows } = await follow(api, ok.body.run_id, ["completed", "failed"], { deadlineMs: 55_000 });
-  assert.deepEqual(rows.filter((row) => row.kind === "user_message").map((row) => row.text), ['Input:\n```json\n{\n  "company": "Stripe, Inc.",\n  "country": "US",\n  "reason": "vendor"\n}\n```']);
+  // Its first message (kyb learns, so a reflection turn follows it).
+  assert.deepEqual(rows.filter((row) => row.kind === "user_message").map((row) => row.text).slice(0, 1), ['Input:\n```json\n{\n  "company": "Stripe, Inc.",\n  "country": "US",\n  "reason": "vendor"\n}\n```']);
 });

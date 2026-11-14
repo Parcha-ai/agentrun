@@ -144,6 +144,7 @@ test("a trigger's start_run target is checked against the agent's input schema w
   const fired = await api("POST", `/triggers/${made.body.id}/fire`, undefined, { "idempotency-key": "typed-1" });
   assert.equal(fired.status, 202, JSON.stringify(fired.body));
   const { rows } = await follow(api, fired.body.run_id, ["completed"], { deadlineMs: 55_000 });
-  const [first] = rows.filter((row) => row.kind === "user_message").map((row) => row.text);
+  // A trigger's message is its own row (origin trigger), never a person's user_message.
+  const first = rows.find((row) => row.origin === "trigger")?.text;
   assert.match(first, /^Check them\.\n\n\(Started by hand from the schedule "nightly" at [^)]*\)\.?\n\nInput:\n```json\n\{\n {2}"company": "Stripe, Inc\."\n\}\n```$/, first);
 });

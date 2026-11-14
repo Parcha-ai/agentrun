@@ -1,14 +1,17 @@
 import { ToolBlockers } from "@/components/ToolBlockers";
 import { ArrowRight, Copy, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { FieldInput, FieldIssues } from "@/components/FieldInput";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Picker } from "@/components/ui/picker";
 import { Input, Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
-import { ClientError } from "@/lib/client";
+import { ClientError, type FieldIssue } from "@/lib/client";
+import { agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldValid, fieldValues, inputOf, startText } from "@/lib/inputForm";
 import { curlFor, exampleHint, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
+import { type ParameterText, paramHelp } from "@/lib/templatePackages";
 import { SpendCapMinimum } from "@/lib/spendCap";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
@@ -51,7 +54,15 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const agent = agents.find((a) => a.agent_id === agentId);
   const kind = agent?.kind ?? "agentic";
   const [text, setText] = useState("");
-  const example = kind === "workflow" ? exampleInput(agent?.definition.workflow) : null;
+  // An agentic agent's input_schema: its typed fields under the message, or, for one the fields can't show, the whole
+  // input as JSON in the box, as a workflow's is. The fields start again for another agent, or a changed schema.
+  const schemaKey = kind === "agentic" ? JSON.stringify(agent?.definition.input_schema ?? null) : "null";
+  const shape = useMemo(() => (kind === "agentic" ? agentInputOf(JSON.parse(schemaKey)) : null), [kind, schemaKey]);
+  const form = shape?.kind === "fields" ? shape.form : null;
+  const json = kind === "workflow" || shape?.kind === "json";
+  const [values, setValues] = useState<ParameterText>({});
+  useEffect(() => { setValues(form ? startText(Object.fromEntries(form.fields)) : {}); }, [agentId, schemaKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const example = kind === "workflow" ? exampleInput(agent?.definition.workflow) : shape?.kind === "json" ? shape.example : null;
   // A workflow agent opens with its example input (its schema's, else its fields empty), replaced on a switch of agent
   // unless it was edited.
   const prefilled = useRef("");
@@ -72,20 +83,35 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   // Show code swaps the two. Taller viewports show both, as before.
   const [showCode, setShowCode] = useState(false);
   const [result, setResult] = useState<StartResult | null>(initialResult);
+  // A refusal's issue at one of the typed fields (input.<key>, or an item's input.<key>.<i>) is said at that field.
+  const fieldKeys = new Set(form?.fields.map(([k]) => k) ?? []);
+  const atField = (path: string) => { const k = fieldOfIssue(path); return k !== null && fieldKeys.has(k) ? k : null; };
   // A refused start, said plainly above its answer: the server's reason, and the box it names when it lacks one.
   const refusal = useMemo(() => {
     const error = (result && result.status >= 400 ? (result.body as { error?: { code?: unknown; message?: unknown; fields?: unknown; details?: { box?: unknown } & Record<string, unknown> } } | null)?.error : undefined);
     if (!error || typeof error.message !== "string") return undefined;
-    // A 422 names its fields: each one whose message says more than the refusal's is listed under it, as the Run bar does.
-    const fields = Array.isArray(error.fields) ? error.fields.filter((f): f is { field: string; message: string } => !!f && typeof f.field === "string" && typeof f.message === "string" && f.message !== error.message) : [];
-    return { message: error.message, more: fields, box: typeof error.details?.box === "string" ? error.details.box : undefined, details: error.code === "agent_not_runnable" ? error.details : undefined };
-  }, [result]);
+    const issues = Array.isArray(error.fields) ? error.fields.filter((f): f is FieldIssue => !!f && typeof f.field === "string" && typeof f.message === "string") : [];
+    // A 422 names its fields: each one whose message says more than the refusal's is listed under it, as the Run bar does;
+    // one at a typed field is said there instead.
+    const more = issues.filter((f) => f.message !== error.message && atField(f.field) === null);
+    return { message: error.message, more, issues, box: typeof error.details?.box === "string" ? error.details.box : undefined, details: error.code === "agent_not_runnable" ? error.details : undefined };
+  }, [result, schemaKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The fields edited to a value the server takes since the last answer: their issues go.
+  const [fixed, setFixed] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => { setFixed(new Set()); }, [result]);
+  const setField = (key: string, f: FieldSpec, value: string) => {
+    setValues((was) => ({ ...was, [key]: value }));
+    setFixed((was) => { const n = new Set(was); if (fieldValid(f, value)) n.add(key); else n.delete(key); return n; });
+  };
+  const issuesAt = (key: string) => (fixed.has(key) ? [] : (refusal?.issues ?? []).filter((i) => atField(i.field) === key));
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
   // Files picked here are sent at once; the request names each once the server has it, and waits for the rest.
   const attachments = useAttachments({ upload, remove: removeUpload, limits, frozen: sending });
-  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap, fileIds: attachments.fileIds, repo });
-  const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text, ...(attachments.fileIds.length ? { file_ids: attachments.fileIds } : {}) };
+  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap, fileIds: attachments.fileIds, repo,
+    ...(form ? { typed: { fields: fieldValues(form, values), contentRequired: form.contentRequired } } : {}), ...(shape?.kind === "json" ? { json: true } : {}) });
+  // A request the form can't send yet still shows as typed so far: the code pane and the JSON view carry the typed input.
+  const body: StartBody = built.ok ? built.body : { input: json ? text : form ? inputOf(form, text, values) : { content: text }, ...(attachments.fileIds.length ? { file_ids: attachments.fileIds } : {}) };
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
     : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId || "{agent_id}"}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_API_KEY}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
@@ -97,7 +123,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     // The run has its own copies: the next request starts with none picked.
     if (r.status >= 200 && r.status < 300) attachments.clear();
   };
-  const placeholder = kind === "agentic" ? "The run's first message, e.g. Summarize the standup: we ship Friday." : '{ "subject": "...", "body": "..." }';
+  const placeholder = !json ? `The run's ${form ? "message" : "first message"}, e.g. Summarize the standup: we ship Friday.` : kind === "workflow" ? '{ "subject": "...", "body": "..." }' : "The agent's input, as JSON";
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div aria-label="Playground agent" className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
@@ -159,15 +185,22 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 </>
               ) : (
                 <>
-                  <Label name={kind === "agentic" ? "input.content" : "input"} required error={!built.ok && built.field === "input" && text ? built.message : undefined}>
-                    <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={kind === "agentic" ? 4 : 7} placeholder={placeholder} />
+                  <Label name={json ? "input" : "input.content"} required={!form || form.contentRequired} optional={!!form && !form.contentRequired} error={!built.ok && built.field === "input" && text ? built.message : undefined}>
+                    <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={json ? 7 : 4} placeholder={placeholder} />
                     {example && (
                       <p className="mt-1 font-mono text-label text-muted-foreground">
-                        {exampleHint(example, "start")}
+                        {exampleHint(example, "start", kind === "workflow" ? "workflow" : "agent")}
                         {example.fields.length > 0 && <> Fields: {example.fields.map((f, k) => <span key={f.name} title={f.note}>{k ? ", " : ""}<span className="text-foreground">{f.name}</span></span>)}.</>}
                       </p>
                     )}
                   </Label>
+                  {/* The agent's typed input fields, drawn as a template's parameters are. */}
+                  {form?.fields.map(([key, f]) => (
+                    <div key={key} data-field={`input.${key}`}>
+                      <FieldInput field={f} label={fieldLabel(key, f)} help={paramHelp(f)} value={values[key] ?? ""} onChange={(v) => setField(key, f, v)} />
+                      <FieldIssues issues={issuesAt(key)} words={(i) => fieldIssueWords(i, key, f)} />
+                    </div>
+                  ))}
                   <Label name="file_ids" note={NOTES.file_ids}>
                     <FilePicker attachments={attachments} limits={limits} />
                   </Label>
@@ -251,10 +284,10 @@ const NOTES = {
   repo: "The GitHub repository the run reaches, owner/name. It must be one the agent is bound to; empty takes the agent's one repository.",
 } as const;
 
-function Label({ name, required, note, error, children }: { name: string; required?: boolean; note?: string; error?: string; children: React.ReactNode }) {
+function Label({ name, required, optional, note, error, children }: { name: string; required?: boolean; optional?: boolean; note?: string; error?: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="mb-2 flex items-center justify-between"><span className="font-mono text-body">{name}</span>{required && <span className="text-label text-muted-foreground">required</span>}</div>
+      <div className="mb-2 flex items-center justify-between"><span className="font-mono text-body">{name}</span>{required ? <span className="text-label text-muted-foreground">required</span> : optional && <span className="text-label text-muted-foreground">optional</span>}</div>
       {children}
       {note && <p className="mt-1.5 text-small text-muted-foreground">{note}</p>}
       {error && <p className="mt-1.5 font-mono text-small text-destructive-text" role="alert">{error}</p>}
