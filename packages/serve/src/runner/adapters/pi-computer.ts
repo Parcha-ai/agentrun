@@ -4,7 +4,7 @@
 // tools, each a nested call through the session's gate; `computer` is the surface's script prelude over one host global
 // (`__computerCall`), on the run's port, held by a person's take-over as the tools' port is. The `codemode` call itself
 // is held to the computer kind's setting (tool-gate.ts settingsKeyOf), so a deny on desktop refuses the script whole.
-// The script's computer calls are the `computer_calls` of the `codemode` call's result row (pi.ts recordedTool).
+// The script's computer calls are the `computer_calls` of the `codemode` call's result row (pi.ts recordingExtension).
 //
 // A script survives a restart by pi-durable's replay: the VM starts again from its stored start data and is handed the
 // results it had, each global's outcome from its journal, so a computer call already answered is never made again.
