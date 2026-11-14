@@ -69,6 +69,7 @@ const unavailable = (message: string): Result<never> => ({ ok: false, error: { c
 async function post(fetcher: typeof fetch, url: string, body: URLSearchParams | object, headers: Record<string, string> = {}): Promise<Result<Record<string, unknown>>> {
 	const what = `POST ${new URL(url).host}${new URL(url).pathname}`;
 	let response: Response;
+	let text: string;
 	try {
 		response = await fetcher(url, {
 			method: "POST",
@@ -77,10 +78,11 @@ async function post(fetcher: typeof fetch, url: string, body: URLSearchParams | 
 			redirect: "error",
 			signal: AbortSignal.timeout(REQUEST_MS),
 		});
+		// The body inside the same try: a body that stalls or drops is the same outage as no answer.
+		text = await response.text();
 	} catch (cause) {
 		return unavailable(`${what} failed: ${(cause as Error).message}`);
 	}
-	const text = await response.text();
 	if (response.status >= 500 || response.status === 429) return unavailable(`${what}: ${response.status} ${text.slice(0, 300)}`);
 	// The token service's own words (error, error_description), never the request's: it held a token or a key.
 	if (!response.ok) return failure(`${what}: ${response.status} ${text.replace(/\s+/g, " ").slice(0, 300)}`);

@@ -436,7 +436,7 @@ test("Google ADC: an external account's file subject token, Google's STS, then i
 	assert.equal(calls.length, 6, "minted again when asked fresh");
 });
 
-test("Google ADC: a service account signs an RS256 JWT with both scopes; an executable source is refused; a 503 is transient", async () => {
+test("Google ADC: a service account signs an RS256 JWT with both scopes; an executable source is refused; a 503 or a dropped body is transient", async () => {
 	const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 	let assertion;
 	const fetch = async (_url, init) => {
@@ -455,4 +455,10 @@ test("Google ADC: a service account signs an RS256 JWT with both scopes; an exec
 	assert.match((await googleAdc({ credentialsFile: "/x.json", fetch, readFile: async (path) => exec[path] })(false)).error.message, /executable is not read here/);
 	const down = await googleAdc({ credentialsFile: "/sa.json", fetch: async () => new Response("down", { status: 503 }), readFile: async (path) => files[path] })(false);
 	assert.equal(down.error.transient, true);
+	// Headers came, then the body dropped: the same outage, transient too.
+	const dropped = new ReadableStream({ start(controller) { controller.error(new Error("socket hang up")); } });
+	const cut = await googleAdc({ credentialsFile: "/sa.json", fetch: async () => new Response(dropped, { status: 200 }), readFile: async (path) => files[path] })(false);
+	assert.equal(cut.ok, false);
+	assert.equal(cut.error.transient, true);
+	assert.match(cut.error.message, /socket hang up/);
 });
