@@ -154,10 +154,10 @@ As of 2026-11-14, these have run end to end against the real service, through th
 | Composio `github` (a connected account) | reads; `GITHUB_CREATE_AN_ISSUE` pinned to one repository, asked and refused; with Allow reads on, the reads ran unasked from `codemode` scripts and through `tools_call`, and the create still asked | pi, Claude Code, Codex |
 | Composio `github` poll trigger `GITHUB_ISSUE_CREATED_TRIGGER` | a new issue started a run; use poll triggers, as the webhook type `GITHUB_ISSUE_ADDED_EVENT` needs admin rights on the repository | one run (a trigger starts a run whatever the harness) |
 | Composio `hackernews` (no account) | reads; `HACKERNEWS_GET_FRONTPAGE` is not served even when allowed, and the preset names such a tool under `not_served` | pi, Claude Code, Codex |
-| monid, litescrape `/github/repository` | the old `monid.run` from a `codemode` script, a real charge of $0.00015 on its own cost line; a per-endpoint grant is not yet proven live | pi, Claude Code, Codex |
+| monid, `monid:litescrape/github/repository` | granted in a template's `tools`, priced and pinned at the apply's save, called from a code-mode script: a real charge of $0.00015 on its own cost line | pi, Claude Code, Codex |
 
 Through `codemode`: proven on 2026-11-14, one script that read GitHub, ran a monid endpoint and was refused a pinned
-write, on all three harnesses (Codex in its own code mode). That template had fewer than 20 MCP and monid tools, so
+write, on all three harnesses (Codex in its own code mode), again on main after monid's per-endpoint grant. That template had fewer than 20 MCP and monid tools, so
 no run was offered `tools_search` or `tools_call`.
 
 Listing only: `slack`, `gmail`, `googlecalendar`, `linear`, `hubspot`, `stripe` (actions checked against Composio's
