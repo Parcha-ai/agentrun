@@ -140,16 +140,11 @@ export const needsNetwork = (network: readonly string[] | undefined): boolean =>
  *  sound). `start`: at a sentence's start, "A"/"An". */
 export const aLabel = (label: string, start = false): string => `${start ? "A" : "a"}${/^[AEIOU]/i.test(label) ? "n" : ""} ${label}`;
 
-/** Why a sandbox on `entry` can't hold the run's folder from the owner's Archil disk though its provider mounts one, in
- *  one sentence with no fix: the mount needs an image with Archil's client and helper (the computer package's box
- *  recipe), and this server names a provider's image only through its descriptor's imageEnv (computer-deps.ts
- *  computerSpecOf). With none declared it would start from the vendor's stock image, whose mount is refused at start.
- *  Undefined where one is declared. Settings (computers.ts modeRefusal) and a run's start (computerReadiness) say it. */
-export function stockImageWhy(entry: { readonly label: string; readonly imageEnv?: string; readonly defaultImage?: { readonly sandbox?: string } }): string | undefined {
-  if (entry.imageEnv !== undefined) return undefined;
-  const stock = entry.defaultImage?.sandbox;
-  return `${aLabel(entry.label, true)} sandbox can't mount the owner's disk this server keeps run folders on yet: it would start from ${entry.label}'s stock image${stock ? ` (${stock})` : ""}, which has no Archil client, and this server can't name another`;
-}
+/** Why a sandbox whose provider mounts the owner's Archil disk can't start in Mode 2: the mount needs Archil's image in
+ *  the owner's own vendor account, and this server can't put it there yet. Settings (computers.ts modeRefusal) and a
+ *  run's start (computerReadiness) say it. */
+export const mode2SandboxWhy = (label: string): string =>
+  `${aLabel(label, true)} sandbox can't start in Mode 2 yet: it needs Archil's image in your ${label} account, and this server can't put it there yet. Set this agent's computer to none (${SETTINGS})`;
 
 /** Why a computer that needs a network is refused where this server's AGENTRUN_BOX_ALLOW is none, in words that name the
  *  fix: the operator said no network at all, and the computer can't run without one. */
@@ -180,8 +175,7 @@ export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, r
   });
   if ("refused" in resolved) return { refused: resolved.refused };
   const entry = registry.PROVIDERS.find((one) => one.id === resolved.provider);
-  const stock = mode === 2 && resolved.kind === "sandbox" && resolved.mounts && entry ? stockImageWhy(entry) : undefined;
-  if (stock) return { refused: `${stock}. Set this agent's computer to none in ${SETTINGS}.` };
+  if (mode === 2 && resolved.kind === "sandbox" && resolved.mounts && entry) return { refused: `${mode2SandboxWhy(entry.label)}.` };
   if (entry && entry.mounts.includes("bind") && answers) {
     const said = await answers(entry.id);
     // It names the box whose probe said no (a refusal's details.box), as the box check did.
