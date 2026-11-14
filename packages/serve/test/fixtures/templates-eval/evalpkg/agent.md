@@ -5,11 +5,12 @@ description: A package for the eval runner's tests, its agent played by test/fix
 harness: [pi]
 tools: [read, write, ask_person]
 mcp:
-  - server: crm
+  - source: url
+    toolkit: crm
     tools: [get_contact, update_contact]
     pin: { update_contact: { id: "7" } }
 parameters:
-  team: { type: string, required: true, description: "the team the agent answers for" }
+  team: { type: string, description: "the team the agent answers for" }
 learning: true
 output: { schema: answer.schema.json }
 ---

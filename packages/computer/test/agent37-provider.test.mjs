@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { codeOfError } from "../dist/hosted/process.js";
 import * as registry from "../dist/providers.js";
 import { API_URL, fakeAgent37, fakeRest, KEY, keyPair, MAX_SESSIONS, PROXY } from "./fake-agent37.mjs";
 
@@ -170,8 +171,8 @@ test("create posts the template, type, region, name, labels as metadata, deny-al
 	assert.equal(rest.calls[1].body.resources, undefined, "no size asked, none sent");
 });
 
-test("get reads an instance back as a machine; an unknown id is none; list matches labels over the whole workspace; delete twice is done", async () => {
-	const { rest, host } = restOnly();
+test("get reads an instance back as a machine; an unknown id is none; list answers the whole workspace, which the adapter matches by labels; delete twice is done", async () => {
+	const { rest, host, provider } = restOnly();
 	const { value } = await host.create(request({ "agentrun.conformance": "run-1" }), CTX);
 	await host.create(request({ "agentrun.conformance": "run-2" }), CTX);
 	const machine = (await host.get(value.id, CTX)).value;
@@ -183,13 +184,14 @@ test("get reads an instance back as a machine; an unknown id is none; list match
 	assert.deepEqual(machine.createdAt, new Date(1_800_000_000_000));
 	assert.equal(machine.drift, undefined);
 	assert.equal(machine.labels["agentrun.conformance"], "run-1");
-	assert.deepEqual((await host.get("zzzzzzzzzz", CTX)).value, undefined);
-	assert.deepEqual((await host.get("not an id", CTX)).value, undefined, "an id that is not Agent37's is none, never a URL");
-	const listed = (await host.list({ "agentrun.conformance": "run-1" }, CTX)).value;
-	assert.deepEqual(listed.map((one) => one.id), [value.id]);
-	assert.equal((await host.list({ [COMPUTER]: "1" }, CTX)).value.length, 2);
+	// get no longer catches 404: the adapter reads not_found as none (hosted-provider.test.mjs).
+	assert.equal(host.errorCode(await host.get("zzzzzzzzzz", CTX).catch((thrown) => thrown)), "not_found");
+	assert.equal(host.errorCode(await host.get("not an id", CTX).catch((thrown) => thrown)), "not_found", "an id that is not Agent37's is not found, never a URL");
+	// Agent37 filters nothing: its listing is the whole workspace, and the adapter keeps the machines that carry the labels.
+	assert.equal((await host.list({ "agentrun.conformance": "run-1" }, CTX)).value.length, 2);
+	assert.deepEqual((await provider.list({ "agentrun.conformance": "run-1" })).value.map((info) => info.ref.id), [value.id]);
 	assert.ok((await host.delete(value.id, CTX)).ok);
-	assert.ok((await host.delete(value.id, CTX)).ok, "a repeat's 404 is done");
+	assert.equal(host.errorCode(await host.delete(value.id, CTX).catch((thrown) => thrown)), "not_found", "a repeat's 404 is not_found, which the adapter's delete reads as done");
 	assert.equal(rest.instances.has(value.id), false);
 	rest.fail("GET", /^\/v1\/instances$/, new Response(JSON.stringify({ data: [], has_more: true }), { status: 200 }));
 	await assert.rejects(host.list({}, CTX), /would miss machines/);
@@ -288,7 +290,7 @@ test("the error codes: Agent37's envelope codes, then the status, flat transport
 	assert.equal(wrong.host.errorCode(refused), "denied");
 	assert.doesNotMatch(refused.message, new RegExp(BARE));
 	const timeout = Object.assign(new Error("slow"), { name: "TimeoutError" });
-	assert.equal(host.errorCode(timeout), "timeout");
+	assert.equal(codeOfError(host, timeout), "timeout");
 	assert.equal(host.errorCode(Object.assign(new Error("no"), { level: "client-authentication" })), "denied");
 });
 
@@ -406,7 +408,7 @@ test("a tunnel that fails to open is opened again, within the call's bound; afte
 	assert.equal(fake.ws.opened.length, 7, "four tries in all");
 	fake.ws.failNext(10);
 	const error = await host.exec(second.id, ["true"], { stdin: false }, { timeoutMs: 300 }).catch((thrown) => thrown);
-	assert.equal(host.errorCode(error), "timeout", "the bound ends the retries");
+	assert.equal(codeOfError(host, error), "timeout", "the bound ends the retries");
 	fake.ws.failNext(0);
 });
 
@@ -416,7 +418,7 @@ test("a tunnel still opening when its call times out or is aborted is closed, no
 	const before = fake.ws.closedBy.length;
 	fake.ws.hangNext(1);
 	const timedOut = await host.exec(value.id, ["true"], { stdin: false }, { timeoutMs: 200 }).catch((thrown) => thrown);
-	assert.equal(host.errorCode(timedOut), "timeout");
+	assert.equal(codeOfError(host, timedOut), "timeout");
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(fake.ws.closedBy.slice(before), [0], "the opening tunnel was closed as the call gave up");
 	fake.ws.hangNext(1);
@@ -502,7 +504,7 @@ test("an exec that joins another's handshake keeps its own bound: when the share
 	const short = host.exec(value.id, ["true"], { stdin: false }, { timeoutMs: 600 }).catch((thrown) => thrown);
 	await new Promise((resolve) => setTimeout(resolve, 100));
 	const long = run(host, value.id, ["echo", "mine"]);
-	assert.equal(host.errorCode(await short), "timeout");
+	assert.equal(codeOfError(host, await short), "timeout");
 	assert.equal((await long).stdout, "mine\n");
 	assert.equal(fake.ws.opened.length, 2, "the hung one, then the late call's own");
 });

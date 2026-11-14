@@ -1060,6 +1060,88 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(os.snapshots - walks, 5, "the first look, one that saw the change, one that saw it hold")
 	}
 
+	/// An app that tells its tree's changes (an AXObserver on a Mac) settles on one read: the settle waits until the app
+	/// told nothing for quietMs, reads once, and reads again only when the app told a change after that read began. An
+	/// act's first look is the observe's read before it, while the app told nothing since. System Settings on CI: 260
+	/// to 860 ms a read, and a step took three to five of them.
+	func testAnAppThatTellsItsChangesSettlesOnOneRead() async throws {
+		os.tells = true
+		os.walkMs = 400
+		let engine = os.engine()
+		let notes = Target(app: "com.apple.Notes")
+		var r = try await engine.observe(UiObserveParams(target: notes))
+		// Nothing changes: the act's first look is the observe's, and the settle reads once, a quiet after the press.
+		var (start, walks) = (os.now, os.snapshots)
+		var result = try await engine.act(UiActParams(target: notes, steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(os.snapshots - walks, 1, "one read, a quiet after the press")
+		XCTAssertEqual(os.now - start, 150 + 400)
+		XCTAssertEqual(ran(result, 0)?.1, false)
+		// The press redraws the window 300 ms on, while the settle's read runs: told after that read began, so the
+		// window is read again once the app went quiet, and that read shows it.
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.after(300) { $0.elements[5]!.name = "Saved" } }
+		}
+		r = try await engine.observe(UiObserveParams(target: notes))
+		(start, walks) = (os.now, os.snapshots)
+		result = try await engine.act(UiActParams(target: notes, steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertTrue(result.changed)
+		XCTAssertEqual(os.snapshots - walks, 2)
+		XCTAssertEqual(os.now - start, 150 + 400 + 400)
+		// An app still telling changes holds the read off until it went quiet.
+		os.react = { entry, os in
+			guard entry == "ax.AXPress 3" else { return }
+			for t in stride(from: 100.0, through: 500, by: 100) { os.after(t) { $0.elements[2]?.value = "\(t)" } }
+		}
+		r = try await engine.observe(UiObserveParams(target: notes))
+		(start, walks) = (os.now, os.snapshots)
+		result = try await engine.act(UiActParams(target: notes, steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertEqual(os.snapshots - walks, 1)
+		XCTAssertEqual(os.now - start, 500 + 150 + 400)
+	}
+
+	/// An app may tell changes a person never sees: System Settings remakes its sidebar's rows out of view each time its
+	/// tree is read. A read that came out the same as the one before settles, as the look-twice settle does.
+	func testAnAppThatTellsChangesNoOneSeesStillSettles() async throws {
+		os.tells = true
+		os.walkMs = 100
+		os.onSnapshot = { os in
+			let old = os.order.last { os.elements[$0]?.name == "Sound" } ?? 99
+			os.remove(old)
+			os.add(old + 1, "row", name: "Sound", frame: Rect(108, 700 + Double(old % 2) * 19, 198, 19), parent: 2)
+		}
+		let engine = os.engine()
+		let notes = Target(app: "com.apple.Notes")
+		let r = try await engine.observe(UiObserveParams(target: notes))
+		let (start, walks) = (os.now, os.snapshots)
+		let result = try await engine.act(UiActParams(target: notes, steps: [.press(ref(r, "Save"))]))
+		XCTAssertEqual(os.snapshots - walks, 3, "the first look (the observe's read told a change), then two reads the same")
+		XCTAssertEqual(os.now - start, 100 + 150 + 100 + 150 + 100)
+		XCTAssertFalse(result.changed)
+	}
+
+	/// An act with no steps, at an app that tells its changes: its first look is the settle's read, and stays the final
+	/// view while the app told nothing for quietMs after it began. A change told in that time is read.
+	func testAnActWithNoStepsAtAnAppThatTellsItsChangesReadsOnce() async throws {
+		os.tells = true
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		var (start, walks) = (os.now, os.snapshots)
+		var result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Save")))
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertEqual(result.changed, false)
+		XCTAssertEqual(os.snapshots - walks, 1)
+		XCTAssertEqual(os.now - start, 150)
+		os.after(100) { $0.elements[5]!.name = "Saved" }
+		(start, walks) = (os.now, os.snapshots)
+		result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Saved")))
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertEqual(result.changed, true)
+		XCTAssertEqual(os.snapshots - walks, 2)
+		XCTAssertEqual(os.now - start, 250)
+	}
+
 	func testCallsRunOneAtATime() async throws {
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())

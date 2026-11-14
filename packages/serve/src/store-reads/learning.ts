@@ -26,11 +26,13 @@ import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
+import { promotedOf } from "../learn/compile.js";
+import { promotionsOf } from "../learn/promote.js";
 import { GENERAL_NO_BUDGET, GENERAL_NO_ROOM, GENERAL_UNCHECKED } from "../learn/general.js";
-import type { Store } from "../store/store.js";
+import type { LearningProposal, Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
-export type RunLearningEnd = Pick<Learning, "state" | "reason" | "detail" | "at" | "problems" | "verdict" | "graded" | "merged" | "cost_usd" | "tokens" | "learned" | "pending" | "skills" | "workflows" | "lost" | "answered_at" | "job_cost_usd" | "look_back_usd">;
+export type RunLearningEnd = Pick<Learning, "state" | "reason" | "detail" | "at" | "problems" | "verdict" | "graded" | "merged" | "cost_usd" | "tokens" | "learned" | "pending" | "skills" | "workflows" | "lost" | "answered_at" | "job_cost_usd" | "look_back_usd" | "compiled" | "draft_errors">;
 
 /** The kept row as the end-of-run hook writes it (runner/reflect-hook.ts): proposed with the proposal, or dropped, with
  *  when the job answered, its cost and what looking back cost once the run looked back. */
@@ -53,7 +55,24 @@ export async function runLearningEnd(store: Store, runId: string, round?: number
   const kept = await store.learning.proposal(runId, round);
   if (!kept) return null;
   const row = (kept.proposal ?? {}) as KeptRow;
-  return { ...(await endOfKept(store, kept, row)), ...answeredOf(row) };
+  return { ...(await endOfKept(store, kept, row)), ...answeredOf(row), ...compiledOf(row) };
+}
+
+/** What a kept row says of its compile turn (runner/reflect-hook.ts): the record, and a failed draft's errors; read as
+ *  untrusted, an entry out of shape left out. */
+function compiledOf(row: KeptRow): Pick<Learning, "compiled" | "draft_errors"> {
+  const texts = (list: unknown): string[] => (Array.isArray(list) ? list.filter((one): one is string => typeof one === "string") : []);
+  // The kept row's own (its proposal's `compiled` names only the workflow and its notes, for the merge).
+  const { compiled: record, draft_errors } = row as { compiled?: unknown; draft_errors?: unknown };
+  const errors = texts(draft_errors);
+  const out: Pick<Learning, "compiled" | "draft_errors"> = errors.length ? { draft_errors: errors } : {};
+  if (record && typeof record === "object" && typeof (record as { workflow?: unknown }).workflow === "string") {
+    const { workflow, from_notes, attempts, digest } = record as { workflow: string; from_notes?: unknown; attempts?: unknown; digest?: unknown };
+    const tries = Array.isArray(attempts) ? attempts.filter((one) => one && typeof one === "object" && typeof (one as { ok?: unknown }).ok === "boolean").map((one) => ({ ok: (one as { ok: boolean }).ok, errors: texts((one as { errors?: unknown }).errors) })) : [];
+    // `promoted` is never kept: runLearningOverStore reads it from the agent's promotion records (promotedOf).
+    out.compiled = { workflow, from_notes: texts(from_notes), attempts: tries, ...(typeof digest === "string" && /^[0-9a-f]{16}$/.test(digest) ? { digest } : {}) };
+  }
+  return out;
 }
 
 /** The learning end a kept row and its learning run's journal say. */
@@ -218,16 +237,50 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, unknown_path_runs: unknownPath, workflows };
 }
 
-/** What run `runId`'s learning spent, as its cost per run counts it: what it kept as it answered (`looked`: answeredOf),
- *  and its grade's spend (`grade`): its learning run's cost once that run ended, stopped or failed (runner/learning-loop.ts
- *  keeps the grade's spend there, a paid grade a person stopped included; null when unknown), 0 while it runs or when the
- *  run queued none. */
-async function learningSpendOf(store: Store, runId: string): Promise<{ looked: ReturnType<typeof answeredOf> | null; grade: number | null }> {
-  const kept = await store.learning.proposal(runId);
-  if (!kept) return { looked: null, grade: 0 };
-  const looked = answeredOf((kept.proposal ?? {}) as KeptRow);
-  const learningRun = kept.learningRunId ? await store.runs.get(kept.learningRunId) : undefined;
-  return { looked, grade: learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0 };
+/** What run `runId`'s learning spent, as its cost per run counts it, over every round a follow-up opened (roundsOf): what
+ *  it kept as it answered (`looked`: answeredOf; for a run with more rounds, its first round's job figure and every
+ *  round's look-back, as roundsSpendOf adds them), and its grades' spend (`grade`): each round's learning run's cost once
+ *  that run ended, stopped or failed (runner/learning-loop.ts keeps the grade's spend there, a paid grade a person stopped
+ *  included; null when one is unknown), 0 while it runs or when the round queued none. */
+export async function learningSpendOf(store: Pick<Store, "learning" | "runs">, runId: string): Promise<{ looked: ReturnType<typeof answeredOf> | null; grade: number | null }> {
+  const rounds = await roundsOf(store, runId);
+  if (!rounds.length) return { looked: null, grade: 0 };
+  const spent = await roundsSpentOf(store, rounds);
+  if (rounds.length < 2) return { looked: answeredOf((rounds[0]!.proposal ?? {}) as KeptRow), grade: spent.grade };
+  return { looked: spent.first ? { answered_at: spent.first.answered_at, job_cost_usd: spent.first.job_cost_usd ?? null, look_back_usd: spent.look } : null, grade: spent.grade };
+}
+
+/** Every round run `runId` kept (one a follow-up opened again is a round past its first), oldest first: none when it kept
+ *  no learning. The store's proposal(runId) is the newest round alone; a read of what the run's learning did or spent
+ *  reads them all. */
+export async function roundsOf(store: Pick<Store, "learning">, runId: string): Promise<LearningProposal[]> {
+  const newest = await store.learning.proposal(runId);
+  if (!newest) return [];
+  const out: LearningProposal[] = [];
+  for (let round = 1; round < newest.round; round++) {
+    const kept = await store.learning.proposal(runId, round);
+    if (kept) out.push(kept);
+  }
+  out.push(newest);
+  return out;
+}
+
+/** Over a run's rounds (roundsOf): the first round that answered (its job's own figures), every round's look-back added
+ *  up and every round's grade (each null once one round's is unknown). */
+async function roundsSpentOf(store: Pick<Store, "runs">, rounds: readonly LearningProposal[]): Promise<{ first: ReturnType<typeof answeredOf> | undefined; look: number | null; grade: number | null }> {
+  let first: ReturnType<typeof answeredOf> | undefined;
+  let look: number | null = 0;
+  let grade: number | null = 0;
+  for (const kept of rounds) {
+    const answered = answeredOf((kept.proposal ?? {}) as KeptRow);
+    if (!first && answered.answered_at !== undefined) first = answered;
+    // A round that never looked back (no figures kept) added none.
+    look = look === null || answered.look_back_usd === null ? null : look + (answered.look_back_usd ?? 0);
+    const learningRun = kept.learningRunId ? await store.runs.get(kept.learningRunId) : undefined;
+    const spent = learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0;
+    grade = grade === null || spent === null ? null : grade + spent;
+  }
+  return { first, look, grade };
 }
 
 type RunRecord = NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>;
@@ -364,23 +417,10 @@ export function laidOf(entries: readonly EntryLike[]): Laid {
  *  round's job answered and what the job cost to then, the look-backs of every round added up, and every round's grade. A
  *  figure that is unknown in any round is unknown (null). */
 type RoundsSpend = { answered_at: string; job_cost_usd: number | null; look_back_usd: number | null; grade_usd: number | null };
-export async function roundsSpendOf(store: Store, runId: string): Promise<RoundsSpend | undefined> {
-  const newest = await store.learning.proposal(runId);
-  if (!newest || newest.round < 2) return undefined;
-  let first: ReturnType<typeof answeredOf> | undefined;
-  let look: number | null = 0;
-  let grade: number | null = 0;
-  for (let round = 1; round <= newest.round; round++) {
-    const kept = round === newest.round ? newest : await store.learning.proposal(runId, round);
-    if (!kept) continue;
-    const answered = answeredOf((kept.proposal ?? {}) as KeptRow);
-    if (!first && answered.answered_at !== undefined) first = answered;
-    // A round that never looked back (no figures kept) added none.
-    look = look === null || answered.look_back_usd === null ? null : look + (answered.look_back_usd ?? 0);
-    const learningRun = kept.learningRunId ? await store.runs.get(kept.learningRunId) : undefined;
-    const spent = learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0;
-    grade = grade === null || spent === null ? null : grade + spent;
-  }
+export async function roundsSpendOf(store: Pick<Store, "learning" | "runs">, runId: string): Promise<RoundsSpend | undefined> {
+  const rounds = await roundsOf(store, runId);
+  if (rounds.length < 2) return undefined;
+  const { first, look, grade } = await roundsSpentOf(store, rounds);
   if (!first || typeof first.answered_at !== "string") return undefined;
   return { answered_at: first.answered_at, job_cost_usd: first.job_cost_usd ?? null, look_back_usd: look, grade_usd: grade };
 }
@@ -569,6 +609,11 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   // once it ended), the same words its run view gives.
   const end = (await runLearningEnd(store, runId)) ?? (started?.use && row ? usedOnly(started, settled, timeOf(row.endedAt ?? row.startedAt)) : null);
   if (!end) return null;
+  // A kept compile's promotion (learn/promote.ts), as the agent's records say now: unread, it stays undecided.
+  if (end.compiled?.digest && row) {
+    const promoted = promotedOf(await promotionsOf(store.settings, row.agentId).catch(() => []), end.compiled.workflow, end.compiled.digest);
+    if (promoted !== undefined) end.compiled = { ...end.compiled, promoted };
+  }
   const used = started?.given.length || started?.skills?.length || started?.workflows?.length;
   const [reflect, rows, entries] = used ? await Promise.all([runReflect(store, runId, BACKGROUND_CONTEXT), runTimeline(store, runId, BACKGROUND_CONTEXT, { settled }), runEntries(store, runId, BACKGROUND_CONTEXT)]) : [undefined, [], []];
   const read = started?.given.length ? notesReadOf(started.given, reflect, rows) : [];

@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
-import { CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, timelineOf, TOOL_COST } from "../timeline/index.js";
+import { CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -69,8 +69,9 @@ export function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       const text = typeof data.text === "string" ? data.text : "";
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text }] }] };
     }
+    // A call: shown as a model's call, never counted as a model request (the booking counts those: bookedUsage).
     if (entry.kind === KINDS.callStart) {
-      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
+      return { ...entry, kind: "pi.assistant", recordedCall: true, model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
     }
     if (entry.kind === KINDS.callEnd) {
       // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text. One
@@ -149,8 +150,11 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   return out;
 }
 
-/** Whether `entries` are a CLI harness's record (its loop's calls and messages). */
-export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
+/** Whether `entries` are a CLI harness's record (its loop's calls and messages). A nested call's (`<callId>/<key>`, a
+ *  script's or tools_call's) is the record of whichever harness made the call it nests in: on pi, the loop keeps it
+ *  beside pi's own record (adapter-loop.ts nestedGate), so it makes no run a CLI's. */
+export const isCliRecord = (entries: readonly EntryLike[]): boolean =>
+  entries.some((entry) => entry.kind === KINDS.message || ((entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd) && !String((entry.data as { callId?: unknown } | undefined)?.callId ?? "").includes("/")));
 
 /** The call a run's turn ended on waiting for a person (timeline endedOnTurnEndingTool), over its root's entries as the
  *  run keeps them: a CLI harness's record read as pi's (piShaped), as its Timeline and its view read it, so the runner's
@@ -184,7 +188,9 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // session's proxy sees its upstream end). Its cost reads that turn the same way, the request it cut a charge with no
   // price, never one in flight: never the known sum as its cost while the run reads stopped.
   const read = { ...options, ...(cwd ? { path: inWorkspace(cwd.cwd) } : {}), ...(!options.settled && turnCutOf(records, reflect) ? { turnCut: true } : {}) };
-  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), read);
+  // Shaped on pi too: its own entries pass through as they are, and the calls its tools nested (on the loop's record) read
+  // as a CLI's calls do.
+  const rendered = timelineOf(withPaidCosts(piShaped(entries)), read);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
   return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries, options.redact));
 }
@@ -280,11 +286,13 @@ function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike
   const unpriced = model.unpriced + paid.unpriced + (unbooked ? 1 : 0);
   const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
   const spent = usd !== null ? dollars(usd) : `${dollars(model.known + paid.known)} known, ${unpriced} not priced,`;
-  const charges = paid.requests ? ` and ${paid.requests} paid tool call${paid.requests === 1 ? "" : "s"}` : "";
+  // Its tool calls with no price as the renderer counted them from the journal (TOOL_UNMETERED), as on a pi run's row.
+  const notMetered = at >= 0 ? (rows[at]!.usage?.not_metered ?? 0) : 0;
+  const calls = toolCallWords(paid.requests, notMetered);
   const summary = unbooked
-    ? `${costLabel(options.ended === true)}: unknown, its model's requests were not metered${charges}`
-    : `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${charges}`;
-  const usage = { usd, requests: model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}) };
+    ? `${costLabel(options.ended === true)}: unknown, its model's requests were not metered${calls}`
+    : `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${calls}`;
+  const usage = { usd, requests: model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}), ...(notMetered ? { not_metered: notMetered } : {}) };
   const last = rows[rows.length - 1];
   const base: TimelineEvent = at >= 0 ? rows[at]! : {
     ...last!, id: `${last?.conversation_id ?? 0}:usage`, agent_label: null, text: null,

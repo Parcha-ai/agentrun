@@ -75,6 +75,11 @@ export type PublicFetchOptions = {
 /** The answer that ended the redirects: its URL, status and type, and its body when it is a 2xx text answer. */
 export type PublicAnswer = { url: string; status: number; contentType: string; body: string | null };
 
+/** The content types read as text: any text/*, application/json and application/xml, and any application/<name>+xml
+ *  or application/<name>+json (atom, rss, xhtml, ld+json), so a site's feed reads like its pages. Anything else (a PDF,
+ *  a zip, octet-stream, an image/svg+xml) is refused. */
+const TEXT_TYPE = /^(text\/|application\/(json|xml|[\w.!#$&^-]+\+(xml|json)\b))/i;
+
 /**
  * Fetches `url` from a public host, following at most 5 redirects, each hop resolved, checked and dialled at the
  * address checked. A 2xx answer of a text type is read whole, up to `maxBytes`; another status comes back without its
@@ -109,7 +114,7 @@ export async function publicFetch(url: string, options: PublicFetchOptions = {})
       }
       const contentType = res.headers.get("content-type") ?? "";
       if (!res.ok) return { url: target.href, status: res.status, contentType, body: null };
-      if (!/^(text\/|application\/(xhtml\+xml|json|xml))/i.test(contentType)) throw refusedError(`refused: ${contentType || "an unknown content type"} is not text`);
+      if (!TEXT_TYPE.test(contentType)) throw refusedError(`refused: ${contentType || "an unknown content type"} is not text`);
       const chunks: Uint8Array[] = [];
       let size = 0;
       for (const reader = res.body!.getReader(); ; ) {

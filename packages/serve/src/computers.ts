@@ -24,7 +24,7 @@ import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./s
 import type { PairedComputerRow, Store } from "./store/index.js";
 import type { PairedView } from "./computer-attach.js";
 import { withPaired } from "./workspace/attached-computers.js";
-import { type ComputerSettingKind, type ShellPlace, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
+import { aLabel, type ComputerSettingKind, type ShellPlace, needsNetwork, shellChoiceOf, stockImageWhy } from "./workspace/resolve-computer.js";
 
 // Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
 // body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
@@ -61,6 +61,9 @@ export interface ProviderEntry {
   readonly capabilities: readonly KindCapabilities[];
   /** The image a computer of each kind starts from when its setting names none. */
   readonly defaultImage?: Partial<Record<ComputerKind, string>>;
+  /** The environment variable an owner names this provider's image in (Daytona's AGENTRUN_DAYTONA_SNAPSHOT), as its
+   *  descriptor declares it: where it has none, this server can't name its image (computer-deps.ts computerSpecOf). */
+  readonly imageEnv?: string;
   /** A program its computers need on this machine's PATH, what installs it, and the machines it is built for
    *  (`${platform}-${arch}`; absent, every one), as its descriptor declares it: the phone's adb. Absent: none. */
   readonly hostCommand?: HostCommand;
@@ -208,7 +211,7 @@ export const COMPUTER_UNAVAILABLE = "computer_unavailable";
  *  A sandbox holds the run's folder: Mode 1 keeps it on this machine, which only a computer that binds a local folder
  *  (Docker) reaches; Mode 2 keeps it on the owner's disk, which only a computer that mounts the disk reaches (never a
  *  local Docker bind). A desktop, phone or browser holds no folder unless its provider mounts it, so either mode takes
- *  it. */
+ *  it, and a sandbox that mounts the disk is one whose image this server can name (resolve-computer.ts stockImageWhy). */
 export function modeRefusal(kind: ComputerKind, provider: ProviderEntry, mode: FolderMode): string | undefined {
   if (kind !== "sandbox") return undefined;
   if (mode === "local" && !provider.mounts.includes("bind")) return `${provider.label} can't mount this server's run folders (they are on its own disk): set this agent's computer to sandbox on Docker, or none (Settings → Computers)`;
@@ -216,7 +219,8 @@ export function modeRefusal(kind: ComputerKind, provider: ProviderEntry, mode: F
     const why = provider.unmounted?.archil;
     return `${provider.label} can't mount the owner's disk this server keeps run folders on${why ? ` (${why})` : ""}: set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)`;
   }
-  return undefined;
+  const stock = mode === "disk" ? stockImageWhy(provider) : undefined;
+  return stock ? `${stock}: set this agent's computer to none (Settings → Computers)` : undefined;
 }
 
 /** The GPUs a sandbox of `provider` gives, as its configuration that serves a sandbox declares them, or undefined. */
@@ -432,7 +436,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const options = providerOptions(providerId, await keysOf(entry), settings, keyTable);
     if (!options.ok) throw new Error(options.error.message);
     const make = Object.hasOwn(factories, providerId) ? factories[providerId] : undefined;
-    if (typeof make !== "function") throw new Error(`this server cannot make a ${entry.label} provider`);
+    if (typeof make !== "function") throw new Error(`this server cannot make ${aLabel(entry.label)} provider`);
     const configuration = image === undefined ? undefined : entry.capabilities.find((one) => one.image === image);
     const made = (await make({ ...options.options, ...((configuration?.options ?? {}) as Record<string, string>) })) as unknown as Partial<Pick<ComputerProvider, "release">>;
     if (typeof made.release !== "function") throw new Error(`this server's ${entry.label} provider cannot release a computer`);

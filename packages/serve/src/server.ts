@@ -70,9 +70,10 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
+import { type Grade, GRADE_SOURCES, type GradeSource, gradeView, promotionsOf, promotionsShown, putGrade } from "./learn/promote.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -90,9 +91,11 @@ import { bootSealKey, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentCostOverStore, agentLearningOverStore, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
+import { agentLoopOverStore } from "./store-reads/loop.js";
+import { printable } from "./learn/index.js";
+import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
 import { figuresOf, LearningBatches, type RunSnap } from "./learning-batch.js";
-import { costCsv, learningCostQuery } from "./learning-cost.js";
+import { costCsv, learningCostQuery, RUN_PATHS } from "./learning-cost.js";
 import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
@@ -101,6 +104,7 @@ import { signInsOverStore } from "./sign-ins-store.js";
 import { MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type ComposioControl, composioSave, composioTools } from "./composio-preset.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
+import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
@@ -121,9 +125,12 @@ import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
-import { isMcpWildcard, mcpToolName } from "./tool-names.js";
+import { isMcpWildcard, mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageTiers, packageView, pickComputer, readPackages, type ShellHere, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
+import { deleteTemplate, importTemplate, loadImported, type TemplateImportDeps } from "./template-import.js";
+import { templateInstallLink, templateLink } from "./console-links.js";
+import { GITHUB_HOSTS } from "./template-source.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, inputSchemaOf, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, loadToolSettings, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { wakeAnsweredBySetting } from "./settings-wake.js";
@@ -208,6 +215,9 @@ export type ServeOptions = {
    *  alone use): an MCP server's URL may be on loopback, at its save, preview and sign-in, and for the runner beside it.
    *  Never inferred; absent, loopback is refused there in words saying how to say so. */
   mcpLoopback?: boolean;
+  /** A template eval's own scratch server (template-eval.ts), never set by the CLI: an MCP server's save may say, in its
+   *  `source`, which package need the eval's fake stands in for. Every other server records what made a server. */
+  mcpStandIns?: boolean;
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
    *  the only lock: put TLS in front of it. */
   host?: string;
@@ -334,6 +344,9 @@ export type ServeOptions = {
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
   templates?: string;
+  /** A test's seam: the GitHub a template import reads, its API's origin and the one host it may be sent to, in place of
+   *  GitHub's own (template-source.ts GITHUB_HOSTS). */
+  templateImportApi?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
   webhookRetryMs?: readonly number[];
   /** Whether the outbound webhook may send to a private network or this machine: off by default, so no caller of the API
@@ -436,6 +449,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/cancel$/, name: "cancelRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/approvals\/([^/]+)$/, name: "answerApproval" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/archive$/, name: "archiveRun" },
+  // A person's or an eval's grade of an ended run (learn/promote.ts): what promotion by replay reads.
+  { method: "PUT", pattern: /^\/runs\/([^/]+)\/grade$/, name: "gradeRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/unarchive$/, name: "unarchiveRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/graph$/, name: "getRunGraph" },
   { method: "POST", pattern: /^\/workflows\/validate$/, name: "validateWorkflow" },
@@ -515,6 +530,8 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/triggers\/([^/]+)\/firings$/, name: "listTriggerFirings" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
   { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
+  { method: "POST", pattern: /^\/templates\/import$/, name: "importTemplate" },
+  { method: "DELETE", pattern: /^\/templates\/([^/]+)$/, name: "deleteTemplate" },
   { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
   { method: "POST", pattern: /^\/hooks\/([^/]+)$/, name: "receiveHook" },
@@ -527,12 +544,14 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/promotions$/, name: "listLearningPromotions" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "createLearningBatch" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "listLearningBatches" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)$/, name: "getLearningBatch" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)\/cancel$/, name: "cancelLearningBatch" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "listLearningEvals" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "recordLearningEval" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/loop$/, name: "getLearningLoop" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/notes$/, name: "listLearningNotes" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/log$/, name: "listLearningLog" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "readLearningFile" },
@@ -902,6 +921,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(options.onStoreLost ? { onOwnerLost: options.onStoreLost } : {}),
   }), (error) => onSqlite && error instanceof StoreOwned, replacedUntil, waitingForReplaced);
   stops.push(() => store.close());
+  // The packages served: the bundled ones, read and checked before the start, and those imported here, which the store
+  // keeps and are checked again as they load (template-import.ts). One that no longer checks is left out, said in the log.
+  const registry = new TemplateRegistry(templates);
+  await loadImported({ registry, store }, (id, why) => log?.(logLine("template_import_skipped", { template: id, why })));
   // The person's own computers paired with this server (computer-attach.ts): their live sockets are this process's hub,
   // which the runner beside the server shares (Serve.attachHub), so one process holds them. A second server on this
   // store is refused above (its owner lock).
@@ -952,13 +975,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   toolKeys.view();
   const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
+  mcpServers.standIns = options.mcpStandIns === true;
   // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the run-grant checks read in
   // step (blockersOf's `mcp`, and the template apply): the server is the one writer of these rows (a save, refresh, sign-in
   // or delete), so the snapshot is refreshed after each of those and reads what is saved now. The runner reads the registry,
   // pins and credentials from the store at a run's claim (runner/mcp-claim.ts); this server hands a run no MCP source.
-  let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[] }>();
+  // Each with what it is (its source and toolkit, mcp-sources.ts), which a template's apply maps its MCP needs on.
+  let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[]; source: SourceRecord }>();
   const refreshMcpMeta = async (): Promise<void> => {
-    mcpMeta = new Map((await listMcpServers(store)).map((row) => [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [] }]));
+    mcpMeta = new Map(await Promise.all((await listMcpServers(store)).map(async (row) => [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [], source: await mcpServers.sourceOf(row) }] as const)));
   };
   await refreshMcpMeta();
   // Each saved server's tools in the harnesses' shape (the registry keeps input_schema; a bound tool takes inputSchema),
@@ -1148,6 +1173,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     return { none: `this server has no shell to give an agent now: Archil is off (Settings → Workspace), and the docker box is unavailable here (${why})` };
   };
+  /** Each package's computer list read against this server now, as a listing shows it (`computer_here`): what an apply
+   *  here would pick (pickComputer), the shell asked for once for them all. */
+  const computerHere = async (packages: readonly Package[]) => {
+    const here = packages.some((one) => one.computer) ? await shellHere() : undefined;
+    return (pkg: Package) => {
+      const pick = here && pickComputer(pkg, here);
+      if (!pick) return null;
+      if ("refused" in pick) return { entry: null, computer: null, shell: null, dropped: [], note: pick.refused };
+      return { entry: pick.entry, computer: pick.computer, shell: pick.shell, dropped: pick.dropped, note: pick.note };
+    };
+  };
   const archil = createArchilRoutes({ store, sealKey, env: process.env, ...(options.archilControl ? { control: options.archilControl } : {}) });
   /** Where a run of `revision` has its shell (shellOf): its computer setting as the claim reads it (computer-for-claim.ts
    *  settingOf), else its place's computer, else the place its run would resolve to (fallbackPlace). The agent's tool
@@ -1165,8 +1201,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const agents = {
     get: (id: string) => getAgent(store, id),
     list: (options: { archived?: boolean } = {}) => listAgents(store, options),
-    create: (body: DefinitionBody, check?: (revision: NewRevision) => Promise<void>, fresh?: { place: RevisionPlace; tools: readonly string[] }) =>
-      createAgent(store, body, { ...(check ? { check } : {}), ...(fresh ? { fresh } : {}) }),
+    create: (body: DefinitionBody, check?: (revision: NewRevision) => Promise<void>, fresh?: { place: RevisionPlace; tools: readonly string[] }, template?: TemplatePackage) =>
+      createAgent(store, body, { ...(check ? { check } : {}), ...(fresh ? { fresh } : {}), ...(template ? { template } : {}) }),
     commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean } = {}) => commitAgent(store, entry, body, options),
     revisions: (id: string) => agentRevisions(store, id),
     revision: (agentId: string, revisionId: string) => agentRevision(store, agentId, revisionId),
@@ -1350,7 +1386,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Every round the run kept (a review follow-up opens a round of its own), in order: what each one learned and merged.
       const newest = await store.learning.proposal(runId);
       const ends = await Promise.all(Array.from({ length: newest?.round ?? 1 }, (_, i) => runLearningEnd(store, runId, i + 1)));
-      return figuresOf(await costRunOf(store, run, 0), ends);
+      // A run still going names no path yet (its end writes it): the batch reads it as the agent's until then.
+      return figuresOf((await costRunOf(store, run, 0)) ?? { path: "agent", ...(await allInOf(store, run)) }, ends);
     },
     // A batch's reads are the learning routes' reads: the same cut, the same 403 when a sign-in can't be read here.
     shown: (agentId) => learningShown(agentId),
@@ -1505,6 +1542,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const githubConnection = () => github.view();
   /** What applying a template reads of the server (templates.ts TemplatesDeps). */
   const templateDeps: TemplatesDeps = { githubConnection };
+  // A template import reads GitHub's own hosts alone (a test's faux GitHub in their place), with an installation token of
+  // the App when GitHub is connected (tokenForListing: metadata read, the least there is), else anonymously, and says why.
+  const importDeps: TemplateImportDeps = {
+    registry, store,
+    reach: async (signal) => {
+      const api = options.templateImportApi ?? GITHUB_API;
+      const hosts = options.templateImportApi ? [new URL(options.templateImportApi).host] : GITHUB_HOSTS;
+      const minted = options.templateImportApi ? { unusable: "it reads a test's GitHub" } : await githubConnect.tokenForListing(signal).catch((error: Error) => ({ unusable: error.message }));
+      return "token" in minted ? { api, hosts, token: minted.token } : { api, hosts, anonymous: "unusable" in minted ? minted.unusable : minted.failed };
+    },
+  };
   // A github_app MCP server's tools are listed with an installation token of the App, narrowed to one repository it covers
   // with metadata read (tokenForListing); a run's own is minted in the runner (runner/github-app.ts). Every token minted
   // is a server secret while it may be in use.
@@ -1552,7 +1600,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // not passed; the worker reads them from the store over the port (sealed rows it opens with the seal key among these
         // secrets), the same cut as the CLI's import, where a saved key and the server's own of the same name may differ.
         workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = name === SEAL_KEY_ENV ? seal.text : secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
-        // Started from a string (its launcher runs node --input-type=module -e), the server's flags are given again
+        // Started from a string (node --input-type=module -e, as a test or a `--` command may), the server's flags are given again
         // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
         // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
         // runner's child holds many).
@@ -1837,12 +1885,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
    *  that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision; one that names a
    *  tool the box refuses (browser) keeps the runner. */
-  async function createAgentOf(body: Json): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
+  async function createAgentOf(body: Json, template?: TemplatePackage): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
     let warnings: InputIssue[] = [];
     const definition = checkDefinitionBody(body);
     const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
     const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
-    const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
+    const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined, template);
     return { entry, warnings };
   }
 
@@ -1896,16 +1944,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`; a
    *  github trigger GitHub is not connected for is skipped instead, with a warning there, and one made is said there. A webhook
    *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
-  async function applyTemplate(pkg: Package, body: Json) {
-    const { parameters, grants, model: override, approvals } = applyBodyOf(pkg, body);
-    const missing = pkg.secrets.filter((name) => !secret(name, storedKeys));
-    const saved = pkg.mcp.filter((need) => mcpMeta.has(need.server));
-    const unsaved = pkg.mcp.filter((need) => !saved.includes(need));
+  async function applyTemplate(template: Package, body: Json) {
+    const { parameters, grants: asked, servers: picks, model: override, approvals } = applyBodyOf(template, body);
+    const missing = template.secrets.filter((name) => !secret(name, storedKeys));
+    // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
+    // one: several and no pick is a 422); the package's
+    // tool names, mcp:<toolkit>/<tool>, read as that server's from here on (templates.ts onServers).
+    const mapped = serversFor(template, [...mcpMeta].map(([name, meta]) => ({ name, ...meta.source })), picks);
+    const servers = Object.fromEntries(mapped.flatMap(({ need, server }) => (server ? [[need.toolkit, server]] : [])));
+    const pkg = onServers(template, servers);
+    const saved: McpServed[] = mapped.flatMap(({ need, server }) => (server ? [{ ...need, server }] : []));
+    const unsaved = mapped.filter(({ server }) => !server).map(({ need }) => need);
+    // A grant of a need with no server here grants nothing: dropped before the names move, so it never reads as a tool
+    // of a saved server that happens to be named as its toolkit.
+    const grants = asked.filter((tool) => Object.hasOwn(servers, mcpToolOf(tool)?.server ?? "")).map((tool) => onServerName(tool, servers));
     const needed = unsaved.filter((need) => need.required);
     if (missing.length || needed.length) {
       const fix = "Add it in Settings → Model keys or Settings → Tool keys, or set it where AgentRun starts, then apply the template again.";
-      const server = "Add it in Settings → MCP servers, under that name, then apply the template again.";
-      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server }))] });
+      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `a ${need.source} MCP server of the toolkit ${need.toolkit}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}.`, fix: mcpSetUp(need) }))] });
     }
     // The package's computer list: the first entry this server meets now (templates.ts pickComputer), written as the
     // agent's computer; a fallback, or a shell tool that computer does not run, said under `computer`. A list none of
@@ -1914,7 +1970,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (pick && "refused" in pick) throw new ApiError("agent_not_runnable", pick.refused, { fields: [{ field: "computer", reason: NOT_SET_UP, message: pick.refused, fix: COMPUTER_FIX }] });
     const computerWarnings: InputIssue[] = pick?.note ? [{ field: "computer", reason: pick.entry === "none" ? NOT_SET_UP : "not_an_option", message: pick.note }] : [];
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
-    const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server, so the agent was made without its tools (${need.tools.join(", ")}). Save it in Settings → MCP servers and apply again to grant them.` }));
+    const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}, so the agent was made without its tools (${need.tools.join(", ")}).`, fix: mcpSetUp(need) }));
     const harness = pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
     const picked = override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
     const model = picked.model;
@@ -1938,7 +1994,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
-    const { entry, warnings } = await createAgentOf(made.agent);
+    // The agent keeps where it came from (its first revision's package): the package's id, version and, imported, its SHA.
+    const { entry, warnings } = await createAgentOf(made.agent, { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null });
     const ids: string[] = [];
     // Each webhook trigger's signing secret, minted as it is made: handed back in the apply's first answer alone, as POST
     // /triggers hands back its own, so the owner can give it to the sender.
@@ -1991,7 +2048,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
     // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
-    const applied = { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...appShort] };
+    // Which saved server each MCP need runs on (null: none here, said under mcp.<toolkit>).
+    const used = Object.fromEntries(mapped.map(({ need, server }) => [need.toolkit, server]));
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...appShort] };
     return { applied, minted };
   }
 
@@ -2909,6 +2968,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
       }
+      case "gradeRun": {
+        const row = ID.test(id) ? await store.runs.get(id) : undefined;
+        if (!row) throw new ApiError("not_found", `no run ${id}`);
+        const body = await bodyOf(req);
+        const extra = unknownFields(body, ["correct", "expected", "source"]);
+        if (extra.length) throw invalid(extra);
+        if (typeof body.correct !== "boolean") throw invalid([{ field: "correct", reason: body.correct === undefined ? "missing" : "wrong_type", message: "correct is true or false: whether the run's answer was right" }]);
+        if (body.expected !== undefined && !isObject(body.expected)) throw invalid([{ field: "expected", reason: "wrong_type", message: "expected is an object: the fields a right answer's JSON holds" }]);
+        if (body.source !== undefined && !GRADE_SOURCES.includes(body.source as never)) throw invalid([{ field: "source", reason: "not_an_option", message: `source is one of ${GRADE_SOURCES.join(", ")}` }]);
+        if (!FINAL_STATES.includes(row.state)) throw invalid([{ field: "run_id", reason: "not_allowed", message: "A run is graded once it has ended." }]);
+        const m = (isObject(row.metrics as Json) ? row.metrics : {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown };
+        if (m.path === "replay") throw invalid([{ field: "run_id", reason: "not_allowed", message: "A replay run is never graded: its answer is scored against the run it replays." }]);
+        const path = RUN_PATHS.includes(m.path as never) ? (m.path as Grade["path"]) : "agent";
+        const grade: Grade = {
+          run: row.id, correct: body.correct, ...(body.expected !== undefined ? { expected: body.expected as Record<string, unknown> } : {}), source: (body.source as GradeSource | undefined) ?? "feedback", at: new Date().toISOString(), path,
+          ...(typeof m.workflow === "string" ? { workflow: m.workflow } : {}), ...(typeof m.workflow_digest === "string" ? { digest: m.workflow_digest } : {}),
+        };
+        await putGrade(store.settings, row.agentId, grade);
+        return send(res, 200, gradeView(grade));
+      }
       case "archiveRun":
       case "unarchiveRun": {
         const run = await needRun(id);
@@ -2939,7 +3018,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             return computerViewerLink(store, sealKey, run.id, answers);
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family)),
-          session: (kind) => sessionIn(kind, entries),
+          session: (kind) => sessionIn(kind, entries, run.terminal),
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
@@ -3189,7 +3268,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);
         const body = await bodyOf(req);
-        const answer = await composioSave(body, options.composioControl ?? {}, (mcp) => mcpServers.save(id, mcp, stopping.signal), id, stopping.signal, async () => (await mcpServers.get(id)).url);
+        const answer = await composioSave(body, options.composioControl ?? {}, (mcp, made) => mcpServers.save(id, mcp, stopping.signal, undefined, made), id, stopping.signal, async () => (await mcpServers.get(id)).url);
         await refreshMcpMeta();
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
@@ -3282,6 +3361,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }
         return send(res, 200, { agent: id, ...cost });
       }
+      case "listLearningPromotions": {
+        await needAgent(id);
+        // Each learned workflow's promotion records, oldest first (learn/promote.ts): its replays' numbers and decisions,
+        // its refits, its holds. Aggregates only; every text in them cut as the other learning reads cut theirs
+        // (promotionsShown: a reason and a refit guard's label as well as each workflow's name).
+        return send(res, 200, { agent: id, ...promotionsShown(await promotionsOf(store.settings, id), await learningShown(id)) });
+      }
       case "createLearningBatch": {
         await needAgent(id);
         const made = await batches.create(id, await bodyOf(req));
@@ -3311,6 +3397,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           return { status: 201, body: result };
         });
         return send(res, answer.status, answer.body, answer.headers);
+      }
+      case "getLearningLoop": {
+        await needAgent(id);
+        // The loop's own record over the one store (store-reads/loop.ts): compile turns and guarded steps, aggregates only.
+        // Names cut as the other learning reads cut them; a compile's error texts cut by its run's own cut as its run's
+        // learning read cuts them (run-learning-served.ts), and left out when that run's handed values can't be read.
+        const shown = await learningShown(id);
+        const values = await learningValues(id);
+        const read = await agentLoopOverStore(store, id);
+        const compiles = await Promise.all(read.compiles.map(async (one) => {
+          const cut = await runCutValues({ serverSecrets, signIns }, store, one.run_id).catch(() => "unreadable" as const);
+          const workflow = one.workflow === null ? null : shown.name(one.workflow);
+          if (cut === "unreadable") return { ...one, workflow, from_notes: one.from_notes.map(shown.name), attempts: one.attempts.map(({ ok }) => ({ ok, errors: [] })), draft_errors: [], withheld: true };
+          const all = [...values, ...cut.values];
+          const said = (error: string) => shown.text(printable({ rule: "workflow", detail: error }, all).detail);
+          return { ...one, workflow, from_notes: one.from_notes.map(shown.name), attempts: one.attempts.map(({ ok, errors }) => ({ ok, errors: errors.map(said) })), draft_errors: one.draft_errors.map(said), withheld: false };
+        }));
+        const guards = read.guards.map((one) => ({ ...one, workflow: shown.name(one.workflow), node: shown.text(one.node) }));
+        return send(res, 200, { agent: id, compiles, guards });
       }
       case "listLearningNotes":
       case "listLearningLog":
@@ -3403,23 +3508,31 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listTemplates": {
         // Each package's computer list read against this server now: what an apply here would pick (pickComputer).
-        const here = templates.some((one) => one.computer) ? await shellHere() : undefined;
-        const pickView = (pkg: Package) => {
-          const pick = here && pickComputer(pkg, here);
-          if (!pick) return null;
-          if ("refused" in pick) return { entry: null, computer: null, shell: null, dropped: [], note: pick.refused };
-          return { entry: pick.entry, computer: pick.computer, shell: pick.shell, dropped: pick.dropped, note: pick.note };
-        };
-        return send(res, 200, { templates: templates.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg) })) });
+        const listed = registry.list();
+        const pickView = await computerHere(listed);
+        return send(res, 200, { templates: listed.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg) })) });
       }
+      case "importTemplate": {
+        // Read from GitHub and checked; a dry run answers it (200), else it is stored and served (201). The answer shows the
+        // package whole, its instructions and every skill file, for a person to read before they apply it.
+        const body = await bodyOf(req);
+        const done = new AbortController();
+        res.once("close", () => done.abort());
+        const imported = await importTemplate(importDeps, body, done.signal);
+        const pickView = await computerHere([imported.pkg]);
+        return send(res, imported.status, { template: { ...packageView(imported.pkg), computer_here: pickView(imported.pkg) }, ...(({ instructions, skill_files }) => ({ instructions, skill_files }))(packageDetail(imported.pkg)), publisher_trusted: imported.trusted, stored: imported.status === 201, replaced: imported.replaced, console_url: imported.status === 201 ? templateLink(linkOrigin(req), imported.pkg.id) : templateInstallLink(linkOrigin(req), imported.pkg.origin?.source ?? imported.pkg.id) });
+      }
+      case "deleteTemplate":
+        await deleteTemplate(importDeps, id);
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "applyTemplate": {
-        const pkg = templates.find((t) => t.name === id);
+        const pkg = registry.get(id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         const body = await bodyOf(req);
         // The Idempotency-Key's record keeps the agent and triggers, so a retry under the key gets the same apply; it never
         // keeps a webhook trigger's secret (below).
         let minted = new Map<string, string>();
-        const answer = await idempotent(req, `/templates/${pkg.name}/apply`, body, async () => {
+        const answer = await idempotent(req, `/templates/${encodeURIComponent(pkg.id)}/apply`, body, async () => {
           const made = await applyTemplate(pkg, body);
           minted = made.minted;
           return { status: 201, body: made.applied, headers: { location: `/v2/agents/${made.applied.agent_id}` } };

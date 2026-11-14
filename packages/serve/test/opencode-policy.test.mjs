@@ -5,8 +5,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { test } from "node:test";
 import { modelPortFor } from "@parcha/agentrun-kernel";
-import { startModelProxy } from "@parcha/agentrun-kernel/host";
-import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
+import { responsesEscapedBytes, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { inputTokensMaxOf, memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { BODY_KEYS, openCodePolicy, usageOf } from "../dist/harness-opencode/host/policy.js";
 
 const policy = (extra = {}) => openCodePolicy({ model: "gpt-test", tools: ["read", "write"], ...extra });
@@ -126,7 +126,12 @@ test("under a spend cap, the body sent is never longer than the one its input bo
   const answer = await send(p.url, RECORDED_HIGH);
   assert.equal(answer.status, 200, answer.text);
   const measured = asked[0].inputTokensMax;
-  assert.ok(typeof measured === "number" && Buffer.byteLength(sent[0], "utf8") <= measured, `${Buffer.byteLength(sent[0] ?? "", "utf8")} bytes sent, ${measured} measured`);
+  // The bound of the body as it went (its bytes less the escapes of the text it carries) is never above the bound it was
+  // admitted on: limiting its output never made it longer.
+  const went = JSON.parse(sent[0]);
+  const bound = inputTokensMaxOf(openCodePolicy({ model: RECORDED_HIGH.model, tools: toolsOf(RECORDED_HIGH) }), went, sent[0]);
+  assert.ok(typeof measured === "number" && bound <= measured, `${bound} sent, ${measured} measured`);
+  assert.ok(Buffer.byteLength(sent[0], "utf8") <= measured + responsesEscapedBytes(went), "nor its bytes");
 });
 
 test("the host is told what a request asks for and the least it may be limited to: 1,024 tokens for the answer, plus its reasoning effort's allowance", async (t) => {

@@ -75,7 +75,7 @@ export type TimelineEvent = {
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
-export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown };
+export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown; /** A call the loop's record kept, shaped as a model's answer (store-reads/journal.ts piShaped): shown as one, never a model request. */ recordedCall?: true };
 /** A pi `AgentEvent`, as `watchEvents` yields it and `GET /events` serves it. */
 export type AgentEventLike = { type: string; [key: string]: unknown };
 
@@ -339,10 +339,13 @@ function createMeter() {
   };
   const models = new Map<string, number>();
 
-  function push(entry: EntryLike): "answer" | "continued" | "refusal" | "mark" | "charge" | "unmetered" | undefined {
+  function push(entry: EntryLike): "answer" | "call" | "continued" | "refusal" | "mark" | "charge" | "unmetered" | undefined {
     const message = entry.model?.[0];
     const data = obj(entry.data);
-    if (entry.kind === REQUEST_REFUSED) {
+    if (entry.kind === "pi.assistant" && entry.recordedCall && message) {
+      // A call the loop's record kept (a CLI's, or one a tool of pi's nested): shown as an answer's call, never a request.
+      return "call";
+    } else if (entry.kind === REQUEST_REFUSED) {
       refused += 1;
     } else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") {
       // pi's answer to a request that never left: nothing to count or show.
@@ -758,12 +761,17 @@ function createProjector(options: TimelineOptions) {
       const data = obj(entry.data);
       const tool = str(data?.tool) ?? "a tool";
       add(make("phase", conv, base, { summary: `Not metered: ${tool} has no price set, so it is outside the run's cost`, tool_name: tool, tool_use_id: str(data?.call) ?? null }));
-    } else if ((metered === "answer" || metered === "continued") && message) {
+    } else if ((metered === "answer" || metered === "call" || metered === "continued") && message) {
       const round = metered === "continued" && answers.has(conv) ? answers.get(conv) : entry.id;
-      if (metered === "answer") answers.set(conv, entry.id);
+      if (metered !== "continued") answers.set(conv, entry.id);
       if (message.stopReason === "error") {
         const why = redactedWhy(str(message.errorMessage) ?? "unknown error");
-        add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}`, text: why }));
+        // One with no price of its own (a provider's refusal sends none) is a cost unknown, never $0: the provider may
+        // still bill it (run-adapters answeredUnpriced). Its row says so, as the usage row counts it "not priced".
+        const priced = Number.isFinite(obj(obj(message.usage)?.cost)?.total);
+        // The note is ours, so it stays whole: only the provider's words give way when the summary's cap (make) would cut it.
+        const [head, note] = ["Model request failed: ", priced ? "" : UNPRICED_FAILURE];
+        add(make("error", conv, base, { summary: `${head}${cut(firstLine(why), Math.max(0, caps.summary - head.length - note.length))}${note}`, text: why }));
       } else if (message.stopReason !== "aborted") {
         const blocks = blocksOf(message);
         const settled = provisional.get(conv);
@@ -983,7 +991,7 @@ function createProjector(options: TimelineOptions) {
     const counted = meter.usage(options.settled === true || nothingInFlight);
     if (!counted || root === undefined) return undefined;
     const { usd, requests, charges, so_far_usd, unpriced, not_metered } = counted;
-    const paid = `${charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : ""}${not_metered ? `; ${not_metered} tool call${not_metered === 1 ? "" : "s"} not metered` : ""}`;
+    const paid = toolCallWords(charges, not_metered);
     const spent = usd !== null ? dollars(usd) : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
       // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
@@ -1010,6 +1018,12 @@ function createProjector(options: TimelineOptions) {
 export const COST_SO_FAR = "Cost so far";
 export const COST_ENDED = "Cost";
 export const costLabel = (ended: boolean): string => (ended ? COST_ENDED : COST_SO_FAR);
+/** What a failed model request's row adds when no price came back for it. */
+const UNPRICED_FAILURE = " (its cost is unknown: the provider sent no price and may still bill it)";
+/** The usage row's words after its model requests: its paid tool calls (`charges`) and its tool calls with no price
+ *  (`notMetered`), each said only when there is one, the same on every harness (store-reads/journal.ts bookedUsage). */
+export const toolCallWords = (charges: number, notMetered = 0): string =>
+  `${charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : ""}${notMetered ? `; ${notMetered} tool call${notMetered === 1 ? "" : "s"} not metered` : ""}`;
 /** `row` as an ended run's: a usage row made while it ran ("Cost so far: …") says its cost ("Cost: …"); any other row as
  *  it is. For a host that keeps rows read before the run ended. */
 export function endedUsage<T extends { kind: string; summary?: string | null }>(row: T): T {
@@ -1080,7 +1094,7 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
     }
     const message = entry.model?.[0];
     const metered = meter.push(entry);
-    if ((metered === "answer" || metered === "continued") && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
+    if ((metered === "answer" || metered === "call" || metered === "continued") && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
       for (const block of blocksOf(message)) {
         const [id, name] = [str(block.id), str(block.name)];
         if (block.type !== "toolCall" || !id || !name) continue;

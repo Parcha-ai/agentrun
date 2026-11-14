@@ -65,7 +65,8 @@ import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { bookedSpend, cliModelWorked, cliRunMetrics, runEndCost } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
-import { pathMetrics, workflowFirstOf } from "./workflow-first.js";
+import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid } from "./promotion.js";
+import { laidFor, pathMetrics, workflowFirstOf } from "./workflow-first.js";
 import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -387,13 +388,15 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });
   // A learning run's seed laid as the pi spec lays it (runner/learning-seed.ts), its learned skills then in the skill list
   // the harness is handed (its native skills, or the prompt's), its learned workflows the ones learned_workflow runs.
+  const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
+  const learningFolder = () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil }));
   const seedLaid = start && !seedFailed(start)
     ? await layLearningSeed({
       work: ws.workspace,
       seed: start.seed,
-      folder: () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil })),
+      folder: learningFolder,
       own: Object.keys(revisionRow.skills ?? {}),
-      shown: async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true }),
+      shown,
       log,
       ...(start.notesOnly ? { workflows: false as const } : {}),
       ...(start.notesLeftOut?.length ? { notesLeftOut: start.notesLeftOut } : {}),
@@ -527,7 +530,23 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The keys the claim hands the run (its web tools and its learned workflow's call nodes run on them): never learned
   // (learningEndOfRun).
   let handedKeys: string[] = [];
-  const workflows = seedLaid?.workflows ?? [];
+  // A replay run lays the workflow it replays record-only (runner/promotion.ts replayLaid).
+  const laidFlows = replayLaid(launch, seedLaid?.workflows ?? []);
+  // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts),
+  // chosen before the learned_workflow tool is bound, so the tool runs the text that serves. Only a promoted digest
+  // serves (runner/promotion.ts: replayed on the agent's graded inputs first, or promoted on its dry run with fewer than
+  // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
+  // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
+  const firstChoice = learnsWorkflows(revision.kind, laidFlows) ? await workflowFirstOf(revision.kind, laidFlows, launch, log, () => pastRunsOverStore(deps.store, runRow.agentId), promotionGate(claimPromotion({
+    store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey,
+  })), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
+  // A replay run runs only its revision, while it still replays: else its claim is refused (the run ends failed, no agent).
+  await replayClaimed(deps.store, runRow.agentId, launch, firstChoice);
+  // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
+  // answered from that recording (runner/promotion.ts replayCallsFor, learn/replay-calls.ts).
+  const replay = await replayCallsFor(deps.store, claim.runId, launch, context);
+  const { serve: workflowFirst, revise: workflowRevise } = firstChoice;
+  const workflows = laidFor(laidFlows, firstChoice);
   const learns = learnsWorkflows(revision.kind, workflows);
   if (webNames.length || learns) {
     // The claim's keys (above, already held by the redactors), a copy of its own for the tools' plane below.
@@ -569,16 +588,13 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate); they run through the run's
       // own MCP as the loop wraps it. Its model nodes run on the session's one model: what each node's trace says it ran on.
       gate.learn(workflows);
-      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}), workspace: ws.workspace, modelName: () => chosen.model.modelId });
+      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}), workspace: ws.workspace, modelName: () => chosen.model.modelId, ...(replay ? { replay } : {}) });
     }
   }
   // ask_person, when granted: pi's own tool (tools.ts askPerson), bound as a host tool the way the web tools are. Its call
   // answers what pi's does; the loop then cuts the CLI's turn at the question (adapter-loop.ts, turn-ending host tools),
   // so the run parks on the person or waits for them in its claim exactly as a pi run does.
   const askTool = granted.includes(ASK_TOOL) ? hostToolOf(ASK_TOOL, askPerson as never, ctx) : undefined;
-  // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts).
-  // Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
-  const { serve: workflowFirst, revise: workflowRevise } = learnedTool ? await workflowFirstOf(revision.kind, workflows, launch, log, () => pastRunsOverStore(deps.store, runRow.agentId), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
@@ -596,7 +612,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's end-of-run step, when it learns, the same as the pi spec's: the reflect-and-propose turn over the run's
   // store, its learning folder where the run's place keeps it — Mode 1 under the data directory, Mode 2 on this claim's
   // Archil disk — so the proposal is checked against the seed in the run's own Workspace, never this machine's local path.
-  const endOfRun = learningEndOfRun(launch, {
+  // A replay run asks nothing at its end: it is the promotion's, never the agent's to learn from.
+  const endOfRun = launch.replay ? undefined : learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -606,6 +623,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     signIns: signInReads(deps.store, deps.sealKey),
     handed: handedKeys,
     stored: () => storeSecrets(deps.store, deps.sealKey, deps.data),
+    log,
     // A workflow draft's decision nodes are checked against the host's decision providers, on its keys (LS-07).
     decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, DECISION_PROVIDER_KEYS)) }),
     learningFolder: archil === undefined

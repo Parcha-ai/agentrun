@@ -3,8 +3,11 @@
 // once at the run's start. A spec builder gives the adapter loop `endOfRun: learningEndOfRun(launch, deps)`. Each of the
 // hook's reads is the server's own rule, over the store in place of the run's directory:
 //   - whether it looks back (learning-run.ts reflectSkip): its cap and its spend so far, read as its view reads them;
-//   - its prompt's facts: how many notes its seed held (launch seedNotes), the tools a workflow draft may name
-//     (learning-run.ts draftTools), and the learned skill whose job it asks for as a workflow draft (draftForOf);
+//   - its prompt's facts: how many notes its seed held (launch seedNotes);
+//   - the compile turn's facts (compileAskOf, learn/compile.ts): whether the job is due to be compiled (its notes, its
+//     completed runs, no learned workflow yet), or a workflow that handed the run back or that the money rule stopped
+//     wants a revision; its notes whole, its last runs' traces, the tools a workflow may name (draftTools) and the DSL's
+//     own language for writing one;
 //   - what the person said in the run and a trigger's input (heard.ts Hearing over its entries, the end-of-run turn's
 //     own left out), as learning-run.ts turnOf reads them;
 //   - whether the job gave nothing new to look back on (onlyLearnedWorkflows over its timeline): a run whose only tool
@@ -25,26 +28,27 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { Hearing } from "../heard.js";
-import { type LearningFolder, readSnapshot } from "../learn/folder.js";
-import { DRAFT_AFTER_RUNS } from "../learn/reflect.js";
-import { type DraftDecisions, SKILL_NAME } from "../learn/skills.js";
+import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
+import { type CompileAsk, type CompileTrace, compileDue, compilePrompt, compileReference,COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
+import { type PromotionRecord, promotionOf, promotionsOf } from "../learn/promote.js";
+import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
-import { MIN_SECRET } from "../learn/secrets.js";
+import { MIN_SECRET, redactSecrets } from "../learn/secrets.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
-import { LEARNING_LABEL, PROPOSAL } from "../learning.js";
+import { holdsSecret, LEARNING_LABEL, PROPOSAL, secretsShown } from "../learning.js";
 import type { RunPath } from "../learning-cost.js";
 import { reflects, type Reflect } from "../reflect-range.js";
 import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
-import { type McpServerRow, type Store } from "../store/store.js";
+import type { LearningProposal, McpServerRow, Store } from "../store/store.js";
 import { getMcpServer, listMcpServers } from "../mcp-store.js";
 import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
-import { reviseOf, servedOf } from "./workflow-first.js";
+import { fits, reviseOf, servedOf, workflowDigest } from "./workflow-first.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectDeps, type ReflectTurn } from "./reflect-hook.js";
 import { runnerSecrets } from "./redact.js";
@@ -74,6 +78,8 @@ export interface LearningEndDeps {
    *  hostDecisionKeys), host-side, never handed to the run. Read once per check; none: a draft with a decision node is
    *  refused. */
   readonly decisionProviders?: () => Promise<{ readonly providers: Readonly<Record<string, unknown>>; readonly default: string } | undefined>;
+  /** The runner's log: what the compile turn left out for holding a secret, by name and count, never a value. */
+  readonly log?: (line: string) => void;
 }
 
 /** The end-of-run step for a run launched with `launch`: undefined when its launch records no learning start (a run that
@@ -101,24 +107,9 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       return { learns: true, costUsd, capUsd, capReached: costUsd !== null && (beside === null || costUsd + beside >= capUsd) };
     },
     nothingNew: async (runId) => onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
-    // A draft asked for or not never stops the turn: a count that can't be read asks for none.
-    promptFacts: async (runId, agentId) => {
-      const { tools, decisions } = await draftTools(deps, runId);
-      // A notes run (`learning: "notes"`) is asked for no workflow draft, and its prompt describes none.
-      const draftFor = start.notesOnly ? [] : await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []);
-      // With a draft asked for, what each tool its call nodes may run takes and gives, in the server's own words.
-      const described = draftFor.length ? await describedOf(tools, deps.store) : [];
-      // A run its learned workflow handed back (workflow-first.ts): the prompt asks for that workflow's next revision, by
-      // its name alone. A deopt is the signal the next revision learns from, never a failure that keeps it from learning.
-      // A run whose learned workflow the money rule stopped from running first: the prompt asks for its revision, with the
-      // two numbers that stopped it.
-      const entries = start.notesOnly ? [] : await runEntries(deps.store, runId, BACKGROUND_CONTEXT).catch(() => []);
-      const served = servedOf(entries);
-      const handedBack = served?.outcome === "handed_back" ? served.workflow : undefined;
-      const stopped = reviseOf(entries);
-      const revise = stopped ? { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } : undefined;
-      return { active: start.seedNotes ?? start.given.length, tools, draftFor, described, ...(decisions ? { decisions } : {}), ...(start.notesOnly ? { workflows: false as const } : {}), ...(handedBack ? { handedBack } : {}), ...(revise ? { revise } : {}) };
-    },
+    promptFacts: async () => ({ active: start.seedNotes ?? start.given.length }),
+    // A notes run (`learning: "notes"`) compiles nothing.
+    ...(start.notesOnly ? {} : { compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => compileAskOf(deps, { ...input, input: launch.input, ...(start.seedNotes !== undefined ? { seedNotes: start.seedNotes } : {}), seedWorkflows: start.workflows?.length ?? 0 }) }),
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
       const hearing = new Hearing();
@@ -313,59 +304,184 @@ async function describedOf(tools: readonly string[], store: Pick<Store, "mcp">):
   return out;
 }
 
-/** How many of an agent's latest runs draftForOf reads at most: a skill offered to fewer than DRAFT_AFTER_RUNS of them is
- *  no repeated job. */
-export const DRAFT_SCAN_RUNS = 200;
+/** The most of an agent's kept learning, newest first, read for a held workflow's ask since its hold (compileAskOf). */
+const HELD_ASKED_READ = 200;
 
-/** The learned skill whose job the end-of-run turn asks for as a workflow draft: of the skills run `runId` was offered
- *  (its launch's learning start), the first in the seed's order (the one changed last first) offered to DRAFT_AFTER_RUNS
- *  or more runs of agent `agentId` started before it (each run's launch says what it was offered; its latest
- *  DRAFT_SCAN_RUNS runs are read newest first, those after `runId` in that order counted, only until every skill has its
- *  count), with no learned workflow of its name on the agent's main, active or waiting for
- *  its owner's OK (the folder's snapshot). One at most: a turn keeps one workflow draft. None when no skill qualifies, or
- *  when the folder can't be read: a read that fails asks for nothing, never a draft that may be there already. */
-export async function draftForOf(deps: Pick<LearningEndDeps, "store" | "learningFolder">, agentId: string, runId: string, offered: readonly string[]): Promise<string[]> {
-  // Only a skill's name reaches the prompt (reflectPrompt refuses anything else).
-  const served = new Map(offered.filter((name) => SKILL_NAME.test(name)).map((name) => [name, 0]));
-  if (!served.size) return [];
-  // The list is newest first: only the runs after the ending one in it started before it, and count. A run started
-  // later (a long job's newer runs) never does, and an ending run past the latest DRAFT_SCAN_RUNS + 1 counts none.
-  let earlier = false;
-  for (const run of await deps.store.runs.list({ agentId, limit: DRAFT_SCAN_RUNS + 1 })) {
-    if (run.id === runId) {
-      earlier = true;
-      continue;
-    }
-    if (!earlier || run.agentId !== agentId) continue;
-    const row = await deps.store.runs.launch(run.id).catch(() => undefined);
-    const launch = row ? readLaunchBody(row.body) : undefined;
-    for (const name of (launch && learningStartOf(launch)?.skills) ?? []) if (served.has(name)) served.set(name, served.get(name)! + 1);
-    // Enough runs read once every skill has served its count.
-    if ([...served.values()].every((count) => count >= DRAFT_AFTER_RUNS)) break;
+/** Whether a store run ended completed (its state `ended`, a plain completion). */
+const completedRun = (run: { readonly state: string; readonly outcome: string | null }) => run.state === "ended" && (run.outcome === null || run.outcome === "completed");
+/** The most tool calls of one run a trace keeps, and the most of a call's input or a message it holds, in characters. */
+const TRACE_CALLS = 20;
+const TRACE_TEXT = 600;
+
+/** One earlier run as the compile turn reads it (learn/compile.ts CompileTrace), from its timeline (traceFrom). */
+export async function traceOf(store: Store, runId: string, refuse: readonly string[]): Promise<CompileTrace> {
+  return traceFrom(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false }), refuse);
+}
+
+/** A run's trace from its timeline rows, the end-of-run turn's (LEARNING_LABEL) left out: its first message (the
+ *  person's, or a trigger's firing: what it was asked), each tool call its job made at the top level, its answer, and
+ *  each message the person sent after the first (`user_message`: their feedback), never the server's words (an
+ *  approval's resume, which can carry a call's result, a raised cap's follow-up, a hand-back) or a trigger's; every text
+ *  cut of `refuse` and every secret's shape. */
+export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly string[]): CompileTrace {
+  const rows = timeline.filter((row) => row.agent_label !== LEARNING_LABEL);
+  const cut = (text: string | null | undefined) => redactSecrets(String(text ?? ""), refuse, Number.POSITIVE_INFINITY).replace(/\s+/g, " ").trim().slice(0, TRACE_TEXT);
+  const messages = rows.filter(isMessageRow);
+  const failed = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_status === "failed").map((row) => row.tool_use_id));
+  const calls = rows.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id).slice(0, TRACE_CALLS).map((row) => ({ tool: cut(row.tool_name), input: cut(row.tool_input_preview), ...(failed.has(row.tool_use_id) ? { failed: true as const } : {}) }));
+  const answer = rows.findLast((row) => row.kind === "final_answer")?.text;
+  const first = messages[0];
+  return { input: first ? cut(first.text ?? first.summary) : "", calls, answer: cut(answer), feedback: messages.slice(1).filter((row) => row.kind === "user_message").map((row) => cut(row.text ?? row.summary)) };
+}
+
+/** The compile turn's facts for run `runId` of agent `agentId` (learn/compile.ts): a revision of the learned workflow
+ *  that handed the run back or that the money rule stopped (workflow-first.ts servedOf, reviseOf), its text as main holds
+ *  it; or of the one that fits the run's input and whose promotion holds it at main's digest (runner/promotion.ts: its
+ *  replay on the agent's graded inputs, or its graded served runs, fell under the bar; its champion served the run, or the
+ *  agent did by hand), with the
+ *  hold's numbers, once per hold (none when any run since the hold compiled it, read from the agent's kept learning); else, when the job is due (compileDue: the run completed, the agent has no learned workflow active or waiting, none
+ *  of its last COMPILE_QUIET_RUNS runs compiled, and it keeps enough notes or has run enough), a new one. Either way the
+ *  agent's active notes whole, the traces of its last COMPILE_TRACES completed runs before this one, the tools a call node
+ *  may run (draftTools) with what each takes and gives, its decision providers, the run's input (`input`, its fields for
+ *  the workflow's input schema), the agent's output schema when it has one (its final output's shape) and the DSL's
+ *  language with this host's addendum. Undefined when it compiles nothing, or
+ *  when the folder can't be read. */
+export async function compileAskOf(deps: LearningEndDeps, input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; input?: unknown; seedNotes?: number; seedWorkflows?: number }): Promise<CompileAsk | undefined> {
+  const entries = await runEntries(deps.store, input.runId, BACKGROUND_CONTEXT).catch(() => []);
+  const served = servedOf(entries);
+  const stopped = reviseOf(entries);
+  let revising = served?.outcome === "handed_back" ? served.workflow : stopped?.workflow;
+  // The workflows whose newest revision other than their champion (learn/promote.ts championOf: it serves while that one
+  // is held) is held: the run's own may be one (its champion served it, or it went by hand).
+  const records: PromotionRecord[] = revising ? [] : await promotionsOf(deps.store.settings, input.agentId).catch(() => []);
+  const heldNames = heldNamesOf(records);
+  // The agent's latest runs, newest first: those after the ending one in the list started before it.
+  const listed = await deps.store.runs.list({ agentId: input.agentId, limit: 200 });
+  const at = listed.findIndex((run) => run.id === input.runId);
+  const earlier = (at < 0 ? listed : listed.slice(at + 1)).filter((run) => run.agentId === input.agentId);
+  const done = earlier.filter(completedRun);
+  let compiledLately = false;
+  const dueWith = (notes: number, workflows: number) => compileDue({ completed: input.outcome === "completed", notes, runs: Math.min(done.length, COMPILE_AFTER_RUNS) + (input.outcome === "completed" ? 1 : 0), workflows, compiledLately });
+  const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown } } | null | undefined)?.compiled;
+  // Every learning round a run kept: its newest, and each before it (a follow-up opened the run again after it).
+  const roundsOf = async (runId: string): Promise<(LearningProposal | undefined)[]> => {
+    const newest = await deps.store.learning.proposal(runId).catch(() => undefined);
+    if (!newest) return [];
+    return [newest, ...(await Promise.all(Array.from({ length: Math.max(0, newest.round - 1) }, (_, i) => deps.store.learning.proposal(runId, i + 1).catch(() => undefined))))];
+  };
+  if (!revising) {
+    // A compile in any learning round of the agent's last runs (a draft still waiting for its grade, or one that failed)
+    // asks none now: a follow-up's round keeps no compile of its own, so a run's earlier rounds are read too.
+    const lately = (await Promise.all(earlier.slice(0, COMPILE_QUIET_RUNS).map((run) => roundsOf(run.id)))).flat();
+    compiledLately = lately.some((kept) => compiledOf(kept) !== undefined);
+    // First by what the run started from (its seed's notes and the workflows it was offered): a run not due by them
+    // opens no folder, unless one of its workflows is held. Main is read below for the turn itself, and decides again.
+    if (!heldNames.size && !dueWith(input.seedNotes ?? 0, input.seedWorkflows ?? 0)) return undefined;
   }
-  const due = [...served].filter(([, count]) => count >= DRAFT_AFTER_RUNS);
-  if (!due.length) return [];
-  let drafted: Set<string>;
-  const folder = deps.learningFolder(agentId);
+  const dsl = await import("@parcha/agentrun-dsl");
+  // Every text the turn is told passes the check a run's start makes (learning.ts holdsSecret, as chooseWorkflows reads a
+  // learned workflow) over what the run must never learn (`refuse`): one that holds a secret is left out whole, never sent
+  // cut, and logged by name and count only. A workflow the start left out is never revised from its text either.
+  const shown = secretsShown(input.refuse);
+  const holds = (value: unknown) => holdsSecret(typeof value === "string" ? value : (JSON.stringify(value) ?? ""), shown);
+  const leftOut = { workflows: new Set<string>(), notes: 0, traces: 0, input: false };
+  const folder = deps.learningFolder(input.agentId);
+  let read: { notes: { file: string; text: string }[]; workflows: number; current?: string; held?: PromotionRecord };
   try {
-    const snapshot = await readSnapshot(folder.workspace);
-    drafted = new Set((snapshot?.workflows ?? []).filter(({ status }) => status === "active" || status === "pending").map(({ name }) => name));
+    read = await readLearning(folder.workspace, async ({ snapshot, body }) => {
+      const workflows = (snapshot?.workflows ?? []).filter(({ status }) => status === "active" || status === "pending");
+      const textOf = async (name: string) => {
+        const file = workflows.find((one) => one.name === name)?.files.find(({ path }) => path.endsWith("/workflow.json"));
+        const text = file ? await body(file.path, file.oid) : undefined;
+        if (text === undefined || !(holds(name) || holds(text))) return text;
+        leftOut.workflows.add(shown.name(name));
+        return undefined;
+      };
+      let current = revising ? await textOf(revising) : undefined;
+      let held: PromotionRecord | undefined;
+      if (!revising && heldNames.size) {
+        // The one active workflow that fits the run's input (the one workflow-first would serve), held at main's digest.
+        const active: { name: string; workflow: string }[] = [];
+        for (const one of workflows) if (one.status === "active") { const text = await textOf(one.name); if (text !== undefined) active.push({ name: one.name, workflow: text }); }
+        const fitting = active.filter((one) => fits(one as never, input.input, dsl.resolveSchemaForWorkflow as never));
+        const record = fitting.length === 1 ? promotionOf(records, fitting[0]!.name, workflowDigest(fitting[0]!)) : undefined;
+        if (record?.decided === "hold") [held, current] = [record, fitting[0]!.workflow];
+      }
+      // An agent with a learned workflow compiles nothing new: its notes' text is not read.
+      if (!revising && !held && workflows.length) return { notes: [], workflows: workflows.length };
+      const notes: { file: string; text: string }[] = [];
+      for (const note of snapshot?.notes ?? []) {
+        if (note.status !== "active") continue;
+        const text = await body(note.file, note.oid);
+        if (holds(note.file) || holds(text)) leftOut.notes += 1;
+        else notes.push({ file: note.file, text });
+      }
+      return { notes, workflows: workflows.length, ...(current !== undefined ? { current } : {}), ...(held ? { held } : {}) };
+    });
   } catch {
-    return [];
+    return undefined;
   } finally {
     await folder.end().catch(() => undefined);
   }
-  const open = due.find(([name]) => !drafted.has(name));
-  return open ? [open[0]] : [];
+  // What it left out, by name and count: said once the facts are gathered, or now when it asks nothing.
+  const sayLeftOut = () => {
+    const parts = [...[...leftOut.workflows].map((name) => `workflow \`${name}\``), ...(leftOut.notes ? [`${leftOut.notes} note${leftOut.notes === 1 ? "" : "s"}`] : []), ...(leftOut.traces ? [`${leftOut.traces} earlier run${leftOut.traces === 1 ? "" : "s"}`] : []), ...(leftOut.input ? ["the run's input"] : [])];
+    if (parts.length) deps.log?.(`learning: run ${input.runId}: the compile turn left out what holds a secret: ${parts.join(", ")}`);
+  };
+  // A revision of a workflow main no longer holds (a person retired it), or whose text holds a secret, asks for none.
+  if (revising && read.current === undefined) return sayLeftOut(), undefined;
+  let held: HeldAsk | undefined;
+  if (read.held) {
+    // Once per hold: a run since it that compiled this workflow asked already, whatever came of it (its revision is on its
+    // way to a replay, its draft failed its checks, or the grader dropped it), however many runs ago. Read from the
+    // agent's kept learning since the hold, never a window of its last runs; one that can't be read asks nothing.
+    const since = Date.parse(read.held.at);
+    const kept = await deps.store.learning.proposals(input.agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
+    if (!kept || kept.some((one) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow)) return sayLeftOut(), undefined;
+    const { workflow, digest, source, reason, replay } = read.held;
+    held = { workflow, digest, source, reason, ...(replay ? { replay: { n: replay.n, agree: replay.agree, agent_acc: replay.agent_acc, wf_acc: replay.wf_acc, delta: replay.delta, handed_back: replay.handed_back } } : {}) };
+    revising = workflow;
+  }
+  if (!revising && !dueWith(read.notes.length, read.workflows)) return sayLeftOut(), undefined;
+  // An earlier run's trace is cut of each value it held (traceFrom); one that still holds a secret (a value in a call's
+  // input spelled in JSON escapes, a shape the cut does not take) is left out whole.
+  const traces = (await Promise.all(done.slice(0, COMPILE_TRACES).reverse().map((run) => traceOf(deps.store, run.id, input.refuse).catch(() => undefined)))).filter((one): one is CompileTrace => {
+    if (one === undefined) return false;
+    if (!holds(one)) return true;
+    leftOut.traces += 1;
+    return false;
+  });
+  const { tools, decisions, outputSchema } = await draftTools(deps, input.runId);
+  const allowed = draftDecisionProviders(decisions);
+  const judges = allowed.length > 0;
+  // Jev by default: a run that can call Jev (a decision provider its gate does not deny) asks every step for a guard it reads.
+  const jev = allowed.includes("jev");
+  const described = await describedOf(tools, deps.store);
+  const object = input.input !== null && typeof input.input === "object" && !Array.isArray(input.input);
+  leftOut.input = object && holds(input.input);
+  const fields = object && !leftOut.input ? { input: input.input as Record<string, unknown> } : {};
+  const base = { reference: compileReference(dsl, { tools, judges, jev }), notes: read.notes, traces, tools, described, judges, jev, ...fields, ...(outputSchema !== undefined ? { outputSchema } : {}) };
+  const ask: CompileAsk = !revising ? { mode: "new", ...base } : { mode: "revise", workflow: revising, current: read.current!, ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : held ? { held } : {}), ...base };
+  sayLeftOut();
+  // Last, the prompt itself, whatever it is told now or later (a tool's description, the agent's output schema): one that
+  // still holds a secret asks nothing.
+  if (holds(compilePrompt(ask))) {
+    deps.log?.(`learning: run ${input.runId}: the compile turn asked nothing: its prompt holds a secret`);
+    return undefined;
+  }
+  return ask;
 }
 
 /** The tools a workflow draft may name (learning-run.ts draftTools): the revision's own, as its run's gate reads them
  *  with the server's settings (from the store) and the agent's; none for a workflow revision. */
-async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; asked: string[]; decisions?: DraftDecisions }> {
+async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; asked: string[]; decisions?: DraftDecisions; outputSchema?: unknown }> {
   const run = await deps.store.runs.get(runId);
   const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
   if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {}, asked: [] };
-  const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
+  const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string; outputSchema?: unknown };
+  // The agent's output schema, which a learned workflow's answer is served shaped to (answer-json.ts answerAsServed): the
+  // compile turn is told it and a draft's dry run holds its answer to it.
+  const shaped = body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {};
   const [{ learnedDraftTools, mcpGrantsListed }, { permissionFrom }, { loadToolSettings }] = await Promise.all([import("../tools.js"), import("../tool-gate.js"), import("../tool-plane.js")]);
   // The server's settings from the one store, as the run's gate reads them: a stored row that does not read carries
   // SETTINGS_UNREAD, which permissionFrom honours (no ask is lifted over a deny the row may hold).
@@ -380,7 +496,7 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
   // A draft's decision nodes (LS-07): the host's decision providers, each held to the gate by its bare id as the run's
   // gate holds it (tool-plane.ts DECISION_PROVIDER_KEYS); deny alone refuses one.
   const providers = await deps.decisionProviders?.();
-  if (!providers) return { tools, gated, deniedBy, asked };
+  if (!providers) return { tools, gated, deniedBy, asked, ...shaped };
   const decided: Record<string, string> = {};
   const decisionDeniedBy: Record<string, "agent" | "server" | "default"> = {};
   for (const id of DECISION_PROVIDER_KEYS) {
@@ -389,7 +505,7 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
     decided[id] = permission;
     if (permission === "deny") decisionDeniedBy[id] = from as "agent" | "server" | "default";
   }
-  return { tools, gated, deniedBy, asked, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy } };
+  return { tools, gated, deniedBy, asked, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy }, ...shaped };
 }
 
 /** The commit main of the agent's learning folder is at now; none for a folder with no main yet. */
@@ -407,14 +523,14 @@ async function mainOf(deps: LearningEndDeps, agentId: string): Promise<string | 
 async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId: string; seed: string; notesSeed?: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[]; workflows?: false }): Promise<Checked> {
   const runDir = await mkdtemp(join(tmpdir(), "agentrun-learning-end-"));
   try {
-    const { tools, gated, deniedBy, asked, decisions } = await draftTools(deps, input.runId);
+    const { tools, gated, deniedBy, asked, decisions, outputSchema } = await draftTools(deps, input.runId);
     // #2424's card rule (learnedAskFits): a draft whose ask-set MCP tools would not all show on its approval card is refused.
     const { learnedAskFits } = await import("../learned-workflow.js");
     const turn = { answer: input.turn.answer, asked: [...input.turn.asked], ...(input.turn.triggered?.length ? { triggered: input.turn.triggered.map((one) => ({ ...one })) } : {}) };
     const folder = deps.learningFolder(input.agentId);
     let proposed;
     try {
-      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, ...(input.notesSeed ? { notesSeed: input.notesSeed } : {}), turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ask: { asked, fits: learnedAskFits }, ...(decisions ? { decisions } : {}), ...(input.workflows === false ? { workflows: false as const } : {}) });
+      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, ...(input.notesSeed ? { notesSeed: input.notesSeed } : {}), turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ask: { asked, fits: learnedAskFits }, ...(decisions ? { decisions } : {}), ...(input.workflows === false ? { workflows: false as const } : {}), ...(outputSchema !== undefined ? { outputSchema } : {}) });
     } finally {
       await folder.end();
     }

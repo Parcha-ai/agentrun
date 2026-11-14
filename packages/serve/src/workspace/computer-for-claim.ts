@@ -174,10 +174,20 @@ const unavailable = (words: string): Error => Object.assign(new Error(words), { 
 const claimLost = (words: string): Error => Object.assign(new Error(words), { code: "claim_lost" });
 const noop = async (): Promise<void> => {};
 
-/** The agent's computer setting: the launch's, else its revision's (computer, else place), else the launch's place. */
 /** A claim's create request: the run and its claim epoch, so a retry of the claim's create finds the computer it made. */
 const claimRequestId = (claim: { readonly runId: string; readonly epoch: number }) => `${claim.runId}#${claim.epoch}`;
 
+/** The run's computers of a lower claim epoch released (the janitor's releaseOlder: one claim's computer at a time), its
+ *  failure thrown in its words. A run's first claim is epoch 1 (a queued run is epoch 0; each claim and release moves it
+ *  up one): no claim came before it to leave a computer, so the provider is not asked (its list is a vendor round trip
+ *  before the create). */
+async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly runId: string; readonly epoch: number }, signal: AbortSignal | undefined): Promise<void> {
+  if (claim.epoch <= 1) return;
+  const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
+  if (!older.ok) throw new Error(older.error.message);
+}
+
+/** The agent's computer setting: the launch's, else its revision's (computer, else place), else the launch's place. */
 async function settingOf(launch: ClaimLaunch, store: Pick<Store, "agents">): Promise<ComputerSetting | undefined> {
   if (launch.computer) return launch.computer;
   const body = launch.revisionId ? ((await store.agents.revision(launch.revisionId))?.body as { computer?: RevisionComputer; place?: PlaceView } | undefined) : undefined;
@@ -302,8 +312,8 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
   };
 }
 
-/** `entry`'s computer started through its provider: the run's computers of a lower claim epoch released first (the
- *  janitor's releaseOlder: one claim's computer at a time), then made with the run's labels (and the run's folder, when
+/** `entry`'s computer started through its provider: the run's computers of a lower claim epoch released first
+ *  (releaseOlderClaims; none at a run's first claim), then made with the run's labels (and the run's folder, when
  *  it mounts), connected, its groups from its hello; its read-back is the provider's own; its release deletes it. */
 async function providerLaunch(
   provider: ComputerProvider,
@@ -311,8 +321,7 @@ async function providerLaunch(
   spec: ComputerSpec,
   signal: AbortSignal | undefined,
 ): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: WatchOf }> {
-  const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
-  if (!older.ok) throw new Error(older.error.message);
+  await releaseOlderClaims(provider, claim, signal);
   // The claim is the request: a retry of this launch under the same epoch gets the computer it made, never a second.
   const created = await provider.create(spec, { requestId: claimRequestId(claim), ...(signal ? { signal } : {}) });
   if (!created.ok) throw new Error(created.error.message);
@@ -413,8 +422,7 @@ async function ownedStart(
 ): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: WatchOf }> {
   const call = signal ? { signal } : {};
   const { store, agentId, note } = context;
-  const older = await releaseOlder(provider, claim.runId, claim.epoch, call);
-  if (!older.ok) throw new Error(older.error.message);
+  await releaseOlderClaims(provider, claim, signal);
   const listed = await provider.list(ownerFilter(context.owner), call);
   if (!listed.ok) throw new Error(listed.error.message);
   const record = await agentComputerOf(store, agentId);
@@ -570,8 +578,7 @@ export async function computerForClaim(
       // booked) only while the tool holds it.
       if (kind === "browser") {
         // The run's sessions of a lower claim epoch go first, as a computer's do (the janitor's releaseOlder).
-        const older = await releaseOlder(provider, launch.runId, launch.epoch, signal ? { signal } : {});
-        if (!older.ok) throw new Error(older.error.message);
+        await releaseOlderClaims(provider, launch, signal);
         const opened = claimBrowser(provider, spec);
         madeBy = entry;
         return { id: entry.id, groups: ["cdp"], browser: opened.browser, release: opened.release };
