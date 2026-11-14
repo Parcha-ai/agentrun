@@ -17,10 +17,11 @@ const ALLOW = { [ADD]: { permission: "allow" } };
 /** The fake's add as a save pins it: every field its server listed. */
 const PINNED_ADD = { name: "add", title: "Add", description: "Add two numbers.", input_schema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"], additionalProperties: false }, annotations: { readOnlyHint: true } };
 
-async function setup(t) {
+/** The server with the fake saved. `serving`: more of serve()'s options (runner: false); `fakeOptions`: the fake's (hold). */
+async function setup(t, { serving = {}, fakeOptions = {} } = {}) {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
-  const server = await serve(t, { faux: FAUX_MCP });
-  const fake = await startFakeMcp({});
+  const server = await serve(t, { faux: FAUX_MCP, ...serving });
+  const fake = await startFakeMcp(fakeOptions);
   t.after(() => fake.close());
   assert.equal((await server.api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
   return { ...server, fake };
@@ -225,4 +226,40 @@ test("two runs at once of an inline agent's version stored with no pin make one 
   assert.ok(pins[0]?.fake?.tools?.[0]?.description, JSON.stringify(pins));
   assert.deepEqual(pins[1], pins[0], "one pin for both runs");
   assert.deepEqual((await store.agents.revision(first.body.revision))?.mcpPin, pins[0], "the stored version keeps it");
+});
+
+test("an edit while a granted server is down carries the pin of the revision it is built on: a save that re-pinned meanwhile is kept, not the pin the edit first read", { timeout: 120_000 }, async (t) => {
+  // The edit's first listing is held at the fake (its `hold`) until the test lets go, by closing the fake.
+  let gate;
+  const reached = new Promise((resolve) => (gate = resolve));
+  let armed = false;
+  const hold = async () => {
+    if (!armed) return;
+    armed = false;
+    gate();
+    await new Promise(() => {});
+  };
+  const { api, fake } = await setup(t, { fakeOptions: { hold } });
+  assert.equal((await retried(api)("POST", "/agents", agent("carried", { tools: [ADD] }))).status, 201);
+  const first = (await api("GET", "/agents/carried")).body;
+  assert.equal(first.mcp_pin.fake.tools[0].description, "Add two numbers.", "v1");
+  const definition = { ...first.definition };
+  delete definition.version;
+  // The edit reads the agent (v1), then its save lists the server: held there.
+  armed = true;
+  const editing = api("PUT", "/agents/carried/definition", { definition: { ...definition, instructions: "Add the numbers, then say the sum." } });
+  await reached;
+  // Meanwhile another save re-pins: the server changed its tool, and the unchanged definition saved again is v2.
+  fake.tools.add.description = "Add two numbers, v2.";
+  const repinned = await api("PUT", "/agents/carried/definition", { definition });
+  assert.equal(repinned.status, 200, JSON.stringify(repinned.body));
+  assert.equal((await api("GET", "/agents/carried")).body.mcp_pin.fake.tools[0].description, "Add two numbers, v2.", "v2");
+  // The server goes down: the edit's held listing fails, and its retry on v2 cannot list either, so it carries a pin.
+  await fake.close();
+  const edited = await editing;
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  const now = (await api("GET", "/agents/carried")).body;
+  assert.equal(now.revisions, 3, "the edit, on v2");
+  assert.equal(now.definition.instructions, "Add the numbers, then say the sum.");
+  assert.equal(now.mcp_pin.fake.tools[0].description, "Add two numbers, v2.", "the pin of the revision the edit is built on (v2), not the one it first read (v1)");
 });
