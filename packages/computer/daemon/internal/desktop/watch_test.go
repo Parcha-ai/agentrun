@@ -371,6 +371,25 @@ func TestOnTheFakeWithDamageAPointerMoveIsAFrameWithTheCursorWhereItWent(t *test
 	}
 }
 
+// A pointer that moves all the time reads no pixels, but each frame is a whole JPEG: its frames keep the cap too.
+func TestOnTheFakeWithDamageAPointerMovingAllTheTimeGivesFramesAtTheCap(t *testing.T) {
+	c, _, f := damaged(t)
+	var r watchResult
+	c.ok("screen.watch", map[string]any{"after": 0}, &r)
+	start := time.Now()
+	for i := range 9 {
+		f.MovePointer(20+i, 40)
+		after := r.Seq
+		c.ok("screen.watch", map[string]any{"after": after}, &r)
+		if !r.Changed || r.Seq != after+1 {
+			t.Fatalf("a moved pointer: %+v; want frame %d", r, after+1)
+		}
+	}
+	if took := time.Since(start); took < 8*desktop.FrameGapForTest {
+		t.Fatalf("9 pointer frames in %v: faster than one each %v", took, desktop.FrameGapForTest)
+	}
+}
+
 // screen.ahead: a caller keeps a second ask waiting while the first answers, with after one past the newest frame;
 // it waits as an ask for the newest does, so frames come at the computer's pace, not one each round trip.
 func TestOnTheFakeAWatchAheadByOneWaitsForTheNextFrame(t *testing.T) {

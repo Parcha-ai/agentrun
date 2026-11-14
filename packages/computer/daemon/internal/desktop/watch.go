@@ -196,7 +196,7 @@ func (d *Display) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 		if damage {
 			region = w.take()
 		}
-		cursor, changed, err := d.look(ctx, w, region)
+		cursor, changed, at, err := d.look(ctx, w, region)
 		if err != nil {
 			if damage {
 				// Not read (a cancel while input held the display, or the display went): the next look reads it.
@@ -208,6 +208,10 @@ func (d *Display) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 			frame, fw, fh, err := encodeFrame(w.screen, maxWidth, quality)
 			if err != nil {
 				return nil, err
+			}
+			if !changed {
+				// A frame of the pointer alone read no pixels, but it is a whole JPEG all the same: it keeps the cap too.
+				w.read = at
 			}
 			w.seq++
 			w.jpeg, w.frameW, w.frameH, w.cursor = frame, fw, fh, &cursor
@@ -246,19 +250,20 @@ func pause(ctx context.Context, d time.Duration, wake chan struct{}) error {
 
 // look holds the display while it reads the region of the screen into the watch's copy (the whole screen on the first
 // read, or once its size changed) and where the pointer is; an empty region reads no pixels. changed says whether a
-// pixel of the copy changed.
-func (d *Display) look(ctx context.Context, w *watching, region image.Rectangle) (cursor [2]int, changed bool, err error) {
+// pixel of the copy changed; at is when it had the display.
+func (d *Display) look(ctx context.Context, w *watching, region image.Rectangle) (cursor [2]int, changed bool, at time.Time, err error) {
 	if err := d.hold(ctx, "screen.watch"); err != nil {
-		return cursor, false, err
+		return cursor, false, at, err
 	}
 	defer d.letGo()
+	at = time.Now()
 	c, err := d.connection()
 	if err != nil {
-		return cursor, false, err
+		return cursor, false, at, err
 	}
 	width, height, err := c.RootSize()
 	if err != nil {
-		return cursor, false, d.gone(c, err)
+		return cursor, false, at, d.gone(c, err)
 	}
 	whole := image.Rect(0, 0, width, height)
 	if w.screen == nil || w.screen.Bounds() != whole {
@@ -270,13 +275,13 @@ func (d *Display) look(ctx context.Context, w *watching, region image.Rectangle)
 		// The cap counts from the read's start, so the read and the frame's encode are inside the gap, not added to it.
 		started := time.Now()
 		if img, err = c.GetImage(region.Min.X, region.Min.Y, region.Dx(), region.Dy()); err != nil {
-			return cursor, false, d.gone(c, err)
+			return cursor, false, at, d.gone(c, err)
 		}
 		w.read = started
 	}
 	x, y, err := c.QueryPointer()
 	if err != nil {
-		return cursor, false, d.gone(c, err)
+		return cursor, false, at, d.gone(c, err)
 	}
 	w.width, w.height = width, height
 	switch {
@@ -285,7 +290,7 @@ func (d *Display) look(ctx context.Context, w *watching, region image.Rectangle)
 	case img != nil:
 		changed = patch(w.screen, img, region.Min)
 	}
-	return [2]int{x, y}, changed, nil
+	return [2]int{x, y}, changed, at, nil
 }
 
 // patch copies img into screen at at, row by row, and says whether any pixel differed.
