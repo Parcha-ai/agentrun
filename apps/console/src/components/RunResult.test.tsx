@@ -43,6 +43,26 @@ describe("RunResult, an agentic run with an output schema", () => {
     expect(html).not.toContain("stale");
   });
 
+  it("follows the schema's local $refs: a Markdown field, and a nested object's own, behind a reference", () => {
+    const schema = {
+      type: "object",
+      $defs: { report: { type: "string", title: "Report", contentMediaType: "text/markdown" }, item: { type: "object", properties: { note: { $ref: "#/$defs/report" } } } },
+      properties: { report: { $ref: "#/$defs/report" }, items: { type: "array", items: { $ref: "#/$defs/item" } } },
+    };
+    const run = agentic({ output: { report: "# Verdict\n\nNo **red flags**.", items: [{ note: "Seen on *two* pages." }] } });
+    const html = renderToStaticMarkup(<RunResult run={run} rows={[]} schema={schema} />);
+    expect(html).toContain("Report");
+    expect(html).toMatch(/<h1[^>]*>Verdict<\/h1>/);
+    expect(html).toContain("<em>two</em>");
+  });
+
+  it("reads an output that is not an object with its schema too: a list of Markdown strings as Markdown", () => {
+    const schema = { type: "array", items: { type: "string", contentMediaType: "text/markdown" } };
+    const html = renderToStaticMarkup(<RunResult run={agentic({ output: ["# One", "Two **bold**"] })} rows={[]} schema={schema} />);
+    expect(html).toMatch(/<h1[^>]*>One<\/h1>/);
+    expect(html).toContain("<strong>bold</strong>");
+  });
+
   it("a run whose answer still missed its schema says why, then shows the answer as written", () => {
     const run = agentic({ output: null, output_error: "the answer has no fenced json block", final_answer: "Only prose here." });
     const html = renderToStaticMarkup(<RunResult run={run} rows={[]} schema={SCHEMA} />);

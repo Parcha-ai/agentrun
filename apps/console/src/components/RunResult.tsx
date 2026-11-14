@@ -1,4 +1,4 @@
-import { AnswerFields } from "@/components/AnswerFields";
+import { AnswerFields, AnswerValue } from "@/components/AnswerFields";
 import { Banner } from "@/components/ui/banner";
 import { answerRecord } from "@/lib/answerJson";
 import { markdown, openLinkedFile } from "@/lib/format";
@@ -18,9 +18,13 @@ export function RunResult({ run, rows, files = [], onOpen, schema }: { run: Run;
   const output = run.result?.output;
   // An agentic run's output is there only when its agent has an output schema and the answer met it (serve's store-view).
   if (run.kind === "agentic" && output !== undefined && output !== null) {
-    return output && typeof output === "object" && !Array.isArray(output)
-      ? <div className="min-w-0" onClick={open}><AnswerFields record={output as Record<string, unknown>} schema={schema} linked={linked} /></div>
-      : <pre className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] border bg-card p-4 font-mono text-small leading-[1.8]">{JSON.stringify(output, null, 2)}</pre>;
+    return (
+      <div className="min-w-0" onClick={open}>
+        {typeof output === "object" && !Array.isArray(output)
+          ? <AnswerFields record={output as Record<string, unknown>} schema={schema} linked={linked} />
+          : <AnswerValue value={output} schema={schema} linked={linked} />}
+      </div>
+    );
   }
   const missed = run.kind === "agentic" ? run.result?.output_error : undefined;
   const missedNote = missed ? <Banner tone="warning" title="The answer did not match the output schema">{missed}</Banner> : null;
