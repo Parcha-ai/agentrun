@@ -16,7 +16,7 @@ import { computerToolsFor } from "@parcha/agentrun-kernel/kernel";
 import { localWorkspace, resolveComputer, runShellOf, runTools } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
-import { ARCHIL_KINDS, GPU_ARCHIL_KINDS, KINDS, PROVIDERS } from "./workspace-kinds-fixture.mjs";
+import { GPU_ARCHIL_KINDS, KINDS, PROVIDERS } from "./workspace-kinds-fixture.mjs";
 
 /** A kind's computer tools, as the kernel registry lists them for its provider's groups (the desktop's and the phone's
  *  are the same tools). */
@@ -50,10 +50,9 @@ function claim(root, saved = SAVED) {
     },
   };
 }
-/** Resolved against the registry with the remote sandboxes mounting from Archil (ARCHIL_KINDS; since module D6 the
- *  module's own table, KINDS, says the same). */
-const resolve = (setting, mode, root = scratch(), saved, kinds = ARCHIL_KINDS) => resolveComputer(setting, mode, kinds, claim(root, saved));
-const KIND_REGISTRY = ARCHIL_KINDS;
+/** Resolved against the registry, whose remote sandboxes mount from Archil (each descriptor's own mounts). */
+const resolve = (setting, mode, root = scratch(), saved, kinds = KINDS) => resolveComputer(setting, mode, kinds, claim(root, saved));
+const KIND_REGISTRY = KINDS;
 const shape = (resolved) => ("refused" in resolved ? resolved : { kind: resolved.kind, provider: resolved.provider, mounts: resolved.mounts, ports: resolved.ports });
 
 test("no setting is the server's default: in Mode 1 Docker's sandbox where Docker answers here, else no computer; in Mode 2 no computer", async () => {
