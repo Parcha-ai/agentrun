@@ -74,6 +74,19 @@ test("a monid grant saved with no monid key is refused: it cannot be pinned", as
   assert.match(JSON.stringify(saved.body), /no monid key here to read it with: save the monid key in Settings → Tool keys first/);
 });
 
+test("monid's error that echoes the key it was sent is refused at the save with the key cut from it, on the listing and on an inspect", async (t) => {
+  for (const [path, grant] of [["/v1/inspect", "monid:faux/person/enrich"], ["/v1/endpoints", "monid:apollo/*"]]) {
+    await t.test(path, async (t) => {
+      withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_ECHO: path });
+      const { api } = await serve(t, { fauxMonid: FAUX_MONID });
+      const saved = await api("POST", "/agents", agent("echo", { tools: [grant] }));
+      assert.equal(saved.status, 422, JSON.stringify(saved.body));
+      assert.match(JSON.stringify(saved.body), /No such endpoint for the key \[redacted\]/, "monid's words, the key cut");
+      assert.ok(!JSON.stringify(saved.body).includes(KEY), "no key in the refusal");
+    });
+  }
+});
+
 test("an endpoint whose input the agent's harness refuses is refused at the save, at the grant that names it, in words; another harness takes it", async (t) => {
   withEnv(t, { MONID_API_KEY: KEY });
   const { api, store } = await serve(t, { fauxMonid: FAUX_MONID });

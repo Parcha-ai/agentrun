@@ -22,6 +22,7 @@ import { randomUUID } from "node:crypto";
 import { type Workspace, workspaceErrorWords } from "./workspace/index.js";
 import { wireName } from "./catalog.js";
 import { formatToolName, parseToolName } from "./tool-names.js";
+import { redacted } from "./key-refusal.js";
 import type { MonidPinBody } from "./store/agent-body.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -259,6 +260,10 @@ export async function pinMonid(grants: readonly string[], options: { key: string
   if (!named.length) return undefined;
   if (!options.key) return { refused: named.map(({ tool }) => ({ tool, message: `${tool} is pinned to what monid lists when the agent is saved, and there is no monid key here to read it with: save the monid key in Settings → Tool keys first.` })) };
   const client = monidClient({ key: options.key, ...(options.fetch ? { fetch: options.fetch } : {}), ...(options.sleep ? { sleep: options.sleep } : {}) });
+  // monid's own words, which a save's refusal returns to its caller: the key they were read with cut from them, in
+  // every form a run's error is redacted of (key-refusal.ts redacted).
+  const key = options.key;
+  const said = (error: unknown) => redacted(String(error), [key]);
   const refused: { tool: string; message: string }[] = [];
   // Each endpoint to pin, by catalog name: the grants' own, then each wildcard's provider's as monid lists them.
   const wanted = new Map<string, { provider: string; endpoint: string }>();
@@ -268,7 +273,7 @@ export async function pinMonid(grants: readonly string[], options: { key: string
     // Every page, a bounded number of them: monid's listing is not filtered by provider.
     for (let cursor: string | undefined, page = 0; (page === 0 || cursor) && page < 500; page++) {
       const res = await client.endpoints(cursor, options.signal);
-      if (res.error !== undefined) return { refused: named.map(({ tool }) => ({ tool, message: `${tool} could not be pinned: monid's listing could not be read (${res.error}).` })) };
+      if (res.error !== undefined) return { refused: named.map(({ tool }) => ({ tool, message: `${tool} could not be pinned: monid's listing could not be read (${said(res.error)}).` })) };
       for (const item of Array.isArray(res.items) ? res.items : []) {
         if (isObject(item) && typeof item.provider === "string" && typeof item.endpoint === "string" && providers.has(item.provider)) listed.set(item.provider, [...(listed.get(item.provider) ?? []), item.endpoint]);
       }
@@ -291,7 +296,7 @@ export async function pinMonid(grants: readonly string[], options: { key: string
       const [tool, at] = next;
       const res = await client.inspect(at, options.signal);
       if (res.status === 404) refused.push({ tool, message: `monid lists no endpoint ${at.endpoint} of a provider ${at.provider}.` });
-      else if (res.error !== undefined) refused.push({ tool, message: `${tool} could not be pinned: monid's listing of it could not be read (${res.error}).` });
+      else if (res.error !== undefined) refused.push({ tool, message: `${tool} could not be pinned: monid's listing of it could not be read (${said(res.error)}).` });
       else pin[tool] = { description: [res.description, res.summary].find((said): said is string => typeof said === "string" && said.trim() !== "")?.trim() ?? `${at.provider} ${at.endpoint}, an endpoint of monid's.`, input: inputSchema(res.input), ...heldOf(res.price) };
     }
   };
