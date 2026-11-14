@@ -282,8 +282,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
           <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && !done && <OffChip trigger={trigger} />}</h1>
           <p className="mt-2 break-words font-mono text-small text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : <span title={cronOf(trigger)}>{scheduleLine(runs.source as Schedule["source"], trigger.next_at, { instead: onceWords(done), now: now() })}</span>}</p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
+        <div className="flex flex-wrap items-center justify-end gap-2 self-stretch sm:self-auto">
           {!(done && "ran" in done) && <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>}
           {!hook && !gh && <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> Edit</Button>}
           {hook && hook.source.signature === "composio" && (!givingSecret ? <Button size="sm" onClick={() => setGivingSecret(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Set secret</Button> : (
@@ -307,6 +306,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
               <Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>Keep</Button>
             </span>
           )}
+          <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
         </div>
       </div>
       {disabledWords(trigger, failuresToPause) && (

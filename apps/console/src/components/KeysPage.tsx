@@ -1,3 +1,4 @@
+import { pasteFromClipboard } from "@/lib/paste";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -140,6 +141,7 @@ type RowProps = {
 };
 
 function KeyRow({ tool: k, writable, again, open, problem, onOpen, onSave, onRemove }: RowProps) {
+  const row = useRef<HTMLLIElement>(null);
   // Each field's secret ("tool:<KEY>"), and each secret's field (the form's input, and whether a saved one still opens).
   const secretOf = (f: ToolKeyField) => k.secrets.find((s) => secretLabel(s.name) === f.name);
   const fieldOf = (s: SecretMeta) => k.fields.find((f) => f.name === secretLabel(s.name));
@@ -147,7 +149,7 @@ function KeyRow({ tool: k, writable, again, open, problem, onOpen, onSave, onRem
   const own = k.fields.filter((f) => secretOf(f)?.source !== "env");
   const setCount = k.secrets.filter((s) => s.set).length;
   return (
-    <li className="border-b p-4 last:border-b-0">
+    <li ref={row} className="border-b p-4 last:border-b-0">
       <div className="flex flex-wrap items-start gap-3">
         <ProviderIcon id={k.id} className="mt-1" />
         <div className="min-w-0 flex-1">
@@ -167,7 +169,7 @@ function KeyRow({ tool: k, writable, again, open, problem, onOpen, onSave, onRem
           <ul className="mt-3 space-y-1.5">
             {k.secrets.map((s) => (
               <SecretRow key={s.name} field={s} stateSaid={k.secrets.length === 1} writable={writable && open === null} note={fieldOf(s)?.stored_unreadable ? UNREADABLE : undefined}
-                onPaste={() => onOpen("edit")} onRemove={s.source === "console" ? () => onOpen("remove") : undefined} />
+                onPaste={() => void pasteFromClipboard(() => onOpen("edit"), () => row.current?.querySelector("form")?.elements.namedItem(fieldOf(s)?.name ?? "") as HTMLInputElement | null)} onRemove={s.source === "console" ? () => onOpen("remove") : undefined} />
             ))}
           </ul>
           {!own.length && <p className="mt-3 text-small text-muted-foreground">Set when the server starts, and that one wins: change it where the server is started.</p>}
@@ -223,7 +225,7 @@ export function KeyForm({ tool: k, fields, onSave, onCancel }: { tool: ToolKey; 
       {help && (
         <p className="text-body text-muted-foreground">
           <span className="font-semibold text-foreground">{k.label}</span> · No key yet?{" "}
-          <a href={help.url} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2">Get a key</a> (opens in a new tab)
+          <a href={help.url} target="_blank" rel="noopener noreferrer" className="text-primary-text underline underline-offset-2">Get a key</a> (opens in a new tab)
         </p>
       )}
       {fields.map((f) => (
