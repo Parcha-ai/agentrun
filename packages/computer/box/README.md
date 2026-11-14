@@ -10,10 +10,10 @@ The image is made of two files, `Dockerfile` and `agentrun-archil`, the one file
 prints their hash, the first 12 hex of their sha256 (`node packages/computer/box/recipe.mjs`). Every build names what it
 makes by that hash, so a changed recipe is a new image and the same recipe is the one built before.
 
-`.dockerignore` lets `agentrun-archil` alone into a build's context, Docker's or E2B's; the builder reads the
-Dockerfile on its own. The Dockerfile takes no build secret, and its build arguments are the archil client's version
-and package sums. `test/box-recipe.test.mjs` fails if this folder gains a file named like a key or a credential, holds
-key material, or the Dockerfile takes a secret.
+A build's context is this folder, which the npm package ships whole, and the image copies `agentrun-archil` alone from
+it. The Dockerfile takes no build secret, and its build arguments are the archil client's version and package sums.
+`test/box-recipe.test.mjs` fails if this folder gains a file named like a key or a credential, or one holding key
+material, or if the Dockerfile takes a secret.
 
 ## The published image
 

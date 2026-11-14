@@ -236,7 +236,8 @@ jobs:
   # The box image (packages/computer/box): what a remote computer with an Archil mount starts from, published once per
   # recipe as ghcr.io/parcha-ai/agentrun-box:<recipe hash> (box/recipe.mjs) and tagged with the release, for linux/amd64.
   # Like `image`, it runs after the approved publish job with this run's GITHUB_TOKEN alone, every action pinned by commit
-  # and BuildKit by digest. Its context is box/, where .dockerignore lets the helper alone in; the build takes no secret.
+  # and BuildKit by digest. Its context is box/, which the npm package ships whole; the image copies the helper alone
+  # from it, and the build takes no secret.
   box:
     needs: publish
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false

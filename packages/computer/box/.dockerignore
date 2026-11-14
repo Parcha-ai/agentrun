@@ -1,4 +1,0 @@
-# The image copies agentrun-archil alone (the Dockerfile's one COPY): nothing else in this folder is sent to a build,
-# Docker's or E2B's. The builder reads the Dockerfile on its own. test/box-recipe.test.mjs holds this file to these lines.
-*
-!agentrun-archil

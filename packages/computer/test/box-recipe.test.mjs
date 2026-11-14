@@ -173,15 +173,12 @@ const KEY_MATERIAL = [
   /\bxox[abpr]-[A-Za-z0-9-]{10,}/,
 ];
 
-test("a build's context is the helper alone: .dockerignore lets in only what the Dockerfile copies", () => {
-  assert.deepEqual(read(".dockerignore").split("\n").filter((line) => line && !line.startsWith("#")), ["*", "!agentrun-archil"]);
+test("a build's context is box/, the files the npm package ships there, and the image takes the helper alone from it", () => {
   const copied = INSTRUCTIONS.filter((line) => /^(COPY|ADD) /.test(line)).map((line) => line.split(/\s+/).slice(1, -1));
   assert.deepEqual(copied, [["agentrun-archil"]], "one COPY, of the helper, with no flags (no --from, no remote ADD)");
-  assert.deepEqual(
-    BOX_FILES.sort(),
-    [".dockerignore", "Dockerfile", "README.md", "agentrun-archil", "build-agent37.mjs", "build-daytona.py", "build-e2b.mjs", "build-modal.py", "recipe.mjs"],
-    "box/ holds the recipe, its build scripts and its README: a new file here is read for what it is before this list takes it",
-  );
+  // No .dockerignore: everything here is public already (the package ships box/ whole), and the image copies the helper
+  // alone. A new file here is read for what it is before this list takes it.
+  assert.deepEqual(BOX_FILES.sort(), ["Dockerfile", "README.md", "agentrun-archil", "build-agent37.mjs", "build-daytona.py", "build-e2b.mjs", "build-modal.py", "recipe.mjs"]);
 });
 
 test("box/ holds no file named like a key or a credential and no key material, and the Dockerfile takes no secret", () => {
