@@ -25,13 +25,9 @@ test("each vendor SDK a provider imports is a root devDependency pinned exactly,
 		assert.equal(root.devDependencies?.[name], version, `the root package.json pins ${name} exactly, at ${version}`);
 		assert.equal(lock.packages?.[`node_modules/${name}`]?.version, version, `package-lock.json holds ${name} ${version}`);
 		assert.equal(lock.packages?.[`node_modules/${name}`]?.dev, true, `${name} is a devDependency in the lock, never a runtime one`);
-		for (const field of ["dependencies", "optionalDependencies", "devDependencies"]) {
+		for (const field of ["dependencies", "peerDependencies", "optionalDependencies", "devDependencies"]) {
 			assert.equal(computer[field]?.[name], undefined, `packages/computer has no ${field} entry for ${name}: it imports the host's own`);
 		}
-		// A published .d.ts that names an SDK's types declares it, as an optional peer: nothing is installed for it.
-		const typed = ["e2b", "modal"].includes(name);
-		assert.equal(computer.peerDependencies?.[name] !== undefined, typed, `${name} is a peer of packages/computer exactly when its types are imported`);
-		if (typed) assert.equal(computer.peerDependenciesMeta?.[name]?.optional, true, `${name} is an optional peer`);
 	}
 });
 
@@ -41,5 +37,8 @@ test("the built provider modules import no vendor SDK at load: the SDKs' types a
 		assert.doesNotMatch(code, /^import .* from ["'](e2b|modal)["']/m, `${file} has no static import of the SDK`);
 		assert.doesNotMatch(code, /require\(/, `${file} has no require`);
 		assert.doesNotMatch(code, /import\(["'](e2b|modal)["']\)/, `${file} names the SDK in no literal import, so no bundler resolves it`);
+		// The published types name no SDK either: a consumer without it installed, and the package check, see no dependency.
+		const types = read(file.replace(/\.js$/, ".d.ts"));
+		assert.doesNotMatch(types, /from ["'](e2b|modal)["']|import\(["'](e2b|modal)["']\)/, `${file.replace(/\.js$/, ".d.ts")} names no SDK`);
 	}
 });

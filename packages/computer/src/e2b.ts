@@ -4,7 +4,7 @@
 // upload goes through envd's file API and every command (install, init's start, the stdio bridge) is a background
 // command as root. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts). Every SDK fact
 // used here is cited in the README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
-import type { CommandResult, ConnectionOpts, Sandbox, SandboxInfo, SandboxOpts } from "e2b";
+import type { CommandResult, Sandbox, SandboxInfo, SandboxOpts } from "e2b";
 import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, ours } from "./hosted/provider.js";
@@ -21,12 +21,21 @@ const fail = failFor("e2b");
 
 /**
  * What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152).
- * The SDK's types are imported as types only: erased at build, so nothing loads the SDK from here.
+ * The SDK's types below are `import type`: erased at build, so nothing loads the SDK from here and the published types
+ * name none of it (the package declares no dependency on e2b).
  */
-export type E2BConnectionOptions = ConnectionOpts & Required<Pick<ConnectionOpts, "apiKey" | "domain" | "apiUrl">> & { debug: false };
+export interface E2BConnectionOptions {
+	apiKey: string;
+	domain: string;
+	apiUrl: string;
+	debug: false;
+	requestTimeoutMs?: number;
+	signal?: AbortSignal;
+}
 
-/** The statics of the SDK's Sandbox class this provider calls: the host's own `e2b` package's. */
-export type E2BSandboxClass = typeof Sandbox;
+/** The SDK's Sandbox class, the host's own `e2b` package's. Held as the SDK's type inside; the published type is `object`. */
+export type E2BSandboxClass = object;
+type SdkSandboxClass = typeof Sandbox;
 
 /** The E2B provider's options: the key and the SDK, then the shared adapter's (HostedOptions). */
 export interface E2BProviderOptions extends Omit<HostedOptions, "label" | "maxLifetimeMs"> {
@@ -250,14 +259,14 @@ class E2BHost implements MachineHost {
 		mounts: [...MOUNT],
 		release: ["delete"],
 	};
-	readonly #Sandbox: E2BSandboxClass;
+	readonly #Sandbox: SdkSandboxClass;
 	readonly #connection: E2BConnectionOptions;
 	readonly #requestMs: number;
 	/** Each sandbox create or connect gave, by id, for envd's commands and files: let go of at its delete. */
 	readonly #sandboxes = new Map<string, Sandbox>();
 
 	constructor(Sandbox: E2BSandboxClass, connection: E2BConnectionOptions, requestMs: number) {
-		this.#Sandbox = Sandbox;
+		this.#Sandbox = Sandbox as SdkSandboxClass;
 		this.#connection = connection;
 		this.#requestMs = requestMs;
 	}

@@ -103,18 +103,6 @@
     "test:e2b": "node --test --test-timeout=1800000 test/e2b/*.test.mjs",
     "conformance": "node dist/conformance/cli.js"
   },
-  "peerDependencies": {
-    "e2b": "^2.63.0",
-    "modal": "^0.11.1"
-  },
-  "peerDependenciesMeta": {
-    "e2b": {
-      "optional": true
-    },
-    "modal": {
-      "optional": true
-    }
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Parcha-ai/agentrun.git",

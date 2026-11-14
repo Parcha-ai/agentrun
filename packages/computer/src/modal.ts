@@ -26,7 +26,8 @@ const fail = failFor("modal");
  * The SDK's own types, imported as types only: erased at build, so nothing loads the SDK from here. The host passes its
  * own client (or the constructor), which these name.
  */
-export type ModalSdk = ModalClient;
+export type ModalSdk = object;
+type SdkClient = ModalClient;
 
 /** The Modal provider's options: the client and the app, then the shared adapter's (HostedOptions). */
 export interface ModalProviderOptions extends Omit<HostedOptions, "label" | "kind" | "desktop" | "maxLifetimeMs"> {
@@ -243,13 +244,13 @@ function tagProblem(tags: Record<string, string>): string | undefined {
 class ModalHost implements MachineHost {
 	readonly id = "modal";
 	readonly facts: HostFacts;
-	readonly #sdk: ModalSdk;
+	readonly #sdk: SdkClient;
 	readonly #appName: string;
 	/** Each sandbox create or a read gave, by id: let go of at its delete. */
 	readonly #sandboxes = new Map<string, Sandbox>();
 	#app: App | undefined;
 
-	constructor(sdk: ModalSdk, app: string) {
+	constructor(sdk: SdkClient, app: string) {
 		this.#sdk = sdk;
 		this.#appName = app;
 		this.facts = {
@@ -480,7 +481,8 @@ class ModalHost implements MachineHost {
  */
 export class ModalProvider extends HostedProvider {
 	constructor(options: ModalProviderOptions) {
-		const { sdk, app, maxLifetimeMs = MAX_LIFETIME_MS, timeouts = {}, ...rest } = options ?? ({} as ModalProviderOptions);
+		const { app, maxLifetimeMs = MAX_LIFETIME_MS, timeouts = {}, ...rest } = options ?? ({} as ModalProviderOptions);
+		const sdk = options?.sdk as SdkClient | undefined;
 		const lacks = [
 			["apps.fromName", sdk?.apps?.fromName],
 			["images.fromRegistry", sdk?.images?.fromRegistry],
@@ -493,6 +495,6 @@ export class ModalProvider extends HostedProvider {
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_LIFETIME_MS) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 hours (${MAX_LIFETIME_MS} ms), Modal's longest timeout`);
 		}
-		super(new ModalHost(sdk, app), { ...rest, label: "Modal", kind: "linux", maxLifetimeMs, timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
+		super(new ModalHost(sdk as SdkClient, app), { ...rest, label: "Modal", kind: "linux", maxLifetimeMs, timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
 	}
 }

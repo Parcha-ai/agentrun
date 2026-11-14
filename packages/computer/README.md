@@ -1701,7 +1701,7 @@ Xfce, x11vnc and noVNC, e2b-dev/desktop `template/template.py:3-65`). It is kind
 server itself, as on a Docker desktop, and its X11 shim drives it. With `kind: "linux"` it is kind `linux`
 on any template, `base` by default, with no display: the same provider, minus the X server, so it costs nothing to
 offer. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, whose types `src/e2b.ts` imports
-as types only (`E2BSandboxClass` is `typeof Sandbox`), so nothing loads from it at import; the package is the host's to install, as
+as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import; the package is the host's to install, as
 Modal's is. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
 and with no bound or abort (`@e2b/desktop@2.5.0` `dist/index.mjs:387-415`), and the provider needs none of its other
 calls.
