@@ -22,9 +22,17 @@ struct View: Sendable {
 		return nodes.last { $0.frame?.contains(screen) == true }
 	}
 
-	/// A node's bounds in the window's points.
+	/// A node's bounds in the window's points, each edge that reaches past the window's held to it (wire.md, ui.observe):
+	/// a row half scrolled out of a list is the part a person sees, and one wholly out is a line on the edge it left by.
+	/// So a list's content, taller than its window, keeps its bounds while the app guesses its height anew on each read
+	/// (System Settings' sidebar).
 	func bounds(_ node: RawNode) -> Rect {
-		node.frame.map { $0.offset(-target.window.bounds.x, -target.window.bounds.y) } ?? Rect(0, 0, 0, 0)
+		guard let frame = node.frame else { return Rect(0, 0, 0, 0) }
+		let (w, h) = (target.window.bounds.w, target.window.bounds.h)
+		let r = frame.offset(-target.window.bounds.x, -target.window.bounds.y)
+		func held(_ v: Double, _ most: Double) -> Double { min(most, max(0, v)) }
+		let (left, top) = (held(r.x, w), held(r.y, h))
+		return Rect(left, top, held(r.x + r.w, w) - left, held(r.y + r.h, h) - top)
 	}
 
 	/// What a person sees of a node: its role, words, place and flags. A secure field's value is never in it.
@@ -34,20 +42,26 @@ struct View: Sendable {
 		return [node.role, node.name ?? "", value, node.desc ?? "", "\(b.x),\(b.y),\(b.w),\(b.h)", node.flags.sorted().map(\.rawValue).joined(separator: ",")].joined(separator: "\u{1f}")
 	}
 
-	/// What a person would see of the whole window: its id and size and every node; with no nodes (ui.tree off), the
-	/// image's hash. Not the image when there is a tree: a blinking caret or a spinner redraws the window every half
-	/// second, which held every settle to maxSettleMs and counted as a step's effect.
+	/// What a person would see of the whole window: its id and size and every node on it; with no nodes (ui.tree off),
+	/// the image's hash. Not the image when there is a tree: a blinking caret or a spinner redraws the window every half
+	/// second, which held every settle to maxSettleMs and counted as a step's effect. Not a node wholly outside the
+	/// window: System Settings rebuilds its sidebar rows scrolled out of view each time its tree is read, and Finder's
+	/// status bar below the window counts the free disk space, which held every settle there to maxSettleMs too. Nor
+	/// which element a node is: a person sees none of that, and System Settings makes its sidebar's row at the window's
+	/// edge anew on every read, the same words in the same place.
 	var fingerprint: Int {
 		var h = Hasher()
 		h.combine(target.window.id)
 		h.combine(target.window.bounds.w)
 		h.combine(target.window.bounds.h)
-		for node in nodes {
-			h.combine(node.handle)
-			h.combine(looks(node))
-		}
+		for node in nodes where onWindow(node) { h.combine(looks(node)) }
 		if nodes.isEmpty { h.combine(frame) }
 		return h.finalize()
+	}
+
+	/// The node's frame reaches into the window; a node with no frame counts as on it.
+	func onWindow(_ node: RawNode) -> Bool {
+		node.frame.map { $0.intersects(target.window.bounds) } ?? true
 	}
 }
 

@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { deflateSync } from "node:zlib";
 import type { AgentRequest, AgentResult, Backend, Episode, OpenRequest } from "./runner.js";
+import type { AgentWire } from "./tap.js";
 import type { Hello, JsonObject, Wire, WireResult } from "./wire.js";
 
 export interface FakeNode {
@@ -394,8 +395,9 @@ export class FakeWorld implements Wire {
 	}
 }
 
-/** An agent for the fake world: given its tapped wire and the request, it does whatever it does. */
-export type FakeAgent = (wire: Wire, request: AgentRequest) => Promise<AgentResult>;
+/** An agent for the fake world: given its tapped wire (its surface: on "code" its calls go through wire.script) and the
+ *  request, it does whatever it does. */
+export type FakeAgent = (wire: AgentWire, request: AgentRequest) => Promise<AgentResult>;
 
 export interface FakeBackendOptions {
 	/** Makes each episode's world (default: a fresh FakeWorld). */
@@ -564,7 +566,8 @@ const playing =
 	async (wire, request) => {
 		const play = plays[request.task.task.spec.id];
 		if (!play) return { outcome: "done", message: "this fake agent has no play for the task" };
-		const answer = await play(helper(wire), wire, request);
+		// Given code mode, the play is one script, as a code-mode agent writes it; given tools, a tool call per method.
+		const answer = wire.script ? await wire.script((computer) => play(helper(computer), computer, request)) : await play(helper(wire), wire, request);
 		return { outcome: "done", ...(answer === undefined ? {} : { answer }), cost_usd: 0 };
 	};
 

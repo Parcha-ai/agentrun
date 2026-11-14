@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
@@ -106,7 +107,7 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
     return startedRun.body.run_id;
   };
   const cost = async (query = "") => (await api("GET", `/agents/${id}/learning/cost${query}`)).body;
-  assert.deepEqual(await cost(), { agent: id, runs: [], total_runs: 0, unknown_cost_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null } });
+  assert.deepEqual(await cost(), { agent: id, runs: [], total_runs: 0, unknown_cost_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null }, workflows: [] });
 
   const byHand = [await runOf("What is six times seven."), await runOf("What is two times three.")];
   const sha = await landFlow(data, id, "answer");
@@ -125,6 +126,17 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   // first unit test above pins which records say which), "handed_back" when a loaded machine left more in them.
   assert.ok(["workflow", "handed_back"].includes(body.runs[2].path), `the run told to use the workflow: ${body.runs[2].path}`);
   assert.deepEqual([body.runs[2].learned_revision, body.runs[3].learned_revision], [sha, sha], "the commit its learning started from");
+  // One classifier: the agent called the tool itself (no workflow-first step), and its run record's metrics.path, written
+  // at its end, is the path the cost per run shows.
+  const metricsOf = (runId) => {
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+    try {
+      return JSON.parse(db.prepare("SELECT metrics FROM runs WHERE id = ?").get(runId)?.metrics ?? "null");
+    } finally {
+      db.close();
+    }
+  };
+  assert.deepEqual(body.runs.map((run) => [metricsOf(run.run_id)?.path, metricsOf(run.run_id)?.workflow ?? null]), [["agent", null], ["agent", null], ["workflow", "answer"], ["handed_back", null]], "the record's path and workflow are the chart's");
   for (const run of body.runs) {
     const { learning } = await savedOf(data, run.run_id);
     const rowUsd = storeRun(data, run.run_id).costUsd;
@@ -138,6 +150,7 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   const after = Math.round(((body.runs[2].total_usd + body.runs[3].total_usd) / 2) * 1e6) / 1e6;
   assert.deepEqual(body.summary, { takeover: { n: 3, run_id: alone }, before: { runs: 2, mean_usd: before }, after: { runs: 2, mean_usd: after }, times_cheaper: null });
   assert.deepEqual([body.total_runs, body.unknown_cost_runs], [4, 0]);
+  assert.deepEqual(body.workflows, [], "the money rule holds a workflow that ran first; the agent calling one is the agent's own run");
 
   const last = await cost("?limit=2");
   assert.deepEqual(last.runs.map((run) => run.n), [3, 4], "the latest runs, each keeping its number");
