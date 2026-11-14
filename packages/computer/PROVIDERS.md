@@ -30,7 +30,7 @@ Seven members, each a call about the vendor's own machines:
 | `list(labels, ctx)` | Every machine carrying all of these labels, every page, each as `get` reads it, within `ctx.timeoutMs`. |
 | `delete(id, ctx)` | Deletes; not found is ok; answers once the vendor took it. |
 | `exec(id, argv, { stdin }, ctx)` | Starts argv as root (or a user with passwordless sudo), outside the computer's tools, with no command timeout; a `MachineProcess` (stdout, stderr, write, end, wait, kill). |
-| `errorCode(error)` | The code of an error the vendor's client threw: one of `ComputerErrorCode`, `vendor` for anything else. |
+| `errorCode(error)` | Optional. The code of an error the vendor's client threw: one of `ComputerErrorCode`, `vendor` for anything it does not map. The adapter reads an `AbortError` as `aborted` and a `TimeoutError` as `timeout` itself, and a `not_found` from `get` or `delete` as a machine that is gone, so a host maps none of those. |
 
 `upload` is optional: a vendor with no file API leaves it out, and the adapter streams the daemon through `exec`'s
 stdin. Six optional hooks exist, each for one vendor's need: `prepare` (settings once a machine runs), `stop` (with
