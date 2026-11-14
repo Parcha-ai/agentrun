@@ -691,8 +691,9 @@ export function readPackage(dir: string): Package {
   const every = mcp.flatMap(({ server, tools: listed }) => listed.map((tool) => mcpToolName(server, tool)));
   const made = compiled(p, samples, { ...(harness ? { harness: harness[0]! } : {}), ...(p.model?.prefer ? { model: p.model.prefer } : {}), ...(Object.keys(declared).length ? { modelTiers: declared } : {}), mcp, defaultTools: [], grants: every });
   for (const issue of definitionBodyIssues(made.agent)) bad(issue.field.startsWith("skills.") ? `skills/${issue.field.slice("skills.".length)}` : MANIFEST, `${issue.field.startsWith("skills.") ? "" : `the agent it makes: ${issue.field}: `}${issue.message}`);
-  // A sample stands in for a value apply is given: at a target.input field a parameter with no default fills whole, only
-  // its type is checked here (a pattern or a bound is the apply's, on the value given).
+  // A sample stands in for a value apply is given: at a target.input field a parameter with no default fills whole, what
+  // hangs on the value (a pattern, a bound, a choice) is the apply's, on the value given. Its type, and whether the
+  // inputs name the field at all, are checked here.
   const sampled = (field: string): boolean => {
     const at = /^triggers\.(\d+)\.target\.input\.([^.]+)/.exec(field);
     const target = at ? (p.triggers[Number(at[1])]?.target as Json | undefined) : undefined;
@@ -700,7 +701,7 @@ export function readPackage(dir: string): Package {
     const whole = typeof value === "string" ? WHOLE.exec(value) : null;
     return !!whole && Object.hasOwn(parameters, whole[1]!) && parameters[whole[1]!]!.default === undefined;
   };
-  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (issue.reason === "wrong_type" || !sampled(issue.field)) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
+  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field)) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   return p;
 }

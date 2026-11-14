@@ -64,10 +64,11 @@ export function parametersOf(t: TemplateView, text: ParameterText): Record<strin
   const out: Record<string, unknown> = {};
   for (const [key, p] of Object.entries(parameterFields(t))) {
     const v = text[key];
-    // A list, one item a line, each of its items' type; none typed, not sent (the server applies its default).
+    // A list, one item a line, each of its items' type. None typed: a required one is sent as [] (the server takes or
+    // refuses it), an optional one not at all (the server applies its default, shown as the field's hint).
     if (p.array) {
       const items = linesOf(v).map((item) => (p.type === "number" || p.type === "integer") && Number.isFinite(Number(item)) ? Number(item) : p.type === "boolean" && (item === "true" || item === "false") ? item === "true" : item);
-      if (items.length) out[key] = items;
+      if (items.length || p.required) out[key] = items;
       continue;
     }
     if (p.type === "boolean") { out[key] = v === "true"; continue; }
