@@ -1172,6 +1172,16 @@ test("exec takes no stdin flag: the adapter ends a process's stdin at once where
 	assert.ok(ended.some(([kind, wrote]) => kind === "run start" && !wrote), "so has init's start");
 });
 
+test("a command given no input never waits on its stdin's close: a vendor whose close never answers still creates", async () => {
+	const { provider, fake } = setup();
+	const exec = fake.host.exec;
+	fake.host.exec = async (id, argv, ctx) => {
+		const proc = await exec(id, argv, ctx);
+		return { ...proc, end: () => new Promise(() => {}) };
+	};
+	made(await create(provider));
+});
+
 test("the adapter reads AbortError and TimeoutError by name; a host with no errorCode answers vendor for the rest", async () => {
 	for (const [name, code] of [["TimeoutError", "timeout"], ["AbortError", "aborted"], ["Whatever", "vendor"]]) {
 		const { provider, fake } = setup();

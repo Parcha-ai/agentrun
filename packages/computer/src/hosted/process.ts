@@ -163,8 +163,10 @@ export async function runToExit(host: MachineHost, id: string, argv: readonly st
 	const err = drain(proc.stderr, OUTPUT_MAX);
 	const ran = (async (): Promise<RunResult> => {
 		// In pieces, so a vendor whose stdin takes one request at a time (E2B's sendStdin) is never handed a whole binary;
-		// with none to give, stdin ends at once, so the process reads end of file (one that ended already has no stdin).
-		if (stdin === undefined) await proc.end().catch(() => {});
+		// with none to give, stdin ends at once, so the process reads end of file (one that ended already has no stdin). Not
+		// awaited: a vendor's close that stalls (E2B's closeStdin is a request of its own) never holds up a command that
+		// reads no input.
+		if (stdin === undefined) Promise.resolve().then(() => proc.end()).catch(() => {});
 		else {
 			for (let at = 0; at < stdin.length; at += STDIN_CHUNK) await proc.write(stdin.subarray(at, at + STDIN_CHUNK));
 			await proc.end();

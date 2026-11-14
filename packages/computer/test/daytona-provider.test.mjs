@@ -296,6 +296,8 @@ test("the read-back: Daytona's states as the adapter's, its end, its GPUs and it
 	}
 	assert.equal((await read({ state: "started", desiredState: "destroyed" })).state, "gone");
 	assert.equal((await read({ state: "error", errorReason: "no capacity" })).why, "no capacity");
+	assert.equal((await read({ state: "build_failed" })).why, "Daytona reads the sandbox build_failed, with no reason given", "a failed sandbox with no reason still carries a why");
+	assert.equal((await read({ state: "destroying" })).why, undefined);
 	assert.equal(await read({ state: "destroyed" }), undefined, "a destroyed sandbox is one Daytona no longer has");
 	assert.deepEqual((await read({ snapshot: "daytona-gpu", gpu: 1, gpuType: "H100", autoDeleteInterval: 0 })).gpu, GPU);
 	const { provider } = setup({ [`GET /api/sandbox/${REF.id}`]: { status: 404, body: { statusCode: 404, message: "not found" } } });

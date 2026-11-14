@@ -196,7 +196,10 @@ function stateOf(status: string): Machine["state"] | undefined {
 /** An instance as the adapter reads a machine: its state (a status it does not know is gone, in words), labels, start. */
 function machineOf(instance: Agent37Instance): Machine {
 	const state = stateOf(instance.status);
-	const why = instance.status_reason?.message ?? (state === undefined ? `Agent37 reads the status ${show(instance.status)}, which this provider does not know` : undefined);
+	// A failed instance always carries a why, Agent37's or ours, so create stops on it as vendor, never as gone.
+	const why =
+		instance.status_reason?.message ??
+		(state === undefined ? `Agent37 reads the status ${show(instance.status)}, which this provider does not know` : instance.status === "failed" ? "Agent37 reads the instance failed, with no reason given" : undefined);
 	const created = dateOf(instance.created, "s");
 	return {
 		id: instance.id,

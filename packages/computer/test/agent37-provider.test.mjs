@@ -217,6 +217,7 @@ test("the status mapping: every Agent37 status is one of the adapter's states, a
 	assert.equal(odd.state, "gone");
 	assert.match(odd.why, /melting/);
 	rest.instances.get(value.id).status = "failed";
+	assert.equal((await host.get(value.id, CTX)).why, "Agent37 reads the instance failed, with no reason given", "a failed instance with no reason still carries a why");
 	rest.instances.get(value.id).status_reason = { code: "boot_failed", message: "the VM did not boot" };
 	assert.equal((await host.get(value.id, CTX)).why, "the VM did not boot");
 });

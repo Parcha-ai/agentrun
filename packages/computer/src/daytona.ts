@@ -275,7 +275,8 @@ class DaytonaHost implements MachineHost {
 			...(made ? { createdAt: made } : {}),
 			...(endsAt ? { endsAt } : {}),
 			...(isWhole(sb.gpu) && sb.gpu > 0 ? { gpu: { type: String(sb.gpuType), count: sb.gpu } } : {}),
-			...(typeof sb.errorReason === "string" && sb.errorReason !== "" ? { why: sb.errorReason } : {}),
+			// A failed sandbox always carries a why, Daytona's or ours, so create stops on it as vendor, never as gone.
+			...(typeof sb.errorReason === "string" && sb.errorReason !== "" ? { why: sb.errorReason } : FAILED.has(sb.state ?? "") ? { why: `Daytona reads the sandbox ${sb.state}, with no reason given` } : {}),
 		};
 	}
 
