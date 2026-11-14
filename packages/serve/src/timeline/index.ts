@@ -1,5 +1,5 @@
 export { groupTimeline, foldCalls, failedCall, type Call, type Fold, type Group } from "./group.js";
-export { callFailed, foldLabel, inputPreview, labelOf, nameOf, registerLabel, registerOutcome, registerTurnEnding, type FoldSpec, type LabelFn, type OutcomeFn, type ToolResultView } from "./labels.js";
+export { callFailed, endsTurn, foldLabel, inputPreview, labelOf, nameOf, registerLabel, registerOutcome, registerTurnEnding, type FoldSpec, type LabelFn, type OutcomeFn, type ToolResultView } from "./labels.js";
 export { renderText } from "./render-text.js";
 export { appWords, callWords, chordWords, stepWords, type ComputerCallRow, type ComputerStepRow } from "./computer.js";
 export { costLabel, endedUsage, PAGE_CHANGED_ROW, RUN_RESUMED, TURN_END } from "./timeline.js";
