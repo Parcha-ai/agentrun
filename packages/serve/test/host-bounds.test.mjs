@@ -26,7 +26,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import * as pages from "../dist/web-fetch-direct.js";
 import * as hosts from "../dist/host-tools.js";
 import { hostToolNames } from "../dist/tool-list.js";
-import { CLIP, monidRegistration, monidText } from "../dist/monid.js";
+import { CLIP, monidText } from "../dist/monid.js";
+import { monidForClaim } from "../dist/runner/monid-run.js";
 import { asked, askPerson } from "../dist/tools.js";
 import { HOST_TOOL_OUTPUT } from "../dist/runner/adapters/pi.js";
 import { localWorkspace } from "../dist/workspace/index.js";
@@ -42,6 +43,8 @@ const BACKGROUND = ["bash_background", "bash_output", "bash_input", "bash_signal
 /** Every tool a host runs here (tool-list.ts replay) but the background tools. */
 const HOSTED = hostToolNames().filter((name) => !BACKGROUND.includes(name));
 const signal = new AbortController().signal;
+/** A monid endpoint: a host tool of the run's, made from its revision's pin, no table tool. */
+const MONID_ENDPOINT = "monid:faux/person/enrich";
 
 test("every host tool's largest result is within the host's result bound, which each CLI is told to pass whole", async (t) => {
   const bound = kernel.HOST_RESULT_MAX_CHARS;
@@ -80,13 +83,14 @@ test("every host tool's largest result is within the host's result bound, which 
   const wideHit = { url: `https://s.example/${"u".repeat(pages.URL_MAX)}`, title: wide.repeat(pages.TITLE_CAP), snippet: wide.repeat(search.SNIPPET_MAX) };
   keep("web_search", search.searchText(found), search.searchText({ provider: "native", query: wide.repeat(search.QUERY_MAX), results: Array.from({ length: search.RESULTS_MAX }, () => wideHit), text: wide.repeat(search.ANSWER_MAX) }));
 
-  // monid's three: one answer far past CLIP, the whole filed under work/, by the longest run id it files by.
+  // A monid endpoint (one host tool per pinned endpoint, runner/monid-run.ts): one answer far past CLIP, the whole filed
+  // under work/, by the longest run id it files by.
   const work = join(dir, "work");
   await mkdir(work);
   const ws = localWorkspace(work);
-  const monid = [await monidText({ runId: "r".repeat(80), output: '"'.repeat(3 * CLIP) }, ws, "run"), await monidText({ runId: "w".repeat(80), output: wide.repeat(3 * CLIP) }, ws, "run")];
+  const monid = [await monidText({ runId: "r".repeat(80), output: '"'.repeat(3 * CLIP) }, ws, "faux"), await monidText({ runId: "w".repeat(80), output: wide.repeat(3 * CLIP) }, ws, "faux")];
   assert.ok(monid.every((text) => text.includes("the whole answer is in the run's files at evidence/monid/")), "filed through the run's Workspace");
-  for (const name of ["monid.discover", "monid.inspect", "monid.run"]) keep(name, ...monid);
+  keep(MONID_ENDPOINT, ...monid);
 
   // ask_person: a question far past the 500 characters its answer keeps, in quotes and in three-byte text.
   keep("ask_person", asked('"'.repeat(20_000)), asked(wide.repeat(20_000)));
@@ -122,7 +126,7 @@ test("every host tool's largest result is within the host's result bound, which 
   t.diagnostic(`bound ${bound}: ${JSON.stringify(largest)}; as Codex counts them (limit ${codex.CODEX_TOOL_OUTPUT_TOKENS}): ${JSON.stringify(codexTokens)}`);
   // The background tools are the computer's, run by the kernel's registry (workspace/run-tools.ts): the kernel holds
   // their bounds. Every other host tool has its largest result here.
-  assert.deepEqual(Object.keys(largest).sort(), HOSTED.sort(), "every host tool but the computer's background tools has its largest result here");
+  assert.deepEqual(Object.keys(largest).sort(), [...HOSTED, MONID_ENDPOINT].sort(), "every host tool but the computer's background tools, and a monid endpoint, has its largest result here");
   for (const [tool, size] of Object.entries(largest)) assert.ok(size < bound, `${tool}'s largest result is ${size} characters, not under the bound ${bound}`);
   for (const [tool, tokens] of Object.entries(codexTokens)) assert.ok(tokens <= codex.CODEX_TOOL_OUTPUT_TOKENS, `${tool}'s largest result is ${tokens} tokens as Codex counts them, past its tool_output_token_limit ${codex.CODEX_TOOL_OUTPUT_TOKENS}`);
   for (const [tool, size] of Object.entries(largest)) assert.ok(Math.round(size / 4) + 2 * 1_600 <= claude.MCP_OUTPUT_TOKENS / 2, `${tool}'s largest result, with two images, is past half the Claude Agent CLI's MAX_MCP_OUTPUT_TOKENS ${claude.MCP_OUTPUT_TOKENS}, where it counts exactly`);
@@ -137,9 +141,10 @@ test("every host tool's largest result is within the host's result bound, which 
   // client), carries the bound as its result size; the CLI takes one up to 500,000.
   // learned_workflow is the run's own tool, given beside the table's when its pin names a learned workflow.
   const learned = learnedWorkflowTool({ workflows: [{ name: "answer", description: "Answers a question", workflow: "{}" }], granted: [], env: {}, work, models: { getModel: () => undefined, getModels: () => [], completeSimple: async () => ({}) }, policy: () => "allow", denyFrom: () => "default" });
-  const registrations = [...fileTools(), bashTool(), web.webFetchTool(process.env), search.webSearchTool(process.env), ...["discover", "inspect", "run"].map((kind) => monidRegistration(kind, {}, () => ws)), learned, askPerson];
-  const all = hostToolsOf(run, HOSTED, ctx, new Map(), registrations);
-  assert.deepEqual(all.map((tool) => tool.name).sort(), HOSTED.map((name) => name.replace(".", "_")).sort(), "every host tool, under its wire name");
+  const registrations = [...fileTools(), bashTool(), web.webFetchTool(process.env), search.webSearchTool(process.env), learned, askPerson];
+  const endpoints = monidForClaim({ [MONID_ENDPOINT]: { description: "Enrich a person.", input: { type: "object", properties: {} }, usd: 0.003 } }, {}, () => ws).tools;
+  const all = [...hostToolsOf(run, HOSTED, ctx, new Map(), registrations), ...endpoints];
+  assert.deepEqual(all.map((tool) => tool.name).sort(), [...HOSTED, "monid__faux__person__enrich"].sort(), "every host tool, and a monid endpoint, under its wire name");
   const server = await claude.toolServer("hands", all.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })), async () => ({ content: [] }));
   const [near, far] = InMemoryTransport.createLinkedPair();
   await server.instance.connect(far);

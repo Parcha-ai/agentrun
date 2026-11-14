@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "linux.terminal.count-errors",
-  "version": 1,
+  "version": 2,
   "title": "Count the ERROR lines of a log in the terminal and write the count to a file",
   "split": "dev",
   "tags": ["terminal", "xfce4-terminal", "shell"],
@@ -9,7 +9,7 @@
     "os": "linux",
     "kind": "desktop",
     "capabilities": [
-      { "id": "xfce4-terminal", "kind": "exec", "why": "Xfce's terminal, and xdotool, which setup places its window with.", "argv": ["sh", "-c", "command -v xfce4-terminal && command -v xdotool"] }
+      { "id": "xfce4-terminal", "kind": "exec", "why": "Xfce's terminal, xdotool, which setup places its window with, and gzip's zgrep, which reads the compressed log.", "argv": ["sh", "-c", "command -v xfce4-terminal && command -v xdotool && command -v gzip && command -v zgrep"] }
     ]
   },
   "params": {
@@ -25,8 +25,8 @@
   "setup": [
     {
       "method": "exec.run",
-      "why": "Write the log: {{log.lines}} lines, {{log.want}} of them ERROR lines, and WARN lines that say \"error\" in lower case as decoys.",
-      "params": { "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d && awk -v T={{log.lines}} -v M={{log.every}} -v R={{log.at}} 'BEGIN { for (i = 1; i <= T; i++) { t = sprintf(\"2026-11-14 10:%02d:%02d\", int(i / 6), (i * 7) % 60); if (i % M == R) printf \"%s ERROR job %d failed: upstream timeout\\n\", t, i; else if (i % 5 == 2) printf \"%s WARN job %d: error budget at %d%%\\n\", t, i, 40 + i; else printf \"%s INFO job %d done in %d ms\\n\", t, i, 100 + 13 * i } }' > $d/server-{{nonce}}.log; [ \"$(grep -c ERROR $d/server-{{nonce}}.log)\" = {{log.want}} ] || { echo the log does not hold {{log.want}} ERROR lines >&2; exit 1; }"], "timeoutMs": 20000 }
+      "why": "Write the log: {{log.lines}} lines, {{log.want}} of them ERROR lines, and WARN lines that say \"error\" in lower case as decoys; then gzip it. The agent keeps the files group, so a log left as text could be read and counted with no terminal; compressed, counting it takes a program, and the terminal is the agent's only one.",
+      "params": { "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d && awk -v T={{log.lines}} -v M={{log.every}} -v R={{log.at}} 'BEGIN { for (i = 1; i <= T; i++) { t = sprintf(\"2026-11-14 10:%02d:%02d\", int(i / 6), (i * 7) % 60); if (i % M == R) printf \"%s ERROR job %d failed: upstream timeout\\n\", t, i; else if (i % 5 == 2) printf \"%s WARN job %d: error budget at %d%%\\n\", t, i, 40 + i; else printf \"%s INFO job %d done in %d ms\\n\", t, i, 100 + 13 * i } }' > $d/server-{{nonce}}.log; [ \"$(grep -c ERROR $d/server-{{nonce}}.log)\" = {{log.want}} ] || { echo the log does not hold {{log.want}} ERROR lines >&2; exit 1; }; gzip -n $d/server-{{nonce}}.log && [ ! -e $d/server-{{nonce}}.log ] && [ \"$(zgrep -c ERROR $d/server-{{nonce}}.log.gz)\" = {{log.want}} ]"], "timeoutMs": 20000 }
     },
     {
       "method": "process.start",
@@ -40,7 +40,7 @@
     }
   ],
   "exec": "deny",
-  "instruction": "In the terminal window, count how many lines of /tmp/computer-bench-{{nonce}}/server-{{nonce}}.log contain ERROR (in capitals), and write just that number into a new file /tmp/computer-bench-{{nonce}}/errors-{{nonce}}.txt.",
+  "instruction": "In the terminal window, count how many lines of the gzip-compressed log /tmp/computer-bench-{{nonce}}/server-{{nonce}}.log.gz contain ERROR (in capitals), and write just that number into a new file /tmp/computer-bench-{{nonce}}/errors-{{nonce}}.txt.",
   "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
   "checks": [
     {
@@ -64,7 +64,7 @@
       "why": "Type the command into the terminal and run it.",
       "params": {
         "actions": [
-          { "type": "type", "text": "grep -c ERROR /tmp/computer-bench-{{nonce}}/server-{{nonce}}.log > /tmp/computer-bench-{{nonce}}/errors-{{nonce}}.txt" },
+          { "type": "type", "text": "zgrep -c ERROR /tmp/computer-bench-{{nonce}}/server-{{nonce}}.log.gz >/tmp/computer-bench-{{nonce}}/errors-{{nonce}}.txt" },
           { "type": "key", "keys": ["enter"] },
           { "type": "wait", "ms": 1500 }
         ]

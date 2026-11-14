@@ -19,17 +19,15 @@ mcp:
     required: false
     reason: "Posts the weekly digest to the one Slack channel you set, and nowhere else."
     allow: []
-    # channel_id is the name the action also takes a channel by: held absent, so the pinned channel is the only one.
-    pin: { SLACK_SEND_MESSAGE: { channel: "${parameters.channel}", channel_id: null } }
+    pin: { SLACK_SEND_MESSAGE: { channel: "${parameters.channel}" } }
   - source: composio
     toolkit: gmail
     tools: [GMAIL_SEND_EMAIL]
     required: false
     reason: "Emails the weekly digest to the one address you set, with no cc or bcc."
     allow: []
-    # `to` is the name the action also takes the recipient by, and from_email picks the sending address: both held
-    # absent, so the mail goes from the connected account to the one address set.
-    pin: { GMAIL_SEND_EMAIL: { recipient_email: "${parameters.channel}", to: null, cc: null, bcc: null, extra_recipients: null, from_email: null } }
+    # from_email picks the sending address: held absent, so the mail goes from the connected account to the one address set.
+    pin: { GMAIL_SEND_EMAIL: { recipient_email: "${parameters.channel}", cc: null, bcc: null, extra_recipients: null, from_email: null } }
 parameters:
   competitors: { type: string, pattern: "^[^\\n]{2,2000}$", description: "the companies to watch, comma-separated, each a name and its domain: \"Acme (acme.com), Globex (globex.io)\"" }
   topics: { type: string, required: false, pattern: "^[^\\n]{0,500}$", description: "optional market keywords, comma-separated (\"payments orchestration, KYB\"): market news on them is in scope too" }

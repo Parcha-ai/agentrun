@@ -119,10 +119,10 @@ test("under AGENTRUN_BOX_ALLOW=none a computer that needs a network is not ready
 /** Why a Daytona sandbox is refused in Mode 2: it takes no Archil mount, and its descriptor says why. */
 const DAYTONA_NO_DISK = "Daytona can't mount the owner's disk this server keeps run folders on (Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes): set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)";
 
-/** Why a vendor's sandbox that mounts Archil is refused in Mode 2: it needs Archil's image in the owner's own vendor
- *  account, which this server can't put there yet. */
-const MODE2_SANDBOX = (article, label) =>
-  `${article} ${label} sandbox can't start in Mode 2 yet: it needs Archil's image in your ${label} account, and this server can't put it there yet. Set this agent's computer to none (Settings → Computers)`;
+/** Why a vendor's sandbox, or desktop, that would mount Archil is refused in Mode 2: it needs Archil's image in the
+ *  owner's own vendor account, which this server can't put there yet. */
+const MODE2_SANDBOX = (article, label, kind = "sandbox") =>
+  `${article} ${label} ${kind} can't start in Mode 2 yet: it needs Archil's image in your ${label} account, and this server can't put it there yet. Set this agent's computer to none (Settings → Computers)`;
 
 test("Mode 2 today: no sandbox is ready. Docker's can't mount the owner's disk, nor can Daytona's (saying why); Modal's, E2B's and Agent37's need Archil's image in the owner's account, keys or not; a desktop, phone or browser is offered", async (t) => {
   const env = { MODAL_TOKEN_ID: "good-id", MODAL_TOKEN_SECRET: "good-secret", E2B_API_KEY: "fake-test-key", AGENT37_API_KEY: "not-a-secret" };
@@ -136,7 +136,22 @@ test("Mode 2 today: no sandbox is ready. Docker's can't mount the owner's disk, 
   }
   assert.deepEqual([kindOf(view, "sandbox").offered, kindOf(view, "sandbox").why], [false, "no provider of a sandbox computer can reach this server's run folders"]);
   assert.equal(providerOf(view, "desktop", "docker").ready, true, "a desktop holds no folder unless its provider mounts it");
+  // E2B's and Agent37's desktops would mount the disk (they have files and exec), so they need the same image.
+  for (const [id, label] of [["e2b", "E2B"], ["agent37", "Agent37"]]) {
+    assert.deepEqual([providerOf(view, "desktop", id).ready, providerOf(view, "desktop", id).why], [false, MODE2_SANDBOX("An", label, "desktop")], `${id}'s desktop: its keys are saved, and still not ready`);
+    assert.equal(await routes.claimRefusal({ kind: "desktop", provider: id }), MODE2_SANDBOX("An", label, "desktop"), `${id}'s desktop: claimRefusal says the same`);
+  }
+  assert.equal(providerOf(view, "desktop", "orgo").why, "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers", "Orgo's desktop mounts nothing: only its key");
+  assert.equal(kindOf(view, "desktop").offered, true);
   assert.equal(kindOf(view, "phone").offered, true);
+});
+
+test("Mode 1: an E2B or Agent37 desktop mounts nothing, so it is never refused for Archil's image; E2B's key is all it needs", async (t) => {
+  const { routes } = await setup(t, { env: { E2B_API_KEY: "fake-test-key", AGENT37_API_KEY: "not-a-secret" } });
+  const view = await routes.view();
+  assert.equal(providerOf(view, "desktop", "e2b").ready, true);
+  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "e2b" }), undefined);
+  assert.doesNotMatch(providerOf(view, "desktop", "agent37").why ?? "", /Mode 2|Archil/);
 });
 
 test("a kind no provider can serve here is not offered, and says why: in Mode 2 with Docker the only sandbox (it can't mount the owner's disk), and no phone provider", async (t) => {

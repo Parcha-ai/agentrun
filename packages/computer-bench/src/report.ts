@@ -68,7 +68,7 @@ export interface Report {
 	splits: string[];
 	arms: ArmReport[];
 	platforms: PlatformReport[];
-	/** The tasks that denied the agent exec (done through the UI alone), and those that allowed it. */
+	/** The tasks that denied the agent exec (no shell, no program; its files group kept), and those that allowed it. */
 	exec: { deny: string[]; allow: string[] };
 	/** How the run was measured, for its paragraph. */
 	measured: {
@@ -261,7 +261,7 @@ function measuredParagraph(report: Report): string {
 		`Each run is scored by the task's own checks of the computer's real state, read before the computer is released; ${grader}.`,
 		`A run is infra when the platform failed, not the agent: no computer could be had, setup failed, the computer stopped answering, a check could not run, or the run ended on a platform error (a model endpoint, a lost runner). Infra runs are ${reruns} and never scored; refused runs (a computer without the task's app or capability) are not scored either.`,
 		`A step is one computer call (a code-mode script of six calls is six); a model turn is one tool call.`,
-		`Tasks that deny exec (${exec.deny.length}): ${exec.deny.join(", ") || "none"}; the agent had no shell and no way to start a program, so it worked through the UI. Tasks that allow exec (${exec.allow.length}): ${exec.allow.join(", ") || "none"}.`,
+		`Tasks that deny exec (${exec.deny.length}): ${exec.deny.join(", ") || "none"}; the agent had no shell and no way to start a program, and kept the computer's files group where it has one. Tasks that allow exec (${exec.allow.length}): ${exec.allow.join(", ") || "none"}.`,
 	].join(" ");
 }
 
