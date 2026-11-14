@@ -209,7 +209,8 @@ export function storyOf(input: {
     const words = `${dollars(s.before.mean_usd)} a run by the agent, ${dollars(s.after.mean_usd)} all-in since`;
     const ratio = s.times_cheaper;
     if (ratio !== null && ratio > 1) stages.push({ key: "cheaper", title: "Cheaper", value: `${timesWord(ratio)} cheaper`, detail: words, state: "done" });
-    else if (ratio !== null) stages.push({ key: "cheaper", title: "Cheaper", value: ratio < 1 ? `Not cheaper yet: ${timesWord(1 / ratio)} the cost` : "Same cost", detail: words, state: "now" });
+    // times_cheaper is rounded by the server (0.03 reads as 0), so the increase comes from the two means.
+    else if (ratio !== null) stages.push({ key: "cheaper", title: "Cheaper", value: ratio < 1 ? (s.before.mean_usd > 0 ? `Not cheaper yet: ${timesWord(s.after.mean_usd / s.before.mean_usd)} the cost` : "Not cheaper yet") : "Same cost", detail: words, state: "now" });
     else stages.push({ key: "cheaper", title: "Cheaper", value: `${s.after.runs} ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: `${words}; how many times cheaper shows after ${CHEAPER_AFTER} runs`, state: "now" });
   } else if (!notesOnly) {
     stages.push({ key: "cheaper", title: "Cheaper", value: "Not yet", detail: "once a workflow takes over, each run's all-in cost against before", state: "later" });
