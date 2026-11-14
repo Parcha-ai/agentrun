@@ -52,18 +52,19 @@ const stdout = {
 };
 const module = fileURLToPath(new URL("./conformance.mjs", import.meta.url));
 const results = [];
-let report = {};
+const reports = [];
 for (const options of passes) {
 	json = "";
 	await main(["--provider", module, ...options, "--json"], { stdout, stderr: progress, progress: true });
-	report = JSON.parse(json);
+	const report = JSON.parse(json);
+	reports.push(report);
 	results.push(...(report.results ?? []));
 }
-report = { ...report, results };
 for (const result of results) {
 	if (ended.has(result.id)) result.ms = ended.get(result.id);
 }
-writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
+// Each pass's own report (its only, coreNotRun, cleanup), and every case in order.
+writeFileSync(out, `${JSON.stringify({ passes: reports, results }, null, 2)}\n`);
 
 const marks = { pass: "✅", fail: "❌", skip: "⏭️" };
 const lines = ["| | Case | Level | ms | Detail |", "| --- | --- | --- | ---: | --- |"];
