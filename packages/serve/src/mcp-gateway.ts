@@ -1,6 +1,5 @@
 // A run's remote MCP servers: the one place every harness's MCP call goes through. A claimed run's spec builds one per
-// claim from its MCP claim step (runner/mcp-run.ts mcpForClaim); pi calls it through the runner's host tools, and a
-// harness with its own MCP client through the session proxy's /mcp/<server> (@parcha/agentrun-kernel/host mcpRoute).
+// claim from its MCP claim step (runner/mcp-run.ts mcpForClaim); every harness calls it through the runner's host tools.
 //  - What a run may call is pinned (mcpPinOf): each granted tool as the server listed it when its owner saved it, and
 //    the server's URL then. A later refresh of the server never changes a running agent's tools.
 //  - Its credentials come from the claim step, only for the servers it grants, with each server's URL now, read at every
@@ -17,7 +16,7 @@
 //    tool with no price runs, marked "not metered" on the run's root (TOOL_UNMETERED), outside the run's cost.
 import { randomUUID } from "node:crypto";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
+import type { McpCallResult, McpTool } from "@parcha/agentrun-kernel";
 import { TOOL_UNMETERED } from "./timeline/index.js";
 import { filedAnswer } from "./filed-answer.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
@@ -210,21 +209,18 @@ export interface McpGatewayOptions {
   /** The claim's per-call check of a server's credential (its custody stamp): awaited before each call is checked for
    *  sending, it may drop the credential (`credentials[server].unopened`), which the call then refuses unsent; one that
    *  throws (a store read failed, the call was stopped) refuses the call unsent too, in words, and the run goes on. Only
-   *  the runner's MCP claim step passes it: a github_app token whose App was disconnected or replaced. A CLI harness's
-   *  session proxy ends in the same call. */
+   *  the runner's MCP claim step passes it: a github_app token whose App was disconnected or replaced. */
   beforeCall?: (server: string, signal: AbortSignal) => Promise<void>;
 }
 
 /** A run's journal commit. */
 export type McpCommit = <T>(change: (tx: unknown) => Promise<T>) => Promise<T>;
 
-/** What a call with no call id answers where a gate must know it by one: nothing was sent. */
-export const noCallId = (name: string): string => `The ${name} call was not sent: it came with no call id, so it cannot wait for a person's approval.`;
-
 /** The gateway: a session's servers, and their calls. `credentials` is read at every call and every request, never
  *  copied: a change the claim step makes after (a token refreshed behind the claim, a server removed) reaches it, even
  *  through a client already connected. */
-export type McpGateway = Omit<SessionMcp, "call"> & {
+export type McpGateway = {
+  servers: readonly { name: string; tools: readonly McpTool[] }[];
   call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string }): Promise<McpCallResult>;
   /** The credential values the calls in flight hold for their scrub, every call's together (none when idle). */
   heldValues(): string[];

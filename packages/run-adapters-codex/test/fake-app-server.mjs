@@ -78,13 +78,14 @@
  *   file mid-turn (`FAKE_CODEX_TAMPER` does it in every turn);
  * - `turn/interrupt` kills the running command and ends the turn interrupted;
  * - `recall` answers with the code word an earlier message of the thread
- *   ("the code word is …") named, from the rollout it resumed.
+ *   ("the code word is …") named, from the rollout it resumed;
+ * - `thread/start` refuses a dynamic tool named `mcp` or `mcp__…`, as Codex
+ *   0.164 does (its own MCP client's names are reserved).
  */
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { mcpDown, mcpTurn } from './fake-app-server-mcp.js';
 
 const home = process.env.CODEX_HOME;
 if (home && process.argv[2] === 'sandbox') {
@@ -366,9 +367,6 @@ async function runTurn(turnId, clientId, text) {
     await sleep(300);
     last = 'tampered';
     await say(turnId, last);
-  } else if (trimmed === 'outputs' || /^mcp\s/.test(trimmed)) {
-    last = await mcpTurn(trimmed, turnId, { thread, write, notify, say, table });
-    await say(turnId, last);
   } else if (trimmed === 'recall') {
     const said = thread.lines.map((l) => JSON.stringify(l.payload ?? {})).join('\n');
     const word = /code word is (\w+)/.exec(said)?.[1];
@@ -504,8 +502,8 @@ async function handle(m) {
     case 'thread/start': {
       const id = randomUUID();
       const path = join(home, 'sessions', '2026', '10', '06', `rollout-2026-10-06T00-00-00-${id}.jsonl`);
-      const down = await mcpDown({ config, table });
-      if (down) return fail(-32603, down);
+      const reserved = (p.dynamicTools ?? []).find((t) => t?.name === 'mcp' || String(t?.name ?? '').startsWith('mcp__'));
+      if (reserved) return fail(-32600, `dynamic tool name is reserved: ${reserved.name}`);
       thread = { id, path, cwd: p.cwd, dynamicTools: p.dynamicTools ?? [], lines: [], planted: projectConfig(p.cwd) };
       return reply({ thread: { id, path }, approvalPolicy: p.approvalPolicy, sandbox: { type: 'readOnly' } });
     }

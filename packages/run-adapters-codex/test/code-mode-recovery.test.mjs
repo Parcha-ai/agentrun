@@ -119,13 +119,14 @@ test("a resumed script that repeats a completed computer call gets the JSON the 
 const WAITING = "This mcp:fake/add call waits for a person's approval; the run pauses here and continues with the result when they answer.";
 
 test("a cut-off exec tells a nested MCP call the host parked that it was waiting for a person's approval and did not run, never that it completed", async () => {
-  const { recorded } = await import('../dist/mcp.js');
+  const { kernelTool } = await import('../dist/adapter.js');
   const output = await parkedExec(async (drive) => {
-    const mcp = { servers: [{ name: 'fake', tools: [{ name: 'add', inputSchema: { type: 'object' } }] }], call: async () => ({ content: [{ type: 'text', text: WAITING }], parked: true }) };
-    const door = recorded(mcp, drive, () => ({ barrier: async () => true, recovered: () => undefined }));
-    assert.equal((await door.call('fake', 'add', { a: 2, b: 3 }, { signal: new AbortController().signal, callId: 'exec-1' })).content[0].text, WAITING, 'the model is told it waits');
+    // The run's MCP tool, a host tool like any other, by the name Codex is given it (mcp_fake__add).
+    const host = { name: 'mcp__fake__add', description: 'Adds.', inputSchema: { type: 'object' }, replay: 'never', call: async () => ({ text: WAITING, parked: true }) };
+    const bridge = toolBridge(drive, [kernelTool(host)], { live: false });
+    assert.equal((await bridge.call('mcp_fake__add', { a: 2, b: 3 }, 'exec-1')).text, WAITING, 'the model is told it waits');
   });
-  assert.match(output, /\n1\. mcp__fake__add was waiting for a person's approval and did not run; it was not run again\./);
+  assert.match(output, /\n1\. mcp_fake__add was waiting for a person's approval and did not run; it was not run again\./);
   assert.doesNotMatch(output, /completed|effect is done/i);
 });
 

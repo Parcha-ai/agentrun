@@ -76,8 +76,6 @@ export interface AnthropicPolicyOptions {
   tools: readonly string[];
   /** The CLI's own tools the session has, offered by their own names beside its tools (`Skill`, when it has skills). */
   builtins?: readonly string[];
-  /** The granted tools of the session's remote MCP servers, as the CLI names them (`mcp__<server>__<tool>`). */
-  mcpTools?: readonly string[];
   /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
   /** Admit Anthropic's web search server tool (`CLAUDE_WEB_SEARCH_TOOL`), exactly as the pinned CLI asks for it; every
@@ -277,7 +275,7 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
     blocks((message as Record<string, unknown>).content, "a message's content");
   }
   blocks(body.system, "system");
-  const allowed = context.host !== undefined ? new Set(clientToolNames(body.tools)) : new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? []), ...(options.mcpTools ?? [])]);
+  const allowed = context.host !== undefined ? new Set(clientToolNames(body.tools)) : new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? [])]);
   const tools = ownTools(body.tools, allowed, options.webSearch);
   const choice = body.tool_choice;
   const chosen = isPlain(choice) && typeof choice.name === "string" && (allowed.has(choice.name) || (options.webSearch === true && choice.name === "web_search"));
@@ -378,10 +376,10 @@ export function anthropicFiltered(text: string): boolean {
 }
 
 /** Whether a Messages body (as `apply` kept it) is the turn's answer request: it offers the model one of the session's
- *  tools, its own, built-in or remote (a remote MCP server's). The CLI's side calls (a title, a summary, a web search's
+ *  tools, its own (a run's remote MCP tools among them) or built-in. The CLI's side calls (a title, a summary, a web search's
  *  own request) offer none of them; in a session with no tools no request can be told from one, so each is the turn's. */
-export function anthropicAnswers(body: Record<string, unknown>, options: Pick<AnthropicPolicyOptions, "tools" | "builtins" | "mcpTools">): boolean {
-  const allowed = new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? []), ...(options.mcpTools ?? [])]);
+export function anthropicAnswers(body: Record<string, unknown>, options: Pick<AnthropicPolicyOptions, "tools" | "builtins">): boolean {
+  const allowed = new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? [])]);
   if (allowed.size === 0) return true;
   return Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && typeof tool.name === "string" && allowed.has(tool.name));
 }

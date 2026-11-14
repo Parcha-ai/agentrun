@@ -16,8 +16,7 @@
 // Model spend is accounted only there, by the runner: the proxy keeps no ledger of its own.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
-import { type McpHandler, mcpRoute } from "./mcp-route.js";
-import { CONTENT_FILTERED, type McpClient, type NoteRequest, type SessionMcp } from "../types.js";
+import { CONTENT_FILTERED, type NoteRequest } from "../types.js";
 import { type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "../booking.js";
 import { SPEND_CAP_REACHED } from "../kernel/cap/words.js";
 
@@ -562,10 +561,6 @@ export interface ModelProxyOptions {
    *  after the client's, so the client can neither set nor override them, and before the credential's. Checked when the
    *  proxy starts (`hostHeaderProblems`). */
   headers?: Readonly<Record<string, string>>;
-  /** The session's remote MCP servers, each mounted here at `/mcp/<server>` behind the session's key (mcp-route.ts),
-   *  for the harness's own MCP client as its adapter declares it (`client`, AdapterCapabilities.mcpClient). One mount for
-   *  every harness: an adapter hands the session's MCP, never a route of its own. */
-  mcp?: { session: SessionMcp; client: McpClient; keepaliveMs?: number };
   /** For tests: the fetch the proxy forwards with. */
   fetch?: typeof fetch;
   /** Told, with CONTENT_FILTERED, once an answer the provider stopped on its content filter has been passed and booked
@@ -604,7 +599,7 @@ export interface ModelProxy {
    *  harness. A request under it goes through the same policy, origin, credential, price and hooks as the harness's;
    *  its admission names the label (ModelRequest.host), the policy applies it as the host's (`ProxyRequestContext`),
    *  it is never the turn's answer request (a content-filter stop on it never halts the turn) and never watched. It opens
-   *  the model routes only: the session's MCP door stays behind the session's key. */
+   *  the model routes only. */
   sideKey(label: string): string;
   /** The harness opened its next turn: once the proxy has told it a turn's answer stopped (onCut, onFiltered), it refuses
    *  the session's answer requests, unsent and unbooked, until this is called. */
@@ -618,10 +613,6 @@ export interface ProxyRequestContext {
   readonly host?: string;
 }
 
-/** A server's endpoint, `/mcp/<server>`, with no query. */
-const MCP_PATH = /^\/mcp\/([a-z][a-z0-9-]{0,31})$/;
-/** Where an MCP client looks for OAuth after a 401: never served here, so it never starts a sign-in against the proxy. */
-const OAUTH_PATH = /^\/(?:\.well-known\/|register(?:$|[/?]))/;
 const UNSAFE_PATH = /[^A-Za-z0-9/_.\-?=&]|\.\.|\/\/|^[^/]|\?.*\?/;
 const MAX_BODY = 32 * 1024 * 1024;
 /** How much of a response's start and end the proxy keeps to read its usage from. */
@@ -896,9 +887,6 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     res.end(JSON.stringify({ error: { message, type: "agentrun_proxy", ...(code ? { code } : {}) } }));
   };
 
-  // The session's MCP door, mounted once here for whichever harness's client calls it (the call id from its fact).
-  const mcpDoor: McpHandler | undefined = options.mcp && mcpRoute(options.mcp.session, { callIdMeta: options.mcp.client.callIdMeta, ...(options.mcp.keepaliveMs !== undefined ? { keepaliveMs: options.mcp.keepaliveMs } : {}) });
-
   /** Serves one request. A note it took and did not bring to its admission (it left before `beforeRequest`: its client
    *  gone while it was counted, a refusal, an error) is given back to the host then, however it left, so the next request
    *  can take it at once. From its admission on the note is the admission's: told, or given back by its refusal. */
@@ -921,17 +909,6 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const serveRequest = async (req: IncomingMessage, res: ServerResponse, taken: { note?: string }) => {
     // A request refused before its body is read is drained, so its client gets the answer instead of a reset.
     res.once("finish", () => { if (!req.complete) req.resume(); });
-    const path = req.url ?? "";
-    if (options.mcp && OAUTH_PATH.test(path)) {
-      res.writeHead(404, { "content-length": "0" });
-      return res.end();
-    }
-    const mcp = mcpDoor ? MCP_PATH.exec(path) : null;
-    if (mcp) {
-      if (!sameKey(policy.keyOf(req.headers), key)) return refuse(res, 401, "this session's key is required", req);
-      if (closing) return refuse(res, 503, "the model proxy is closing", req);
-      return mcpDoor!(mcp[1]!, req, res);
-    }
     let route: ProxyRoute;
     let query: string;
     try { ({ route, query } = matchRoute(policy.routes, req.method ?? "", req.url ?? "")); } catch (error) {

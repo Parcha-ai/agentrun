@@ -1,9 +1,10 @@
-// Remote MCP tools on the runner for a harness with its own MCP client (AdapterCapabilities.mcpClient: Claude Code, Codex):
-// the loop hands the session's MCP in the session's spec (runner/mcp-run.ts `session`), the kernel's model proxy mounts
-// it once at `/mcp/<server>` from the adapter's client fact (startModelProxy's `mcp`), and the CLI's client calls it
-// there with the session's key. Each call asks the loop's gate first (by its catalog name), then runs as the loop's host
-// tool: its start and end on the run's record, the gateway sending it with the credential the CLI never sees. Here the
-// CLI is a stand-in that speaks MCP to the real door as Claude Code's client does (`_meta["claudecode/toolUseId"]`).
+// Remote MCP tools on the runner for a CLI harness (Claude Code, Codex, OpenCode): the claim's MCP tools (runner/mcp-run.ts)
+// are host tools like any other, handed to the session in its spec's tools under their wire names, and its tool bridge
+// asks the loop's gate before each call (by its catalog name), then runs it as the loop's host tool: its start and end on
+// the run's record, the gateway sending it with the credential the CLI never sees. A call the gate parks is held at the
+// bridge, the CLI handed nothing, until the session closes; the CLI's own resume issues it again under its id, and the
+// gate's answer then (the person's) runs it once or refuses it. Here the CLI is a stand-in that calls its tools through
+// the host's gate as every CLI adapter's tool bridge does (run-adapters' toolBridge).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -11,8 +12,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
-import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 /** A tool as the registry keeps it: as its server listed it (input_schema). */
@@ -21,13 +20,12 @@ const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { permissionOf } = await import("../dist/tool-gate.js");
-const { waitingText, RESUME_GO_ON } = await import("../dist/tool-gate.js");
 const { deniedText } = await import("../dist/runner/loop-contract.js");
 const { deniedText: setToDenyText } = await import("../dist/refusal-words.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { TOOL_UNMETERED } = await import("../dist/timeline/index.js");
-const { mcpForClaim } = await import("../dist/runner/mcp-run.js");const { noCallId } = await import("../dist/mcp-gateway.js");
+const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { STOPPED_WHILE_WAITING } = await import("../dist/refusal-words.js");
 const { INTERRUPTED_TEXT } = await import("@parcha/agentrun-kernel/kernel");
@@ -36,62 +34,51 @@ const KEY = randomBytes(32);
 const TOKEN = `not-a-secret-${"runner-mcp-cli-bearer-for-the-scan"}`;
 const object = (properties) => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false });
 const ADD = { name: "add", title: "Add", description: "Add two numbers.", inputSchema: object({ a: { type: "number" }, b: { type: "number" } }), annotations: { readOnlyHint: true } };
+/** The MCP tool's wire name, as the claim hands it to the session. */
+const WIRE = "mcp__fake__add";
 const CALL_ID = "toolu_cli_1";
 const STEADY = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 
-/** A CLI stand-in with its own MCP client (Claude Code's call-id key): its session's proxy mounts the session's MCP, and
- *  its one turn calls `add` there over HTTP, then says what the door answered. `seen` keeps what it was handed. `callId`:
- *  the id its call carries under that key; null, a call with none. */
-function mcpCli(seen, { reissue = false, callId = CALL_ID } = {}) {
-  const client = { callIdMeta: "claudecode/toolUseId" };
+/** A CLI stand-in whose one turn calls the MCP tool through the host's gate under CALL_ID, then says what it was
+ *  answered (none when it was offered no such tool). `seen` keeps the spec it was opened with and what its call was answered (`answer`; none while it is
+ *  held). Like a CLI it keeps a resume log: a session opened again after its turn was sent and never answered finds the
+ *  turn open, and its recover() issues the same call again under the same id, as a CLI's own resume does. */
+function bridgeCli(seen) {
   return {
     id: "stand-in-cli",
-    capabilities: () => ({ mcpClient: client }),
     check: () => [],
     async open(spec, io) {
       seen.spec = spec;
-      const proxy = await startModelProxy({
-        policy: anthropicPolicy({ model: "claude-test", tools: [] }),
-        hooks: io.models,
-        model: "claude-test",
-        origin: "https://faux.invalid",
-        credential: async () => "not-a-secret-provider",
-        ...(spec.mcp ? { mcp: { session: spec.mcp, client } } : {}),
-      }, randomBytes(32).toString("base64url"));
-      // `reissue`: a session opened again after its turn was cut (sent, never done) is open; its recover() runs the turn
-      // again, issuing the same call under the same id, as a CLI's own resume does.
       const kept = await io.writer.read();
       const sentBefore = kept.some((record) => record.kind === "stand-in.sent");
-      let state = !sentBefore ? "new" : reissue && !kept.some((record) => record.kind === "stand-in.done") ? "open_turn" : "idle";
+      let state = !sentBefore ? "new" : !kept.some((record) => record.kind === "stand-in.done") ? "open_turn" : "idle";
       let turn;
+      const closing = new AbortController();
       const callTurn = async () => {
-        const response = await fetch(`${proxy.url}/mcp/fake`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${proxy.key}`, "content-type": "application/json", accept: "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "add", arguments: { a: 2, b: 3 }, ...(callId === null ? {} : { _meta: { [client.callIdMeta]: callId } }) } }),
-        });
-        const body = await response.json();
-        seen.answer = body.result;
+        const call = { callId: CALL_ID, tool: WIRE, args: { a: 2, b: 3 } };
+        // A model calls only the tools it was offered.
+        if (!spec.tools.some((tool) => tool.name === WIRE)) {
+          io.onEvent({ type: "text", delta: "I have no add tool." });
+          io.onEvent({ type: "turn_end", status: "completed" });
+          return { status: "completed" };
+        }
+        const answer = await io.gate(call);
+        if (answer !== "allow" && !("deny" in answer)) {
+          await new Promise((resolve) => closing.signal.addEventListener("abort", resolve, { once: true }));
+          return { status: "aborted" };
+        }
+        const result = answer === "allow" ? await spec.tools.find((tool) => tool.name === WIRE).call(call.args, { callId: CALL_ID, signal: io.signal }) : { text: answer.deny, isError: true };
+        seen.answer = result;
         await io.writer.append([{ kind: "stand-in.done", data: null }]);
-        io.onEvent({ type: "text", delta: `It said ${body.result?.content?.[0]?.text}.` });
+        io.onEvent({ type: "text", delta: `It said ${result.text}.` });
         io.onEvent({ type: "turn_end", status: "completed" });
         return { status: "completed" };
       };
       return {
         get state() { return state; },
-        async send(text) {
-          // The resume message for a call that parked (main's [tool approval] words): kept, and the turn says it heard it.
-          if (text.startsWith("[tool approval] ")) {
-            (seen.followUps ??= []).push(text);
-            turn = (async () => {
-              io.onEvent({ type: "text", delta: "Resumed." });
-              io.onEvent({ type: "turn_end", status: "completed" });
-              return { status: "completed" };
-            })();
-            return;
-          }
+        async send() {
           await io.writer.append([{ kind: "stand-in.sent", data: null }]);
           state = "idle";
           turn = callTurn();
@@ -103,18 +90,16 @@ function mcpCli(seen, { reissue = false, callId = CALL_ID } = {}) {
         async settleOpenTurn() { state = "idle"; },
         turnEnd: () => turn,
         async interrupt() {},
-        // Closed once its turn has heard the door's answer: a call that parks is answered (main's waiting words) before
-        // the session closes, and the CLI keeps what it heard.
         async close() {
+          closing.abort();
           await turn?.catch(() => undefined);
-          await proxy.close().catch(() => undefined);
         },
       };
     },
   };
 }
 
-async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gateOf, wrap = (store) => store, timing = STEADY, reissue = false, settle = true, callId } = {}) {
+async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gateOf, wrap = (store) => store, timing = STEADY, settle = true } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -138,7 +123,7 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gat
   const loop = createAdapterLoop(async (claim, run) => {
     const mcp = await mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants, harness: run.harness, work: () => work });
     return {
-      adapter: mcpCli(seen, { reissue, callId }),
+      adapter: bridgeCli(seen),
       session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
       input: "Add them.",
       record: "loop",
@@ -197,13 +182,14 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gat
 
 const toolCalls = (fake) => fake.log.filter((entry) => entry.method === "tools/call");
 
-test("C1: the CLI's session carries the run's MCP, not its tools as host tools; an allowed call through the door answers, sent once with the credential the CLI never held, on the run's record", async (t) => {
+test("C1: the CLI's session carries the run's MCP tools as host tools; an allowed call through its bridge answers, sent once with the credential the CLI never held, on the run's record", async (t) => {
   const { row, seen, fake, entries } = await cliRun(t, { settings: { "mcp:fake/add": { permission: "allow" } } });
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.deepEqual(seen.spec.mcp.servers.map((server) => ({ name: server.name, tools: server.tools.map((tool) => tool.name) })), [{ name: "fake", tools: ["add"] }]);
-  assert.deepEqual(seen.spec.tools.map((tool) => tool.name), ["lookup"], "the MCP tools are the CLI's own client's, not host tools");
+  assert.deepEqual(seen.spec.tools.map((tool) => tool.name), ["lookup", WIRE], "the MCP tools are host tools, beside the run's own");
+  assert.equal("mcp" in seen.spec, false, "no MCP of its own: the CLI's client is never handed a server");
   assert.equal(JSON.stringify(seen.spec).includes(TOKEN), false, "no credential in what the CLI was handed");
-  assert.deepEqual(seen.answer, { content: [{ type: "text", text: "5" }] });
+  assert.equal(seen.answer?.text, "5", JSON.stringify(seen.answer));
+  assert.notEqual(seen.answer?.isError, true);
   assert.equal(toolCalls(fake).length, 1, "sent once");
   assert.equal(toolCalls(fake)[0].authorization, true, "with its credential");
   const start = entries.find((entry) => entry.kind === KINDS.callStart)?.data;
@@ -214,12 +200,10 @@ test("C1: the CLI's session carries the run's MCP, not its tools as host tools; 
   assert.deepEqual(entries.filter((entry) => entry.kind === TOOL_UNMETERED).map((entry) => entry.data.tool), ["mcp:fake/add"]);
 });
 
-test("C2: a call set to ask parks the run with nothing sent, the CLI answered main's waiting words; the owner's Allow runs it exactly once and the session goes on with its result", async (t) => {
+test("C2: a call set to ask parks the run with nothing sent and the CLI handed nothing; the owner's Allow runs it exactly once when the CLI issues it again, and the session goes on with its result", async (t) => {
   const run = await cliRun(t);
   assert.equal(run.row.state, "parked", JSON.stringify(run.row));
-  // The run parks on the ask and its session closes once the CLI heard the door's answer: the waiting words (the door
-  // sends no parked flag).
-  assert.deepEqual(run.seen.answer, { content: [{ type: "text", text: waitingText("mcp:fake/add") }] });
+  assert.equal(run.seen.answer, undefined, "the CLI was handed nothing while it waits");
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent while it waits");
   const [ask] = run.entries.filter((entry) => entry.kind === KINDS.ask).map((entry) => entry.data);
   assert.deepEqual([ask?.callId, ask?.tool, ask?.price], [CALL_ID, "mcp:fake/add", "not metered"], "asked by the CLI's own call id, as main's card");
@@ -227,11 +211,7 @@ test("C2: a call set to ask parks the run with nothing sent, the CLI answered ma
   const { row, entries } = await run.settled((row) => row.state === "ended" && row.runner === null);
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(toolCalls(run.fake).length, 1, "run exactly once");
-  assert.equal(run.seen.followUps?.length, 1, "one resume message");
-  assert.ok(run.seen.followUps[0].startsWith(`[tool approval] This answers your mcp:fake/add call ${CALL_ID} (arguments {"a":2,"b":3})`), run.seen.followUps[0]);
-  // Then the one line that sends the agent back to the person's request: Claude Code read the result alone as a note about
-  // the approval and answered that, never the question (live, a Composio MCP call, 2 of 3 runs).
-  assert.ok(run.seen.followUps[0].endsWith(`They allowed it, and it ran. Its result:\n5\n\n${RESUME_GO_ON}`), run.seen.followUps[0]);
+  assert.equal(run.seen.answer?.text, "5", "the CLI is handed the call's real result");
   assert.equal(entries.find((entry) => entry.kind === KINDS.callEnd)?.data.output, "5", "the approved call on the run's record");
 });
 
@@ -242,12 +222,12 @@ test("C4: a parked call the owner denies is told in their words, and nothing is 
   const { row } = await run.settled((row) => row.state === "ended" && row.runner === null);
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
-  assert.ok(run.seen.followUps?.[0]?.endsWith(`\n${deniedText("mcp:fake/add", "not today")}\n\n${RESUME_GO_ON}`), run.seen.followUps?.[0]);
+  assert.deepEqual(run.seen.answer, { text: deniedText("mcp:fake/add", "not today"), isError: true });
 });
 
 test("C3: a call set to deny is refused in the gate's words, nothing sent", async (t) => {
   const { seen, fake } = await cliRun(t, { settings: { "mcp:fake/add": { permission: "deny" } } });
-  assert.deepEqual(seen.answer, { content: [{ type: "text", text: setToDenyText("mcp:fake/add") }], isError: true });
+  assert.deepEqual(seen.answer, { text: setToDenyText("mcp:fake/add"), isError: true });
   assert.equal(toolCalls(fake).length, 0, "nothing sent");
 });
 
@@ -257,7 +237,7 @@ test("C3b: a CLI's call outside its server's argument pin is refused in the pin'
     before: ({ server }) => server.settings.put("tool-settings", { "mcp:fake/add": { permission: "allow", pin: { a: 7 } } }),
     gateOf: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work),
   });
-  const said = seen.answer?.content?.[0]?.text ?? "";
+  const said = seen.answer?.text ?? "";
   assert.equal(seen.answer?.isError, true, JSON.stringify(seen.answer));
   assert.match(said, /mcp:fake\/add/, said);
   assert.match(said, /a = 7/, `the pin's words: ${said}`);
@@ -274,27 +254,17 @@ test("C5: a parked call across a new runner: the runner that parked it goes, ano
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(row.runner, null);
   assert.equal(toolCalls(run.fake).length, 1, "run exactly once");
-  assert.ok(run.seen.followUps?.[0]?.endsWith(`They allowed it, and it ran. Its result:\n5\n\n${RESUME_GO_ON}`), run.seen.followUps?.[0]);
+  assert.equal(run.seen.answer?.text, "5");
 });
 
-test("C7: a door call that carries no call id is refused in words: never asked of the gate, never sent", async (t) => {
-  const asked = [];
-  const { row, seen, fake, entries } = await cliRun(t, { callId: null, gateOf: async () => (call) => (asked.push(call.tool), permissionOf(call.tool, { "mcp:fake/add": { permission: "allow" } })) });
-  assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.deepEqual(seen.answer, { content: [{ type: "text", text: noCallId("mcp:fake/add") }], isError: true });
-  assert.deepEqual(asked.filter((tool) => tool === "mcp:fake/add"), [], "the gate was never asked");
-  assert.deepEqual(fake.log.filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "nothing reached the server");
-  assert.equal(entries.filter((entry) => entry.kind === KINDS.callStart).length, 0, "no call on the run's record");
-});
-
-test("C6: a run that grants no MCP tool hands its CLI no MCP server, and the server sees nothing", async (t) => {
+test("C6: a run that grants no MCP tool hands its CLI no MCP tool, and the server sees nothing", async (t) => {
   const run = await cliRun(t, { grants: [] });
   assert.equal(run.row.state, "ended", JSON.stringify(run.row));
-  assert.equal(run.seen.spec.mcp, undefined, "no session MCP, so no /mcp door is mounted");
+  assert.deepEqual(run.seen.spec.tools.map((tool) => tool.name), ["lookup"], "no MCP tool among the host tools");
   assert.deepEqual(run.fake.log.filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "the server saw nothing of the run");
 });
 
-// A call parked at its gate through the CLI's own client is on the run's record from its park (its start, marked
+// A call parked at its CLI's bridge is on the run's record from its park (its start, marked
 // parked), and only a durable sent mark, committed before the send, says it may have left: the record never calls a
 // parked call interrupted unless it carries that mark.
 const SHORT = { leaseMs: 1_500, renewEveryMs: 300, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
@@ -338,7 +308,7 @@ test("P1: a parked call is on the record from its park, unsent; Allow sends it o
   await reached(async () => (await run.server.runs.get("run-1")).state === "ended", "the run ends");
   const { entries } = await run.settled();
   assert.equal(toolCalls(run.fake).length, 1, "sent once");
-  assert.ok(run.seen.followUps?.[0]?.endsWith(`\n5\n\n${RESUME_GO_ON}`), run.seen.followUps?.[0]);
+  assert.equal(run.seen.answer?.text, "5", "its real result goes to the session");
   assert.deepEqual([ofCall(entries, KINDS.callStart).length, ofCall(entries, SENT).length], [1, 1], "one start, one sent mark");
   assert.deepEqual(ofCall(entries, KINDS.callEnd).map((data) => [data.status, data.output]), [["done", "5"]]);
 });
@@ -355,7 +325,7 @@ test("P2: an allowed parked call whose runner dies before its sent mark is sent 
   const { entries } = await run.settled();
   assert.equal(toolCalls(run.fake).length, 1, "sent once, by the next runner");
   assert.deepEqual(ofCall(entries, KINDS.callEnd).map((data) => [data.status, data.output]), [["done", "5"]], "its real result, not interrupted");
-  assert.ok(run.seen.followUps?.at(-1)?.endsWith(`\n5\n\n${RESUME_GO_ON}`), run.seen.followUps?.at(-1));
+  assert.equal(run.seen.answer?.text, "5", "its real result goes to the session");
 });
 
 test("P6: an allowed parked call whose runner dies after its sent mark, before the send, ends interrupted and is never sent again", async (t) => {
@@ -375,7 +345,7 @@ test("P6: an allowed parked call whose runner dies after its sent mark, before t
   assert.ok(toolCalls(run.fake).length <= 1, `never sent twice: ${toolCalls(run.fake).length}`);
   assert.equal(toolCalls(run.fake).length, 0, "the first runner died before the send");
   assert.deepEqual(ofCall(entries, KINDS.callEnd).map((data) => data.status), ["interrupted"]);
-  assert.ok(run.seen.followUps?.at(-1)?.includes(INTERRUPTED_TEXT), run.seen.followUps?.at(-1));
+  assert.deepEqual(run.seen.answer, { text: INTERRUPTED_TEXT, isError: true }, "the CLI's re-issue is answered in the words of an outcome not known");
 });
 
 test("P4: a stop withdraws a parked call: its record ends in the withdrawal's words, never interrupted, and nothing is sent", async (t) => {
@@ -407,7 +377,6 @@ test("P7: an allowed call whose runner dies after its start and before its sent 
   const run = await cliRun(t, {
     settings: { "mcp:fake/add": { permission: "allow" } },
     timing: SHORT,
-    reissue: true,
     settle: false,
     wrap: (store) => sentWatched(store, () => (hit(), held())),
   }).catch((error) => assert.fail(error));
