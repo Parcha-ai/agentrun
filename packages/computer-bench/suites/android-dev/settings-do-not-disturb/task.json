@@ -1,0 +1,55 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.settings.do-not-disturb",
+  "version": 1,
+  "title": "Turn Do Not Disturb on or off in Settings",
+  "split": "heldout",
+  "tags": ["settings", "toggle"],
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "params": {
+    "mode": {
+      "pick": [
+        { "say": "on", "start": "off", "want": "^[123]$", "solve": "priority" },
+        { "say": "off", "start": "priority", "want": "^0$", "solve": "off" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep the phone's own zen mode once (0 off, 1 priority, 2 total silence, 3 alarms only), so teardown puts it back.",
+      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; [ -e $f ] || settings get global zen_mode > $f"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Start from the other state through NotificationManager (a plain `settings put` of zen_mode is reverted by ZenModeHelper), so the agent has to change it.",
+      "params": { "argv": ["cmd", "notification", "set_dnd", "{{mode.start}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open Settings at its home page, whatever screen an earlier run left it on.",
+      "params": { "argv": ["am", "start", "-W", "--activity-clear-task", "-a", "android.settings.SETTINGS"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "Using the Settings app, turn Do Not Disturb {{mode.say}}.",
+  "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
+  "checks": [
+    {
+      "id": "zen-mode",
+      "kind": "exec",
+      "why": "global/zen_mode is 0 when Do Not Disturb is off and 1, 2 or 3 when it is on (priority, total silence, alarms only: any of them is on). Setup left the other state, so an agent that does nothing fails.",
+      "argv": ["settings", "get", "global", "zen_mode"],
+      "stdout": { "matches": "{{mode.want}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Put the phone's own Do Not Disturb state back from the saved zen mode, and drop the saved copy.",
+      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; [ -e $f ] || exit 0; v=$(cat $f 2>/dev/null); case \"$v\" in 1) m=priority ;; 2) m=none ;; 3) m=alarms ;; *) m=off ;; esac; cmd notification set_dnd $m; rm -f $f"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    { "method": "exec.run", "params": { "argv": ["cmd", "notification", "set_dnd", "{{mode.solve}}"], "timeoutMs": 20000 } }
+  ]
+}

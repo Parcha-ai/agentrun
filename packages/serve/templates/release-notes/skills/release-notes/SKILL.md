@@ -274,7 +274,7 @@ edits and copies it: an issue. You make at most one write per run.
 
 ### 9. Answer
 
-Return exactly one fenced `json` block matching `notes.schema.json` (beside this SKILL.md: read it before you answer), and nothing after it:
+Return exactly one fenced `json` block matching the output schema in your instructions, and nothing after it:
 
 ```json
 {

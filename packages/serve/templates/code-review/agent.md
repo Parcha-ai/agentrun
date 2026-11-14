@@ -48,7 +48,7 @@ budget: { per_run_usd: 0.50, tool_calls: 90 }
 learning: false
 # Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.
 approvals: never
-output: { schema: findings.schema.json }
+output: { schema: skills/review/findings.schema.json }
 triggers:
   - name: pull-requests
     # Each pull request opened, reopened, updated or marked ready on this repository is one run; AgentRun's one GitHub

@@ -154,7 +154,7 @@ So:
    - Never post twice. A post that fails: don't retry it more than once, set `delivery.status` to `failed` with the
      error, and still return the digest.
 
-8. **Answer** with exactly one fenced `json` block matching `digest.schema.json` (beside this SKILL.md: read it before you answer), and nothing after it:
+8. **Answer** with exactly one fenced `json` block matching the output schema in your instructions, and nothing after it:
 
 ```json
 {

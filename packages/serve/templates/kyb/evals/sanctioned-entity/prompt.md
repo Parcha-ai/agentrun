@@ -2,13 +2,9 @@
 description: A dissolved UK company on OFAC's SDN list (ent_num 26466, SDNTK), with its director listed too (26402). The run's input carries the day's OFAC rows; the agent matches the company and the director against them, cites the entries and escalates. Pass 3 of 3.
 runs: 3
 max_cost_usd: 1.50
+input: { company: Smile Property & Travel Ltd, country: GB, registration_number: "08220547", reason: vendor }
 ---
-Run KYB on this company before we pay its invoice.
-
-- Company: Smile Property & Travel Ltd
-- Country of incorporation: United Kingdom
-- Registration number: 08220547
-- Why we're checking: vendor
+We are about to pay its invoice.
 
 Our screening cache's OFAC rows for today follow. They come from OFAC's Sanctions List Service files published
 2026-11-05 (SDN.CSV, ALT.CSV, ADD.CSV, in OFAC's own column format, no header row) and are every SDN row the cache
