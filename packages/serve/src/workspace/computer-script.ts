@@ -30,6 +30,12 @@ export type ScriptDecide = (tool: string, args: unknown) => Promise<"allow" | "a
 const HELD_AS: Readonly<Record<string, "bash" | "bash_background" | "write" | "read">> = Object.freeze({ "shell.run": "bash", "processes.start": "bash_background", "files.write": "write", "files.read": "read", "files.list": "read", "files.stat": "read" });
 /** The ops whose command runs in the computer's shell: each gets the bash policy's safeguards. */
 const SHELL_OPS: ReadonlySet<string> = new Set(["shell.run", "processes.start"]);
+/** What each held op does, as a refusal says it could not. */
+const DOES: Readonly<Record<string, string>> = Object.freeze({ "shell.run": "run a shell command", "processes.start": "start a program", "files.write": "write a file", "files.read": "read a file", "files.list": "list a folder", "files.stat": "look a file up" });
+/** The setting a person sees for each held tool: bash_background is bash's. */
+const SETTING: Readonly<Record<string, string>> = Object.freeze({ bash: "bash", bash_background: "bash", write: "write", read: "read" });
+/** What waits for a person's OK under each setting, in a person's words. */
+const WAITS: Readonly<Record<string, string>> = Object.freeze({ bash: "shell commands", write: "file writes", read: "file reads" });
 
 /** What a script's `computer.shell` and `computer.files` are held to: the run's gate, which a person's settings (a denied
  *  bash, a read-only bash policy, a denied write) reach through the one decision the run's own tools get. A script can't
@@ -38,8 +44,9 @@ const SHELL_OPS: ReadonlySet<string> = new Set(["shell.run", "processes.start"])
 export class ScriptGuard {
   #decide: ScriptDecide | undefined;
   /** `shell`: what the run's bash adds under its bash policy (bash-read-only.ts policyEnv, policyPrelude): the environment
-   *  that locks git's config down, set over any a script gives, and the line that runs git only at the floor version. */
-  constructor(private readonly shell: { readonly env: Readonly<Record<string, string>>; readonly prelude: string } = { env: {}, prelude: "" }) {}
+   *  that locks git's config down, set over any a script gives, and the line that runs git only at the floor version.
+   *  `kind`: the run's computer's kind, which a refusal names (the phone, the desktop). */
+  constructor(private readonly shell: { readonly env: Readonly<Record<string, string>>; readonly prelude: string } = { env: {}, prelude: "" }, private readonly kind?: string) {}
 
   /** `op`'s arguments as the computer is sent them: a script's shell command with the policy's safeguards, as the bash
    *  tool's own command has them, which no option of the script's overrides. */
@@ -54,16 +61,27 @@ export class ScriptGuard {
     this.#decide = decide;
   }
 
-  /** Why `op` with `args` may not run now, or undefined when the gate lets it. */
+  /** Why `op` with `args` may not run now, or undefined when the gate lets it. The words start with what could not be
+   *  done, on which computer ("could not run a shell command on the phone"), as the Timeline's row shows them; an ask
+   *  says why in a person's words and what to do instead. A phone's instead is its screen, named as the script's
+   *  `computer` (script.ts bindComputer) and the run's tools name it: the run's bash tool does not run on a phone, so it
+   *  is never offered there. */
   async refusal(op: string, args: unknown): Promise<string | undefined> {
     const tool = HELD_AS[op];
     if (tool === undefined) return undefined;
-    if (!this.#decide) return `computer call ${op} was not run: this run's tool settings are not attached to its scripts yet`;
+    const on = this.kind === "phone" ? "the phone" : this.kind === "desktop" ? "the desktop" : "the computer";
+    const couldNot = `could not ${DOES[op] ?? op} on ${on}`;
+    if (!this.#decide) return `${couldNot}: this run's tool settings are not attached to its scripts yet`;
     const given = (args ?? {}) as Record<string, unknown>;
     const decision = await this.#decide(tool, SHELL_OPS.has(op) ? { command: given.command, ...(given.cwd !== undefined ? { cwd: given.cwd } : {}) } : { path: given.path });
     if (decision === "allow") return undefined;
-    if (decision === "ask") return `computer call ${op} was not run: this agent's ${tool} setting asks a person first, and a script can't wait for one. Call the ${tool} tool itself, or ask for the setting to be allow.`;
-    return `computer call ${op} was not run: ${decision.deny}`;
+    if (decision !== "ask") return `${couldNot}: ${decision.deny}`;
+    const setting = SETTING[tool] ?? tool;
+    const why = `this agent's ${WAITS[setting] ?? `${setting} calls`} wait for a person's OK (its ${setting} setting is ask), and a script can't stop to ask.`;
+    const instead = this.kind === "phone"
+      ? `Do it on the phone's screen instead: in a script, computer.app(id).observe() reads it and its press, type and click act on it (or call the computer_observe and computer_act tools), or ask the agent's owner to set ${setting} to allow.`
+      : `Call the ${tool} tool itself, which can ask, or ask the agent's owner to set ${setting} to allow.`;
+    return `${couldNot}: ${why} ${instead}`;
   }
 
   /** `call` of the computer's port with a script's computer call held to the gate first: the refusal throws in the
