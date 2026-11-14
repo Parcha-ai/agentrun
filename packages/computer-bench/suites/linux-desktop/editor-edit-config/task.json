@@ -31,7 +31,7 @@
     {
       "method": "process.start",
       "why": "Open the config file in Mousepad.",
-      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && exec mousepad /tmp/computer-bench-{{nonce}}/app-{{nonce}}.conf"] }
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && echo $$ > /tmp/computer-bench-{{nonce}}-mousepad.pid && exec mousepad /tmp/computer-bench-{{nonce}}/app-{{nonce}}.conf"] }
     },
     {
       "method": "exec.run",
@@ -54,8 +54,8 @@
   "teardown": [
     {
       "method": "exec.run",
-      "why": "Close Mousepad without saving (KILL: Mousepad holds on to a changed document on TERM) and delete the run's folder.",
-      "params": { "argv": ["sh", "-c", "pkill -9 -x mousepad; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
+      "why": "Close the run's Mousepad without saving, by the pid setup kept beside the folder (a desktop may have other Mousepads open; KILL: Mousepad holds on to a changed document on TERM), and delete the run's folder.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -f /tmp/computer-bench-{{nonce}}-*.pid; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
     }
   ],
   "oracle": [

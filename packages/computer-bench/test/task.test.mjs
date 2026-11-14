@@ -78,6 +78,21 @@ test("every linux-desktop task denies exec and gets different params on seeds 1,
 	}
 });
 
+test("a linux-desktop teardown stops only the apps its run started, and git-email checks the global config is kept", () => {
+	for (const task of loadSuite(join(SUITES, "linux-desktop"))) {
+		const scripts = (steps) => (steps ?? []).map((step) => (step.params?.argv ?? []).join(" "));
+		for (const script of scripts(task.spec.teardown)) {
+			for (const kill of script.match(/pkill[^;]*/g) ?? []) assert.match(kill, /computer-bench-\{\{nonce\}\}/, `${task.spec.id}'s teardown kills by a name any desktop's app has: ${kill}`);
+		}
+		for (const script of scripts(task.spec.setup.filter((step) => step.method === "process.start"))) {
+			const app = /exec (mousepad|xfce4-terminal|thunar)\b/.exec(script)?.[1];
+			if (app) assert.match(script, /echo \$\$ > \/tmp\/computer-bench-\{\{nonce\}\}-[a-z]+\.pid && exec /, `${task.spec.id} starts ${app} without keeping its pid`);
+		}
+	}
+	const [git] = loadSuite(join(SUITES, "linux-desktop")).filter((task) => task.spec.id === "linux.terminal.git-email");
+	assert.ok(git.spec.checks.some((check) => check.id === "global-email-kept"), "git-email passes an agent that also sets the global user.email");
+});
+
 test("a good task loads; its bench groups come from its setup and checks", () => {
 	const task = loadTask(writeTask({ ...GOOD, setup: [{ method: "apps.launch", params: { id: "x" } }], checks: [...GOOD.checks, { id: "f", kind: "file", why: "w", path: "/x", exists: true }] }));
 	assert.deepEqual([...task.benchGroups].sort(), ["apps", "exec", "files"]);

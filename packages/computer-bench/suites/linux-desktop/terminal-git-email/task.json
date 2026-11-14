@@ -26,13 +26,13 @@
   "setup": [
     {
       "method": "exec.run",
-      "why": "Make a git repository whose own user.email is the old address.",
-      "params": { "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d && git init -q $d/repo-{{nonce}} && git -C $d/repo-{{nonce}} config user.email {{who.old}}"], "timeoutMs": 20000 }
+      "why": "Make a git repository whose own user.email is the old address, and keep the global user.email as it was before the run (empty when none is set), which a check compares.",
+      "params": { "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d && git init -q $d/repo-{{nonce}} && git -C $d/repo-{{nonce}} config user.email {{who.old}} && { git config --global --get user.email || true; } > $d/global-email-before"], "timeoutMs": 20000 }
     },
     {
       "method": "process.start",
-      "why": "Open Xfce's terminal in the run's folder.",
-      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && exec xfce4-terminal --disable-server --working-directory=/tmp/computer-bench-{{nonce}}"] }
+      "why": "Open Xfce's terminal in the run's folder, its pid kept beside the folder so teardown stops this terminal and no other.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && echo $$ > /tmp/computer-bench-{{nonce}}-terminal.pid && exec xfce4-terminal --disable-server --working-directory=/tmp/computer-bench-{{nonce}}"] }
     },
     {
       "method": "exec.run",
@@ -50,13 +50,20 @@
       "why": "The repository's own config (git config --local) says the new address. Setup set it to {{who.old}} there, which a global setting can't override, so an agent that does nothing fails, and so does one that sets it only globally.",
       "argv": ["git", "-C", "/tmp/computer-bench-{{nonce}}/repo-{{nonce}}", "config", "--local", "--get", "user.email"],
       "stdout": { "equals": "{{who.new}}" }
+    },
+    {
+      "id": "global-email-kept",
+      "kind": "exec",
+      "why": "The global user.email is what it was before the run: an agent that also sets it globally, which the instruction forbids, fails.",
+      "argv": ["sh", "-c", "[ \"$(git config --global --get user.email)\" = \"$(cat /tmp/computer-bench-{{nonce}}/global-email-before)\" ] && echo kept || echo changed"],
+      "stdout": { "equals": "kept" }
     }
   ],
   "teardown": [
     {
       "method": "exec.run",
-      "why": "Close the terminal and delete the run's folder.",
-      "params": { "argv": ["sh", "-c", "pkill -9 -x xfce4-terminal; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
+      "why": "Close the run's terminal (by the pid setup kept: a desktop may have other terminals open) and delete the run's folder.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -f /tmp/computer-bench-{{nonce}}-*.pid; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
     }
   ],
   "oracle": [

@@ -31,7 +31,7 @@
     {
       "method": "process.start",
       "why": "Open Thunar on the run's folder.",
-      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && exec thunar /tmp/computer-bench-{{nonce}}"] }
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && echo $$ > /tmp/computer-bench-{{nonce}}-thunar.pid && exec thunar /tmp/computer-bench-{{nonce}}"] }
     },
     {
       "method": "exec.run",
@@ -61,8 +61,8 @@
   "teardown": [
     {
       "method": "exec.run",
-      "why": "Close Thunar and delete the run's folder.",
-      "params": { "argv": ["sh", "-c", "pkill -9 -x thunar; pkill -9 -x Thunar; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
+      "why": "Close the run's Thunar (by the pid setup kept beside the folder: a desktop may have other Thunar windows open) and delete the run's folder.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -f /tmp/computer-bench-{{nonce}}-*.pid; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
     }
   ],
   "oracle": [

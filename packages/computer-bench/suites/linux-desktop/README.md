@@ -12,7 +12,7 @@ teardown use the bench's own channel (`exec.run`, `process.start`, `files.read`)
 | linux.editor.edit-config | Mousepad | heldout | the saved config's five lines (two changed, three kept) |
 | linux.editor.replace-word | Mousepad | heldout | the saved memo's four lines (all three uses replaced) |
 | linux.terminal.count-errors | xfce4-terminal | dev | the count file's text (lower-case "error" WARN lines are decoys) |
-| linux.terminal.git-email | xfce4-terminal, git | heldout | `git config --local --get user.email` of the run's repository |
+| linux.terminal.git-email | xfce4-terminal, git | heldout | `git config --local --get user.email` of the run's repository, and the global `user.email` unchanged |
 | linux.files.rename | Thunar | dev | `ls -1` of the run's folder, and the renamed file's text |
 | linux.files.move | Thunar | heldout | every file under the run's folder with its text, in byte order |
 | linux.browser.sign-form | Firefox | dev | the guest book file the page's server appends each signature to |
@@ -67,6 +67,12 @@ saves.
 
 ## Reset
 
-Every task makes its files under `/tmp/computer-bench-<nonce>` and teardown deletes it and kills the apps it opened
-(`pkill -9`: Mousepad holds on to a changed document on TERM). Firefox runs on a fresh profile in the run's folder, with
-first-run pages off (`user.js`). The two pages are served on 127.0.0.1 on a port picked per seed.
+Every task makes its files under `/tmp/computer-bench-<nonce>` and teardown deletes it and kills the apps it opened,
+and only those: setup keeps each app's pid in `/tmp/computer-bench-<nonce>-<app>.pid` and teardown kills those pids
+(KILL: Mousepad holds on to a changed document on TERM), so the Mousepad or terminal a desktop already had open stays.
+Firefox runs on a fresh profile in the run's folder, with first-run pages off (`user.js`), and the run's Firefox and page
+server are killed by patterns that name the run's folder. The two pages are served on 127.0.0.1 on a port picked per
+seed.
+
+`linux.terminal.git-email` keeps the global `user.email` setup found and checks it is unchanged at the end: setting the
+address globally as well as in the repository fails.

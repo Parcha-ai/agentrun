@@ -24,7 +24,7 @@
     {
       "method": "process.start",
       "why": "Open Xfce's terminal in the run's folder.",
-      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && exec xfce4-terminal --disable-server --working-directory=/tmp/computer-bench-{{nonce}}"] }
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && echo $$ > /tmp/computer-bench-{{nonce}}-terminal.pid && exec xfce4-terminal --disable-server --working-directory=/tmp/computer-bench-{{nonce}}"] }
     },
     {
       "method": "exec.run",
@@ -34,7 +34,7 @@
     {
       "method": "process.start",
       "why": "Open the empty note in Mousepad.",
-      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && exec mousepad /tmp/computer-bench-{{nonce}}/notes-{{nonce}}.txt"] }
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && echo $$ > /tmp/computer-bench-{{nonce}}-mousepad.pid && exec mousepad /tmp/computer-bench-{{nonce}}/notes-{{nonce}}.txt"] }
     },
     {
       "method": "exec.run",
@@ -57,8 +57,8 @@
   "teardown": [
     {
       "method": "exec.run",
-      "why": "Close Mousepad and the terminal (KILL: Mousepad holds on to a changed document on TERM), and delete the run's folder.",
-      "params": { "argv": ["sh", "-c", "pkill -9 -x mousepad; pkill -9 -x xfce4-terminal; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
+      "why": "Close the run's Mousepad and terminal, by the pids setup kept beside the folder (a desktop may have others open; KILL: Mousepad holds on to a changed document on TERM), and delete the run's folder.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -f /tmp/computer-bench-{{nonce}}-*.pid; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
     }
   ],
   "oracle": [

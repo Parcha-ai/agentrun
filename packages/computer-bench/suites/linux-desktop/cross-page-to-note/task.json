@@ -52,7 +52,7 @@
     {
       "method": "process.start",
       "why": "Open the empty note in Mousepad.",
-      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && exec mousepad /tmp/computer-bench-{{nonce}}/notes-{{nonce}}.txt"] }
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && echo $$ > /tmp/computer-bench-{{nonce}}-mousepad.pid && exec mousepad /tmp/computer-bench-{{nonce}}/notes-{{nonce}}.txt"] }
     },
     {
       "method": "exec.run",
@@ -75,8 +75,8 @@
   "teardown": [
     {
       "method": "exec.run",
-      "why": "Close Mousepad (KILL: it holds on to a changed document on TERM) and Firefox, stop the run's server (the brackets keep pkill's patterns from matching this shell), and delete the run's folder.",
-      "params": { "argv": ["sh", "-c", "pkill -9 -x mousepad; pkill -9 -f 'computer-bench-{{nonce}}/profil[e]'; pkill -9 -f 'computer-bench-{{nonce}}/sit[e]'; sleep 1; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
+      "why": "Close the run's Mousepad, by the pid setup kept beside the folder (a desktop may have other Mousepads open; KILL: it holds on to a changed document on TERM), and the run's Firefox, stop the run's server (pkill's patterns name the run's folder; the brackets keep them from matching this shell), and delete the run's folder.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -f /tmp/computer-bench-{{nonce}}-*.pid; pkill -9 -f 'computer-bench-{{nonce}}/profil[e]'; pkill -9 -f 'computer-bench-{{nonce}}/sit[e]'; sleep 1; rm -rf /tmp/computer-bench-{{nonce}}; true"], "timeoutMs": 20000 }
     }
   ],
   "oracle": [
