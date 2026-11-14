@@ -3,6 +3,23 @@
 AgentRun is an open-source platform for running AI agents. It gives each agent a computer, a sandbox or a desktop, on
 a vendor's machines. This page shows how to add your machines in one pull request.
 
+## The first 30 minutes
+
+Conformance comes first: each step ends on a command that tells you whether it's done. Run them from the repository root.
+
+1. Check that your API has the [two things AgentRun needs](#what-your-api-needs).
+2. Write your host's constructor, `exec` and `createHost`, then run the [exec pre-check](#step-one-run-the-exec-pre-check)
+   on a machine you made by hand until it prints `exec PASS`:
+   `npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>`
+3. Copy `e2b.ts` into [the four files](#what-you-write) and fill in [the eleven members](#the-eleven-members).
+4. Run the [whole suite between two sweeps](#prove-it) until its last line reads `core PASS`:
+   `npm run conformance -w @parcha/agentrun-computer -- --provider <vendor>`
+5. [Open the pull request](#send-it) with the report and the sweep's last line.
+
+To see a pass before you write anything, point the pre-check at a stub. It takes seconds and needs no key. Make a module
+that exports `createHost = async () => fakeExecHost()`, from `packages/computer/test/fake-exec-host.mjs` (its `exec`
+runs local processes), and pass its path to `--provider`, with `--machine local --quick`.
+
 ## How to contribute a provider
 
 ### What your API needs
@@ -23,7 +40,8 @@ that says what your API offers.
 Before you write anything else, write your host's constructor and its `exec` (see [the eleven members](#the-eleven-members)
 below). Then write a `createHost({ env = process.env } = {})` in your conformance module that builds the host from
 your key (the pre-check calls it with `{}`, the sweep with `{ env }`), and point to that module from your provider file
-with `conformance`, as `e2b.ts` does. E2B's `createHost` in `src/conformance/e2b.ts` is three lines. Make a machine by hand in your console, then run, from the repository root:
+with `conformance`, as `e2b.ts` does. E2B's `createHost` in `src/conformance/e2b.ts` is three lines. Make a machine by
+hand in your console, then run, from the repository root:
 
 ```sh
 npm ci --ignore-scripts && npm run build
