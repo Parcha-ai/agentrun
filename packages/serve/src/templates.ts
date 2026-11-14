@@ -873,10 +873,12 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants:
   if (!isObject(given)) issues.push({ field: "parameters", reason: "wrong_type", message: "parameters is an object of the package's parameters, by name" });
   // A parameter left blank (left out, or "") takes its default; then they are checked as a run's input is (the same
   // compiler, the same words), so a blank required one is missing.
+  // A declared parameter given blank is left out (its default filled); an undeclared one stays, for the check to refuse.
+  const fields = fieldsOf(p.parameters);
   const blank = (key: string) => !isObject(given) || givenOf(given, key) === undefined || given[key] === "";
   const parameters: Json = Object.fromEntries([
-    ...Object.entries(isObject(given) ? given : {}).filter(([key]) => !blank(key)),
-    ...Object.entries(fieldsOf(p.parameters)).filter(([key, spec]) => blank(key) && spec.default !== undefined).map(([key, spec]) => [key, spec.default]),
+    ...Object.entries(isObject(given) ? given : {}).filter(([key]) => !blank(key) || !Object.hasOwn(fields, key)),
+    ...Object.entries(fields).filter(([key, spec]) => blank(key) && spec.default !== undefined).map(([key, spec]) => [key, spec.default]),
   ]);
   if (isObject(given)) issues.push(...inputIssues(parameters, p.parameters, "parameters"));
   const overrides = body.overrides ?? {};

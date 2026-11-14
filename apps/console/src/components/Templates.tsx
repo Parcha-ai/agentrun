@@ -209,7 +209,9 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   // The parameters, served compiled as inputs are, drawn and sent by the run form's own code (lib/inputForm.ts): a field
   // left blank is left out, and the server applies its default.
   const form = { fields: schemaFields(t.parameters) ?? [], contentRequired: false };
-  const [values, setValues] = useState<ParameterText>(() => fieldStartText(form));
+  // A box with no default starts unticked and is sent as it shows (false): a parameter may fill a trigger's input whole,
+  // where a boolean left out would be missing.
+  const [values, setValues] = useState<ParameterText>(() => ({ ...Object.fromEntries(form.fields.filter(([, f]) => f.type === "boolean" && !f.array).map(([key]) => [key, "false"])), ...fieldStartText(form) }));
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   // The agent's approvals, sent as overrides.approvals: the template's own (approvals_default: never for one that runs
   // on its triggers with no one there), which the owner can switch.

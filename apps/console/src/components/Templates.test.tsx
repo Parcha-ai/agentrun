@@ -376,17 +376,19 @@ describe("applying a template", () => {
     expect(t.sent[0].body.parameters).toEqual({ companies: [] });
   });
 
-  it("sends a boolean parameter as its checkbox shows it: false untouched, true once ticked", async () => {
-    const FLAGGED: TemplateView = { ...REVIEWER, name: "flagged", parameters: params({ ...REVIEWER_PARAMS, strict: { type: "boolean", description: "Fail on any finding" } }) };
+  // An optional one too: a parameter may fill a trigger's input whole, where a boolean left out would be missing.
+  it("sends a boolean parameter as its checkbox shows it, required or not: false untouched, true once ticked", async () => {
+    const FLAGGED: TemplateView = { ...REVIEWER, name: "flagged", parameters: params({ ...REVIEWER_PARAMS, strict: { type: "boolean", description: "Fail on any finding" }, quiet: { type: "boolean", required: false, description: "Post nothing" } }) };
     const t = await open("flagged", { templates: [FLAGGED] });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     const box = t.host.querySelector<HTMLInputElement>('[data-field="parameters.strict"] input[type="checkbox"]')!;
     expect(box.checked).toBe(false);
+    expect(t.host.querySelector<HTMLInputElement>('[data-field="parameters.quiet"] input[type="checkbox"]')!.checked).toBe(false);
     await t.click(t.button(/^Apply/));
-    expect(t.sent[0].body.parameters).toEqual({ repo: "acme/web", strict: false });
+    expect(t.sent[0].body.parameters).toEqual({ repo: "acme/web", strict: false, quiet: false });
     await t.click(box);
     await t.click(t.button(/^Apply/));
-    expect(t.sent[1].body.parameters).toEqual({ repo: "acme/web", strict: true });
+    expect(t.sent[1].body.parameters).toEqual({ repo: "acme/web", strict: true, quiet: false });
   });
 
   it("starts a boolean with a default at that default, sends it as shown, and shows a text parameter's default as its hint", async () => {

@@ -458,13 +458,13 @@ test("a parameter is an input: the inputs' grammar and rule (required unless req
   const { api } = await serve(t, { templates: FIXTURES });
   const nightly = (await api("GET", "/templates")).body.templates.find((x) => x.name === "nightly").parameters;
   assert.deepEqual(nightly, { type: "object", additionalProperties: false, required: ["topic"], properties: { topic: { type: "string", description: "what the brief is about" }, words: { type: "integer", minimum: 50, description: "how long the brief is", default: 200 } } });
-  const refused = await api("POST", "/templates/nightly/apply", { parameters: { topic: "", words: 10, tone: "dry" } });
+  const refused = await api("POST", "/templates/nightly/apply", { parameters: { topic: "", words: 10, tone: "" } });
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason, f.message]).sort(), [
     ["parameters.tone", "not_allowed", "parameters keeps no field tone"],
     ["parameters.topic", "missing", "parameters.topic is required"],
     ["parameters.words", "invalid", "parameters.words must be >= 50"],
-  ], "a blank one is missing; the rest as a run's input is refused");
+  ], "a blank declared one is missing, a blank undeclared one is still refused; the rest as a run's input is refused");
   for (const [to, said] of [
     ["focus: { type: string, default: x, description: x }", /parameters\.focus is required and has a default: a default is for one that may be left out \(required: false\)/],
     ["focus: { type: integer, required: false, format: cron }", /parameters\.focus\.format is one of uri, email, hostname, date, date-time, uuid, cron, timezone, on a string/],
