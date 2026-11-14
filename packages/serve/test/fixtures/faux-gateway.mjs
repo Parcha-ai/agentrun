@@ -27,17 +27,19 @@ export const RECORDED_HEADERS = Object.freeze(["authorization", "x-api-key", "an
 
 /**
  * Starts the gateway on 127.0.0.1, on a port of its own.
- * @param {{ text?: string | ((request: GatewayRequest) => string), call?: (request: GatewayRequest) => { name: string, input: unknown } | undefined, usage?: { input?: number, output?: number }, port?: number }} [options]
+ * @param {{ text?: string | ((request: GatewayRequest) => string), call?: (request: GatewayRequest) => { name: string, input: unknown } | undefined, usage?: { input?: number, output?: number, cacheRead?: number, cacheWrite?: number }, port?: number }} [options]
  *   `text`: what every answer says (or a function of the request); `call`: a tool call to answer with instead, when it
  *   returns one (Messages' tool_use, Responses' function_call; not on Chat Completions); `usage`: the input and output
- *   tokens every answer reports (default 10 in, 2 out); `port`: the port to listen on (default: one the system picks).
+ *   tokens every answer reports (default 10 in, 2 out), and on Messages the prompt cache's reads and writes
+ *   (`cache_read_input_tokens`, `cache_creation_input_tokens`; default 0); `port`: the port to listen on (default: one the
+ *   system picks).
  * @returns {Promise<{ url: string, requests: GatewayRequest[], close(): Promise<void> }>} `url` is the origin
  *   (`http://127.0.0.1:<port>`), with no path.
  * @typedef {{ method: string, path: string, query: string, headers: Record<string, string | undefined>, body: any }} GatewayRequest
  */
 export async function startFauxGateway(options = {}) {
   const requests = [];
-  const usage = { input: options.usage?.input ?? 10, output: options.usage?.output ?? 2 };
+  const usage = { input: options.usage?.input ?? 10, output: options.usage?.output ?? 2, cacheRead: options.usage?.cacheRead ?? 0, cacheWrite: options.usage?.cacheWrite ?? 0 };
   const textOf = (request) => (typeof options.text === "function" ? options.text(request) : options.text ?? "ok");
   const server = createServer((req, res) => {
     const chunks = [];
@@ -101,8 +103,11 @@ function responses(res, body, text, usage, stream) {
   ], { done: true });
 }
 
+/** A Messages answer's usage: its input and output, and the prompt cache's writes and reads. */
+const messagesCounts = (usage) => ({ input_tokens: usage.input, cache_creation_input_tokens: usage.cacheWrite, cache_read_input_tokens: usage.cacheRead, output_tokens: usage.output });
+
 function messages(res, body, text, usage, stream) {
-  const counts = { input_tokens: usage.input, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: usage.output };
+  const counts = messagesCounts(usage);
   const message = { id: "msg_faux_1", type: "message", role: "assistant", model: body?.model, content: [{ type: "text", text }], stop_reason: "end_turn", stop_sequence: null, usage: counts };
   if (!stream) return json(res, message);
   sse(res, [
@@ -133,7 +138,7 @@ function responsesCall(res, body, call, usage, stream) {
 
 /** A Messages answer that is one tool_use block: `call.name` with `call.input`. */
 function messagesCall(res, body, call, usage, stream) {
-  const counts = { input_tokens: usage.input, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: usage.output };
+  const counts = messagesCounts(usage);
   const block = { type: "tool_use", id: "toolu_faux_1", name: call.name, input: call.input ?? {} };
   const message = { id: "msg_faux_1", type: "message", role: "assistant", model: body?.model, content: [block], stop_reason: "tool_use", stop_sequence: null, usage: counts };
   if (!stream) return json(res, message);

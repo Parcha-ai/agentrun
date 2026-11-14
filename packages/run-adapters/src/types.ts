@@ -182,7 +182,7 @@ export interface ModelRequest {
    *  host's own request beside the harness's (`host`). */
   side?: true;
   /** On the session's model but no answer of the turn (a title, a summary, a child's request): booked as any request, but
-   *  never the session's previous request for the cap's expected pricing, read or replaced. */
+   *  never one of the session's recent requests for the cap's expected pricing, read or kept. */
   unanswered?: true;
   /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
    *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
