@@ -7,8 +7,9 @@ import type { ComputerClient } from "../../protocol.js";
 import type { Case, CaseContext } from "../types.js";
 
 /**
- * The path unix sockets a program of the computer's user may connect to: the computer's own, computerd's and the Archil
- * sync socket (which only syncs). A network namespace does not cut a path socket, so any other is a door out.
+ * The unix sockets a program of the computer's user may connect to: the computer's own, computerd's and the Archil sync
+ * socket (which only syncs). A network namespace does not cut a path socket, and every program in the namespace reaches
+ * an abstract name (@...), so any other socket is a door out.
  */
 export const OWN_SOCKETS: readonly string[] = [`${SOCKET_DIR}/computerd.sock`, ARCHIL_SYNC_SOCKET];
 
@@ -30,8 +31,8 @@ interface ProbeLine {
 /**
  * The isolation check, on the computer `client` reaches (the case's own by default): computerd's probe, run as the
  * computer's user, sees its own loopback alone, and is refused at the vendor's agent's declared ports on 127.0.0.1 and
- * ::1 and at OUTSIDE_TARGETS; and the path unix sockets it connects to (the probe's own listing, --sockets) are the
- * computer's own (OWN_SOCKETS, and a desktop's display) alone, each recorded with its type; and every TCP and UDP
+ * ::1 and at OUTSIDE_TARGETS; and the unix sockets it connects to, paths and abstract names (the probe's own listing,
+ * --sockets), are the computer's own (OWN_SOCKETS, and a desktop's display) alone, each recorded with its type; and every TCP and UDP
  * listener in its own network is computerd's (assertOnlyComputerdListens: today, none listens). A probe that reports no
  * socket list or no listener list, or a search it could not finish, fails the check in words. The Archil case mount.archil-isolated-durable runs the same check on an Archil computer.
  */
@@ -65,25 +66,27 @@ export async function assertIsolated(t: CaseContext, client?: ComputerClient): P
 		const what = agent.includes(target) ? "the vendor's agent" : "the outside";
 		t.equal(result?.outcome, "refused", `a program of the computer's user, to ${what} at ${target} (${String(result?.detail ?? "no result")})`);
 	}
-	// The path unix sockets, which no network namespace cuts: computerd's own listing, so no image can lack it. Each with
-	// the type that connected (stream, dgram, seqpacket); a search it could not finish proves nothing, and fails.
+	// The unix sockets: paths, which no network namespace cuts, and the abstract names of the user's own namespace.
+	// computerd's own listing, so no image can lack it. Each with the type that connected (stream, dgram, seqpacket); a
+	// search it could not finish proves nothing, and fails.
 	const search = probe.sockets as { sockets?: unknown; incomplete?: unknown } | undefined;
 	if (search === null || typeof search !== "object" || !Array.isArray(search.sockets) || !Array.isArray(search.incomplete)) {
-		return t.assert(false, "the probe reported no list of the path unix sockets a program can connect to (a computerd too old for probe --sockets), so the socket fence could not run");
+		return t.assert(false, "the probe reported no list of the unix sockets a program can connect to (a computerd too old for probe --sockets), so the socket fence could not run");
 	}
 	const found = search.sockets.map((one) => ({ path: String((one as { path?: unknown }).path), type: String((one as { type?: unknown }).type) }));
-	t.observe(`path unix sockets a tool can connect to: ${found.map(({ path, type }) => `${path} (${type})`).join(", ") || "none"}`);
+	t.observe(`unix sockets a tool can connect to: ${found.map(({ path, type }) => `${path} (${type})`).join(", ") || "none"}`);
 	const incomplete = search.incomplete.map(String);
 	t.assert(incomplete.length === 0, `the probe could not search every place a socket may be, so the socket fence is unproven: ${incomplete.join("; ")}`);
-	// A desktop's tools draw on its display: the one X socket of the display its hello names is the computer's own too.
+	// A desktop's tools draw on its display: the X server of the display its hello names, on its path and on the same
+	// name as an abstract one, is the computer's own too.
 	const own = [...OWN_SOCKETS];
 	if (t.provider.capabilities().kind === "desktop") {
 		const display = await displaySocket(client ?? t.client);
-		if (display !== undefined) own.push(display);
+		if (display !== undefined) own.push(display, `@${display}`);
 		else t.observe("the desktop's display socket: not known (its hello names no display of the form :N)");
 	}
 	const other = found.filter(({ path }) => !own.includes(path)).map(({ path, type }) => `${path} (${type})`);
-	t.assert(other.length === 0, `a program of the computer's user connects to path unix sockets that are not the computer's own (${own.join(", ")}): ${other.join(", ")}`);
+	t.assert(other.length === 0, `a program of the computer's user connects to unix sockets that are not the computer's own (${own.join(", ")}): ${other.join(", ")}`);
 	assertOnlyComputerdListens(t, probe.listeners);
 }
 

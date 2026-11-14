@@ -26,8 +26,8 @@ type SocketBounds struct {
 // DefaultSocketBounds are the probe's.
 var DefaultSocketBounds = SocketBounds{Entries: 50_000, Depth: 8}
 
-// Socket is one socket a program could connect to: its real path, and the type that connected (stream, dgram or
-// seqpacket).
+// Socket is one socket a program could connect to: its real path, or its abstract name as /proc/net/unix gives it
+// (@...), and the type that connected (stream, dgram or seqpacket).
 type Socket struct {
 	Path string `json:"path"`
 	Type string `json:"type"`
@@ -43,11 +43,12 @@ type SocketSearch struct {
 // The socket types a connect is tried with, each by Go's network name and the name reported.
 var socketTypes = []struct{ network, name string }{{"unix", "stream"}, {"unixgram", "dgram"}, {"unixpacket", "seqpacket"}}
 
-// ConnectableSockets lists the unix sockets with a path that the calling process can connect to: every socket found by
-// walking roots (each root by its real path, links never followed, each within bounds of its own) and every path in
-// netUnix (the text of /proc/net/unix; abstract names, @..., are the namespace's own and left out). Each is tried with a
-// connect of each type, bounded by timeout, at once; the real paths of those that accept, with the type, sorted by path.
-// A root whose walk reached a bound is named in Incomplete.
+// ConnectableSockets lists the unix sockets that the calling process can connect to: every socket found by walking
+// roots (each root by its real path, links never followed, each within bounds of its own), and every path and abstract
+// name (@...) in netUnix, the text of /proc/net/unix. An abstract name is in no folder: the network namespace holds it,
+// so every program in the namespace reaches it. Each is tried with a connect of each type, bounded by timeout, at once;
+// the real paths and names of those that accept, with the type, sorted. A root whose walk reached a bound is named in
+// Incomplete.
 func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, timeout time.Duration) SocketSearch {
 	candidates := map[string]bool{}
 	add := func(path string) {
@@ -96,10 +97,13 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 	}
 	for _, line := range strings.Split(netUnix, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 8 || !strings.HasPrefix(fields[7], "/") {
-			continue
+		switch {
+		case len(fields) < 8:
+		case strings.HasPrefix(fields[7], "/"):
+			add(fields[7])
+		case strings.HasPrefix(fields[7], "@"):
+			candidates[fields[7]] = true // Go dials a name that starts with @ as an abstract one
 		}
-		add(fields[7])
 	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup

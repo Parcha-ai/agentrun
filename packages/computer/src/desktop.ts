@@ -25,11 +25,42 @@ export interface DesktopOptions {
 export const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys", "apps"] as const;
 
 /**
- * The window manager E2B's and Agent37's desktops run: xfwm4, which both images have, with no compositor and no session
- * manager, in a session bus of its own (dbus-run-session), where it reads its settings from xfconfd: without one it
- * exits at once, "Xfconf could not be initialized".
+ * The session bus the window manager reads its settings over: dbus's own session config, but listening on an abstract
+ * name, which only a program in the bus's own network namespace reaches. dbus's unix:tmpdir is a socket under /tmp
+ * with dbus 1.16 (Agent37's box), which every program of the user reaches.
  */
-export const WINDOW_MANAGER: readonly string[] = ["dbus-run-session", "--", "xfwm4", "--compositor=off", "--sm-client-disable"];
+const WINDOW_MANAGER_BUS = `<busconfig>
+  <type>session</type>
+  <keep_umask/>
+  <listen>unix:abstract=/agentrun/window-manager</listen>
+  <auth>EXTERNAL</auth>
+  <standard_session_servicedirs/>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>`;
+
+/**
+ * The window manager E2B's and Agent37's desktops run: xfwm4, which both images have, with no compositor and no session
+ * manager. It reads its settings from xfconfd over a session bus, and exits at once without one ("Xfconf could not be
+ * initialized"). So it runs in a session bus of its own (dbus-run-session, WINDOW_MANAGER_BUS, written to a file of
+ * its own under /tmp), in a user namespace (the same uid) and a network namespace of its own: a program of the
+ * computer's user reaches no socket of that bus. It reaches the display as any program does, by its path.
+ */
+export const WINDOW_MANAGER: readonly string[] = [
+	"unshare",
+	"--user",
+	"--map-current-user",
+	"--net",
+	"--",
+	"sh",
+	"-c",
+	'bus=$(mktemp) && printf "%s" "$1" > "$bus" && exec dbus-run-session --config-file="$bus" -- xfwm4 --compositor=off --sm-client-disable',
+	"sh",
+	WINDOW_MANAGER_BUS,
+];
 
 const DISPLAY = /^:\d{1,5}(\.\d{1,5})?$/;
 /** How often create asks the daemon whether the display is up yet. */

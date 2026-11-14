@@ -45,8 +45,9 @@ func set(entries ...string) string {
 	return strings.Join(entries, ",")
 }
 
-// The isolation fence's listing, in computerd so no image lacks it: every unix socket with a path a program can connect
-// to, under the roots walked and among /proc/net/unix's paths, by its real path and the type that connected.
+// The isolation fence's listing, in computerd so no image lacks it: every unix socket a program can connect to, under
+// the roots walked and among /proc/net/unix's paths and abstract names, by its real path or its name and the type that
+// connected.
 func TestConnectableSocketsListsThoseThatAcceptByTheirRealPathAndTypeAndNoOther(t *testing.T) {
 	dir := shortDir(t)
 	stream := filepath.Join(dir, "stream.sock")
@@ -90,14 +91,23 @@ func TestConnectableSocketsListsThoseThatAcceptByTheirRealPathAndTypeAndNoOther(
 		t.Fatal(err)
 	}
 	defer l2.Close()
+	// An abstract name, which no folder holds: a session bus on E2B (dbus 1.12's unix:tmpdir) is one. The network
+	// namespace holds it, and a program in the namespace reaches it. An abstract name no one listens on is refused.
+	abstract := fmt.Sprintf("@pso-%d", time.Now().UnixNano())
+	l3, err := net.Listen("unix", abstract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l3.Close()
 	netUnix := "Num       RefCount Protocol Flags    Type St Inode Path\n" +
 		"0000000000000000: 00000002 00000000 00010000 0001 01 12345 " + named + "\n" +
-		"0000000000000000: 00000002 00000000 00010000 0001 01 12346 @abstract-name\n"
+		"0000000000000000: 00000002 00000000 00010000 0001 01 12346 " + abstract + "\n" +
+		"0000000000000000: 00000002 00000000 00010000 0001 01 12347 @pso-no-one-listens\n"
 
 	search := probe.ConnectableSockets([]string{dir}, netUnix, probe.SocketBounds{Entries: 1000, Depth: 8}, 2*time.Second)
-	want := set("dgram "+dgram, "seqpacket "+seqpacket, "stream "+stream, "stream "+named)
+	want := set("dgram "+dgram, "seqpacket "+seqpacket, "stream "+stream, "stream "+named, "stream "+abstract)
 	if got := listed(search); got != want {
-		t.Fatalf("ConnectableSockets = %s; want %s (not the dead socket, the file, the link again or the abstract name)", got, want)
+		t.Fatalf("ConnectableSockets = %s; want %s (not the dead socket, the file, the link again or the abstract name no one listens on)", got, want)
 	}
 	if len(search.Incomplete) != 0 {
 		t.Fatalf("a search within its bounds reports itself incomplete: %v", search.Incomplete)
