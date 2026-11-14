@@ -57,6 +57,8 @@ export interface FakeWorldOptions {
 const ok = (value: unknown): WireResult => ({ ok: true, value });
 const err = (code: string, message: string): WireResult => ({ ok: false, error: { code, message } });
 const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64");
+/** The protocol's most bytes for one files.read (MAX_CHUNK_BYTES). */
+const READ_CHUNK = 512 * 1024;
 
 /** A small PNG of one colour, made from a seed: the same world state gives the same bytes. */
 export function pngOf(seed: string, size = 8): Buffer {
@@ -276,7 +278,12 @@ export class FakeWorld implements Wire {
 			}
 			case "files.read": {
 				const text = this.files.get(String(params.path));
-				return text === undefined ? err("not_found", `no such file: ${params.path}`) : ok({ data: b64(text), eof: true, size: Buffer.byteLength(text) });
+				if (text === undefined) return err("not_found", `no such file: ${params.path}`);
+				// In chunks of at most the protocol's 512 KiB, by offset, as a real computer reads.
+				const bytes = Buffer.from(text, "utf8");
+				const offset = Number(params.offset ?? 0);
+				const end = Math.min(bytes.length, offset + Math.min(Number(params.length ?? READ_CHUNK), READ_CHUNK));
+				return ok({ data: bytes.subarray(offset, end).toString("base64"), eof: end >= bytes.length, size: bytes.length });
 			}
 			case "files.write":
 				this.files.set(String(params.path), Buffer.from(String(params.data), "base64").toString("utf8"));

@@ -40,7 +40,7 @@
     {
       "method": "exec.run",
       "why": "Put the phone's own device name back (delete the key when it had none), and drop the saved copy.",
-      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; v=$(cat $f 2>/dev/null); if [ -z \"$v\" ] || [ \"$v\" = null ]; then settings delete global device_name; else settings put global device_name \"$v\"; fi; rm -f $f"], "timeoutMs": 20000 }
+      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; [ -e $f ] || exit 0; v=$(cat $f 2>/dev/null); if [ -z \"$v\" ] || [ \"$v\" = null ]; then settings delete global device_name; else settings put global device_name \"$v\"; fi; rm -f $f"], "timeoutMs": 20000 }
     }
   ]
 }

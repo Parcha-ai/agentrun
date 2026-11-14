@@ -31,6 +31,7 @@
   ],
   "instruction": "In the Clock app, set an alarm for {{t.say}} with the label \"{{label}} {{nonce}}\".",
   "budget": { "steps": 30, "usd": 1.5, "wall_s": 400 },
+  "sufficient": false,
   "checks": [
     {
       "id": "next-alarm",

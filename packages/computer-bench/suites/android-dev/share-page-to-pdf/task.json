@@ -41,6 +41,7 @@
   ],
   "instruction": "Chrome is showing a receipt from {{shop}}. Save it on the phone as a PDF: use Chrome's Share menu to print it, choose Save as PDF, and keep the file name it suggests.",
   "budget": { "steps": 40, "usd": 2, "wall_s": 500 },
+  "sufficient": false,
   "checks": [
     {
       "id": "pdf-saved",

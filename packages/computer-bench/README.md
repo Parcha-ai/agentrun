@@ -75,7 +75,8 @@ under the same conditions):
 
 Outcomes: `pass`, `fail` and `budget` are scored; `infra` (the platform failed: no computer, a lost connection, a check
 that could not run) is run again, up to `retries` (default 2), and never scored; `refused` (the computer or the agent
-can't take the task) is neither. `--mode null` runs no agent and `--mode oracle` runs the task's oracle on the bench's
+can't take the task) is neither. A run stopped for its budget stays `budget` even when its checks can't run after the
+stop (serve's cancel lets the computer go). `--mode null` runs no agent and `--mode oracle` runs the task's oracle on the bench's
 channel: `verify` runs both and names every check that passes an untouched state or fails a solved one.
 
 The agent's calls go through a tap (`src/tap.ts`) that records them, keeps the budget, and denies a method outside the
@@ -100,7 +101,8 @@ move into a run's journal once serve writes computer steps itself:
 
 Images are kept once under `<out>/blobs/<sha256>`. Beside the runs: `bench.json` (the bench run's arms, seeds, tasks
 and judge), `results.jsonl` (one line per attempt: outcome, scored, rerun, stage 1, the grade, steps, cost, wall,
-routes, stale, no-op acts, verified steps), `human-queue.jsonl`, and the person's `labels.jsonl`.
+routes, stale, no-op acts, verified steps), `human-queue.jsonl`, and the person's `labels.jsonl`. One bench run per
+folder: a run refuses a folder that already holds `results.jsonl`, so a report never pools two.
 
 ## The grader
 
@@ -132,7 +134,8 @@ isn't the JSON, then says unknown.
 task (the task is the unit; never narrower than Wilson's at the task count), tasks passed on every seed (pass^k), mean
 steps, $ per run and per success, wall time, budget stops, infra re-runs and final, refusals, the queue, the route mix
 (semantic, page, background, foreground, raw input, error), stale steps per run, no-op acts and verified steps; each
-arm's paired difference against the first; the failure loci; and a table per task.
+arm's paired difference against the first, over the task × seed pairs both arms scored; the failure loci; and a table
+per task.
 
 ## Suites
 
@@ -150,7 +153,7 @@ Each suite's README says which tasks are proven only on the fake and which wait 
 ## Arms
 
 `arms.json` is a list of `{id, harness, surface, model, effort?, options?}`. On serve, the arm is an agent definition:
-`harness`, `model` and `effort` as they are, `computer.kind` from the task, `options.provider` the provider that serves
+`harness` and `model` as they are, `effort` as its `thinking` level, `computer.kind` from the task, `options.provider` the provider that serves
 it, and `options.definition` any other field of the definition as it is, such as the tools that make the surface:
 
 ```json

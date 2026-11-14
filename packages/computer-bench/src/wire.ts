@@ -52,12 +52,16 @@ export function groupOf(method: string): string | undefined {
 	return undefined;
 }
 
+/** Whether `groups` (a hello's) has `group`, as groupOf names it: "input" is any of the input groups. */
+export function hasGroup(groups: readonly string[], group: string): boolean {
+	if (group === "input") return groups.some((one) => one.startsWith("input."));
+	return groups.includes(group);
+}
+
 /** Whether `groups` (a hello's) offers what a method needs. */
 export function offers(groups: readonly string[], method: string): boolean {
 	const group = groupOf(method);
-	if (group === undefined) return true;
-	if (group === "input") return groups.some((one) => one.startsWith("input."));
-	return groups.includes(group);
+	return group === undefined || hasGroup(groups, group);
 }
 
 /** Base64 to text, for exec.run's stdout and stderr. */

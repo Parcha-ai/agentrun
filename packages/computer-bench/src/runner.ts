@@ -4,13 +4,14 @@
 // releases, then grades (the grader reads what the record kept, so no computer waits on a model). Arms see the same tasks and seeds (paired); an infra outcome is run again and never scored.
 // What a computer or a harness is lives behind Backend; what a task is lives in its folder.
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { type CheckResult, nodeLine, nodeMatches, type ObservedNode, runChecks, type Stage1, stage1Of } from "./checks.js";
 import { combine, GRADER_STEPS, type GradeWhen, type GraderInput, type GraderVerdict, type Judge, wantsGrader } from "./grader.js";
 import { type ComputerIdentity, ENTRY, imageType, type RunHeader, type RunRecord, type Step, type Store } from "./record.js";
 import { Frames, frameSourceOf, tap } from "./tap.js";
 import { type Call, type ResolvedTask, resolveTask, type Task, type UiQuery } from "./task.js";
-import { fromBase64, type Hello, type Json, type JsonObject, type Wire, type WireResult } from "./wire.js";
+import { fromBase64, type Hello, hasGroup, type Json, type JsonObject, type Wire, type WireResult } from "./wire.js";
 
 export const BENCH_VERSION = "0.1.0";
 
@@ -21,6 +22,7 @@ export interface Arm {
 	/** "code": code mode over one computer object; "tools": the per-step computer_* tools. */
 	surface: "code" | "tools";
 	model: string;
+	/** The thinking level (serve's definition field `thinking`). */
 	effort?: string;
 	/** Anything else the backend passes to the harness as it is. */
 	options?: Record<string, Json>;
@@ -151,7 +153,7 @@ export interface RunOptions {
 const sinceS = (t0: number) => Math.round((Date.now() - t0) / 100) / 10;
 
 /** Why a hello can't run a task, or undefined when it can. */
-export function helloMismatch(hello: Hello, task: Task, agentGroups: readonly string[]): string | undefined {
+export function helloMismatch(hello: Hello, task: Task, agentGroups: readonly string[], mode: "agent" | "null" | "oracle" = "agent"): string | undefined {
 	const needs = task.spec.needs;
 	if (hello.os !== needs.os) return `the task needs ${needs.os}; this computer is ${hello.os}`;
 	const kinds: Record<string, string[]> = { desktop: ["desktop"], phone: ["android", "ios"], sandbox: ["linux"], browser: ["browser"] };
@@ -166,8 +168,10 @@ export function helloMismatch(hello: Hello, task: Task, agentGroups: readonly st
 			? `the task can't be done without ${missing.join(", ")}, which this computer does not have (it has ${hello.groups.join(", ") || "nothing"})`
 			: `the task can't be done without ${missing.join(", ")}, which the agent is not given here (it has ${agentGroups.join(", ") || "nothing"})`;
 	}
-	const benchMissing = task.benchGroups.filter((group) => !hello.groups.includes(group));
+	const benchMissing = task.benchGroups.filter((group) => !hasGroup(hello.groups, group));
 	if (benchMissing.length > 0) return `the task's setup and checks need ${benchMissing.join(", ")}, which this computer does not offer`;
+	const oracleMissing = mode === "oracle" ? task.oracleGroups.filter((group) => !hasGroup(hello.groups, group)) : [];
+	if (oracleMissing.length > 0) return `the task's oracle needs ${oracleMissing.join(", ")}, which this computer does not offer`;
 	return undefined;
 }
 
@@ -352,7 +356,7 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 			started_at: new Date(t0).toISOString(),
 		};
 		record.entry(ENTRY.run, header);
-		const mismatch = helloMismatch(hello, task, agentGroups);
+		const mismatch = helloMismatch(hello, task, agentGroups, options.mode ?? "agent");
 		if (mismatch) return end({ ...empty, outcome: "refused", phase: "hello", why: mismatch });
 		touched = true;
 		const setupFailed = await runCalls(benchWire, resolved.setup, signal);
@@ -423,7 +427,14 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 		const observeWire = tapped("observe");
 		const tree = await readTree(observeWire, hello, signal);
 		if (frames) await frames.take(signal);
-		if (stage1 === "error") return end({ ...common, outcome: "infra", phase: "checks", stage1, checks: checks.map(({ id, kind, status }) => ({ id, kind, status })), why: `a check could not run: ${checks.find((one) => one.status === "error")?.reason}` });
+		if (stage1 === "error") {
+			const why = `a check could not run: ${checks.find((one) => one.status === "error")?.reason}`;
+			const brief = checks.map(({ id, kind, status }) => ({ id, kind, status }));
+			// A run stopped for its budget is scored as budget, whatever its checks could read: a stop may let the computer
+			// go (serve's cancel), so a check that can't run then is no platform failure to run again.
+			if (agent.outcome === "budget") return end({ ...common, outcome: "budget", phase: "checks", stage1, checks: brief, why: `${agent.message ?? "the budget is spent"}; ${why}` });
+			return end({ ...common, outcome: "infra", phase: "checks", stage1, checks: brief, why });
+		}
 		const input: GraderInput = {
 			task: { id: task.spec.id, title: task.spec.title, instruction: resolved.instruction, rubric: resolved.rubric, sufficient: resolved.sufficient },
 			checks,
@@ -528,6 +539,8 @@ export async function runBench(options: RunOptions): Promise<Result[]> {
 	const signal = options.signal ?? new AbortController().signal;
 	const ids = options.arms.map((arm) => arm.id);
 	if (new Set(ids).size !== ids.length) throw new Error("two arms have the same id");
+	// One bench run per folder: results.jsonl is appended to, and a report pools every row in it.
+	if (existsSync(join(options.store.dir, "results.jsonl"))) throw new Error(`${options.store.dir} already holds a bench run's results: give each run a folder of its own, so no report pools two`);
 	await options.backend.preflight?.(signal);
 	options.store.write(
 		"bench.json",

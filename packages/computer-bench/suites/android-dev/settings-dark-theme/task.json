@@ -46,7 +46,7 @@
     {
       "method": "exec.run",
       "why": "Put the phone's own night mode back (yes, no or auto; anything else becomes no) and drop the saved copy.",
-      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; v=$(sed -n 's/^Night mode: //p' $f 2>/dev/null); case \"$v\" in yes|no|auto) cmd uimode night $v ;; *) cmd uimode night no ;; esac; rm -f $f"], "timeoutMs": 20000 }
+      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; [ -e $f ] || exit 0; v=$(sed -n 's/^Night mode: //p' $f 2>/dev/null); case \"$v\" in yes|no|auto) cmd uimode night $v ;; *) cmd uimode night no ;; esac; rm -f $f"], "timeoutMs": 20000 }
     }
   ],
   "oracle": [

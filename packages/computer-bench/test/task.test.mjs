@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { checkGroup, loadSuite, loadTask, nonceOf, pickParam, resolveTask, TaskError } from "../dist/index.js";
+import { checkGroup, helloMismatch, loadSuite, loadTask, nonceOf, pickParam, resolveTask, TaskError } from "../dist/index.js";
 import { FAKE, SUITES, tmp } from "./support.mjs";
 
 const GOOD = {
@@ -70,8 +70,20 @@ test("mac-dev and android-dev tasks cover the apps the brief names", () => {
 test("a good task loads; its bench groups come from its setup and checks", () => {
 	const task = loadTask(writeTask({ ...GOOD, setup: [{ method: "apps.launch", params: { id: "x" } }], checks: [...GOOD.checks, { id: "f", kind: "file", why: "w", path: "/x", exists: true }] }));
 	assert.deepEqual([...task.benchGroups].sort(), ["apps", "exec", "files"]);
+	assert.deepEqual(task.oracleGroups, []);
 	assert.equal(checkGroup({ kind: "ui" }), "ui");
 	assert.equal(checkGroup({ kind: "answer" }), undefined);
+});
+
+test("an oracle's input.actions needs any input group, and only when the oracle runs", () => {
+	const task = loadTask(writeTask({ ...GOOD, oracle: [{ method: "input.actions", params: { actions: [{ type: "key", key: "a" }] } }] }));
+	assert.deepEqual(task.benchGroups, ["exec"]);
+	assert.deepEqual(task.oracleGroups, ["input"]);
+	const hello = (groups) => ({ protocol: "0.2", os: "macos", kind: "desktop", arch: "arm64", groups });
+	assert.equal(helloMismatch(hello(["exec", "input.keys", "input.pointer"]), task, ["exec"], "oracle"), undefined);
+	assert.equal(helloMismatch(hello(["exec"]), task, ["exec"], "agent"), undefined);
+	assert.equal(helloMismatch(hello(["exec"]), task, ["exec"], "null"), undefined);
+	assert.match(helloMismatch(hello(["exec"]), task, ["exec"], "oracle"), /oracle needs input/);
 });
 
 test("the schema refuses a task with a field missing, a bad id, an unknown check kind or an unknown field", () => {

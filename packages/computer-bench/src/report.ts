@@ -124,8 +124,32 @@ export function buildReport(all: readonly Result[], labels: readonly Label[] = [
 			labelled: mine.filter((result) => byRun.has(result.run)).length,
 		};
 	});
+	// A pair is one task (its id, version and folder hash) on one seed, scored in both arms: a seed scored in one arm
+	// alone (an infra end, a label) is left out of the pair, so the two arms are compared on the same inputs.
+	const seedOutcomes = new Map<string, Map<string, boolean>>();
+	for (const result of finals.filter((one) => one.scored)) {
+		const byJob = seedOutcomes.get(result.arm) ?? new Map<string, boolean>();
+		byJob.set(JSON.stringify([result.task, result.version, result.sha256, result.seed]), result.outcome === "pass");
+		seedOutcomes.set(result.arm, byJob);
+	}
+	const pairedTasks = (arm: string, against: string): [Map<string, { k: number; n: number }>, Map<string, { k: number; n: number }>] => {
+		const mine = new Map<string, { k: number; n: number }>();
+		const theirs = new Map<string, { k: number; n: number }>();
+		const other = seedOutcomes.get(against) ?? new Map<string, boolean>();
+		for (const [job, passed] of seedOutcomes.get(arm) ?? []) {
+			const otherPassed = other.get(job);
+			if (otherPassed === undefined) continue;
+			const [task, version, sha256] = JSON.parse(job) as [string, number, string, number];
+			const key = JSON.stringify([task, version, sha256]);
+			const a = mine.get(key) ?? { k: 0, n: 0 };
+			const b = theirs.get(key) ?? { k: 0, n: 0 };
+			mine.set(key, { k: a.k + (passed ? 1 : 0), n: a.n + 1 });
+			theirs.set(key, { k: b.k + (otherPassed ? 1 : 0), n: b.n + 1 });
+		}
+		return [mine, theirs];
+	};
 	const [first] = armIds;
-	const paired = armIds.slice(1).map((arm) => ({ arm, against: first as string, difference: pairedDifference(perTask.get(arm) as Map<string, { k: number; n: number }>, perTask.get(first as string) as Map<string, { k: number; n: number }>) }));
+	const paired = armIds.slice(1).map((arm) => ({ arm, against: first as string, difference: pairedDifference(...pairedTasks(arm, first as string)) }));
 	const taskIds = [...new Set(finals.map((result) => result.task))].sort();
 	const splitOf = new Map(finals.map((result) => [result.task, result.split]));
 	const tasks = taskIds.map((task) => ({

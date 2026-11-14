@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { FAKE_AGENTS, FakeWorld, fakeBackend, helper, pngOf } from "../dist/fake-world.js";
-import { ENTRY, runBench } from "../dist/index.js";
+import { ENTRY, runBench, runChecks } from "../dist/index.js";
 import { arm, fakeTasks, jsonl, recordOf, store } from "./support.mjs";
 
 test("the fake agents: right passes every fake task, wrong and null fail every task whose checks are sufficient", async () => {
@@ -212,6 +212,36 @@ test("the wall budget stops an agent that waits, and the usd budget fails one th
 	assert.equal(spent.stage1, "pass", "the dark theme is on");
 	assert.equal(spent.outcome, "budget", "but a success bought over budget is not one");
 	assert.equal(spent.cost_usd, 0.5);
+});
+
+test("a file check reads the whole file, chunk by chunk, so a match past the first 512 KiB is seen", async () => {
+	const world = new FakeWorld();
+	world.files.set("/tmp/big.txt", `${"a".repeat(600 * 1024)}END`);
+	const signal = AbortSignal.timeout(10_000);
+	const [found, absent] = await runChecks(
+		[
+			{ id: "found", kind: "file", why: "the end is read", path: "/tmp/big.txt", text: { contains: "END" } },
+			{ id: "absent", kind: "file", why: "a negative match sees the end too", path: "/tmp/big.txt", text: { contains: "END", not: true } },
+		],
+		{ wire: world, signal },
+	);
+	assert.equal(found.status, "pass", found.reason);
+	assert.equal(absent.status, "fail");
+});
+
+test("a budget stop that let the computer go is scored as budget once, never re-run as infra", async () => {
+	// serve's cancel past a budget releases the run's computer, so the checks after it can't read anything.
+	const worlds = [];
+	const cancelled = async () => {
+		worlds.at(-1).released = true;
+		return { outcome: "budget", message: "the run was cancelled past its step budget" };
+	};
+	const results = await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("cancelled")], seeds: [1], backend: fakeBackend({ agents: { cancelled }, worlds }), store: store(), grade: "never" });
+	assert.equal(results.length, 1, "no re-run");
+	assert.equal(results[0].outcome, "budget");
+	assert.equal(results[0].scored, true);
+	assert.equal(results[0].stage1, "error");
+	assert.match(results[0].why, /cancelled past its step budget; a check could not run/);
 });
 
 test("frames and images: each image is kept once as a blob, a chunked shot is put back together, and bytes never sit in a step", async () => {

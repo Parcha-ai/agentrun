@@ -59,6 +59,8 @@ export function describe(match: Match): string {
 
 /** The error kinds that mean the state was read and the thing is not there (a fail), not that reading failed. */
 const ABSENT = new Set(["not_found", "not_dir", "is_dir"]);
+/** The most a file check reads: a task's file is text it can match, never a disk image. */
+const MAX_FILE_BYTES = 64 * 1024 * 1024;
 
 /** One node of ui.observe, as the bench reads it. */
 export interface ObservedNode {
@@ -128,8 +130,21 @@ export async function runCheck(check: Check, context: CheckContext): Promise<Che
 					return want ? done("fail", read.error.message, `${check.path} is not there`) : done("pass", `${check.path} is not there`);
 				}
 				if (!want) return done("fail", `${check.path} is there`, `${check.path} must not be there`);
-				const value = read.value as { data: string; eof?: boolean };
-				const text = fromBase64(value.data);
+				// One files.read answers a chunk: read on by offset to the end, so a match sees the whole file.
+				const chunks: Buffer[] = [];
+				let value = read.value as { data: string; eof?: boolean };
+				let offset = 0;
+				for (;;) {
+					const chunk = Buffer.from(value.data ?? "", "base64");
+					chunks.push(chunk);
+					offset += chunk.length;
+					if (value.eof !== false) break;
+					if (chunk.length === 0 || offset > MAX_FILE_BYTES) return done("error", "", `${check.path} did not end within ${MAX_FILE_BYTES} bytes`);
+					const more = await wire.call("files.read", { path: check.path, offset }, { signal });
+					if (!more.ok) return done("error", "", `files.read at ${offset} could not run: ${errorText(more.error)}`);
+					value = more.value as { data: string; eof?: boolean };
+				}
+				const text = Buffer.concat(chunks).toString("utf8");
 				if (check.text && !matches(text, check.text)) return done("fail", text, `its text does not ${describe(check.text)}`);
 				return done("pass", text);
 			}

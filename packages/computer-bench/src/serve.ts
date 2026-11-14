@@ -100,7 +100,7 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 				instructions: "Do the task you are given with your computer, then stop. When it asks a question, end with the answer alone.",
 				harness: arm.harness,
 				model: arm.model,
-				...(arm.effort ? { effort: arm.effort } : {}),
+				...(arm.effort ? { thinking: arm.effort } : {}),
 				computer: { kind, ...(typeof arm.options?.provider === "string" ? { provider: arm.options.provider } : {}) },
 				approvals: "never",
 				skills: [],
@@ -303,7 +303,7 @@ const runBody = (content: string, usd: number, holdMinutes: number | undefined) 
  *  needs each for, and the item of README.md's "What serve needs" that asks for it (0: serve has it without a hold). */
 export const SERVE_CONTRACT: readonly { method: string; path: string; body?: Json; answers: string; need: string; item: number }[] = [
 	{ method: "GET", path: "/openapi.json", answers: "serve's OpenAPI document", need: "reads whether a run's create takes hold and its read has computer.held", item: 0 },
-	{ method: "POST", path: "/agents", body: { definition: "{id, name, instructions, harness, model, effort?, computer {kind, provider?}, approvals, skills, tools, max_tool_calls (pi: budget.steps), ...arm.options.definition}" }, answers: "the saved agent", need: "saves an agent per arm and kind (and step budget, on pi)", item: 0 },
+	{ method: "POST", path: "/agents", body: { definition: "{id, name, instructions, harness, model, thinking (arm.effort)?, computer {kind, provider?}, approvals, skills, tools, max_tool_calls (pi: budget.steps), ...arm.options.definition}" }, answers: "the saved agent", need: "saves an agent per arm and kind (and step budget, on pi)", item: 0 },
 	{ method: "POST", path: "/agents/{agent_id}/runs", body: { input: "{content}", max_cost_usd: "budget.usd", hold: true, hold_minutes: "options.holdMinutes?" }, answers: "{run_id, status, computer {state, held {state}}}; with hold, the agent waits for /start", need: "claims a run's computer and holds it, its agent not started", item: 1 },
 	{ method: "GET", path: "/runs/{run_id}", answers: "{status, computer {state, provider, why, held {state starting|waiting|started|ended|released, why}}, cost {usd, so_far_usd}, result {final_answer}, error {code, message}}", need: "reads where the hold is, and how the run ended", item: 5 },
 	{ method: "POST", path: "/runs/{run_id}/computer/call", body: { method: "a protocol method", params: "its params" }, answers: "{ok, value} | {ok: false, error {code, message}}: the computer's answer, verbatim", need: "reaches the held computer through it, for setup, frames, checks and teardown", item: 2 },

@@ -99,6 +99,23 @@ test("the report over a fake run: per arm success, steps, routes and the paired 
 	assert.deepEqual(dev.splits, ["dev"]);
 });
 
+test("the paired difference compares a task on the seeds both arms scored, never one arm's seed 1 against another's seed 2", () => {
+	const row = (arm, seed, outcome) => ({ bench: "b", run: `${arm}-${seed}`, task: "t.one", version: 1, sha256: "s", split: "dev", seed, arm, attempt: 1, outcome, scored: outcome !== "infra", rerun: false, steps: 1, wall_s: 1, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 });
+	// Two arms that both pass seed 1 and fail seed 2, each with the other seed lost to infra.
+	const lopsided = buildReport([row("a", 1, "pass"), row("a", 2, "infra"), row("b", 1, "infra"), row("b", 2, "fail")]);
+	assert.equal(lopsided.paired[0].difference.tasks, 0, "no seed was scored in both arms");
+	assert.equal(lopsided.paired[0].difference.estimate, 0);
+	const both = buildReport([row("a", 1, "pass"), row("a", 2, "fail"), row("b", 1, "pass"), row("b", 2, "pass"), row("b", 3, "pass")]);
+	assert.equal(both.paired[0].difference.tasks, 1);
+	assert.equal(both.paired[0].difference.estimate, 0.5, "b passes 2 of the 2 seeds a ran, a 1 of 2; b's seed 3 has no pair");
+});
+
+test("a bench run refuses a folder that already holds results", async () => {
+	const s = store();
+	await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("fake-right")], seeds: [1], backend: fakeBackend({ agents: FAKE_AGENTS }), store: s, grade: "never" });
+	await assert.rejects(runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("fake-wrong")], seeds: [1], backend: fakeBackend({ agents: FAKE_AGENTS }), store: s, grade: "never" }), /already holds a bench run's results/);
+});
+
 test("a person's label overrides a verdict, and a labelled run leaves the queue", async () => {
 	const s = store();
 	const results = await runBench({ tasks: fakeTasks("fake.settings.volume-judged"), arms: [arm("fake-wrong")], seeds: [1, 2], backend: fakeBackend({ agents: FAKE_AGENTS }), store: s, grade: "never" });

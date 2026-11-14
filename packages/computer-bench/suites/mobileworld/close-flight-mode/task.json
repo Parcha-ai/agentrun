@@ -46,7 +46,7 @@
     {
       "method": "exec.run",
       "why": "Put the phone's own flight-mode state back (off when none was saved), and drop the saved copy.",
-      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; case \"$(cat $f 2>/dev/null)\" in 1) cmd connectivity airplane-mode enable ;; *) cmd connectivity airplane-mode disable ;; esac; rm -f $f"], "timeoutMs": 20000 }
+      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; [ -e $f ] || exit 0; case \"$(cat $f 2>/dev/null)\" in 1) cmd connectivity airplane-mode enable ;; *) cmd connectivity airplane-mode disable ;; esac; rm -f $f"], "timeoutMs": 20000 }
     }
   ],
   "oracle": [

@@ -31,6 +31,7 @@
   ],
   "instruction": "Use the Calculator app to work out {{f.say}}, with the angle in radians, and leave the value as Calculator's result.",
   "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "sufficient": false,
   "checks": [
     {
       "id": "result",

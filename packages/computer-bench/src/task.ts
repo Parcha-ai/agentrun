@@ -95,8 +95,10 @@ export interface Task {
 	rubric?: string;
 	/** Every file of the folder by name, for {{file:NAME}}. */
 	files: Record<string, string>;
-	/** The groups the bench's own channel needs: setup's, the checks', teardown's and the oracle's. */
+	/** The groups the bench's own channel needs on every run: setup's, the checks' and teardown's. */
 	benchGroups: string[];
+	/** The groups the oracle needs besides, asked of a computer only when the oracle runs. */
+	oracleGroups: string[];
 }
 
 /** A task resolved for one seed: what one run of it does. */
@@ -277,9 +279,10 @@ export function loadTask(dir: string): Task {
 	const rubricName = spec.rubric ?? (files["rubric.md"] !== undefined ? "rubric.md" : undefined);
 	const problems = ruleProblems({ ...spec, rubric: rubricName }, files);
 	if (problems.length > 0) throw new TaskError(where, problems);
-	const methods = [...(spec.setup ?? []), ...(spec.teardown ?? []), ...(spec.oracle ?? [])].map((call) => groupOf(call.method));
-	const benchGroups = [...new Set([...methods, ...spec.checks.map(checkGroup)].filter((g): g is string => g !== undefined))].sort();
-	return { spec, dir: where, sha256: folderSha(files), rubric: rubricName ? files[rubricName] : undefined, files, benchGroups };
+	const groupsOf = (groups: (string | undefined)[]) => [...new Set(groups.filter((g): g is string => g !== undefined))].sort();
+	const benchGroups = groupsOf([...[...(spec.setup ?? []), ...(spec.teardown ?? [])].map((call) => groupOf(call.method)), ...spec.checks.map(checkGroup)]);
+	const oracleGroups = groupsOf((spec.oracle ?? []).map((call) => groupOf(call.method))).filter((group) => !benchGroups.includes(group));
+	return { spec, dir: where, sha256: folderSha(files), rubric: rubricName ? files[rubricName] : undefined, files, benchGroups, oracleGroups };
 }
 
 /** A suite: every folder under `dir` that holds a task.json, at any depth, in path order. Ids must be unique. */

@@ -25,6 +25,7 @@
   ],
   "instruction": "In Chrome, open the English Wikipedia article about {{topic.say}}.",
   "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
+  "sufficient": false,
   "checks": [
     {
       "id": "heading",

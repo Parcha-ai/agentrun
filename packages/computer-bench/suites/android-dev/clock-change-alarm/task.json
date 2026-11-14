@@ -36,6 +36,7 @@
   ],
   "instruction": "In the Clock app, change the alarm labelled \"{{label}} {{nonce}}\" from {{t.from_say}} to {{t.to_say}}. Keep its label, and don't leave an alarm at the old time.",
   "budget": { "steps": 30, "usd": 1.5, "wall_s": 400 },
+  "sufficient": false,
   "checks": [
     {
       "id": "next-alarm",

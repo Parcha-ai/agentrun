@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import test from "node:test";
 import { FAKE_AGENTS, FakeWorld } from "../dist/fake-world.js";
-import { MissingRoute, runBench, serveBackend, Store, tap, verifySuite } from "../dist/index.js";
+import { MissingRoute, resolveTask, runBench, serveBackend, Store, tap, verifySuite } from "../dist/index.js";
 import { arm, fakeTasks, store, tmp } from "./support.mjs";
 
 const TOKEN = "t0ken";
@@ -389,4 +389,20 @@ test("this repository's serve has every route the bench needs: the preflight fin
 	const server = await startServe({ data: join(tmp("cb-serve-"), "agents"), port: 0, drainTimeout: "5s" });
 	t.after(() => server.close());
 	await serveBackend({ baseUrl: server.baseUrl, token: server.token }).preflight(AbortSignal.timeout(30_000));
+});
+
+test("this repository's serve saves an arm's agent: its effort is the definition's thinking", async (t) => {
+	const { startServe } = await import("@parcha/agentrun-serve");
+	const server = await startServe({ data: join(tmp("cb-serve-"), "agents"), port: 0, drainTimeout: "5s" });
+	t.after(() => server.close());
+	const [task] = fakeTasks("fake.settings.dark-theme");
+	const thinking = { ...arm("thinking"), harness: "pi", model: "anthropic/claude-sonnet-5-5", effort: "high", options: { provider: "docker" } };
+	// This serve has no model key, so the run is refused after its agent is saved; the agent is what is read. Where a key
+	// is set and the run holds a computer, it is let go at once.
+	const opened = await serveBackend({ baseUrl: server.baseUrl, token: server.token }).open({ task: resolveTask(task, 1), arm: thinking, labels: { "agentrun.bench": "cb-effort" }, signal: AbortSignal.timeout(30_000) });
+	if (opened.ok) await opened.value.release();
+	const saved = await fetch(`${server.baseUrl}/agents/cb-effort-thinking-desktop-s${task.spec.budget.steps}`, { headers: { authorization: `Bearer ${server.token}` } });
+	assert.equal(saved.status, 200, await saved.clone().text());
+	const agent = await saved.json();
+	assert.equal((agent.definition ?? agent).thinking, "high");
 });
