@@ -9,14 +9,11 @@
 import type { App, Image, ModalClient, Sandbox, SandboxCreateParams } from "modal";
 import { MODAL, MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./descriptors/modal.js";
 import { DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
-import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
+import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
 import { isWhole } from "./hosted/values.js";
 import type { ComputerSpec, GpuSpec, Refusal } from "./provider.js";
-import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
-
-/** This module's failures: one with code vendor names Modal. */
-const fail = failFor("modal");
+import type { ComputerErrorCode } from "./result.js";
 
 /**
  * The SDK's own types, imported as types only: erased at build, so nothing loads the SDK from here. The host passes its
@@ -190,8 +187,6 @@ class ModalHost implements MachineHost {
 			arch: "amd64",
 			// No listener of Modal's own inside a sandbox is documented, so none is declared.
 			vendorAgentPorts: [],
-			networkReadBack: false,
-			release: ["delete"],
 			// capabilities() reads a copy, so no caller can change the descriptor's own.
 			gpu: MODAL_GPU,
 			// Never root: each connection is Modal's exec of the stdio bridge, as Modal's root, outside the daemon.
@@ -248,13 +243,13 @@ class ModalHost implements MachineHost {
 	 * SDK takes, the spec's sizes as limits over Modal's small default request, no network unless the adapter asks open
 	 * (an Archil computer's root, to reach Archil), and the labels as its tags.
 	 */
-	async create(req: MachineRequest, ctx: HostCall): Promise<Result<{ id: string }>> {
+	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		void ctx;
-		if (req.command === undefined) return fail("invalid", "a Modal sandbox's command is the entrypoint the adapter gives a pid1 host, and the request has none");
+		if (req.command === undefined) throw new HostError("invalid", "a Modal sandbox's command is the entrypoint the adapter gives a pid1 host, and the request has none");
 		let base: Image;
 		if (MODAL_IMAGE_ID.test(req.image)) {
 			const fromId = this.#sdk.images.fromId;
-			if (typeof fromId !== "function") return fail("invalid", `the image ${req.image} is a Modal image id, and options.sdk has no images.fromId to open it: pass the SDK's own ModalClient`);
+			if (typeof fromId !== "function") throw new HostError("invalid", `the image ${req.image} is a Modal image id, and options.sdk has no images.fromId to open it: pass the SDK's own ModalClient`);
 			base = await fromId.call(this.#sdk.images, req.image);
 		} else base = this.#sdk.images.fromRegistry(req.image);
 		const cpus = req.cpus ?? DEFAULT_CPUS;
@@ -276,7 +271,7 @@ class ModalHost implements MachineHost {
 		const image = base.dockerfileCommands([`ENV HOME=${WORK}`, `WORKDIR ${WORK}`]);
 		const sandbox = await this.#sdk.sandboxes.create((await this.#theApp(true)) as App, image, params);
 		this.#sandboxes.set(sandbox.sandboxId, sandbox);
-		return ok({ id: sandbox.sandboxId });
+		return { id: sandbox.sandboxId };
 	}
 
 	/**
@@ -284,9 +279,9 @@ class ModalHost implements MachineHost {
 	 * has finished, or that Modal no longer knows, is none: a finished sandbox cannot run again. Modal reads no network,
 	 * size or GPU back.
 	 */
-	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
+	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
 		void ctx;
-		return ok(await this.#machine(await this.#sandbox(id)));
+		return this.#machine(await this.#sandbox(id));
 	}
 
 	/** One sandbox read: none once it has finished or Modal no longer knows it. */
@@ -306,15 +301,15 @@ class ModalHost implements MachineHost {
 	 * and one finished or no longer known is left out. One bound, ctx.timeoutMs, for the listing and every read. An app
 	 * not made yet holds none.
 	 */
-	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
+	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
 		const until = Date.now() + ctx.timeoutMs;
 		const app = await this.#theApp(false);
-		if (app === undefined) return ok([]);
+		if (app === undefined) return [];
 		const iterator = this.#sdk.sandboxes.list({ appId: app.appId, tags: labels })[Symbol.asyncIterator]();
 		const machines: Machine[] = [];
 		try {
 			for (;;) {
-				if (Date.now() >= until) return fail("timeout", `sandboxes.list read ${machines.length} sandboxes, and did not finish within ${ctx.timeoutMs / 1000} s`);
+				if (Date.now() >= until) throw new HostError("timeout", `sandboxes.list read ${machines.length} sandboxes, and did not finish within ${ctx.timeoutMs / 1000} s`);
 				const next = await iterator.next();
 				if (next.done) break;
 				const machine = await this.#machine(next.value);
@@ -323,14 +318,14 @@ class ModalHost implements MachineHost {
 		} finally {
 			Promise.resolve(iterator.return?.()).catch(() => {});
 		}
-		return ok(machines);
+		return machines;
 	}
 
 	/**
 	 * terminate, which returns before Modal has ended the sandbox (sandbox.ts:1292-1296): the adapter waits for it to be
 	 * gone. One Modal no longer knows (not_found, done to the adapter), or one that had finished when terminate failed, is done.
 	 */
-	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
+	async delete(id: string, ctx: HostCall): Promise<void> {
 		void ctx;
 		const sandbox = await this.#sandbox(id).finally(() => this.#sandboxes.delete(id));
 		try {
@@ -343,28 +338,25 @@ class ModalHost implements MachineHost {
 			);
 			if (!finished) throw error;
 		}
-		return ok(undefined);
 	}
 
 	/**
-	 * exec in binary mode, as root (Modal containers always run as root), outside computerd. Without stdin, it is closed
-	 * at once. Modal has no kill for an exec: kill closes its stdin, which ends the stdio bridge and anything else that
-	 * reads it.
+	 * exec in binary mode, as root (Modal containers always run as root), outside computerd. Modal has no kill for an
+	 * exec: kill closes its stdin, which ends the stdio bridge and anything else that reads it.
 	 */
-	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
+	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		void ctx;
 		const sandbox = await this.#sandbox(id);
 		const program = await sandbox.exec([...argv], { mode: "binary" });
 		const close = () => program.stdin.close().catch(() => {});
-		if (!stdin) await close();
-		return ok({
+		return {
 			stdout: program.stdout,
 			stderr: program.stderr,
 			write: (bytes) => program.stdin.writeBytes(bytes),
 			end: () => program.stdin.close(),
 			wait: () => program.wait(),
 			kill: async () => void (await close()),
-		});
+		};
 	}
 }
 
