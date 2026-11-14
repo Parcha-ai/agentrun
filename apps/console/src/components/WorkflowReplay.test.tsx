@@ -140,7 +140,7 @@ describe("the workflow card: standing, guards and where it is unsure", () => {
   const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sorter", digest: "1".repeat(16), at: "2026-11-02T10:00:00Z", decided: "promote", source: "replay", reason: "as good as the agent on its graded inputs", replay: { of: [], n: 20, agree: 19, agent_acc: 0.9, wf_acc: 0.95, delta: 0.05, handed_back: 2 }, ...over } as Promotion);
   const point = (p: number | null, correct: boolean | null, i: number) => ({ run_id: `r${i}`, p, escalated: p === null || p < 0.7, correct });
   const loop: LearningLoop = { agent: "a", compiles: [], guards: [
-    { workflow: "sorter", digest: "1".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 5, escalated: 2, right: 2, wrong: 1, replays: 0, points: [point(0.95, true, 1), point(0.91, true, 2), point(0.75, false, 3), point(0.4, null, 4), point(null, null, 5)] },
+    { workflow: "sorter", digest: "1".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 5, escalated: 2, right: 2, wrong: 1, grades_past: 0, replays: 0, points: [point(0.95, true, 1), point(0.91, true, 2), point(0.75, false, 3), point(0.4, null, 4), point(null, null, 5)] },
   ] } as LearningLoop;
 
   it("says where each revision stands, with its replay in one line; scrubbing moves it", () => {
@@ -189,7 +189,7 @@ describe("the workflow card: standing, guards and where it is unsure", () => {
 
   it("a step's graded counts are every run's (the server's), and its p is said to be the newest runs' once older ones are left out", () => {
     const many: LearningLoop = { agent: "a", compiles: [], guards: [
-      { workflow: "sorter", digest: "1".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 205, escalated: 5, right: 0, wrong: 5, replays: 0, points: Array.from({ length: 200 }, (_, i) => point(0.9, null, i)) },
+      { workflow: "sorter", digest: "1".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 205, escalated: 5, right: 0, wrong: 5, grades_past: 0, replays: 0, points: Array.from({ length: 200 }, (_, i) => point(0.9, null, i)) },
     ] } as LearningLoop;
     const host = mount(createElement(Steps, { data: read([REVS2[0]!]), promotions: [record({})], loop: many }));
     const row = host.querySelector('[data-testid="guard-row"]')!.textContent;
@@ -198,9 +198,45 @@ describe("the workflow card: standing, guards and where it is unsure", () => {
     expect(row).toContain("p of the newest 200 runs");
   });
 
+  // Review on #2654: the server keeps the newest GRADES_KEPT grades; a step whose older runs' grades are past them says
+  // so, never "none graded".
+  it("a step whose older runs' grades are past the grades kept says so, not none graded", () => {
+    const old: LearningLoop = { agent: "a", compiles: [], guards: [
+      { workflow: "sorter", digest: "1".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 40, escalated: 0, right: 0, wrong: 0, grades_past: 40, replays: 0, points: [] },
+    ] } as LearningLoop;
+    const row = mount(createElement(Steps, { data: read([REVS2[0]!]), promotions: [record({})], loop: old })).querySelector('[data-testid="guard-row"]')!.textContent;
+    expect(row).toContain("0% handed back (0 of 40 runs) · 40 older runs' grades are past the newest grades kept");
+    expect(row).not.toContain("none graded");
+  });
+
+  // Review on #2654: a step of a composed child workflow is `parent/child` on the runner's guard rows; its card reads
+  // those rows and its verdict sits on the child's own node.
+  it("a guarded step inside a child workflow reads its rows by parent/child, its verdict on its own node", () => {
+    const nested = JSON.stringify({ v: 2, name: "sorter", schemas: { Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } } }, root: { node: "chain", steps: [
+      { node: "workflow", label: "vendor", workflow: { v: 2, schemas: { Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } } }, root: { node: "chain", steps: [{ ...step("check", "Check the vendor."), guard: { signal: "self", threshold: 0.6 } }] } } },
+    ] } });
+    const child: LearningLoop = { agent: "a", compiles: [], guards: [
+      { workflow: "sorter", digest: "1".repeat(16), node: "vendor/check", signal: "self", threshold: 0.6, runs: 4, escalated: 1, right: 3, wrong: 0, grades_past: 0, replays: 0, points: [point(0.9, true, 1)] },
+    ] } as LearningLoop;
+    const host = mount(createElement(Steps, { data: read([rev(1, nested)]), promotions: [record({})], loop: child }));
+    const row = host.querySelector('[data-testid="guard-row"]')!.textContent;
+    expect(row).toContain("vendor/check");
+    expect(row).toContain("25% handed back (1 of 4 runs) · graded 3 right, 0 wrong");
+    expect(host.querySelectorAll('[data-testid="guard-histogram"]')).toHaveLength(1);
+    expect([...host.querySelectorAll("svg .verdict")].map((v) => `${v.closest("g")?.getAttribute("data-path")}:${v.textContent}`)).toEqual(["/root/steps/0/workflow/root/steps/0:self ≥0.60"]);
+  });
+
+  // Review on #2654: the money rule stops a serving revision from running first without a promotion record; the cost
+  // read's needs_revision says so, and the card follows it.
+  it("the champion the money rule stopped says Stopped, not Serving", () => {
+    const host = mount(createElement(Steps, { data: read([REVS2[0]!]), promotions: [record({})], serving: "1".repeat(16), stopped: "1".repeat(16), loop }));
+    expect(host.querySelector('[data-testid="standing"]')?.textContent).toContain("Stopped");
+    expect(host.querySelector('[data-testid="standing"]')?.textContent).not.toContain("Serving");
+  });
+
   it("a revision only replayed says so, never a hand-back rate read at the replay's record-only threshold", () => {
     const replayed: LearningLoop = { agent: "a", compiles: [], guards: [
-      { workflow: "sorter", digest: "1".repeat(16), node: "classify", signal: "jev", threshold: null, runs: 0, escalated: 0, right: 0, wrong: 0, replays: 3, points: [] },
+      { workflow: "sorter", digest: "1".repeat(16), node: "classify", signal: "jev", threshold: null, runs: 0, escalated: 0, right: 0, wrong: 0, grades_past: 0, replays: 3, points: [] },
     ] } as LearningLoop;
     const host = mount(createElement(Steps, { data: read([REVS2[0]!]), promotions: [record({ decided: "replaying", replay: undefined })], loop: replayed }));
     expect(host.querySelector('[data-testid="guard-row"]')!.textContent).toContain("Replayed on 3 graded inputs; no run served yet.");

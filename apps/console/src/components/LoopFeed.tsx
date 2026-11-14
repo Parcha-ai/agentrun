@@ -2,8 +2,8 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
 import { runLabel, when } from "@/lib/format";
-import { kindOf, MARKER_LETTER, MARKER_WORDS, type MarkerKind, recordOf, refitOf, replayLine, standingOf } from "@/lib/learningLoop";
-import type { LearningLoop, LoopCompile, Promotion, Serving } from "@/lib/v2";
+import { kindOf, MARKER_LETTER, MARKER_WORDS, type MarkerKind, recordOf, refitOf, replayLine, standingOf, stoppedOf } from "@/lib/learningLoop";
+import type { LearningCost, LearningLoop, LoopCompile, Promotion, Serving } from "@/lib/v2";
 
 // The learning feed: what the loop did, newest first. A compile turn (a run's end, any round of it, wrote a workflow from
 // its notes: which notes went in, each attempt, and where that revision stands now, as the replay card says it) and each promotion record (a revision replaying,
@@ -17,8 +17,9 @@ type Entry = { at: string; key: string } & ({ kind: "compile"; compile: LoopComp
 
 const MARKER_TONE: Record<MarkerKind, ChipTone> = { promote: "success", hold: "warning", refit: "plain", revision: "active", superseded: "muted" };
 
-/** `serving`: the server's serving digest per workflow (the promotions read's), the one revision that says Serving. */
-export function LoopFeed({ loop, promotions, serving = [] }: { loop: LearningLoop | null; promotions: readonly Promotion[]; serving?: readonly Serving[] }) {
+/** `serving`: the server's serving digest per workflow (the promotions read's), the one revision that says Serving;
+ *  `cost`: the cost read, whose `needs_revision` makes that revision say Stopped (the money rule stopped it). */
+export function LoopFeed({ loop, promotions, serving = [], cost = null }: { loop: LearningLoop | null; promotions: readonly Promotion[]; serving?: readonly Serving[]; cost?: Pick<LearningCost, "workflows"> | null }) {
   const [all, setAll] = useState(false);
   const entries: Entry[] = [
     ...(loop?.compiles ?? []).map((compile): Entry => ({ at: compile.at, key: `c:${compile.run_id}:${compile.round}`, kind: "compile", compile })),
@@ -32,7 +33,7 @@ export function LoopFeed({ loop, promotions, serving = [] }: { loop: LearningLoo
       <ol className="divide-y">
         {shown.map((entry) => (
           <li key={entry.key} className="min-w-0 px-4 py-3" data-testid={`feed-${entry.kind}`}>
-            {entry.kind === "compile" ? <Compiled compile={entry.compile} promotions={promotions} serving={serving.find((one) => one.workflow === entry.compile.workflow)?.digest ?? null} /> : <Decided record={entry.record} />}
+            {entry.kind === "compile" ? <Compiled compile={entry.compile} promotions={promotions} serving={serving.find((one) => one.workflow === entry.compile.workflow)?.digest ?? null} stopped={entry.compile.workflow ? stoppedOf(cost, entry.compile.workflow) : null} /> : <Decided record={entry.record} />}
           </li>
         ))}
       </ol>
@@ -48,13 +49,14 @@ const Meta = ({ at, run }: { at: string; run?: string }) => (
   <p className="mt-1 font-mono text-label text-muted-foreground"><time dateTime={at}>{when(at)}</time>{run ? <> · <Run id={run} /></> : null}</p>
 );
 
-function Compiled({ compile: c, promotions, serving }: { compile: LoopCompile; promotions: readonly Promotion[]; serving: string | null }) {
+function Compiled({ compile: c, promotions, serving, stopped }: { compile: LoopCompile; promotions: readonly Promotion[]; serving: string | null; stopped: string | null }) {
   const failed = c.digest === null || c.workflow === null;
   const refused = c.attempts.filter((a) => !a.ok);
   const errors: { e: string; attempt: number | null }[] = [...c.attempts.flatMap((a, i) => (a.ok ? [] : a.errors.map((e) => ({ e, attempt: i + 1 })))), ...c.draft_errors.map((e) => ({ e, attempt: null }))];
   // Its revision's standing as the replay card says it (standingOf): Serving only for the champion the server names, Served
-  // for one promoted before it, Refit when a refit of it serves in its place, Held, Replaying, Superseded.
-  const standing = failed ? null : standingOf(recordOf(promotions, c.workflow!, c.digest), { serving, refit: refitOf(promotions, c.workflow!, c.digest) });
+  // for one promoted before it, Refit when a refit of it serves in its place, Held, Replaying, Superseded; Stopped when
+  // the money rule stopped the champion running first.
+  const standing = failed ? null : standingOf(recordOf(promotions, c.workflow!, c.digest), { serving, refit: refitOf(promotions, c.workflow!, c.digest), stopped });
   return (
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2">

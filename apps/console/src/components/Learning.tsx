@@ -162,6 +162,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   const story = storyOf({
     notes: active.length, compiledNotes: all.filter((x) => x.status !== "retired" && compiledInto(x.text) !== null).length,
     runs: runs.filter((r) => r.status === "completed").length, workflows, cost, promotions, serving, loop,
+    mode: agent.definition.learning === "notes" ? "notes" : "full",
   });
 
   if (error && !view) return <ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />;
@@ -179,7 +180,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
       <HeldOutTest v2={v2} agentId={agent.agent_id} quiet />
       {on && !readOnly && <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />}
       <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} quiet promotions={promotions} onCost={setCost} />
-      <LoopFeed loop={loop} promotions={promotions} serving={serving} />
+      <LoopFeed loop={loop} promotions={promotions} serving={serving} cost={cost} />
       <NotKept runs={runs} />
     </div>
   );
@@ -208,7 +209,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
       {on && !readOnly && <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />}
       <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} />
-      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} loop={loop} />
+      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} loop={loop} cost={cost} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
         <section className="min-w-0 space-y-3" aria-label="Notes">
@@ -258,7 +259,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
         </div>
         <aside className="min-w-0 space-y-6" aria-label="About learning">
           <Panel title="Learning">{switchRow(false)}</Panel>
-          <LoopFeed loop={loop} promotions={promotions} serving={serving} />
+          <LoopFeed loop={loop} promotions={promotions} serving={serving} cost={cost} />
           <NotKept runs={runs} />
           <NextRun index={view.index} skills={skills.filter((s) => s.status === "active").map((s) => s.name)} off={!on || server === "off"} />
         </aside>

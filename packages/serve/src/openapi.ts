@@ -1226,6 +1226,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
           escalated: { ...COUNT, description: "How many of them it handed back (one of the run's checks of it did)." },
           right: { ...COUNT, description: "How many of them the workflow answered alone and were graded right." },
           wrong: { ...COUNT, description: "How many of them the workflow answered alone and were graded wrong." },
+          grades_past: { ...COUNT, description: `How many of them the workflow answered alone whose grade, if one was given, is no longer kept (the agent keeps its newest ${GRADES_KEPT} grades): in neither \`right\` nor \`wrong\`, and not known to be ungraded.` },
           replays: { ...COUNT, description: "Replay runs of this revision that read this step: in none of the other counts, nor in \`points\` (a replay reads its guards at a record-only threshold, so its row says nothing of a hand-back)." },
           points: { type: "array", items: closed({ run_id: { type: "string" }, p: { type: ["number", "null"], minimum: 0, maximum: 1, description: "The least p the run's checks of this step read, to 4 places; null when a signal was missing on one (always handed back)." }, escalated: { type: "boolean" }, correct: { type: ["boolean", "null"], description: "The run's grade, on a run the workflow answered alone; null otherwise." } }), description: `The runs it served first on, oldest first: the newest ${LOOP_POINTS_MAX}.` },
         }) },

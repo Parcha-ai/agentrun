@@ -6,7 +6,7 @@
 // Aggregates and the checks' own words only: no input, no answer.
 import { FINAL_STATES, type Store } from "../store/store.js";
 import type { GuardRow } from "../learned-nodes.js";
-import { gradesOf, promotionsOf } from "../learn/promote.js";
+import { GRADES_KEPT, gradesOf, promotionsOf } from "../learn/promote.js";
 import { promotedOf } from "../learn/compile.js";
 import { roundsOf } from "./learning.js";
 
@@ -48,6 +48,9 @@ export type LoopGuard = {
   escalated: number;
   right: number;
   wrong: number;
+  /** Runs it answered alone whose grade, if one was given, is no longer kept (the agent keeps its newest GRADES_KEPT
+   *  grades): in neither `right` nor `wrong`, never read as "not graded". */
+  grades_past: number;
   replays: number;
   points: LoopPoint[];
 };
@@ -93,6 +96,11 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
   const ended = (await store.runs.list({ agentId })).filter((run) => run.agentId === agentId && FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const [grades, promotions] = await Promise.all([gradesOf(store.settings, agentId).catch(() => []), promotionsOf(store.settings, agentId).catch(() => [])]);
   const graded = new Map(grades.map((grade) => [grade.run, grade.correct]));
+  // The grades kept are the newest GRADES_KEPT (putGrade trims the oldest): once full, a run that ended before the oldest
+  // grade kept and has none kept may have had one trimmed, so its grade is unknown. A run that ended after it with none
+  // kept was never graded (a grade of it would be newer than one kept). Not full: nothing was trimmed.
+  const kept = grades.map((grade) => Date.parse(grade.at)).filter(Number.isFinite);
+  const keptSince = grades.length >= GRADES_KEPT ? (kept.length ? Math.min(...kept) : Infinity) : -Infinity;
   const compiles: (LoopCompile & { createdAt: number })[] = [];
   const steps = new Map<string, LoopGuard>();
   for (const run of ended) {
@@ -103,7 +111,7 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
       const alone = metrics?.path === "workflow";
       for (const row of perStep(guardRowsOf(run.metrics, workflow))) {
         const key = `${workflow}\u0000${digest}\u0000${row.node}`;
-        const step = steps.get(key) ?? { workflow, digest, node: row.node, signal: row.signal, threshold: null, runs: 0, escalated: 0, right: 0, wrong: 0, replays: 0, points: [] };
+        const step = steps.get(key) ?? { workflow, digest, node: row.node, signal: row.signal, threshold: null, runs: 0, escalated: 0, right: 0, wrong: 0, grades_past: 0, replays: 0, points: [] };
         steps.set(key, step);
         if (metrics?.path === "replay") {
           step.replays += 1;
@@ -115,6 +123,7 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
         if (row.escalated) step.escalated += 1;
         if (correct === true) step.right += 1;
         if (correct === false) step.wrong += 1;
+        if (alone && correct === null && (run.endedAt ?? run.startedAt) < keptSince) step.grades_past += 1;
         step.points.push({ run_id: run.id, p: row.p === null ? null : round4(row.p), escalated: row.escalated, correct });
       }
     }

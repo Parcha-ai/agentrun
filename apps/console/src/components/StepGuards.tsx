@@ -27,7 +27,7 @@ export function StepGuards({ guards, workflow, digest, loop }: { guards: readonl
         <p className="text-small text-muted-foreground">Each guarded step hands the run back to the agent when its p is under the threshold.</p>
       </header>
       <ul className="divide-y">
-        {guards.map((g) => <GuardRow key={g.label} guard={g} stats={guardFor(loop, workflow, digest, g.label)} />)}
+        {guards.map((g) => <GuardRow key={g.node} guard={g} stats={guardFor(loop, workflow, digest, g.node)} />)}
       </ul>
       <HistLegend />
     </section>
@@ -39,17 +39,21 @@ function GuardRow({ guard, stats }: { guard: StepGuard; stats: LoopGuard | undef
   const right = stats?.right ?? 0;
   const wrong = stats?.wrong ?? 0;
   const replays = stats?.replays ?? 0;
+  // Runs whose grade is past the grades the server keeps (its newest GRADES_KEPT): unknown, never "none graded".
+  const past = stats?.grades_past ?? 0;
+  const graded = right + wrong ? ` · graded ${right} right, ${wrong} wrong` : past ? "" : " · none graded";
+  const pastWords = past ? ` · ${past} older ${past === 1 ? "run's grade is" : "runs' grades are"} past the newest grades kept` : "";
   return (
     <li className="grid grid-cols-1 gap-x-4 gap-y-2 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center" data-testid="guard-row">
       <div className="min-w-0 space-y-1">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="min-w-0 break-words font-mono text-body font-semibold">{guard.label}</span>
+          <span className="min-w-0 break-words font-mono text-body font-semibold">{guard.node}</span>
           <Chip tone="plain" title={`Reads ${SIGNAL_WORDS[guard.signal]}`}>{SIGNAL_SHORT[guard.signal]}</Chip>
           <Chip tone="muted">{guard.fitted ? "fitted" : "threshold"} {guard.threshold.toFixed(2)}</Chip>
         </div>
         <p className="font-mono text-small text-muted-foreground">
           {stats && stats.runs
-            ? <><span className={cn("font-semibold", stats.escalated / stats.runs > 0.25 ? "text-warning-text" : "text-foreground")}>{pct(stats.escalated, stats.runs)} handed back</span> ({stats.escalated} of {stats.runs} runs){right + wrong ? ` · graded ${right} right, ${wrong} wrong` : " · none graded"}{replays ? ` · ${replays} replay ${replays === 1 ? "run" : "runs"} apart` : ""}</>
+            ? <><span className={cn("font-semibold", stats.escalated / stats.runs > 0.25 ? "text-warning-text" : "text-foreground")}>{pct(stats.escalated, stats.runs)} handed back</span> ({stats.escalated} of {stats.runs} runs){graded}{pastWords}{replays ? ` · ${replays} replay ${replays === 1 ? "run" : "runs"} apart` : ""}</>
             : replays
               ? `Replayed on ${replays} graded ${replays === 1 ? "input" : "inputs"}; no run served yet.`
               : "No run of this revision yet."}
@@ -95,7 +99,7 @@ export function Histogram({ guard, stats }: { guard: StepGuard; stats: LoopGuard
         <text x={at(guard.threshold)} y={HH + 12} textAnchor="middle" className="fill-foreground text-micro font-semibold">{guard.threshold.toFixed(2)}</text>
       </svg>
       {stats.points.length < stats.runs && <p className="m-0 font-mono text-micro text-muted-foreground">p of the newest {stats.points.length} runs</p>}
-      <figcaption className="sr-only">{`${guard.label}: p by run${stats.points.length < stats.runs ? `, the newest ${stats.points.length} of ${stats.runs}` : ""}. ${words.join(". ")}.`}</figcaption>
+      <figcaption className="sr-only">{`${guard.node}: p by run${stats.points.length < stats.runs ? `, the newest ${stats.points.length} of ${stats.runs}` : ""}. ${words.join(". ")}.`}</figcaption>
     </figure>
   );
 }

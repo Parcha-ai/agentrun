@@ -57,16 +57,22 @@ export const recordOf = (records: readonly Promotion[], workflow: string, digest
 /** A revision's standing in words a person reads: Serving (it is the champion: `serving`, the digest the server says
  *  serves), Served (promoted once, a newer one serves now), Held, Replaying, Superseded (a newer revision came while it
  *  replayed), or not decided yet; Refit when a threshold refit of it serves in its place (`refit`). A held, replaying or
- *  superseded revision never stops its champion serving. */
-export type Standing = { word: "Serving" | "Served" | "Refit" | "Held" | "Replaying" | "Superseded" | "Not decided"; tone: "success" | "warning" | "active" | "muted" };
-export function standingOf(record: Promotion | undefined, { serving = null, refit }: { serving?: string | null; refit?: Promotion } = {}): Standing {
+ *  superseded revision never stops its champion serving. Stopped when it is the champion but the money rule stopped it
+ *  running first (`stopped`, the digest the cost read says `needs_revision`: stoppedOf); no promotion record says so. */
+export type Standing = { word: "Serving" | "Stopped" | "Served" | "Refit" | "Held" | "Replaying" | "Superseded" | "Not decided"; tone: "success" | "warning" | "active" | "muted" };
+export function standingOf(record: Promotion | undefined, { serving = null, refit, stopped = null }: { serving?: string | null; refit?: Promotion; stopped?: string | null } = {}): Standing {
   if (refit) return { word: "Refit", tone: "muted" };
   if (!record) return { word: "Not decided", tone: "muted" };
-  if (record.decided === "promote") return record.digest === serving ? { word: "Serving", tone: "success" } : { word: "Served", tone: "muted" };
+  if (record.decided === "promote") return record.digest !== serving ? { word: "Served", tone: "muted" } : record.digest === stopped ? { word: "Stopped", tone: "warning" } : { word: "Serving", tone: "success" };
   if (record.decided === "hold") return { word: "Held", tone: "warning" };
   if (record.decided === "superseded") return { word: "Superseded", tone: "muted" };
   return { word: "Replaying", tone: "active" };
 }
+
+/** The digest of `workflow` the money rule stopped running first (the cost read's `needs_revision`: over its last runs it
+ *  cost as much as the agent by hand), or null. */
+export const stoppedOf = (cost: Pick<LearningCost, "workflows"> | null, workflow: string): string | null =>
+  cost?.workflows.find((one) => one.workflow === workflow && one.state === "needs_revision")?.digest ?? null;
 
 /** The refit that replaced a revision (`workflow` at `digest`): a promoted record made from it, the newest. */
 export const refitOf = (records: readonly Promotion[], workflow: string, digest: string | null): Promotion | undefined =>
@@ -85,25 +91,32 @@ export function replayLine(record: Promotion): string {
   return `${how} ${r.n} graded ${r.n === 1 ? "input" : "inputs"}: workflow ${pctOf(r.wf_acc)} vs agent ${pctOf(r.agent_acc)} (${pts(r.delta)}), ${r.handed_back} handed back${r.skipped_write ? `, ${r.skipped_write} skipped: needs a write the recording doesn't have` : ""}`;
 }
 
-/** A guarded step as a workflow's JSON says it: by label (the guard rows' `node`), its signal and threshold. */
-export type StepGuard = { label: string; signal: "self" | "jev" | "both"; threshold: number; fitted: boolean };
+/** A guarded step as a workflow's JSON says it: its `label`; its `node`, the name the runner gives it on its guard rows
+ *  (the label, or `parent/child` for a step of a composed child workflow: serve learn/promote.ts walkGuards); its `path`,
+ *  the node's JSON pointer in the document (the graph's path: workflowGraph); its signal and threshold. */
+export type StepGuard = { label: string; node: string; path: string; signal: "self" | "jev" | "both"; threshold: number; fitted: boolean };
 
-/** Each node of a workflow document with a guard and a label, in document order (serve learn/promote.ts walkGuards). */
+/** Each node of a workflow document with a guard and a label, in document order (serve learn/promote.ts walkGuards): a
+ *  step under a `workflow` node's child named under that node's label, as the runner names its rows. */
 export function guardsOfText(text: string | null): StepGuard[] {
   const out: StepGuard[] = [];
   let doc: unknown;
   try { doc = text === null ? null : JSON.parse(text); } catch { return out; }
-  const walk = (node: unknown): void => {
-    if (Array.isArray(node)) { node.forEach(walk); return; }
+  const walk = (node: unknown, path: string, prefix: string): void => {
+    if (Array.isArray(node)) { node.forEach((one, i) => walk(one, `${path}/${i}`, prefix)); return; }
     if (!node || typeof node !== "object") return;
     const o = node as Record<string, unknown>;
     const g = o.guard as Record<string, unknown> | undefined;
     if (typeof o.label === "string" && g && typeof g === "object" && !Array.isArray(g) && (g.signal === "self" || g.signal === "jev" || g.signal === "both") && typeof g.threshold === "number") {
-      out.push({ label: o.label, signal: g.signal, threshold: g.threshold, fitted: !!g.fit });
+      out.push({ label: o.label, node: `${prefix}${o.label}`, path, signal: g.signal, threshold: g.threshold, fitted: !!g.fit });
     }
-    for (const [k, v] of Object.entries(o)) if (k !== "guard") walk(v);
+    for (const [k, v] of Object.entries(o)) {
+      if (k === "guard") continue;
+      const child = k === "workflow" && o.node === "workflow" && typeof o.label === "string";
+      walk(v, `${path}/${k.replace(/~/g, "~0").replace(/\//g, "~1")}`, child ? `${prefix}${o.label}/` : prefix);
+    }
   };
-  walk(doc);
+  walk(doc, "", "");
   return out;
 }
 
@@ -144,8 +157,12 @@ export type Stage = { key: "notes" | "compiled" | "took_over" | "cheaper" | "uns
 export function storyOf(input: {
   notes: number; compiledNotes: number; runs: number; workflows: { name: string; status: string }[];
   cost: LearningCost | null; promotions: readonly Promotion[]; serving: readonly Serving[]; loop: LearningLoop | null;
+  /** The agent's learning: `notes` keeps notes and never compiles (the runner skips the compile turn), so the story
+   *  promises no workflow, takeover or cheaper runs it will never get. */
+  mode?: "full" | "notes";
 }): Stage[] {
-  const { notes, compiledNotes, runs, workflows, cost, promotions, serving, loop } = input;
+  const { notes, compiledNotes, runs, workflows, cost, promotions, serving, loop, mode = "full" } = input;
+  const notesOnly = mode === "notes";
   const active = workflows.filter((w) => w.status === "active");
   const failedCompile = loop?.compiles.find((c) => c.digest === null && (c.draft_errors.length > 0 || c.attempts.length > 0));
   // The newest compile that wrote a workflow the checks passed (a later refused draft says so in the feed).
@@ -157,7 +174,10 @@ export function storyOf(input: {
   const now = newest ? serving.find((one) => one.workflow === newest.workflow) : undefined;
   const champion = now?.digest ?? null;
   const challenger = now?.replaying ? `revision ${now.replaying.slice(0, 7)} replays on graded inputs before it serves` : newest?.decided === "hold" && newest.digest !== champion ? `revision ${newest.digest.slice(0, 7)} was held: ${replayLine(newest)}` : null;
-  const servingLine = champion && challenger ? `revision ${champion.slice(0, 7)} serves; ${challenger}` : null;
+  // The champion the money rule stopped running first (the cost read's needs_revision): no promotion record says so.
+  const stopped = champion !== null && newest ? stoppedOf(cost, newest.workflow) === champion : false;
+  const stoppedLine = stopped ? `revision ${champion!.slice(0, 7)} no longer runs first: it cost as much as the agent by hand; its next run asks the agent for a new version` : null;
+  const servingLine = stoppedLine ? (challenger ? `${stoppedLine}; ${challenger}` : stoppedLine) : champion && challenger ? `revision ${champion.slice(0, 7)} serves; ${challenger}` : null;
   const stages: Stage[] = [];
   stages.push({
     key: "notes", title: "Learned", value: notes === 1 ? "1 note" : `${notes} notes`,
@@ -169,24 +189,26 @@ export function storyOf(input: {
     stages.push({ key: "compiled", title: "Compiled", value: name, detail: lastCompile ? `from ${lastCompile.from_notes.length} ${lastCompile.from_notes.length === 1 ? "note" : "notes"}, ${lastCompile.attempts.length} ${lastCompile.attempts.length === 1 ? "attempt" : "attempts"}` : "a learned workflow", state: "done" });
   } else if (failedCompile) {
     stages.push({ key: "compiled", title: "Compile", value: "Draft failed", detail: `${failedCompile.attempts.length} ${failedCompile.attempts.length === 1 ? "attempt" : "attempts"}, the checks refused it: it tries again on a later run`, state: "warn" });
+  } else if (notesOnly) {
+    stages.push({ key: "compiled", title: "Compile", value: "Notes only", detail: `this agent learns notes only: no workflow compiles from them. Full learning compiles one at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs`, state: "later" });
   } else {
     stages.push({ key: "compiled", title: "Compile", value: "Not yet", detail: `${notes} of ${COMPILE_AT_NOTES} notes, ${Math.min(runs, COMPILE_AT_RUNS)} of ${COMPILE_AT_RUNS} runs: a workflow compiles at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs`, state: notes || runs ? "now" : "later" });
   }
   if (s?.takeover) {
-    stages.push({ key: "took_over", title: "Took over", value: `Run ${s.takeover.n}`, detail: servingLine ?? (newest?.replay?.n ? replayLine(newest) : newest ? newest.reason : "the first run a learned workflow finished alone"), state: newest?.decided === "hold" && !champion ? "warn" : "done" });
+    stages.push({ key: "took_over", title: "Took over", value: `Run ${s.takeover.n}`, detail: servingLine ?? (newest?.replay?.n ? replayLine(newest) : newest ? newest.reason : "the first run a learned workflow finished alone"), state: stopped || (newest?.decided === "hold" && !champion) ? "warn" : "done" });
   } else if (newest) {
-    if (servingLine) stages.push({ key: "took_over", title: "Take over", value: "Serving", detail: servingLine, state: "done" });
+    if (servingLine) stages.push({ key: "took_over", title: "Take over", value: stopped ? "Stopped" : "Serving", detail: servingLine, state: stopped ? "warn" : "done" });
     else {
       const st = standingOf(newest, { serving: champion });
       stages.push({ key: "took_over", title: "Take over", value: st.word, detail: newest.decided === "replaying" ? "replaying on graded inputs before it serves; the agent takes the runs meanwhile" : replayLine(newest), state: newest.decided === "hold" ? "warn" : "now" });
     }
-  } else {
+  } else if (!notesOnly) {
     stages.push({ key: "took_over", title: "Take over", value: "Not yet", detail: "a compiled workflow replays on graded runs, then serves first when it does as well as the agent", state: "later" });
   }
   if (s?.after && s.before) {
     const words = `${dollars(s.before.mean_usd)} a run by the agent, ${dollars(s.after.mean_usd)} all-in since`;
     stages.push({ key: "cheaper", title: "Cheaper", value: s.times_cheaper !== null ? `${timesWord(s.times_cheaper)} cheaper` : `${s.after.runs} ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: s.times_cheaper !== null ? words : `${words}; how many times cheaper shows after ${CHEAPER_AFTER} runs`, state: s.times_cheaper !== null ? "done" : "now" });
-  } else {
+  } else if (!notesOnly) {
     stages.push({ key: "cheaper", title: "Cheaper", value: "Not yet", detail: "once a workflow takes over, each run's all-in cost against before", state: "later" });
   }
   const shaky = (loop?.guards ?? []).filter((g): g is typeof g & { threshold: number } => g.runs > 0 && g.threshold !== null).sort((a, b) => b.escalated / b.runs - a.escalated / a.runs)[0];

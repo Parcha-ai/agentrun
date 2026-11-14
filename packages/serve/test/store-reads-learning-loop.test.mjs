@@ -9,6 +9,7 @@ import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve } from "./support.mjs";
 
 const { agentLoopOverStore, LOOP_POINTS_MAX } = await import("../dist/store-reads/loop.js");
+const { GRADES_KEPT } = await import("../dist/learn/promote.js");
 
 const D1 = "a1b2c3d4e5f60718";
 const D2 = "0f1e2d3c4b5a6978";
@@ -87,6 +88,25 @@ test("a guarded step's graded counts are over every run it served, not only the 
   const { guards } = await agentLoopOverStore(storeOf({ runs, grades }), "sorter");
   assert.equal(guards[0].points.filter((p) => p.correct !== null).length, 0);
   assert.deepEqual([guards[0].runs, guards[0].right, guards[0].wrong], [LOOP_POINTS_MAX + 5, 0, 5]);
+});
+
+// Review on #2654: the agent keeps its newest GRADES_KEPT grades (putGrade trims the rest), so an older run's grade can
+// be gone. A run the workflow answered alone that ended before the oldest grade kept, with none kept, may have been graded:
+// it counts in `grades_past`, never as "none graded". A run that ended after it with none kept was never graded.
+test("once the grades kept are full, an older run's grade that is no longer kept counts as past the window, not as none", async () => {
+  const at = (minutes) => new Date(T0 + minutes * 60_000).toISOString();
+  const runs = [
+    runOf("old", 1, guarded("workflow", D1, [row("classify", 0.9)]), { endedAt: T0 + 2 * 60_000 }),
+    runOf("old-back", 2, guarded("handed_back", D1, [row("classify", 0.2)]), { endedAt: T0 + 3 * 60_000 }),
+    runOf("kept", 60, guarded("workflow", D1, [row("classify", 0.9)]), { endedAt: T0 + 61 * 60_000 }),
+    runOf("fresh", 100, guarded("workflow", D1, [row("classify", 0.9)]), { endedAt: T0 + 101 * 60_000 }),
+  ];
+  const full = Array.from({ length: GRADES_KEPT - 1 }, (_, i) => ({ run: `g${i}`, correct: true, at: at(50 + i / 1000) }));
+  const grades = [...full, { run: "kept", correct: true, at: at(70) }];
+  const [step] = (await agentLoopOverStore(storeOf({ runs, grades }), "sorter")).guards;
+  assert.deepEqual([step.runs, step.right, step.wrong, step.grades_past], [4, 1, 0, 1], "only `old`: a hand-back's answer was the agent's, `fresh` ended after the oldest grade kept");
+  const [notFull] = (await agentLoopOverStore(storeOf({ runs, grades: grades.slice(1) }), "sorter")).guards;
+  assert.equal(notFull.grades_past, 0, "with fewer than GRADES_KEPT kept, none was trimmed");
 });
 
 test("a replay's record-only rows never count as served: a revision only replayed hands back nothing it says, and has no threshold", async () => {

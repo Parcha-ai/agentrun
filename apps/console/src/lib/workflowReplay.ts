@@ -27,9 +27,9 @@ export type ReplayStep = {
   line: string;
   /** The revision's digest (what runs' metrics and promotion records name it by), null when its file did not read. */
   digest: string | null;
-  /** Its guarded steps, by label, in document order. */
+  /** Its guarded steps, in document order. */
   guards: StepGuard[];
-  /** Each guarded step's node path in the graph, by its label. */
+  /** Each guarded step's node path in the graph, by the runner's name of it (StepGuard.node). */
   guardPaths: Record<string, string>;
 };
 
@@ -76,7 +76,8 @@ export function replaySteps(revisions: readonly WorkflowRevision[]): { steps: Re
     const removed = diff ? diff.removed.filter((n) => n.kind !== "chain").map((n) => n.label) : [];
     const rewired = diff ? diff.edges.added.length + diff.edges.removed.length : 0;
     const guards = guardsOfText(rev.text);
-    const guardPaths = Object.fromEntries(guards.flatMap((g) => { const node = graph!.nodes.find((n) => n.label === g.label); return node ? [[g.label, node.path]] : []; }));
+    // By the runner's name of the step (a child workflow's as parent/child), at its own node of the graph (its pointer).
+    const guardPaths = Object.fromEntries(guards.flatMap((g) => (graph!.nodes.some((n) => n.path === g.path) ? [[g.node, g.path]] : [])));
     steps.push({
       digest: rev.digest ?? null, guards, guardPaths,
       commit: rev.commit, at: rev.at, run: "run" in rev.by ? rev.by.run : null, reason: rev.reason, graph,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { binsOf, compiledInto, guardsOfText, kindOf, markersOf, replayLine, standingOf, storyOf } from "./learningLoop";
+import { binsOf, compiledInto, guardFor, guardsOfText, kindOf, markersOf, replayLine, standingOf, stoppedOf, storyOf } from "./learningLoop";
 import type { CostRun, LearningCost, LearningLoop, Promotion } from "./v2";
 
 // The loop's arithmetic for the Learning tab, on an invented invoice-sorter agent: promotion records on the run axis,
@@ -35,6 +35,15 @@ describe("a revision's standing and numbers", () => {
   it("says serving, held, replaying, superseded or not decided", () => {
     expect([standingOf(record({}), { serving: "a".repeat(16) }).word, standingOf(record({})).word, standingOf(record({ decided: "hold" })).word, standingOf(record({ decided: "replaying" })).word, standingOf(record({ decided: "superseded" })).word, standingOf(undefined).word]).toEqual(["Serving", "Served", "Held", "Replaying", "Superseded", "Not decided"]);
   });
+  // Review on #2654: the money rule (serve learning-cost.ts) stops a serving revision from running first without a
+  // promotion record; the cost read says so (`needs_revision`), and the standing follows it.
+  it("says Stopped for the champion the money rule stopped, from the cost read's needs_revision", () => {
+    const cost = { workflows: [{ workflow: "sort-invoice", digest: "a".repeat(16), state: "needs_revision" }, { workflow: "file-invoice", digest: "c".repeat(16), state: "serving" }] } as unknown as LearningCost;
+    expect(stoppedOf(cost, "sort-invoice")).toBe("a".repeat(16));
+    expect([stoppedOf(cost, "file-invoice"), stoppedOf(null, "sort-invoice")]).toEqual([null, null]);
+    expect(standingOf(record({}), { serving: "a".repeat(16), stopped: "a".repeat(16) })).toEqual({ word: "Stopped", tone: "warning" });
+    expect(standingOf(record({ digest: "b".repeat(16) }), { serving: "b".repeat(16), stopped: "a".repeat(16) }).word).toBe("Serving");
+  });
   it("puts the replay's numbers in one line, or the reason when there was no replay", () => {
     expect(replayLine(record({ replay: REPLAY }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back");
     expect(replayLine(record({ source: "dry_run", reason: "no graded input it fits: promoted on its dry run" }))).toBe("no graded input it fits: promoted on its dry run");
@@ -58,9 +67,27 @@ describe("guards and p", () => {
     { node: "extract", label: "bad", guard: { signal: "vibes", threshold: 0.5 } },
   ] } });
   it("reads each labelled guarded step in order", () => {
-    expect(guardsOfText(doc)).toEqual([{ label: "classify", signal: "jev", threshold: 0.7, fitted: false }, { label: "pick", signal: "both", threshold: 0.82, fitted: true }]);
+    expect(guardsOfText(doc)).toEqual([
+      { label: "classify", node: "classify", path: "/root/steps/0", signal: "jev", threshold: 0.7, fitted: false },
+      { label: "pick", node: "pick", path: "/root/steps/1", signal: "both", threshold: 0.82, fitted: true },
+    ]);
     expect(guardsOfText("not json")).toEqual([]);
     expect(guardsOfText(null)).toEqual([]);
+  });
+  // Review on #2654: the runner names a step of a composed child workflow `parent/child` on its guard rows (serve
+  // learn/promote.ts walkGuards), so the card reads its rows by that name; the graph finds it by its JSON pointer.
+  it("names a guarded step of a child workflow as the runner does, parent/child, with its own pointer for the graph", () => {
+    const nested = JSON.stringify({ v: 2, root: { node: "chain", steps: [
+      { node: "workflow", label: "vendor", workflow: { v: 2, root: { node: "chain", steps: [{ node: "extract", label: "check", guard: { signal: "self", threshold: 0.6 } }] } } },
+      { node: "extract", label: "check", guard: { signal: "jev", threshold: 0.7 } },
+    ] } });
+    const guards = guardsOfText(nested);
+    expect(guards.map((g) => [g.label, g.node, g.path])).toEqual([["check", "vendor/check", "/root/steps/0/workflow/root/steps/0"], ["check", "check", "/root/steps/1"]]);
+    const loop = { agent: "a", compiles: [], guards: [
+      { workflow: "sort-invoice", digest: "a".repeat(16), node: "vendor/check", signal: "self", threshold: 0.6, runs: 4, escalated: 1, right: 2, wrong: 0, grades_past: 0, replays: 0, points: [] },
+    ] } as unknown as LearningLoop;
+    expect(guardFor(loop, "sort-invoice", "a".repeat(16), guards[0]!.node)?.runs).toBe(4);
+    expect(guardFor(loop, "sort-invoice", "a".repeat(16), guards[1]!.node)).toBeUndefined();
   });
   it("bins p in tenths by grade, a missing p in the lowest", () => {
     const bins = binsOf([{ run_id: "1", p: 0.95, escalated: false, correct: true }, { run_id: "2", p: 1, escalated: false, correct: false }, { run_id: "3", p: null, escalated: true, correct: null }, { run_id: "4", p: 0.7, escalated: false, correct: null }]);
@@ -105,10 +132,26 @@ describe("notes and the story", () => {
     expect(stages.map((s) => [s.key, s.state])).toEqual([["notes", "now"], ["compiled", "later"], ["took_over", "later"], ["cheaper", "later"]]);
     expect(stages[1]!.detail).toBe("0 of 3 notes, 0 of 5 runs: a workflow compiles at 3 notes or 5 runs");
   });
+  // Review on #2654: an agent with learning "notes" keeps notes and never compiles (the runner skips the compile turn),
+  // so its story promises no workflow, no takeover and no cheaper runs.
+  it("a notes-only agent's story keeps to notes: no compile, takeover or cheaper runs promised", () => {
+    const stages = storyOf({ ...base, notes: 4, runs: 9, mode: "notes" });
+    expect(stages.map((s) => [s.key, s.value, s.state])).toEqual([["notes", "4 notes", "done"], ["compiled", "Notes only", "later"]]);
+    expect(stages[1]!.detail).toBe("this agent learns notes only: no workflow compiles from them. Full learning compiles one at 3 notes or 5 runs");
+    expect(stages.some((s) => /compiles at/.test(s.detail) && s.key !== "compiled")).toBe(false);
+  });
+  it("a champion the money rule stopped: the takeover stage says it no longer runs first", () => {
+    const took = { notes: 3, compiledNotes: 3, runs: 4, workflows: [{ name: "sort-invoice", status: "active" }] };
+    const stopped = { ...cost({ takeover: { n: 2, run_id: "r2" } }), workflows: [{ workflow: "sort-invoice", digest: "a".repeat(16), state: "needs_revision", served: null, by_hand: null, unknown_cost_runs: 0 }] } as LearningCost;
+    const stage = storyOf({ ...base, ...took, cost: stopped, promotions: [record({ replay: REPLAY })], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: null }] }).find((s) => s.key === "took_over")!;
+    expect([stage.value, stage.detail, stage.state]).toEqual(["Run 2", "revision aaaaaaa no longer runs first: it cost as much as the agent by hand; its next run asks the agent for a new version", "warn"]);
+    const before = storyOf({ ...base, notes: 3, cost: { ...stopped, summary: cost({}).summary }, promotions: [record({ replay: REPLAY })], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: null }] }).find((s) => s.key === "took_over")!;
+    expect([before.value, before.state]).toEqual(["Stopped", "warn"]);
+  });
   it("once it took over and got cheaper, tells it whole, with where it is unsure", () => {
     const runs = [run(1, "agent"), run(2, "workflow"), run(3, "handed_back"), run(4, "workflow")];
     const loop = { agent: "a", compiles: [{ run_id: "r1", round: 1, at: at(1), workflow: "sort-invoice", from_notes: ["a", "b", "c"], attempts: [{ ok: true, errors: [] }], digest: "a".repeat(16), promoted: true, draft_errors: [], withheld: false }],
-      guards: [{ workflow: "sort-invoice", digest: "a".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 3, escalated: 1, right: 0, wrong: 0, replays: 0, points: [] }] } as LearningLoop;
+      guards: [{ workflow: "sort-invoice", digest: "a".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 3, escalated: 1, right: 0, wrong: 0, grades_past: 0, replays: 0, points: [] }] } as LearningLoop;
     const stages = storyOf({ ...base, notes: 3, compiledNotes: 3, runs: 4, workflows: [{ name: "sort-invoice", status: "active" }], loop, promotions: [record({ replay: REPLAY })],
       cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.89 }, after: { runs: 25, mean_usd: 0.127 }, times_cheaper: 7, hand_backs: { ran: 3, back: 1 } }, runs) });
     expect(stages.map((s) => [s.key, s.value, s.state])).toEqual([
