@@ -1,9 +1,10 @@
 // The E2B host: E2B Desktop sandboxes (kind desktop) or E2B's plain template (kind linux), every call through the
-// host's own E2B JS SDK (the `e2b` package), of which this package names only the slice it uses (E2BSandboxClass) and
-// imports nothing at load. E2B's envd is the sandbox's first process (under systemd), so computerd is a child: its
+// host's own E2B JS SDK (the `e2b` package), whose types it imports as types only (erased at build: nothing loads at
+// import). E2B's envd is the sandbox's first process (under systemd), so computerd is a child: its
 // upload goes through envd's file API and every command (install, init's start, the stdio bridge) is a background
 // command as root. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts). Every SDK fact
 // used here is cited in the README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
+import type { CommandResult, ConnectionOpts, Sandbox, SandboxInfo, SandboxOpts } from "e2b";
 import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, ours } from "./hosted/provider.js";
@@ -18,109 +19,20 @@ import { countTested } from "./test-connection.js";
 /** This module's failures: one with code vendor names E2B. */
 const fail = failFor("e2b");
 
-/** What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152). */
-export interface E2BConnectionOptions {
-	apiKey: string;
-	domain: string;
-	apiUrl: string;
-	debug: false;
-	requestTimeoutMs?: number;
-	signal?: AbortSignal;
-}
+/**
+ * What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152).
+ * The SDK's types are imported as types only: erased at build, so nothing loads the SDK from here.
+ */
+export type E2BConnectionOptions = ConnectionOpts & Required<Pick<ConnectionOpts, "apiKey" | "domain" | "apiUrl">> & { debug: false };
 
-/** Sandbox.create's options as the provider gives them (SandboxOpts, index.d.mts:10140-10245). */
-export interface E2BCreateOptions extends E2BConnectionOptions {
-	timeoutMs: number;
-	metadata: Record<string, string>;
-	envs: Record<string, string>;
-	allowInternetAccess: boolean;
-	network: { allowPublicTraffic: boolean };
-	lifecycle: { onTimeout: "kill" };
-}
-
-/** What getInfo reports of a sandbox, as far as this provider reads it (index.mjs:5432-5465). */
-export interface E2BSandboxInfo {
-	sandboxId: string;
-	templateId: string;
-	name?: string;
-	metadata: Record<string, string>;
-	allowInternetAccess?: boolean;
-	startedAt: Date;
-	endAt: Date;
-	state: string;
-	network?: { allowOut?: string[]; denyOut?: string[]; allowPublicTraffic?: boolean; egressProxy?: unknown; rules?: unknown; dnsServers?: unknown };
-	lifecycle?: { onTimeout?: string; autoResume?: boolean };
-}
-
-/** One sandbox in a page of Sandbox.list (index.mjs:5820-5838). */
-export interface E2BListedSandbox {
-	sandboxId: string;
-	metadata: Record<string, string>;
-	state: string;
-	startedAt: Date;
-	endAt: Date;
-}
-
-/** The result of a command that has ended (index.mjs:2751-2757); CommandExitError carries the same fields. */
-export interface E2BCommandResult {
-	exitCode: number;
-	stdout: string;
-	stderr: string;
-}
-
-/** A background command (CommandHandle, index.mjs:2683-2810). */
-export interface E2BCommandHandle {
-	readonly pid: number;
-	readonly stderr: string;
-	wait(): Promise<E2BCommandResult>;
-	kill(): Promise<boolean>;
-	disconnect(): Promise<void>;
-}
-
-export interface E2BRunOptions {
-	user: "root";
-	timeoutMs: number;
-	requestTimeoutMs: number;
-	signal?: AbortSignal;
-}
-
-/** The part of a connected Sandbox called here: commands and files (index.mjs:5917-5989). */
-export interface E2BSandbox {
-	readonly sandboxId: string;
-	readonly files: { write(path: string, data: ArrayBuffer, options: { user: "root"; requestTimeoutMs: number; signal?: AbortSignal }): Promise<unknown> };
-	readonly commands: {
-		run(command: string, options: E2BRunOptions & { background?: false }): Promise<E2BCommandResult>;
-		run(
-			command: string,
-			options: E2BRunOptions & { background: true; stdin?: boolean; retainOutput?: boolean; onStdout?: (data: string) => void; onStderr?: (data: string) => void },
-		): Promise<E2BCommandHandle>;
-		sendStdin(pid: number, data: Uint8Array, options: { requestTimeoutMs: number }): Promise<void>;
-		/** Ends a command's stdin, so it reads end of file (index.mjs:5071-5082). */
-		closeStdin(pid: number, options: { requestTimeoutMs: number }): Promise<void>;
-	};
-}
-
-/** The paginator Sandbox.list returns (SandboxPaginator, index.mjs:5785-5849). */
-export interface E2BPaginator {
-	readonly hasNext: boolean;
-	nextItems(options: { requestTimeoutMs: number; signal?: AbortSignal }): Promise<E2BListedSandbox[]>;
-}
-
-/** The statics of the SDK's Sandbox class this provider calls. The host's own, or anything with the same slice. */
-export interface E2BSandboxClass {
-	create(template: string, options: E2BCreateOptions): Promise<E2BSandbox>;
-	connect(sandboxId: string, options: E2BConnectionOptions & { timeoutMs: number }): Promise<E2BSandbox>;
-	getInfo(sandboxId: string, options: E2BConnectionOptions): Promise<E2BSandboxInfo>;
-	setTimeout(sandboxId: string, timeoutMs: number, options: E2BConnectionOptions): Promise<void>;
-	kill(sandboxId: string, options: E2BConnectionOptions): Promise<boolean>;
-	list(options: Omit<E2BConnectionOptions, "signal"> & { query: { metadata: Record<string, string> }; limit: number }): E2BPaginator;
-}
+/** The statics of the SDK's Sandbox class this provider calls: the host's own `e2b` package's. */
+export type E2BSandboxClass = typeof Sandbox;
 
 /** The E2B provider's options: the key and the SDK, then the shared adapter's (HostedOptions). */
 export interface E2BProviderOptions extends Omit<HostedOptions, "label" | "maxLifetimeMs"> {
 	/** The E2B API key. The caller passes it; this provider never reads it from the environment or puts it in a computer. */
 	apiKey: string;
-	/** The SDK's Sandbox class: the host's `e2b` package's, or anything with the same slice. */
+	/** The SDK's Sandbox class: the host's `e2b` package's. */
 	Sandbox: E2BSandboxClass;
 	/** E2B's domain: the API is https://api.<domain>. Default e2b.app. */
 	domain?: string;
@@ -133,7 +45,7 @@ export interface E2BProviderOptions extends Omit<HostedOptions, "label" | "maxLi
 
 /**
  * What create() takes: the provider's options, the SDK's Sandbox class optional (default the host's e2b package's).
- * Not E2BCreateOptions, which is the SDK's own Sandbox.create options.
+ * Not SandboxOpts, which is the SDK's own Sandbox.create options.
  */
 export interface E2BOptions extends Omit<E2BProviderOptions, "Sandbox"> {
 	/** The SDK's Sandbox class; imported from the host's e2b package by default. */
@@ -233,7 +145,7 @@ const clearOf = (created: number) => created + END_SLACK_MS + 1_000;
  * index.d.mts:10179) with no allow list and no public traffic in; open is internet access with none of those either.
  * Anything else is another network in words, never one it might widen to.
  */
-function networkOf(info: E2BSandboxInfo): NetworkPolicy {
+function networkOf(info: SandboxInfo): NetworkPolicy {
 	const network = info.network ?? {};
 	if (network.egressProxy !== undefined && network.egressProxy !== null) return { other: "an egress proxy is set on it" };
 	if (Array.isArray(network.allowOut) && network.allowOut.length > 0) return { other: `an allowOut list (${network.allowOut.length} entries), which this provider never makes` };
@@ -249,7 +161,7 @@ function networkOf(info: E2BSandboxInfo): NetworkPolicy {
 
 
 /** A sandbox as the adapter reads a machine: E2B's states, its network, its template, its timer, and its create's drift. */
-function machineOf(info: E2BSandboxInfo): Machine {
+function machineOf(info: SandboxInfo): Machine {
 	const metadata = { ...(info.metadata ?? {}) };
 	const end = info.endAt instanceof Date ? info.endAt.getTime() : Number.NaN;
 	const created = createdEnd({ metadata, startedAt: info.startedAt });
@@ -283,7 +195,7 @@ function machineOf(info: E2BSandboxInfo): Machine {
 }
 
 /** A listed sandbox whose read-back E2B no longer has: still listed, so it is going, not gone. */
-const listedOnly = (sb: E2BListedSandbox): Machine => ({
+const listedOnly = (sb: SandboxInfo): Machine => ({
 	id: sb.sandboxId,
 	labels: { ...(sb.metadata ?? {}) },
 	state: "going",
@@ -342,7 +254,7 @@ class E2BHost implements MachineHost {
 	readonly #connection: E2BConnectionOptions;
 	readonly #requestMs: number;
 	/** Each sandbox create or connect gave, by id, for envd's commands and files: let go of at its delete. */
-	readonly #sandboxes = new Map<string, E2BSandbox>();
+	readonly #sandboxes = new Map<string, Sandbox>();
 
 	constructor(Sandbox: E2BSandboxClass, connection: E2BConnectionOptions, requestMs: number) {
 		this.#Sandbox = Sandbox;
@@ -376,7 +288,7 @@ class E2BHost implements MachineHost {
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<Result<{ id: string }>> {
 		const timeoutMs = Math.ceil((req.lifetimeMs ?? 0) / 1000) * 1000;
-		const options: E2BCreateOptions = {
+		const options: SandboxOpts = {
 			...this.#api(ctx.timeoutMs),
 			timeoutMs,
 			metadata: { ...req.labels, [TIMEOUT_LABEL]: String(timeoutMs) },
@@ -408,7 +320,7 @@ class E2BHost implements MachineHost {
 		const until = Date.now() + ctx.timeoutMs;
 		const left = () => Math.max(1, Math.min(this.#requestMs, until - Date.now()));
 		const paginator = this.#Sandbox.list({ ...this.#connection, requestTimeoutMs: this.#requestMs, query: { metadata: labels }, limit: PAGE });
-		const found = new Map<string, E2BListedSandbox>();
+		const found = new Map<string, SandboxInfo>();
 		for (let page = 0; paginator.hasNext; page++) {
 			if (page >= MAX_PAGES) return fail("vendor", `Sandbox.list ran past ${MAX_PAGES} pages`);
 			const items = await paginator.nextItems({ requestTimeoutMs: left(), ...(ctx.signal ? { signal: ctx.signal } : {}) });
@@ -441,7 +353,7 @@ class E2BHost implements MachineHost {
 	 * little under what is left: E2B moves a running sandbox's timer only to a longer one (index.d.mts:10250-10255), so
 	 * connecting never moves the end. The adapter connects only to a sandbox it read running: connect resumes a paused one.
 	 */
-	async #sandbox(id: string, ctx: HostCall): Promise<E2BSandbox> {
+	async #sandbox(id: string, ctx: HostCall): Promise<Sandbox> {
 		const known = this.#sandboxes.get(id);
 		if (known !== undefined) return known;
 		const info = await this.#Sandbox.getInfo(id, this.#api(ctx.timeoutMs, ctx.signal));
@@ -483,7 +395,7 @@ class E2BHost implements MachineHost {
 		const exited = handle.wait().then(
 			(done) => done.exitCode,
 			(error: unknown) => {
-				const code = (error as Partial<E2BCommandResult> | null)?.exitCode;
+				const code = (error as Partial<CommandResult> | null)?.exitCode;
 				return typeof code === "number" ? code : -1;
 			},
 		);

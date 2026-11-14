@@ -30,3 +30,12 @@ test("each vendor SDK a provider imports is a root devDependency pinned exactly,
 		}
 	}
 });
+
+test("the built provider modules import no vendor SDK at load: the SDKs' types are erased, and the one run-time import is a non-literal dynamic one", () => {
+	for (const file of ["../dist/e2b.js", "../dist/modal.js"]) {
+		const code = read(file);
+		assert.doesNotMatch(code, /^import .* from ["'](e2b|modal)["']/m, `${file} has no static import of the SDK`);
+		assert.doesNotMatch(code, /require\(/, `${file} has no require`);
+		assert.doesNotMatch(code, /import\(["'](e2b|modal)["']\)/, `${file} names the SDK in no literal import, so no bundler resolves it`);
+	}
+});
