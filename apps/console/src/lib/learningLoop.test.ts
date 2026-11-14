@@ -164,4 +164,9 @@ describe("notes and the story", () => {
     const stage = storyOf({ ...base, notes: 3, runs: 4, cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.1 }, after: { runs: 25, mean_usd: 0.1 / ratio }, times_cheaper: ratio }) }).find((s) => s.key === "cheaper")!;
     expect([stage.value, stage.state]).toEqual([value, state]);
   });
+  // The server rounds times_cheaper to one decimal: $0.01 -> $0.30 comes back as 0, never "Infinityx the cost".
+  it.each([[0.01, 0.3, "Not cheaper yet: 30.0x the cost"], [0, 0.3, "Not cheaper yet"]])("from $%s to $%s a run reads %s", (before, after, value) => {
+    const stage = storyOf({ ...base, notes: 3, runs: 4, cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: before }, after: { runs: 25, mean_usd: after }, times_cheaper: 0 }) }).find((s) => s.key === "cheaper")!;
+    expect([stage.value, stage.state]).toEqual([value, "now"]);
+  });
 });
