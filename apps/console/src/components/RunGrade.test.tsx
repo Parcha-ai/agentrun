@@ -30,8 +30,17 @@ async function open(r: Run, { graded, grade }: { graded?: RunGraded; grade?: (bo
   const sent: GradeBody[] = [];
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
+  // The server's side: the learning read gives back the newest grade it took, and counts how often it was read.
+  let stored = graded;
+  const reads = { n: 0 };
   const props = { run: r, agentName: "Invoice sorter", messages: messageFeatures, harnessSteers: true, rows: [], files: [], tab: "report" as const,
-    readLearning: async () => read(graded), onGrade: async (body: GradeBody) => { sent.push(body); return grade ? grade(body) : answer(body, body.label ? "look_back" : null); } };
+    readLearning: async () => { reads.n++; return read(stored); },
+    onGrade: async (body: GradeBody) => {
+      sent.push(body);
+      const a = grade ? await grade(body) : answer(body, body.label ? "look_back" : null);
+      stored = { correct: a.correct, source: a.source, graded_at: a.graded_at };
+      return a;
+    } };
   act(() => root!.render(createElement(RunDetail, props)));
   await settle();
   const section = () => host.querySelector('section[aria-label="Grade"]') as HTMLElement | null;
@@ -42,8 +51,19 @@ async function open(r: Run, { graded, grade }: { graded?: RunGraded; grade?: (bo
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, text); box.dispatchEvent(new Event("input", { bubbles: true })); });
   };
   const rerender = async (next: Run) => { act(() => root!.render(createElement(RunDetail, { ...props, run: next }))); await settle(); };
-  return { host, sent, section, button, click, boxes, type, rerender };
+  // A tab of the run page, by the start of its label ("Files 0").
+  const tab = async (name: string) => {
+    const b = [...host.querySelectorAll('[role="tab"]')].find((t) => t.textContent?.startsWith(name)) as HTMLButtonElement | undefined;
+    expect(b, `a ${name} tab`).toBeTruthy();
+    await act(async () => { b!.click(); });
+    await settle();
+  };
+  return { host, sent, reads, section, button, click, boxes, type, rerender, tab };
 }
+
+/** A grade's answer that opened a `revise` round: a learned workflow gave the answer alone. */
+const revised = (body: GradeBody): GradeAnswer => ({ ...answer(body, "revise"), path: "workflow", workflow: "sort-invoice", workflow_digest: "0123456789abcdef" });
+const WORKFLOW = { file: "workflows/sort-invoice/workflow.json", name: "sort-invoice" };
 
 describe("a run's page, the Grade control", () => {
   it("grades it right in one click, and shows the grade with a way to grade again", async () => {
@@ -126,6 +146,75 @@ describe("a run's page, the Grade control", () => {
     await t.click("Right");
     expect(t.sent).toEqual([{ correct: true }]);
     expect(t.section()!.textContent).toContain("Graded right");
+  });
+
+  it("keeps a grade it sent across a tab switch: the run's learning is read again after it, and the round it opened stays said", async () => {
+    // Right on an ungraded run: the run stays ended, so only the grade itself reads the learning again.
+    const t = await open(run());
+    const before = t.reads.n;
+    await t.click("Right");
+    expect(t.reads.n).toBeGreaterThan(before);
+    await t.tab("Files");
+    expect(t.section()).toBeNull();
+    await t.tab("Report");
+    let text = t.section()!.textContent ?? "";
+    expect(text).toContain("Graded right");
+    expect(text).toContain("Kept for this agent.");
+    expect(t.button("Right")).toBeUndefined();
+    expect(t.button("Grade again")).toBeTruthy();
+    // Wrong with words: the look-back it opened is still said after Files and back, and on the Timeline.
+    await t.click("Grade again");
+    await t.click("Wrong");
+    await t.type(t.boxes()[0]!, "Wrong vendor.");
+    await t.click("Send grade");
+    await t.tab("Files");
+    await t.tab("Timeline");
+    text = t.section()!.textContent ?? "";
+    expect(text).toContain("Graded wrong");
+    expect(text).toContain("Reviewing");
+    expect(text).toContain("The agent is looking back on your words.");
+    await t.tab("Report");
+    expect(t.section()!.textContent).toContain("The agent is looking back on your words.");
+  });
+
+  it("shows a re-grade, not the grade it replaced, after a tab switch", async () => {
+    const t = await open(run(), { graded: { correct: false, source: "feedback", graded_at: "2026-11-14T10:02:00.000Z" } });
+    expect(t.section()!.textContent).toContain("Graded wrong");
+    await t.click("Grade again");
+    await t.click("Right");
+    await t.tab("Files");
+    await t.tab("Report");
+    const text = t.section()!.textContent ?? "";
+    expect(text).toContain("Graded right");
+    expect(text).not.toContain("Graded wrong");
+  });
+
+  it("says a finished revise round revised the workflow only when its change was kept", async () => {
+    const reopened = run({ status: "working", state: "working", ended_at: null, learning: { ...LEARNS!, state: "reflecting", reason: null } });
+    const ends = (learning: Run["learning"]) => run({ ended_at: "2026-11-14T10:06:00Z", learning });
+    const cases: [Run["learning"], string][] = [
+      [{ ...LEARNS!, state: "merged", reason: null, workflows: [WORKFLOW] }, "The learned workflow that answered was revised with your grade."],
+      [{ ...LEARNS!, state: "merged", reason: null, workflows: [{ ...WORKFLOW, pending: true }] }, "The learned workflow that answered was revised with your grade. The revision waits for your OK."],
+      // Its draft failed the checks: nothing kept.
+      [{ ...LEARNS!, state: "dropped", reason: "checker" }, "The agent looked back at your grade; nothing changed."],
+      // A note kept, the workflow's revision not.
+      [{ ...LEARNS!, state: "merged", reason: null, learned: [{ file: "vendors.md", name: "vendors", supersedes: [] }] }, "The agent looked back at your grade; nothing changed."],
+    ];
+    for (const [learning, said] of cases) {
+      const t = await open(run(), { grade: async (body) => revised(body) });
+      await t.click("Wrong");
+      await t.type(t.boxes()[0]!, "Northwind is a freight vendor.");
+      await t.click("Send grade");
+      expect(t.section()!.textContent).toContain("The learned workflow that answered is being revised with your grade.");
+      await t.rerender(reopened);
+      expect(t.section()!.textContent).toContain("Reviewing");
+      await t.rerender(ends(learning));
+      const text = t.section()!.textContent ?? "";
+      expect(text).not.toContain("Reviewing");
+      expect(text).toContain(said);
+      if (said.includes("nothing changed")) expect(text).not.toContain("was revised");
+      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    }
   });
 
   it("says a refused grade in the server's words and keeps the choice", async () => {
