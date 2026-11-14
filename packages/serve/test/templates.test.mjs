@@ -560,19 +560,20 @@ test("a package's writes are bounded: each MCP tool it lists is a known read or 
   // classified here before it ships.
   const WRITES = new Set(["github/pull_request_review_write", "github/add_comment_to_pending_review", "github/issue_write", "hubspot/HUBSPOT_CREATE_NOTE", "slack/SLACK_SEND_MESSAGE", "gmail/GMAIL_SEND_EMAIL"]);
   // No free-text search: one reaches everything its credential does, and no pin can hold it to one repository or record.
-  const READS = new Set([
-    ...["pull_request_read", "get_file_contents", "get_repository_tree", "list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "list_pull_requests", "list_issues", "get_label"].map((tool) => `github/${tool}`),
-    ...["HUBSPOT_READ_CONTACT", "HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA", "HUBSPOT_GET_COMPANY"].map((tool) => `hubspot/${tool}`),
-  ]);
+  const READS = new Set(["pull_request_read", "get_file_contents", "get_repository_tree", "list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "list_pull_requests", "list_issues", "get_label"].map((tool) => `github/${tool}`));
   // A write no pin can bound, and why it is bounded anyway. Each needs a reason a reviewer can check.
   const BOUNDED = {
-    "hubspot/HUBSPOT_CREATE_NOTE": "it only adds a note, never changes a record; the skill writes it only onto the contact whose email equals the lead's (read first), and the HubSpot connection's scopes bound what it can touch",
+    "hubspot/HUBSPOT_CREATE_NOTE": "it only adds a note, never changes or reads a record; the skill writes it only onto the contact a HubSpot CRM event's own payload names, and the HubSpot connection's scopes bound what it can touch",
   };
   const packages = readPackages();
   const listed = packages.flatMap((p) => p.mcp.flatMap((need) => need.tools.map((tool) => ({ p: p.name, id: `${need.toolkit}/${tool}`, allowed: need.allow.includes(tool), pinned: Object.hasOwn(need.pin ?? {}, tool), unattended: p.approvals === "never" }))));
   for (const { p, id } of listed) assert.ok(WRITES.has(id) || READS.has(id), `${p} lists ${id}, neither a known read nor a known write: classify it here`);
   assert.deepEqual(listed.filter((x) => x.allowed && WRITES.has(x.id)).map((x) => `${x.p}: ${x.id}`), [], "a write at the package's allow");
   assert.deepEqual(listed.filter((x) => x.unattended && WRITES.has(x.id) && !x.pinned && !Object.hasOwn(BOUNDED, x.id)).map((x) => `${x.p}: ${x.id}`), [], "an unattended package's write with neither a pin nor a stated bound");
+  // web_fetch beside a credentialed read is an exfil path: untrusted text has the agent read private data and put it in a
+  // URL it fetches. A package that fetches reads nothing through MCP.
+  const fetches = new Set(packages.filter((p) => p.tools?.includes("web_fetch")).map((p) => p.name));
+  assert.deepEqual(listed.filter((x) => fetches.has(x.p) && !WRITES.has(x.id)).map((x) => `${x.p}: ${x.id}`), [], "a package that holds web_fetch and reads through MCP");
   assert.deepEqual(packages.filter((p) => p.approvals === "never").map((p) => p.name), ["code-review", "inbound-lead", "market-monitor", "release-notes"], "the packages whose job runs on triggers run unattended");
   assert.ok(listed.some((x) => WRITES.has(x.id) && x.pinned) && listed.some((x) => x.allowed), "the check sees pinned writes and allowed tools");
 });
@@ -750,7 +751,7 @@ test("market-monitor's sends are pinned to its channel: the consent screen shows
   const inbound = (await api("GET", "/templates")).body.templates.find((x) => x.name === "inbound-lead");
   assert.deepEqual(inbound.mcp.find((need) => need.toolkit === "slack").tools, [{ name: "SLACK_SEND_MESSAGE", tool: SEND, asks: "ask", pin: { channel: "${parameters.slack_channel}", channel_id: null } }]);
   const hubspot = inbound.mcp.find((need) => need.toolkit === "hubspot").tools;
-  assert.deepEqual(hubspot.map((x) => [x.name, x.asks, x.pin]), [["HUBSPOT_READ_CONTACT", "allow", undefined], ["HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA", "allow", undefined], ["HUBSPOT_GET_COMPANY", "allow", undefined], ["HUBSPOT_CREATE_NOTE", "ask", undefined]], "its one write, the note, stays unpinned: the SOP's email match proves the contact");
+  assert.deepEqual(hubspot.map((x) => [x.name, x.asks, x.pin]), [["HUBSPOT_CREATE_NOTE", "ask", undefined]], "its one call, the note, stays unpinned: the contact comes only from a HubSpot CRM event's own payload");
 
   const settingsOf = async (applied) => (await api("GET", `/agents/${applied.body.agent_id}`)).body.definition.tool_settings;
   const pinWarnings = (applied) => applied.body.warnings.filter((w) => w.field.startsWith("pins."));

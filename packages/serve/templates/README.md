@@ -43,7 +43,9 @@ Apply writes each pin into the agent's own tool settings, so a pinned write neve
 writes a package offers for the owner's grant (inbound-lead's HubSpot note, whose destination is a contact that differs
 each run) are the rule-bounded ones above, and once granted they run unasked under `never`. No package offers a write
 whose object argument a pin can't bound: inbound-lead puts the fit score in its note's text, not in a contact update
-that could overwrite any field.
+that could overwrite any field. A package that holds `web_fetch` reads nothing through MCP: text it reads could have it
+put private data in a URL it fetches, so inbound-lead takes its contact from the CRM event's own payload and never reads
+the CRM.
 
 **Every scoped tool is pinned, reads too.** A package that reads text anyone can write pins every MCP tool that takes a
 scope argument (a GitHub `owner` and `repo`, a channel) to its parameters, reads as well as writes, so a hostile pull

@@ -9,7 +9,4 @@ parameters:
 mcp:
   hubspot: fixtures/fake-hubspot.json
 grants:
-  - mcp:hubspot/HUBSPOT_READ_CONTACT
-  - mcp:hubspot/HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA
-  - mcp:hubspot/HUBSPOT_GET_COMPANY
   - mcp:hubspot/HUBSPOT_CREATE_NOTE

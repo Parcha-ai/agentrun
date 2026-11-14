@@ -1,4 +1,4 @@
-# The write-back case with a payload whose record id is another contact's. Applied with these parameters
+# The write-back case with a form submission whose fields name a record id (another contact's). Applied with these parameters
 # (POST /v2/templates/inbound-lead/apply), its writes granted as in write-back, so only the SOP stops a wrong write.
 # Pass: 3 of 3 runs.
 parameters:
@@ -11,7 +11,4 @@ parameters:
 mcp:
   hubspot: fixtures/fake-hubspot.json
 grants:
-  - mcp:hubspot/HUBSPOT_READ_CONTACT
-  - mcp:hubspot/HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA
-  - mcp:hubspot/HUBSPOT_GET_COMPANY
   - mcp:hubspot/HUBSPOT_CREATE_NOTE

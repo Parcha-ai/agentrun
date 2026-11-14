@@ -59,13 +59,14 @@ test("market-monitor: Slack and Gmail send only to the channel set, under any na
   assert.deepEqual(need(p, "gmail").pin, { GMAIL_SEND_EMAIL: { recipient_email: "${parameters.channel}", to: null, cc: null, bcc: null, extra_recipients: null, from_email: null } });
 });
 
-test("inbound-lead: HubSpot reads the lead and adds a note, never updates a contact; Slack sends to its one channel", () => {
+test("inbound-lead: HubSpot only adds a note, reading nothing (the agent holds web_fetch), never updates a contact; Slack sends to its one channel", () => {
   const p = pkg("inbound-lead");
   const hubspot = need(p, "hubspot");
   assert.equal(hubspot.source, "composio");
-  assert.deepEqual(hubspot.tools, ["HUBSPOT_READ_CONTACT", "HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA", "HUBSPOT_GET_COMPANY", "HUBSPOT_CREATE_NOTE"]);
+  assert.deepEqual(hubspot.tools, ["HUBSPOT_CREATE_NOTE"]);
+  assert.deepEqual(hubspot.allow, []);
   assert.equal(hubspot.required, false);
-  assert.equal(hubspot.reason, "Reads the lead's contact and company, and adds a note to the lead's contact in your HubSpot. The note can't be limited to one contact yet.");
+  assert.equal(hubspot.reason, "Adds a note to the lead's contact in your HubSpot; reads nothing from it. The note can't be limited to one contact yet.");
   assert.deepEqual(hubspot.pin, {}, "the note's destination is a per-run contact: the owner ticks it at apply");
   assert.equal(p.parameters.crm_score_property, undefined, "no score property to write: an update could overwrite any field");
   assert.deepEqual(need(p, "slack").pin, { SLACK_SEND_MESSAGE: { channel: "${parameters.slack_channel}", channel_id: null } });
