@@ -199,9 +199,24 @@ function replyTo(context, faux) {
   // Answers in words, then the given JSON as its last fenced json block: an agent's structured answer
   // (agent-output-schema.test.mjs). Read off the message's first line; what a trigger appends after it is quoted back
   // first, as "Handed: ...", so a test reads what the run was handed.
+  // With ", then on a retry with this json: <B>", a later message (the output contract's one retry, the server's) is
+  // answered with B, its words quoted as "Told: ..."; without it, every message gets the same JSON. "Answer in prose,
+  // then on a retry with this json: <B>" answers the first message with no json block at all.
   const [line, ...rest] = first.split("\n");
-  const structured = /^Answer with this json: (.+)$/.exec(line ?? "");
-  if (structured) return faux.message(`Here is the answer.${rest.join("\n").trim() ? `\n\nHanded: ${rest.join("\n").trim()}` : ""}\n\n\`\`\`json\n${structured[1]}\n\`\`\``);
+  const structured = /^Answer (?:with this json: (.+?)|in prose)(?:, then on a retry with this json: (.+))?$/.exec(line ?? "");
+  if (structured) {
+    const retry = users.length > 1 && structured[2] !== undefined;
+    const json = retry ? structured[2] : structured[1];
+    const told = users.length > 1 ? `\n\nTold: ${last}` : "";
+    return faux.message(`Here is the answer.${rest.join("\n").trim() ? `\n\nHanded: ${rest.join("\n").trim()}` : ""}${told}${json === undefined ? "" : `\n\n\`\`\`json\n${json}\n\`\`\``}`);
+  }
+  // Quotes what its system prompt says from "End your final answer" on (the output contract, agent-output-schema.test.mjs),
+  // else NO CONTRACT.
+  if (first === "Quote the output contract.") {
+    const system = context.systemPrompt ?? "";
+    const at = system.indexOf("End your final answer");
+    return faux.message(at < 0 ? "NO CONTRACT" : system.slice(at));
+  }
   // Answers with a console link and the key in a file, in a URL's query (answer-urls.test.mjs).
   const linked = /^Answer with the console link and the key in (\S+)$/.exec(first);
   if (linked) {

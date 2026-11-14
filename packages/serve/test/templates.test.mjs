@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 import { applyBodyOf, compiled, filledPins, PackageError, packageModel, pickComputer, readPackage, readPackages } from "../dist/templates.js";
 import { FINDINGS } from "./fixtures/faux-review.mjs";
@@ -65,7 +65,7 @@ test("the code-review package reads whole: its review skill with the rules besid
   assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.3.0", { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "medium", { per_run_usd: 0.5, tool_calls: 90 }, false]);
   assert.deepEqual([review.tools, review.toolPolicy, review.computer, review.checkout], [["read", "bash", "subagent"], { bash: "read-only" }, ["shell", "none"], "pull_request"], "a shell where there is one, else none; bash read-only on the checkout the platform makes; read for the skill's own files; subagent for its eight reviewers");
   assert.deepEqual(Object.keys(review.skills).sort(), ["review/CODEREVIEW.md", "review/DEEP.md", "review/REVIEWER.md", "review/SKILL.md", "review/findings.schema.json"]);
-  assert.equal(review.skills["review/findings.schema.json"], file("findings.schema.json"), "the answer's schema ships beside the SKILL.md that names it");
+  assert.equal(review.skills["review/findings.schema.json"], file("skills/review/findings.schema.json"), "the answer's schema lives in the skill's folder, where the reviewers' guides read it");
   assert.equal(review.skills["review/CODEREVIEW.md"], file("rules/CODEREVIEW.md"), "the default rules, and the starter a repo copies, ship beside the SKILL.md that reads them");
   assert.match(review.skills["review/SKILL.md"], /## 2\. Checkout\n\nAgentRun checked the pull request out in `repo\/` before you began/, "the platform makes the checkout, never the agent");
   assert.match(review.skills["review/SKILL.md"], /five quick reviewers: `<guide>` is `REVIEWER\.md`, with `max_tool_calls: 30` and `effort: medium`/);
@@ -73,7 +73,7 @@ test("the code-review package reads whole: its review skill with the rules besid
   assert.match(review.skills["review/SKILL.md"], /You never\s+edit, build, install, run the repository's code or tests, commit or push/);
   for (const guide of ["REVIEWER.md", "DEEP.md"]) assert.match(review.skills[`review/${guide}`], /you post nothing: answer with the JSON below/, `${guide}: a reviewer answers, the agent posts`);
   for (const path of Object.keys(review.skills).filter((x) => x.endsWith(".md"))) assert.ok(Buffer.byteLength(review.skills[path]) <= 8192, `${path}: at most 8 KB, read whole on every review`);
-  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "re-review", "re-review-open", "repo-rule", "two-defects"], [PULL_REQUESTS], []]);
+  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "skills/review/findings.schema.json" }, ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "re-review", "re-review-open", "repo-rule", "two-defects"], [PULL_REQUESTS], []]);
   assert.deepEqual([review.displayName, review.tools, review.mcp], ["Code review: ${parameters.repo}", ["read", "bash", "subagent"], [{ server: "github", tools: GITHUB_TOOLS, required: false, allow: GITHUB_READS, pin: { pull_request_review_write: { method: ["create", "submit_pending", "delete_pending"], event: [null, "COMMENT"] } } }]]);
   assert.match(review.instructions, /\$\{parameters\.repo\}/, "placeholders stay unfilled until an apply");
 });
@@ -229,7 +229,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.match(definition.instructions, /start eight reviewers on it in one turn with `subagent`/);
   assert.match(definition.instructions, /never build, install, run tests or run the repository's code, never commit or push/);
   const files = Object.fromEntries(agent.skills.map((s) => [s.path, s.sha256]));
-  assert.deepEqual(files, { "review/CODEREVIEW.md": sha256(file("rules/CODEREVIEW.md")), "review/DEEP.md": sha256(file("skills/review/DEEP.md")), "review/REVIEWER.md": sha256(file("skills/review/REVIEWER.md")), "review/SKILL.md": sha256(file("skills/review/SKILL.md")), "review/findings.schema.json": sha256(file("findings.schema.json")) }, "the skill, its reviewers' guides, its rule and its answer schema reach the agent");
+  assert.deepEqual(files, { "review/CODEREVIEW.md": sha256(file("rules/CODEREVIEW.md")), "review/DEEP.md": sha256(file("skills/review/DEEP.md")), "review/REVIEWER.md": sha256(file("skills/review/REVIEWER.md")), "review/SKILL.md": sha256(file("skills/review/SKILL.md")), "review/findings.schema.json": sha256(file("skills/review/findings.schema.json")) }, "the skill, its reviewers' guides, its rule and its answer schema reach the agent");
 
   const other = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, overrides: { model: "openrouter/other-lab/other-model" } });
   assert.equal(other.status, 201, JSON.stringify(other.body));
@@ -244,7 +244,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.equal(done.cost.cap_usd, 0.5, "capped at the package's budget");
   const block = [...done.result.final_answer.matchAll(/```json\n([\s\S]*?)\n```/g)].at(-1)?.[1];
   assert.ok(block, `a fenced json block: ${done.result.final_answer}`);
-  const schema = JSON.parse(file("findings.schema.json"));
+  const schema = JSON.parse(file("skills/review/findings.schema.json"));
   assert.deepEqual(schemaProblems(schema, schema, JSON.parse(block)), []);
   assert.deepEqual(JSON.parse(block), FINDINGS);
   assert.ok(schemaProblems(schema, schema, { ...FINDINGS, findings: [{ ...FINDINGS.findings[0], priority: "P3" }] }).length, "the schema is a real check");
@@ -603,14 +603,16 @@ test("market-monitor's schedule comes from its parameters: Monday 08:00 UTC by d
   assert.deepEqual((await api("GET", "/agents?archived=true")).body.agents, [], "and archives none");
 });
 
-test("every shipped package's agent gets its answer schema beside its skill, and its skill names that file", () => {
+test("every shipped package's answer schema is its agent's output_schema, never copied beside a skill to tell the model, and its report field is Markdown", () => {
+  // The runner tells the model the schema (its instructions' output contract), so no skill sends it to read a copy; a
+  // skill that reads the file itself (code-review's reviewers) keeps it in its own folder, the manifest naming it there.
+  const reports = { "code-review": "summary", kyb: "report_markdown", "release-notes": "draft_markdown" };
   for (const p of readPackages()) {
     if (!p.output) continue;
-    const skills = Object.keys(p.skills).filter((path) => path.endsWith("/SKILL.md")).map((path) => path.slice(0, -"/SKILL.md".length));
-    for (const skill of skills) {
-      assert.ok(Object.hasOwn(p.skills, `${skill}/${p.output.schema}`), `${p.name}: ${skill}/${p.output.schema} ships with the agent`);
-      assert.match(p.skills[`${skill}/SKILL.md`], new RegExp(p.output.schema.replace(/\./g, "\\.")), `${p.name}: the ${skill} skill names its schema`);
-    }
+    const copies = Object.keys(p.skills).filter((path) => path.split("/").slice(1).join("/") === basename(p.output.schema) && `skills/${path}` !== p.output.schema);
+    assert.deepEqual(copies, [], `${p.name}: no copy of ${p.output.schema} beside a skill`);
+    for (const [path, text] of Object.entries(p.skills)) assert.doesNotMatch(text, /read it before you answer/, `${p.name}: ${path} sends the model to no schema file`);
+    if (reports[p.name]) assert.equal(p.outputSchema.properties[reports[p.name]].contentMediaType, "text/markdown", `${p.name}: ${reports[p.name]} is Markdown`);
   }
 });
 

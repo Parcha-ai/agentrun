@@ -1,7 +1,8 @@
 // An agentic agent's structured answer (#2145): its definition's output_schema is kept with its revision, and a completed
 // run's result.output is its final answer's last fenced json block when that meets the schema, so the API, the SDK and
 // the console read the answer there instead of parsing the message. No schema, no block, or a block the schema refuses:
-// result.output is null, as before. And a triggered run is handed its trigger's previous result (#2144): a scheduled run
+// result.output is null, as before. The runner tells the model the schema in its instructions, and asks once more when
+// the answer misses it; one that still misses says why (result.output_error). And a triggered run is handed its trigger's previous result (#2144): a scheduled run
 // of the same trigger reads what its last completed run answered, so a weekly digest can leave out what it reported.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -58,6 +59,59 @@ test("a completed run's result.output is its answer's last json block when it me
 
   const none = await answered(api, "plain", MET);
   assert.equal(none.result.output, null, "an agent with no output schema has none, as before");
+});
+
+/** A run of agent `id` on `content`, followed to its end: its view and its timeline's rows. */
+async function ranOn(api, id, content) {
+  const started = await api("POST", `/agents/${id}/runs`, { input: { content } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed"]);
+  return { run: (await api("GET", `/runs/${started.body.run_id}`)).body, rows: (await api("GET", `/runs/${started.body.run_id}/timeline`)).body.rows };
+}
+const RETRY = /^Your final JSON did not match the output schema: (.+)\. Reply again, ending with the corrected json block\.$/;
+/** The server's retry rows a run's timeline shows (the output contract's one retry), by their text. */
+const retriesOf = (rows) => rows.filter((row) => row.origin === "server" && RETRY.test(row.text ?? ""));
+
+test("the runner gives the model the output schema itself, in its instructions: an agent with none is told nothing", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("digest", { output_schema: DIGEST }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
+  const told = await ranOn(api, "digest", "Quote the output contract.");
+  assert.ok(told.run.result.final_answer.startsWith(`End your final answer with exactly one \`\`\`json block that matches this JSON Schema:\n\n\`\`\`json\n${JSON.stringify(DIGEST, null, 2)}\n\`\`\``), told.run.result.final_answer);
+  const plain = await ranOn(api, "plain", "Quote the output contract.");
+  assert.equal(plain.run.result.final_answer, "NO CONTRACT");
+  assert.equal(plain.run.result.output_error, undefined, "no schema, no output_error");
+  assert.deepEqual(retriesOf(plain.rows), [], "and no retry");
+});
+
+test("an answer that misses the output schema gets one more turn in the same session, and the corrected answer is the run's output", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("digest", { output_schema: DIGEST }))).status, 201);
+
+  const prose = await ranOn(api, "digest", `Answer in prose, then on a retry with this json: ${JSON.stringify(MET)}`);
+  assert.deepEqual(prose.run.result.output, MET, "the retry's answer is the run's output");
+  assert.equal(prose.run.result.output_error, undefined, "a run that met the schema in the end says no why");
+  const [told] = retriesOf(prose.rows);
+  assert.equal(retriesOf(prose.rows).length, 1, "one retry");
+  assert.equal(RETRY.exec(told.text)[1], "the answer has no fenced json block", "the retry says why");
+  assert.match(prose.run.result.final_answer, /Told: Your final JSON did not match the output schema: the answer has no fenced json block\./, "the model read the retry as its next message, in the same session");
+
+  const wrong = await ranOn(api, "digest", `Answer with this json: ${JSON.stringify({ quiet: "no", items: [] })}, then on a retry with this json: ${JSON.stringify(MET)}`);
+  assert.deepEqual(wrong.run.result.output, MET);
+  assert.match(RETRY.exec(retriesOf(wrong.rows)[0].text)[1], /^the answer's json does not meet the output schema: \/quiet /, "a block the schema refuses says which path");
+
+  const met = await ranOn(api, "digest", `Answer with this json: ${JSON.stringify(MET)}`);
+  assert.deepEqual([met.run.result.output, retriesOf(met.rows).length], [MET, 0], "an answer that meets the schema at once is never asked again");
+});
+
+test("an answer that still misses after the one retry ends completed with output null and output_error: never a second retry", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("digest", { output_schema: DIGEST }))).status, 201);
+  const missed = await ranOn(api, "digest", `Answer with this json: ${JSON.stringify({ quiet: "no", items: [] })}`);
+  assert.equal(missed.run.status, "completed");
+  assert.equal(missed.run.result.output, null);
+  assert.match(missed.run.result.output_error, /^the answer's json does not meet the output schema: \/quiet /);
+  assert.equal(retriesOf(missed.rows).length, 1, "exactly one retry, never a second");
 });
 
 test("the structured answer is read off the answer as written, then cut: a held value in it, a number's too, is cut inside the output, never the output dropped", { timeout: 120_000 }, async (t) => {
