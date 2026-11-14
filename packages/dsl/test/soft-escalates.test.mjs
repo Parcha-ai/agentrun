@@ -130,6 +130,28 @@ test("an `ask` predicate reads its `state`: soft when every value it reads is a 
   assert.deepEqual(soft(chainOf(JUDGE_CHECK, asks({ doubt: "{state.check.unsupported}" }))), []);
 });
 
+test("an `ask` reads the references in its `state` values, never in its keys", () => {
+  // interpolateValue replaces values only: a key that looks like a reference is a literal, so this ask reads no judge.
+  assert.deepEqual(soft(chainOf(JUDGE_CHECK, asks({ "{check}": "literal" }))), []);
+  // Nested keys are literals too; the nested value is still read.
+  assert.deepEqual(soft(chainOf(JUDGE_CHECK, asks({ why: { "{question}": "{check.unsupported}" } }))), ["doubted"]);
+  // An `images` key is a placeholder, not a reference.
+  assert.deepEqual(soft(chainOf(JUDGE_CHECK, asks({ doubt: "{check.unsupported}" }, { images: { "{question}": "{check.unsupported}" } }))), ["doubted"]);
+});
+
+test("a judge writes `<as>$answers` too: an `ask` reading only that is soft, until another step overwrites it", () => {
+  const ANSWERS = asks({ doubt: "{check$answers.answers.unsupported.noul}" });
+  assert.deepEqual(soft(chainOf(JUDGE_CHECK, ANSWERS)), ["doubted"]);
+  assert.deepEqual(soft(chainOf(JUDGE_CHECK, asks({ doubt: "{check$answers.answers.unsupported.noul}", also: "{check.unsupported}" }))), ["doubted"]);
+  // Beside the input it is not only a judge's.
+  assert.deepEqual(soft(chainOf(JUDGE_CHECK, asks({ doubt: "{check$answers.answers.unsupported.noul}", q: "{question}" }))), []);
+  // A code node with no `as` may write any key, `$answers` included.
+  assert.deepEqual(soft(chainOf(JUDGE_CHECK, { node: "code", label: "patch", code: "return {}" }, ANSWERS)), []);
+  // A judge in only one route branch leaves `$answers` unjudged on the other.
+  const route = { node: "route", label: "which", valuePath: "question", branches: { a: { body: JUDGE_CHECK }, b: { body: { node: "code", label: "c", code: "1", as: "n" } } } };
+  assert.deepEqual(soft(chainOf(route, ANSWERS)), []);
+});
+
 test("a run with softEscalate from softEscalates goes on past an `ask` on a judge's field, and stops at one on the draft", async () => {
   const flow = judged([asks({ doubt: "{check.unsupported}" }), asks({ answer: "{answer.answer}" })]);
   flow.root.steps[2] = { ...flow.root.steps[2], when: { predicate: "field_equals", path: "check.unsupported", value: false } };
