@@ -49,8 +49,9 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const later = (ms: number) => { clearTimeout(timer); timer = setTimeout(() => { hurry.current = null; void once(); }, ms); hurry.current = () => later(soon); };
+    // Whether the last answer said a change is on its way: a failed read keeps it, as it keeps the last answer.
+    let onItsWay = false;
     const once = async () => {
-      let onItsWay = false;
       try {
         const next = await reader.current!();
         if (!alive) return;

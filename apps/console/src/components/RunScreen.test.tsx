@@ -732,6 +732,14 @@ describe("the screen is read again soon while a change is on its way", () => {
     expect(now().view?.state === "live" && now().view).toMatchObject({ hold: "person" });
   });
 
+  it("a failed read while a take-over is pending keeps the reads soon", async () => {
+    let reads = 0;
+    // pending, then one read that fails (a blip), then the person has it.
+    const now = await hook(async () => { reads += 1; if (reads === 2) throw new Error("a blip"); return LIVE(reads >= 3 ? "person" : "pending"); });
+    await settle(150);
+    expect(now().view?.state === "live" && now().view).toMatchObject({ hold: "person" });
+  });
+
   it("after the page's hand-back, the reads catch up soon though its answer still said the person's", async () => {
     let hold: "agent" | "person" = "person";
     let reads = 0;
