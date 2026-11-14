@@ -106,8 +106,6 @@ export interface SessionMachine {
   announcedExec?(): string | undefined;
   /** Told each line the rollout's tail reads, as it reads it: the harness's view of code mode follows the log from here. */
   onRolloutLine?(listener: (line: string) => void): void;
-  /** Given the drive's hooks for a call the harness never sees (a remote MCP server's tool, mcp.ts). */
-  onCalls?(hooks: CallHooks): void;
   /** Told when the model proxy reads that the provider cut the turn's answer at its output limit, before Codex has the
    *  piece that carries the stop (its output tokens, when the answer said them): the harness ends the turn there. */
   onCut?(listener: (stop: { outputTokens?: number }) => void): void;
@@ -119,15 +117,6 @@ export interface SessionMachine {
   configure?(config: Record<string, TomlValue>): void;
   fsync(): Promise<void>;
   close(): Promise<void>;
-}
-
-/** The drive's hooks for a call Codex runs without the harness (code-mode.ts gives them, mcp.ts uses them). */
-export interface CallHooks {
-  /** Resolves true once the call's own line (a script's nested call: its script's) is in the log, false when it never came. */
-  barrier(callId: string): Promise<boolean>;
-  /** After a recovery: what answers a call of `tool` with `args` that already completed in the interrupted turn (a rewritten
-   *  script re-issues its calls under new ids), taken once; undefined for any other call. */
-  recovered(tool: string, args: unknown): string | undefined;
 }
 
 /** What a harness's drive asks its machine factory for: the drive, the model route its proxy serves, and its deadline. */

@@ -118,6 +118,10 @@ export interface NestedFact {
   rollout?: RolloutNested;
   /** The host parked the call for a person's approval (`parkedKey`'s record): it did not run, whatever its record says. */
   parked?: true;
+  /** Asked again on this resume (code-mode.ts recoverItems): it never reached its intent before, as a park at the host's gate
+   *  leaves a call, and went through the gate now, the person's answer on it: what it answered, and whether it ran (a refusal
+   *  never does). */
+  resumed?: { text: string; isError: boolean; ran: boolean };
 }
 
 export type Settled = { kind: "completed"; text: string } | { kind: "failed"; text: string } | { kind: "interrupted" } | { kind: "parked" };
@@ -168,6 +172,10 @@ export function recoveryFacts<T>(execs: readonly string[], ties: readonly Nested
 const describeCall = (fact: NestedFact, label: string): string => {
   const settled = settle(fact);
   if (settled.kind === "parked") return `${label} was waiting for a person's approval and did not run; it was not run again.`;
+  const again = fact.resumed;
+  if (again && !again.ran) return `${label} waited for a person's approval, then: ${quoted(again.text)}. It did not run.`;
+  if (again && again.isError) return `${label} waited for a person's approval, then ran and failed: ${quoted(again.text)}. It was not run again.`;
+  if (again) return `${label} waited for a person's approval, then ran: ${quoted(again.text)}. Its effect is done; it was not run again.`;
   if (settled.kind === "completed") return `${label} completed: ${quoted(settled.text)}. Its effect is done; it was not run again.`;
   if (settled.kind === "failed") return `${label} failed: ${quoted(settled.text)}. It was not run again.`;
   // Told as the recovery note of the same turn tells it, which reaches the model with this output: a safe tool's call a crash cut off.
@@ -178,6 +186,13 @@ const describeCall = (fact: NestedFact, label: string): string => {
 /** The output a cut-off `exec` is answered with: its nested calls, in order, each with what it came to, and that nothing was run
  *  again. A completed call's effect is done, a never tool's included; a call with no end is interrupted. `loose`: calls of this turn
  *  whose script could not be told (given to the last cut-off exec only), listed apart under their own heading. */
+/** What a dangling `wait` on a yielded exec's cell is told when calls of that script that waited for a person's approval
+ *  were answered on this resume (code-mode.ts recoverItems): each call's outcome, in order. */
+export function waitResumedText(cell: string, resumed: readonly NestedFact[]): string {
+  const lines = resumed.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
+  return `The session stopped while waiting on cell ${cell}; that cell's script was cut off. Its calls that waited for a person's approval were answered since, each once:\n${lines.join("\n")}\nNothing else of the script was run again. Check the actual state before relying on it.`;
+}
+
 export function execRecoveryOutput(facts: readonly NestedFact[], loose: readonly NestedFact[] = []): string {
   const apart = loose.length
     ? `\n${loose.length} ${loose.length === 1 ? "call" : "calls"} ran whose script could not be told (an answer of the model's could not be read to its end):\n${loose.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`)).join("\n")}`

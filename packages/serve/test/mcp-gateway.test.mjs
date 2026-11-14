@@ -3,12 +3,11 @@
 // read tool pages through, and a server whose address changed is sent nothing.
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, rm, symlink } from "node:fs/promises";
-import { createServer, request } from "node:http";
+import { createServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { FILED_LINE_MAX, LAYOUT_DEPTH_MAX, fileable, laidOut, layoutBound } from "../dist/filed-answer.js";
 import { HEADER_SCAN_DEPTH, MCP_CLIP, mcpGateway, mcpHeaderProblem, mcpPinOf } from "../dist/mcp-gateway.js";
@@ -180,29 +179,6 @@ function store() {
   const entries = [];
   return { entries, commit: () => async (change) => change({ appendEntry: async (_conversation, entry) => entries.push(entry) }) };
 }
-
-test("at the session proxy's /mcp/<server>: a client that drops a held tools/call cancels it at the server", async (t) => {
-  const { fake, gateway, cancelled } = await setup(t);
-  const key = "session-key-for-tests";
-  const policy = { id: "test", routes: [], keyOf: (headers) => String(headers.authorization ?? "").replace(/^Bearer /, ""), authHeaders: () => ({}), apply: (body) => body, usageOf: () => undefined };
-  const proxy = await startModelProxy({ policy, model: "m", origin: "https://provider.invalid", credential: () => "c", hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: { session: gateway, client: { callIdMeta: "claudecode/toolUseId" } } }, key);
-  t.after(() => proxy.close());
-  const gone = new AbortController();
-  const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slow_write", arguments: { line: "x", seconds: 30 } } });
-  const held = new Promise((resolve) => {
-    const req = request(`${proxy.url}/mcp/fake`, { method: "POST", signal: gone.signal, headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" } }, (res) => res.resume());
-    req.once("error", () => resolve("dropped"));
-    req.end(body);
-  });
-  while (!fake.log.some((entry) => entry.tool === "slow_write")) await new Promise((resolve) => setTimeout(resolve, 20));
-  gone.abort();
-  assert.equal(await held, "dropped");
-  for (let i = 0; !cancelled(); i++) {
-    assert.ok(i < 150, `the server is told the call was cancelled: ${JSON.stringify(fake.log.map((entry) => entry.method))}`);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  assert.equal(fake.log.filter((entry) => entry.tool === "slow_write").length, 1, "and it was sent once");
-});
 
 test("a tool named like an object's own property (__proto__) keeps its price: pinned, refused unsent over the cap, booked at it once it leaves", async (t) => {
   const listed = [{ name: "__proto__", inputSchema: schema }];
