@@ -351,9 +351,10 @@ export class HostedProvider implements ComputerProvider {
 		const { image, network, labels, mount } = given;
 		const capabilities = this.capabilities();
 		const label = this.#label;
-		refusals.push(...checkMount(mount, capabilities.mount ?? []), ...archilRefusals(given as unknown as ComputerSpec));
+		// An Archil mount's own rules hold only where the provider takes one; elsewhere checkMount's refusal says why alone.
+		const archil = (mount as { kind?: unknown } | undefined)?.kind === "archil" && (capabilities.mount ?? []).includes("archil");
+		refusals.push(...checkMount(mount, capabilities.mount ?? [], this.host.facts.unmounted), ...(archil ? archilRefusals(given as unknown as ComputerSpec) : []));
 		const daemonUser = `${this.#uid}:${this.#gid}`;
-		const archil = (mount as { kind?: unknown } | undefined)?.kind === "archil";
 		const asked = this.#takesUser() ? given.user : undefined;
 		if (asked !== undefined) {
 			const user = specUserOf(asked);

@@ -40,8 +40,9 @@ PASS`, write the rest.
 ### What you write
 
 You write one small TypeScript object, a `MachineHost`. It creates, reads, lists and deletes your machines, and runs a
-command in one. AgentRun does the rest. It installs its daemon (computerd) in each machine, enforces deadlines, makes
-create safe to retry, sweeps up leftovers and checks from inside that the agent's programs have no network. This works
+command in one. AgentRun does the rest. It installs its daemon (computerd) in each machine. This package ships that
+daemon, so it always matches the provider's protocol and version exactly. AgentRun also enforces deadlines, makes create
+safe to retry, sweeps up leftovers and checks from inside that the agent's programs have no network. This works
 for any vendor whose machines run Linux and can start a process as root.
 
 You add four things under `packages/computer/src/`, each copied from E2B's:
@@ -216,8 +217,8 @@ export class E2BProvider extends HostedProvider {
 ```
 
 The same file exports `create(options)`, `MOUNT`, `CAPABILITIES` and `conformance`, as `e2b.ts` does. Load your SDK
-lazily through a constant like `E2B_PACKAGE`, pin it exactly as a root devDependency, and add it to
-`test/vendor-sdks.test.mjs`.
+lazily through a constant like `E2B_PACKAGE` and pin it exactly as a root devDependency. `test/vendor-sdks.test.mjs`
+finds that constant in your file and checks the pin.
 
 The descriptor is data. AgentRun's Settings page shows it, and the registry loads your file through `load`.
 
@@ -235,10 +236,7 @@ export const E2B = defineProvider({
 });
 ```
 
-A few tests still list every provider by hand, so add yours to each: `packages/computer/test/kinds.test.mjs` (your
-kinds and default images), `packages/computer/test/vendor-sdks.test.mjs` (your SDK's pinned version),
-`packages/serve/test/fixtures/computer-kinds.mjs` (a fake of your provider for serve's tests), and, if you take an
-Archil mount, `packages/serve/test/workspace-kinds-fixture.mjs`.
+The tests that cover every provider read the descriptors, so your descriptor is the only list you add to.
 
 Settings stores your key under the name your descriptor gives it, `<VENDOR>_API_KEY`. The conformance module reads it
 as `COMPUTER_<VENDOR>_API_KEY` instead, so a test run never picks up a key your shell already holds for something else.
@@ -254,8 +252,9 @@ lifecycle against one fake host, and your live run is the proof.
 
 ### Prove it
 
-The full suite needs Go on your PATH, because the build compiles AgentRun's daemon and the drift case compiles a second
-copy that reports another version. Build, then run the suite with your own key between two sweeps, from the repository root:
+Without Go, `build:daemon` takes AgentRun's daemon from the same version on npm, as long as your checkout's daemon
+source is that version's. If you or your branch changed the daemon, you need Go to build it. The drift case always needs Go on your PATH, because it compiles a second copy of the daemon that reports another
+version. Build, then run the suite with your own key between two sweeps, from the repository root:
 
 ```sh
 npm ci --ignore-scripts && npm run build
@@ -331,6 +330,10 @@ and so on), lifetime, networks, isolation, release, users and mounts. On a `Mach
 provider's options, so you write none of them by hand. The case `health.declared` checks `capabilities()` against the
 descriptor, and each computer's `hello` against `capabilities()`. [spec/computer/provider.md](../../spec/computer/provider.md)
 says what each member promises.
+
+A mount kind your machines can't take goes in the descriptor's `unmounted`, with why in one sentence, and `check()`
+refuses it in those words. Daytona declares no mount: `unmounted: { archil: "Archil mounts don't work on Daytona yet:
+Archil's client hangs on its sandboxes" }`.
 
 If your machines can't run Linux as root, the adapter doesn't fit, and you'd implement `ComputerProvider`
 (`src/provider.ts`) directly. That's a big job, because the adapter's whole lifecycle, claims and all, becomes yours to

@@ -1,13 +1,9 @@
 ---
 description: "Repeat. Northfield Dental Supply Inc.: active, but its 2025 return is Overdue in its own filings table: RF10 is real."
 max_cost_usd: 1.50
+input: { company: Northfield Dental Supply Inc., website: northfielddental.example, country: CA, reason: vendor }
 ---
-Run KYB on this company: we're about to sign a vendor agreement with them.
-
-- Company: Northfield Dental Supply Inc.
-- Domain: northfielddental.example
-- Country of incorporation: Canada
-- Why we're checking: vendor
+We're about to sign a vendor agreement with them.
 
 The web is not reachable from this run: the material below is everything there is, so cite it and don't fetch.
 

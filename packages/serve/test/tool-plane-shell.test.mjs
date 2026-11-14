@@ -44,23 +44,23 @@ test("each shell place, the family as a run of it gets it: all on a computer, ba
   assert.equal(agentTools(process.env, {}, tooling, order, "none").find((tool) => tool.name === "read").resolved, undefined, "read stays as it was");
 });
 
-test("an agent's read follows its computer setting and the folder mode now: Mode 1 a Docker sandbox has the family and a Daytona one none; Mode 2 the other way round", { timeout: 120_000 }, async (t) => {
+test("an agent's read follows its computer setting and the folder mode now: Mode 1 a Docker sandbox has the family and an E2B one none; Mode 2 the other way round", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t);
   // Saved in Mode 1, each with the whole family. Neither box runs here (each saves with a warning), and the plane reads
   // the setting, as the claim does, never whether its box answers now.
-  for (const [id, provider] of [["docked", "docker"], ["remote", "daytona"]]) {
+  for (const [id, provider] of [["docked", "docker"], ["remote", "e2b"]]) {
     const made = await api("POST", "/agents", agent(id, { computer: { kind: "sandbox", provider }, tools: SHELL }));
     assert.equal(made.status, 201, JSON.stringify(made.body));
   }
   const read = async (id) => resolvedOf((await api("GET", `/agents/${id}`)).body.tools);
   assert.deepEqual(await read("docked"), there, "Mode 1: Docker binds the run's folder, so its sandbox is the run's shell");
-  assert.deepEqual(await read("remote"), none, "Mode 1: a Daytona sandbox cannot reach a folder of this machine, so the run has no shell");
+  assert.deepEqual(await read("remote"), none, "Mode 1: an E2B sandbox cannot reach a folder of this machine, so the run has no shell");
 
-  // Mode 2: the folder is on Archil, which a Daytona sandbox mounts and a local Docker one cannot.
+  // Mode 2: the folder is on Archil, which an E2B sandbox mounts and a local Docker one cannot.
   const on = await api("PUT", "/workspace/archil", ARCHIL);
   assert.equal(on.status, 200, JSON.stringify(on.body));
   assert.deepEqual(await read("docked"), none, "Mode 2: a Docker sandbox cannot mount Archil, so the run has no shell");
-  assert.deepEqual(await read("remote"), there, "Mode 2: Daytona mounts the folder, so its sandbox is the run's shell");
+  assert.deepEqual(await read("remote"), there, "Mode 2: E2B mounts the folder, so its sandbox is the run's shell");
 
   assert.equal((await api("DELETE", "/workspace/archil")).body.on, false);
   assert.deepEqual(await read("docked"), there, "back in Mode 1");

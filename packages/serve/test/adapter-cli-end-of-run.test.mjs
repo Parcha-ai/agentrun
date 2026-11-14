@@ -22,7 +22,6 @@ const INPUT = "Find it.";
 function standInCli(turns, replies = []) {
   return {
     id: "stand-in-cli",
-    capabilities: () => ({}),
     check: () => [],
     async open(_spec, io) {
       const state = (await io.writer.read()).some((record) => record.kind === "stand-in.sent") ? "idle" : "new";

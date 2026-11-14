@@ -29,10 +29,10 @@ function fake(reads: LearningBatch[]) {
   };
   return v2;
 }
-async function show(v2: ReturnType<typeof fake>, onFinished = () => {}) {
+async function show(v2: ReturnType<typeof fake>, onFinished = () => {}, pollMs = 20) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  await act(async () => { root!.render(createElement(LearnFromCsv, { v2: v2 as unknown as Client, agentId: "ag", onFinished, pollMs: 20 })); });
+  await act(async () => { root!.render(createElement(LearnFromCsv, { v2: v2 as unknown as Client, agentId: "ag", onFinished, pollMs })); });
   return host;
 }
 const wait = (ms: number) => act(async () => { await new Promise((r) => setTimeout(r, ms)); });
@@ -87,8 +87,10 @@ describe("LearnFromCsv", () => {
     expect(onFinished).not.toHaveBeenCalled();
   });
   it("cancels a running batch", async () => {
-    const v2 = fake([batch(), batch({ status: "cancelled", finished: 1 })]);
-    const host = await show(v2);
+    // Only the first read: the cancel answer itself shows the ended batch. A fast poll could read "cancelled" before the
+    // click on a slow box and take the Cancel button away (CI flake, 11-14).
+    const v2 = fake([batch()]);
+    const host = await show(v2, () => {}, 60_000);
     const cancel = [...host.querySelectorAll("button")].find((b) => b.textContent === "Cancel")!;
     await act(async () => { cancel.click(); });
     expect(v2.cancelLearningBatch).toHaveBeenCalledWith("ag", "lb_1");

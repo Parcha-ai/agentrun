@@ -19,21 +19,21 @@ A workflow is {"v":2,"name","schemas","input"?,"output","root"}.
 
 This is the complete set. Each kind accepts exactly these fields; any other field is an error.
 - `chain`: `steps`
-- `code`: `label`, `code`, `as`
-- `agent`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`, `budget_usd`, `max_turns`, `context`
-- `decide`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`
-- `extract`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`
+- `code`: `label`, `code`, `as`, `guard`
+- `agent`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`, `guard`, `budget_usd`, `max_turns`, `context`
+- `decide`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`, `guard`
+- `extract`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`, `guard`
 - `report`: `label`, `state`, `instructions`, `sopSection`, `requires`, `tools`, `effort`, `thinking`
 - `artifact`: `label`, `state`, `type`, `path`, `instructions`, `sopSection`, `requires`, `tools`, `effort`, `thinking`
 - `map`: `label`, `itemsPath`, `body`, `as`, `resultPath`, `maxConcurrency`, `onItemFailure`, `failedAs`
 - `parallel`: `label`, `branches`
 - `loop`: `label`, `body`, `until`, `maxIters`, `expect_iters`
 - `escalate`: `label`, `when`, `kind`, `stage`, `summary`
-- `call`: `label`, `via`, `tool`, `args`, `code`, `input`, `command`, `env`, `where`, `out`, `as`, `produces`, `deadline_s`, `retry`, `poll`, `requires`
-- `workflow`: `label`, `workflow`, `input`, `out`, `as`
-- `judge`: `label`, `state`, `out`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`
-- `pick`: `label`, `itemsPath`, `describe`, `instructions`, `state`, `allowNone`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`
-- `sift`: `label`, `itemsPath`, `describe`, `state`, `out`, `as`, `keep`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`
+- `call`: `label`, `via`, `tool`, `args`, `code`, `input`, `command`, `env`, `where`, `out`, `as`, `produces`, `deadline_s`, `retry`, `poll`, `requires`, `guard`
+- `workflow`: `label`, `workflow`, `input`, `out`, `as`, `guard`
+- `judge`: `label`, `state`, `out`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`, `guard`
+- `pick`: `label`, `itemsPath`, `describe`, `instructions`, `state`, `allowNone`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`, `guard`
+- `sift`: `label`, `itemsPath`, `describe`, `state`, `out`, `as`, `keep`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`, `guard`
 - `route`: `label`, `state`, `instructions`, `branches`, `unsure`, `valuePath`, `otherwise`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`, `images`
 
 Every kind also accepts `metadata`, an object the host owns and the engine never reads; set only the keys the host addendum names.
@@ -91,6 +91,15 @@ Typed questions answered by the host's judge in one request each: no tools, no s
   - `retry` {attempts: an integer >= 1, backoff_s?: a number >= 0, on?: [timeout, http_5xx, http_429, connection, exit, effect_timeout, effect_exit, effect_transport, effect_not_granted, effect_produces_missing, effect_path_escape, effect_code_unsafe, output_invalid, state_invalid, effect_unknown_transport]}. `where` accepts only "sandbox".
   - `poll` {until, fail_when?, interval_s: >= 0.1 (a busy-loop guard), deadline_s: at least the call's deadline_s (no maximum)} repeats the call until `until` holds on its own result; `fail_when` fails it at once. Both are mechanical predicates whose paths are relative to the result and lie in its declared shape.
   - Validation and dry runs never perform effects: they synthesize the declared result, and a shell result's stdout is "{}".
+
+### Step guards
+
+A `guard` on a step (agent, decide, extract, code, call, workflow, judge, pick, sift) checks the step once it ran: below its threshold, the run hands the job back (it escalates, kind `guard`, at the step, with the state it reached), so an uncertain step never answers alone.
+- `guard` is {"signal": self|jev|both, "threshold": a number between 0 and 1 (exclusive), "question"?: text, "fit"?: {"w", "b", "n", "fitted_at"}}.
+- `self` reads the step's own confidence: agent, decide, judge, pick, sift nodes only. An agent or decide node with it submits a `confidence` field (0 to 1) beside its record, which lands at `<key>$confidence`, never in its value; its `out` is an object schema. A judge, pick or sift reads its weakest answer's confidence.
+- `jev` asks Jev one yes/no question over what the step saw and what it wrote: `question` (at most 2000 characters), or by default whether the output is right for the input. Every guarded kind may use it; it is the only signal for extract, code, call, workflow nodes.
+- `both` combines the two: through `fit` when it has one, else the lower of the two.
+- `fit` is the host's, written when it fits the threshold on graded runs: {"w": one weight per signal ([self, jev] for both), "b", "n": the runs it was fitted on, "fitted_at": an ISO time}. Never write or change one yourself. A raw confidence is not a calibrated probability: without a fit, set a threshold the host has measured, or leave the guard to the host.
 
 ## Predicates
 

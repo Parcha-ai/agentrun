@@ -5,6 +5,7 @@
 // command as root. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts). Every SDK fact
 // used here is cited in the README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
 import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
+import { WINDOW_MANAGER } from "./desktop.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, ours } from "./hosted/provider.js";
 import { codeOfError, words } from "./hosted/process.js";
@@ -574,6 +575,8 @@ export class E2BProvider extends HostedProvider {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 h (${PRO_MAX_MS} ms), E2B Pro's longest sandbox; Hobby's is 1 h`);
 		}
 		const requestMs = rest.timeouts?.requestMs ?? DEFAULT_REQUEST_MS;
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, label: "E2B", kind, maxLifetimeMs });
+		// E2B Desktop's template has xfwm4, which its own desktop runs: the apps an agent opens are framed and focused.
+		const desktop = { windowManager: WINDOW_MANAGER, ...rest.desktop };
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, desktop, label: "E2B", kind, maxLifetimeMs });
 	}
 }

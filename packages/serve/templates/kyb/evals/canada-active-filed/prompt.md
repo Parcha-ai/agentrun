@@ -2,13 +2,9 @@
 description: 'A Canadian federal corporation that is active and has filed, within its $1.50 cap (a run that re-reads the record into its context runs out first). Its registry record, as captured, carries hidden help pop-ups about a notice of intent to dissolve and overdue filings, which every record shows and which are never a finding. Verdict proceed. Pass 3 of 3.'
 runs: 3
 max_cost_usd: 1.50
+input: { company: Shopify Inc., website: shopify.com, country: CA, reason: vendor }
 ---
-Run KYB on this company: we're about to sign a vendor agreement with them.
-
-- Company: Shopify Inc.
-- Domain: shopify.com
-- Country of incorporation: Canada
-- Why we're checking: vendor
+We're about to sign a vendor agreement with them.
 
 Our onboarding form looked the company up in Corporations Canada when they applied. The record page as it captured
 it follows, between the markers, hidden parts included.

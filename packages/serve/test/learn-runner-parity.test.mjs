@@ -42,7 +42,8 @@ test("every agent node the learned runner refuses when it comes up is refused at
     for (const context of [undefined, "fresh", "fork"])
       for (const max_turns of [undefined, 1, LEARNED_MAX_TURNS, LEARNED_MAX_TURNS + 1])
         cases.push(Object.fromEntries(Object.entries({ tools, context, max_turns }).filter(([, v]) => v !== undefined)));
-  cases.push({ budget_usd: 0.5 }, { effort: "low" }, { thinking: "high" });
+  // A guard never reaches the runner (the engine asks the host's guardStep after the node ran): it runs, and passes the check.
+  cases.push({ budget_usd: 0.5 }, { effort: "low" }, { thinking: "high" }, { guard: { signal: "self", threshold: 0.5 } }, { guard: { signal: "both", threshold: 0.7 } });
   let compared = 0;
   for (const fields of cases) {
     const text = draftOf(fields);
@@ -57,5 +58,5 @@ test("every agent node the learned runner refuses when it comes up is refused at
 });
 
 test("the agent node's fields are the ones the parity grid covers: a new field that reaches the runner fails here until it is added", () => {
-  assert.deepEqual([...dsl.NODE_FIELDS.agent].sort(), ["as", "budget_usd", "context", "effort", "instructions", "label", "max_turns", "node", "out", "requires", "sopSection", "state", "thinking", "tier", "tools", "verify"].sort());
+  assert.deepEqual([...dsl.NODE_FIELDS.agent].sort(), ["as", "budget_usd", "context", "effort", "guard", "instructions", "label", "max_turns", "node", "out", "requires", "sopSection", "state", "thinking", "tier", "tools", "verify"].sort());
 });

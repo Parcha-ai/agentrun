@@ -97,8 +97,12 @@ public protocol Accessibility: Sendable {
 	var incidentalActions: Set<String> { get }
 	/// The app and window a target names. Throws not_found for an app that is not running or a window it lacks.
 	func resolve(_ target: Target?) throws -> ResolvedTarget
-	/// The window's tree, at most maxNodes nodes.
-	func snapshot(_ target: ResolvedTarget, maxNodes: Int) throws -> Snapshot
+	/// The window's tree, at most maxNodes nodes. Without details each node's actions are empty and settable false: on a
+	/// Mac those two reads cost as much as the rest of a node, and an act's looks need them only for the elements its
+	/// steps act on, which details(_:) reads.
+	func snapshot(_ target: ResolvedTarget, maxNodes: Int, details: Bool) throws -> Snapshot
+	/// An element's actions and whether its value can be set, as a snapshot with details reads them.
+	func details(_ element: ElementHandle) -> (actions: [String], settable: Bool)
 	/// The element still exists.
 	func exists(_ element: ElementHandle) -> Bool
 	/// Its frame now, in screen points.
@@ -271,8 +275,10 @@ public struct Platform: Sendable {
 	/// A person's keyboard and mouse, for the take-over check of a ui act that takes the foreground route.
 	public var person: any PersonInput
 	public var clock: any Clock
+	/// Where ui.act last acted, for the live view's frames (Marks): on clock's time.
+	public var marks: Marks
 
-	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, raw: any RawInput, person: any PersonInput, clock: any Clock = SystemClock()) {
+	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, raw: any RawInput, person: any PersonInput, clock: any Clock = SystemClock(), marks: Marks = Marks()) {
 		self.accessibility = accessibility
 		self.capture = capture
 		self.workspace = workspace
@@ -283,6 +289,7 @@ public struct Platform: Sendable {
 		self.raw = raw
 		self.person = person
 		self.clock = clock
+		self.marks = marks
 	}
 }
 

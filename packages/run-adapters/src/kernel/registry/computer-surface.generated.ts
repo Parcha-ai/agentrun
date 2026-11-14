@@ -582,6 +582,13 @@ const MEMBERS: readonly { groups?: readonly string[]; uses: readonly string[]; t
   },
   {
     "groups": [
+      "processes"
+    ],
+    "uses": [],
+    "text": "readonly processes: { start(command: string | string[], options?: { cwd?: string; env?: Record<string, string>; }): Promise<{ pid: number; }>; };"
+  },
+  {
+    "groups": [
       "files"
     ],
     "uses": [

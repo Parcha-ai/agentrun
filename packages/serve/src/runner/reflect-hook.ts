@@ -8,8 +8,9 @@
 import { cutStrings } from "../key-refusal.js";
 import type { DraftDecisions } from "../learn/skills.js";
 import { DRY_RUN_FAILED, reflectAgain, reflectDryRun, reflectPrompt, redactSecrets } from "../learn/index.js";
+import type { ReviseAsk } from "../learn/reflect.js";
 import { said, STOPPED } from "../learning-words.js";
-import type { AlsoRow, EndOfRunTurn } from "./loop-contract.js";
+import type { AlsoRow, EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
 
 /** How long a run's end-of-run turn may take before it is aborted and the run ends without it. */
 export const REFLECT_TIMEOUT_MS = 5 * 60_000;
@@ -43,7 +44,7 @@ export interface ReflectDeps {
   readonly facts: (runId: string) => Promise<{ learns: boolean; cancelled?: boolean; capReached?: boolean; capUsd?: number; costUsd: number | null }>;
   /** The prompt's facts: how many notes the run started from, the tools a workflow draft may name, and the learned skills
    *  whose job the prompt asks for as a workflow draft (reflectPrompt's draftFor; none when absent). */
-  readonly promptFacts: (runId: string, agentId: string) => Promise<{ active: number; tools: readonly string[]; decisions?: DraftDecisions; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: false }>;
+  readonly promptFacts: (runId: string, agentId: string) => Promise<{ active: number; tools: readonly string[]; decisions?: DraftDecisions; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: false; handedBack?: string; revise?: ReviseAsk }>;
   /** What the person said in the run, and a trigger's input, as the checks and the grader read them. */
   readonly asked: (runId: string) => Promise<{ asked: readonly string[]; triggered?: ReflectTurn["triggered"] }>;
   /** Every value the run must never learn (learning-run.ts refused): the host's secrets and what the run was handed, its
@@ -103,36 +104,47 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
   const hook: EndOfRunTurn = async (input) => {
     const facts = await deps.facts(input.runId);
     if (!facts.learns) return undefined;
-    // closeLearning for a run cut before it could look back: a person's stop, before or during the turn, or a fault.
-    if (input.cut === "stopped") return { also: [droppedRow(null, "cancelled", said.stopped(STOPPED.cancelled))] };
-    if (input.cut === "stopped-looking") return { also: [droppedRow(null, "cancelled", said.stopped(STOPPED.cancelledLooking))] };
-    if (input.cut === "faulted") return { also: [droppedRow(null, "crashed", said.stopped(STOPPED.crashed))] };
-    // reflectSkip: the cap keeps no reserve; a run its cap stopped has no room left, and one whose spend is unknown
-    // cannot be kept within its cap.
-    if (facts.cancelled) return { also: [droppedRow(null, "cancelled", said.stopped(STOPPED.cancelled))] };
-    if (facts.capReached) return { also: [droppedRow(null, "no_budget", said.noBudget)] };
-    if (facts.capUsd !== undefined && facts.costUsd === null) return { also: [droppedRow(null, "unknown_cost", said.unknownCost)] };
     const now = deps.now ?? Date.now;
     // When the job answered and what it cost (learning-run.ts setLearning "reflecting"): as the turn starts, the run's
-    // spend so far is the job's.
-    const answeredAt = new Date(now()).toISOString();
-    const job = facts.costUsd;
+    // spend so far is the job's. A turn an earlier claim asked first (cut by a crash or a lost claim) reads that ask's,
+    // which it kept with its prompt (the ask's `kept`): what the earlier attempt spent is the look-back's, never the job's.
+    let answeredAt = new Date(now()).toISOString();
+    let job = facts.costUsd;
+    const firstAsk = (kept: EndOfRunKept | undefined): boolean => {
+      if (typeof kept?.answered_at !== "string" || (typeof kept.job_cost_usd !== "number" && kept.job_cost_usd !== null)) return false;
+      [answeredAt, job] = [kept.answered_at, kept.job_cost_usd];
+      return true;
+    };
+    // A look-back already started (its first ask's figures on the record, keptOf), read before any skip or cut: one this
+    // claim closes without asking still keeps when the job answered, its cost, and what looking back spent since.
+    const begun = firstAsk(input.keptOf?.(round));
     // A later round's: the follow-up's own spend, the run's spend now less what the round before it kept (its job's and
     // its look-back's), unknown when any is.
     const earlier = deps.before;
-    const followUp = round === 1 ? {} : { follow_up_usd: job === null || typeof earlier?.job_cost_usd !== "number" || typeof earlier.look_back_usd !== "number" ? null : Math.max(0, Math.round((job - earlier.job_cost_usd - earlier.look_back_usd) * 1e9) / 1e9) };
+    const followUp = () => (round === 1 ? {} : { follow_up_usd: job === null || typeof earlier?.job_cost_usd !== "number" || typeof earlier.look_back_usd !== "number" ? null : Math.max(0, Math.round((job - earlier.job_cost_usd - earlier.look_back_usd) * 1e9) / 1e9) });
     // closeLearning: what looking back cost, the run's spend once the turn closed (its re-ask included) less the job's,
     // unknown when either is. Kept with every end the turn reaches from here, beside when the job answered and its cost.
     const looked = async (rows: { readonly also: readonly AlsoRow[] }) => {
       const total = (await deps.facts(input.runId)).costUsd;
-      const answered = { answered_at: answeredAt, job_cost_usd: job, look_back_usd: total === null || job === null ? null : Math.max(0, Math.round((total - job) * 1e9) / 1e9), ...followUp };
+      const answered = { answered_at: answeredAt, job_cost_usd: job, look_back_usd: total === null || job === null ? null : Math.max(0, Math.round((total - job) * 1e9) / 1e9), ...followUp() };
       return { also: rows.also.map((row): AlsoRow => (row.table === "learning_proposals" ? { ...row, row: { ...row.row, proposal: { ...(row.row as { proposal: object }).proposal, ...answered } } } : row)) };
     };
+    // A run cut or skipped here asks nothing: its drop alone, or with looked's figures when its look-back had started.
+    const unasked = async (row: AlsoRow) => (begun ? looked({ also: [row] }) : { also: [row] });
+    // closeLearning for a run cut before it could look back: a person's stop, before or during the turn, or a fault.
+    if (input.cut === "stopped") return unasked(droppedRow(null, "cancelled", said.stopped(STOPPED.cancelled)));
+    if (input.cut === "stopped-looking") return unasked(droppedRow(null, "cancelled", said.stopped(STOPPED.cancelledLooking)));
+    if (input.cut === "faulted") return unasked(droppedRow(null, "crashed", said.stopped(STOPPED.crashed)));
+    // reflectSkip: the cap keeps no reserve; a run its cap stopped has no room left, and one whose spend is unknown
+    // cannot be kept within its cap.
+    if (facts.cancelled) return unasked(droppedRow(null, "cancelled", said.stopped(STOPPED.cancelled)));
+    if (facts.capReached) return unasked(droppedRow(null, "no_budget", said.noBudget));
+    if (facts.capUsd !== undefined && facts.costUsd === null) return unasked(droppedRow(null, "unknown_cost", said.unknownCost));
     // A job that only ran its learned workflows, each answering, with nothing said after its first message, gave nothing
     // new to learn: it is not asked (no model request), and looking back cost nothing, $0 whether or not the job's own
     // cost is known. Its words are the server's own.
     if (input.outcome === "completed" && deps.nothingNew && (await deps.nothingNew(input.runId).catch(() => false))) {
-      return { also: [droppedRow(null, "empty", said.onlyWorkflow, { answered_at: answeredAt, job_cost_usd: job, look_back_usd: 0, ...followUp })] };
+      return { also: [droppedRow(null, "empty", said.onlyWorkflow, { answered_at: answeredAt, job_cost_usd: job, look_back_usd: 0, ...followUp() })] };
     }
     // What the run must never learn, read once, before it is asked anything: a run whose list can't be read learns
     // nothing, never over a shorter one.
@@ -142,11 +154,12 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // string the kept rows hold, whatever looked adds now or later.
     const close = async (rows: AlsoRow[]) => ({ also: (await looked({ also: rows })).also.map((row) => cutRow(row, refuse)) });
     if (read === "unreadable") return close([droppedRow(null, "propose_failed", said.stopped(STOPPED.refuseUnread))]);
-    const { active, tools, draftFor, described, decisions, workflows } = await deps.promptFacts(input.runId, input.agentId);
+    const { active, tools, draftFor, described, decisions, workflows, handedBack, revise } = await deps.promptFacts(input.runId, input.agentId);
     const deadlineMs = deps.deadlineMs ?? REFLECT_TIMEOUT_MS;
     const started = now();
     const ask = { origin: "reflect", ...(round > 1 ? { round } : {}) } as const;
-    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools, ...(decisions ? { decisions } : {}), ...(workflows === false ? { workflows: false } : draftFor?.length ? { draftFor, ...(described?.length ? { described } : {}) } : {}), ...(round > 1 && deps.before?.looked !== false ? { later: true } : {}) }), { ...ask, deadlineMs });
+    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools, ...(decisions ? { decisions } : {}), ...(workflows === false ? { workflows: false } : { ...(draftFor?.length ? { draftFor, ...(described?.length ? { described } : {}) } : {}), ...(handedBack ? { handedBack } : {}), ...(revise ? { revise } : {}) }), ...(round > 1 && deps.before?.looked !== false ? { later: true } : {}) }), { ...ask, deadlineMs, keep: { answered_at: answeredAt, job_cost_usd: job } });
+    firstAsk(end.kept);
     // closeLearning: how the turn ended.
     if ("timedOut" in end) return close([droppedRow(null, "reflect_timeout", said.stopped(STOPPED.timedOut))]);
     if ("failed" in end) return close([CAP_REFUSAL.test(end.failed.message) ? droppedRow(null, "no_budget", said.noBudget) : droppedRow(null, "reflect_failed", said.stopped(STOPPED.failed))]);
