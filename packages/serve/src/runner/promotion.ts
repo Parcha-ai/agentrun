@@ -21,7 +21,9 @@
 // the folder's main, the challenger's own text, so it already carries that change. The challenger is reserved before any
 // of its replay runs starts: its replaying record, naming the runs it will start, is kept only while no other revision of
 // the workflow replays (the rival check in the same guarded write), so two claims of two revisions at once start one
-// replay. Every decision is acted on (replay runs started, a refit written, runs cancelled) only by the claim whose write
+// replay. A reserved run not created yet is pending, never ended: a claim between the reservation and the creates decides
+// nothing, and a launch interrupted there (a crash, a failed create) is finished by a claim REPLAY_LAUNCH_GRACE_MS on, each
+// run under its reserved id on the graded input its record names (relaunch). Every decision is acted on (replay runs started, a refit written, runs cancelled) only by the claim whose write
 // kept it (learn/promote.ts Recorded.won). A replay decided with runs still at work (its deadline passed) cancels them.
 // A replay never repeats a side effect and runs with what a served run of the agent has (learn/replay-calls.ts, SPEC B4):
 // each call node's tool is a read or a write; a read runs live through a cache seeded from the graded run's recorded calls,
@@ -36,7 +38,7 @@ import { LEARNING_LABEL } from "../learning.js";
 import type { GuardRow } from "../learned-nodes.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { uuidv7 } from "../runs-over-store.js";
-import { FINAL_STATES, RunFinal, type RunRow, type Store } from "../store/store.js";
+import { FINAL_STATES, RunFinal, type RunRow, type Store, StoreConstraint } from "../store/store.js";
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/journal.js";
 import type { McpPin } from "../mcp-gateway.js";
@@ -57,6 +59,9 @@ import { workflowsAt } from "./learning-seed.js";
 /** A replay run still not ended this long after its replay started counts as failed (no evidence), and is cancelled once
  *  the replay is decided without it. */
 export const REPLAY_DEADLINE_MS = 60 * 60 * 1000;
+/** A reserved replay run still not created this long after its record was reserved is a launch that was interrupted (the
+ *  reserving claim crashed, or its create failed): the next claim creates it (relaunch). Before then it is pending. */
+export const REPLAY_LAUNCH_GRACE_MS = 5 * 60 * 1000;
 
 export interface PromotionDeps {
   readonly store: Store;
@@ -117,8 +122,8 @@ export function claimPromotion(deps: Omit<PromotionDeps, "commit" | "champion"> 
 }
 
 /** A replay run's claim (launch.replay), once its first choice is made: refused (ClaimRefused: the run ends failed, no
- *  agent turn, nothing sent) unless its revision's record still says replaying, or has none yet (the claim that started
- *  it records it after its runs), and the claim laid that revision to serve it. A superseded, promoted or held revision's
+ *  agent turn, nothing sent) unless its revision's record still says replaying (it is reserved before its runs are
+ *  created), or has none (trimmed), and the claim laid that revision to serve it. A superseded, promoted or held revision's
  *  replay run never runs (a cancel that never reached it included); one whose workflow is not laid at its digest (the
  *  seed could not be read, the folder moved on) never falls to the agent's path. Any other run: nothing to check. */
 export async function replayClaimed(store: Pick<Store, "settings">, agentId: string, launch: RunLaunch, choice: FirstChoice): Promise<void> {
@@ -202,6 +207,7 @@ async function promoted(deps: PromotionDeps, workflow: LearnedWorkflow, digest: 
     return false;
   }
   if (record?.decided === "replaying") {
+    await relaunch(deps, workflow, digest, record);
     const decided = await settle(deps, workflow, digest, record);
     if (!decided) {
       log(`workflow-first: ${workflow.name} at ${digest} is replaying on ${plural(record.runs?.length ?? 0, "graded input")}; it does not serve this run`);
@@ -232,14 +238,14 @@ async function promoted(deps: PromotionDeps, workflow: LearnedWorkflow, digest: 
   // this digest has none yet and no other revision of the workflow replays, in the one guarded write. Only the claim that
   // kept it starts them: a claim of the same digest, or of another revision, at once, starts none.
   const ids = graded.map(() => uuidv7());
-  const reserved = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "replaying", source: "replay", reason: `replaying on the agent's last ${plural(graded.length, "graded input")} it fits`, runs: ids, ...seedOf(deps) },
+  const reserved = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "replaying", source: "replay", reason: `replaying on the agent's last ${plural(graded.length, "graded input")} it fits`, runs: ids, inputs: graded.map((one) => one.grade.run), ...seedOf(deps) },
     (was, items) => was === undefined && replayingOf(items, workflow.name, digest).length === 0);
   if (!reserved.won) {
     const rival = reserved.record ? undefined : replayingOf(await promotionsOf(store.settings, agentId), workflow.name, digest)[0];
     if (rival) log(`workflow-first: ${workflow.name} at ${digest}: ${rival.digest} began replaying first; it does not serve this run`);
     return reserved.record?.decided === "promote";
   }
-  for (const [i, one] of graded.entries()) await startReplay(deps, workflow, digest, one, ids[i]!);
+  for (const [i, one] of graded.entries()) await startReplay(deps, workflow, digest, one.grade.run, one.launch, ids[i]!);
   log(`workflow-first: ${workflow.name} at ${digest} is new: replaying it on the agent's last ${plural(graded.length, "graded input")} before it serves`);
   return false;
 }
@@ -314,13 +320,14 @@ async function handedTo(deps: PromotionDeps, id: string): Promise<Uint8Array | u
   return handed && Object.keys(handed).length ? sealRunMcpAuth(deps.sealKey, id, handed) : undefined;
 }
 
-/** Starts the replay of `workflow` at `digest` on graded input `one` as run `id` (the id its reserved record names), with
- *  the claimed run's handed credentials (handedTo). */
-async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, one: GradedInput, id: string): Promise<void> {
+/** Starts the replay of `workflow` at `digest` on graded run `of` (its launch `from`) as run `id` (the id its reserved
+ *  record names), with the claimed run's handed credentials (handedTo). False when a run by that id exists already:
+ *  another claim created it (a relaunch and the reserving claim at once), and it is left to that one. */
+async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, of: string, from: RunLaunch, id: string): Promise<boolean> {
   const { store, agentId, launch } = deps;
   const replay: RunLaunch = {
-    input: one.launch.input,
-    title: `Replay of ${workflow.name}: ${one.launch.title}`.slice(0, 200),
+    input: from.input,
+    title: `Replay of ${workflow.name}: ${from.title}`.slice(0, 200),
     place: launch.place,
     ...(launch.harness !== undefined ? { harness: launch.harness } : {}),
     ...(launch.model ? { model: launch.model } : {}),
@@ -334,10 +341,35 @@ async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, diges
     ...(launch.boxAllowSet ? { boxAllowSet: true as const } : {}),
     ...(launch.learning ? { learning: launch.learning } : {}),
     ...(launch.archilDisk ? { archilDisk: launch.archilDisk } : {}),
-    replay: { of: one.grade.run, workflow: workflow.name, digest },
+    replay: { of, workflow: workflow.name, digest },
   };
   const sealed = await handedTo(deps, id);
-  await store.runs.create({ id, agentId, revisionId: deps.revisionId }, { body: launchBody(replay) as Json, ...(sealed ? { sealed } : {}) });
+  try {
+    await store.runs.create({ id, agentId, revisionId: deps.revisionId }, { body: launchBody(replay) as Json, ...(sealed ? { sealed } : {}) });
+    return true;
+  } catch (error) {
+    if (error instanceof StoreConstraint && (await store.runs.get(id))) return false;
+    throw error;
+  }
+}
+
+/** Finishes a launch that was interrupted: `record`'s reserved replay runs still not created REPLAY_LAUNCH_GRACE_MS after
+ *  its reservation (and before its deadline) are created now, each under its reserved id on the graded run its record
+ *  names for it (`inputs`), with this claim's launch and handed credentials. One whose graded run's launch can no longer be
+ *  read stays missing: past the deadline it is counted as never started. How many this claim created. */
+async function relaunch(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, record: PromotionRecord): Promise<number> {
+  const { store } = deps;
+  const since = (deps.now ?? Date.now)() - Date.parse(record.at);
+  if (since <= REPLAY_LAUNCH_GRACE_MS || since > REPLAY_DEADLINE_MS) return 0;
+  let made = 0;
+  for (const [i, id] of (record.runs ?? []).entries()) {
+    const of = record.inputs?.[i];
+    if (!of || (await store.runs.get(id))) continue;
+    const from = await store.runs.launch(of).then((one) => readLaunchBody(one.body), () => undefined);
+    if (from && (await startReplay(deps, workflow, digest, of, from, id))) made += 1;
+  }
+  if (made) deps.log(`workflow-first: ${workflow.name} at ${digest}: its replay's launch was interrupted; ${plural(made, "replay run")} it reserved started now`);
+  return made;
 }
 
 /** A run's final answer, whole (its last final answer row that is not its end-of-run turn's), or null: none, or its
@@ -353,15 +385,17 @@ async function answerOf(store: PromotionDeps["store"], runId: string, context: C
 
 const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ? (row!.metrics as { replay?: { outcome?: unknown }; guards?: unknown; path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
 
-/** The replay's rows, once every replay run ended (or REPLAY_DEADLINE_MS passed: one not ended is handed back); undefined
- *  while one is at work. With what the replay runs cost (null when one's is unknown). */
-async function replayRows(deps: PromotionDeps, record: PromotionRecord): Promise<{ rows: ReplayRow[]; cost: number | null } | undefined> {
+/** The replay's rows, once every replay run ended (or REPLAY_DEADLINE_MS passed: one not ended is failed, no evidence);
+ *  undefined while one is at work or not created yet (its record is reserved before its runs are created: a run missing
+ *  is a launch still under way, or one a later claim finishes, relaunch). With what the replay runs cost (null when one's
+ *  is unknown), and how many reserved runs were never created by the deadline (`unstarted`). */
+async function replayRows(deps: PromotionDeps, record: PromotionRecord): Promise<{ rows: ReplayRow[]; cost: number | null; unstarted: number } | undefined> {
   const { store, context } = deps;
   const now = (deps.now ?? Date.now)();
   const grades = new Map((await gradesOf(store.settings, deps.agentId)).map((grade) => [grade.run, grade]));
   const runs = await Promise.all((record.runs ?? []).map((id) => store.runs.get(id)));
   const late = now - Date.parse(record.at) > REPLAY_DEADLINE_MS;
-  if (!late && runs.some((row) => row && !FINAL_STATES.includes(row.state))) return undefined;
+  if (!late && runs.some((row) => !row || !FINAL_STATES.includes(row.state))) return undefined;
   const rows: ReplayRow[] = [];
   let cost: number | null = 0;
   for (const run of runs) {
@@ -382,7 +416,7 @@ async function replayRows(deps: PromotionDeps, record: PromotionRecord): Promise
       guards: Array.isArray(m.guards) ? (m.guards as GuardRow[]) : [],
     });
   }
-  return { rows, cost: cost === null ? null : Math.round(cost * 1e6) / 1e6 };
+  return { rows, cost: cost === null ? null : Math.round(cost * 1e6) / 1e6, unstarted: runs.filter((row) => !row).length };
 }
 
 /** A replaying digest's decision, once its replay runs ended: promote within the bar, else hold, then one refit when its
@@ -402,7 +436,8 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
   const pts = (value: number) => `${(value * 100).toFixed(1)}%`;
   const skipped = read.rows.filter((row) => row.outcome === "skipped_write").length;
   const failed = read.rows.length - scored.length - skipped;
-  const aside = [...(failed ? [`${failed} failed: a step failed, no evidence either way`] : []), ...(skipped ? [`${skipped} skipped: ${SKIPPED_WRITE}`] : [])].join("; ");
+  const aside = [...(failed ? [`${failed} failed: a step failed, no evidence either way`] : []), ...(skipped ? [`${skipped} skipped: ${SKIPPED_WRITE}`] : []),
+    ...(read.unstarted ? [`${read.unstarted} never started by the replay's deadline`] : [])].join("; ");
   const said = `on ${plural(score.n, "graded input")}: the workflow ${pts(score.wf_acc)} (${score.handed_back} handed back, the agent's answer), the agent ${pts(score.agent_acc)}, ${score.delta >= 0 ? "+" : ""}${(score.delta * 100).toFixed(1)} pts${aside ? ` (${aside})` : ""}`;
   const reason = read.rows.length && skipped === read.rows.length
     ? `every one of its ${plural(skipped, "graded input")} ${SKIPPED_WRITE}: a replay never runs a write, so nothing was replayed`
