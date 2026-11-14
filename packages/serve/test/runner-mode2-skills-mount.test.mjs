@@ -8,8 +8,11 @@
 //   - the claim lays the revision's skills, and the build writes nothing the delegation refuses;
 //   - a second claim (epoch 2) of the same run, its folder already holding the skills (one edited by the run since),
 //     mounts the folder again, writes no skill again and keeps the first claim's files as they are.
+//   - a learning run's seed (its notes into .learning/, its learned skill into .agents/skills/) is laid before the mount
+//     too, and the spec says it laid the learned skill (learningLaid): layLearningSeed never throws, so a build that
+//     succeeds says nothing about whether the seed was laid.
 // On the old order (the lay after computerForClaim) the first test's build fails with the disk's 409, after the
-// Workspace's 60 s queue.
+// Workspace's 60 s queue, and the learning test's seed is refused and taken back.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,6 +37,10 @@ const { readBackOf } = await import("./fixtures/archil-readback.mjs");
 const { fakeComputer } = await import("./workspace-fake-computer.mjs");
 const { KINDS } = await import("./workspace-kinds-fixture.mjs");
 const { archilControlFetch } = await import("./archil-control-fake.mjs");
+const { seedOf } = await import("../dist/learning.js");
+const { folderTestHooks } = await import("../dist/learn/folder.js");
+const { learningWorkspace } = await import("../dist/workspace/index.js");
+const { learningCommit } = await import("../dist/learn/commit.js");
 
 process.env.AGENTRUN_OPENCODE_STANDIN = "1";
 const STAND_IN = new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url).pathname;
@@ -44,6 +51,9 @@ const ARCHIL_SETTINGS = { diskId: "dsk-0000000000000001", region: "aws-us-east-1
 const KEY = runKey(AGENT, RUN);
 const SKILL = "---\nname: cite\ndescription: Cite every claim.\n---\nCite every claim.\n";
 const SKILL_KEY = `${KEY}/.agents/skills/cite/SKILL.md`;
+const NOTE = "---\nname: Retry slowly\ndescription: Back off between retries\ntype: reference\n---\nWait a little longer after each failed call.\n";
+const LEARNED = "---\nname: summarize\ndescription: Summarize the sources.\n---\nSummarize every source in one line.\n";
+const LEARNED_KEY = `${KEY}/.agents/skills/summarize/SKILL.md`;
 const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" } });
 
 /** The run's computer, an E2B sandbox, started by the runner's own computerForClaim (the run's folder mounted from its
@@ -81,9 +91,33 @@ function sandboxOverArchil(disk, scratch, mounts) {
   }));
 }
 
-/** A Mode 2 run of a revision with one skill, over the Archil fake `disk`, in a fresh store. `claimNext(build)` claims it
- *  (a claim taken over a lapsed one when there was one) and builds its spec; `t.after` lets every spec go. */
-async function mode2Run(t, { harness, disk }) {
+/** The agent's learning folder, holding one note and one learned skill on its main, as a local folder that stands in for
+ *  the one on the run's Archil disk (folderTestHooks.workspace): the seed's commit, for the launch's learning start. */
+async function learningSeedIn(t, dir) {
+  const folderData = join(dir, "learning-disk");
+  mkdirSync(folderData);
+  for (const [file, text] of [["retry-slowly.md", NOTE], ["skills/summarize/SKILL.md", LEARNED]]) {
+    const folder = learningWorkspace({ mode: "local", data: folderData, agentId: AGENT });
+    try {
+      const made = await learningCommit(folder.workspace, { kind: "person", action: "created", file, text, ifMatch: null });
+      assert.equal(made.ok, true, JSON.stringify(made));
+    } finally {
+      await folder.end();
+    }
+  }
+  const seed = (await seedOf(folderData, AGENT)).sha;
+  folderTestHooks.workspace = (place) => {
+    assert.equal(place.mode, "archil", "a Mode 2 run reads its learning folder on its Archil disk");
+    return learningWorkspace({ mode: "local", data: folderData, agentId: place.agentId });
+  };
+  t.after(() => delete folderTestHooks.workspace);
+  return seed;
+}
+
+/** A Mode 2 run of a revision with one skill, over the Archil fake `disk`, in a fresh store (`learns`: a learning run whose
+ *  seed holds a note and a learned skill). `claimNext(build)` claims it (a claim taken over a lapsed one when there was
+ *  one) and builds its spec; `t.after` lets every spec go. */
+async function mode2Run(t, { harness, disk, learns = false }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-skills-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -100,9 +134,10 @@ async function mode2Run(t, { harness, disk }) {
   });
   await server.agents.create(
     { id: AGENT, name: "Agent" },
-    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write"], skills: { "cite/SKILL.md": "0".repeat(64) }, ...(harness ? { harness } : {}) }, skills: { "cite/SKILL.md": SKILL } },
+    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write"], skills: { "cite/SKILL.md": "0".repeat(64) }, ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}) }, skills: { "cite/SKILL.md": SKILL } },
   );
-  const launch = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, computer: { kind: "sandbox", provider: "e2b" }, ...(harness ? { harness, model: { provider: "openai", modelId: "gpt-5" } } : { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } }) };
+  const learning = learns ? { given: [], seed: await learningSeedIn(t, dir), section: "", seedNotes: 1 } : undefined;
+  const launch = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, computer: { kind: "sandbox", provider: "e2b" }, ...(harness ? { harness, model: { provider: "openai", modelId: "gpt-5" } } : { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } }), ...(learning ? { learning } : {}) };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });
   await saveArchilSettings(server, ARCHIL_SETTINGS);
   await storeAgentDisk(server, AGENT, { diskId: ARCHIL_SETTINGS.diskId });
@@ -170,5 +205,21 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     assert.deepEqual(disk.refusedByDelegation, [], "no write to the run's folder was refused by a mount's delegation");
     assert.equal(putsOf(disk, `${KEY}/.agents/skills`).length, firstPuts, "the second claim put nothing under .agents/skills");
     assert.equal(Buffer.from(disk.files.get(SKILL_KEY)).toString("utf8"), `${SKILL}Edited by the run.\n`, "the first claim's skill, as the run left it");
+  });
+
+  test(`${name} in Mode 2: a learning run's seed, its notes and its learned skill, is laid on the disk before the mount`, async (t) => {
+    const disk = new FakeArchilDisk();
+    const run = await mode2Run(t, { harness, disk, learns: true });
+    const { spec } = await run.claimNext(build);
+    assert.deepEqual(disk.refusedByDelegation, [], "no write to the run's folder was refused by the mount's delegation");
+    assert.deepEqual(spec.learningLaid?.skills, ["summarize"], "the spec says the claim laid the learned skill");
+    // The lay writes the skill's front matter back in its own form (its values quoted): its name and body are the seed's.
+    const learned = Buffer.from(disk.files.get(LEARNED_KEY) ?? []).toString("utf8");
+    assert.match(learned, /^---\nname: "?summarize"?\n[\s\S]*\n---\nSummarize every source in one line\.\n$/, `the learned skill is on the disk: ${JSON.stringify(learned)}`);
+    const notePut = disk.calls.findIndex((call) => call.op === "putObject" && call.key.startsWith(`${KEY}/.learning/`) && call.key.endsWith("retry-slowly.md"));
+    const learnedPut = disk.calls.findIndex((call) => call.op === "putObject" && call.key === LEARNED_KEY);
+    assert.equal(run.mounts.length, 1, "the computer mounted the run's folder once");
+    assert.ok(notePut >= 0 && notePut < run.mounts[0].at, `the seed's note was put in .learning/ before the mount (put at call ${notePut}, the mount after call ${run.mounts[0].at})`);
+    assert.ok(learnedPut >= 0 && learnedPut < run.mounts[0].at, `the learned skill was put before the mount (put at call ${learnedPut}, the mount after call ${run.mounts[0].at})`);
   });
 }
