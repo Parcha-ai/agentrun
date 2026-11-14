@@ -1144,7 +1144,8 @@ export class HostedProvider implements ComputerProvider {
 				const read = await this.#call(`the read of ${machine.id}`, (ctx) => this.host.get(item.id, ctx), Math.max(1, Math.min(requestMs, until - Date.now())), signal);
 				if (!read.ok) return read.error.code === "timeout" ? late(read.error.message) : read;
 				machine = read.value;
-				if (!shown(machine) || !ours(machine.labels)) continue;
+				// The listing may be older than get: the machine is held to every label again, as get reads them.
+				if (!shown(machine) || !ours(machine.labels) || !Object.entries(labels).every(([key, value]) => machine?.labels[key] === value)) continue;
 			}
 			// list runs nothing in a computer: an Archil computer's mount is the one its label records, under its epoch label.
 			const archil = recordedArchil(machine.labels);
@@ -1349,9 +1350,10 @@ export async function listedBy(host: MachineHost, what: string, labels: Record<s
 /**
  * Waits, through waitUntil, until the host reads a machine as wanted, by get and by its name's listing alike, twice
  * running: gone (get answers none, or a state that is not alive, and the listing no longer shows it), or stopped (get
- * and the listing read stopped; gone counts too). While a stop is waited for, a machine that reads running or starting
- * is asked to stop again (ask), and one that reads failed ends the wait. Pauses double from pollMs to 5 s, bounded by
- * goneMs and the caller's signal; a failed read ends the wait with that error. Shared with the live sweep.
+ * and the listing read stopped; gone counts too). After a stop (ask given, whether it keeps the machine or deletes it), a
+ * machine that reads running or starting is asked to stop again, and one that reads failed ends the wait. Pauses double
+ * from pollMs to 5 s, bounded by goneMs and the caller's signal; a failed read ends the wait with that error. Shared
+ * with the live sweep.
  */
 export async function settle(
 	host: MachineHost,
@@ -1367,7 +1369,7 @@ export async function settle(
 	}: Pick<HostedTimeouts, "requestMs" | "listMs" | "pollMs" | "goneMs"> & { signal?: AbortSignal; want?: "gone" | "stopped"; ask?: (signal: AbortSignal) => Promise<Result<void>> },
 ): Promise<Result<void>> {
 	const fail = failOf(host);
-	const doing = want === "gone" ? "release" : "the stop";
+	const doing = ask === undefined ? "release" : "the stop";
 	type Read = { failed: Result<never> } | { settled: true } | { last: string };
 	let agreed = 0;
 	let last = "unread";
@@ -1380,7 +1382,7 @@ export async function settle(
 		const machine = got.ok ? got.value : undefined;
 		const state = machine?.state;
 		last = state ?? "gone (not found)";
-		if (want === "stopped" && state === "failed") return { failed: fail("vendor", `${doing} of ${ref.name}: it went to failed${machine?.why ? `: ${machine.why}` : ""}`) };
+		if (ask !== undefined && state === "failed") return { failed: fail("vendor", `${doing} of ${ref.name}: it went to failed${machine?.why ? `: ${machine.why}` : ""}`) };
 		const reached = state === undefined || (want === "gone" && !alive(state)) ? "gone" : want === "stopped" && state === "stopped" ? "stopped" : undefined;
 		if (reached === undefined) {
 			agreed = 0;
@@ -1408,7 +1410,7 @@ export async function settle(
 		...(signal ? { signal } : {}),
 		minMs: Math.min(pollMs, RELEASE_POLL_MAX_MS),
 		maxMs: RELEASE_POLL_MAX_MS,
-		what: `${ref.name} to be ${want} after its ${want === "gone" ? "delete" : "stop"}`,
+		what: `${ref.name} to be ${want} after its ${ask === undefined ? "delete" : "stop"}`,
 		describe: (state) => ("last" in state ? `the vendor read it ${state.last}` : "done"),
 	});
 	if (!waited.ok) return waited;

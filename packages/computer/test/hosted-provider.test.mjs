@@ -652,6 +652,11 @@ test("release stop of a computer whose stop deletes it (stopDeletes, or a GPU's 
 	const plain = made(await create(provider));
 	assert.deepEqual(await provider.release(plain, "stop"), { ok: true, value: undefined });
 	assert.equal(fake.machines.get(plain.id).deleted, false, "a computer with no GPU is kept, stopped");
+	// A GPU computer that goes to failed on its stop ends the wait, as a kept one does, not at goneMs.
+	fake.host.stop = async (id) => ((fake.machines.get(id).state = "failed"), { ok: true, value: undefined });
+	const failed = await provider.release(made(await create(provider, { ...SPEC, gpu: { type: "H100", count: 1 } })), "stop");
+	assert.equal(failed.error?.code, "vendor");
+	assert.match(failed.error.message, /the stop of computer-[0-9a-f]{12}: it went to failed/);
 });
 
 // --- connect, list, attach, network ---
@@ -755,10 +760,12 @@ test("a listing as the vendor reads it (no network, more machines than carry the
 	const a = made(await provider.create({ ...SPEC, labels: { team: "a" } }, { requestId: "listing-a" }));
 	made(await create(provider, { ...SPEC, labels: { team: "b" } }));
 	// The listing filters by the adapter's label alone, and carries no network and none of the vendor's drift or timer.
+	// stale: labels a listing older than get still shows.
 	const listing = fake.host.list;
+	const stale = new Map();
 	fake.host.list = async (labels, ctx) => {
 		const read = await listing({ [COMPUTER]: "1" }, ctx);
-		return read.ok ? { ok: true, value: read.value.map(({ id, labels: carried, state, createdAt }) => ({ id, labels: carried, state, createdAt })) } : read;
+		return read.ok ? { ok: true, value: read.value.map(({ id, labels: carried, state, createdAt }) => ({ id, labels: stale.get(id) ?? carried, state, createdAt })) } : read;
 	};
 	const gets = () => fake.calls.filter(([name]) => name === "get").length;
 	let before = gets();
@@ -771,6 +778,10 @@ test("a listing as the vendor reads it (no network, more machines than carry the
 	assert.match(made(await provider.testConnection()).detail, /^Fakehost answered: 2 computers of this provider$/);
 	assert.equal(gets(), before, "Settings' test reads the listing alone");
 	assert.equal(fake.creates(), 2);
+	// A listing older than get: the labels get reads are the ones held to the filter.
+	stale.set(a.id, { ...fake.machines.get(a.id).labels });
+	fake.machines.get(a.id).labels.team = "c";
+	assert.deepEqual(made(await provider.list({ team: "a" })), [], "relabelled since the listing: not team a");
 });
 
 // --- Archil ---
