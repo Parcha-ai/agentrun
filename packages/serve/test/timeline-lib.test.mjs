@@ -994,15 +994,16 @@ test("a computer call in words, as the run page and a movie's caption say it: th
     // selects all), and the record does not say which computer it was.
     call({ method: "ui.act", steps: [{ do: "key", keys: "ctrl+a" }, { do: "key", keys: "ctrl+s" }] }),
   ].map(callWords), [
-    "open TextEdit",
-    "open System Settings",
-    "look at Calendar",
-    "select all (⌘A); type into the text box “Pears: 41”; save (⌘S)",
-    "press “Save”; click the element; press a key; go back; press (refused: stale)",
-    "wait for Notes (not seen)",
-    "act (failed: denied)",
-    "take a screenshot",
-    "press Return; press ⌃⇧T; press ⇧Tab",
-    "press ⌃A; press ⌃S",
+    "Opened TextEdit",
+    "Opened System Settings",
+    "Looked at Calendar",
+    "Selected all (⌘A), typed into the text box “Pears: 41”, saved (⌘S)",
+    "Pressed “Save”, clicked the element, pressed a key, +2 more",
+    "Waited for Notes (not seen)",
+    "Could not act on the computer",
+    "Took a screenshot",
+    "Pressed Return, pressed ⌃⇧T, pressed ⇧Tab",
+    "Pressed ⌃A, pressed ⌃S",
   ]);
+  assert.equal(callWords(call({ method: "ui.act", steps: [{ do: "nav", nav: "back" }, { do: "press", error: "stale" }] })), "Went back, could not press an element");
 });

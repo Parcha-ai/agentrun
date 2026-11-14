@@ -123,6 +123,8 @@ PREFIX = "AgentRun demo "
 NAME = PREFIX + RUN
 # /tmp is a link to /private/tmp: Finder and TextEdit answer with the real path, so the root is named by it.
 ROOT = "/private/tmp/agentrun-demos"
+# The step kinds a ui.act step may name (the protocol's UiStep keys), as serve's record reads them.
+STEP_KINDS = ("press", "set", "perform", "click", "type", "key", "nav", "scroll", "drag")
 APPS = {"com.apple.iCal": "Calendar", "com.apple.Notes": "Notes", "com.apple.finder": "Finder", "com.apple.TextEdit": "TextEdit", "com.apple.Safari": "Safari",
         "com.apple.systempreferences": "System Settings"}
 # The apps the sandbox's AppleScript drives, whose Automation grants Computerd needs. System Settings' task makes and
@@ -701,11 +703,28 @@ class Task:
         # Settings domains the task's fixture changed for the movie, each with its whole old content (`defaults export`),
         # put back by the teardown. Kept in memory only: a person's settings never reach a file.
         self.restore = []
+        # Each ref the task's observes showed, as serve's record names it: its role, and its name when it has one.
+        self.names = {}
 
-    def say(self, text):
+    def say(self, text, caption=None):
+        """Prints the step's own words; captions it with `caption` (a computer call's words) or those."""
         print(f"  {self.id}: {text}", flush=True)
         if self.rec:
-            self.rec.caption(text)
+            self.rec.caption(caption or text)
+
+    def step_row(self, step):
+        """A ui.act step as serve's record keeps it: its kind, the element it acts on as the task's observes named it, a
+        key step's chord (call-words.mjs keeps only what the record keeps), a nav step's place. Never a typed value."""
+        kind = next((k for k in STEP_KINDS if k in step), "step")
+        ref = step.get("into") if kind == "type" else step.get(kind)
+        row = {"do": kind}
+        if isinstance(ref, str) and ref in self.names:
+            row["on"] = self.names[ref]
+        if kind == "key":
+            row["keys"] = step["key"]
+        if kind == "nav":
+            row["nav"] = step["nav"]
+        return row
 
     def call(self, method, params, label, not_found=None):
         """One call, timed and recorded. not_found: the words for a not_found the caller expects (a poll for a window
@@ -724,6 +743,9 @@ class Task:
         if method == "ui.observe":
             entry["nodes"] = len(r.get("nodes", []))
             self.shown = (r.get("window") or {}).get("id") or self.shown
+            for n in r.get("nodes", []):
+                name = " ".join((n.get("name") or "").split())
+                self.names[n["ref"]] = {"role": n["role"], **({"name": name} if name else {})}
         self.calls.append(entry)
         # A route, with " unverified" when no readback saw the step's effect; or the refusal's kind.
         routes = ", ".join(
@@ -780,7 +802,8 @@ class Task:
             params["state"] = state
         if foreground:
             params["foreground"] = True
-        self.say(label)
+        # The caption is the step's words as the console says them, from the steps asked: a refused one fails the task.
+        self.say(label, call_words({"method": "ui.act", "app": self.app, "ok": True, "steps": [self.step_row(s) for s in steps]}))
         reply = self.call("ui.act", params, label)
         if "error" in reply:
             raise Failed(f"{label}: {reply['error'].get('message')}")
@@ -806,7 +829,7 @@ class Task:
     def wait_for(self, text, label, seconds=20):
         """Until the task's window (or, before one is pinned, the app's main one) shows the text: an expect, asked again
         while there is no window yet."""
-        self.say(label)
+        self.say(label, call_words({"method": "ui.act", "app": self.app, "ok": True, "steps": [], "expect": "met"}))
         deadline = time.monotonic() + seconds
         while True:
             params = {"target": self.target(), "steps": [], "expect": {"text": text, "timeoutMs": 3000}}
@@ -1122,8 +1145,41 @@ def notes_setup_folder(t, setup):
         t.run_exec(["/usr/bin/osascript", "-e", REMOVE_FOLDERS, setup], "remove the setup folder")
 
 
+PROBE_MENUS = """on run argv
+  set out to ""
+  tell application "System Events" to tell process "Notes"
+    repeat with top in {"View", "Format", "Window"}
+      repeat with m in (every menu item of menu 1 of menu bar item (top as text) of menu bar 1)
+        set out to out & top & " > " & (name of m as text) & " [" & (value of attribute "AXMenuItemCmdChar" of m as text) & " " & (value of attribute "AXMenuItemCmdModifiers" of m as text) & "]" & linefeed
+        try
+          repeat with s in (every menu item of menu 1 of m)
+            set out to out & top & " > " & (name of m as text) & " > " & (name of s as text) & " [" & (value of attribute "AXMenuItemCmdChar" of s as text) & " " & (value of attribute "AXMenuItemCmdModifiers" of s as text) & "]" & linefeed
+          end repeat
+        end try
+      end repeat
+    end repeat
+    set out to out & "window size " & ((size of window 1) as text) & linefeed
+  end tell
+  return out
+end run"""
+
+
+def notes_probe(t):
+    """A one-off look at Notes' menus and settings on CI, for sizing its text in the movie."""
+    for argv in (["/usr/bin/defaults", "read", "com.apple.Notes"],
+                 ["/usr/bin/defaults", "read", os.path.expanduser("~/Library/Containers/com.apple.Notes/Data/Library/Preferences/com.apple.Notes")]):
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        print(f"    probe {argv[-1]}: {done.returncode}\n{done.stdout[-6000:]}\n{done.stderr[-500:]}", flush=True)
+    try:
+        print("    probe menus:\n" + osa(t.c, PROBE_MENUS), flush=True)
+    except Exception as e:
+        print(f"    probe menus failed: {e!r}", flush=True)
+
+
 def notes_new_note(t):
     """mac.notes.new-note: a note whose first line is its title and whose second line is given, in the task's folder."""
+    if CI and t.rec:
+        notes_probe(t)
     # The line starts with a capital: Notes capitalizes a line's first word as it is typed (it did on CI's runner).
     title, line = f"{NAME} groceries", "Oat milk and eggs"
     t.say("make the task's Notes folder (AppleScript)")
@@ -1405,13 +1461,22 @@ class Serve:
         shutil.rmtree(self.data, ignore_errors=True)
 
 
-def call_words(calls):
-    """Each computer call as the line a person reads ("open TextEdit", "select all (⌘A); type into the text box"), by
-    serve's own words for it (call-words.mjs): the console's run page shows the same lines."""
-    done = subprocess.run(["node", os.path.join(here, "call-words.mjs")], input=json.dumps(calls), capture_output=True, text=True, timeout=60)
-    if done.returncode != 0:
-        raise Failed(f"call-words.mjs: {done.stderr.strip()[-300:]}")
-    return json.loads(done.stdout)
+words_process = None
+
+
+def call_words(call):
+    """A computer call (serve's record of one, or a scripted call in its shape) as the line a person reads ("Opened
+    TextEdit", "Selected all (⌘A), typed into the text box"), by serve's own words for it (call-words.mjs, one process
+    for the whole run): the console's run page shows the same line on the step's row and in its call list."""
+    global words_process
+    if words_process is None or words_process.poll() is not None:
+        words_process = subprocess.Popen(["node", os.path.join(here, "call-words.mjs")], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    words_process.stdin.write(json.dumps(call) + "\n")
+    words_process.stdin.flush()
+    line = words_process.stdout.readline()
+    if not line:
+        raise Failed(f"call-words.mjs ended (exit {words_process.wait()})")
+    return json.loads(line)
 
 
 def first_sentence(text):
@@ -1464,7 +1529,7 @@ def agent_run(t, serve, model, prompt):
             elif kind == "tool_result":
                 calls = row.get("computer_calls") or []
                 did["computerCalls"] += len(calls)
-                lines = call_words(calls) if calls else []
+                lines = [call_words(x) for x in calls]
                 print(f"    {row.get('tool_name')} {row.get('tool_status')}: {len(calls)} computer calls"
                       + "".join(f"\n      +{epoch(x['started_at']) - wall0:.2f} s {line}: {x['method']} {x['ms']} ms"
                                 + (f" [{', '.join(s['do'] + ' ' + s.get('route', s.get('error', '')) for s in x['steps'])}]" if x.get("steps") else "")
@@ -1692,26 +1757,30 @@ def teardown(t):
 
 def quit_apps(apps, seconds=15):
     """Apps the run started, quit by the driver (an Apple event to quit would itself need the grant), on a connection of
-    their own, and waited for: the ones still running after that, by name."""
-    if not apps:
-        return []
-    c = Client()
-    try:
-        for app in apps:
-            try:
-                refused = c.call("apps.terminate", {"id": app}).get("error")
-            except Exception as e:
-                refused = e
-            if refused:
-                print(f"  (could not quit {APPS[app]}, which the run started: {refused})", flush=True)
-    finally:
-        c.close()
-    deadline = time.monotonic() + seconds
-    while True:
-        still = [app for app in apps if app in running()]
-        if not still or time.monotonic() > deadline:
-            return [APPS[app] for app in still]
-        time.sleep(0.5)
+    their own, and waited for: the ones still running after that, by name. One still running after `seconds` is asked
+    once more (System Settings let one quit go by on CI's runner, in 1 run of 25) and waited for again."""
+    still = list(apps)
+    for _ in range(2):
+        if not still:
+            return []
+        c = Client()
+        try:
+            for app in still:
+                try:
+                    refused = c.call("apps.terminate", {"id": app}).get("error")
+                except Exception as e:
+                    refused = e
+                if refused:
+                    print(f"  (could not quit {APPS[app]}, which the run started: {refused})", flush=True)
+        finally:
+            c.close()
+        deadline = time.monotonic() + seconds
+        while True:
+            still = [app for app in still if app in running()]
+            if not still or time.monotonic() > deadline:
+                break
+            time.sleep(0.5)
+    return [APPS[app] for app in still]
 
 
 def encode(timeline, path):

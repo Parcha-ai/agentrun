@@ -13,7 +13,7 @@
 // claim) records each call made inside one.
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ComputerClient } from "@parcha/agentrun-computer";
-import type { ComputerCallRow, ComputerStepRow } from "./timeline/computer.js";
+import { keptChord, type ComputerCallRow, type ComputerStepRow } from "./timeline/computer.js";
 
 /** The element a step acted on, as the run's ui.observe answers named it: its role, and its name when it has one. */
 export type ComputerTarget = NonNullable<ComputerStepRow["on"]>;
@@ -100,22 +100,6 @@ export const MAX_KEPT_NAME = 1000;
 export function shownName(name: string, redact?: (text: string) => string): string {
   const said = redact ? redact(name) : name;
   return said.length > MAX_TARGET_NAME ? `${said.slice(0, MAX_TARGET_NAME - 1)}…` : said;
-}
-/** The keys a chord names that are no character (the protocol's KEYS). */
-const NAMED_KEYS: ReadonlySet<string> = new Set(["enter", "tab", "space", "backspace", "delete", "escape", "insert", "up", "down", "left", "right", "home", "end", "pageup", "pagedown",
-  "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "shift", "ctrl", "alt", "super", "capslock"]);
-/** The modifiers whose chord with a character is a command, never typing ("super+s"); shift and a character is typing. */
-const COMMAND_KEYS: ReadonlySet<string> = new Set(["ctrl", "alt", "super"]);
-
-/** A key step's chord as the record may keep it: one with a command modifier, or of named keys only ("enter",
- *  "shift+tab"). A lone character or shift and one is typing (a password's, key by key), so it is kept as nothing. */
-export function keptChord(chord: unknown): string | undefined {
-  if (typeof chord !== "string" || !chord) return undefined;
-  // The last key may be "+" itself ("shift++").
-  const keys = chord.endsWith("++") ? [...chord.slice(0, -2).split("+"), "+"] : chord.split("+");
-  const lower = keys.map((key) => key.toLowerCase());
-  if (lower.some((key) => COMMAND_KEYS.has(key))) return chord;
-  return lower.every((key) => NAMED_KEYS.has(key)) ? chord : undefined;
 }
 
 /** What a ui.act step's ref names, as the run's ui.observe answers showed it. */
