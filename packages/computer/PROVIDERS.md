@@ -32,15 +32,11 @@ class E2BHost implements MachineHost {
 	readonly id = "e2b";
 ```
 
-**`facts`** says what your machines are. It never changes, and AgentRun builds the provider's capabilities from it and
-from your descriptor, which is where the network forms and mount kinds come from.
+**`facts`** says what your machines are. It never changes, and AgentRun builds the provider's capabilities from it.
 `daemon: "child"` means your own agent runs first and starts processes; with `"pid1"`, the machine's main process is
 the command AgentRun passes to create. `lifetime: "vendor"` means your timer ends a machine at its deadline; with
 `"janitor"`, AgentRun ends it by label. `vendorAgentPorts` are the ports your agent listens on inside the machine.
-`HostFacts` in [`src/host.ts`](src/host.ts) lists the optional fields, such as `gpu`, `user`, `specFields` and `timeouts`.
-With `timeouts` you give your own default bounds. AgentRun merges them under the caller's and writes the result back to
-`facts.timeouts`, so your client reads the bounds that apply with `timeoutOf(this.facts, "requestMs")` from
-`hosted/options.ts`.
+`HostFacts` in [`src/host.ts`](src/host.ts) lists the optional fields, such as `gpu`, `user` and `specFields`.
 
 ```ts
 	readonly facts: HostFacts = {
@@ -51,6 +47,8 @@ With `timeouts` you give your own default bounds. AgentRun merges them under the
 		arch: "amd64",
 		vendorAgentPorts: [ENVD_PORT],
 		networkReadBack: true,
+		network: [...E2B.network],
+		mounts: [...MOUNT],
 		release: ["delete"],
 	};
 ```
@@ -178,7 +176,7 @@ the rest of AgentRun calls. The function `hostedProvider(host, options)` does th
 export class E2BProvider extends HostedProvider {
 	constructor(options: E2BProviderOptions) {
 		// … check the options with requireText, hostName and sliceProblem from hosted/options.ts
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain })), { ...rest, label: "E2B", descriptor: E2B, kind, maxLifetimeMs });
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, label: "E2B", kind, maxLifetimeMs });
 	}
 }
 ```

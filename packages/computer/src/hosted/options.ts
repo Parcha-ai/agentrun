@@ -1,27 +1,5 @@
 // What every hosted vendor's constructor checks of its options, once: a required text, an https URL, a host name, the
-// slice of an SDK it was handed, the package it imports when none was handed, and the timeouts that apply to its host.
-import type { HostFacts } from "../host.js";
-import type { HostedTimeouts } from "./provider.js";
-
-/** The adapter's bounds, under a vendor's own (facts.timeouts) and the caller's (options.timeouts). */
-export const TIMEOUT_DEFAULTS: HostedTimeouts = {
-	requestMs: 30_000,
-	createMs: 120_000,
-	uploadMs: 120_000,
-	execMs: 60_000,
-	helloMs: 30_000,
-	probeMs: 30_000,
-	listMs: 60_000,
-	goneMs: 120_000,
-	pollMs: 1_000,
-	listedMs: 15_000,
-	listedStableMs: 1_000,
-	mountMs: 120_000,
-};
-
-/** One timeout as it applies to a host: the adapter writes the merged set to facts.timeouts, so a host reads it at call time. */
-export const timeoutOf = (facts: Pick<HostFacts, "timeouts">, key: keyof HostedTimeouts): number => facts.timeouts?.[key] ?? TIMEOUT_DEFAULTS[key];
-
+// slice of an SDK it was handed, and the package it imports when none was handed.
 const DOMAIN = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 /** A non-empty text, or the error in message (which never holds the value: it may be a key). */

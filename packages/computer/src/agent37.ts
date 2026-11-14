@@ -109,7 +109,7 @@ export type Agent37Type = "vm" | "default";
 export type Agent37Region = "us" | "eu" | "ap-south";
 
 /** The Agent37 provider's options: the key, the SSH key and ssh2, then the shared adapter's (HostedOptions). */
-export interface Agent37ProviderOptions extends Omit<HostedOptions, "label" | "descriptor" | "maxLifetimeMs"> {
+export interface Agent37ProviderOptions extends Omit<HostedOptions, "label" | "maxLifetimeMs"> {
 	/** The workspace's API key (sk_live_...). The caller passes it; this provider never reads it from the environment. */
 	apiKey: string;
 	/**
@@ -171,6 +171,7 @@ const MAX_CPUS = 4;
 const METADATA_MAX_BYTES = 4096;
 /** A VM boots inside the create's POST, which answers once it runs (docs: instances/create, Defaults). */
 const DEFAULT_CREATE_MS = 300_000;
+const DEFAULT_REQUEST_MS = 30_000;
 /** How much a tunnel may hold unsent before a write waits for it (the WebSocket's bufferedAmount). */
 const TUNNEL_HIGH_WATER = 1024 * 1024;
 const TUNNEL_POLL_MS = 10;
@@ -450,7 +451,8 @@ class Agent37Host implements MachineHost {
 			arch: "amd64",
 			vendorAgentPorts: [AGENT37_SSH_PORT, AGENT37_TTYD_PORT],
 			networkReadBack: true,
-			timeouts: { createMs: DEFAULT_CREATE_MS },
+			network: [...AGENT37.network],
+			mounts: [...MOUNT],
 			release: ["delete"],
 			specFields: ["cpus", "memoryMb"],
 			runtime: () => runtime,
@@ -822,6 +824,8 @@ export class Agent37Provider extends HostedProvider {
 			proxyDomain = DEFAULT_PROXY_DOMAIN,
 			type = "vm",
 			region = "us",
+			maxLifetimeMs = DAY_MS,
+			timeouts = {},
 			...rest
 		} = options ?? ({} as Agent37ProviderOptions);
 		requireText(apiKey, "options.apiKey, the Agent37 API key is required: the provider reads no environment, so the caller passes it");
@@ -837,7 +841,7 @@ export class Agent37Provider extends HostedProvider {
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);
 		if (region !== "us" && type !== "vm") throw new Error(`Agent37 runs type default in us alone: ${region} takes type vm`);
 		const host = new Agent37Host({ apiKey, sshKey: privateKey, ssh2, fetch: fetcher, WebSocket, apiUrl: api.href.replace(/\/+$/, ""), proxyDomain, type, region });
-		super(host, { ...rest, label: "Agent37", descriptor: AGENT37 });
+		super(host, { ...rest, label: "Agent37", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
 	}
 }
 

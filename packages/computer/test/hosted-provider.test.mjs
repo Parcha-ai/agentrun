@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, computerNameFor as nameOf } from "../dist/index.js";
-import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, LINUX_GROUPS, VERSION } from "./fake-host.mjs";
+import { DAEMON, DESKTOP_GROUPS, deferred, fakeHost, LINUX_GROUPS, VERSION } from "./fake-host.mjs";
 
 const { hostedProvider } = await import("../dist/hosted/provider.js");
 const { hostedCommands } = await import("../dist/hosted/scripts.js");
@@ -36,7 +36,7 @@ const TIMEOUTS = { requestMs: 2_000, createMs: 2_000, uploadMs: 2_000, execMs: 2
 
 function setup(options = {}, fakeOptions = {}) {
 	const fake = fakeHost(fakeOptions);
-	const provider = hostedProvider(fake.host, { label: "Fakehost", descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, ...options });
+	const provider = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, ...options });
 	return { fake, provider };
 }
 let requests = 0;
@@ -108,7 +108,7 @@ test("a host's own rules (check), label budget and label names are held at check
 	assert.match(provider.check({ ...SPEC, labels: { a: "1", b: "2", c: "3" } })[0].message, /takes 7 labels, 5 of them the provider's own: 3 is 1 too many/);
 	assert.match(provider.check({ ...SPEC, labels: { "A.b": "1" } })[0].message, /is not one the vendor takes/);
 	const fake = fakeHost();
-	const strict = hostedProvider({ ...fake.host, check: (spec) => (spec.image === "bad" ? [{ field: "image", message: "not a vendor image" }] : []) }, { label: "Fakehost", descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH });
+	const strict = hostedProvider({ ...fake.host, check: (spec) => (spec.image === "bad" ? [{ field: "image", message: "not a vendor image" }] : []) }, { label: "Fakehost", daemonPath: DAEMON_PATH });
 	assert.deepEqual(strict.check({ ...SPEC, image: "bad" }), [{ field: "image", message: "not a vendor image" }]);
 });
 
@@ -286,8 +286,8 @@ test("create races: a second create of a request in flight with another spec is 
 
 test("a retry from another provider instance finds the machine still starting, waits until it is up, and returns it", async () => {
 	const fake = fakeHost();
-	const first = hostedProvider(fake.host, { label: "Fakehost", descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
-	const second = hostedProvider(fake.host, { label: "Fakehost", descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const first = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const second = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	const starting = fake.add({ labels: { [COMPUTER]: "1", [NAME]: nameOf("other-instance"), [DEADLINE]: new Date(Date.now() + 600_000).toISOString(), [MAX]: new Date(Date.now() + HOUR).toISOString(), "agentrun.computer.image": "img" }, state: "starting", startingReads: 2 });
 	const pending = second.create(SPEC, { requestId: "other-instance" });
 	// The first instance's create brings init up a moment later.
@@ -307,8 +307,8 @@ test("two provider instances racing one request each make a machine; both conver
 		["with no creation time: the lowest id", () => undefined, 0],
 	]) {
 		const fake = fakeHost({ create: "hold", born, lingers: { reads: 1, lists: 1 } });
-		const one = hostedProvider(fake.host, { label: "Fakehost", descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
-		const two = hostedProvider(fake.host, { label: "Fakehost", descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		const one = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		const two = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 		// Both read the name's listing and find nothing, then both creates are in flight at the vendor.
 		const pending = [one.create(SPEC, { requestId: "two-instances" }), two.create(SPEC, { requestId: "two-instances" })];
 		for (let i = 0; i < 100 && fake.creates() < 2; i++) await new Promise((done) => setImmediate(done));
@@ -377,9 +377,9 @@ test("a retry is held to the GPUs its computer reads back: a GPU request that fi
 test("a retry from a restarted provider, of a sized request on a host that takes sizes but reads none back (Modal), finds the computer the first made", async () => {
 	const fake = fakeHost({ facts: { specFields: ["cpus", "memoryMb"] } });
 	const spec = { ...SPEC, cpus: 4, memoryMb: 8192 };
-	const before = hostedProvider(fake.host, { label: "Fakehost", descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const before = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	const ref = made(await before.create(spec, { requestId: "sized-unread" }));
-	const after = hostedProvider(fake.host, { label: "Fakehost", descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const after = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	assert.equal(made(await after.create(spec, { requestId: "sized-unread" })).id, ref.id, "a size read back as nothing is not a drift");
 	assert.equal(fake.creates(), 1, "never a second machine under one name");
 });
@@ -387,9 +387,9 @@ test("a retry from a restarted provider, of a sized request on a host that takes
 test("a retry from a restarted provider, of a GPU request on a host that reads no GPUs back (Modal), finds the computer the first made", async () => {
 	const H100 = { type: "H100", count: 1 };
 	const fake = fakeHost({ facts: { gpu: { types: ["H100"], max: 1 }, gpuReadBack: false } });
-	const before = hostedProvider(fake.host, { label: "Fakehost", descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const before = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	const ref = made(await before.create(SPEC, { requestId: "gpu-unread" }));
-	const after = hostedProvider(fake.host, { label: "Fakehost", descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const after = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	assert.equal(made(await after.create({ ...SPEC, gpu: H100 }, { requestId: "gpu-unread" })).id, ref.id, "GPUs the vendor reads none of are not a drift");
 	assert.equal(fake.creates(), 1, "never a second machine under one name");
 });
@@ -669,7 +669,7 @@ test("attach holds the vendor's own read-back drift as create does, and reports 
 	assert.equal(made(await provider.attach({ id: other.id })).spec.cpus, undefined, "no size read back: none reported");
 	// The vendor's own read-back goes wrong after create (the drift every read of it now gives): attach refuses it.
 	const drifting = fakeHost({ drift: ['lifecycle onTimeout: declared "kill", read back "pause"'] });
-	const reader = hostedProvider(drifting.host, { label: "Fakehost", descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const reader = hostedProvider(drifting.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
 	const m = drifting.add({ labels: fake.machines.get(other.id).labels });
 	Object.assign(m, { daemon: { path: DAEMON, bytes: DAEMON_BYTES }, init: { deadline: m.labels[DEADLINE], user: "2510:2510", display: "", max: m.labels[MAX] } });
 	const refused = await reader.attach({ id: m.id });
@@ -1050,25 +1050,4 @@ test("a conformance run of a hosted provider sweeps its label through the host a
 	assert.deepEqual(report.cleanup.sweep, { swept: 0, gone: 0, stillThere: [], leftAlone: 0 });
 	assert.deepEqual(report.cleanup.errors, []);
 	assert.deepEqual(report.cleanup.left, []);
-});
-
-test("facts.timeouts is the vendor's default under the caller's, and the adapter writes the merged set back for the host to read", () => {
-	const { fake } = setup({ timeouts: { createMs: 5_000 } }, { facts: { timeouts: { pollMs: 7, createMs: 99_000 } } });
-	const merged = fake.host.facts.timeouts;
-	assert.equal(merged.createMs, 5_000, "the caller's wins");
-	assert.equal(merged.pollMs, 7, "the vendor's over the adapter's");
-	assert.equal(merged.requestMs, 30_000, "and the adapter's where neither says");
-	// A second provider over the same host merges under the vendor's defaults, not under the first provider's set.
-	hostedProvider(fake.host, { label: "Fakehost", descriptor: FAKE_DESCRIPTOR, daemonPath: DAEMON_PATH });
-	assert.equal(fake.host.facts.timeouts.createMs, 99_000);
-	assert.equal(fake.host.facts.timeouts.pollMs, 7);
-});
-
-test("capabilities() reads the network forms and mount kinds from the descriptor, not from the host's facts", () => {
-	const fake = fakeHost();
-	const forms = hostedProvider(fake.host, { label: "Fakehost", descriptor: { network: ["none", "open"], mounts: [] }, daemonPath: DAEMON_PATH }).capabilities();
-	assert.deepEqual(forms.network, ["none", "open"]);
-	assert.deepEqual(forms.mount, []);
-	const none = hostedProvider(fake.host, { label: "Fakehost", descriptor: { network: ["none"] }, daemonPath: DAEMON_PATH }).capabilities();
-	assert.equal("mount" in none, false);
 });

@@ -8,7 +8,7 @@ import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, ours } from "./hosted/provider.js";
 import { words } from "./hosted/process.js";
-import { hostName, loadPackage, requireText, sliceProblem, timeoutOf } from "./hosted/options.js";
+import { hostName, loadPackage, requireText, sliceProblem } from "./hosted/options.js";
 import { shellLine } from "./hosted/scripts.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
@@ -118,7 +118,7 @@ export interface E2BSandboxClass {
 }
 
 /** The E2B provider's options: the key and the SDK, then the shared adapter's (HostedOptions). */
-export interface E2BProviderOptions extends Omit<HostedOptions, "label" | "descriptor" | "maxLifetimeMs"> {
+export interface E2BProviderOptions extends Omit<HostedOptions, "label" | "maxLifetimeMs"> {
 	/** The E2B API key. The caller passes it; this provider never reads it from the environment or puts it in a computer. */
 	apiKey: string;
 	/** The SDK's Sandbox class: the host's `e2b` package's, or anything with the same slice. */
@@ -191,6 +191,7 @@ const MAX_PAGES = 100;
 const PAGE = 100;
 /** E2B's end, read back, is its start plus the timeout create gave it, to the second it rounds to (index.mjs:502-504). */
 const END_SLACK_MS = 2_000;
+const DEFAULT_REQUEST_MS = 30_000;
 const PUBLIC =
 	"publicStream is no longer an option: an E2B computer never takes public traffic, which would open every port in it to anyone with its address, and its screen is streamed through agentrun, never a vendor URL";
 /** envd's port in the sandbox (e2b@2.63.0 dist/index.mjs:1213, ConnectionConfig.envdPort). */
@@ -332,20 +333,20 @@ class E2BHost implements MachineHost {
 		arch: "amd64",
 		vendorAgentPorts: [ENVD_PORT],
 		networkReadBack: true,
+		network: [...E2B.network],
+		mounts: [...MOUNT],
 		release: ["delete"],
 	};
 	readonly #Sandbox: E2BSandboxClass;
 	readonly #connection: E2BConnectionOptions;
+	readonly #requestMs: number;
 	/** Each sandbox create or connect gave, by id, for envd's commands and files: let go of at its delete. */
 	readonly #sandboxes = new Map<string, E2BSandbox>();
 
-	constructor(Sandbox: E2BSandboxClass, connection: E2BConnectionOptions) {
+	constructor(Sandbox: E2BSandboxClass, connection: E2BConnectionOptions, requestMs: number) {
 		this.#Sandbox = Sandbox;
 		this.#connection = connection;
-	}
-
-	get #requestMs() {
-		return timeoutOf(this.facts, "requestMs");
+		this.#requestMs = requestMs;
 	}
 
 	errorCode(error: unknown): ComputerErrorCode {
@@ -566,6 +567,7 @@ export class E2BProvider extends HostedProvider {
 		const ambient = ambientProblem();
 		if (ambient) throw new Error(ambient);
 		hostName(domain, "the E2B domain", DEFAULT_DOMAIN);
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain })), { ...rest, label: "E2B", descriptor: E2B, kind, maxLifetimeMs });
+		const requestMs = rest.timeouts?.requestMs ?? DEFAULT_REQUEST_MS;
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, label: "E2B", kind, maxLifetimeMs });
 	}
 }

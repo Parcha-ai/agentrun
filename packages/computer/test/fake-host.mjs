@@ -11,8 +11,6 @@ import { scriptOfWords } from "./fake-shell.mjs";
 import { netDevText } from "./net-dev.mjs";
 
 export const VERSION = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8")).version;
-/** The descriptor the fake host stands on: the network forms and mount kinds its computers take. */
-export const FAKE_DESCRIPTOR = { network: ["none"], mounts: ["archil"] };
 export const DAEMON = "/opt/agentrun/computerd";
 export const LINUX_GROUPS = ["exec", "files", "processes"];
 export const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
@@ -446,6 +444,8 @@ export function fakeHost({
 			vendorAgentPorts: [7777],
 			networkReadBack: true,
 			gpuReadBack: true,
+			network: ["none"],
+			mounts: ["archil"],
 			release: ["delete"],
 			...facts,
 		},
