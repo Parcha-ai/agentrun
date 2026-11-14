@@ -8,6 +8,7 @@
 // claimed, with an error that names each one. Nothing here names a vendor: the arm's options say which provider serves
 // the kind, and what the agent definition holds besides.
 import { randomBytes } from "node:crypto";
+import { clip, type Step } from "./record.js";
 import type { AgentResult, Arm, Backend, Episode, OpenRequest } from "./runner.js";
 import type { Json, JsonObject, Wire, WireResult } from "./wire.js";
 
@@ -50,6 +51,53 @@ interface TimelineRow {
 	tool_result_preview: string | null;
 	text: string | null;
 	parent_tool_use_id?: string;
+	/** On a tool_result row: each computer call the tool call made, in order, and how many past serve's bound it kept
+	 *  none of. */
+	computer_calls?: ComputerCall[];
+	computer_calls_dropped?: number;
+	/** On a tool_result row: the call was refused before it ran (a gate's deny, a person's). */
+	refused?: true;
+}
+
+/** A computer call as serve's record keeps it (serve's computer-calls.ts): never a param's value or an answer's bytes.
+ *  `at` (when it was sent) and `words` (the call in a line) are read where serve's record has them. */
+interface ComputerCall {
+	method: string;
+	ok: boolean;
+	ms: number;
+	code?: string;
+	steps?: { do: string; route?: string; verified?: boolean; error?: string }[];
+	expect?: "met" | "unmet";
+	at?: string | number;
+	words?: string;
+}
+
+/** When a computer call was sent, from its record's `at` (an ISO time, or epoch milliseconds), where it has one. */
+const sentAt = (at: unknown): number | undefined => {
+	const t = typeof at === "string" ? Date.parse(at) : typeof at === "number" && at > 1e12 ? at : Number.NaN;
+	return Number.isFinite(t) ? t : undefined;
+};
+
+/** The agent's step for one computer call of a tool call: its method, answer, time, its ui.act steps' routes and
+ *  readbacks, and its expect, as the tap records a call it makes itself. */
+function stepOfCall(call: ComputerCall, at: number, t0: number, turn: number, tool: string, preview: string | null | undefined): Omit<Step, "n"> {
+	const steps = call.steps ?? [];
+	const stale = steps.filter((one) => one.error === "stale").length + (call.code === "stale" ? 1 : 0);
+	return {
+		phase: "agent",
+		method: call.method,
+		params: { tool, ...(preview === undefined ? {} : { preview }) },
+		t_ms: Math.max(0, at - t0),
+		ms: Math.max(0, call.ms),
+		ok: call.ok,
+		...(call.ok ? {} : { error: { code: call.code ?? "error", message: clip(call.words ?? call.code ?? "", 300) } }),
+		...(call.method === "ui.act" ? { routes: steps.map((one) => (typeof one.route === "string" ? one.route : "error")), verified: steps.filter((one) => one.verified === true).length, ran: steps.filter((one) => typeof one.route === "string").length } : {}),
+		...(call.expect ? { expect: call.expect } : {}),
+		...(stale > 0 ? { stale } : {}),
+		...(call.ok && call.words ? { note: clip(call.words, 400) } : {}),
+		turn,
+		tool,
+	};
 }
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
@@ -86,14 +134,20 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 	const errorOf = (value: Record<string, unknown> | undefined) => (value?.error ?? {}) as { code?: string; message?: string };
 	const agents = new Map<string, Promise<string>>();
 
-	/** One agent per bench run, arm and kind (and step budget, on pi), made once: its definition is the arm's, and a new
-	 *  bench run makes new ones, so an arm's definition is never edited under runs that used it. On pi the step budget is
-	 *  the agent's own `max_tool_calls` (serve holds it on pi alone); on every harness the bench counts the Timeline's tool
-	 *  calls and stops the run past it. */
-	const agentFor = (bench: string, arm: Arm, kind: string, steps: number): Promise<string> => {
-		const id = `${bench}-${arm.id}-${kind}${arm.harness === "pi" ? `-s${steps}` : ""}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+	/** One agent per bench run, arm, kind and exec (and step budget, on pi), made once: its definition is the arm's, and a
+	 *  new bench run makes new ones, so an arm's definition is never edited under runs that used it. Its computer has the
+	 *  arm's surface ("code" or "tools"), and for a task that denies exec, `exec: false` (its id ends -ui). On pi the step
+	 *  budget is the agent's own `max_tool_calls` (serve holds it on pi alone), a backstop: on every harness the bench
+	 *  counts the computer calls on the Timeline's tool rows and stops the run past the budget. */
+	const agentFor = (bench: string, arm: Arm, kind: string, steps: number, exec: "allow" | "deny"): Promise<string> => {
+		const id = `${bench}-${arm.id}-${kind}-${arm.surface}${exec === "deny" ? "-ui" : ""}${arm.harness === "pi" ? `-s${steps}` : ""}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
 		let made = agents.get(id);
 		if (!made) {
+			// The arm's own definition may pin the computer (its provider, say), never its kind, its surface or its exec: those
+			// are the task's and the arm's, and the record says them.
+			const own = (arm.options?.definition as JsonObject | undefined) ?? {};
+			const ownComputer = own.computer && typeof own.computer === "object" && !Array.isArray(own.computer) ? own.computer : {};
+			const pinned = Object.fromEntries(Object.entries(ownComputer).filter(([key]) => key !== "kind" && key !== "surface" && key !== "exec"));
 			const definition = {
 				id,
 				name: `computer-bench ${arm.id} (${kind})`,
@@ -101,12 +155,12 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 				harness: arm.harness,
 				model: arm.model,
 				...(arm.effort ? { thinking: arm.effort } : {}),
-				computer: { kind, ...(typeof arm.options?.provider === "string" ? { provider: arm.options.provider } : {}) },
 				approvals: "never",
 				skills: [],
 				tools: [],
 				...(arm.harness === "pi" ? { max_tool_calls: steps } : {}),
-				...((arm.options?.definition as JsonObject | undefined) ?? {}),
+				...own,
+				computer: { kind, ...(typeof arm.options?.provider === "string" ? { provider: arm.options.provider } : {}), ...pinned, surface: arm.surface, ...(exec === "deny" ? { exec: false } : {}) },
 			};
 			made = api("POST", "/agents", { definition }).then(({ status, value }) => {
 				if (status >= 300) throw Object.assign(new Error(`the agent ${id} was not saved: ${status} ${errorOf(value).message ?? ""}`), { code: "refused" });
@@ -135,7 +189,7 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 			const { task, arm, signal } = request;
 			let agentId: string;
 			try {
-				agentId = await agentFor(request.labels["agentrun.bench"] ?? "bench", arm, task.task.spec.needs.kind, task.budget.steps);
+				agentId = await agentFor(request.labels["agentrun.bench"] ?? "bench", arm, task.task.spec.needs.kind, task.budget.steps, task.task.spec.exec ?? "allow");
 			} catch (error) {
 				return { ok: false, error: { code: (error as { code?: string }).code ?? "serve", message: (error as Error).message } };
 			}
@@ -175,6 +229,7 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 				ok: true,
 				value: {
 					identity: { provider: view.computer?.provider ?? "serve", ref: runId },
+					agentId,
 					bench,
 					agent: (agentRequest) => drive(runId, agentRequest),
 					async release() {
@@ -220,7 +275,8 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 	};
 
 	/** Starts the held run's agent and follows it until it is done and the run keeps its computer for the checks: its
-	 *  steps (the Timeline's tool calls, under the step budget) and its answer (the Timeline's final answer). */
+	 *  steps (the computer calls on the Timeline's tool rows, under the step budget), its tool calls (its turns), and its
+	 *  answer (the Timeline's final answer). A tool call that made no computer call is a turn, not a step. */
 	async function drive(runId: string, request: Parameters<Episode["agent"]>[0]): Promise<AgentResult> {
 		const go = await api("POST", `/runs/${runId}/start`, {});
 		const startGap = gapOf(ROUTE.start, go.status, go.value);
@@ -230,6 +286,7 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 		let after: number | undefined;
 		const uses = new Map<string, { at: number; name: string; input: string | null }>();
 		const done = new Set<string>();
+		let computerCalls = 0;
 		let answer: string | undefined;
 		let stopped: "budget" | "signal" | undefined;
 		let view: RunView = { run_id: runId, status: "working" };
@@ -249,18 +306,39 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 					if (row.kind === "tool_use" && row.tool_use_id && !uses.has(row.tool_use_id)) uses.set(row.tool_use_id, { at: Date.parse(row.timestamp), name: row.tool_name ?? "", input: row.tool_input_preview });
 					if (row.kind !== "tool_result" || !row.tool_use_id || row.tool_status === null || done.has(row.tool_use_id)) continue;
 					done.add(row.tool_use_id);
+					const turn = done.size;
 					const use = uses.get(row.tool_use_id);
 					const at = Date.parse(row.timestamp);
 					const start = use?.at ?? at;
-					request.onStep({
-						phase: "agent",
-						method: row.tool_name ?? use?.name ?? "",
-						params: { preview: use?.input ?? row.tool_input_preview ?? null },
-						t_ms: Math.max(0, start - t0),
-						ms: Math.max(0, at - start),
-						ok: row.tool_status === "success",
-						...(row.tool_status === "failed" ? { error: { code: "tool_failed", message: row.tool_result_preview ?? "" } } : {}),
+					const tool = row.tool_name ?? use?.name ?? "";
+					const preview = use?.input ?? row.tool_input_preview ?? null;
+					const calls = row.computer_calls ?? [];
+					const dropped = row.computer_calls_dropped ?? 0;
+					if (calls.length === 0 && dropped === 0) {
+						request.onStep({
+							phase: "tool",
+							method: tool,
+							params: { preview },
+							t_ms: Math.max(0, start - t0),
+							ms: Math.max(0, at - start),
+							ok: row.tool_status === "success",
+							...(row.tool_status === "failed" ? { error: { code: row.refused ? "tool_refused" : "tool_failed", message: row.tool_result_preview ?? "" } } : {}),
+							turn,
+							tool,
+						});
+						continue;
+					}
+					// Each computer call is a step, at its own time where serve's record says, else after the one before it.
+					let next = start;
+					calls.forEach((call, i) => {
+						const sent = sentAt(call.at) ?? next;
+						request.onStep(stepOfCall(call, sent, t0, turn, tool, i === 0 ? preview : undefined));
+						next = sent + Math.max(0, call.ms);
+						if (call.method !== "hello" && call.method !== "ping") computerCalls += 1;
 					});
+					// Calls past serve's bound are steps too, though their method and answer were not kept.
+					for (let i = 0; i < dropped; i += 1) request.onStep({ phase: "agent", method: "unrecorded", params: { tool }, t_ms: Math.max(0, next - t0), ms: 0, ok: true, note: "a computer call past serve's record bound: its method and answer were not kept", turn, tool });
+					computerCalls += dropped;
 				}
 				const next = got.value?.next_after;
 				if (typeof next === "number") after = next;
@@ -272,7 +350,7 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 		while (!over()) {
 			await sleep(pollMs, request.signal);
 			await readTimeline();
-			if (!stopped && (request.signal.aborted || done.size > request.budget.steps)) {
+			if (!stopped && (request.signal.aborted || computerCalls > request.budget.steps)) {
 				stopped = request.signal.aborted ? "signal" : "budget";
 				await api("POST", `/runs/${runId}/cancel`, {});
 			}
@@ -284,10 +362,14 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 			}
 		}
 		await readTimeline();
+		// Serve runs a script's calls before the bench reads them (the last may show only now, after the run's end): a
+		// run that made more computer calls than the budget is over it, whatever its checks say.
+		const overSteps = computerCalls > request.budget.steps;
+		if (!stopped && overSteps) stopped = "budget";
 		const usd = view.cost?.usd ?? view.cost?.so_far_usd;
 		const final = answer ?? view.result?.final_answer ?? undefined;
-		const common = { ...(typeof usd === "number" ? { cost_usd: usd } : {}), ...(final ? { answer: final } : {}), transcript: `serve run ${runId}` };
-		if (stopped === "budget") return { ...common, outcome: "budget", message: done.size > request.budget.steps ? `the task's budget of ${request.budget.steps} computer calls is spent` : "the run paused at its cap" };
+		const common = { ...(typeof usd === "number" ? { cost_usd: usd } : {}), ...(final ? { answer: final } : {}), tool_calls: done.size, ...(overSteps ? { over_steps: true } : {}), transcript: `serve run ${runId}` };
+		if (stopped === "budget") return { ...common, outcome: "budget", message: computerCalls > request.budget.steps ? `the task's budget of ${request.budget.steps} computer calls is spent` : "the run paused at its cap" };
 		if (stopped === "signal") return { ...common, outcome: "budget", message: String((request.signal.reason as Error | undefined)?.message ?? "stopped") };
 		if (view.computer?.held?.state === "ended" || view.status === "completed") return { ...common, outcome: "done" };
 		const code = view.error?.code ?? "";
@@ -303,12 +385,12 @@ const runBody = (content: string, usd: number, holdMinutes: number | undefined) 
  *  needs each for, and the item of README.md's "What serve needs" that asks for it (0: serve has it without a hold). */
 export const SERVE_CONTRACT: readonly { method: string; path: string; body?: Json; answers: string; need: string; item: number }[] = [
 	{ method: "GET", path: "/openapi.json", answers: "serve's OpenAPI document", need: "reads whether a run's create takes hold and its read has computer.held", item: 0 },
-	{ method: "POST", path: "/agents", body: { definition: "{id, name, instructions, harness, model, thinking (arm.effort)?, computer {kind, provider?}, approvals, skills, tools, max_tool_calls (pi: budget.steps), ...arm.options.definition}" }, answers: "the saved agent", need: "saves an agent per arm and kind (and step budget, on pi)", item: 0 },
+	{ method: "POST", path: "/agents", body: { definition: "{id, name, instructions, harness, model, thinking (arm.effort)?, approvals, skills, tools, max_tool_calls (pi: budget.steps), ...arm.options.definition, computer {kind, provider?, ...arm.options.definition.computer, surface (arm.surface), exec: false (a task's exec deny)?}}" }, answers: "the saved agent", need: "saves an agent per arm, kind and exec (and step budget, on pi)", item: 0 },
 	{ method: "POST", path: "/agents/{agent_id}/runs", body: { input: "{content}", max_cost_usd: "budget.usd", hold: true, hold_minutes: "options.holdMinutes?" }, answers: "{run_id, status, computer {state, held {state}}}; with hold, the agent waits for /start", need: "claims a run's computer and holds it, its agent not started", item: 1 },
 	{ method: "GET", path: "/runs/{run_id}", answers: "{status, computer {state, provider, why, held {state starting|waiting|started|ended|released, why}}, cost {usd, so_far_usd}, result {final_answer}, error {code, message}}", need: "reads where the hold is, and how the run ended", item: 5 },
 	{ method: "POST", path: "/runs/{run_id}/computer/call", body: { method: "a protocol method", params: "its params" }, answers: "{ok, value} | {ok: false, error {code, message}}: the computer's answer, verbatim", need: "reaches the held computer through it, for setup, frames, checks and teardown", item: 2 },
 	{ method: "POST", path: "/runs/{run_id}/start", answers: "{held {state: started}}", need: "starts the held run's agent once the task is set up", item: 1 },
-	{ method: "GET", path: "/runs/{run_id}/timeline?after=", answers: "{rows [{kind tool_use|tool_result|final_answer, tool_name, tool_use_id, tool_status, tool_input_preview, text}], next_after, has_more}", need: "reads the agent's tool calls and its final answer", item: 4 },
+	{ method: "GET", path: "/runs/{run_id}/timeline?after=", answers: "{rows [{kind tool_use|tool_result|final_answer, tool_name, tool_use_id, tool_status, tool_input_preview, text, computer_calls [{method, ok, ms, code?, steps?, expect?, at?, words?}]?, computer_calls_dropped?}], next_after, has_more}", need: "reads the agent's tool calls, the computer calls each made, and its final answer", item: 4 },
 	{ method: "POST", path: "/runs/{run_id}/cancel", answers: "the run stops", need: "stops a run past its budget", item: 0 },
 	{ method: "POST", path: "/runs/{run_id}/computer/release", answers: "{held {state: released}}; 404 not_found, not 'no route', once let go", need: "releases the computer once the checks have read it", item: 3 },
 ];
