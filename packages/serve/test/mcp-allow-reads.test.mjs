@@ -348,3 +348,16 @@ test("an agent's read (GET /v2/agents/{id}) gives each MCP tool's permission by 
   assert.equal((await api("GET", "/agents/pinned-read")).body.mcp_pin, null, "unpinned");
   assert.deepEqual(await permissions("pinned-read"), { "mcp:fake/note": "allow", "mcp:fake/add": "ask" }, "no pin: the listing its first run would pin");
 });
+
+test("pi: on this server a tool's own allow under its server's wildcard deny is its answer: the server's read says allow for it and deny for the rest, and a run calls it with no one asked", { timeout: 180_000 }, async (t) => {
+  const { api } = await serve(t);
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { permission: "deny" }, "mcp:fake/add": { permission: "allow" } })).status, 200);
+  const read = Object.fromEntries((await api("GET", "/settings/mcp-servers/fake")).body.tools.map((tool) => [tool.name, tool.permission]));
+  assert.deepEqual([read.add, read.note, read.delete_thing], ["allow", "deny", "deny"]);
+  const runId = await started(api, "own-allow", ["mcp:fake/add"], 'Call mcp__fake__add with {"a":2,"b":3}');
+  const { last } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed", "no one was asked");
+  assert.equal(await answerOf(api, runId), "The tool said: 5");
+  assert.equal(calls(fake, "add").length, 1);
+});

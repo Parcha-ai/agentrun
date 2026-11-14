@@ -5,6 +5,7 @@ import { freeName, McpServersPage } from "./McpServersPage";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
 import { type McpServer, PREVIEW_SCOPE_NOTE } from "@/lib/mcp";
+import { SERVER_DENY } from "@/lib/toolSettings";
 import recorded from "@/fixtures/mcp.requests.json";
 import { pick, picker, valueOf } from "@/test/picker";
 
@@ -880,6 +881,16 @@ describe("Settings → MCP servers, a server's tool settings", () => {
     await p.settle();
     expect(s.settings()).toEqual({});
     expect(valueOf(permission(p, "get_repo"))).toBe("ask");
+  });
+
+  it("a tool's own allow under its server's wildcard deny shows allow, its default deny, and no refusal: on this server the tool's own key is its answer (tool-gate.ts settingFrom), so its calls run; every other tool of it shows the deny", async () => {
+    const p = await open(withSettings({ "mcp:gh/*": { permission: "deny" }, "mcp:gh/get_repo": { permission: "allow" } }).v2, { choices: CHOICES });
+    const row = (tool: string) => table(p).querySelector(`tr[data-tool="mcp:gh/${tool}"]`)!;
+    expect(valueOf(permission(p, "get_repo"))).toBe("allow");
+    expect(row("get_repo").textContent).toContain("default: deny");
+    expect(row("get_repo").textContent).not.toContain(SERVER_DENY);
+    expect(valueOf(permission(p, "open_issue"))).toBe("deny");
+    expect(row("open_issue").textContent).toContain(SERVER_DENY);
   });
 
   it("the switch and its label are one line: the label beside the switch, which it names", async () => {
