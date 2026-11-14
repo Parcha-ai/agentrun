@@ -51,6 +51,9 @@ export default {
       await grade.getByRole("button", { name: "Wrong", exact: true }).click();
       const fields = grade.getByRole("form", { name: "Grade wrong" }).getByRole("textbox");
       await fields.first().waitFor();
+      // Found by position, so copy changes don't break the flow; each field must still have a nonempty accessible name.
+      const names = await fields.evaluateAll((els) => els.map((el) => (el.labels ? [...el.labels].map((l) => l.textContent.trim()).join("") : "") || el.getAttribute("aria-label") || ""));
+      check(names.length === 2 && names.every((n) => n.length > 0), `${width}px: the grade fields' accessible names are ${JSON.stringify(names)}`);
       await fields.nth(0).fill(WORDS);
       await fields.nth(1).fill(EXPECTED);
       await shoot(grade, `grade-wrong-form-${width}.png`);
