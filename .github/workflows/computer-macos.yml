@@ -72,7 +72,7 @@ jobs:
       - name: Seed the runner's grants
         if: ${{ !cancelled() }}
         run: scripts/seed-tcc.sh build/Computerd.app
-      - name: Smoke test and the ui conformance cases
+      - name: Peer check and the conformance cases
         if: ${{ !cancelled() }}
         run: scripts/smoke.sh build/Computerd.app
       - name: Logs
