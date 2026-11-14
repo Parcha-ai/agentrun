@@ -85,18 +85,24 @@ test("POST /agents/{id}/learning/batches: each row's run, in order, with learnin
   assert.deepEqual(end.lessons.notes, ["Check units", "What the reviewer said"], "the first run's note, then the note its review taught, each once");
   assert.ok(end.rows[0].merged, "the merge of the first run's learning");
   assert.deepEqual(end.rows[0].learned.notes, ["Check units", "What the reviewer said"], "every round's");
-  // What a row's learning cost is every round's: each round's look-back and each round's grade (the review opens round 2).
+  // What a row's learning cost is every round's (the review opens round 2): all its run spent after its job answered (the
+  // review's turn, feedback the run was given, and each round's look-back: store-reads/learning.ts roundsLooked) and each
+  // round's grade. The job is round 1's alone.
   let graded = 0;
   for (const row of end.rows) {
-    let look = 0, grade = 0;
+    let look = 0, grade = 0, job;
     for (const round of [1, 2]) {
       const kept = await store.learning.proposal(row.run_id, round);
       assert.ok(kept, `row ${row.n} kept round ${round}`);
       look += kept.proposal?.look_back_usd ?? 0;
+      job ??= kept.proposal?.job_cost_usd;
       grade += kept.learningRunId ? ((await store.runs.get(kept.learningRunId))?.costUsd ?? 0) : 0;
     }
     graded += grade;
-    assert.equal(row.learning_usd, money(look + grade), `row ${row.n}: every round's look-back and grade`);
+    const rowUsd = (await store.runs.get(row.run_id)).costUsd;
+    assert.equal(typeof job, "number", `row ${row.n}: round 1 kept its job's cost`);
+    assert.ok(Math.abs(row.learning_usd - (rowUsd - job + grade)) < 2e-6, `row ${row.n}: all its run spent after the job, and every round's grade: ${row.learning_usd} vs ${rowUsd - job + grade}`);
+    assert.ok(row.learning_usd >= money(look + grade), `row ${row.n}: every round's look-back and grade are in it, the review's turn beside them`);
   }
   assert.ok(graded > 0, "the rows' grades cost something");
 

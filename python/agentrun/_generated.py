@@ -168,6 +168,8 @@ __all__ = [
     "DeleteAgentArchilResponse",
     "DeleteAgentArchilResponseArchilDisk",
     "DeleteAgentArchilResponseRemoved",
+    "DeleteMcpServerResponse",
+    "DeleteMcpServerResponseComposio",
     "DeleteWorkspaceArchilResponse",
     "DeleteWorkspaceArchilResponseSecret",
     "DisconnectGitHubResponse",
@@ -2895,6 +2897,16 @@ class TestWorkspaceArchilResponseObject2(TypedDict):
     why: str
 
 
+class DeleteMcpServerResponse(TypedDict):
+    deleted: Literal[True]
+    composio: DeleteMcpServerResponseComposio
+
+
+class DeleteMcpServerResponseComposio(TypedDict):
+    removed: Literal[False]
+    note: str
+
+
 class _GetMcpServerResponseRequired(TypedDict):
     name: str
     url: str
@@ -3595,6 +3607,7 @@ class _GradeRunBodyRequired(TypedDict):
 class GradeRunBody(_GradeRunBodyRequired, total=False):
     expected: dict[str, Any]
     source: Literal["feedback", "eval"]
+    label: str
 
 
 class _GradeRunResponseRequired(TypedDict):
@@ -3605,6 +3618,7 @@ class _GradeRunResponseRequired(TypedDict):
     path: Literal["agent", "handed_back", "workflow", "replay"]
     workflow: str | None
     workflow_digest: str | None
+    feedback: Literal["revise", "look_back"] | None
 
 
 class GradeRunResponse(_GradeRunResponseRequired, total=False):
@@ -6273,7 +6287,7 @@ OPERATIONS: dict[str, Operation] = {
     "startMcpOAuth": Operation(method="POST", path="/settings/mcp-servers/{name}/oauth/start", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "scopes.[]", "client_id"), tagged=False),
     "testComputer": Operation(method="POST", path="/computers/{provider}/test", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "testWorkspaceArchil": Operation(method="POST", path="/workspace/archil/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "deleteMcpServer": Operation(method="DELETE", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "deleteMcpServer": Operation(method="DELETE", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getMcpServer": Operation(method="GET", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listMcpServers": Operation(method="GET", path="/settings/mcp-servers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "mcpOAuthClient": Operation(method="GET", path="/settings/mcp-servers/oauth/client.json", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -6563,7 +6577,7 @@ class LocalResource(Group):
 class McpServersResource(Group):
     """client.mcp_servers: one method per operation."""
 
-    def delete(self, name: str, *, timeout: float | None = None) -> None:
+    def delete(self, name: str, *, timeout: float | None = None) -> DeleteMcpServerResponse | None:
         """Forget a saved MCP server and its credential (DELETE /settings/mcp-servers/{name})."""
         return self._call("deleteMcpServer", (name,), None, None, timeout=timeout)
 

@@ -338,8 +338,9 @@ has Docker, and no computer otherwise. Remote computers bill through your own ac
   missing; it never enters the agent's computer. **Test connection** makes one read at the vendor and starts nothing.
 - **The run's files.** By default a run's folder lives on your server and the Docker sandbox mounts it. Turn on an
   Archil disk in Settings and the folder lives there instead, and the Docker sandbox is refused. A Modal, E2B or Agent37
-  sandbox mounts that folder only from an image with Archil's client, which your server can't name yet: Settings shows
-  them not ready, so with Archil on no sandbox runs for now.
+  sandbox needs Archil's image in your own vendor account, which your server can't put there yet: Settings shows them
+  not ready, so with Archil on no sandbox runs for now. An E2B or Agent37 desktop would mount the folder too, so it needs
+  the same image and isn't ready either; Orgo's desktop, a phone and a browser mount nothing and still run.
 - **Watching and taking over.** A browser run streams to the run's **Screen** tab through your own server, never
   through a vendor link. Take the controls, then hand them back. The agent can also stop and ask you to take over, for
   a login or a captcha.

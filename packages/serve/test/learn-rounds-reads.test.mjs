@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { learningCommit, mergedAt } from "../dist/learn/commit.js";
 import { learningWorkspace } from "../dist/workspace/index.js";
-import { learningSpendOf, roundsSpendOf, usedOnly } from "../dist/store-reads/learning.js";
+import { learningSpendOf, roundsLooked, roundsSpendOf, usedOnly } from "../dist/store-reads/learning.js";
 import { runCostOf } from "../dist/learning-cost.js";
 import { note } from "./learn-format-support.mjs";
 
@@ -54,7 +54,26 @@ test("a followed-up run's impact figures: the first round's job cost, every roun
   assert.equal(await roundsSpendOf({ ...store, learning: { proposal: async () => rounds[0] } }, "r"), undefined, "one round: nothing to add up");
 });
 
-test("a followed-up run's cost per run: every round's grade and look-back are its learning, the first round's job figure its job", async () => {
+test("a later round stopped in its model request: the run's cost is unknown, and so is its learning spend, never the earlier rounds' sum (#2648 review)", async () => {
+  const kept = (round, row, learningRunId) => ({ runId: "r", round, agentId: "a", turn: {}, proposal: row, ...(learningRunId ? { learningRunId } : {}), createdAt: 0 });
+  // Round 2 was stopped mid-request: its proposal dropped with no figures, and the run's row cost reads unknown (null).
+  const rounds = [kept(1, { answered_at: "2026-11-13T00:00:00.000Z", job_cost_usd: 0.5, look_back_usd: 0.1 }, "r-learning-1"), kept(2, { state: "dropped" })];
+  const store = {
+    learning: { proposal: async (_id, round) => (round === undefined ? rounds[1] : rounds[round - 1]) },
+    runs: { get: async () => ({ state: "ended", costUsd: 0.01 }) },
+  };
+  const spend = await roundsSpendOf(store, "r");
+  const looked = roundsLooked(spend, null);
+  assert.equal(looked.job_cost_usd, 0.5, "the job's own cost is known: it answered before the unknown request");
+  assert.equal(looked.look_back_usd, null, "what the row spent after the job is unknown");
+  assert.deepEqual(runCostOf(null, looked, spend.grade_usd), { cost_usd: 0.5, learning_usd: null, total_usd: null });
+  // A known row still reads its learning as the row less the job.
+  assert.ok(Math.abs(roundsLooked(spend, 0.75).look_back_usd - 0.25) < 1e-9);
+  // A job whose own cost is unknown leaves the rounds' look-backs added up, as before.
+  assert.ok(Math.abs(roundsLooked({ ...spend, job_cost_usd: null }, null).look_back_usd - 0.1) < 1e-9);
+});
+
+test("a followed-up run's cost per run: every round's grade, look-back and follow-up turn are its learning, the first round's job figure its job", async () => {
   const kept = (round, row, learningRunId = `r-learning-${round}`) => ({ runId: "r", round, agentId: "a", turn: {}, proposal: row, ...(learningRunId ? { learningRunId } : {}), createdAt: 0 });
   // Round 1 answered and was graded ($0.04); round 2 looked back again and graded nothing.
   const rounds = [
@@ -65,13 +84,13 @@ test("a followed-up run's cost per run: every round's grade and look-back are it
     learning: { proposal: async (_id, round) => (round === undefined ? rounds[1] : rounds[round - 1]) },
     runs: { get: async () => ({ state: "ended", costUsd: 0.04 }) },
   };
-  const { looked, grade } = await learningSpendOf(store, "r");
+  // The run's row: the job 0.5, both look-backs 0.3, a follow-up turn 0.4 (feedback the run was given: learning, #2648).
+  const { looked, grade } = await learningSpendOf(store, "r", 1.2);
   assert.ok(Math.abs(grade - 0.04) < 1e-9, "round 1's grade stays when round 2 graded nothing");
   assert.equal(looked.job_cost_usd, 0.5, "the job's figure is the first round's: round 2's holds round 1's look-back");
-  assert.ok(Math.abs(looked.look_back_usd - 0.3) < 1e-9, "every round's look-back");
-  // The run's row: the job 0.5, both look-backs 0.3, a follow-up turn 0.4.
+  assert.ok(Math.abs(looked.look_back_usd - 0.7) < 1e-9, "every round's look-back and the follow-up turn: the row less the job");
   const cost = runCostOf(1.2, looked, grade);
-  assert.deepEqual([cost.cost_usd, cost.learning_usd, cost.total_usd], [0.9, 0.34, 1.24]);
+  assert.deepEqual([cost.cost_usd, cost.learning_usd, cost.total_usd], [0.5, 0.74, 1.24]);
   const one = { learning: { proposal: async () => rounds[0] }, runs: store.runs };
-  assert.deepEqual(await learningSpendOf(one, "r"), { looked: { answered_at: "2026-11-13T00:00:00.000Z", job_cost_usd: 0.5, look_back_usd: 0.1 }, grade: 0.04 }, "one round reads as before");
+  assert.deepEqual(await learningSpendOf(one, "r", 0.6), { looked: { answered_at: "2026-11-13T00:00:00.000Z", job_cost_usd: 0.5, look_back_usd: 0.1 }, grade: 0.04 }, "one round reads as before");
 });

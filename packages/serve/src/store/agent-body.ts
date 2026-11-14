@@ -57,7 +57,10 @@ export type RevisionComputer = { kind: string; provider?: string; image?: string
 export type ToolSettings = Record<string, unknown>;
 /** The model of each tier an agentic revision names (its definition's `model_tiers`: fast, strong), each "provider/model-id". */
 export type ModelTiers = Partial<Record<"fast" | "strong", string>>;
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" };
+/** A revision's monid pin (monid.ts MonidPin): each granted endpoint by its catalog name, as monid listed it at the save.
+ *  Stamped by the save's check (server.ts saveable), never read from a definition nor shown in one. */
+export type MonidPinBody = Readonly<Record<string, { readonly description: string; readonly input: Record<string, unknown>; readonly usd: number }>>;
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request"; monidPin?: MonidPinBody };
 export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already

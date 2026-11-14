@@ -8,7 +8,8 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { callRecordOf } from "../dist/computer-calls.js";
-import { callWords, labelOf } from "../dist/timeline/index.js";
+import { callWords, labelOf, timelineOf } from "../dist/timeline/index.js";
+import { assistant, call, result } from "./timeline-lib-support.mjs";
 
 const CAPTIONS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "computer", "daemon-macos", "scripts", "call-words.mjs");
 const captions = (calls) => execFileSync(process.execPath, [CAPTIONS], { input: calls.map((call) => `${JSON.stringify(call)}\n`).join(""), encoding: "utf8" }).trim().split("\n").map((line) => JSON.parse(line));
@@ -112,4 +113,52 @@ test("a look, a wait and a failed act read the same on the row and in the call, 
     assert.equal(callWords(call({ ok: false, code: "gone" })), `Could not act on ${name}`);
     assert.equal(callWords(call({ method: "apps.launch" })), `Opened ${name}`);
   }
+});
+
+test("a failed computer step's row reads in the one voice, \"Could not …\", with why after it, never \"… failed: …\"", () => {
+  const rows = timelineOf([
+    assistant([
+      call("a", "computer_script", { code: "await computer.processes.start(['sleep', '2'])" }),
+      call("b", "computer_script", { code: "1", title: "Open Settings" }),
+      call("c", "computer_screenshot", {}),
+      call("d", "computer_act", { app: "org.xfce.mousepad", steps: [{ press: "@e3" }] }),
+      call("e", "computer_observe", {}),
+      call("f", "computer_script", { code: "return 1" }),
+    ], 0),
+    result("a", "computer_script", "could not start a program on the desktop: Permission denied", 1, { isError: true }),
+    result("b", "computer_script", "the daemon's stream ended", 1, { isError: true }),
+    result("c", "computer_screenshot", "the daemon's stream ended", 1, { isError: true }),
+    result("d", "computer_act", "the computer went away", 1, { isError: true }),
+    result("e", "computer_observe", "the computer went away", 1, { isError: true }),
+    result("f", "computer_script", "1", 1),
+  ]);
+  const summary = (id) => rows.find((row) => row.tool_use_id === id && row.kind === "tool_result").summary;
+  assert.equal(summary("a"), "Could not run a script on the computer: could not start a program on the desktop: Permission denied");
+  assert.equal(summary("b"), "Could not run the script “Open Settings”: the daemon's stream ended");
+  assert.equal(summary("c"), "Could not take a screenshot: the daemon's stream ended");
+  assert.equal(summary("d"), "Could not act on Mousepad: the computer went away");
+  assert.equal(summary("e"), "Could not look at the window: the computer went away");
+  assert.equal(summary("f"), "Ran a script on the computer: ok", "a script that ran keeps its words");
+});
+
+test("an app whose id is not its name reads by the name a person knows: firefox-esr is Firefox, google-chrome Chrome", () => {
+  assert.equal(callWords({ method: "apps.launch", started_at: at, app: "firefox-esr", ok: true, ms: 9 }), "Opened Firefox");
+  assert.equal(callWords({ method: "apps.launch", started_at: at, app: "google-chrome", ok: true, ms: 9 }), "Opened Chrome");
+  assert.equal(labelOf("computer_observe", { app: "firefox-esr" }), "Looked at Firefox");
+});
+
+test("a look on a computer with no ui group names every call it made, as its call list does: the app opened, the screenshot, the apps listed", () => {
+  const front = (app) => `screen 1280×800 px · ${app} in front · this computer has no ui group: no elements; act at points of this image`;
+  const record = (method, app) => ({ method, started_at: at, ok: true, ms: 9, ...(app ? { app } : {}) });
+  const said = (records) => records.map(callWords).map((words, index) => (index === 0 ? words : words[0].toLowerCase() + words.slice(1))).join(", ");
+  const seen = [record("screen.shot"), record("apps.list")];
+  assert.equal(labelOf("computer_observe", {}, view(front("org.xfce.mousepad"))), said(seen));
+  assert.equal(labelOf("computer_observe", {}, view(front("org.xfce.mousepad"))), "Took a screenshot, listed the apps");
+  const opened = [record("apps.launch", "org.xfce.mousepad"), ...seen];
+  assert.equal(labelOf("computer_observe", { app: "org.xfce.mousepad" }, view(front("org.xfce.mousepad"))), said(opened));
+  assert.equal(labelOf("computer_observe", { app: "org.xfce.mousepad" }, view(front("org.xfce.mousepad"))), "Opened Mousepad, took a screenshot, listed the apps");
+  // Nothing in front: the apps were listed all the same.
+  assert.equal(labelOf("computer_observe", {}, view("screen 1280×800 px · no app in front; name one as app to open it: org.xfce.mousepad · this computer has no ui group: no elements; act at points of this image")), "Took a screenshot, listed the apps");
+  // A computer with no apps group: the screenshot alone.
+  assert.equal(labelOf("computer_observe", {}, view("screen 1080×2400 px · this computer has no ui group: no elements; act at points of this image")), "Took a screenshot");
 });

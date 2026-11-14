@@ -12,12 +12,13 @@ import {
   type Auth, authOf, canonical, credentialInQuery, credentialInQueryWords, credentialMissing, type HeaderMap, savedOrGiven, shownUrl, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
   type McpTool, nameOf, notFound, oauthValueValid, pricesListed, pricesOf, scopesValid, urlOf,
 } from "./mcp-probe.js";
-import { listMcpServers, openMcpRow, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn } from "./mcp-store.js";
+import { listMcpServers, openMcpRow, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn, type RemovedMcpServer } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
 import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
+import { composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
@@ -45,6 +46,20 @@ type McpServersStore = { readonly mcp: Mcp; readonly mcpOauth: McpOauth; readonl
 function changedMeanwhile(name: string, saved: McpServerRow | undefined): McpServerRow {
   if (!saved) throw new ApiError("precondition_failed", `The MCP server ${name}'s credential changed while this save ran (another save, a sign-in or a removal): read it again, then save again.`);
   return saved;
+}
+
+/** What a deleted Composio preset server leaves to remove on Composio: the MCP server it made (its id, from the removed
+ *  row's own address) and the key it was made with (the removed row's sealed x-api-key, held for the one call), or
+ *  `unusable` when either can't be had (a key that does not open here, an address that names no server): the delete of
+ *  our row still stands, and the answer says to remove it in Composio by hand. Taken from the row actually removed, never
+ *  a row read before it, so a server saved again under the name meanwhile is not the one deleted on Composio. */
+export type ComposioHandle = { id: string; key: string } | { unusable: true };
+function composioHandleOf(removed: RemovedMcpServer | undefined): ComposioHandle {
+  const id = removed ? composioServerId(removed.url) : undefined;
+  const open = removed?.opened;
+  const headers = open && "credential" in open && open.credential.type === "headers" ? (open.credential.headers as HeaderMap) : undefined;
+  const key = headers ? Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1] : undefined;
+  return id && key ? { id, key } : { unusable: true };
 }
 
 /** The sign-ins in flight over the store (store.mcpOauth): the sign-in's secret parts (the PKCE verifier and the OAuth
@@ -243,7 +258,13 @@ export class McpServersOverStore {
     // What the server is (its source and toolkit, mcp-sources.ts): from what made it and the owner's toolkit, over what it
     // is now, checked before anything is listed; written once the server is, for the row it wrote.
     const sourceIssues: InputIssue[] = [];
-    const source = sourceToWrite(made ?? standIn, toolkit,await this.sourceOf({ name, auth: auth.type, createdAt: was?.createdAt }), auth.type, sourceIssues);
+    const wasSource = await this.sourceOf({ name, auth: auth.type, createdAt: was?.createdAt });
+    // An ordinary save that moves a Composio preset row to another address makes it another service's server: it stops being
+    // Composio's, whatever its path looks like, so its delete never sends the key it holds to Composio. It is url's, with the
+    // toolkit the same save names, else none.
+    const moved = !made && !standIn && was !== undefined && wasSource.source === "composio" && was.url !== url.href;
+    const written = sourceToWrite(made ?? standIn, toolkit, moved ? { source: "url", toolkit: null } : wasSource, auth.type, sourceIssues);
+    const source = moved ? (written ?? { source: "url" as const, toolkit: null }) : written;
     if (sourceIssues.length) throw invalid(sourceIssues);
     const send = await this.reached(auth.type, url, stop);
     // The credential this save may write over: the one the secret-write gate let it through against (`checkedAgainst`,
@@ -347,8 +368,10 @@ export class McpServersOverStore {
    *  credential saved meanwhile is never dropped by it. An OAuth one's sign-in is then let go at its authorization server
    *  (its refresh token revoked, RFC 7009, where its metadata names a revocation_endpoint), behind the answer: best effort,
    *  never holding or failing the removal. A claimed run sees the removal at its next call (runner/mcp-claim.ts check). */
-  async remove(name: string, checkedAgainst?: McpCredentialMark): Promise<void> {
+  async remove(name: string, checkedAgainst?: McpCredentialMark): Promise<{ composio?: ComposioHandle }> {
     const row = await this.need(name);
+    // Whether it is a Composio preset server: from its record (source composio), read before the row goes.
+    const preset = row.auth === "headers" && (await this.sourceOf(row)).source === "composio";
     // The credential revoked is the one the deleting statement saw (RETURNING): a run's refresh landing before it is in it,
     // one landing after finds no row to keep. A sign-in kept as expired has no refresh token left to revoke.
     const removed = checkedAgainst === undefined ? await removeMcpServer(this.store, this.sealKey, name)
@@ -361,6 +384,7 @@ export class McpServersOverStore {
     const open = removed?.opened;
     const credential = open && "credential" in open && open.credential.type === "oauth" && !(open.credential as { expired?: true }).expired ? open.credential : undefined;
     if (credential && removed) void this.track(this.signIns.revoke(credential.set as TokenSet, removed.url, this.stopped.signal));
+    return preset ? { composio: composioHandleOf(removed) } : {};
   }
 
   /** POST .../{name}/oauth/start: `{url, scopes?, client_id?, client_secret?, toolkit?}`; answers the URL the owner opens.

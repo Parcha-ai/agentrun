@@ -221,6 +221,8 @@ export function fakeHost({
 				if (m.box.probe === "no-accepted") delete report.accepted;
 				return result({ exitCode: 0, stdout: Buffer.from(`${JSON.stringify(report)}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 			}
+			// A command still running: its answer comes once it ends, which a test never lets it.
+			if (argv[0] === "sleep") return undefined;
 			return result({ exitCode: 0, stdout: Buffer.from(`${argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 		}
 		if (method === "process.start") {
@@ -408,8 +410,11 @@ export function fakeHost({
 				queueMicrotask(() => proc.exit(1, "computerd stdio: no daemon listens at /run/agentrun/computerd.sock (connect: no such file or directory)\n"));
 				return proc;
 			}
+			m.bridges = [...(m.bridges ?? []), proc];
 			let buffered = "";
 			proc.onWrite = async (bytes) => {
+				// A machine that vanished under a hung transport: what is sent is taken, and nothing ever answers.
+				if (m.hung) return;
 				buffered += bytes.toString("utf8");
 				let at;
 				while ((at = buffered.indexOf("\n")) >= 0) {
@@ -420,6 +425,7 @@ export function fakeHost({
 					fake.events.push({ machine: m.id, what: `daemon ${request.method}` });
 					await onStep(request.method, m);
 					const reply = answer(m, request);
+					if (reply === undefined) continue;
 					proc.out.push(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...reply })}\n`);
 				}
 			};
@@ -574,6 +580,18 @@ export function fakeHost({
 	fake.release = async () => {
 		for (const one of held.splice(0)) one.resolve();
 		await new Promise((done) => setTimeout(done, 10));
+	};
+	/**
+	 * A machine deleted out from under the adapter, by the vendor's own API: get reads it gone and the listing leaves it
+	 * out. stream "end": every bridge into it ends, as a VM that died closes its exec streams; "hang": the bridges stay
+	 * open and nothing answers, as a dead tunnel nobody has noticed yet.
+	 */
+	fake.vanish = (id, stream = "end") => {
+		const m = machines.get(id);
+		m.deleted = true;
+		fake.events.push({ machine: id, what: `vanish (${stream})` });
+		if (stream === "hang") m.hung = true;
+		else for (const bridge of m.bridges ?? []) bridge.exit(255);
 	};
 	/** Every machine not deleted. */
 	fake.live = () => [...machines.values()].filter((m) => !m.deleted);

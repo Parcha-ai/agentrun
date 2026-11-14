@@ -65,7 +65,7 @@ test("a refused step makes the act's outcome failed, saying which step and why",
 test("observe names the app; with no ui group it was a screenshot; a script's title when it gives one", () => {
   assert.equal(labelOf("computer_observe", {}, view('state s8 · com.android.settings "Settings" · window "Display" 360×640 pt\n@e1 generic')), "Looked at Settings");
   assert.equal(labelOf("computer_observe", { app: "com.apple.TextEdit" }), "Looked at TextEdit");
-  assert.equal(labelOf("computer_observe", {}, view("screen 1080×2400 px · com.android.settings in front · this computer has no ui group")), "Took a screenshot");
+  assert.equal(labelOf("computer_observe", {}, view("screen 1080×2400 px · com.android.settings in front · this computer has no ui group")), "Took a screenshot, listed the apps");
   assert.equal(labelOf("computer_observe", {}), "Looked at the window");
   assert.equal(labelOf("computer_screenshot", {}), "Took a screenshot");
   assert.equal(labelOf("computer_script", { code: "await computer.app().observe()" }), "Ran a script on the computer");

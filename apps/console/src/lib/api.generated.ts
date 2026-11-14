@@ -1555,7 +1555,13 @@ export interface operations {
   };
   deleteMcpServer: {
     body: never;
-    answer: never;
+    answer: {
+      deleted: true;
+      composio: {
+        removed: false;
+        note: string;
+      };
+    };
   };
   deleteTemplate: {
     body: never;
@@ -2535,6 +2541,7 @@ export interface operations {
       correct: boolean;
       expected?: Record<string, unknown>;
       source?: "feedback" | "eval";
+      label?: string;
     };
     answer: {
       run_id: string;
@@ -2544,6 +2551,7 @@ export interface operations {
       path: "agent" | "handed_back" | "workflow" | "replay";
       workflow: string | null;
       workflow_digest: string | null;
+      feedback: "revise" | "look_back" | null;
       expected?: Record<string, unknown>;
     };
   };

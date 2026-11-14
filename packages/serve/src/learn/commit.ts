@@ -33,6 +33,10 @@ export type LearningChange =
        *  it (a person retired or approved it, another run's merge changed it) is a conflict, never written over. The
        *  script checks it on main as it commits. Optional, past COMMIT-API.md v1. */
       seed?: string;
+      /** A file checked against another commit than `seed`, by its path: a workflow the run's compile turn revised from
+       *  main's text, against the commit it read that text at (a change to it before that read is what the revision was
+       *  written over; one after it is a conflict). */
+      bases?: Readonly<Record<string, string>>;
       /** New notes written over the note main holds by the same name: each one the run's note supersedes by its own
        *  name (the learning loop's takenOnMain), its blob on main in `graded`, so a change since is a conflict. Any
        *  other new note main holds a note by when the merge commits is left out alone (`left`, `taken`). */
@@ -244,7 +248,10 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
       by: { run: change.runId, reason: change.reason, ...(change.round !== undefined && change.round > 1 ? { round: change.round } : {}) },
       writes: [...files].map(([path, text]) => ({ path, text })),
       absent: added.map((note) => note.file),
-      ...(change.seed ? { same: [...change.files.filter(({ path }) => !isNote(path)).map(({ path }) => path), ...retiring].map((path) => ({ commit: change.seed!, path })) } : {}),
+      ...(change.seed || change.bases ? { same: [...change.files.filter(({ path }) => !isNote(path)).map(({ path }) => path), ...retiring].flatMap((path) => {
+        const commit = change.bases?.[path] ?? change.seed;
+        return commit ? [{ commit, path }] : [];
+      }) } : {}),
     },
   };
 }

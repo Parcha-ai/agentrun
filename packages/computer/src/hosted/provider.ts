@@ -59,6 +59,7 @@ import {
 	type ReleaseHow,
 	runLifetimeMs,
 } from "../provider.js";
+import type { DaemonMethod, DaemonMethods } from "../protocol.js";
 import { type ComputerError, failFor, ok, type Result } from "../result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "../screen-watch.js";
 import { countTested } from "../test-connection.js";
@@ -899,9 +900,11 @@ export class HostedProvider implements ComputerProvider {
 		return { version: VERSION, ...(uid === undefined || gid === undefined ? {} : { uid, gid }), arch: this.host.facts.arch, kind, groups };
 	}
 
-	/** One stdio bridge into the machine, after hello, unchecked. */
-	#open(ref: ComputerRef, signal?: AbortSignal, helloMs = this.#timeouts.helloMs): Promise<Opened> {
-		return openBridge(this.host, ref.id, { argv: hostedCommands().stdio, name: ref.name, version: VERSION, requestMs: this.#timeouts.requestMs, helloMs, ...(signal ? { signal } : {}) });
+	/** One stdio bridge into the machine, after hello, unchecked; its client says so once the machine is deleted. */
+	async #open(ref: ComputerRef, signal?: AbortSignal, helloMs = this.#timeouts.helloMs): Promise<Opened> {
+		const { requestMs } = this.#timeouts;
+		const opened = await openBridge(this.host, ref.id, { argv: hostedCommands().stdio, name: ref.name, version: VERSION, requestMs, helloMs, ...(signal ? { signal } : {}) });
+		return opened.ok ? ok(deletedSaid(this.host, ref, this.#label, requestMs, opened.value)) : opened;
 	}
 
 	/** #open, tried again while the bridge finds no daemon listening, until hello or helloMs in all. */
@@ -1310,6 +1313,76 @@ export async function foundBy(
 async function readMachine(host: MachineHost, id: string, ms: number, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
 	const read = await hostCall(host, `the read of ${id}`, (ctx) => host.get(id, ctx), ms, signal);
 	return !read.ok && read.error.code === "not_found" ? ok(undefined) : read;
+}
+
+/** What reading answers, or undefined once a signal aborts first: a caller that stopped waiting never waits on a read. */
+function untilAborted<T>(reading: Promise<T>, signals: readonly (AbortSignal | undefined)[]): Promise<T | undefined> {
+	const given = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+	if (given.length === 0) return reading;
+	const signal = AbortSignal.any(given);
+	if (signal.aborted) return Promise.resolve(undefined);
+	return new Promise((settle) => {
+		const onAbort = () => settle(undefined);
+		signal.addEventListener("abort", onAbort, { once: true });
+		reading.then((value) => {
+			signal.removeEventListener("abort", onAbort);
+			settle(value);
+		});
+	});
+}
+
+/**
+ * A connection that says its computer was deleted (the vendor's own API can delete it mid-run). Once its client answers
+ * gone (the stream ended or failed), the machine is read once, and that one read answers every call in flight at that
+ * moment and every later call. A machine the vendor no longer has, or reads going, makes each of them not_found in these
+ * words; one still there, or a read that failed, leaves the client's own answer, as does a caller's abort or a close
+ * during the read. A call with no answer by its own timeout answers timeout at once, as the client says; the machine is
+ * read beside it, and a deleted one ends the connection, so every call still waiting on the hung transport and every
+ * later call answers not_found. A connection its caller closed is never read back.
+ */
+function deletedSaid(host: MachineHost, ref: ComputerRef, label: string, requestMs: number, connection: ComputerConnection): ComputerConnection {
+	const { client } = connection;
+	const closing = new AbortController();
+	let deleted: ComputerError | undefined;
+	let ended: Promise<ComputerError | undefined> | undefined;
+	let checking: Promise<ComputerError | undefined> | undefined;
+	const read = async (): Promise<ComputerError | undefined> => {
+		const got = await readMachine(host, ref.id, requestMs, closing.signal);
+		if (got.ok && (got.value === undefined || got.value.state === "going") && deleted === undefined && !closing.signal.aborted) {
+			const how = got.value === undefined ? `${label} no longer has it` : `${label} reads it going`;
+			deleted = { code: "not_found", message: `the computer ${ref.name} (${ref.id}) was deleted: ${how}` };
+			// Every call still waiting on the transport settles now, with these words, as later ones do.
+			void connection.close();
+		}
+		return deleted;
+	};
+	const close = () => {
+		closing.abort();
+		return connection.close();
+	};
+	return {
+		...connection,
+		client: {
+			async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }): Promise<Result<DaemonMethods[M]["result"]>> {
+				if (deleted) return { ok: false, error: deleted };
+				const answered = await client.call(method, params, options);
+				if (answered.ok) return answered;
+				if (deleted) return { ok: false, error: deleted };
+				if (closing.signal.aborted) return answered;
+				if (answered.error.code === "timeout") {
+					checking ??= read().finally(() => (checking = undefined));
+					return answered;
+				}
+				if (answered.error.code !== "gone") return answered;
+				const found = await untilAborted((ended ??= read()), [options?.signal, closing.signal]);
+				return found ? { ok: false, error: found } : answered;
+			},
+			close() {
+				void close();
+			},
+		},
+		close,
+	};
 }
 
 /**
