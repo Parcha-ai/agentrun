@@ -7,6 +7,7 @@ import { RunError } from "@/components/RunError";
 import { ArtifactViewer, listedFiles, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
 import { NativeRun } from "@/components/NativeRun";
+import { RunLearningResult } from "@/components/RunLearningResult";
 import { ScreenPanel, useRunScreen } from "@/components/RunScreen";
 import { ComputerAskCard } from "@/components/ComputerAskCard";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,7 @@ import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
 import { askedAt, askOf, computerRefusal } from "@/lib/computerAsk";
 import { runEnded } from "@/lib/format";
 import { BY_THE_MINUTE } from "@/lib/computers";
-import { type LearningDiff, learningSteps } from "@/lib/learning";
+import { type LearningDiff, type RunLearningResultData, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
@@ -66,8 +67,10 @@ export type RunDetailProps = {
   onHandBack?: (outcome?: HandBackOutcome) => Promise<ComputerHoldAnswer>;
   /** Reads the computer kinds and providers (GET /v2/computers): whether the run's provider is metered. */
   readComputers?: () => Promise<Computers>;
+  /** The recorded grader result and provenance, read only when the Learning tab opens. */
+  readLearningResult?: () => Promise<RunLearningResultData | null>;
 };
-type Tab = "graph" | "report" | "timeline" | "files" | "screen";
+type Tab = "graph" | "report" | "timeline" | "files" | "screen" | "learning";
 
 /** The message box's words while a tool call waits on an approval: a message declines the call, and the agent reads it. */
 const DECLINES = { label: "Decline and say what to do instead", placeholder: "Tell the agent what to do instead...", does: "Sending it declines the waiting call; the agent reads your message." };
@@ -104,7 +107,7 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, outputSchema, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readComputer, computerEvery, onTakeOver, onHandBack, readComputers }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, outputSchema, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readLearningResult, readComputer, computerEvery, onTakeOver, onHandBack, readComputers }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const native = run.native;
   const sdk = backendSdkOf(run);
@@ -207,7 +210,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${listedFiles(files, showHidden).length}`], ...(hasScreen ? [["screen", "Screen"] as [Tab, string]] : [])];
+  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ...(run.learning ? [["learning", "Learning"] as [Tab, string]] : []), ["files", `Files ${listedFiles(files, showHidden).length}`], ...(hasScreen ? [["screen", "Screen"] as [Tab, string]] : [])];
   return (
     // On a short screen (a phone on its side) the page scrolls as a whole, in <main>: the header, the tabs and the composer
     // keep their own heights and the tab body takes what it needs, instead of what is left of 390 px (nothing).
@@ -243,6 +246,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} ended={runEnded(run.status)} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} files={files} onOpen={show} />}
           {(tab === "report" || tab === "timeline") && <RunUsed used={used} agentId={run.agent_id} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
+          {tab === "learning" && <RunLearningResult key={run.run_id} run={run} read={readLearningResult} onViewChanges={changes ? () => setTab("report") : undefined} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}
           {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered}
             onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} />}

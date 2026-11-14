@@ -1,13 +1,14 @@
 import { Brain, CalendarClock, ChevronDown, Code, Hammer, History, LayoutGrid, LayoutTemplate, LogOut, Menu, Monitor, Moon, Settings, Sun } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ConnectionBanner } from "@/components/Connection";
+import { DojoIcon } from "@/components/DojoIcon";
 import { Button, NavItem } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
-export type Section = "mission" | "playground" | "agents" | "runs" | "templates" | "triggers" | "settings";
+export type Section = "mission" | "playground" | "agents" | "runs" | "dojo" | "templates" | "triggers" | "settings";
 
-const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", templates: "#/templates", triggers: "#/triggers", settings: "#/settings/keys" };
+const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", templates: "#/templates", triggers: "#/triggers", settings: "#/settings/keys" };
 const THEME_LABEL: Record<Theme, [string, typeof Brain]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
 
 /** System (the OS's), Light or Dark: a pick shows at once and is kept in this browser (lib/theme). */
@@ -84,6 +85,7 @@ export function Shell({ active, settings = false, triggers = false, banners, bui
               </div>
             </div>
             {triggers && <NavItem className="w-full" active={active === "triggers"} onClick={() => navigate("triggers")}><CalendarClock className="size-4 shrink-0" aria-hidden />Triggers</NavItem>}
+            <NavItem className="w-full" active={active === "dojo"} onClick={() => navigate("dojo")}><DojoIcon size={16} className="shrink-0" />Learning Dojo</NavItem>
           </div>
           {settings && <div data-sidebar-account className="mt-auto border-t pb-2 pt-3">
             <NavItem className="w-full" active={active === "settings"} onClick={() => navigate("settings")}><Settings className="size-4 shrink-0" aria-hidden />Settings</NavItem>

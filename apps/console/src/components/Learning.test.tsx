@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LearningTab, type LearningProps } from "./Learning";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
@@ -47,7 +47,7 @@ const RUNS: Run[] = [
 ];
 
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.restoreAllMocks(); });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
 type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }>; promote?: (name: string, key: string) => Promise<Agent>; promotions?: () => Promise<Promotions>; loop?: () => Promise<LearningLoop>; cost?: () => Promise<LearningCost> };
@@ -88,8 +88,217 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
   };
   const key = async (el: Element, k: string, mod: { ctrlKey?: boolean; metaKey?: boolean } = {}) => { await act(async () => { el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, ...mod })); }); await settle(); };
-  return { host, calls, agents, button, click, card, type, key, text: () => host.textContent ?? "" };
+  const render = async (next: Agent) => {
+    act(() => root!.render(createElement(LearningTab, { agent: next, v2: v2 as never, onAgent: (x: Agent) => agents.push(x), ...props })));
+    await settle();
+  };
+  return { host, calls, agents, button, click, card, type, key, render, text: () => host.textContent ?? "" };
 }
+
+describe("refreshing learning after external work", () => {
+  const focus = async () => { await act(async () => { window.dispatchEvent(new Event("focus")); }); await settle(); };
+  const none = () => view({ index: "", notes: { items: [], total: 0, next_cursor: null } });
+
+  it("refreshes notes, run feedback and the next-run index when returning to the window", async () => {
+    let current = view();
+    const fake: Fake = { learning: async () => current, runs: [] };
+    const t = await open(agent(true), fake);
+    current = view({ index: "A newly learned policy", notes: { items: [note("new.md", "Fresh external learning")], total: 1, next_cursor: null } });
+    fake.runs = [runOf("new-run", "External task", { state: "dropped", reason: "grader", detail: "This example was too specific.", at: "2026-11-04T00:00:00Z" })];
+    await focus();
+    expect(t.card("Fresh external learning")).not.toBeNull();
+    expect(t.card("Keep it to three lines")).toBeNull();
+    expect(t.text()).toContain("This example was too specific.");
+    await t.click(/^What the next run reads/);
+    expect(t.text()).toContain("A newly learned policy");
+    expect(t.calls.filter((call) => call === "learning refunds")).toHaveLength(2);
+  });
+
+  it.each(["edit", "add", "retire"])("keeps an active %s intact even when an earlier background reply arrives", async (action) => {
+    let release!: (result: AgentLearning) => void;
+    let reads = 0;
+    const t = await open(agent(true), { learning: () => ++reads === 1 ? Promise.resolve(view()) : new Promise((resolve) => { release = resolve; }) });
+    await focus();
+    expect(reads).toBe(2);
+    if (action === "edit") await t.click(/^Edit Try/);
+    else if (action === "add") await t.click(/^Add a note$/);
+    else await t.click(/^Retire Keep/);
+    const selector = action === "retire" ? '[role="alertdialog"]' : `section[aria-label="${action === "edit" ? "Edit" : "New"} note"]`;
+    const held = t.host.querySelector(selector)!;
+    expect(t.button(/^Refresh learning$/)?.disabled).toBe(true);
+    const draft = held.querySelector("textarea");
+    if (draft) await t.type(draft, "Keep this unsaved draft.");
+    await act(async () => { release(none()); });
+    await settle();
+    expect(t.host.querySelector(selector)).toBe(held);
+    if (draft) expect(draft.value).toBe("Keep this unsaved draft.");
+    await focus();
+    expect(reads).toBe(2);
+    if (action === "retire") await t.key(held, "Escape");
+    else await t.click(/^Cancel$/);
+    expect(t.button(/^Refresh learning$/)?.disabled).toBe(false);
+    await focus();
+    expect(reads).toBe(3);
+    await act(async () => { release(none()); });
+    await settle();
+    expect(t.text()).toContain("Nothing learned yet.");
+  });
+
+  it.each(["retired", "superseded"] as const)("keeps a newly opened dirty editor when a pending manual reply moves its note to %s", async (status) => {
+    let release!: (result: AgentLearning) => void;
+    let reads = 0;
+    const moved = view();
+    moved.notes.items = moved.notes.items.map(x => x.file === FIRST ? { ...x, status, superseded_by: status === "superseded" ? MINE : null } : x);
+    const t = await open(agent(true), { learning: () => ++reads === 1 ? Promise.resolve(view()) : reads === 2 ? new Promise(resolve => { release = resolve; }) : Promise.resolve(moved) });
+    await t.click(/^Refresh learning$/);
+    expect(reads).toBe(2);
+    await t.click(/^Edit Try/);
+    const editor = t.host.querySelector('section[aria-label="Edit note"]')!;
+    const draft = editor.querySelector("textarea")!;
+    await t.type(draft, "Keep this draft typed after the manual refresh started.");
+    await act(async () => { release(moved); });
+    await settle();
+    expect(t.host.querySelector('section[aria-label="Edit note"]')).toBe(editor);
+    expect(draft.isConnected).toBe(true);
+    expect(draft.value).toBe("Keep this draft typed after the manual refresh started.");
+    expect(t.calls.some(c => c.startsWith("write ") || c.startsWith("retire "))).toBe(false);
+    expect(t.button(/^Refresh learning$/)?.disabled).toBe(true);
+    await t.click(/^Cancel$/);
+    expect(t.button(/^Refresh learning$/)?.disabled).toBe(false);
+    await t.click(/^Refresh learning$/);
+    expect(reads).toBe(3);
+    expect(t.host.querySelector('section[aria-label="Edit note"]')).toBeNull();
+    expect(t.text()).toContain("1 note in use.");
+  });
+
+  it("applies a successful retire's own refresh while the retiring confirmation still holds its card", async () => {
+    let release!: (result: AgentLearning) => void;
+    let reads = 0;
+    const moved = view();
+    moved.notes.items = moved.notes.items.map(x => x.file === MINE ? { ...x, status: "retired" as const } : x);
+    const t = await open(agent(true), { learning: () => ++reads === 1 ? Promise.resolve(view()) : new Promise(resolve => { release = resolve; }) });
+    await t.click(/^Retire Keep/);
+    await t.click(/^Yes, retire$/);
+    expect(reads).toBe(2);
+    expect(t.calls.filter(c => c.startsWith("retire "))).toEqual([`retire ${MINE} "v-${MINE}"`]);
+    expect(t.host.querySelector('[role="alertdialog"]')).not.toBeNull();
+    expect(t.button(/^Refresh learning$/)?.disabled).toBe(true);
+    await act(async () => { release(moved); });
+    await settle();
+    expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(t.text()).toContain("1 note in use.");
+    expect(t.button(/^Refresh learning$/)?.disabled).toBe(false);
+  });
+
+  it.each(["note", "skill"])("keeps a %s restore confirmation on its reviewed version while a background reply arrives", async (kind) => {
+    let release!: (result: AgentLearning) => void;
+    let reads = 0;
+    const retired = none();
+    if (kind === "note") retired.notes = { items: [note("old.md", "Retired policy", { status: "retired", etag: '"old-v1"' })], total: 1, next_cursor: null };
+    else retired.skills = [{ name: "retired-policy", file: "skills/retired-policy/SKILL.md", description: "An earlier policy", status: "retired", run: null, bytes: 80, etag: '"old-v1"' }];
+    const t = await open(agent(true), { learning: () => ++reads === 1 ? Promise.resolve(retired) : reads === 2 ? new Promise((resolve) => { release = resolve; }) : Promise.resolve(none()) });
+    await focus();
+    await t.click(kind === "note" ? /^Earlier notes/ : /^Earlier skills/);
+    await t.click(kind === "note" ? /^Restore Retired policy$/ : /^Restore retired-policy$/);
+    const confirm = t.host.querySelector('[role="alertdialog"]')!;
+    expect(confirm).not.toBeNull();
+    expect(t.button(/^Refresh learning$/)?.disabled).toBe(true);
+    await act(async () => { release(none()); }); await settle();
+    expect(t.host.querySelector('[role="alertdialog"]')).toBe(confirm);
+    await focus();
+    expect(reads).toBe(2);
+    await t.key(confirm, "Escape");
+    expect(t.button(/^Refresh learning$/)?.disabled).toBe(false);
+    await focus();
+    expect(reads).toBe(3);
+    expect(t.text()).toContain("Nothing learned yet.");
+  });
+
+  it("keeps an approval in progress until its own refresh completes", async () => {
+    let releaseRead!: (result: AgentLearning) => void;
+    let releaseApproval!: (result: unknown) => void;
+    let reads = 0;
+    const waiting = view({ notes: { items: [note(FIRST, "Review this policy", { status: "pending", etag: '"v1"' })], total: 1, next_cursor: null } });
+    const t = await open(agent(true), { learning: () => ++reads === 1 ? Promise.resolve(waiting) : new Promise((resolve) => { releaseRead = resolve; }), caps: { learning: { pending: true, approve: true } }, approve: () => new Promise((resolve) => { releaseApproval = resolve; }) });
+    await focus();
+    await t.click(/^Approve Review/);
+    await act(async () => { releaseRead(none()); });
+    await settle();
+    expect(t.button(/^Approve Review/)?.textContent).toBe("Approving");
+    await focus();
+    expect(reads).toBe(2);
+    await act(async () => { releaseApproval({}); });
+    await settle();
+    expect(reads).toBe(3);
+    await act(async () => { releaseRead(none()); });
+    await settle();
+    expect(t.text()).toContain("Nothing learned yet.");
+  });
+
+  it("resumes refreshing after an immediately refused approval", async () => {
+    const waiting = view({ notes: { items: [note(FIRST, "Review this policy", { status: "pending", etag: '"v1"' })], total: 1, next_cursor: null } });
+    let reads = 0;
+    const t = await open(agent(true), { learning: async () => ++reads === 1 ? waiting : none(), caps: { learning: { pending: true, approve: true } }, approve: async () => { throw new ClientError(412, "precondition_failed", "Changed elsewhere."); } });
+    await t.click(/^Approve Review/);
+    expect(t.button(/^Approve Review/)?.disabled).toBe(false);
+    await focus();
+    expect(reads).toBe(2);
+    expect(t.text()).toContain("Nothing learned yet.");
+  });
+
+  it("preserves additional note pages until an explicit refresh, then resumes automatic updates", async () => {
+    const first = view();
+    first.notes.next_cursor = "older-notes";
+    let reads = 0;
+    const t = await open(agent(true), { learning: async () => ++reads === 1 ? first : view(), notes: async () => ({ items: [note("older.md", "Older learned note")], total: 4, next_cursor: "still-older" }) });
+    await t.click(/^Load more notes$/);
+    await focus();
+    expect(t.card("Older learned note")).not.toBeNull();
+    expect(t.calls.filter((call) => call === "learning refunds")).toHaveLength(1);
+    await t.click(/^Refresh learning$/);
+    expect(reads).toBe(2);
+    expect(t.card("Older learned note")).toBeNull();
+    expect(t.button(/^Load more notes$/)).toBeUndefined();
+    await focus();
+    expect(reads).toBe(3);
+  });
+
+  it("polls only while visible and removes the timer and listeners on unmount", async () => {
+    let tick!: () => void;
+    const interval = vi.spyOn(window, "setInterval").mockImplementation((callback) => { tick = callback as () => void; return 123 as unknown as ReturnType<typeof window.setInterval>; });
+    const clear = vi.spyOn(window, "clearInterval");
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    const t = await open(agent(true));
+    expect(interval).toHaveBeenCalledWith(expect.any(Function), 15_000);
+    await act(async () => { tick(); }); await settle();
+    expect(t.calls.filter((call) => call === "learning refunds")).toHaveLength(2);
+    hidden.mockReturnValue(true);
+    await act(async () => { tick(); window.dispatchEvent(new Event("focus")); }); await settle();
+    expect(t.calls.filter((call) => call === "learning refunds")).toHaveLength(2);
+    hidden.mockReturnValue(false);
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); }); await settle();
+    expect(t.calls.filter((call) => call === "learning refunds")).toHaveLength(3);
+    act(() => root!.unmount()); root = undefined;
+    expect(clear).toHaveBeenCalledWith(123);
+    await focus();
+    expect(t.calls.filter((call) => call === "learning refunds")).toHaveLength(3);
+  });
+
+  it("clears prior-agent drafts and ignores prior-agent background responses after navigation", async () => {
+    let release!: (result: AgentLearning) => void;
+    let reads = 0;
+    const newer = view({ agent: "invoices", notes: { items: [note("invoice.md", "Check invoice totals")], total: 1, next_cursor: null } });
+    const t = await open(agent(true), { learning: () => ++reads === 1 ? Promise.resolve(view()) : reads === 2 ? new Promise((resolve) => { release = resolve; }) : Promise.resolve(newer) });
+    await focus();
+    await t.click(/^Edit Try/);
+    await t.render({ ...agent(true), agent_id: "invoices" });
+    expect(t.host.querySelector('section[aria-label="Edit note"]')).toBeNull();
+    expect(t.card("Check invoice totals")).not.toBeNull();
+    await act(async () => { release(view()); }); await settle();
+    expect(t.card("Check invoice totals")).not.toBeNull();
+    expect(t.card("Try /policies/refund-policy first")).toBeNull();
+  });
+});
 
 describe("the Learning tab's notes", () => {
   it("tells apart two runs started in the same second that learned notes, when it has no title for them", async () => {
@@ -1643,5 +1852,34 @@ describe("learning-loop integration with source-owned execution", () => {
     expect(story.textContent).toContain("MCP with explicitly bound tools");
     expect(story.textContent).not.toContain("serves first");
     expect(story.querySelector('[data-testid="stage-cheaper"]')).toBeNull();
+  });
+});
+
+
+describe("learning-loop refresh integration", () => {
+  it.each(["loop", "promotions"] as const)("an in-flight %s background read cannot change the reviewed learning snapshot", async kind => {
+    let release!: () => void;
+    let reads = 0;
+    const marker = "late-workflow-after-edit";
+    const emptyLoop: LearningLoop = { agent: "refunds", compiles: [], guards: [] };
+    const emptyPromotions: Promotions = { agent: "refunds", promotions: [], serving: [] };
+    const lateLoop: LearningLoop = { ...emptyLoop, compiles: [{ run_id: "late-run", round: 1, at: "2026-11-05T10:00:00Z", workflow: marker, from_notes: [], attempts: [{ ok: false, errors: ["late draft"] }], digest: null, promoted: null, draft_errors: ["late draft"], withheld: false }] };
+    const latePromotions: Promotions = { ...emptyPromotions, promotions: [{ workflow: marker, digest: "a".repeat(16), at: "2026-11-05T10:00:00Z", source: "replay", decided: "hold", reason: "late decision" }] };
+    const fake: Fake = kind === "loop"
+      ? { loop: () => ++reads === 1 ? Promise.resolve(emptyLoop) : new Promise(resolve => { release = () => resolve(lateLoop); }) }
+      : { promotions: () => ++reads === 1 ? Promise.resolve(emptyPromotions) : new Promise(resolve => { release = () => resolve(latePromotions); }) };
+    const t = await open(agent(true), fake);
+    await act(async () => { window.dispatchEvent(new Event("focus")); }); await settle();
+    expect(reads).toBe(2);
+    await t.click(/^Edit Try/);
+    const draft = t.host.querySelector('section[aria-label="Edit note"] textarea')!;
+    await t.type(draft, "Keep this draft and its reviewed snapshot.");
+    await act(async () => { release(); }); await settle();
+    expect(t.text()).not.toContain(marker);
+    expect((draft as HTMLTextAreaElement).value).toBe("Keep this draft and its reviewed snapshot.");
+    await t.click(/^Cancel$/);
+    await act(async () => { window.dispatchEvent(new Event("focus")); }); await settle();
+    await act(async () => { release(); }); await settle();
+    expect(t.text()).toContain(marker);
   });
 });

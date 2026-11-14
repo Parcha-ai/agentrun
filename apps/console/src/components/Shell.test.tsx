@@ -19,7 +19,16 @@ function mount(props: Partial<ComponentProps<typeof Shell>> = {}) {
 }
 
 describe("Shell's hosted navigation", () => {
-
+  it("offers Learning Dojo as a separate active destination", () => {
+    const onNavigate = vi.fn();
+    const { host } = mount({ active: "dojo", onNavigate });
+    const dojo = [...host.querySelectorAll<HTMLButtonElement>('nav button')].find((b) => b.textContent?.trim() === "Learning Dojo")!;
+    expect(dojo).toBeTruthy();
+    expect(dojo.getAttribute("aria-current")).toBe("page");
+    expect(dojo.closest("#agent-navigation")).toBeNull();
+    act(() => dojo.click());
+    expect(onNavigate).toHaveBeenCalledWith("dojo");
+  });
 
   it("groups working local agent destinations and leaves Settings at the foot", () => {
     const onNavigate = vi.fn();
@@ -127,8 +136,8 @@ describe("Shell's navigation", () => {
     return [...host.querySelectorAll('nav[aria-label="Navigation"] button')].map((b) => b.textContent?.trim());
   };
   it("offers Triggers where the server has them, after Runs, and not where it does not", () => {
-    expect(items(true)).toEqual(["Mission Control", "API playground", "Agents", "Build", "Connected agents", "Templates", "Runs", "Triggers"]);
+    expect(items(true)).toEqual(["Mission Control", "API playground", "Agents", "Build", "Connected agents", "Templates", "Runs", "Triggers", "Learning Dojo"]);
     act(() => root?.unmount());
-    expect(items(false)).toEqual(["Mission Control", "API playground", "Agents", "Build", "Connected agents", "Templates", "Runs"]);
+    expect(items(false)).toEqual(["Mission Control", "API playground", "Agents", "Build", "Connected agents", "Templates", "Runs", "Learning Dojo"]);
   });
 });
