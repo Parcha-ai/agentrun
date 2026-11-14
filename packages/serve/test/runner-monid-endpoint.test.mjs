@@ -248,6 +248,7 @@ test("a call priced by usage under ask that the person denies sends nothing to m
 
 test("a call priced by usage under ask that the person allows reads monid's estimate once, after the allow, then sends the call once, held at it", async (t) => {
   const sent = callLog(t);
+  charging(t, 0.003);
   const one = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, launch: { max_cost_usd: 1 }, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
   assert.equal(one.row.state, "parked", JSON.stringify(one.row));
   assert.deepEqual(sent.all(), [], "nothing before the allow");
@@ -269,48 +270,29 @@ function stallMonid(t) {
 test("a call priced by usage has its estimate read marked on the run's ledger before it is sent, so a crash while monid holds it leaves its possible charge on record; refused unrun, the mark is given back, no charge", async (t) => {
   const sent = callLog(t);
   stallMonid(t);
+  charging(t, 0.003);
   const { spec } = await specFor(t, { body: { tools: [SEARCH], monidPin: USAGE_PIN }, keys: { MONID_API_KEY: KEY }, env: env() });
+  const [search] = spec.mcp.tools;
   const paid = await toolLedger(1);
-  const read = bookedIn({ call: "c1", paid }, async () => spec.mcp.priceOf(SEARCH, { callId: "c1", args: SEARCH_ARGS }));
+  const answer = bookedIn({ call: "c1", paid }, () => search.call(SEARCH_ARGS, { callId: "c1", signal: new AbortController().signal, attempt: 0 }));
   await stalled();
   const marked = paidBookings(await paid.records()).filter((row) => row.call === "c1");
-  assert.deepEqual(marked.map((row) => [row.kind, row.tool, row.charged_by]), [["agentrun.tool_started", SEARCH, "monid"]], `marked while monid holds the read: ${JSON.stringify(marked)}`);
+  assert.deepEqual(marked.map((row) => [row.kind, row.tool, row.charged_by, row.heldUsd]), [["agentrun.tool_started", SEARCH, "monid", 0]], `marked while monid holds the read: ${JSON.stringify(marked)}`);
+  // The read answers (refused unrun, naming the estimate); the call is then sent and held too: let both go.
   releaseHeld();
-  assert.deepEqual(await read, { estimate_usd: 0.003 });
+  await stalled();
+  releaseHeld();
+  assert.equal((await answer).isError, undefined);
   const settled = paidBookings(await paid.records()).filter((row) => row.call === "c1");
-  assert.deepEqual(settled.map((row) => row.kind), ["agentrun.tool_started"], `refused unrun: given back, no charge row: ${JSON.stringify(settled)}`);
-  assert.deepEqual(sent().map((call) => call.maxCost), [0]);
+  assert.deepEqual(settled.map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", 0], ["agentrun.tool_started", 0.003], ["agentrun.tool_cost", 0.003]], `the read given back, no charge row; the call held at its estimate: ${JSON.stringify(settled)}`);
+  assert.deepEqual(sent().map((call) => call.maxCost), [0, 0.003]);
 });
 
-test("a call priced by usage with no run's ledger to book its estimate read on is never read: its card has no price, nothing is sent", async (t) => {
+test("a call priced by usage shows \"priced by usage\" on its card, read from its pin: monid is sent nothing for it", async (t) => {
   const sent = callLog(t);
   const { spec } = await specFor(t, { body: { tools: [SEARCH], monidPin: USAGE_PIN }, keys: { MONID_API_KEY: KEY }, env: env() });
-  assert.equal(await spec.mcp.priceOf(SEARCH, { callId: "c1", args: SEARCH_ARGS }), undefined);
-  assert.deepEqual(sent(), [], "never sent");
-});
-
-test("a card's estimate read is cut off by the run's stop and by the claim's release, never left running at monid", async (t) => {
-  callLog(t);
-  stallMonid(t);
-  const { spec } = await specFor(t, { body: { tools: [SEARCH], monidPin: USAGE_PIN }, keys: { MONID_API_KEY: KEY }, env: env() });
-  const paid = await toolLedger(1);
-  // Stopped: the run's stop signal reaches the read.
-  const stop = new AbortController();
-  const stoppedRead = bookedIn({ call: "c1", paid }, async () => spec.mcp.priceOf(SEARCH, { callId: "c1", args: SEARCH_ARGS, signal: stop.signal }));
-  const first = await stalled();
-  assert.equal(first.aborted, false, "held while the run goes on");
-  stop.abort(new Error("the run was stopped"));
-  assert.equal(first.aborted, true, "the stop cuts the read off");
-  releaseHeld();
-  await stoppedRead;
-  // Released: the claim letting its tools go cuts off a read still out.
-  const releasedRead = bookedIn({ call: "c2", paid }, async () => spec.mcp.priceOf(SEARCH, { callId: "c2", args: SEARCH_ARGS }));
-  const second = await stalled();
-  assert.equal(second.aborted, false, "held while the claim holds it");
-  spec.mcp.release();
-  assert.equal(second.aborted, true, "the claim's release cuts the read off");
-  releaseHeld();
-  await releasedRead;
+  assert.equal(spec.mcp.priceOf(SEARCH), "priced by usage");
+  assert.deepEqual(sent.all(), [], "never sent");
 });
 
 test("past the deferral threshold, tools_search finds a pinned endpoint by what it does, with its pinned input", async (t) => {

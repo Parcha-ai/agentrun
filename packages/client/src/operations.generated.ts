@@ -298,9 +298,7 @@ export type RunSummary = {
     call_id: string;
     args_preview: string;
     requested_at: string;
-    price?: number | "not metered" | {
-      estimate_usd: number;
-    };
+    price?: number | "not metered" | "priced by usage";
     destructive?: true;
   } | {
     kind: "budget";
@@ -547,9 +545,7 @@ export type Run = {
     call_id: string;
     args_preview: string;
     requested_at: string;
-    price?: number | "not metered" | {
-      estimate_usd: number;
-    };
+    price?: number | "not metered" | "priced by usage";
     destructive?: true;
   } | {
     kind: "budget";

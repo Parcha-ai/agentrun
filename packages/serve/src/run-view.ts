@@ -160,11 +160,7 @@ export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decisio
 /** An `agentrun.ask` entry's data: the tool call the gate parked for a person, as the runner wrote it. */
 type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: ApprovalPrice | null; destructive?: true };
 /** An ask's price as its card shows it (tool-gate.ts ApprovalPrice); undefined for none, or one of no known shape. */
-const priceOfAsk = (price: unknown): ApprovalPrice | undefined => {
-  if (typeof price === "number" || price === "not metered") return price;
-  const estimate = (price as { estimate_usd?: unknown } | null | undefined)?.estimate_usd;
-  return typeof estimate === "number" ? { estimate_usd: estimate } : undefined;
-};
+const priceOfAsk = (price: unknown): ApprovalPrice | undefined => (typeof price === "number" || price === "not metered" || price === "priced by usage" ? price : undefined);
 /** An `agentrun.answer` entry's data: the person's answer the runner wrote, or a withdrawal when the run was stopped or
  *  cancelled while the call waited. */
 type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn" | "canceled"; answeredAt?: string; note?: string; by?: "message" | "setting"; superseded?: { decision: string; answeredAt?: string } };

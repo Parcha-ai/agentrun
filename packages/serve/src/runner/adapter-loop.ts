@@ -400,10 +400,6 @@ export interface AdapterLoopOptions {
 /** The most of a harness's own turn error a failed run's summary keeps. */
 const TURN_ERROR_MAX = 500;
 
-/** A call's card price, read when its ask is first written: the price, and the stop's words if the read stopped the run
- *  for good (a monid read that ran the call and charged above its $0 hold). */
-type PriceRead = () => Promise<{ price: ApprovalPrice | null; stopped?: string }>;
-
 /** A paid call's refusal an earlier claim kept (KINDS.pausePending) whose pause never landed: the newest one with no
  *  pause (KINDS.budget), no end and no park on a person's question (KINDS.personAsked: the turn ended on the ask with no
  *  next request, so the refusal is spent, and the person's answer is no retry of the call) after it. Undefined when there
@@ -878,8 +874,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let computerNow: JournalHold | undefined;
   /** The run's computer held for its owner, for the current pass (AdapterRunSpec.held). */
   let heldNow: JournalHeld | undefined;
-  /** The current pass's paid tool calls and its pause (RunLedger): what a card's price read books on (priceFor). */
-  let paidNow: Pick<RunLedger, "paid" | "pause"> | undefined;
   /** The current pass's computer for the computer call channel (AdapterRunSpec.computer), and how a call's entry is
    *  committed on the run's root through the pass's Harness. */
   let channelNow: { readonly computer: LoopComputer; readonly commit: (entries: readonly { kind: string; data: Record<string, unknown> }[]) => Promise<void> } | undefined;
@@ -1636,7 +1630,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // outside any) and its decisions (ledger.decisions). Its last refusal is kept: a turn it ended ends the run in its
         // words.
         const paid = ledger.paid;
-        paidNow = ledger;
         let refused: Refusal | undefined;
         /** The pause a refusal for room journaled before pi heard of it (pauseAtCap), the run parked with it. */
         let pausedAtRefusal = false;
@@ -1991,7 +1984,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const bySetting = now === "allow" && (await askStands(toolContext.callId));
               if (now === "ask" || bySetting) {
                 const call = { callId: toolContext.callId, tool: name, args: (args ?? {}) as Record<string, unknown> };
-                const price = priceFor(name, call);
+                const price = mcp?.priceOf(name) ?? null;
                 const answer = bySetting ? await allowedBySetting(call, price, asked) : await answerOf(call, price, asked);
                 if (answer === "park") return await heldUntilAborted(toolContext.signal);
                 if (!answer.approved) return { text: refusedText(asked, answer.note?.trim() ? answer.note : undefined, "unknown"), isError: true };
@@ -2850,7 +2843,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const args = shown ? { ...shown, ...Object.fromEntries(Object.entries((call.args ?? {}) as Record<string, unknown>).filter(([key]) => !Object.hasOwn(shown, key))) } : call.args;
       // The call on the record before its ask (beforeAsk), with the input its model gave it.
       await beforeAsk?.(call);
-      const price = priceFor(tool, call);
+      // Its price on the card: a catalog tool's (an MCP tool's, a monid endpoint's pinned price), else none.
+      const price = mcp?.priceOf(tool) ?? null;
       // Marked destructive when the tool is, or when any MCP tool the one allow lets run is (the gate's `mcp_calls`, a
       // learned workflow's MCP calls set to ask): that allow takes the second confirm too.
       const covered = Array.isArray(shown?.mcp_calls) ? shown.mcp_calls.filter((name): name is string => typeof name === "string") : [];
@@ -2869,29 +2863,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     };
   }
 
-  /** A call's price on its card, read when its ask is first written and never for an ask already journaled (a resume
-   *  answers the card the person saw): a catalog tool's (an MCP tool's, a monid endpoint's pinned price or, priced by
-   *  usage, monid's estimate for this call's input, which reads monid), else none. The read ends with the claim or the
-   *  run's stop, and is booked under the call on the pass's ledger: a read monid ran (a free run) books its charge, and
-   *  one that stopped the run for good (a charge above its $0 hold) is `stopped`, in its words. */
-  function priceFor(name: string, call: { callId: string; args: unknown }): PriceRead {
-    return async () => {
-      let stopped: string | undefined;
-      const now = paidNow;
-      const booking = now && { call: call.callId, paid: now.paid, pause: async (refusal: Refusal) => {
-        if (refusal.forGood !== false) stopped = refusal.refuse;
-        await now.pause(refusal);
-      } };
-      const price = (await bookedIn(booking, async () => mcp?.priceOf(name, { callId: call.callId, args: call.args, signal: AbortSignal.any([deps.signal, stopAbort.signal]) }))) ?? null;
-      return { price, ...(stopped !== undefined ? { stopped } : {}) };
-    };
-  }
-
   /** An ask's answer: one in the journal stands; else the approve or deny the runner hands over on a resume; else ask and
    *  park (the ask entry with the run parked, in one commit). The ask is main's approval card: the call's input, when it
-   *  was asked and its `price`; asked again on a resume, it is the same request. A card whose price read stopped the run
-   *  is never asked: the call is refused in the stop's words, and the run ends at its next request. */
-  async function answerOf(call: PreIntentCall, price: PriceRead, asked: string = call.tool, destructive = mcp?.effectOf(asked) === "destructive"): Promise<AnswerData | "park"> {
+   *  was asked and its `price`; asked again on a resume, it is the same request. */
+  async function answerOf(call: PreIntentCall, price: ApprovalPrice | null, asked: string = call.tool, destructive = mcp?.effectOf(asked) === "destructive"): Promise<AnswerData | "park"> {
     const conversation = await harness!.root(context);
     const entries = await entriesOf(gate!.journal, conversation.id, context);
     const first = findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId);
@@ -2903,9 +2878,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // run's pending approval, its approval row, an "always" answer pinned by it) has the one name main gives it.
     // An MCP tool its run's pin marks destructive (ClaimMcp.effectOf), or a call whose allow covers one (`destructive`):
     // its card asks a second confirm of an allow.
-    const read = first ? undefined : await price();
-    if (read?.stopped !== undefined) return { callId: call.callId, approved: false, decision: "deny", answeredAt: isoNow(), note: read.stopped };
-    const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, requestedAt: isoNow(), price: read?.price ?? null, ...(destructive ? { destructive: true as const } : {}) };
+    const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, requestedAt: isoNow(), price, ...(destructive ? { destructive: true as const } : {}) };
     const entryLands = (kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]) => landEntry(conversation, kind, data, staged);
     if (first === undefined) {
       // Asked and parked; or held as the parked call is, when another call of the round parked the run first.
@@ -2953,7 +2926,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  answers it. The ask closes with an allow row of its own (by "setting": "Allowed by the tool's setting"), the call
    *  runs, and the person is never asked again. A person's answer already in the inbox for the call stands over it when it
    *  is a deny; an allow of theirs is taken with the setting's answer, so no row is left untaken. */
-  async function allowedBySetting(call: PreIntentCall, price: PriceRead, asked: string): Promise<AnswerData | "park"> {
+  async function allowedBySetting(call: PreIntentCall, price: ApprovalPrice | null, asked: string): Promise<AnswerData | "park"> {
     // Decided only once the claim's stored commands are with the loop (deps.delivered): pi's recovery starts tool tasks while
     // the session opens, before command() can put a person's stored deny into the inbox, and the setting must not win over it.
     await (deps.delivered ?? Promise.resolve());
@@ -2977,7 +2950,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // As allowedBySetting: decided only once the claim's stored commands are with the loop.
     await (deps.delivered ?? Promise.resolve());
     const row = inbox.find((command) => (command.kind === "approve" || command.kind === "deny") && approvalOf(command) === call.callId);
-    if (row?.kind === "deny") return answerOf(call, async () => ({ price: null }), asked);
+    if (row?.kind === "deny") return answerOf(call, null, asked);
     const conversation = await harness!.root(context);
     const answeredAt = isoNow();
     const data: AnswerData = { callId: call.callId, approved: false, decision: "deny", answeredAt, by: "setting", ...(row ? { superseded: { decision: "allow" as const, answeredAt } } : {}) };
@@ -3236,10 +3209,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     await Promise.race([closing, new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
     clearTimeout(timer);
     session = undefined;
-    // The pass's MCP credentials go with it, and so does its booking.
+    // The pass's MCP credentials go with it.
     mcp?.release();
     mcp = undefined;
-    paidNow = undefined;
     // The pass's resources go once nothing more is written through them (AdapterRunSpec.release), once each.
     const release = releaseNow;
     releaseNow = undefined;

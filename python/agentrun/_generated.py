@@ -571,7 +571,6 @@ __all__ = [
     "RunList",
     "RunPending1",
     "RunPending2",
-    "RunPending2Price",
     "RunPending3",
     "RunPending4",
     "RunPending5",
@@ -592,7 +591,6 @@ __all__ = [
     "RunSummaryLearningWorkflowsItem",
     "RunSummaryPending1",
     "RunSummaryPending2",
-    "RunSummaryPending2Price",
     "RunSummaryPending3",
     "RunSummaryPending4",
     "RunSummaryPending5",
@@ -1625,12 +1623,8 @@ class _RunSummaryPending2Required(TypedDict):
 
 
 class RunSummaryPending2(_RunSummaryPending2Required, total=False):
-    price: float | Literal["not metered"] | RunSummaryPending2Price
+    price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
-
-
-class RunSummaryPending2Price(TypedDict):
-    estimate_usd: float
 
 
 class _RunSummaryPending3Required(TypedDict):
@@ -3557,12 +3551,8 @@ class _RunPending2Required(TypedDict):
 
 
 class RunPending2(_RunPending2Required, total=False):
-    price: float | Literal["not metered"] | RunPending2Price
+    price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
-
-
-class RunPending2Price(TypedDict):
-    estimate_usd: float
 
 
 class _RunPending3Required(TypedDict):
