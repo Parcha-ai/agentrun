@@ -17,8 +17,9 @@ import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { BATCH_CELL_MAX, BATCH_ROWS_MAX } from "./learning-batch.js";
 import { CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
-import { GRADE_SOURCES, GRADES_KEPT, PROMOTE_BAR, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN } from "./learn/promote.js";
 import { EVAL_JOBS_MAX, EVAL_TEXT_MAX, EVALS_KEPT } from "./learning-evals.js";
+import { LOOP_COMPILES_MAX, LOOP_POINTS_MAX } from "./store-reads/loop.js";
+import { GRADE_SOURCES, GRADES_KEPT, PROMOTE_BAR, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN } from "./learn/promote.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
 import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./place-offers.js";
 import { PLACE_MODES } from "./place.js";
@@ -1126,9 +1127,30 @@ const LEARNING_COST = closed({
     before: COST_MEAN("The mean of the job's own cost (`cost_usd`, learning left out) over the `agent` runs before the takeover (all of them when there is none yet) whose cost is known; null when there is none."),
     after: COST_MEAN("The mean all-in cost (`total_usd`, learning included) of every run from the takeover on whose total is known; null before a takeover."),
     times_cheaper: { type: ["number", "null"], minimum: 0, description: `\`before\` over \`after\`, to a tenth, once \`after\` counts ${CHEAPER_AFTER_RUNS} runs or more; else null. Learning is left out of the before side and kept in the after side, so it never flatters learning.` },
+    hand_backs: { oneOf: [closed({ ran: COUNT, back: COUNT }), { type: "null" }], description: "Of the runs a learned workflow ran first on from the takeover on (`path` `workflow` or `handed_back`), how many (`ran`) and how many it handed back to the agent (`back`); null before a takeover." },
   }, "What the series shows, over every run it counts, `limit` aside."),
 });
 
+const EVAL_TEXT = (description: string, example: string) => ({ type: "string", minLength: 1, maxLength: EVAL_TEXT_MAX, description, example });
+const EVAL_IN = {
+  name: EVAL_TEXT("What ran the test, one line: a bench's name and set, a script's.", "invoice bench, sealed test"),
+  n: { type: "integer", minimum: 1, maximum: EVAL_JOBS_MAX, description: "The held-out jobs the test counted: jobs the agent never learned from." },
+  correct: { type: "integer", minimum: 0, maximum: EVAL_JOBS_MAX, description: "How many of the `n` jobs the agent with what it learned got right: 0 to `n`." },
+};
+const EVAL_IN_OPTIONAL = {
+  label_source: { ...EVAL_TEXT("Where the right answers came from, one line; null (or absent) when not said.", "teacher labels, 87% strict vs people"), type: ["string", "null"] },
+  cost_per_task_usd: { type: ["number", "null"], minimum: 0, description: "The agent with what it learned: its mean cost a task, in USD; null (or absent) when not counted." },
+  baseline_cost_per_task_usd: { type: ["number", "null"], minimum: 0, description: "The agent by hand (learning off): its mean cost a task, in USD; null (or absent) when not counted." },
+  learned_revision: { type: ["string", "null"], pattern: "^[0-9a-f]{7,64}$", description: "The learning folder's commit the test ran from; null (or absent) when not said." },
+};
+const LEARNING_EVAL = closed({
+  id: { type: "string" },
+  ...EVAL_IN,
+  ...EVAL_IN_OPTIONAL,
+  accuracy: { type: "number", minimum: 0, maximum: 1, description: "`correct` over `n`, to four places: the server's." },
+  ci: { type: "array", items: { type: "number", minimum: 0, maximum: 1 }, minItems: 2, maxItems: 2, description: "The 95% Wilson interval around `accuracy`, [low, high], to four places: the server's, from `n` and `correct`." },
+  recorded_at: { type: "string", format: "date-time" },
+}, "One recorded held-out test of the agent: its counts as posted, and the accuracy and 95% Wilson interval the server computed from them.");
 /** PUT /runs/{run_id}/grade and GET /agents/{agent_id}/learning/promotions (learn/promote.ts, runner/promotion.ts). */
 const GRADE = closedWith({
   run_id: { type: "string" },
@@ -1205,26 +1227,6 @@ const LEARNING_BATCH_SUMMARY = closedWith(BATCH_HEAD, { error: { type: "string",
 const LEARNING_BATCH = closedWith({ ...BATCH_HEAD, current: { type: ["integer", "null"], minimum: 1, description: "The row whose run is in flight." }, rows: { type: "array", items: BATCH_ROW } }, { error: { type: "string" } });
 const BATCH_ID = { name: "batch_id", in: "path", required: true, schema: { type: "string", pattern: "^lb_[0-9a-f]{16}$" } };
 const BATCH_MARK = { "x-agentrun-serve": "learningbatch/1" };
-const EVAL_TEXT = (description: string, example: string) => ({ type: "string", minLength: 1, maxLength: EVAL_TEXT_MAX, description, example });
-const EVAL_IN = {
-  name: EVAL_TEXT("What ran the test, one line: a bench's name and set, a script's.", "invoice bench, sealed test"),
-  n: { type: "integer", minimum: 1, maximum: EVAL_JOBS_MAX, description: "The held-out jobs the test counted: jobs the agent never learned from." },
-  correct: { type: "integer", minimum: 0, maximum: EVAL_JOBS_MAX, description: "How many of the `n` jobs the agent with what it learned got right: 0 to `n`." },
-};
-const EVAL_IN_OPTIONAL = {
-  label_source: { ...EVAL_TEXT("Where the right answers came from, one line; null (or absent) when not said.", "teacher labels, 87% strict vs people"), type: ["string", "null"] },
-  cost_per_task_usd: { type: ["number", "null"], minimum: 0, description: "The agent with what it learned: its mean cost a task, in USD; null (or absent) when not counted." },
-  baseline_cost_per_task_usd: { type: ["number", "null"], minimum: 0, description: "The agent by hand (learning off): its mean cost a task, in USD; null (or absent) when not counted." },
-  learned_revision: { type: ["string", "null"], pattern: "^[0-9a-f]{7,64}$", description: "The learning folder's commit the test ran from; null (or absent) when not said." },
-};
-const LEARNING_EVAL = closed({
-  id: { type: "string" },
-  ...EVAL_IN,
-  ...EVAL_IN_OPTIONAL,
-  accuracy: { type: "number", minimum: 0, maximum: 1, description: "`correct` over `n`, to four places: the server's." },
-  ci: { type: "array", items: { type: "number", minimum: 0, maximum: 1 }, minItems: 2, maxItems: 2, description: "The 95% Wilson interval around `accuracy`, [low, high], to four places: the server's, from `n` and `correct`." },
-  recorded_at: { type: "string", format: "date-time" },
-}, "One recorded held-out test of the agent: its counts as posted, and the accuracy and 95% Wilson interval the server computed from them.");
 
 const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/grade": {
@@ -1235,6 +1237,43 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["correct"], properties: { correct: { type: "boolean" }, expected: { type: "object", description: "The fields a right answer's JSON holds." }, source: { enum: [...GRADE_SOURCES], default: "feedback" } } } } } },
       responses: { "200": json(GRADE, "The run's grade."), ...errors(400, 401, 404, 429, 500) },
       "x-agentrun-serve": "promotion/1",
+    },
+  },
+  "/agents/{agent_id}/learning/loop": {
+    get: {
+      operationId: "getLearningLoop", tags: ["agents"], summary: "The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows",
+      description: `What the console's Learning tab tells of the loop beside the cost series. \`compiles\`: the agent's compile turns, newest first (the newest ${LOOP_COMPILES_MAX}): the workflow a run's compile turn wrote, the notes it absorbed, each attempt and what the checks refused, its draft's digest and whether that revision was promoted; a follow-up's round compiles on its own, so a run can list one turn a round; a turn whose draft never passed is listed with its \`draft_errors\`, never silent. \`guards\`: each guarded step of each learned workflow revision that ran (served first or replayed), with its signal and threshold, how many runs it served first on and how many it handed back, how many the workflow answered alone were graded right and wrong (each over every run), and each run's p (its newest ${LOOP_POINTS_MAX}), with whether the run was right when its answer was the workflow's own and was graded. A replay run reads its guards at a record-only threshold, so it is counted apart (\`replays\`) and in none of the others. Aggregates and the checks' own words only: no input or answer. Each text cut of the host's secrets and of its run's handed values; a run whose handed values can't be read here shows no error text (\`withheld\`).`,
+      parameters: [AGENT_ID],
+      responses: { "200": json(closed({
+        agent: { type: "string" },
+        compiles: { type: "array", items: closed({
+          run_id: { type: "string", description: "The run whose end compiled it." },
+          round: { type: "integer", minimum: 1, description: "The run's round that compiled it: 1 its first end, more for an end after a follow-up opened it again." },
+          at: DATE_TIME,
+          workflow: { ...NULL_STRING, description: "The workflow it wrote or revised; null when no attempt named one." },
+          from_notes: { type: "array", items: { type: "string" }, description: "The notes it absorbed, by file name (each marked \`compiled_into\` once it merged)." },
+          attempts: { type: "array", items: closed({ ok: { type: "boolean" }, errors: { type: "array", items: { type: "string" } } }), description: "Each attempt in order: whether its checks and dry run passed, and what they refused." },
+          digest: { ...NULL_STRING, description: "The kept draft's digest; null when none passed." },
+          promoted: { type: ["boolean", "null"], description: "Whether that revision was promoted, as its records say now: true promoted (or a refit of it was), false held or superseded, null undecided or none passed. It may no longer serve: the promotions read's \`serving\` says which revision does." },
+          draft_errors: { type: "array", items: { type: "string" }, description: "A draft that never passed: its last errors. Empty when one passed." },
+          withheld: { type: "boolean", description: "The run's handed values can't be read here: its error texts are left out (the counts stand)." },
+        }), description: "Newest first." },
+        guards: { type: "array", items: closed({
+          workflow: { type: "string" },
+          digest: { type: "string", description: "The revision the step ran in." },
+          node: { type: "string", description: "The step's label." },
+          signal: { enum: ["self", "jev", "both"], description: "\`self\`: the step's own confidence; \`jev\`: one Jev call over its input and output; \`both\`: their fitted logistic (min of the two before a fit)." },
+          threshold: { type: ["number", "null"], minimum: 0, maximum: 1, description: "Under it the step hands the run back to the agent, as the runs it served first on read it; null when only replays ran it." },
+          runs: { ...COUNT, description: "Runs this revision served first on that this step guarded, each once however many checks a map made of it (replays left out, and checks of another workflow's call in the same run)." },
+          escalated: { ...COUNT, description: "How many of them it handed back (one of the run's checks of it did)." },
+          right: { ...COUNT, description: "How many of them the workflow answered alone and were graded right." },
+          wrong: { ...COUNT, description: "How many of them the workflow answered alone and were graded wrong." },
+          grades_past: { ...COUNT, description: `How many of them the workflow answered alone whose grade, if one was given, is no longer kept (the agent keeps its newest ${GRADES_KEPT} grades): in neither \`right\` nor \`wrong\`, and not known to be ungraded.` },
+          replays: { ...COUNT, description: "Replay runs of this revision that read this step: in none of the other counts, nor in \`points\` (a replay reads its guards at a record-only threshold, so its row says nothing of a hand-back)." },
+          points: { type: "array", items: closed({ run_id: { type: "string" }, p: { type: ["number", "null"], minimum: 0, maximum: 1, description: "The least p the run's checks of this step read, to 4 places; null when a signal was missing on one (always handed back)." }, escalated: { type: "boolean" }, correct: { type: ["boolean", "null"], description: "The run's grade, on a run the workflow answered alone; null otherwise." } }), description: `The runs it served first on, oldest first: the newest ${LOOP_POINTS_MAX}.` },
+        }) },
+      }), "The loop's compile turns and guarded steps."), ...errors(401, 403, 404, 429, 500) },
+      "x-agentrun-serve": "learningloop/1",
     },
   },
   "/agents/{agent_id}/learning/promotions": {
@@ -1388,7 +1427,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name, `workflows/<name>/`: lowercase letters, digits, dashes and underscores.", schema: { type: "string" } }, { name: "limit", in: "query", required: false, description: "The latest revisions to answer. At most 50.", schema: { type: "integer", minimum: 1, maximum: 50, default: 20 } }],
       responses: { "200": json(closed({
         name: { type: "string" },
-        revisions: { type: "array", items: closed({ commit: { type: "string" }, at: { type: "string", format: "date-time" }, by: LEARNING_BY, reason: { type: "string", description: "A merge's: the grader's reason. A person's: what was done." }, text: { type: ["string", "null"], description: "The workflow's workflow.json at this commit, cut of the host's secrets; null when the commit holds no such file." } }), description: "Oldest first." },
+        revisions: { type: "array", items: closed({ commit: { type: "string" }, at: { type: "string", format: "date-time" }, by: LEARNING_BY, reason: { type: "string", description: "A merge's: the grader's reason. A person's: what was done." }, text: { type: ["string", "null"], description: "The workflow's workflow.json at this commit, cut of the host's secrets; null when the commit holds no such file." }, digest: { type: ["string", "null"], description: "That workflow.json's digest, the first 16 hex of its sha256 (read before any cut): the one a run's metrics (`workflow_digest`), its guard rows and the promotion records name. Null when the commit holds no such file." } }), description: "Oldest first." },
         total: { ...COUNT, description: "How many commits in the log changed this workflow's workflow.json, `limit` aside." },
         truncated: { type: "boolean", description: "The agent's log is cut at its latest 200 changes, so older revisions may exist." },
       }), "The workflow's revisions."), ...errors(400, 401, 403, 404, 429, 500) }, ...MARK,
