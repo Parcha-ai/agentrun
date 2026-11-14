@@ -69,6 +69,7 @@ export function bindComputer(call: Call, card: Card): Computer {
 	if (has("screen")) computer.screen = freeze({ shot: (options: { region?: unknown } = {}) => call("screenshot", options) });
 	if (has("input.pointer") || has("input.touch") || has("input.keys")) computer.input = freeze({ act: (actions: unknown[]) => call("input.act", { actions }) });
 	if (has("exec")) computer.shell = freeze({ run: (command: unknown, options: object = {}) => call("shell.run", { ...options, command }) });
+	if (has("processes")) computer.processes = freeze({ start: (command: unknown, options: object = {}) => call("processes.start", { ...options, command }) });
 	if (has("files"))
 		computer.files = freeze({
 			read: (path: string, options: object = {}) => call("files.read", { ...options, path }),

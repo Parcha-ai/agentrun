@@ -33,12 +33,11 @@ import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { type ModelRef, type PinnedModel, providerModels, runModels, type Tier } from "../model.js";
-import { firstMessage } from "../run-manifest.js";
+import { firstMessage, inputMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
 import { DATA_ENV } from "../server-fs.js";
 import { copyRunFiles } from "../uploads.js";
-import { isObject } from "../validate.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
@@ -581,8 +580,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(thinking ? { thinking } : {}),
   };
 
-  const content = isObject(launch.input) && typeof (launch.input as { content?: unknown }).content === "string" ? (launch.input as { content: string }).content : "";
-  const input = await firstMessage(content, ws.workspace);
+  // A typed input's other fields follow its content as one json block (inputMessage).
+  const input = await firstMessage(inputMessage(launch.input), ws.workspace);
 
   // The run's end-of-run step, when it learns, the same as the pi spec's: the reflect-and-propose turn over the run's
   // store, its learning folder where the run's place keeps it — Mode 1 under the data directory, Mode 2 on this claim's
