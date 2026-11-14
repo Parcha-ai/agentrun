@@ -42,7 +42,7 @@ Each choice below cost us something, and we say what.
   namespace of their own. On hosted vendors today that namespace has loopback alone. After every create, `computerd`
   probes from inside that nothing answers. The vendor's own agent ports and its session sockets are declared, and the
   agent's programs can't reach them. *What it costs:* agent programs on hosted vendors get no network yet. An
-  allowlist runs only on Docker, through our egress proxy.
+  allowlist runs only where we enforce it ourselves: Docker, through our egress proxy, and Local Chrome.
 - **The listing finds; `get` answers.** Vendor list endpoints lag: we've seen a killed sandbox still listed, and an
   extended machine listed with its old end. So AgentRun takes only ids from `list` and reads each machine with
   `get`, and a delete is done when `get` answers "none" twice running. *What it costs:* more API calls.
