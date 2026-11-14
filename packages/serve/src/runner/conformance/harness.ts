@@ -213,6 +213,8 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   await settled(() => server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }), () => server.runs.get(RUN));
   /** The command rows a runner has handed to a loop's command(): with the loop, whether or not taken yet. */
   const handed = new Set<number>();
+  /** The command rows a loop's command() has answered: a steer it took is with the session by then (a CLI's has it). */
+  const answered = new Set<number>();
   /** Each runner's claims in flight (store.runs.claimMany), by its name: what claimsSettled waits for. */
   const claiming = new Map<string, Set<Promise<unknown>>>();
   /** `store` as runner `name` is handed it: the same store, its claims in flight counted (claiming). */
@@ -276,7 +278,15 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
             },
           }),
       });
-      return { ...loop, command: (command) => (handed.add(command.id), loop.command(command)) };
+      return {
+        ...loop,
+        command: (command) => {
+          handed.add(command.id);
+          const outcome = loop.command(command);
+          void Promise.resolve(outcome).then(() => answered.add(command.id), () => undefined);
+          return outcome;
+        },
+      };
     };
     const runner = startRunner({ store: claimsCounted(store, name), createLoop: observedLoop, name, ...TIMING, ...timing, onEvent: (event) => events.push({ runner: name, at: Date.now(), ...event }) });
     runners.push(runner);
@@ -370,7 +380,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, storeUrl: url, storeEnv, clockFile, runOut, runOutUnknown, claimsSettled, server, start, run, read, ended, began, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows, servedRows };
+  return { dir, storeUrl: url, storeEnv, clockFile, runOut, runOutUnknown, claimsSettled, server, start, run, read, ended, began, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), answered: (id: number) => answered.has(id), liveRows, servedRows };
 }
 
 interface Case {
@@ -744,8 +754,9 @@ const CASES: readonly Case[] = [
       await w.began(slowStarted, "the slow tool to start");
       const rows: { id: number }[] = [];
       for (const text of texts) rows.push(await sendCommand(w.server, RUN, { kind: "steer", body: { text } }));
-      // The tool goes on once every message is with the loop: the turn in flight has them, never a timer.
-      await until(() => rows.every((row) => w.handedOver(row.id)), "the messages handed to the loop mid-turn");
+      // The tool goes on once the loop has answered every message: the turn in flight has them, never a timer. (Handed to
+      // the loop is not enough: a CLI's steer is with the CLI only once the loop's steer() returns.)
+      await until(() => rows.every((row) => w.answered(row.id)), "the messages placed by the loop mid-turn");
       letSlowGo();
       await w.ended("ended");
       const { calls, messages } = await w.read();
@@ -939,8 +950,8 @@ const CASES: readonly Case[] = [
       await w.began(slowStarted, "the slow tool to start");
       const origin = { kind: "trigger", trigger_id: "trigger-1", source: "webhook", owner: false };
       const steer = await sendCommand(w.server, RUN, { kind: "steer", body: { text: "a new order came in", origin } });
-      // The tool goes on once the steer is with the loop: the turn in flight has it, never a timer.
-      await until(() => w.handedOver(steer.id), "the steer handed to the loop");
+      // The tool goes on once the loop has answered the steer: the turn in flight has it, never a timer.
+      await until(() => w.answered(steer.id), "the steer placed by the loop");
       letSlowGo();
       await w.ended("ended");
       const { messages } = await w.read();

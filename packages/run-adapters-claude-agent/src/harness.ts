@@ -851,6 +851,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             uuid: uuid as UserMessage['uuid'],
             ...(how.priority ? { priority: how.priority } : {}),
           });
+          // The CLI has the message now: a steer() waiting on it returns (the session keeps this to itself).
+          if (placed.length) ctx.live({ type: 'message_sent', ids: placed.map((p) => p.id) });
         };
 
         /**

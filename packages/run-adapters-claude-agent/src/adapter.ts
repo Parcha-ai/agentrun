@@ -460,6 +460,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         if (e?.type === "text_end") io.onEvent({ type: "text_end" });
         // The CLI took these submissions (its transcript holds the message that carried them): a steer reached the model.
         if (e?.type === "message_taken" && Array.isArray(e.ids)) io.onEvent({ type: "message_taken", ids: e.ids.filter((id): id is string => typeof id === "string") });
+        // The harness handed these submissions to the CLI: a steer() waiting on one returns. Not the host's to hear.
+        if (e?.type === "message_sent" && Array.isArray(e.ids)) for (const id of e.ids) if (typeof id === "string") sentWaiters.get(id)?.();
         // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
         // hear the call ended, with the text recorded.
         if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {
@@ -491,6 +493,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       // A turn is in flight: set as run() starts it, cleared only right after the drive's last look at the inbox (below),
       // with nothing awaited between, so a submission written meanwhile is either sent by this turn or starts the next.
       let turning = false;
+      /** steer() calls waiting for the harness to hand their message to the CLI, by submission id. */
+      const sentWaiters = new Map<string, () => void>();
       /** A submission written while no turn was in flight, still unsent: it starts one. */
       const kick = () => {
         if (!turning && !closed && pendingSubmissions(drive.state()).length > 0) void run();
@@ -608,8 +612,19 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           }
           // A drive an interrupt halted is opened again before anything is written through it.
           if (!turning) await ready();
-          await drive.submit({ id: submissionId, kind: mode === "followUp" ? "followUp" : "steer", text });
-          kick();
+          // steer() returns once the CLI has the message (the turn in flight then takes it at its next step), or once the
+          // turn that would have sent it is over: a host that lets the work go on after steer() returns has not raced it.
+          let wake!: () => void;
+          const sent = new Promise<void>((resolve) => (wake = resolve));
+          sentWaiters.set(submissionId, wake);
+          try {
+            await drive.submit({ id: submissionId, kind: mode === "followUp" ? "followUp" : "steer", text });
+            kick();
+            const turn = running;
+            await Promise.race([sent, ...(turn ? [turn.then(() => undefined, () => undefined)] : [])]);
+          } finally {
+            sentWaiters.delete(submissionId);
+          }
         },
         async recover() {
           if (state !== "open_turn") throw new Error("agentrun-harness-claude: there is no turn to recover");
