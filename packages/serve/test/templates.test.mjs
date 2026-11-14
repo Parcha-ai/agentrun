@@ -128,7 +128,7 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(({ dir }) => rmSync(join(dir, "evals", "null-name", "prompt.md")), /evals\/null-name: has no prompt\.md/);
   await refused(({ dir }) => symlinkSync("/etc/hostname", join(dir, "skills", "review", "host.md")), /skills\/review\/host\.md: is not a regular file or a folder \(links are refused\)/);
   await refused(({ dir }) => writeFileSync(join(dir, "skills", "review", "CODEREVIEW.md"), "mine"), /rules\/CODEREVIEW\.md: skills\/review\/CODEREVIEW\.md has the same name/);
-  await refused(({ dir }) => mkdirSync(join(dir, "scripts")), /scripts\/: a package's folders are skills\/, rules\/, evals\/ and examples\//);
+  await refused(({ dir }) => mkdirSync(join(dir, "scripts")), /scripts\/: a package's folders are skills\/, rules\/ and evals\//);
   await refused(({ edit }) => edit("learning: false", "learning: false\nlearning: true"), /front matter is not YAML/);
   await refused(({ edit }) => edit("toolkit: github", "toolkit: GitHub_Server"), /mcp\[0\]\.toolkit "GitHub_Server" is not a toolkit name: .*the MCP server name rule/);
   await refused(({ edit }) => edit("source: github", "source: gitlab"), /mcp\[0\] is \{source: composio \| github \| url, toolkit/);
@@ -151,12 +151,12 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   // A schedule's cron and timezone may come from a parameter with a default, which is checked here as the schedule.
   const scheduled = (cron, spec) => ({ edit }) => {
     edit(OWN_TRIGGERS, `triggers:\n  - name: nightly\n    source: { kind: schedule, cron: "${cron}", timezone: "\${parameters.zone}" }\n    target: { kind: start_run, input: { content: Go. } }`);
-    edit("  repo: {", `${spec}\n  zone: { type: string, default: UTC, description: the zone }\n  repo: {`);
+    edit("  repo: {", `${spec}\n  zone: { type: string, required: false, default: UTC, description: the zone }\n  repo: {`);
   };
   await refused(scheduled("${parameters.cron}", "  cron: { type: string, description: the schedule }"), /parameters\.cron is used in triggers\[0\]\.source\.cron, so it needs a default/);
-  await refused(scheduled("${parameters.cron}", '  cron: { type: string, default: "every morning", description: the schedule }'), /triggers\[0\]\.source\.cron: cron is five fields/);
-  await refused(scheduled("${parameters.cron}", "  cron: { type: string, default: 7, description: the schedule }"), /parameters\.cron\.default is a string/);
-  assert.deepEqual(await problemsOf(t, scheduled("${parameters.cron}", '  cron: { type: string, default: "0 8 * * 1", description: the schedule }')), [], "a schedule from parameters with good defaults reads");
+  await refused(scheduled("${parameters.cron}", '  cron: { type: string, required: false, default: "every morning", description: the schedule }'), /triggers\[0\]\.source\.cron: cron is five fields/);
+  await refused(scheduled("${parameters.cron}", "  cron: { type: string, required: false, default: 7, description: the schedule }"), /parameters\.cron\.default is not a value it takes/);
+  assert.deepEqual(await problemsOf(t, scheduled("${parameters.cron}", '  cron: { type: string, required: false, default: "0 8 * * 1", description: the schedule }')), [], "a schedule from parameters with good defaults reads");
   await refused(({ edit }) => trigger('{ kind: schedule, cron: "${parameters.repo}" }')(edit), /parameters\.repo is used in triggers\[0\]\.source\.cron, so it needs a default/);
   await refused(({ edit }) => edit(OWN_TRIGGERS, 'triggers:\n  - name: "nightly ${parameters.repo}"\n    source: { kind: schedule, cron: "0 9 * * *" }\n    target: { kind: start_run, input: { content: Go. } }'), /triggers\[0\]\.name holds \$\{parameters\.repo\}: a placeholder goes in display_name, the instructions, a trigger's target\.input, a schedule's cron and timezone, a github or webhook trigger's where in values, or an mcp pin's values/);
   await refused(({ edit }) => edit("tools: [read, bash, subagent]", "tools: [read, bassh]"), /tools: bassh is not a tool this server binds/);
@@ -224,7 +224,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   }
   assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never" }, "a template whose job runs on triggers runs unattended by default");
   const review = listed.body.templates.find((x) => x.name === "code-review");
-  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.owner.required, review.parameters.repo.required], ["0.4.0", [], ["review"], ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "re-review", "re-review-open", "repo-rule", "two-defects"], true, true]);
+  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.required],["0.4.0", [], ["review"], ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "re-review", "re-review-open", "repo-rule", "two-defects"], ["owner", "repo"]]);
 
   const applied = await api("POST", "/templates/code-review/apply", { parameters: AGENTRUN });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
@@ -435,26 +435,45 @@ test("a parameter's enum is a closed set: the list shows it, apply refuses a val
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { api } = await serve(t);
   const listed = (await api("GET", "/templates")).body.templates;
-  const lead = listed.find((x) => x.name === "inbound-lead").parameters;
+  const lead = listed.find((x) => x.name === "inbound-lead").parameters.properties;
   assert.deepEqual([lead.post_to.enum, lead.post_to.pattern], [["crm", "slack", "none"], undefined], "a choice, never a pattern");
-  assert.deepEqual(listed.find((x) => x.name === "kyb").parameters.risk_appetite.enum, ["low", "medium", "high"]);
+  assert.deepEqual(listed.find((x) => x.name === "kyb").parameters.properties.risk_appetite.enum, ["low", "medium", "high"]);
   // A patterned parameter's description says its format in words.
   assert.match(lead.slack_channel.description, /^a Slack channel ID like C0123ABCD/);
   const refused = await api("POST", "/templates/inbound-lead/apply", { parameters: { icp: "B2B fintech", post_to: "email" } });
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
-  assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["parameters.post_to", "not_an_option"]]);
-  assert.match(refused.body.error.fields[0].message, /is one of crm, slack, none/);
+  assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason, f.message]), [["parameters.post_to", "not_an_option", "parameters.post_to must be equal to one of the allowed values"]]);
   for (const [to, said] of [
-    ["focus: { type: string, enum: [], description: x }", /parameters\.focus\.enum is a list of one or more distinct string values/],
-    ["focus: { type: string, enum: [a, a], description: x }", /parameters\.focus\.enum is a list of one or more distinct string values/],
-    ["focus: { type: string, enum: [a, 2], description: x }", /parameters\.focus\.enum is a list of one or more distinct string values/],
-    ['focus: { type: string, enum: [a, b], pattern: "^a$", description: x }', /parameters\.focus has an enum and a pattern/],
-    ["focus: { type: string, enum: [a, b], default: c, description: x }", /parameters\.focus\.default is not one of its enum/],
+    ["focus: { type: string, required: false, enum: [], description: x }", /parameters\.focus\.enum is a list of one or more distinct string values/],
+    ["focus: { type: string, required: false, enum: [a, 2], description: x }", /parameters\.focus\.enum is a list of one or more distinct string values/],
+    ["focus: { type: string, required: false, enum: [a, b], default: c, description: x }", /parameters\.focus\.default is not a value it takes/],
   ]) {
-    const problems = await problemsOf(t, ({ edit }) => edit(/focus: \{ type: string, description: .*\}/, to));
+    const problems = await problemsOf(t, ({ edit }) => edit(/focus: \{ type: string, required: false, description: .*\}/, to));
     assert.ok(problems.some((one) => said.test(one)), `${to}: ${problems.join(" | ")}`);
   }
-  assert.deepEqual(await problemsOf(t, ({ edit }) => edit(/focus: \{ type: string, description: .*\}/, "focus: { type: string, enum: [auth, money], default: auth, description: x }")), []);
+  assert.deepEqual(await problemsOf(t, ({ edit }) => edit(/focus: \{ type: string, required: false, description: .*\}/, "focus: { type: string, required: false, enum: [auth, money], default: auth, description: x }")), []);
+});
+
+test("a parameter is an input: the inputs' grammar and rule (required unless required: false, a default only on one that is not), served as JSON Schema, and apply's refusals in a run input's words", async (t) => {
+  const { api } = await serve(t, { templates: FIXTURES });
+  const nightly = (await api("GET", "/templates")).body.templates.find((x) => x.name === "nightly").parameters;
+  assert.deepEqual(nightly, { type: "object", additionalProperties: false, required: ["topic"], properties: { topic: { type: "string", description: "what the brief is about" }, words: { type: "integer", minimum: 50, description: "how long the brief is", default: 200 } } });
+  const refused = await api("POST", "/templates/nightly/apply", { parameters: { topic: "", words: 10, tone: "" } });
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason, f.message]).sort(), [
+    ["parameters.tone", "not_allowed", "parameters keeps no field tone"],
+    ["parameters.topic", "missing", "parameters.topic is required"],
+    ["parameters.words", "invalid", "parameters.words must be >= 50"],
+  ], "a blank declared one is missing, a blank undeclared one is still refused; the rest as a run's input is refused");
+  for (const [to, said] of [
+    ["focus: { type: string, default: x, description: x }", /parameters\.focus is required and has a default: a default is for one that may be left out \(required: false\)/],
+    ["focus: { type: integer, required: false, format: cron }", /parameters\.focus\.format is one of uri, email, hostname, date, date-time, uuid, cron, timezone, on a string/],
+    ["focus: { type: string, required: false, colour: red }", /parameters\.focus has no field colour: the fields are /],
+  ]) {
+    const problems = await problemsOf(t, ({ edit }) => edit(/focus: \{ type: string, required: false, description: .*\}/, to));
+    assert.ok(problems.some((one) => said.test(one)), `${to}: ${problems.join(" | ")}`);
+  }
+  assert.deepEqual(await problemsOf(t, ({ edit }) => edit(/focus: \{ type: string, required: false, description: .*\}/, "focus: { type: string, title: Focus, format: date, examples: [\"2026-01-01\"] }")), [], "an input's keys and formats are a parameter's");
 });
 
 test("a repository is an owner and a name, the name with no trailing dot and no owner in it: \"widgets.\" and \"acme/widgets\" are refused at apply, \"widgets\" and \"my.repo\" are taken", async (t) => {
@@ -475,7 +494,7 @@ test("a parameter with a documented default takes it when apply leaves it out: k
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { api } = await serve(t);
   const listed = (await api("GET", "/templates")).body.templates;
-  assert.deepEqual([listed.find((x) => x.name === "kyb").parameters.risk_appetite.default, listed.find((x) => x.name === "inbound-lead").parameters.post_to.default], ["medium", "none"]);
+  assert.deepEqual([listed.find((x) => x.name === "kyb").parameters.properties.risk_appetite.default, listed.find((x) => x.name === "inbound-lead").parameters.properties.post_to.default], ["medium", "none"]);
   const kyb = await api("POST", "/templates/kyb/apply", { parameters: {} });
   assert.equal(kyb.status, 201, JSON.stringify(kyb.body));
   assert.match((await api("GET", `/agents/${kyb.body.agent_id}`)).body.definition.instructions, /Risk appetite: medium\./);
@@ -483,22 +502,11 @@ test("a parameter with a documented default takes it when apply leaves it out: k
   assert.equal(lead.status, 201, JSON.stringify(lead.body));
 });
 
-test("a string parameter can say what its value is: market-monitor's schedule is a cron line and a time zone, shown in the list; a bad format is refused", async (t) => {
+test("market-monitor's schedule is a cron line and a time zone, shown in the list by format and title; its lookback_days help says what the number does (the days a run looks back, equal to the gap between runs), not a note about changing cron", async (t) => {
   const { api } = await serve(t);
-  const monitor = (await api("GET", "/templates")).body.templates.find((x) => x.name === "market-monitor").parameters;
-  assert.deepEqual([monitor.cron.format, monitor.timezone.format, monitor.competitors.format], ["cron", "timezone", undefined]);
-  for (const [to, said] of [
-    ["focus: { type: string, format: date, description: x }", /parameters\.focus\.format is one of cron, timezone, on a string parameter/],
-    ["focus: { type: integer, format: cron, description: x }", /parameters\.focus\.format is one of cron, timezone, on a string parameter/],
-  ]) {
-    const problems = await problemsOf(t, ({ edit }) => edit(/focus: \{ type: string, description: .*\}/, to));
-    assert.ok(problems.some((one) => said.test(one)), `${to}: ${problems.join(" | ")}`);
-  }
-});
-
-test("market-monitor's lookback_days help says what the number does (the days a run looks back, equal to the gap between runs), not a note about changing cron", async (t) => {
-  const { api } = await serve(t);
-  const help = (await api("GET", "/templates")).body.templates.find((x) => x.name === "market-monitor").parameters.lookback_days.description;
+  const monitor = (await api("GET", "/templates")).body.templates.find((x) => x.name === "market-monitor").parameters.properties;
+  assert.deepEqual([monitor.cron.format, monitor.cron.title, monitor.timezone.format, monitor.timezone.title, monitor.competitors.format], ["cron", "Schedule", "timezone", "Time zone", undefined]);
+  const help = monitor.lookback_days.description;
   assert.doesNotMatch(help, /change cron/);
   assert.match(help, /how many days back a run looks/);
   assert.match(help, /equal to the gap between runs/);
@@ -543,8 +551,8 @@ test("every package this server ships applies on a server with nothing saved: no
     if (name === "kyb") assert.match(agent.definition.instructions, /OpenSanctions index: false\./);
   }
   const kyb = listed.find((x) => x.name === "kyb");
-  assert.equal(kyb.parameters.opensanctions.default, false);
-  assert.match(kyb.parameters.opensanctions.description, /CC BY-NC 4\.0.*commercial use needs a paid licence/);
+  assert.equal(kyb.parameters.properties.opensanctions.default, false);
+  assert.match(kyb.parameters.properties.opensanctions.description, /CC BY-NC 4\.0.*commercial use needs a paid licence/);
   const on = await api("POST", "/templates/kyb/apply", { parameters: { risk_appetite: "medium", opensanctions: true } });
   assert.equal(on.status, 201, JSON.stringify(on.body));
   assert.match((await api("GET", `/agents/${on.body.agent_id}`)).body.definition.instructions, /OpenSanctions index: true\./);
@@ -624,7 +632,7 @@ test("a key the owner saved in Settings, not set where the server starts, is a p
 test("an apply whose parameters, filled in, make a body over POST /v2/agents' 1 MiB limit is 413, and makes nothing", async (t) => {
   const dir = join(await scratch(t), "templates");
   mkdirSync(join(dir, "echo"), { recursive: true });
-  writeFileSync(join(dir, "echo", "agent.md"), "---\nname: echo\nversion: 1.0.0\ndescription: Repeats its text.\nparameters:\n  text: { type: string, required: true, description: the text }\n---\n${parameters.text}\n\n${parameters.text}\n");
+  writeFileSync(join(dir, "echo", "agent.md"), "---\nname: echo\nversion: 1.0.0\ndescription: Repeats its text.\nparameters:\n  text: { type: string, description: the text }\n---\n${parameters.text}\n\n${parameters.text}\n");
   const { api } = await serve(t, { templates: dir });
   const answer = await api("POST", "/templates/echo/apply", { parameters: { text: "x".repeat(600 * 1024) } });
   assert.equal(answer.status, 413, JSON.stringify(answer.body).slice(0, 300));
@@ -681,7 +689,7 @@ test("an apply's approvals: the override, else the package's own (a trigger temp
 test("a parameter is read from the caller's own fields: a required one named constructor is missing from {parameters: {}}", async (t) => {
   const dir = join(await scratch(t), "inherits");
   mkdirSync(dir);
-  writeFileSync(join(dir, "agent.md"), "---\nname: inherits\nversion: 1.0.0\ndescription: A parameter named as an Object property.\nparameters:\n  constructor: { type: string, required: true, description: the builder }\n---\nBuilt by ${parameters.constructor}.\n");
+  writeFileSync(join(dir, "agent.md"), "---\nname: inherits\nversion: 1.0.0\ndescription: A parameter named as an Object property.\nparameters:\n  constructor: { type: string, description: the builder }\n---\nBuilt by ${parameters.constructor}.\n");
   const p = readPackage(dir);
   assert.throws(() => applyBodyOf(p, { parameters: {} }), (error) => error.extra?.fields?.some((f) => f.field === "parameters.constructor" && f.reason === "missing"));
   assert.deepEqual(applyBodyOf(p, { parameters: { constructor: "Ada" } }).parameters, { constructor: "Ada" });
@@ -692,7 +700,7 @@ function pinProblems(t, entry) {
   return scratch(t).then((root) => {
     const dir = join(root, "sender");
     mkdirSync(dir);
-    writeFileSync(join(dir, "agent.md"), `---\nname: sender\nversion: 1.0.0\ndescription: Sends one message.\nparameters:\n  channel: { type: string, description: the channel's id }\n  count: { type: integer, description: how many }\nmcp:\n  - source: url\n    toolkit: slack\n    tools: [slack_send_message, slack_search]\n${entry}\n---\nSend to \${parameters.channel}.\n`);
+    writeFileSync(join(dir, "agent.md"), `---\nname: sender\nversion: 1.0.0\ndescription: Sends one message.\nparameters:\n  channel: { type: string, required: false, description: the channel's id }\n  count: { type: integer, required: false, description: how many }\nmcp:\n  - source: url\n    toolkit: slack\n    tools: [slack_send_message, slack_search]\n${entry}\n---\nSend to \${parameters.channel}.\n`);
     try {
       return { p: readPackage(dir), problems: [] };
     } catch (error) {
@@ -715,8 +723,9 @@ test("an mcp entry's pin is checked: each tool one of the entry's, 1 to 8 argume
   // The same pins filled on their own (filledPins, what the template eval sets on its server before an apply).
   assert.deepEqual(filledPins(served(p), { channel: "C0123", count: 3 }), [{ tool: SEND, pin: { channel_id: "C0123", limit: 3, unfurl_links: false, thread_ts: null }, empty: [] }]);
   assert.deepEqual(filledPins(served(p), { count: 3 }).map(({ tool, empty }) => [tool, empty]), [[SEND, ["channel"]]]);
-  for (const given of [{ count: 3 }, { channel: "", count: 3 }]) {
-    const empty = compiled(p, given, { mcp: served(p), defaultTools: [], grants: [SEND] });
+  // channel says required: false, so apply takes it blank, and the send it pins is denied.
+  for (const given of [{ count: 3 }, { channel: "", count: 3 }].map((parameters) => applyBodyOf(p, { parameters }).parameters)) {
+    const empty = compiled(p, given,{ mcp: served(p), defaultTools: [], grants: [SEND] });
     assert.deepEqual(empty.agent.definition.tool_settings, { [SEND]: { permission: "deny" } }, JSON.stringify(given));
     assert.deepEqual(empty.unpinned, [{ tool: SEND, parameters: ["channel"] }]);
   }

@@ -37,6 +37,35 @@ export const pause = (ms: number, signal?: AbortSignal) =>
 /** A signal that aborts with the caller's, or once ms pass. */
 export const bounded = (ms: number, signal?: AbortSignal): AbortSignal => (signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms));
 
+/**
+ * A promise that rejects with an AbortError (the caller's signal aborted) or a TimeoutError (ms passed), and clear to
+ * stop listening when the work finished first.
+ */
+export function boundOf(ms: number, signal: AbortSignal | undefined, what: string): { promise: Promise<never>; clear: () => void } {
+	const bound = bounded(ms, signal);
+	let onAbort: () => void = () => {};
+	const promise = new Promise<never>((_, reject) => {
+		onAbort = () => {
+			const timedOut = !signal?.aborted;
+			const error = new Error(timedOut ? `${what} did not answer within ${seconds(ms)}` : `${what} was aborted`);
+			error.name = timedOut ? "TimeoutError" : "AbortError";
+			reject(error);
+		};
+		if (bound.aborted) onAbort();
+		else bound.addEventListener("abort", onAbort, { once: true });
+	});
+	promise.catch(() => {});
+	return { promise, clear: () => bound.removeEventListener("abort", onAbort) };
+}
+
+/** The code of an error a host's client threw: AbortError and TimeoutError by name, else the host's errorCode, else "vendor". */
+export function codeOfError(host: Pick<MachineHost, "errorCode">, error: unknown): ComputerErrorCode {
+	const name = (error as { name?: unknown } | null)?.name;
+	if (name === "AbortError") return "aborted";
+	if (name === "TimeoutError") return "timeout";
+	return host.errorCode?.(error) ?? "vendor";
+}
+
 /** The failures of one host: an error of code vendor names it. */
 export const failOf =
 	(host: Pick<MachineHost, "id">) =>
@@ -71,7 +100,7 @@ export function race<T>(host: Pick<MachineHost, "id" | "errorCode">, promise: Pr
 		}
 		promise.then(
 			(value) => done(ok(value)),
-			(error: unknown) => done(signal?.aborted ? fail("aborted", `${what} was aborted`) : fail(host.errorCode(error), `${what} failed: ${words(error)}`)),
+			(error: unknown) => done(signal?.aborted ? fail("aborted", `${what} was aborted`) : fail(codeOfError(host, error), `${what} failed: ${words(error)}`)),
 		);
 	});
 }
@@ -87,7 +116,7 @@ export async function hostCall<T>(host: Pick<MachineHost, "id" | "errorCode">, w
 	try {
 		promise = Promise.resolve(run({ timeoutMs: ms, ...(signal ? { signal } : {}) }));
 	} catch (error) {
-		return fail(host.errorCode(error), `${what} failed: ${words(error)}`);
+		return fail(codeOfError(host, error), `${what} failed: ${words(error)}`);
 	}
 	const raced = await race(host, promise, what, ms + CALL_SLACK_MS, signal);
 	if (!raced.ok) return raced;
@@ -194,7 +223,7 @@ export async function openBridge(
 	try {
 		starting = Promise.resolve(host.exec(id, argv, { stdin: true }, { timeoutMs: requestMs }));
 	} catch (error) {
-		return fail(host.errorCode(error), `${what} failed: ${words(error)}`);
+		return fail(codeOfError(host, error), `${what} failed: ${words(error)}`);
 	}
 	const raced = await race(host, starting, what, requestMs + CALL_SLACK_MS, signal);
 	if (!raced.ok) {

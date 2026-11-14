@@ -5,3 +5,7 @@ Call mcp__crm__get_contact with {"id": "big"}
 Page through the filed answer
 Answer:
 The record ends: {{last-result}}
+
+```json
+{"verdict": "good", "score": 50, "summary": "mcp-filed"}
+```

@@ -11,13 +11,12 @@
 import { createHash } from "node:crypto";
 import { Duplex } from "node:stream";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
-import { WINDOW_MANAGER } from "./desktop.js";
 import { DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { bounded } from "./hosted/process.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, NAME_LABEL } from "./hosted/provider.js";
 import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh.js";
+import { dateOf, driftOf, isWhole, show, sizeOf } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import { type ArchilMount, archilLabels } from "./mount-archil.js";
@@ -136,9 +135,6 @@ export const MOUNT: readonly MountKind[] = AGENT37.mounts;
 /** The machine kind and groups of each configuration: kind linux (the default), and kind desktop on the box template. */
 export const CAPABILITIES: readonly KindCapabilities[] = AGENT37.capabilities;
 
-const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
-const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
-
 /** An answer of Agent37's REST API that is not a success, as the code its status and the envelope's stable code (docs: errors) make. */
 export class Agent37Error extends Error {
 	override name = "Agent37Error";
@@ -182,9 +178,7 @@ const CODES: Record<string, ComputerErrorCode> = {
 };
 
 function codeOf(error: unknown): ComputerErrorCode {
-	const { name, level } = (error ?? {}) as { name?: unknown; level?: unknown };
-	if (name === "AbortError") return "aborted";
-	if (name === "TimeoutError") return "timeout";
+	const { level } = (error ?? {}) as { level?: unknown };
 	if (error instanceof Agent37Error) return error.code;
 	// ssh2 names the stage that failed (lib/client.js): the instance's sshd refused the key, or the handshake timed out.
 	if (level === "client-authentication") return "denied";
@@ -226,8 +220,7 @@ interface Declared {
 /** An instance as the adapter reads a machine: its state, labels, network, template, size, and its create's drift. */
 function machineOf(instance: Agent37Instance, declared: Declared): Machine {
 	const labels = { ...(instance.metadata ?? {}) };
-	const drift: string[] = [];
-	const mismatch = (field: string, want: unknown, got: unknown) => drift.push(`${field}: declared ${show(want)}, read back ${show(got)}`);
+	const { found: drift, mismatch } = driftOf();
 	const asked = labels[IMAGE_LABEL];
 	if (asked !== undefined && instance.template !== asked) mismatch("template", asked, instance.template);
 	if (instance.type !== declared.type) mismatch("type", declared.type, instance.type);
@@ -236,15 +229,16 @@ function machineOf(instance: Agent37Instance, declared: Declared): Machine {
 	if (instance.auto_sleep !== false) mismatch("auto_sleep", false, instance.auto_sleep);
 	const state = stateOf(instance.status);
 	const why = instance.status_reason?.message ?? (state === undefined ? `Agent37 reads the status ${show(instance.status)}, which this provider does not know` : undefined);
-	const { cpu, memory } = instance.resources ?? {};
+	const created = dateOf(instance.created, "s");
+	const size = sizeOf(instance.resources?.cpu, instance.resources?.memory);
 	return {
 		id: instance.id,
 		labels,
 		state: state ?? "failed",
 		network: networkOf(instance),
 		image: { resolved: instance.image_digest ?? instance.template },
-		...(isWhole(instance.created) ? { createdAt: new Date(instance.created * 1000) } : {}),
-		...(isWhole(cpu) || isWhole(memory) ? { size: { ...(isWhole(cpu) ? { cpus: cpu } : {}), ...(isWhole(memory) ? { memoryMb: memory * 1024 } : {}) } } : {}),
+		...(created ? { createdAt: created } : {}),
+		...(size ? { size } : {}),
 		...(drift.length > 0 ? { drift } : {}),
 		...(why === undefined ? {} : { why }),
 	};
@@ -357,6 +351,8 @@ class Agent37Host implements MachineHost {
 			maxLifetimeMs: DAY_MS,
 			arch: "amd64",
 			vendorAgentPorts: [AGENT37_SSH_PORT, AGENT37_TTYD_PORT],
+			// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
+			windowManager: true,
 			networkReadBack: true,
 			network: [...AGENT37.network],
 			mounts: [...MOUNT],
@@ -400,9 +396,8 @@ class Agent37Host implements MachineHost {
 	}
 
 	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes; metadata fits 4 KB. */
-	check(spec: ComputerSpec): Refusal[] {
+	check(given: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = [];
-		const given = (typeof spec === "object" && spec !== null ? spec : {}) as Partial<ComputerSpec>;
 		const { image, cpus, memoryMb } = given;
 		if (typeof image === "string" && image !== "" && !TEMPLATE.test(image)) {
 			refusals.push({ field: "image", message: `an image is the name of an Agent37 template, optionally pinned as name@version, such as "${AGENT37_BASE_TEMPLATE}"` });
@@ -447,45 +442,36 @@ class Agent37Host implements MachineHost {
 		return ok({ id: made.id });
 	}
 
-	/** GET /v1/instances/{id}; 404 is none (docs: instances/get). */
+	/** GET /v1/instances/{id}; 404 is not_found, which the adapter reads as none (docs: instances/get). */
 	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
-		try {
-			return ok(machineOf(await this.#rest<Agent37Instance>("GET", this.#path(id), undefined, ctx), this.#declared));
-		} catch (error) {
-			if (codeOf(error) === "not_found") return ok(undefined);
-			throw error;
-		}
+		return ok(machineOf(await this.#rest<Agent37Instance>("GET", this.#path(id), undefined, ctx), this.#declared));
 	}
 
 	/**
 	 * GET /v1/instances: the whole workspace in one answer, newest first, each the full instance object (docs:
-	 * instances/list). Agent37 filters nothing, so the labels are matched here; an answer that says it has more is refused.
+	 * instances/list). Agent37 filters nothing: the adapter matches the labels. An answer that says it has more is refused.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
+		void labels;
 		const listed = await this.#rest<{ data?: unknown; has_more?: unknown; next_cursor?: unknown }>("GET", "/v1/instances", undefined, ctx);
 		if (!Array.isArray(listed.data)) throw new Agent37Error("vendor", "GET /v1/instances answered no data list");
 		if (listed.has_more === true || (listed.next_cursor !== undefined && listed.next_cursor !== null)) {
 			throw new Agent37Error("vendor", "GET /v1/instances answered a page with more after it, which Agent37 documents none of: this provider would miss machines");
 		}
-		const wanted = Object.entries(labels);
-		const machines: Machine[] = [];
-		for (const instance of listed.data as Agent37Instance[]) {
-			if (typeof instance?.id !== "string") continue;
-			const metadata = instance.metadata ?? {};
-			if (wanted.every(([key, value]) => metadata[key] === value)) machines.push(machineOf(instance, this.#declared));
-		}
-		return ok(machines);
+		return ok((listed.data as Agent37Instance[]).filter((instance) => typeof instance?.id === "string").map((instance) => machineOf(instance, this.#declared)));
 	}
 
 	/**
-	 * DELETE /v1/instances/{id}, never signalled; a repeat answers 404, read as done (docs: instances/delete). Once taken,
-	 * this host's SSH connections to the instance are ended, channels and all.
+	 * DELETE /v1/instances/{id}, never signalled; a repeat answers 404, which the adapter reads as done (docs:
+	 * instances/delete). Once taken, this host's SSH connections to the instance are ended, channels and all.
 	 */
 	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
 		try {
 			await this.#rest("DELETE", this.#path(id), undefined, { timeoutMs: ctx.timeoutMs });
 		} catch (error) {
-			if (codeOf(error) !== "not_found") throw error;
+			// A 404 means the instance is gone already: its connections end too, then the adapter reads not_found as done.
+			if (codeOf(error) === "not_found") this.#ssh.closeAll(id);
+			throw error;
 		}
 		this.#ssh.closeAll(id);
 		return ok(undefined);
@@ -576,9 +562,7 @@ export class Agent37Provider extends HostedProvider {
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);
 		if (region !== "us" && type !== "vm") throw new Error(`Agent37 runs type default in us alone: ${region} takes type vm`);
 		const host = new Agent37Host({ apiKey, sshKey: privateKey, ssh2, fetch: fetcher, WebSocket, apiUrl: api.href.replace(/\/+$/, ""), proxyDomain, type, region });
-		// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
-		const desktop = { windowManager: WINDOW_MANAGER, ...rest.desktop };
-		super(host, { ...rest, desktop, label: "Agent37", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
+		super(host, { ...rest, label: "Agent37", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
 	}
 }
 

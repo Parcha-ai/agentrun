@@ -712,8 +712,7 @@ was deleted.
   `create` gives the daemon `DISPLAY` (`display`, default `:0`), then starts the X server through it with
   `process.start` (`server`, default `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`), as the computer's user and as any
   program: computerd stays PID 1 and starts nothing itself, and the server is one process in its table that ends with
-  the computer. A `windowManager` (an argv, default none) starts the same way once the display answers, with `DISPLAY`;
-  one that cannot start, or ends within 1 s of starting, fails create with its last words. `create` waits (`timeoutMs`, default 30 s) until hello declares the display, then runs the drift check;
+  the computer. It runs no window manager. `create` waits (`timeoutMs`, default 30 s) until hello declares the display, then runs the drift check;
   a server that ends first, with its last words on stderr, or a display that is not up in time deletes the computer in
   words.
 - `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (`checkLifetime`: at most
@@ -1878,8 +1877,10 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
    shared with Docker). Then xfwm4, which the template has, starts the same way on it (`dbus-run-session -- xfwm4
    --compositor=off --sm-client-disable`, `WINDOW_MANAGER`: xfwm4 reads its settings over a session bus and exits
-   without one), so the apps an agent opens are framed and focused. The template has no passwd entry for 2510, and a
-   session bus closes every connection of a uid it cannot look up, so a desktop's init, still root, first names the
+   without one), so the apps an agent opens are framed and focused. It and every app `apps.launch` opens get
+   `NO_AT_BRIDGE=1`: the template has at-spi2-core, so GTK's accessibility bridge would start an at-spi bus, a
+   socket of the user's at `/work/.cache/at-spi/bus_0` that nothing of ours uses. The template has no passwd entry
+   for 2510, and a session bus closes every connection of a uid it cannot look up, so a desktop's init, still root, first names the
    user `agentrun-tool` (home the computer's, shell `/bin/sh`), as the box image does (`daemon.NameUser`). A window
    manager that ends within a second of its start fails create with its last words. Hello re-checks the
    display on every call, so `connect()` refuses a desktop whose X server has gone (it reads back kind `linux`).
