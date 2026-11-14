@@ -159,21 +159,28 @@ async function savedGitHub(t, auth, options = {}) {
   return { ...server, fake };
 }
 
+/** The apply's grants that tick release-notes' issue write. */
+const ISSUE_WRITE = ["mcp:github/issue_write"];
+
 test("release-notes applied against an installation whose GitHub says Issues: read names it in the apply answer; with no App connected the apply is refused and nothing is made; code-review and the owner's own token are not warned", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { api, fake } = await savedGitHub(t, "github_app", { fauxGitHub: true });
-  const notes = await api("POST", "/templates/release-notes/apply", { parameters: { repo: "acme/widgets" } });
+  // Only a tool the owner ticks is the agent's, so only a ticked one is checked: unticked, issue_write is not said.
+  const unticked = await api("POST", "/templates/release-notes/apply", { parameters: { repo: "acme/widgets" } });
+  assert.equal(unticked.status, 201, JSON.stringify(unticked.body));
+  assert.deepEqual(unticked.body.warnings.filter((w) => w.field === "grants.mcp:github/issue_write"), [], "an unticked tool is not granted: nothing to check");
+  const notes = await api("POST", "/templates/release-notes/apply", { parameters: { repo: "acme/widgets" }, grants: ISSUE_WRITE });
   assert.equal(notes.status, 201, JSON.stringify(notes.body));
   assert.ok(fake.log.some((entry) => entry.method === "tools/list"), "the apply listed the local GitHub MCP to pin its tools");
   assert.deepEqual(notes.body.warnings.filter((w) => w.field === "grants.mcp:github/issue_write"), [{ field: "grants.mcp:github/issue_write", reason: "not_allowed", message: WORDS.replace("on acme", "on faux-org") }]);
-  const review = await api("POST", "/templates/code-review/apply", { parameters: { repo: "acme/widgets" } });
+  const review = await api("POST", "/templates/code-review/apply", { parameters: { repo: "acme/widgets" }, grants: ["pull_request_read", "get_file_contents", "search_code", "get_repository_tree", "pull_request_review_write", "add_comment_to_pending_review"].map((tool) => `mcp:github/${tool}`) });
   assert.equal(review.status, 201, JSON.stringify(review.body));
   assert.ok(!review.body.warnings.some((w) => w.message.includes("GitHub App has")), JSON.stringify(review.body.warnings));
   // With no App connected, a github_app server can't be listed to pin its tools (no token to list it with), so the
   // apply is refused, as any save whose granted server can't be listed is, and nothing is made: an agent made then would
   // have every run refused at its claim. Connect GitHub, apply again, and its tools are pinned.
   const bare = await savedGitHub(t, "github_app");
-  const unconnected = await bare.api("POST", "/templates/release-notes/apply", { parameters: { repo: "acme/widgets" } });
+  const unconnected = await bare.api("POST", "/templates/release-notes/apply", { parameters: { repo: "acme/widgets" }, grants: ISSUE_WRITE });
   assert.equal(unconnected.status, 422, JSON.stringify(unconnected.body));
   assert.equal(unconnected.body.error.code, "input_invalid");
   assert.equal(unconnected.body.error.message, "The MCP server github could not be listed to pin its tools: This server has no GitHub App: Connect GitHub in Settings. Nothing was saved: save again once it answers.");
@@ -181,7 +188,7 @@ test("release-notes applied against an installation whose GitHub says Issues: re
   assert.deepEqual([(await bare.api("GET", "/agents")).body.agents, (await bare.api("GET", "/triggers")).body.triggers], [[], []], "nothing was made");
   assert.ok(!bare.fake.log.length, "nothing reached the GitHub MCP");
   const own = await savedGitHub(t, "bearer");
-  const mine = await own.api("POST", "/templates/release-notes/apply", { parameters: { repo: "acme/widgets" } });
+  const mine = await own.api("POST", "/templates/release-notes/apply", { parameters: { repo: "acme/widgets" }, grants: ISSUE_WRITE });
   assert.equal(mine.status, 201, JSON.stringify(mine.body));
   assert.ok(!mine.body.warnings.some((w) => /GitHub App/.test(w.message)), "the owner's own token is theirs to scope");
 });

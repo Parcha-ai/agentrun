@@ -4,8 +4,8 @@ parameters:
 # The runner serves fixtures/github-mcp.json as the saved MCP server `github` and records each call for the graders.
 mcp:
   github: fixtures/github-mcp.json
-# The owner's answer at apply: the reads, set to allow. issue_write is left at the owner's setting (ask): the message
-# asks for the notes only, so it is never called.
+# The owner's answer at apply: the reads, set to allow. issue_write is left unticked, so the agent is not granted it:
+# the message asks for the notes only.
 grants:
   - mcp:github/list_releases
   - mcp:github/get_latest_release

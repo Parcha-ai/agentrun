@@ -245,7 +245,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       )}
 
       {t.mcp.length > 0 && (
-        <Section title="Tools you allow" note="Nothing is granted until you tick it. A tool you leave unticked stays at your own setting for it.">
+        <Section title="Tools you allow" note="Nothing is granted until you tick it. A tool you leave unticked is not given to the agent, even when it never asks: you can add it later on the agent's page.">
           {t.mcp.map((m) => (
             <div key={m.server} data-mcp={m.server} className="px-4 py-3">
               <p className="flex flex-wrap items-center gap-2 font-mono text-body">
@@ -274,7 +274,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
                           {/* A tick is a grant, and the server stores every granted tool as allow: that is what the tick says. What the
                               template asks for is said apart. */}
                           <span className="block text-small">Allow: the agent may call this without asking you.</span>
-                          <span className="block text-small text-muted-foreground">{tool.asks === "allow" ? "The template asks you to allow this." : "The template does not ask for this; unticked, it stays at your setting."}</span>
+                          <span className="block text-small text-muted-foreground">{tool.asks === "allow" ? "The template asks you to allow this." : "The template does not ask for this; unticked, the agent doesn't get it."}</span>
                         </span>
                       </label>
                       {index >= 0 && <Issues issues={at(`grants.${index}`)} />}
