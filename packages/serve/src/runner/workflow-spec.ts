@@ -387,7 +387,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         // The run's ONE cap over the journal's sessions: its model requests and its decisions admit by the one rule and
         // book on one ledger (runCap's runBooking over the sessions), so each is judged on the run's whole spend and a
         // refusal's figures are the run's. Wired now the Harness is open; the proxies' hooks forward to the model booking.
-        const sessions = journalSessions(harness, context, { flush: () => deps.store.flush() });
+        const sessions = journalSessions(harness, context, { flush: () => deps.store.flush(), runId: claim.runId });
         const writer = await sessions.open(SESSION);
         const run = runCap({ sessions: sessions as unknown as RunSessions, capUsd: () => effectiveCapUsd, mode: claimed.mode, now, modelOf: capModelOf });
         booking = await modelPortFor(writer, {

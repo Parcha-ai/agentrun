@@ -28,8 +28,10 @@ const fenced = (error: unknown): boolean => {
 };
 
 /** The sessions of the run whose one Harness is `harness` (on store.journal(claim)); `context`: the loop's, whose signal is
- *  the claim's; `store`: its flush makes every record appended so far survive a lost box (sync). */
-export function journalSessions(harness: Harness, context: Context, store: Pick<Store, "flush">): SessionStore & { keys(): Promise<string[]> } {
+ *  the claim's; `store`: its flush makes every record appended so far survive a lost box (sync), and `runId` is the run's,
+ *  each writer's scope beside its key (SessionWriter.scope): a request whose cost a lost claim of this process could not
+ *  write is booked by the run's next claim here at what it reported, never cut. A reader that books nothing needs none. */
+export function journalSessions(harness: Harness, context: Context, store: Pick<Store, "flush"> & { runId?: string }): SessionStore & { keys(): Promise<string[]> } {
   const holders = new Map<string, number>();
   const known = new Map<string, ConversationId>();
   // One creation per key at a time: two first opens at once share it, so a key names one conversation.
@@ -134,6 +136,7 @@ export function journalSessions(harness: Harness, context: Context, store: Pick<
       const conversation = (await find(key)) ?? (await create(key));
       const writer: SessionWriter = {
         key,
+        ...(store.runId === undefined ? {} : { scope: `${store.runId}\n${key}` }),
         read: () => read(key),
         // Every record appended so far is durable when this resolves: the kernel calls it after an effect's start record
         // and before the effect runs (drive.ts), so a lost box never runs it twice. One FULL commit of the store.

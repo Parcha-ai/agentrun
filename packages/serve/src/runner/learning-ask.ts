@@ -70,9 +70,10 @@ export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
     const context = withAbortSignal(signal, BACKGROUND_CONTEXT);
     // The claim's journal (a store hands one storage per claim, the loop's too) under a Harness of the ask's own, whose
     // close leaves the storage open: the loop goes on writing its entries there after the grade.
-    const harness = await Harness.open(unclosed(run.journal()), { models: createModels(), registry: createRegistry(), onReport: () => {} }, context);
+    const journal = run.journal();
+    const harness = await Harness.open(unclosed(journal), { models: createModels(), registry: createRegistry(), onReport: () => {} }, context);
     try {
-      const sessions = journalSessions(harness, context, { flush: () => run.flush() });
+      const sessions = journalSessions(harness, context, { flush: () => run.flush(), runId: journal.runId });
       const writer = await sessions.open(GRADE_SESSION);
       // The cap is the learning run's: asked with every session of the run summed, never this one's alone.
       const hostCheck = options.beforeRequest ? runBooking(sessions, options.beforeRequest) : undefined;

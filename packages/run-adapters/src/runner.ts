@@ -297,6 +297,35 @@ const bookedLost = (rule: unknown): boolean => typeof rule === "string" && (rule
  *  part so far (`soFarUsd`) and how many have none (`unpriced`). */
 export type SessionCost = { usd: number | null; soFarUsd: number; unpriced: number };
 
+/** A request's booking its own write could not keep, as it would have been written and told: its runner.turn, and the
+ *  request_end its host was never sent. */
+type Handed = { data: SessionRecord["data"]; usage: ModelUsage; ended?: Ended };
+/** The bookings of each session scope (SessionWriter.scope) in this process, across its claims: each request a booking
+ *  admitted and has not seen answer (`flying`, settled once its afterRequest has written or failed to), and each answered
+ *  request whose runner.turn the store refused (`refused`: a claim lost as the request answered). The scope's next
+ *  booking waits for the first and writes the second at its bookCut: a request that answered is booked at what it
+ *  reported, once, never cut at an unknown cost because the claim that sent it could no longer write. */
+const handoffs = new Map<string, { flying: Map<number, Promise<void>>; refused: Map<number, Handed> }>();
+/** How long a bookCut waits for an earlier booking's request still in flight in this process (its claim lost, its loop
+ *  stopping, which ends its requests): past it, the request is booked cut as one a dead process left. */
+const HANDOFF_WAIT_MS = 10_000;
+/** The most scopes kept: past it, the oldest with nothing in flight is dropped (a run resumed in another process, or not
+ *  at all, never takes what it left here; its next booking anywhere books those requests cut, as before). */
+const HANDOFF_SCOPES_MAX = 1024;
+const handoffOf = (scope: string) => {
+  let at = handoffs.get(scope);
+  if (!at) {
+    at = { flying: new Map(), refused: new Map() };
+    handoffs.set(scope, at);
+    if (handoffs.size > HANDOFF_SCOPES_MAX) for (const [key, old] of handoffs) if (old.flying.size === 0 && key !== scope) { handoffs.delete(key); break; }
+  }
+  return at;
+};
+const handoffDone = (scope: string) => {
+  const at = handoffs.get(scope);
+  if (at && at.flying.size === 0 && at.refused.size === 0) handoffs.delete(scope);
+};
+
 function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records: readonly SessionRecord[] }): ModelBooking {
   const node = { key: options.key, label: options.label ?? options.key, ...(options.executionPath === undefined ? {} : { executionPath: options.executionPath }) };
   const limit = options.maxTurns ?? null;
@@ -325,6 +354,22 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   }
   // This process's requests in flight, oldest first: the turn each was admitted as, and its model.
   const open: InFlight[] = [];
+  // Each of them as the session's scope knows it in flight (handoffs), settled once its afterRequest has written or not.
+  const scope = writer.scope;
+  const settles = new Map<number, () => void>();
+  const fly = (turn: number) => {
+    if (scope === undefined) return;
+    let settle!: () => void;
+    const flying = handoffOf(scope).flying;
+    const done = new Promise<void>((resolve) => (settle = resolve));
+    flying.set(turn, done);
+    settles.set(turn, () => {
+      settles.delete(turn);
+      if (flying.get(turn) === done) flying.delete(turn);
+      settle();
+      handoffDone(scope);
+    });
+  };
   // Response ids whose own write was refused, marked `late`: the booking's next write of its own (the next runner.request,
   // or a runner.turn) carries them first, so a request this process cuts by dying after that still keeps its ids. One a
   // runner.turn writes with the ids is dropped, never written twice. A process that dies before writing for its booking
@@ -413,6 +458,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       throw stoppedLate;
     }
     open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }), ...(bound ? { boundUsd: bound } : {}), ...(host === undefined ? {} : { host }), ...(route === undefined ? {} : { route }) });
+    fly(turn);
     return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(withoutNote ? { noteDropped: true as const } : {}) };
   };
   const models: ModelPort = {
@@ -460,12 +506,19 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       // sessionSpendOf reads it on the next claim.
       const capped = booking && bookedLost(booking.rule) && hold !== undefined ? hold + (bounds.get(turn) ?? 0) : figure;
       spentUsd = spent(spentUsd, capped ?? undefined);
+      const settle = settles.get(turn);
+      const data: SessionRecord["data"] = { turn, usd: usage.usd, ...tokensOf(usage), ...(usage.givenBack ? { givenBack: true } : {}), ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}), ...(stopped === undefined ? {} : { heldUsd: Math.min(hold!, stopped), stopped: true }), ...(booking ? { bookedUsd: booking.usd, rule: booking.rule } : {}), ...(note ? { note } : {}) };
       try {
         // A runner.turn with the ids holds what a carried response record of this turn would: that one is dropped. A
         // stopped one keeps the figure it counts at (`heldUsd`), so a later process counts it the same.
         const covers = (r: SessionRecord) => usage.providerIds !== undefined && (r.data as { turn?: number }).turn === turn;
-        await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...tokensOf(usage), ...(usage.givenBack ? { givenBack: true } : {}), ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}), ...(stopped === undefined ? {} : { heldUsd: Math.min(hold!, stopped), stopped: true }), ...(booking ? { bookedUsd: booking.usd, rule: booking.rule } : {}), ...(note ? { note } : {}) } }], covers);
+        await write([{ kind: RUNNER_RECORDS.turn, data }], covers);
+        settle?.();
       } catch (error) {
+        // Refused (its claim lost as it answered, say): the booking is handed to the session's next booking in this
+        // process, which writes it at its bookCut, never cutting a request that answered (handoffs).
+        if (scope !== undefined) handoffOf(scope).refused.set(turn, { data, usage, ...(ended ? { ended } : {}) });
+        settle?.();
         // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted. Asked
         // with the request's own host label, as its admission was: a stop that holds only the harness's own requests (a
         // parked turn's) never hides the failure from the host's. A turn parked on a call (TurnParked) is no stop of the
@@ -491,8 +544,45 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // Only requests an earlier process admitted: one this process has in flight is not cut. Read again here, just before
     // the cut is written: another booking of this session (an earlier pass of this claim, or one racing it) may have
     // booked it since this one opened, and a request is booked once.
-    const bookedSince = sessionSpendOf(await writer.read().catch(() => options.records)).answered;
+    // An earlier booking of this session in this process (a claim lost, then taken again here) may still have one of them
+    // in flight: its end is waited for, bounded, so a request that answers meanwhile is booked by what it reported.
+    const before = scope === undefined ? undefined : handoffs.get(scope);
+    const flying = before ? inherited.filter((t) => !answered.has(t)).flatMap((t) => before.flying.get(t) ?? []) : [];
+    if (flying.length) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([Promise.all(flying), new Promise<void>((resolve) => (timer = setTimeout(resolve, HANDOFF_WAIT_MS)))]);
+      clearTimeout(timer);
+    }
+    const now = await writer.read().catch(() => options.records);
+    const bookedSince = sessionSpendOf(now).answered;
     for (const t of inherited) if (bookedSince.has(t)) answered.add(t);
+    // A request an earlier booking in this process saw answer, whose runner.turn its store refused: written now as that
+    // booking would have written it, and told as it would have told it, at what it reported. One the session booked since
+    // is dropped: a request is booked once.
+    const handed = scope === undefined ? undefined : handoffs.get(scope);
+    if (scope !== undefined && handed) {
+      for (const t of inherited) if (answered.has(t)) handed.refused.delete(t);
+      const taken = inherited.flatMap((turn) => {
+        const one = handed.refused.get(turn);
+        return one ? [{ turn, ...one }] : [];
+      });
+      if (taken.length) {
+        const records = taken.map((one) => ({ kind: RUNNER_RECORDS.turn, data: one.data }));
+        await append(records);
+        for (const one of taken) {
+          handed.refused.delete(one.turn);
+          answered.add(one.turn);
+        }
+        // Its spend read the request at its hold and bound (or unknown); booked, it reads at what it was booked at. Only
+        // before this booking's own requests: the spend is the session's records then.
+        if (turns === inherited.length && open.length === 0) spentUsd = sessionSpendOf([...now, ...records]).spentUsd;
+        for (const one of taken) {
+          const hosted = hosts.get(one.turn);
+          await emit({ type: "request_end", turn: one.turn, usage: one.usage, ...(hosted === undefined ? {} : { host: hosted }), ...(one.ended ? { ended: one.ended } : {}) });
+        }
+      }
+      handoffDone(scope);
+    }
     const left = inherited.filter((t) => !answered.has(t));
     if (left.length === 0) return;
     // A hold-only step an earlier process left open is given back: money reserved, not spent (its holder's charges book
