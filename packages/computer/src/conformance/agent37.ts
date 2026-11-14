@@ -118,12 +118,12 @@ function live(env: Record<string, string | undefined>): void {
  * The template every computer of the run starts from: COMPUTER_AGENT37_TEMPLATE, else agent37-base, else for kind
  * desktop the box template, which the run's provider registers in the key's workspace first (prepareImage, live).
  */
-export async function conformanceImage(options: Agent37ModuleOptions = {}): Promise<string> {
+export async function conformanceImage(options: Agent37ModuleOptions = {}, { signal }: { signal?: AbortSignal } = {}): Promise<string> {
 	const { env = process.env } = options;
 	const named = env[AGENT37_ENV.template];
 	if (named) return named;
 	if (env[AGENT37_ENV.kind] !== "desktop") return AGENT37_BASE_TEMPLATE;
-	const ready = await (await createProvider(options)).prepareImage();
+	const ready = await (await createProvider(options)).prepareImage(signal ? { signal } : {});
 	if (!ready.ok) throw new Error(`the Agent37 box template: ${ready.error.message}`);
 	return ready.value;
 }

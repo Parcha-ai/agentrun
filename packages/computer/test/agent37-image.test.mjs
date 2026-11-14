@@ -56,7 +56,7 @@ function withTemplates() {
 	};
 	const provider = new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2: { Client: class {} }, fetch, apiUrl: API_URL, proxyDomain: PROXY });
 	const said = () => rest.calls.filter(({ path }) => path.startsWith("/v1/templates")).map(({ method, path }) => `${method} ${path}`);
-	return { provider, templates, calls: rest.calls, said, answer: (method, path, answer) => answers.push({ method, path, answer }) };
+	return { provider, fetch, templates, calls: rest.calls, said, answer: (method, path, answer) => answers.push({ method, path, answer }) };
 }
 
 test("Agent37's descriptor says it prepares its image, and names no template of ours as a default", () => {
@@ -125,6 +125,16 @@ test("a read Agent37 refuses registers nothing: the key's refusal, in its words"
 	assert.match(refused.error.message, /GET \/v1\/templates\/agentrun-box-[0-9a-f]{12} answered 401 invalid_api_key: Invalid API key/);
 	assert.deepEqual(said(), [`GET /v1/templates/${NAME}`]);
 	assert.deepEqual(waits, []);
+});
+
+test("a desktop conformance run registers the box template under the run's own signal: Ctrl-C ends the wait", async () => {
+	const { fetch, answer } = withTemplates();
+	answer("POST", "/v1/templates", () => envelope(409, "template_conflict", "exists"));
+	const { conformanceImage, AGENT37_ENV: ENV } = await import("../dist/conformance/agent37.js");
+	const env = { [ENV.key]: KEY, [ENV.sshKey]: SSH_KEY, [ENV.live]: "1", [ENV.kind]: "desktop", [ENV.apiUrl]: API_URL };
+	const stop = new AbortController();
+	setTimeout(() => stop.abort(), 50);
+	await assert.rejects(conformanceImage({ env, ssh2: { Client: class {} }, fetch }, { signal: stop.signal }), /the Agent37 box template: .*aborted/);
 });
 
 test("an aborted prepare stops waiting and says so", async () => {
