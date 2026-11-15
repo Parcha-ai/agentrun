@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 
 const { promotionGate } = await import("../dist/runner/promotion.js");
-const { GRADES_KEPT, gradesOf, putGrade, promotionsOf, recordPromotion, REFIT_EVERY } = await import("../dist/learn/promote.js");
+const { GRADES_KEPT, gradesOf, putGrade, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS } = await import("../dist/learn/promote.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 
 const flowOf = (guard) => JSON.stringify({ v: 2, name: "answer", schemas: { In: { type: "object", required: ["question"], properties: { question: { type: "string" } } } }, input: { schemaId: "In" }, output: { schemaId: "In", path: "question" },
@@ -208,6 +208,29 @@ test("graded runs a workflow answered alone are replayed: a new revision reserve
   assert.deepEqual([...record.inputs].sort(), Array.from({ length: 6 }, (_, i) => `graded-${i}`), "every path-workflow graded run is an input");
   assert.deepEqual([...created].sort(), [...record.runs].sort());
   assert.match(record.replay_id, /^[0-9a-f-]{36}$/, "the reservation mints the replay's id");
+});
+
+// Review of #2823, item 4: the claim's and the owner's starts share one input picker; a claim's picking is pinned here:
+// the agent's newest REPLAY_INPUTS graded inputs the revision fits, newest first, never the claimed run, an archived run,
+// or a run with an uploaded file.
+test("a claim's replay picks the agent's newest REPLAY_INPUTS graded inputs, newest first: never the claimed run, an archived one or one with a file", async () => {
+  const text = flowOf(undefined);
+  const digest = workflowDigest({ workflow: text });
+  const { settings, logs, gateOf, rows, launches } = await replayStoreOf({ graded: REPLAY_INPUTS + 5 });
+  const newest = (id, launch, row = {}) => {
+    rows.set(id, { id, state: "ended", metrics: { path: "agent" }, archivedAt: null, ...row });
+    launches.set(id, { input: { question: id }, title: id, place: { mode: "runner" }, learning: LEARNING, ...launch });
+    return putGrade(settings, "a", { run: id, correct: true, source: "eval", at: id, path: "agent" });
+  };
+  await newest("archived", {}, { archivedAt: 1 });
+  await newest("with-file", { files: ["file-1"] });
+  await newest("now", {});
+  assert.equal(await gateOf()({ name: "answer", workflow: text }, digest), undefined);
+  const record = (await promotionsOf(settings, "a")).at(-1);
+  assert.equal(record.decided, "replaying", `${JSON.stringify(record)}\n${logs.join("\n")}`);
+  assert.deepEqual(record.inputs, Array.from({ length: REPLAY_INPUTS }, (_, i) => `graded-${REPLAY_INPUTS + 4 - i}`), "the newest REPLAY_INPUTS it fits, newest first");
+  assert.equal(record.reason, `replaying on the agent's last ${REPLAY_INPUTS} graded inputs it fits`);
+  assert.equal(record.held_on, undefined, "a claim's replay owes nothing");
 });
 
 // Review on #2644 (expired replays): a replay decided past REPLAY_DEADLINE_MS with a run still at work cancels that run as

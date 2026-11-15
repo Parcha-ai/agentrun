@@ -30,7 +30,7 @@ import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/in
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
 import { type CompileAsk, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type GradedAsk, type HeldAsk, heldNamesOf } from "../learn/compile.js";
-import { type PromotionRecord, promotionOf, promotionsOf } from "../learn/promote.js";
+import { type PromotionRecord, promotionOf, promotionsOf, scoreOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
@@ -471,7 +471,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     const kept = await deps.store.learning.proposals(input.agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
     if (!kept || kept.some((one) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow)) return sayLeftOut(), undefined;
     const { workflow, digest, source, reason, replay } = read.held;
-    held = { workflow, digest, source, reason, ...(replay ? { replay: { n: replay.n, agree: replay.agree, agent_acc: replay.agent_acc, wf_acc: replay.wf_acc, delta: replay.delta, handed_back: replay.handed_back } } : {}) };
+    held = { workflow, digest, source, reason, ...(replay ? { replay: scoreOf(replay) } : {}) };
     revising = workflow;
   }
   if (!revising && !dueWith(read.notes.length, read.workflows)) return sayLeftOut(), undefined;
