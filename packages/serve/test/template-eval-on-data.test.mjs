@@ -104,6 +104,18 @@ test("an email case on a folder whose server keeps an email account is refused b
   assert.equal(account.body.address, ADDRESS, JSON.stringify(account.body));
 });
 
+test("on an owner's folder an email case's fake mailbox is gone after the eval: the folder's server keeps no email account, as before it", { timeout: 300_000 }, async (t) => {
+  const { data } = await ownersFolder(t);
+  const report = await evalTemplate({ dir: await mailPackage(), data, serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run?.status, "completed", JSON.stringify(report.cases[0], null, 1));
+  // The case saved its fake mailbox as the server's account for its run; the folder's server, started again, keeps none.
+  const again = await serve(t, { data });
+  const account = await asOwner(again)("GET", "/settings/email");
+  assert.equal(account.status, 200, JSON.stringify(account.body));
+  assert.equal(account.body.configured, false, `the case's fake mailbox is left as the owner's account: ${JSON.stringify(account.body)}`);
+});
+
 test("on an owner's folder a case's pins leave the owner's tool settings as they were, and an MCP server of the owner's by a fake's name is never replaced", { timeout: 300_000 }, async (t) => {
   let before;
   const { data } = await ownersFolder(t, async (first) => {
