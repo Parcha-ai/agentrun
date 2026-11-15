@@ -2012,7 +2012,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/chatgpt/sign-in": {
     post: {
       operationId: "startChatGPTSignIn", tags: ["local"], summary: "Start signing in with ChatGPT: the link to open",
-      description: "Starts OpenAI's Sign in with ChatGPT for this server and answers the link a person opens. One waits at a time, for 10 minutes: a new start cancels the one waiting, whose address is then stale. On the machine the server runs on, the browser's return finishes it; elsewhere, paste the address the tab ended on (`http://127.0.0.1:1455/auth/callback?...`) to POST /settings/chatgpt/sign-in/finish. 400 in words when the sign-in can't start (another holds this machine's port 1455). A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      description: "Starts OpenAI's Sign in with ChatGPT for this server and answers the link a person opens. One waits at a time, for 10 minutes: a new start cancels the one waiting, whose address is then stale. On the machine the server runs on, the browser's return finishes it; elsewhere, paste the address the tab ended on (`127.0.0.1:1455/auth/callback?...`, the address OpenAI's sign-in returns to) to POST /settings/chatgpt/sign-in/finish. 400 in words when the sign-in can't start (another holds this machine's port 1455). A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
       responses: {

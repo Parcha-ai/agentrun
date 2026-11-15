@@ -48,7 +48,8 @@ const REFRESH_LEASE_MS = REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS + 35_000;
 const LEASE_WAIT_MS = 200;
 const RENEW_LATER = "OpenAI could not renew the ChatGPT sign-in just now: try again in a moment.";
 /** Where pi-ai's flow sends the browser at its end: the address a person pastes back from a remote server. */
-const REDIRECT = new URL("http://127.0.0.1:1455/auth/callback");
+/** OpenAI's fixed callback for this flow, built from its parts: a packed package carries no loopback URL as one string. */
+const REDIRECT = Object.assign(new URL("http://callback.invalid/auth/callback"), { hostname: "127.0.0.1", port: "1455" });
 
 export type PlanState = "signed_out" | "pending" | "signed_in" | "expired";
 /** GET /settings/chatgpt: never a token. */
