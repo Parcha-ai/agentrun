@@ -51,9 +51,14 @@ export function where(url: string): string {
 
 const ELIDED = "\u2026";
 // An apostrophe is part of a URL (a path's O'Reilly, a query's quoted word): a URL that stopped at one would leave the query
-// after it unscrubbed. One that closes a quote around the URL is in its tail, as a sentence's punctuation is.
+// after it unscrubbed. One that closes a quote around the URL is in its tail, as a sentence's punctuation is (scrubOne).
 const TEXT_URL = /https?:\/\/[^\s"`<>\\]+/gi;
+const SCHEME = /https?:\/\//gi;
 const URL_PARTS = /^(https?:\/\/)(?:[^@/?#]*@)?([^/?#]*)([^?#]*)(?:\?([^#]*))?/i;
+/** The userinfo of a URL run into another's host or path. */
+const INNER_USERINFO = /(https?:\/\/)[^@/?#\s]*@/gi;
+const TAIL = ".,;:!?)]}'";
+const ALNUM = /[A-Za-z0-9]/;
 
 /**
  * Every http(s) URL in `text` keeps its origin, its path and its query keys. Query values, the fragment and the
@@ -61,12 +66,29 @@ const URL_PARTS = /^(https?:\/\/)(?:[^@/?#]*@)?([^/?#]*)([^?#]*)(?:\?([^#]*))?/i
  */
 export function scrubUrls(text: string): string {
   return text.replace(TEXT_URL, (raw) => {
-    const tail = /[.,;:!?)\]}']+$/.exec(raw)?.[0] ?? "";
-    const parts = URL_PARTS.exec(raw.slice(0, raw.length - tail.length));
-    if (!parts) return raw;
-    const keys = [...new Set((parts[4] ?? "").split("&").map((pair) => pair.split("=")[0]).filter(Boolean))];
-    return `${parts[1]}${parts[2]}${parts[3]}${keys.length ? `?${keys.map((key) => `${key}=${ELIDED}`).join("&")}` : ""}${tail}`;
+    // A URL that starts after nothing but punctuation holding an apostrophe is the next of a compact quoted list
+    // (`'https://a','https://b'`): each is scrubbed alone. Each look back stops at the last start, so this is linear.
+    const starts = [0];
+    for (const found of raw.matchAll(SCHEME)) {
+      if (found.index === 0) continue;
+      let quoted = false;
+      for (let i = found.index - 1; i > starts.at(-1)! && !ALNUM.test(raw[i]!); i--) quoted ||= raw[i] === "'";
+      if (quoted) starts.push(found.index);
+    }
+    return starts.map((start, i) => scrubOne(raw.slice(start, starts[i + 1] ?? raw.length))).join("");
   });
+}
+
+/** One URL found in text, scrubbed (scrubUrls), its trailing punctuation (a closing quote's among it) kept as it was. */
+function scrubOne(raw: string): string {
+  let end = raw.length;
+  while (end > 0 && TAIL.includes(raw[end - 1]!)) end--;
+  const parts = URL_PARTS.exec(raw.slice(0, end));
+  if (!parts) return raw;
+  const keys = [...new Set((parts[4] ?? "").split("&").map((pair) => pair.split("=")[0]).filter(Boolean))];
+  // Another URL run into this one's host or path (after a comma, say) loses its userinfo; its query and fragment are
+  // this one's, already dropped.
+  return `${parts[1]}${`${parts[2]}${parts[3]}`.replace(INNER_USERINFO, "$1")}${keys.length ? `?${keys.map((key) => `${key}=${ELIDED}`).join("&")}` : ""}${raw.slice(end)}`;
 }
 
 /** `a, b, +2 more`. */

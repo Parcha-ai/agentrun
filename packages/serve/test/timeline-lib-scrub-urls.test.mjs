@@ -17,6 +17,24 @@ test("a URL in quotes shows no query value, and the closing quote stays outside 
   assert.equal(scrubUrls("It said 'https://api.example/a?token=v'."), "It said 'https://api.example/a?token=…'.");
 });
 
+test("a compact quoted list's URLs are each scrubbed alone, and a URL run into another's path or host never shows its userinfo", () => {
+  // Credentials made at runtime: no credential-shaped literal for the source export.
+  const signed = (host) => Object.assign(new URL(`https://${host}/`), { username: "user", password: "pw-held" }).href;
+  assert.equal(scrubUrls(`['https://a.example/','${signed("b.example")}']`), "['https://a.example/','https://b.example/']");
+  assert.equal(scrubUrls(`['https://a.example/?k=v','${signed("b.example")}x?token=v']`), "['https://a.example/?k=…','https://b.example/x?token=…']");
+  assert.equal(scrubUrls(`https://a.example/,${signed("b.example")}`), "https://a.example/,https://b.example/");
+  assert.equal(scrubUrls(`https://a.example,${signed("b.example")}`), "https://a.example,https://b.example/");
+  // A URL in another's query is a value, dropped with it.
+  assert.equal(scrubUrls("https://a.example/go?next=https://b.example/c?x=1"), "https://a.example/go?next=…");
+});
+
+test("a long run of apostrophes or punctuation after a URL is scrubbed in linear time", () => {
+  const started = performance.now();
+  const runs = ["'".repeat(200_000), `${"'".repeat(100_000)}x`, `${".".repeat(200_000)}x`, `${"',".repeat(50_000)}https://b.example/?k=v`];
+  for (const run of runs) assert.ok(scrubUrls(`https://a.example/${run}`).length > 0);
+  assert.ok(performance.now() - started < 2_000, `took ${Math.round(performance.now() - started)} ms`);
+});
+
 test("an apostrophe inside a query value never lets the values after it through", () => {
   assert.equal(scrubUrls("https://search.example/?q='rust'&token=v"), "https://search.example/?q=…&token=…");
 });
