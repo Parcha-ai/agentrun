@@ -94,6 +94,11 @@ export const KINDS = {
    *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
    *  what the run was given. Neither a call nor a message. */
   learningLaid: "agentrun.learning.laid",
+  /** The claim made the run a computer of its own (`computer`: its kind, desktop, sandbox or phone; computer-for-claim.ts
+   *  ClaimComputer.made): written on the root at the claim's first pass. A later claim's computer is a new one, and this
+   *  entry is how that claim knows the run had one when nothing of the earlier claim's is left to let go (a server's
+   *  stop, a park): computer-journal.ts hadComputer. Neither a call nor a message, and never on the Timeline. */
+  computerMade: "agentrun.computer.made",
   /** A grade's feedback round (runner/feedback-round.ts): the run opened again on a grade's words, asked no turn of the
    *  job's; its next end's end-of-run turn reads them (`text`, the `round`, whether the grade said right, the workflow a
    *  revision is asked of). Written on the root by the commit that takes the round's steer row. Neither a call nor a

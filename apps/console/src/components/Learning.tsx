@@ -209,7 +209,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
       {on && !readOnly && <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />}
       <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} />
-      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} loop={loop} cost={cost} />
+      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} loop={loop} cost={cost} onReplayed={() => { void read(); }} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
         <section className="min-w-0 space-y-3" aria-label="Notes">

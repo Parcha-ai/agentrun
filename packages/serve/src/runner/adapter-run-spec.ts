@@ -74,7 +74,8 @@ import type { ComputerSetting } from "../computer-setting.js";
 import { type claimComputer, type ComputerDeps, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { ScriptDecide } from "../workspace/computer-script.js";
-import { earlierUp, type RunComputerHold } from "./computer-journal.js";
+import { hadComputer, type RunComputerHold } from "./computer-journal.js";
+import type { MadeKind, Replaced } from "../workspace/computer-for-claim.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -113,7 +114,9 @@ export interface ClaimComputer {
   /** The run's desktop or phone and the person's hold on it: the spec's `computer` (AdapterRunSpec.computer). */
   readonly held?: RunComputerHold;
   /** It replaced an earlier claim's computer (computer-for-claim.ts Replaced). */
-  readonly replaced?: { readonly folderKept: boolean };
+  readonly replaced?: Replaced;
+  /** The claim made it the run's own, of this kind (computer-for-claim.ts ClaimComputer.made). */
+  readonly made?: MadeKind;
   release(): Promise<void>;
 }
 /** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner: the composer's
@@ -443,9 +446,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent. What
     // became of the agent's own computer (a persistent setting) is said on the run's timeline.
     // A person's stop ends the claim's waits at once: a first image pull or registration (Agent37's runs minutes) among them.
-    // Whether an earlier claim's desktop or phone came up is the run's journal's to say (earlierUp), asked only of a claim
-    // that took the run over while it was running (a server's stop): a parked run's resume is no lost runner.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(claim.from === "running" ? { earlierUp: () => earlierUp(deps.journal(claim), context) } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    // Whether an earlier claim made the run a computer of its own is the run's journal's to say (hadComputer): a later
+    // claim's is a new one whatever ended the earlier claim (a lost runner, a server's stop, a park).
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, hadComputer: () => hadComputer(deps.journal(claim), context), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
@@ -453,7 +456,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // A desktop's or a phone's hold (the person's take-over) wraps its ports: a call made while the person holds it waits,
   // and the agent's hand-over (computer_request_handoff) asks the person through it.
   holds.hold({ computer });
-  const loopComputer = loopComputerOf(computer.computer, computer.held);
+  const loopComputer = loopComputerOf(computer.computer, computer.held, computer.made);
   const heldComputer = heldSpecOf(launch, loopComputer);
   // Under the agent's bash policy, its shell's environment is the policy's too (bash-read-only.ts policyEnv).
   const bashPolicy = bashPolicyOf(body.toolSettings);

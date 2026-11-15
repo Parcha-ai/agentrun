@@ -26,9 +26,9 @@ import { raiseFollowUpId } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
 
 /** The root entries a claim writes before its turn, whatever the run's turns are (its session's key, a phase row, a
- *  takeover's note, its computer's hold, the learning seed it laid): read past when a claim asks whether the run's root ends
- *  on its end (a fresh reopen). */
-const CLAIM_BOOKKEEPING: ReadonlySet<string> = new Set([KINDS.sessionKey, HOST_PHASE, RUN_RESUMED, KINDS.learningLaid, "computer.hold", HELD_KIND, CALL_KIND, COMPUTER_CALLS, REQUEST_STARTED, REQUEST_ENDED]);
+ *  takeover's note, its computer's hold, the learning seed it laid, the computer it made): read past when a claim asks
+ *  whether the run's root ends on its end (a fresh reopen). */
+const CLAIM_BOOKKEEPING: ReadonlySet<string> = new Set([KINDS.sessionKey, HOST_PHASE, RUN_RESUMED, KINDS.learningLaid, KINDS.computerMade, "computer.hold", HELD_KIND, CALL_KIND, COMPUTER_CALLS, REQUEST_STARTED, REQUEST_ENDED]);
 
 /** What the run's learned workflow did when it ran first: answered (`text` its answer) or handed the job back (`text`
  *  the agent's first input, runner/workflow-first.ts handbackText). */
@@ -65,7 +65,7 @@ import { COMPUTER_CALLS, type ComputerCallRecord, recordingCalls } from "../comp
 import { channelCallOf, type LoopComputer, runChannelCall } from "./computer-channel.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, FIT_TOLERANCE, noteFor, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, FIT_TOLERANCE, noteFor, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, SERVER_NOTE_LABEL, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap's config, as its spec gives it: the kernel runCap's options but its sessions (the loop's own), and
@@ -442,6 +442,13 @@ const DELIVER_NOW_MS = 5_000;
  *  may take it. A request that leaves before its admission gives it back as it goes (ModelPort.noteReturned): this is
  *  only the backstop for a path that never does. A proxy's token count and admission take well under it. */
 const WRAP_UP_OFFER_MS = 30_000;
+
+/** A note the model was told (it begins with SERVER_NOTE_LABEL) as the server's row for it says it: the words after the
+ *  label, their first letter a capital, since the row is the server's already ("AgentRun: …", timeline.ts CAP_WRAPUP). */
+const rowWords = (told: string): string => {
+  const words = told.startsWith(SERVER_NOTE_LABEL) ? told.slice(SERVER_NOTE_LABEL.length) : told;
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+};
 
 /** `text` cut to at most `max` UTF-16 units, never inside a character: a high surrogate the cut leaves alone goes too. */
 const cutWhole = (text: string, max: number): string => {
@@ -2118,7 +2125,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             if (computerTold !== undefined && ticket && !(ticket as { noteDropped?: true }).noteDropped) {
               computerNote.words = undefined;
               try {
-                await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: COMPUTER_NOTE, data: { words: computerTold } as unknown as JsonValue }), context);
+                await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: COMPUTER_NOTE, data: { words: rowWords(computerTold) } as unknown as JsonValue }), context);
                 await deps.flush();
               } catch (error) {
                 console.warn(`[runner] the replaced computer's note row was not written (the note went with the request): ${said(error)}`);
@@ -2143,7 +2150,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const { words, leftUsd, capUsd } = offer;
               toldCaps.push(capUsd);
               try {
-                await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: CAP_WRAPUP, data: { words, leftUsd, capUsd } as unknown as JsonValue }), context);
+                await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: CAP_WRAPUP, data: { words: rowWords(words), leftUsd, capUsd } as unknown as JsonValue }), context);
                 await deps.flush();
               } catch (error) {
                 console.warn(`[runner] the wrap-up's row was not written (the note went with the request): ${said(error)}`);
@@ -2272,6 +2279,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           channelNow = { computer: spec.computer, commit: (entries) => journalOf.commit(async (tx) => {
             for (const entry of entries) await tx.appendEntry(rootOf.id, { kind: entry.kind, data: entry.data as unknown as JsonValue });
           }, context) };
+        }
+        // The run's own computer, made by this claim: its kind recorded once per claim, before any request of the claim
+        // (each request's flush makes it durable first), so a later claim knows the run had one (computer-journal.ts
+        // hadComputer) however this one ends.
+        if (restarts === 0 && spec.computer?.own) {
+          const [rootOf, kind] = [root, spec.computer.kind];
+          await harness.commit((tx) => tx.appendEntry(rootOf.id, { kind: KINDS.computerMade, data: { computer: kind } }), context);
         }
         if (spec.computer?.hold && spec.computer.kind !== "sandbox") {
           const [journalOf, rootOf] = [harness, root];

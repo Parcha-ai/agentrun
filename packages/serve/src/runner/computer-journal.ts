@@ -15,14 +15,15 @@ import {
 } from "../computer-commands.js";
 import type { JournalReads } from "../store/store.js";
 import type { HeldComputer, HoldEnd, HoldEvent, HoldState } from "../workspace/computer-hold.js";
+import { KINDS } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import type { Command, CommandOutcome } from "./loop-contract.js";
 
-/** Whether the run's journal says a desktop or a phone of the run came up (a hold's up entry, which only a claim's pass
- *  writes): what a later claim asks (computerForClaim's earlierUp) when it makes a fresh one and found no older
- *  computer of the run to let go, its claim having let it go at its end (a server's stop). */
-export async function earlierUp(journal: JournalReads, context: Context): Promise<boolean> {
-  return holdIn((await journalEntries(journal, context)).map((entry) => ({ kind: entry.kind, data: entry.data }))).up;
+/** Whether the run's journal says an earlier claim made the run a computer of its own (KINDS.computerMade, which only a
+ *  claim's pass writes): what a later claim asks (computerForClaim's hadComputer) before it makes a fresh one, so it
+ *  says it replaces one even when nothing of the earlier claim's is left to let go (a server's stop, a park). */
+export async function hadComputer(journal: JournalReads, context: Context): Promise<boolean> {
+  return (await journalEntries(journal, context)).some((entry) => entry.kind === KINDS.computerMade);
 }
 
 /** One root entry, as the run's journal takes it. */
