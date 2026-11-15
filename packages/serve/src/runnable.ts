@@ -151,7 +151,6 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (listedTool?.grantable === false) return { field, reason: "not_an_option", message: `${tool} can't be granted: ${listedTool.reason}`, host: false, notGrantable: { tool, reason: listedTool.reason! } };
     // A workflow's nodes bind no catalog tool here (app.ts): its run would go without it, so its grant is refused.
     if (revision.kind === "workflow") return refused(`${tool}: a workflow's nodes don't bind ${isMonid ? "monid endpoints" : "MCP tools"} here yet; grant it to an agentic agent.`);
-    if (isMonid && !env[MONID_KEY_ENV]?.trim()) return { field, reason: NOT_SET_UP, message: `The tool ${tool} needs ${keyNeeded([MONID_KEY_ENV])}.`, host: true, missing: { tool, vars: [MONID_KEY_ENV] } };
     if (named && !listed) return refused(`No MCP server ${named.server} is saved on this server: add it in Settings → MCP servers first.`);
     if (named && listed && !listedTool) return refused(`The MCP server ${named.server} has no tool ${named.tool}; its tools are ${listed.map((t) => t.name).join(", ") || "none"}.`);
     // Each tool the grant offers (the gate's keys), refused here if the harness would drop or retype its input.
@@ -162,6 +161,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       const dropped = schemaProblems?.(wireName(name), schema)[0];
       if (dropped) return refused(droppedWords(name, harness, dropped));
     }
+    // After the harness's check: a pin carried with the key gone is still held to the harness it would run on.
+    if (isMonid && !env[MONID_KEY_ENV]?.trim()) return { field, reason: NOT_SET_UP, message: `The tool ${tool} needs ${keyNeeded([MONID_KEY_ENV])}.`, host: true, missing: { tool, vars: [MONID_KEY_ENV] } };
     if (!named) return undefined;
     const declared = listedTool?.inputSchema ? mcpHeaderProblem(listedTool.inputSchema) : undefined;
     if (declared) return refused(`The MCP server ${named.server}'s tool ${named.tool} declares a header it cannot send: ${declared}.`);
