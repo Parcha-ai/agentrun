@@ -193,8 +193,8 @@ slices, never whole pages, and count your fetches.
    More findings than fit: the ones that break first, then `and <n> more in findings`. No intro, no advice beyond
    each finding's "Do".
 
-8. **Answer** with exactly one fenced `json` block matching `report.schema.json` (beside this SKILL.md: read it
-   before you answer), and nothing after it. Every run ends with this block: one that stopped early (`up_to_date`,
+8. **Answer** with exactly one fenced `json` block matching the output schema in your instructions,
+   and nothing after it. Every run ends with this block: one that stopped early (`up_to_date`,
    or an `incomplete` from step 1 or 2) answers with it too, never with prose alone:
 
 ```json
