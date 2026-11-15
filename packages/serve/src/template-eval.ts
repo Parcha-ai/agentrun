@@ -1159,6 +1159,9 @@ async function triggerRun(ctx: Ctx, one: EvalCase, agentId: string, triggerId: s
     const started = fresh.find((f) => typeof f.run_id === "string");
     if (started) {
       ctx.made.runs.add(String(started.run_id));
+      // Off at once, before the run is waited on or graded: a repeating schedule (or a second message) would start
+      // another paid run on the same fake account, which no report counts and which changes what the graders read.
+      expectOk(`turning off the package's trigger ${fixture.trigger} after its run started`, await api("PATCH", `/triggers/${encodeURIComponent(triggerId)}`, { enabled: false }));
       return { runId: String(started.run_id), before };
     }
     const failed = fresh.find((f) => f.status === "failed");

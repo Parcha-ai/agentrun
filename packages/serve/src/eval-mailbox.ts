@@ -92,7 +92,10 @@ export function mailboxFixtureOf(value: unknown, at: string, bad: (message: stri
 
 /** `m` put in `mailbox` of `faux` as it would have arrived: on gmail, a folder is a label, carried out of the inbox. */
 export function seed(faux: EmailFaux, layout: Layout, mailbox: string, m: MailFixtureMessage): void {
-  const label = layout === "gmail" && !faux.path(mailbox);
+  // A label by what the mailbox is, never by whether it is there yet: every mailbox but INBOX and Gmail's own [Gmail]/
+  // folders (Drafts and Sent among them), so a label's second message is labelled as its first was.
+  const at = faux.path(mailbox);
+  const label = layout === "gmail" && at !== "INBOX" && !at?.startsWith("[Gmail]/");
   const message: FauxMessage = {
     mailbox: label ? "[Gmail]/All Mail" : mailbox, from: m.from_name ? `"${m.from_name.replace(/["\\]/g, "")}" <${m.from}>` : m.from, to: m.to, ...(m.cc?.length ? { cc: m.cc } : {}), subject: m.subject, text: m.text,
     date: m.date, messageId: m.message_id, ...(m.in_reply_to ? { inReplyTo: m.in_reply_to } : {}), ...(m.references?.length ? { references: m.references } : {}),
