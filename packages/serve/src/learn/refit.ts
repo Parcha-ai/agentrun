@@ -10,7 +10,7 @@
 // revision.
 import { softEscalates } from "@parcha/agentrun-dsl";
 import type { GuardRow } from "../learned-nodes.js";
-import { answerCorrect, PROMOTE_BAR, type RefitGuard, type ReplayRow, type ReplayScore, sameAnswer, SOFT_ESCALATE_THRESHOLD, walkGuards } from "./promote.js";
+import { agentRight, answerCorrect, PROMOTE_BAR, type RefitGuard, type ReplayRow, type ReplayScore, sameAnswer, SOFT_ESCALATE_THRESHOLD, walkGuards } from "./promote.js";
 import { workflowNodes } from "./workflow-nodes.js";
 
 /** A switch set off: the guard or the escalate never hands back. Never a threshold the DSL takes (one is in (0, 1)). */
@@ -25,8 +25,8 @@ export const FIT_MIN_WRONG = 5;
 /** One row the scorer (scoreRows) reads: the guard rows of one input (each step's p known up to where it stopped,
  *  `escalated` on the one that handed it back), whether the workflow answered it alone with every guard passing
  *  record-only (`answered`), and if so whether that answer was right (`wfCorrect`; null: unknown) and said what the
- *  agent's recorded answer said (`agrees`); `agentCorrect`, the chance the agent's answer to it is right (its grade, 1 or
- *  0, when known; the agent's mean accuracy when not); `of`, the graded run a replayed row replays (refitRowsOf; a served
+ *  agent's recorded answer said (`agrees`); `agentCorrect`, the chance the agent's answer to it is right (1 or 0 when
+ *  known: a replayed row's agentRight; the agent's mean accuracy when not); `of`, the graded run a replayed row replays (refitRowsOf; a served
  *  run's row has none). */
 export interface RefitRow {
   readonly guards: readonly GuardRow[];
@@ -52,7 +52,7 @@ export const refitRowsOf = (rows: readonly ReplayRow[]): RefitRow[] =>
     if (row.outcome !== "answered" && row.outcome !== "handed_back") return [];
     const answered = row.outcome === "answered" && row.guards.every((guard) => guard.p !== null);
     return [{
-      of: row.of, guards: row.guards, answered, agentCorrect: row.recorded.correct ? 1 : 0,
+      of: row.of, guards: row.guards, answered, agentCorrect: agentRight(row.recorded) ? 1 : 0,
       wfCorrect: answered ? answerCorrect(row.answer, row.recorded) : null, agrees: answered && sameAnswer(row.answer, row.recorded.answer),
     }];
   });

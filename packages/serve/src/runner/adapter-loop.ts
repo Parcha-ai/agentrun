@@ -3288,8 +3288,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     await release?.().catch((error: unknown) => console.warn(`[runner] its run's release failed: ${said(error)}`));
   }
 
-  /** What round `round`'s end-of-run turn kept as it was first asked (EndOfRunTurn's keptOf), on the CLI's record. */
-  const keptOf = (claim: Claim) => (round: number): EndOfRunKept | undefined => cliRecord?.keptOf(reflectRequestId(claim.runId, false, round));
+  /** What a round's first ask kept, read before the hook can skip or close its resumed turn: the CLI's record, or pi's
+   *  durable root entry. A different round's snapshot never prices this one. */
+  async function keptOf(claim: Claim): Promise<(round: number) => EndOfRunKept | undefined> {
+    const record = cliRecord;
+    const entries = !record && gate && root ? await entriesOf(gate.journal, root.id, context) : [];
+    return (round) => {
+      const requestId = reflectRequestId(claim.runId, false, round);
+      if (record) return record.keptOf(requestId);
+      const first = entries.find((entry) => entry.kind === KINDS.endOfRunKept && (entry.data as { requestId?: unknown } | undefined)?.requestId === requestId);
+      const kept = (first?.data as { kept?: unknown } | undefined)?.kept;
+      return kept && typeof kept === "object" && !Array.isArray(kept) ? kept as EndOfRunKept : undefined;
+    };
+  }
 
   /** The run's end-of-run step: its spec's (AdapterRunSpec.endOfRun) when it has one, else the loop's deps'. */
   const stepOf = (spec: AdapterRunSpec): EndOfRunTurn | undefined => spec.endOfRun ?? deps.endOfRun;
@@ -3310,7 +3321,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // Every request from here is learning's, between the step's asks too, until the claim ends (reflecting).
     reflecting = true;
     try {
-      const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, over, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1, opts.keep, opts.step), keptOf: keptOf(claim) });
+      const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, over, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1, opts.keep, opts.step), keptOf: await keptOf(claim) });
       return cut() ?? { kind: "rows", also: rows?.also ?? [] };
     } catch (error) {
       return cut() ?? (console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${said(error)}`), { kind: "rows", also: [] });
@@ -3327,7 +3338,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     let timer: NodeJS.Timeout | undefined;
     const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), CUT_STEP_MS)));
     try {
-      const rows = await Promise.race([step({ runId: claim.runId, agentId: spec.agentId, claim, outcome: "failed", cut, signal: deps.signal, ask: refuse, keptOf: keptOf(claim) }), late]);
+      const pending = async () => step({ runId: claim.runId, agentId: spec.agentId!, claim, outcome: "failed", cut, signal: deps.signal, ask: refuse, keptOf: await keptOf(claim) });
+      const rows = await Promise.race([pending(), late]);
       if (rows === "late") {
         console.warn(`[runner] ${claim.runId}: its end-of-run step gave no answer within ${CUT_STEP_MS / 1000} s; the end is written without it`);
         return [];

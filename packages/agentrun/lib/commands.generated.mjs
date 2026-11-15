@@ -25,6 +25,45 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "connect-native"
+    ],
+    "operationId": "connectNative",
+    "method": "POST",
+    "path": "/native/connect",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "project",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "runtime",
+        "type": "string",
+        "enum": [
+          "claude-code",
+          "codex"
+        ],
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Connect a native project using ordinary agent and revision storage"
+  },
+  {
+    "command": [
+      "agents",
       "create"
     ],
     "operationId": "createAgent",
@@ -90,6 +129,67 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Remove an agent's own Archil disk, and everything on it"
+  },
+  {
+    "command": [
+      "agents",
+      "disconnect-native"
+    ],
+    "operationId": "disconnectNative",
+    "method": "POST",
+    "path": "/agents/{agent_id}/native/disconnect",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Disconnect future native jobs while retaining source configuration and history"
+  },
+  {
+    "command": [
+      "agents",
+      "discover-native"
+    ],
+    "operationId": "discoverNative",
+    "method": "POST",
+    "path": "/native/discover",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "project",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "runtime",
+        "type": "string",
+        "enum": [
+          "claude-code",
+          "codex"
+        ],
+        "required": false,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Discover existing native projects on this source machine without running a model"
   },
   {
     "command": [
@@ -179,6 +279,28 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows"
+  },
+  {
+    "command": [
+      "agents",
+      "get-native"
+    ],
+    "operationId": "getNative",
+    "method": "GET",
+    "path": "/agents/{agent_id}/native",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read a native connection"
   },
   {
     "command": [
@@ -343,6 +465,28 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Replace the agent's definition"
+  },
+  {
+    "command": [
+      "agents",
+      "verify-native"
+    ],
+    "operationId": "verifyNative",
+    "method": "POST",
+    "path": "/agents/{agent_id}/native/verify",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Check native CLI and sign-in without a paid model call"
   },
   {
     "command": [

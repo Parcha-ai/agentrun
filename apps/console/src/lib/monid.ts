@@ -1,31 +1,23 @@
+import { isMonidName, MONID_NAME_WORDS, parseToolName } from "@agentrun/tool-names";
 import type { SaveWarning } from "./agentForm";
 
-// A monid grant's name, as the server reads it (packages/serve/src/tool-names.ts, the one grammar): monid:<provider>/<endpoint>
-// for one endpoint, monid:<provider>/* for every endpoint of the provider that monid prices per call. The provider's slug and
-// the endpoint's path are monid's own. The console checks only the shape, so a typo is said before a save; the save is the
-// judge of the rest (whether monid lists it, and how monid prices it), read against monid's listing.
-const PROVIDER = "[a-z0-9][a-z0-9.-]{0,63}";
-const ENDPOINT = "[A-Za-z0-9_.:{}-][A-Za-z0-9_.:{}/-]{0,199}";
-const MONID_NAME = new RegExp(`^monid:(${PROVIDER})/(\\*|${ENDPOINT})$`);
-
-/** The two sources the grammar's parity test reads against the server's. */
-export const MONID_GRAMMAR = { PROVIDER, ENDPOINT } as const;
-
-/** Whether `name` is in monid's namespace (`monid:`), well formed or not: the monid row shows it, never a tool card. */
-export const isMonidName = (name: string): boolean => name.startsWith("monid:");
+// A monid grant's name, read by the server's own grammar (packages/serve/src/tool-names.ts, bundled from its source):
+// monid:<provider>/<endpoint> for one endpoint, monid:<provider>/* for every endpoint of the provider that monid prices per
+// call. The console checks only the shape, so a typo is said before a save; the save is the judge of the rest (whether
+// monid lists it, and how monid prices it), read against monid's listing. isMonidName: the monid row shows a name in
+// monid's namespace, well formed or not, never a tool card.
+export { isMonidName };
 
 /** A monid grant read: its provider, and its endpoint's path (null for the provider's wildcard). Undefined for a name
  *  outside the grammar. */
 export function monidGrantOf(name: string): { provider: string; endpoint: string | null } | undefined {
-  const m = MONID_NAME.exec(name);
-  return m ? { provider: m[1]!, endpoint: m[2] === "*" ? null : m[2]! } : undefined;
+  const parsed = parseToolName(name);
+  if (parsed?.kind === "monid") return { provider: parsed.provider, endpoint: parsed.endpoint };
+  return parsed?.kind === "monid-provider" ? { provider: parsed.provider, endpoint: null } : undefined;
 }
 
-/** Why `name` is no monid grant, in the server's words (tool-names.ts MONID_NAME_WORDS); undefined when it is one. */
-export function monidNameProblem(name: string): string | undefined {
-  if (monidGrantOf(name)) return undefined;
-  return `${name} is not a monid endpoint's name: monid:<provider>/<endpoint> or monid:<provider>/*, the provider's slug (lowercase letters, digits, . and -) and the endpoint's path without its first / (letters, digits and -._:{}/), as monid lists them.`;
-}
+/** Why `name` is no monid grant, in the server's words; undefined when it is one. */
+export const monidNameProblem = (name: string): string | undefined => (monidGrantOf(name) ? undefined : MONID_NAME_WORDS(name));
 
 /** What a person types, as the grant it is: trimmed, and `monid:` added when it was left off (`keenable/v1/search`), so
  *  the shape is checked on the name the save sends. */

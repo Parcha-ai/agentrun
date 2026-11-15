@@ -62,7 +62,7 @@ export type TimelineEvent = {
    *  many charges have no known cost (model requests cut, stopped, still pending or with no price, and paid tool calls
    *  charged an unknown amount or cut). Absent when `usd` is known. `free`, on the usage row: its $0 is because every
    *  model request went to a free model (one whose known price is $0 for every token), each booked so; absent otherwise. */
-  usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number; not_metered?: number; free?: true };
+  usage?: { usd: number | null; requests: number | null; so_far_usd?: number; unpriced?: number; not_metered?: number; free?: true };
   /** On a learned workflow call's `tool_result` row (learned_workflow): each of the workflow's nodes that ran, as the
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
   learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
@@ -207,6 +207,9 @@ export type TimelineOptions = {
   agentLabel?: (conversationId: number) => string | null | undefined;
   /** Labels for this call only; `registerLabel` adds them for every call. */
   labels?: Record<string, LabelFn>;
+  /** A catalog tool's catalog name (`mcp:<server>/<tool>`), by the wire name its harness called it: its rows are
+   *  labelled by the catalog name, a long one's hashed wire name never read as a tool's own. */
+  catalog?: ReadonlyMap<string, string>;
   caps?: Partial<typeof CAPS>;
   /** Nothing is running: a call with no result is interrupted. */
   settled?: boolean;
@@ -604,7 +607,9 @@ function createProjector(options: TimelineOptions) {
     const named = (value: unknown) => (typeof value === "string" && value ? options.path!(value) : value);
     return "path" in args || "file_path" in args ? { ...args, ...("path" in args ? { path: named(args.path) } : {}), ...("file_path" in args ? { file_path: named(args.file_path) } : {}) } : args;
   };
-  const label = (tool: string, args: Obj, result?: ToolResultView) => (pageChanged(tool, result) ? PAGE_CHANGED_ROW : waitedFirst(tool, result, labelOf(tool, shown(args), result, options.labels)));
+  /** The name a call's label reads its tool by: its catalog name when the run has one for it (options.catalog). */
+  const labelled = (tool: string): string => options.catalog?.get(tool) ?? tool;
+  const label = (tool: string, args: Obj, result?: ToolResultView) => (pageChanged(tool, result) ? PAGE_CHANGED_ROW : waitedFirst(tool, result, labelOf(labelled(tool), shown(args), result, options.labels)));
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
   // Results stored before their call (a harness bridge once wrote a result before the answer holding its call), by
@@ -696,7 +701,7 @@ function createProjector(options: TimelineOptions) {
    *  read by that field, never by its words. */
   const refused = (view: { isError: boolean; details?: unknown }) => view.isError && obj(view.details)?.[CALL_REFUSED] === true;
   /** A call's name on its rows: a refused one's in plain words (refusedLabel), else its label. */
-  const nameFor = (tool: string, args: Obj, view: ToolResultView, result: ToolResultView) => (refused(view) ? refusedLabel(tool, shown(args)) : label(tool, args, result));
+  const nameFor = (tool: string, args: Obj, view: ToolResultView, result: ToolResultView) => (refused(view) ? refusedLabel(labelled(tool), shown(args)) : label(tool, args, result));
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...inputOf(args), ...fields });
