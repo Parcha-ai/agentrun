@@ -30,10 +30,11 @@ async function entriesOf(server) {
 const resultsOf = (body) => Object.fromEntries((body.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : [])).filter((part) => part.type === "tool_result").map((part) => [part.tool_use_id, typeof part.content === "string" ? part.content : (part.content ?? []).map((one) => one.text ?? "").join("")]));
 
 /** A runner over one queued pi run whose first answer calls slow and note at once, its park's bound `parkSiblingsMs`.
- *  slow runs until the test lets it go or its signal aborts; `slowStartMs` holds its start back that long (a loaded
- *  machine can start it after note's park has begun to wait). `askedAt`: when the model was asked for that answer, which
- *  comes before the answer, so before the park and its wait: the one clock a cut at the bound is measured from. */
-async function siblings(t, parkSiblingsMs, { late = false, slowStartMs = 0 } = {}) {
+ *  slow runs until the test lets it go or its signal aborts. `gated`: slow's start waits until the test calls
+ *  `startSlow()` (after note's park has begun to wait, as a loaded machine can start it), never on a timer; an abort that
+ *  came before slow started is still read as its cut. `askedAt`: when the model was asked for that answer, which comes
+ *  before the answer, so before the park and its wait: the one clock a cut at the bound is measured from. */
+async function siblings(t, parkSiblingsMs, { late = false, gated = false } = {}) {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   let started = () => {};
@@ -41,15 +42,23 @@ async function siblings(t, parkSiblingsMs, { late = false, slowStartMs = 0 } = {
   let letGo = () => {};
   const held = new Promise((resolve) => (letGo = resolve));
   t.after(() => letGo());
+  let startSlow = () => {};
+  const slowMayStart = gated ? new Promise((resolve) => (startSlow = resolve)) : Promise.resolve();
+  t.after(() => startSlow());
   const slow = { starts: 0, cutAt: undefined };
   const tools = {
     slow: {
       name: "slow", replaySafe: false, ask: false,
       run: async (_args, signal) => {
-        if (slowStartMs) await new Promise((resolve) => setTimeout(resolve, slowStartMs));
+        await slowMayStart;
         slow.starts += 1;
         started(Date.now());
-        const aborted = new Promise((_, reject) => signal?.addEventListener("abort", () => ((slow.cutAt = Date.now()), reject(new Error("aborted"))), { once: true }));
+        // An abort before this line (the park's bound passed before slow started) fires no listener: read it here.
+        const aborted = new Promise((_, reject) => {
+          const cut = () => ((slow.cutAt ??= Date.now()), reject(new Error("aborted")));
+          if (signal?.aborted) return cut();
+          signal?.addEventListener("abort", cut, { once: true });
+        });
         await Promise.race([held, aborted]);
         return "slow done";
       },
@@ -84,7 +93,7 @@ async function siblings(t, parkSiblingsMs, { late = false, slowStartMs = 0 } = {
   };
   const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
-  return { server: opened.server, running, slow, requests, askedAt, letGo, allowLate, claims };
+  return { server: opened.server, running, slow, requests, askedAt, letGo, allowLate, claims, startSlow };
 }
 
 /** The parking claim's start() settles and leaves no abort listener on its signal, whichever way its wait ended. */
@@ -97,11 +106,16 @@ async function leavesNoListener(claims, how) {
 }
 
 // slow may start before note's park begins to wait or, on a loaded machine, after: the park's bound runs from its own
-// start, so the cut is measured from the model's ask for the answer (askedAt), which comes before both.
-for (const slowStartMs of [0, 150]) {
-  test(`pi: a call beside the parked one that outlasts the park's bound is cut at the bound, and once the parked call is answered the model reads it interrupted${slowStartMs ? ` (it starts ${slowStartMs} ms late, after the park's wait began)` : ""}`, { timeout: 60_000 }, async (t) => {
+// start, so the cut is measured from the model's ask for the answer (askedAt), which comes before both. The late start is
+// an explicit gate opened once the run reads parked, so no assertion rests on how fast a timer or a runner is.
+for (const gated of [false, true]) {
+  test(`pi: a call beside the parked one that outlasts the park's bound is cut at the bound, and once the parked call is answered the model reads it interrupted${gated ? " (it starts late, after the park's wait began)" : ""}`, { timeout: 60_000 }, async (t) => {
     const bound = 300;
-    const { server, running, slow, requests, askedAt, claims } = await siblings(t, bound, { slowStartMs });
+    const { server, running, slow, requests, askedAt, claims, startSlow } = await siblings(t, bound, { gated });
+    if (gated) {
+      await until(async () => (await server.runs.get("run-1")).state === "parked", "note's ask landed before slow started", 15_000);
+      startSlow();
+    }
     await running;
     assert.equal(askedAt.length, 1, "one answer asked for: slow and note");
     const answeredBy = askedAt[0];
