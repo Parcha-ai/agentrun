@@ -55,7 +55,7 @@ export type CostRun = {
    *  that served it. Null for a run that does not learn. */
   learned_revision: string | null;
   cost_usd: number | null;
-  /** Its stored cost counts a request cut at its cap hold: `cost_usd` and `total_usd` are at most that, never a figure. */
+  /** Its stored cost is only a bound (the run row's `costAtMostUsd`: a request cut at its cap hold): `cost_usd` and `total_usd` are null, the bound is never shown as a cost. */
   cost_upper_bound: boolean;
   learning_usd: number | null;
   total_usd: number | null;
@@ -108,8 +108,9 @@ export function costSummary(runs: readonly CostRun[], replay: CostReplay | null 
   const before = mean(beforeSide);
   const after = first < 0 ? null : mean(afterSide);
   const read = [...beforeSide, ...afterSide];
-  const unknown = read.filter(({ value }) => value === null).length;
-  const atMost = read.filter(({ value, bound }) => value !== null && bound).length;
+  // A bound is at most (the row stores its cost null); unknown is a null cost with no bound.
+  const unknown = read.filter(({ value, bound }) => value === null && !bound).length;
+  const atMost = read.filter(({ bound }) => bound).length;
   const withheld = first >= 0 && unknown + atMost > 0 ? { unknown, at_most: atMost } : null;
   const times = !withheld && before && after && after.runs >= CHEAPER_AFTER_RUNS && after.mean_usd > 0 ? Math.round((before.mean_usd / after.mean_usd) * 10) / 10 : null;
   const ranFirst = first < 0 ? [] : runs.slice(first).filter((run) => run.path === "workflow" || run.path === "handed_back");
