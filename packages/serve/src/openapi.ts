@@ -1226,7 +1226,7 @@ const REPLAY_SCORE = {
   n: { ...COUNT, description: "The graded inputs it was decided on." },
   agree: { ...COUNT, description: "How many of them the workflow answered alone with the agent's recorded answer." },
   agent_acc: { type: "number", minimum: 0, maximum: 1, description: "The agent's accuracy on them: each graded run's grade when the agent answered it; on one a learned workflow answered alone and was graded wrong, the agent counts right (it never answered it), so a revision held on runs it served wrong serves again only by answering them right." },
-  wf_acc: { type: "number", minimum: 0, maximum: 1, description: "The workflow's accuracy on them, at its serving thresholds: an input it handed back counts as the agent's recorded answer, never as a failure." },
+  wf_acc: { type: "number", minimum: 0, maximum: 1, description: "The workflow's accuracy on them, at its serving thresholds: an input it handed back counts as the agent's recorded answer, never as a failure. On an input graded wrong it is right only by the grade: the expected answer when the grade gave one; with none, on a run a learned workflow served, any answer but the one graded wrong, and on a run the agent answered, never (a different answer proves nothing)." },
   delta: { type: "number", description: `\`wf_acc\` - \`agent_acc\`; it serves at ${-PROMOTE_BAR} or more.` },
   handed_back: { ...COUNT, description: "How many of them it handed back; it answered `n` - `handed_back` alone. A revision that answered none alone is held: it would never serve." },
 };

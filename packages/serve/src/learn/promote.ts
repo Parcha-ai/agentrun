@@ -412,9 +412,10 @@ export const sameAnswer = (a: string | null, b: string | null): boolean => a !==
 /** Whether the workflow's `answer` to a graded input is right by its grade: with the grade's expected fields, when its JSON
  *  holds each of them (or, one field expected, when the answer is that field's value: a workflow whose output is one
  *  field answers with its text, or its JSON text when it is no text, learned-workflow.ts learnedOutput). Else, graded
- *  right, when it says what the graded run said; graded wrong, when it says anything else (the bar on a wrong grade is the
- *  grade: saying what was graded wrong again is never a tie), and wrong when what the graded run said could not be read
- *  (nothing says it differs). */
+ *  right, when it says what the graded run said. Graded wrong: on a run a learned workflow answered alone (`workflow`),
+ *  when it says anything else (the bar on a wrong grade is the grade: saying what was graded wrong again is never a tie),
+ *  and wrong when what it said could not be read (nothing says it differs); on a run the agent answered, wrong whatever it
+ *  says (another answer proves nothing: a neutral tie with the agent's, agentRight). */
 export function answerCorrect(answer: string | null, recorded: ReplayRow["recorded"]): boolean {
   if (answer === null) return false;
   if (recorded.expected) {
@@ -424,7 +425,8 @@ export function answerCorrect(answer: string | null, recorded: ReplayRow["record
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     return Object.entries(recorded.expected).every(([key, want]) => same((value as Record<string, unknown>)[key], want));
   }
-  return recorded.correct ? sameAnswer(answer, recorded.answer) : recorded.answer !== null && !sameAnswer(answer, recorded.answer);
+  if (recorded.correct) return sameAnswer(answer, recorded.answer);
+  return recorded.path === "workflow" && recorded.answer !== null && !sameAnswer(answer, recorded.answer);
 }
 
 /** Whether the agent's answer to a replayed input is right, the agent's side of a replay's score: the graded run's grade
