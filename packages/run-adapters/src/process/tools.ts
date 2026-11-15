@@ -146,8 +146,16 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
       const { interrupted, ...result } = await run(args, callId, signal, true);
       return { ...result, ...(interrupted ? { interrupted: true as const } : {}), fresh };
     },
-    // A value the call's first run fixed, as a replay-safe effect of its own: its rerun reads the first one.
-    memo: (key, value) => ctx.effect(`nested:${outer}/${key}`, { name: 'nested.memo', replay: 'safe', input: null }, async () => value),
+    // A value the call's first run fixed, as a replay-safe effect of its own: its rerun reads the first one. A value given
+    // as a function is called only while none is recorded, and outside the effect, so a throw of its (a cap's refusal, a
+    // stop) is never recorded as the memo's outcome: the next run calls it again.
+    async memo<T extends JsonValue>(key: string, value: T | (() => T | Promise<T>)): Promise<T> {
+      const memoKey = `nested:${outer}/${key}`;
+      const options = { name: 'nested.memo', replay: 'safe', input: null } as const;
+      if (typeof value !== 'function' || ctx.isMemoized(memoKey)) return ctx.effect(memoKey, options, async () => value as T);
+      const fixed = await value();
+      return ctx.effect(memoKey, options, async () => fixed);
+    },
   });
   const bridged = tools.map((tool): BridgedTool => {
     const run = async (args: unknown, callId: string, signal?: AbortSignal, nested?: true): Promise<ToolResult> => {

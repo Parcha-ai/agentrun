@@ -2422,7 +2422,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             const got = await tool.call(args, { callId, signal: stopAbort.signal });
             return { text: got.text, ...(got.isError ? { isError: true } : {}), ...(got.images?.length ? { images: got.images } : {}), ...(got.structured !== undefined ? { structured: got.structured } : {}), fresh: true };
           },
-          memo: async (_key, value) => value,
+          memo: async (_key, value) => (typeof value === "function" ? value() : value),
         });
         const serveFirst = async (first: WorkflowFirst): Promise<Served | "park" | undefined> => {
           // The session's learned_workflow as this loop wraps a tool, but nesting nothing of the harness's: a call a crash
@@ -2881,19 +2881,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     };
   }
 
-  /** The card a person approved for the learned_workflow call that `callId` (`<outer>/<key>`) is nested in: its ask as
-   *  first journaled, answered with an allow. None when no such call is over it, or its ask was denied or not answered. */
+  /** The card a person approved for the learned_workflow call that `callId` (`<outer>/<key>`, its key never holding a
+   *  "/") is nested in: the ask journaled under that call's own id, answered with an allow. Keyed to that one call, so a
+   *  card approved for any other call (an earlier call of the same workflow among them) never passes it. None when its
+   *  outer call was not asked as learned_workflow, or its ask was denied or not answered. */
   async function approvedCardOver(callId: string, learnedAs: string): Promise<unknown> {
+    const at = callId.lastIndexOf("/");
+    if (at <= 0) return undefined;
+    const outer = callId.slice(0, at);
     const conversation = await harness!.root(context);
     const entries = await entriesOf(gate!.journal, conversation.id, context);
-    for (let at = callId.lastIndexOf("/"); at > 0; at = callId.lastIndexOf("/", at - 1)) {
-      const outer = callId.slice(0, at);
-      const ask = findData<AskData>(entries, KINDS.ask, (data) => data.callId === outer);
-      if (!ask) continue;
-      const answer = findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === outer);
-      return ask.tool === learnedAs && answer?.approved === true ? ask.args : undefined;
-    }
-    return undefined;
+    const ask = findData<AskData>(entries, KINDS.ask, (data) => data.callId === outer);
+    const answer = ask && findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === outer);
+    return ask?.tool === learnedAs && answer?.approved === true ? ask.args : undefined;
   }
 
   /** An ask's answer: one in the journal stands; else the approve or deny the runner hands over on a resume; else ask and

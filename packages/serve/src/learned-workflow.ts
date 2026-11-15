@@ -419,14 +419,21 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
   // What a node answered the first time this call ran it, in every rerun of the call (`nested.memo`, by `key`): a rerun
-  // after a park or a crash goes on from the same answers, so its MCP calls are asked with the arguments a person saw.
-  // Run with no nested calls (main's process, a test's registration), a node's answer is its own.
-  const fixed = async <T>(key: string, value: T): Promise<T> => (nested && value !== undefined ? ((await nested.memo(key, JSON.parse(JSON.stringify(value)) as JsonValue)) as T) : value);
+  // after a park or a crash goes on from the same answers, so its MCP calls are asked with the arguments a person saw,
+  // and never does a node's work again: `work` is called only while no answer is recorded, so a model's request or a paid
+  // decision is made and booked once. A throw of `work` (a cap's refusal, a stop) records nothing: the next run calls it
+  // again. Kept boxed, so an answer of undefined is recorded too. Run with no nested calls (main's process, a test's
+  // registration), a node's answer is its own.
+  const fixed = async <T>(key: string, work: () => Promise<T>): Promise<T> => {
+    if (!nested) return work();
+    const box = (await nested.memo(key, async () => JSON.parse(JSON.stringify({ value: await work() })) as JsonValue)) as { value?: T };
+    return box.value as T;
+  };
   const judged = run.decisions ? await learnedJudge(run, run.decisions) : undefined;
   const runJudge = judged && nested
     ? (async (params: Parameters<typeof judged>[0]) => {
         const at = params as { label?: string; executionPath?: string; item?: { index: number }; decisionId?: string };
-        return fixed(`judge:${at.decisionId ?? nestedKey(String(at.label ?? ""), at.executionPath, at.item)}`, await judged(params));
+        return fixed(`judge:${at.decisionId ?? nestedKey(String(at.label ?? ""), at.executionPath, at.item)}`, () => judged(params));
       }) as typeof judged
     : judged;
   // The host runner loads @earendil-works/pi-coding-agent and pi-agent-core, serve's own dependencies (package.json).
@@ -454,8 +461,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     const model = !ref ? undefined : ref.provider === PORT_PROVIDER ? (run.modelName?.(tier) ?? undefined) : ref.modelId;
     if (model && typeof request.executionPath === "string") ranOn.set(request.executionPath, { model, ...(tier ? { tier } : {}) });
     // Its own signal, which the DSL ties to the call's (a sibling's failure, a deadline, the call's stop).
-    const answer = await (await runnerFor(request.tier as string | undefined))(request);
-    return fixed(`node:${nestedKey(request.label, request.executionPath, request.item)}`, answer);
+    return fixed(`node:${nestedKey(request.label, request.executionPath, request.item)}`, async () => (await runnerFor(request.tier as string | undefined))(request));
   };
   type EffectRequest = { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal; executionPath?: string; item?: { index: number } };
   const liveEffect = async ({ node, input: given, signal: own, executionPath, item }: EffectRequest) => {
@@ -491,8 +497,8 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   // An MCP node's answer is its nested call's record; any other call node's is fixed as a model node's is.
   const runEffect = async (request: EffectRequest) => {
     const tool = request.node.via === "tool" ? request.node.tool : undefined;
-    const answer = await (replay && tool ? replay.call({ label: request.node.label, tool }, request.input, () => liveEffect(request)) : liveEffect(request));
-    return tool && isMcpName(tool) ? answer : fixed(`effect:${nestedKey(request.node.label, request.executionPath, request.item)}`, answer);
+    const work = () => (replay && tool ? replay.call({ label: request.node.label, tool }, request.input, () => liveEffect(request)) : liveEffect(request));
+    return tool && isMcpName(tool) ? work() : fixed(`effect:${nestedKey(request.node.label, request.executionPath, request.item)}`, work);
   };
   // A replay's write with no recording stops the whole workflow there: nothing after it runs.
   const stopped = replay ? (signal ? AbortSignal.any([signal, replay.stop]) : replay.stop) : signal;

@@ -550,7 +550,12 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
         fresh: touched.has(callId),
       };
     },
-    memo: (key, value) => api.memo(`nested:${key}`, value, context),
+    // A value given as a function is called only while the task holds none for `key`, so a rerun never calls it again.
+    async memo<T extends JsonValue>(key: string, value: T | (() => T | Promise<T>)): Promise<T> {
+      if (typeof value !== "function") return api.memo(`nested:${key}`, value, context) as Promise<T>;
+      const held = await api.memo(`nested:${key}`, context);
+      return (held !== undefined ? held : await api.memo(`nested:${key}`, await value(), context)) as T;
+    },
   };
 }
 

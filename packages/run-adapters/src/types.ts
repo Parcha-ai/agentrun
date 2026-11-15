@@ -83,8 +83,10 @@ export interface NestedCalls {
    *  of the calling one. A deny answers `refused` with the gate's words; a park holds until the session lets go, then
    *  rejects. */
   call(name: string, args: Record<string, unknown>, key: string): Promise<NestedResult>;
-  /** `value` the first time `key` is asked in this call, and that first value again in every rerun of the call. */
-  memo<T extends JsonValue>(key: string, value: T): Promise<T>;
+  /** `value` the first time `key` is asked in this call, and that first value again in every rerun of the call. Given a
+   *  function, it is called only the first time: a rerun reads the recorded value and never calls it, so work it does (a
+   *  model's request, a paid decision) is done and paid for once. */
+  memo<T extends JsonValue>(key: string, value: T | (() => T | Promise<T>)): Promise<T>;
 }
 
 /** A nested call's answer. */
