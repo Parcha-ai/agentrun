@@ -127,20 +127,24 @@ const SOCKETS_SCRIPT = [
 ].join("\n");
 
 /**
- * Takes write off every user but root on each path ($@) and, for a directory, on everything under it (no link is
- * followed), as root, then reads it back: anything under a path still writable by group or others fails the script, and
- * create then refuses the computer. A path the image lacks is skipped. For a host whose image leaves places root runs
- * or reads writable by other users (HostFacts.rootOnly); it runs before the daemon's upload.
+ * Makes each path ($@) root's alone, as root, and for a directory everything under it (no link is followed): root owns
+ * every entry (a link itself, `chown -h`), and no group or other user may write one. Only the entries that need it are
+ * changed. Then it reads them back: an entry not root's alone fails the script, and create then refuses the computer.
+ * An owner who is not root could give write back with chmod, so the owner is made root as well as the mode. A path the
+ * image lacks is skipped. For a host whose image leaves places root runs or reads open to other users
+ * (HostFacts.rootOnly); it runs before the daemon's upload. Root is the user `$p` runs as, read by `id -u`.
  */
 const ROOT_ONLY_SCRIPT = [
 	"# agentrun-computer: root-only",
 	ROOT,
+	'r=$($p id -u) || { echo "running a command as root failed"; exit 5; }',
 	'for f in "$@"; do',
 	'\t[ -e "$f" ] || [ -L "$f" ] || continue',
 	'\t[ ! -L "$f" ] || { echo "$f is a symbolic link"; exit 6; }',
-	'\t$p chmod -R go-w "$f" || { echo "taking write off $f failed"; exit 5; }',
-	'\tw=$($p find "$f" ! -type l -perm /022 -print 2>/dev/null | head -n 1)',
-	'\t[ -z "$w" ] || { echo "$w is still writable by other users"; exit 5; }',
+	'\t$p find "$f" ! -user "$r" -exec chown -h "$r" {} + || { echo "making root the owner of $f failed"; exit 5; }',
+	'\t$p find "$f" ! -type l -perm /022 -exec chmod go-w {} + || { echo "taking write off $f failed"; exit 5; }',
+	'\tw=$($p find "$f" \\( ! -user "$r" -o ! -type l -perm /022 \\) -print 2>/dev/null | head -n 1)',
+	'\t[ -z "$w" ] || { echo "$w is not root\'s alone"; exit 5; }',
 	"done",
 ].join("\n");
 

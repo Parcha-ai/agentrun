@@ -195,7 +195,7 @@ test("isolation.root-runs is a Core case of the isolation group that needs exec 
 	assert.equal(found[0].level, "core");
 	assert.equal(found[0].group, "isolation");
 	assert.deepEqual(found[0].needs, ["exec"]);
-	for (const path of ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin", "/opt/agentrun/computerd", "/usr/local/sbin/agentrun-archil", "/usr/bin/archil"]) assert.ok(ROOT_RUNS.includes(path), path);
+	for (const path of ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin", "/opt/agentrun/computerd", "/usr/local/sbin/agentrun-archil", "/usr/bin/archil", "/usr/bin/envd", "/etc/inittab"]) assert.ok(ROOT_RUNS.includes(path), path);
 });
 
 test("isolation.root-runs passes where the user can write none of what root runs or the directories above it, and records every path it read", async () => {
@@ -208,7 +208,7 @@ test("isolation.root-runs passes where the user can write none of what root runs
 });
 
 test("isolation.root-runs fails where the user can write a directory on root's PATH, a helper, or a directory above one, naming each", async () => {
-	for (const writable of [["/usr/local/sbin"], ["/usr/local/sbin/agentrun-archil"], ["/usr/local"], ["/opt/agentrun"], ["/usr/local/bin", "/usr/local/sbin"]]) {
+	for (const writable of [["/usr/local/sbin"], ["/usr/local/sbin/agentrun-archil"], ["/usr/local"], ["/opt/agentrun"], ["/usr/bin/envd"], ["/etc/inittab"], ["/etc"], ["/usr/local/bin", "/usr/local/sbin"]]) {
 		const report = await runRoot({ rootRunsWritable: writable });
 		assert.equal(statuses(report)[ROOT_ID], "fail", writable.join(", "));
 		for (const path of writable) assert.match(reasons(report)[ROOT_ID], new RegExp(`the computer's user can write what root runs: .*${path.replaceAll("/", "\\/")}`));
@@ -237,6 +237,27 @@ test("isolation.root-runs' check, run by sh: each path that is there and every d
 		assert.deepEqual(readdirSync(shut), ["helper"], "nothing written");
 	} finally {
 		chmodSync(join(root, "shut"), 0o755);
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+// BusyBox's test -w reads the mode bits alone, and as root says yes to every path: in a user and mount namespace of its
+// own (root there), with a read-only bind of one directory, only the mount's options tell the two apart.
+const roMounts = spawnSync("unshare", ["-Urm", "true"]).status === 0 && spawnSync("busybox", ["true"]).status === 0;
+test("isolation.root-runs' check, run by BusyBox's sh as root: a path on a read-only mount is closed, the directory above it writable", { skip: roMounts ? false : "needs unshare -Urm and busybox" }, () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-root-runs-ro-"));
+	try {
+		const shut = join(root, "shut");
+		mkdirSync(shut);
+		writeFileSync(join(shut, "helper"), "");
+		const argv = rootRunsArgv([join(shut, "helper")]);
+		const ran = spawnSync("unshare", ["-Urm", "sh", "-c", 'mount --bind "$1" "$1" && mount -o remount,bind,ro "$1" && shift && exec busybox sh -c "$@"', "sh", shut, argv[2], ...argv.slice(3)], { encoding: "utf8" });
+		assert.equal(ran.status, 0, ran.stderr);
+		const lines = ran.stdout.trim().split("\n");
+		assert.ok(lines.includes(`closed ${shut}/helper`) && lines.includes(`closed ${shut}`), ran.stdout);
+		assert.ok(lines.includes(`writable ${root}`), ran.stdout);
+		assert.deepEqual(readdirSync(shut), ["helper"], "nothing written");
+	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });

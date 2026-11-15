@@ -128,20 +128,24 @@ async function displaySocket(client: ComputerClient): Promise<string | undefined
 }
 
 /**
- * What root runs in a computer: the directories of root's PATH (the one init gets, hosted/scripts.ts, and Debian's),
- * computerd, and the root helpers an Archil image ships (the helper and the archil client it runs).
+ * What root runs or reads in a computer: the directories of root's PATH (the one init gets, hosted/scripts.ts, and
+ * Debian's), computerd, the root helpers an Archil image ships (the helper and the archil client it runs), and, where an
+ * image has them, the vendor's agent (E2B's envd) and init's table.
  */
-export const ROOT_RUNS: readonly string[] = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin", DAEMON_IN_COMPUTER, ARCHIL_HELPER, "/usr/bin/archil"];
+export const ROOT_RUNS: readonly string[] = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin", DAEMON_IN_COMPUTER, ARCHIL_HELPER, "/usr/bin/archil", "/usr/bin/envd", "/etc/inittab"];
 
 /** Each path given that is there, then every directory above it, each as `writable <path>` or `closed <path>`: `test -w`
- *  as the computer's user, and nothing written. */
+ *  as the computer's user, and nothing written. A path on a read-only mount is closed: BusyBox's `test -w` reads the
+ *  mode bits alone, so the mount's options are read from /proc/self/mountinfo (the longest mount point above the path,
+ *  its own options and its superblock's). */
 const ROOT_RUNS_SCRIPT = [
 	"# agentrun-conformance: root-runs",
+	"ro() { r=$(readlink -f \"$1\" 2>/dev/null); awk -v p=\"${r:-$1}\" '{ m = $5; gsub(/\\\\040/, \" \", m); if ((p == m || m == \"/\" || index(p, m \"/\") == 1) && length(m) >= n) { n = length(m); o = $6; for (i = 7; i < NF; i++) if ($i == \"-\") { o = o \",\" $(i + 3); break } } } END { exit !(o ~ /(^|,)ro(,|$)/) }' /proc/self/mountinfo 2>/dev/null; }",
 	'for p in "$@"; do',
 	'\t[ -e "$p" ] || [ -L "$p" ] || continue',
 	"\tx=$p",
 	"\twhile :; do",
-	'\t\tif [ -w "$x" ]; then echo "writable $x"; else echo "closed $x"; fi',
+	'\t\tif [ -w "$x" ] && ! ro "$x"; then echo "writable $x"; else echo "closed $x"; fi',
 	'\t\t[ "$x" = / ] && break',
 	"\t\tx=${x%/*}; x=${x:-/}",
 	"\tdone",

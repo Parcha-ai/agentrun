@@ -758,9 +758,9 @@ export class HostedProvider implements ComputerProvider {
 		// Before anything of this create's is in the machine: what root runs is root's alone (the Archil helper's sha256,
 		// read at the mount's preflight, is read after this).
 		if ((this.host.facts.rootOnly ?? []).length > 0) {
-			const closed = await runToExit(this.host, ref.id, commands.rootOnly, { ms: execMs, ...(signal ? { signal } : {}), what: `taking others' write off system paths in ${ref.name}` });
+			const closed = await runToExit(this.host, ref.id, commands.rootOnly, { ms: execMs, ...(signal ? { signal } : {}), what: `making system paths root's alone in ${ref.name}` });
 			if (!closed.ok) return closed;
-			if (closed.value.exitCode !== 0) return this.#fail("refused", `taking others' write off system paths failed (exit ${closed.value.exitCode}): ${`${closed.value.stdout} ${closed.value.stderr}`.trim().slice(0, 300)}`);
+			if (closed.value.exitCode !== 0) return this.#fail("refused", `making system paths root's alone failed (exit ${closed.value.exitCode}): ${`${closed.value.stdout} ${closed.value.stderr}`.trim().slice(0, 300)}`);
 		}
 		const staging = commands.install[4] as string;
 		const bytes = new Uint8Array(daemon.buffer, daemon.byteOffset, daemon.byteLength);

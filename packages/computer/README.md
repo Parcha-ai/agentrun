@@ -1744,9 +1744,9 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    The listing shows a new sandbox a moment late, so the name is listed again until it shows or `listedMs` (15 s)
    passes, and the sandbox found is killed and read back gone, as release waits for one.
 2. `getInfo` reads the sandbox's state until it runs.
-3. A command as root takes write by every user but root off the system paths whose permissions E2B's template build
-   sets wider than root's (`HostFacts.rootOnly`, `ROOT_ONLY` in `src/e2b.ts`), on everything under a directory, and
-   fails create if any of them is still writable by another user. It runs before anything of create's is in the
+3. A command as root makes the system paths whose permissions E2B's template build sets wider than root's root's alone
+   (`HostFacts.rootOnly`, `ROOT_ONLY` in `src/e2b.ts`), and everything under a directory: root the owner, and write
+   taken off group and other users. It fails create if any entry is still not root's alone. It runs before anything of create's is in the
    sandbox, so the daemon's install and the Archil helper's sha256 check read what only root can change. Then
    `files.write` uploads the daemon as root to `/tmp/agentrun-computerd-<random>` (`index.mjs:2332-2435`), and the
    same install command as Daytona's (`src/hosted/scripts.ts`) moves it to `/opt/agentrun/computerd`, root-owned, and
@@ -2581,8 +2581,10 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   provider, that a tool reaches neither the vendor's agent nor any address. A provider that declares nothing (Docker:
   no agent inside) skips it in words.
 - **What root runs** (`isolation.root-runs`, Core wherever exec runs): through `exec.run`, as the computer's user, the
-  case reads `test -w` on root's `PATH` directories, the daemon, the Archil helper and client where they are, and every
-  directory above each (`ROOT_RUNS`), and fails on any it may write. It checks write access alone and changes nothing.
+  case reads `test -w` on root's `PATH` directories, the daemon, the Archil helper and client, the vendor's agent and
+  init's table where an image has them, and every directory above each (`ROOT_RUNS`), and fails on any it may write. A
+  path on a read-only mount is closed (BusyBox's `test -w` reads the mode bits alone, so the case reads the mount's
+  options too). It checks write access alone and changes nothing.
   `mount.archil-isolated-durable` runs the same check on its Archil computer.
 - **Core by kind.** `coreGroups(kind, daemon)` is what a computer of its kind must declare (the table in
   [The protocol extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)): exec, files,
