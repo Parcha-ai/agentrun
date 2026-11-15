@@ -244,6 +244,8 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: warn });
     // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts), said as warnings.
     await sweepEndedScratch(store, options.dataDir, { log: warn });
+    // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
+    const runEnded = typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn }) : undefined;
     runner = startRunner({
       store,
       createLoop,
@@ -252,8 +254,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
       memory,
       ...(options.onEvent ? { onEvent: options.onEvent } : {}),
-      // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
-      ...(typeof parts !== "function" ? { runEnded: runEndComputers({ store, computers: parts.computers, log: warn }) } : {}),
+      ...(runEnded ? { runEnded } : {}),
       onBeat: heartbeat(options.dataDir, name, options.now ?? Date.now),
     });
   } catch (error) {
