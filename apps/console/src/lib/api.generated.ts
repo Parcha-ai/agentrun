@@ -235,6 +235,36 @@ export interface components {
     output_schema?: components["JsonObject"];
     workflow?: components["JsonObject"];
     max_cost_usd?: number;
+    native?: {
+      runtime: "claude-code" | "codex";
+      project: string;
+      selector: {
+        kind: "project" | "agent" | "profile";
+        name?: string;
+      };
+      machine_id: string;
+      version: string | null;
+      model: string | null;
+      fingerprint: string;
+      configuration: {
+        path: string;
+        sha256: string;
+      }[];
+      skills: string[];
+      mcp_servers: string[];
+      state: "needs_verification" | "needs_attention" | "ready";
+      issues: string[];
+      capabilities: {
+        launch: boolean;
+        notes: boolean;
+        skills: boolean;
+        workflows: false;
+        approval: "native" | "unavailable";
+        usage: boolean;
+      };
+      connected: boolean;
+      verified_at?: string;
+    };
     model?: string;
     model_tiers?: {
       fast?: string;
@@ -660,6 +690,36 @@ export interface components {
     error: components["RunError"] | null;
     cost: components["Cost"];
     poll_after_ms: number;
+    native?: {
+      runtime: string;
+      project: string;
+      selector: {
+        kind: "project" | "agent" | "profile";
+        name?: string;
+      };
+      machine_id: string;
+      fingerprint: string;
+      session_id: string | null;
+      model: string | null;
+      learning_revision: string | null;
+      usage: {
+        task: {
+          input_tokens: number | null;
+          output_tokens: number | null;
+          cache_read_tokens: number | null;
+          cache_write_tokens: number | null;
+          cost_usd: number | null;
+        } | null;
+        reflection: {
+          input_tokens: number | null;
+          output_tokens: number | null;
+          cache_read_tokens: number | null;
+          cache_write_tokens: number | null;
+          cost_usd: number | null;
+        }[];
+      };
+      model_requests: null;
+    };
     console_url?: string;
     revision: string;
     kind: "agentic" | "workflow";
@@ -865,6 +925,36 @@ export interface components {
     created_at: components["Timestamp"];
     ended_at: components["Timestamp"] | null;
     cost: components["Cost"];
+    native?: {
+      runtime: string;
+      project: string;
+      selector: {
+        kind: "project" | "agent" | "profile";
+        name?: string;
+      };
+      machine_id: string;
+      fingerprint: string;
+      session_id: string | null;
+      model: string | null;
+      learning_revision: string | null;
+      usage: {
+        task: {
+          input_tokens: number | null;
+          output_tokens: number | null;
+          cache_read_tokens: number | null;
+          cache_write_tokens: number | null;
+          cost_usd: number | null;
+        } | null;
+        reflection: {
+          input_tokens: number | null;
+          output_tokens: number | null;
+          cache_read_tokens: number | null;
+          cache_write_tokens: number | null;
+          cost_usd: number | null;
+        }[];
+      };
+      model_requests: null;
+    };
     console_url?: string;
     revision: string;
     kind: "agentic" | "workflow";
@@ -1074,7 +1164,7 @@ export interface components {
   };
   TimelineUsage: {
     usd: number | null;
-    requests: number;
+    requests: number | null;
     so_far_usd?: number;
     unpriced?: number;
     not_metered?: number;
@@ -1266,6 +1356,49 @@ export interface operations {
       action: string;
       manifest: Record<string, unknown>;
       state: string;
+    };
+  };
+  connectNative: {
+    body: {
+      project: string;
+      runtime: "claude-code" | "codex";
+      selector?: {
+        kind: "project" | "agent" | "profile";
+        name?: string;
+      };
+    };
+    answer: {
+      agent: components["Agent"];
+      native: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+        connected: boolean;
+        verified_at?: string;
+      };
     };
   };
   createAgent: {
@@ -1611,6 +1744,78 @@ export interface operations {
       disconnected: true;
       triggers_off: number;
       note: string;
+    };
+  };
+  disconnectNative: {
+    body: never;
+    answer: {
+      native: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+        connected: boolean;
+        verified_at?: string;
+      };
+    };
+  };
+  discoverNative: {
+    body: {
+      project: string;
+      runtime?: "claude-code" | "codex";
+    };
+    answer: {
+      machine_id: string;
+      targets: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+      }[];
     };
   };
   finishChatGPTSignIn: {
@@ -2085,6 +2290,41 @@ export interface operations {
       secret?: components["SecretMeta"];
     };
   };
+  getNative: {
+    body: never;
+    answer: {
+      native: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+        connected: boolean;
+        verified_at?: string;
+      } | null;
+    };
+  };
   getOpenapi: {
     body: never;
     answer: Record<string, unknown>;
@@ -2354,15 +2594,15 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
-          tokens: number;
+          tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
-          input: number;
-          cache_read: number;
-          cache_write: number;
-          output: number;
-          requests: number;
-          unmetered: number;
+          input: number | null;
+          cache_read: number | null;
+          cache_write: number | null;
+          output: number | null;
+          requests: number | null;
+          unmetered: number | null;
         };
         time: {
           ended_runs: number;
@@ -2378,7 +2618,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
-          tokens: number;
+          tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
         }[];
@@ -2389,7 +2629,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
-          tokens: number;
+          tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
         }[];
@@ -2400,7 +2640,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
-          tokens: number;
+          tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
         }[];
@@ -4365,6 +4605,41 @@ export interface operations {
         message: string;
       }[];
       warnings: string[];
+    };
+  };
+  verifyNative: {
+    body: never;
+    answer: {
+      native: {
+        runtime: "claude-code" | "codex";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          notes: boolean;
+          skills: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+        connected: boolean;
+        verified_at?: string;
+      };
     };
   };
   writeHomeFile: {
