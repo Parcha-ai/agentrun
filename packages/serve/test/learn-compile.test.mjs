@@ -17,7 +17,7 @@ import { git, repoOf } from "./learn-support.mjs";
 
 const compile = await import("../dist/learn/compile.js");
 const { draftProblems, draftDryRun } = await import("../dist/learn/skills.js");
-const { checkProposal } = await import("../dist/learn/check.js");
+const { answerTierProblems, checkProposal } = await import("../dist/learn/check.js");
 const { compiledInto, parseNoteFile } = await import("../dist/learn/notes.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { seedOf } = await import("../dist/learning.js");
@@ -520,6 +520,32 @@ test("the answering step runs on the agent's model: a draft whose answering node
     assert.equal("tier" in answer, false, `judges ${judges}, jev ${jev}: the example's answer names no tier`);
     assert.equal(doc.root.steps.find((step) => step.label === "facts").tier, "fast", "its legwork stays on fast");
   }
+  assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /The step that writes the answer \(`output.path`\) names no tier: it runs on the agent's model\./);
+});
+
+test("answerTierProblems: the answering step is the model node writing output.path's key, by its as or its label, under any chain, route or parallel, and a composed workflow's own; a decision node or a step writing another key is never read", () => {
+  const flow = (root, path = "answer") => ({ v: 2, name: "n", schemas: {}, output: { schemaId: "A", path }, root });
+  const refused = (kind, label, path = "answer") => `the ${kind} step "${label}" writes the answer (output.path "${path}") on tier "fast": the answering node runs on the agent's model: drop its tier`;
+  // By its label when it has no `as`; a field under the key is the same answer.
+  assert.deepEqual(answerTierProblems(flow({ node: "agent", label: "answer", tier: "fast" }, "answer.code")), [refused("agent", "answer", "answer.code")]);
+  // Under a route's bodies and a parallel's branches; legwork beside it on fast passes.
+  const deep = flow({ node: "parallel", branches: [
+    { node: "extract", label: "look", tier: "fast", as: "facts" },
+    { node: "route", branches: { a: { body: { node: "decide", label: "yes", as: "answer", tier: "fast" } }, b: { body: { node: "decide", label: "no", as: "answer" } } } },
+  ] });
+  assert.deepEqual(answerTierProblems(deep), [refused("decide", "yes")]);
+  // A report writes report_markdown.
+  assert.deepEqual(answerTierProblems(flow({ node: "report", label: "write", tier: "fast" }, "report_markdown")), [refused("report", "write", "report_markdown")]);
+  // A decision node goes to its decision provider: no tier is read on it. Strong passes.
+  assert.deepEqual(answerTierProblems(flow({ node: "chain", steps: [{ node: "judge", label: "j", as: "answer", tier: "fast" }, { node: "extract", label: "e", as: "answer", tier: "strong" }] })), []);
+  // A composed workflow node writing the answer answers with its own workflow's answering step; one writing another key
+  // is legwork, whatever its own steps' tiers.
+  const child = flow({ node: "extract", label: "inner", as: "out", tier: "fast" }, "out");
+  assert.deepEqual(answerTierProblems(flow({ node: "workflow", label: "sub", as: "answer", workflow: child })), [refused("extract", "inner", "out")]);
+  assert.deepEqual(answerTierProblems(flow({ node: "chain", steps: [{ node: "workflow", label: "sub", as: "facts", workflow: child }, { node: "decide", label: "answer" }] })), []);
+  // A call's args or a step's state holding a `node` key is data, never a step; no output.path, nothing read.
+  assert.deepEqual(answerTierProblems(flow({ node: "call", label: "c", as: "r", args: { node: "agent", label: "answer", tier: "fast" } })), []);
+  assert.deepEqual(answerTierProblems({ root: { node: "agent", label: "answer", tier: "fast" } }), []);
 });
 
 // The agent's output schema: shown to the compile turn next to the language, and the dry run's answer held to it with
@@ -529,7 +555,7 @@ const shapeDraft = (out) => JSON.stringify({
   v: 2, name: "pick",
   schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Out: out },
   input: { schemaId: "In" }, output: { schemaId: "Out", path: "answer" },
-  root: { node: "chain", steps: [{ node: "extract", label: "pick", instructions: "Pick the code.", out: "Out", as: "answer", tier: "fast" }] },
+  root: { node: "chain", steps: [{ node: "extract", label: "pick", instructions: "Pick the code.", out: "Out", as: "answer" }] },
 });
 
 test("the compile prompt shows the agent's output schema next to the language, whole: the workflow's final output must be this object; with none, nothing", () => {

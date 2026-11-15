@@ -6,7 +6,7 @@
 import { hiddenCharacter } from "./invisible.js";
 import { compiledLineBytes, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile, ruleOf } from "./notes.js";
 import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
-import { type DraftAsk, type DraftDecisions, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
+import { childNodes, type DraftAsk, type DraftDecisions, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
  *  each (notes.ts mergedNote). */
@@ -197,10 +197,44 @@ function decodedScanned(path: string, text: string, refused: (text: string) => b
   return found;
 }
 
+/** The model node kinds a tier routes (model.ts MODEL_NODES); a decision node (judge, pick, sift) goes to its decision
+ *  provider, never a tier. */
+const TIERED_KINDS: ReadonlySet<string> = new Set(["agent", "decide", "extract", "report"]);
+const isNode = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) && typeof (value as { node?: unknown }).node === "string";
+/** The state key a step writes (the DSL's writeKeyOf): a report's `report_markdown`, else its `as`, else an agent's,
+ *  decide's or extract's label. */
+const writeKeyOf = (node: Record<string, unknown>): unknown => (node.node === "report" ? "report_markdown" : typeof node.as === "string" && node.as ? node.as : ["agent", "decide", "extract"].includes(node.node as string) ? node.label : undefined);
+
+/** Why a draft's answer is not written on the agent's own model: each model node that writes the state key its
+ *  output.path reads (its answering step) and names tier "fast", one line each, in words the compile retry acts on. A
+ *  composed workflow node that writes it answers with its own workflow's answering step, held to the same. Legwork on
+ *  fast and an answer on strong pass. Out of sample (H1), the same answering step on the fast model scored 8.5-9.6 points
+ *  lower than on the agent's. */
+export function answerTierProblems(doc: unknown): string[] {
+  const problems: string[] = [];
+  const answered = (workflow: unknown): void => {
+    const path = (workflow as { output?: { path?: unknown } } | null)?.output?.path;
+    if (typeof path !== "string" || !path) return;
+    const head = path.split(".")[0];
+    const walk = (node: unknown): void => {
+      if (!isNode(node)) return;
+      if (node.node === "workflow") return void (writeKeyOf(node) === head && answered(node.workflow));
+      if (TIERED_KINDS.has(node.node as string) && node.tier === "fast" && writeKeyOf(node) === head) {
+        problems.push(`the ${node.node as string} step ${JSON.stringify(String(node.label ?? "(no label)").slice(0, 64))} writes the answer (output.path ${JSON.stringify(path.slice(0, 64))}) on tier "fast": the answering node runs on the agent's model: drop its tier`);
+      }
+      for (const child of childNodes(node)) walk(child);
+    };
+    walk((workflow as { root?: unknown } | null)?.root);
+  };
+  answered(doc);
+  return problems;
+}
+
 /** What a run may write of a skill or a workflow draft (`place`), by itself: a good folder name, never a deletion, a
  *  regular file within CAPS.file (a README within CAPS.readme), its text as textOf takes it, and in shape: a skill's
  *  front matter (skillProblems), with no `status`, which is the host's; a draft the DSL validates against `tools` with
- *  no node that runs code (draftProblems); a README that names its folder and says what the draft is for. */
+ *  no node that runs code (draftProblems), whose answering step runs on the agent's model (answerTierProblems); a README
+ *  that names its folder and says what the draft is for. */
 function learnedChecked(change: Change, place: LearnedPlace, refused: (text: string) => boolean, input: CheckInput, add: Add): void {
   const { path } = change;
   nameScanned(path, refused, add);
@@ -219,6 +253,8 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   if (place.kind === "workflow") {
     if (!input.dsl) throw new TypeError(`${path}: a workflow draft is read with the workflow DSL, which was not given`);
     const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy, input.ask, input.decisions);
+    // A draft the DSL reads parses: its answering step is held to the agent's model.
+    if (!problems.length) problems.push(...answerTierProblems(JSON.parse(text)).map((detail) => ({ rule: "workflow" as const, detail })));
     for (const { rule, detail } of problems) add(rule, detail, path);
     // A draft the checks pass whose dry run failed: its wiring breaks at run time, before any node is paid for.
     const dry = input.dryRuns?.[path];
