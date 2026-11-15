@@ -769,18 +769,17 @@ function WebhookFilter({ signature, rules, onChange, issues, cap }: { signature:
 }
 
 /** A GitHub trigger's events: the picker's events and actions, each picked event with its conditions, then rules for
- *  any other GitHub event, typed as a webhook's are. Sent in that order (githubRulesOf), which is how each issue finds its
- *  place. */
+ *  any other GitHub event, typed as a webhook's are. Each issue finds its rule by where githubRulesOf sends it. */
 function GitHubEvents({ picks, onChange, issues }: { picks: GitHubPicks; onChange: (picks: GitHubPicks) => void; issues: Record<string, string> }) {
   const toggle = (key: string) => onChange({ ...picks, events: picks.events.includes(key) ? picks.events.filter((e) => e !== key) : [...picks.events, key] });
-  const picked = GITHUB_EVENT_NAMES.filter((event) => picks.events.some((key) => key.startsWith(`${event}:`)));
+  const sent = githubRulesOf(picks).map((r) => r.id);
   return (
     <>
       <fieldset className="min-w-0">
         <legend className="caps text-label text-muted-foreground">Events</legend>
         <div className="mt-1 space-y-3">
           {GITHUB_EVENT_NAMES.map((name) => {
-            const i = picked.indexOf(name);
+            const i = sent.indexOf(`event:${name}`);
             const at = `source.accept[${i}]`;
             return (
               <div key={name} data-github-event={name} className="space-y-1">
@@ -808,7 +807,7 @@ function GitHubEvents({ picks, onChange, issues }: { picks: GitHubPicks; onChang
       <fieldset className="min-w-0">
         <legend className="caps text-label text-muted-foreground">Other events <span className="font-normal normal-case">(optional)</span></legend>
         <p className="mb-2 mt-1 text-small text-muted-foreground">Any other GitHub event, by its name.</p>
-        <AcceptEditor name="other" rules={picks.other} onChange={(other) => onChange({ ...picks, other })} issues={issues} offset={picked.length} room={ACCEPT_LIMITS.rules - picked.length - picks.other.length}
+        <AcceptEditor name="other" rules={picks.other} onChange={(other) => onChange({ ...picks, other })} issues={issues} indexOf={(i) => sent.indexOf(`other:${picks.other[i]?.key}`)} room={ACCEPT_LIMITS.rules - sent.length}
           eventHint={EVENT_HINTS.github} eventPlaceholder="issues" addLabel="Add another event" />
       </fieldset>
     </>
@@ -825,6 +824,9 @@ function FilterForm({ v2, go, trigger }: { v2: Client; go: (hash: string) => voi
   const [issues, setIssues] = useState<Record<string, string>>({});
   const [rest, setRest] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  // A save that answers after the person left the editor opens nothing, as the GitHub form's.
+  const open = useRef(true);
+  useEffect(() => { open.current = true; return () => { open.current = false; }; }, []);
   const save = async (e: FormEvent) => {
     e.preventDefault();
     const { source, issues: found } = hook ? webhookSourceOf(hook.source, rules) : githubSourceOf(picks);
@@ -833,8 +835,9 @@ function FilterForm({ v2, go, trigger }: { v2: Client; go: (hash: string) => voi
     setIssues({}); setSaving(true);
     try {
       if (!same(source, trigger.source)) await v2.updateTrigger(trigger.id, { source });
-      go(hashOf(trigger.id));
+      if (open.current) go(hashOf(trigger.id));
     } catch (err) {
+      if (!open.current) return;
       const refused = issuesOf(err);
       const shown = acceptFields(hook ? rules.map((r) => r.where.length) : githubRulesOf(picks).map((r) => r.where.length));
       setIssues(Object.fromEntries(Object.entries(refused.fields).filter(([k]) => shown.has(k))));

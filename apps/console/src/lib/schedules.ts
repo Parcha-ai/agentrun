@@ -329,8 +329,10 @@ export function webhookBodyOf(d: WebhookDraft, capOptional = false): { body?: Tr
 }
 
 /** A GitHub trigger's filter as typed: the picked events as "event:action" (GITHUB_EVENTS), each picked event's
- *  conditions, and rules for events the picker doesn't offer (`other`), typed as a webhook's are. */
-export type GitHubPicks = { events: string[]; where: Record<string, ConditionDraft[]>; other: RuleDraft[] };
+ *  conditions, and rules for events the picker doesn't offer (`other`), typed as a webhook's are. `read`, on a filter
+ *  being edited: its rules in the order they came (`event:<name>` for a picked event's, `other:<key>` for one of
+ *  `other`) and each picked event's rule as read, so what the person left goes back as it came. */
+export type GitHubPicks = { events: string[]; where: Record<string, ConditionDraft[]>; other: RuleDraft[]; read?: { order: string[]; rules: Record<string, Accept> } };
 /** A new GitHub trigger's fields as typed: its filter, then the run each event starts. */
 export type GitHubDraft = GitHubPicks & { name: string; agentId: string; content: string; maxCost: string };
 export const emptyGitHub = (): GitHubDraft => ({ name: "", events: ["pull_request:opened"], where: {}, other: [], agentId: "", content: "", maxCost: "" });
@@ -338,11 +340,23 @@ export const emptyGitHub = (): GitHubDraft => ({ name: "", events: ["pull_reques
 /** The picker's events, one each, in the list's order. */
 export const GITHUB_EVENT_NAMES = [...new Set(GITHUB_EVENTS.map((e) => e.event))];
 
-/** A GitHub filter's rules in the order they are sent: one per picked event (its picked actions, in the list's order,
- *  and its conditions), then the other rules. */
-export function githubRulesOf(d: GitHubPicks): { event: string; actions: string | string[]; where: readonly ConditionDraft[] }[] {
-  const picked = GITHUB_EVENT_NAMES.map((event) => ({ event, actions: GITHUB_EVENTS.filter((e) => e.event === event && d.events.includes(`${e.event}:${e.action}`)).map((e) => e.action), where: d.where[event] ?? [] }));
-  return [...picked.filter((r) => r.actions.length), ...d.other];
+/** A GitHub filter's rule as sent, with `id`: `event:<name>` for a picked event's, `other:<key>` for one of `other`. */
+export type GitHubRule = { id: string; event: string; actions: string | string[]; where: readonly ConditionDraft[]; was?: Accept };
+const sameSet = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x) => b.includes(x));
+/** A GitHub filter's rules in the order they are sent: one per picked event (its picked actions and its conditions),
+ *  then the other rules. On a filter being edited, the rules read keep the order they came in, and a picked event's
+ *  actions their order while the same ones are ticked; new rules follow, in the list's order. */
+export function githubRulesOf(d: GitHubPicks): GitHubRule[] {
+  const picked: GitHubRule[] = GITHUB_EVENT_NAMES.flatMap((event) => {
+    const actions = GITHUB_EVENTS.filter((e) => e.event === event && d.events.includes(`${e.event}:${e.action}`)).map((e) => e.action);
+    if (!actions.length) return [];
+    const was = d.read?.rules[event];
+    return [{ id: `event:${event}`, event, actions: was?.actions && sameSet(actions, was.actions) ? [...was.actions] : actions, where: d.where[event] ?? [], ...(was ? { was } : {}) }];
+  });
+  const rules = [...picked, ...d.other.map((r) => ({ ...r, id: `other:${r.key}` }))];
+  const order = d.read?.order ?? [];
+  const at = (r: GitHubRule) => { const i = order.indexOf(r.id); return i < 0 ? order.length : i; };
+  return rules.map((r, i) => ({ r, i })).sort((a, b) => at(a.r) - at(b.r) || a.i - b.i).map(({ r }) => r);
 }
 
 /** A GitHub source with `d` as its filter, or the issues by field: it takes at least one event. */
@@ -355,13 +369,20 @@ export function githubSourceOf(d: GitHubPicks): { source: GitHubSource; issues: 
 /** A GitHub trigger's filter as the form holds it, to edit: a rule the picker can say (one of its events, by the first
  *  rule for it, with only actions it offers) is ticked there with its conditions; any other is one of `other`. */
 export function githubPicksOf(accept: readonly Accept[]): GitHubPicks {
-  const out: GitHubPicks = { events: [], where: {}, other: [] };
+  const out = { events: [], where: {}, other: [], read: { order: [], rules: {} } } as GitHubPicks & { read: NonNullable<GitHubPicks["read"]> };
   for (const rule of accept) {
     const offered = GITHUB_EVENTS.filter((e) => e.event === rule.event).map((e) => e.action);
-    const fits = !!rule.actions?.length && rule.actions.every((a) => offered.includes(a)) && !(rule.event in out.where);
-    if (!fits) { out.other.push(ruleDraftOf(rule)); continue; }
+    const fits = !!rule.actions?.length && rule.actions.every((a) => offered.includes(a)) && new Set(rule.actions).size === rule.actions.length && !(rule.event in out.where);
+    if (!fits) {
+      const draft = ruleDraftOf(rule);
+      out.other.push(draft);
+      out.read.order.push(`other:${draft.key}`);
+      continue;
+    }
     out.events.push(...rule.actions!.map((a) => `${rule.event}:${a}`));
     out.where[rule.event] = (rule.where ?? []).map(conditionDraftOf);
+    out.read.order.push(`event:${rule.event}`);
+    out.read.rules[rule.event] = rule;
   }
   return out;
 }
