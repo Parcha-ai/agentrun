@@ -725,6 +725,8 @@ export type TimelineRow = {
     expect?: "met" | "unmet";
   }>;
   computer_calls_dropped?: number;
+  tool_input?: Record<string, unknown>;
+  tool_result_text?: string | null;
   learning?: {
     state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
     reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
@@ -1148,9 +1150,16 @@ export type ListLearningPromotionsResponse = {
         inputs: number;
         no_read_only_hint: boolean;
       }>;
+      outcomes?: {
+        answered: number;
+        handed_back: number;
+        failed: number;
+        skipped_write: number;
+      };
     };
     runs?: Array<string>;
     inputs?: Array<string>;
+    replay_id?: string;
     refit?: {
       from: string;
       guards: Array<{
@@ -1162,6 +1171,8 @@ export type ListLearningPromotionsResponse = {
       }>;
     };
     checked?: number;
+    since?: number;
+    held_on?: Array<string>;
     commit?: string;
     superseded_by?: string;
   }>;
@@ -1773,6 +1784,31 @@ export type RecordLearningEvalResponse = {
   accuracy: number;
   ci: Array<number>;
   recorded_at: string;
+};
+
+/** A replay of a learned workflow's revision: running, done or failed, its counts and its score (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
+export type GetLearnedWorkflowReplayResponse = {
+  replay: string;
+  workflow: string;
+  digest: string;
+  status: "running" | "done" | "failed";
+  inputs: number;
+  answered: number;
+  handed_back: number;
+  failed: number;
+  skipped_write: number;
+  alone: number;
+  score: {
+    n: number;
+    agree: number;
+    agent_acc: number;
+    wf_acc: number;
+    delta: number;
+    handed_back: number;
+  };
+  cost_usd: number | null;
+  decided?: "promote" | "hold" | "superseded";
+  reason?: string;
 };
 
 /** Retire a note, a skill or a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire). */
@@ -2811,6 +2847,7 @@ export interface GetTimelineParams {
   after?: number;
   wait_ms?: number;
   limit?: number;
+  calls?: "whole";
   "Last-Event-ID"?: string;
 }
 export type GetTimelineResponse = TimelinePage;
@@ -4050,6 +4087,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listLearningNotes: {"method":"GET","path":"/agents/{agent_id}/learning/notes","pathParams":["agent_id"],"multiSegment":[],"query":["cursor","limit","status"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   readLearningFile: {"method":"GET","path":"/agents/{agent_id}/learning/files/{file}","pathParams":["agent_id","file"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json+text","secret":false,"publicFields":[],"tagged":true},
   recordLearningEval: {"method":"POST","path":"/agents/{agent_id}/learning/evals","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getLearnedWorkflowReplay: {"method":"GET","path":"/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}","pathParams":["agent_id","name","digest","replay_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   retireLearningFile: {"method":"POST","path":"/agents/{agent_id}/learning/files/{file}/retire","pathParams":["agent_id","file"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":null,"answer":"text","secret":false,"publicFields":[],"tagged":true},
   listLearnedWorkflowRevisions: {"method":"GET","path":"/agents/{agent_id}/learning/workflows/{name}/revisions","pathParams":["agent_id","name"],"multiSegment":[],"query":["limit"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   writeLearningFile: {"method":"PUT","path":"/agents/{agent_id}/learning/files/{file}","pathParams":["agent_id","file"],"multiSegment":[],"query":[],"headers":["If-Match","If-None-Match"],"body":{"required":true,"types":["text/markdown","text/plain","application/json"]},"answer":"text","secret":false,"publicFields":[],"tagged":true},
@@ -4107,7 +4145,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   startRun: {"method":"POST","path":"/runs/{run_id}/start","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   stopRun: {"method":"POST","path":"/runs/{run_id}/stop","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   takeOverRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/take-over","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  getTimeline: {"method":"GET","path":"/runs/{run_id}/timeline","pathParams":["run_id"],"multiSegment":[],"query":["after","wait_ms","limit"],"headers":["Last-Event-ID"],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getTimeline: {"method":"GET","path":"/runs/{run_id}/timeline","pathParams":["run_id"],"multiSegment":[],"query":["after","wait_ms","limit","calls"],"headers":["Last-Event-ID"],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveRun: {"method":"POST","path":"/runs/{run_id}/unarchive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getCapabilities: {"method":"GET","path":"/capabilities","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getHealth: {"method":"GET","path":"/health","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -4215,6 +4253,8 @@ export function resources(call: Call) {
       read: (agentId: string, file: string, options?: RequestOptions): Promise<Tagged<ReadLearningFileResponse | string>> => call("readLearningFile", [agentId, file], undefined, undefined, options),
       /** Record a held-out test of the agent: its counts and the cost a task, with learning and by hand (POST /agents/{agent_id}/learning/evals). */
       recordEval: (agentId: string, body: RecordLearningEvalBody, params?: RecordLearningEvalParams, options?: RequestOptions): Promise<RecordLearningEvalResponse> => call("recordLearningEval", [agentId], body, params, options),
+      /** A replay of a learned workflow's revision: running, done or failed, its counts and its score (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
+      replay: (agentId: string, name: string, digest: string, replayId: string, options?: RequestOptions): Promise<GetLearnedWorkflowReplayResponse> => call("getLearnedWorkflowReplay", [agentId, name, digest, replayId], undefined, undefined, options),
       /** Retire a note, a skill or a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire). */
       retire: (agentId: string, file: string, params?: RetireLearningFileParams, options?: RequestOptions): Promise<Tagged<string>> => call("retireLearningFile", [agentId, file], undefined, params, options),
       /** A learned workflow's revisions on main, oldest first, each with its workflow.json as it was then (GET /agents/{agent_id}/learning/workflows/{name}/revisions). */

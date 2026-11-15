@@ -30,8 +30,10 @@ async function entriesOf(server) {
 const resultsOf = (body) => Object.fromEntries((body.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : [])).filter((part) => part.type === "tool_result").map((part) => [part.tool_use_id, typeof part.content === "string" ? part.content : (part.content ?? []).map((one) => one.text ?? "").join("")]));
 
 /** A runner over one queued pi run whose first answer calls slow and note at once, its park's bound `parkSiblingsMs`.
- *  slow runs until the test lets it go or its signal aborts. */
-async function siblings(t, parkSiblingsMs, { late = false } = {}) {
+ *  slow runs until the test lets it go or its signal aborts; `slowStartMs` holds its start back that long (a loaded
+ *  machine can start it after note's park has begun to wait). `askedAt`: when the model was asked for that answer, which
+ *  comes before the answer, so before the park and its wait: the one clock a cut at the bound is measured from. */
+async function siblings(t, parkSiblingsMs, { late = false, slowStartMs = 0 } = {}) {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   let started = () => {};
@@ -44,6 +46,7 @@ async function siblings(t, parkSiblingsMs, { late = false } = {}) {
     slow: {
       name: "slow", replaySafe: false, ask: false,
       run: async (_args, signal) => {
+        if (slowStartMs) await new Promise((resolve) => setTimeout(resolve, slowStartMs));
         slow.starts += 1;
         started(Date.now());
         const aborted = new Promise((_, reject) => signal?.addEventListener("abort", () => ((slow.cutAt = Date.now()), reject(new Error("aborted"))), { once: true }));
@@ -60,6 +63,8 @@ async function siblings(t, parkSiblingsMs, { late = false } = {}) {
   const lateAllowed = new Promise((resolve) => (allowLate = resolve));
   const script = [{ calls: [{ call: "slow" }, { call: "note" }, ...(late ? [{ call: "late" }] : [])] }, { say: "done" }];
   const requests = [];
+  const askedAt = [];
+  requests.push = (...bodies) => (askedAt.push(...bodies.map(() => Date.now())), Array.prototype.push.apply(requests, bodies));
   const base = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
   const inner = createAdapterLoop(async (claim, run) => {
     const spec = await base(claim, run);
@@ -79,7 +84,7 @@ async function siblings(t, parkSiblingsMs, { late = false } = {}) {
   };
   const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
-  return { server: opened.server, running, slow, requests, letGo, allowLate, claims };
+  return { server: opened.server, running, slow, requests, askedAt, letGo, allowLate, claims };
 }
 
 /** The parking claim's start() settles and leaves no abort listener on its signal, whichever way its wait ended. */
@@ -91,34 +96,40 @@ async function leavesNoListener(claims, how) {
   assert.equal(getEventListeners(claims[0].signal, "abort").length, 0, `no abort listener left on the claim's signal once its wait ${how}`);
 }
 
-test("pi: a call beside the parked one that outlasts the park's bound is cut at the bound, and once the parked call is answered the model reads it interrupted", { timeout: 60_000 }, async (t) => {
-  const bound = 300;
-  const { server, running, slow, requests, claims } = await siblings(t, bound);
-  const startedAt = await running;
-  const parked = await until(async () => {
-    const now = await server.runs.get("run-1");
-    return now.state === "parked" && now.runner === null && now;
-  }, "the run parked and its claim let go", 15_000);
-  const letGoAt = Date.now();
-  // A timer reads its own clock, so Date.now() may see it fire a millisecond or so early: SLACK allows for that.
-  assert.ok(letGoAt - startedAt >= bound - SLACK, `the claim held for the bound while slow ran: ${letGoAt - startedAt} ms`);
-  assert.ok(slow.cutAt !== undefined, "slow's signal was aborted: it was cut");
-  assert.ok(slow.cutAt - startedAt >= bound - SLACK, `cut no sooner than the bound: ${slow.cutAt - startedAt} ms`);
-  assert.equal(requests.length, 1, `nothing sent while it parks: ${JSON.stringify(parked)}`);
-  await leavesNoListener(claims, "passed its bound");
-  const callId = (await entriesOf(server)).find((entry) => entry.kind === "agentrun.ask")?.data.callId;
-  assert.ok(callId, "note was asked");
-  await server.command("run-1", { kind: "deny", body: { approval: callId } });
-  const ended = await until(async () => {
-    const now = await server.runs.get("run-1");
-    return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
-  }, "the run went on and ended", 30_000);
-  assert.equal(ended.state, "ended", JSON.stringify(ended));
-  const sent = resultsOf(requests.at(-1));
-  assert.match(sent.toolu_0_0 ?? "", /interrupted/, `the model reads slow cut: ${JSON.stringify(sent)}`);
-  assert.match(sent.toolu_0_1 ?? "", /den/i, `and note denied: ${JSON.stringify(sent)}`);
-  assert.equal(slow.starts, 1, "slow never ran again");
-});
+// slow may start before note's park begins to wait or, on a loaded machine, after: the park's bound runs from its own
+// start, so the cut is measured from the model's ask for the answer (askedAt), which comes before both.
+for (const slowStartMs of [0, 150]) {
+  test(`pi: a call beside the parked one that outlasts the park's bound is cut at the bound, and once the parked call is answered the model reads it interrupted${slowStartMs ? ` (it starts ${slowStartMs} ms late, after the park's wait began)` : ""}`, { timeout: 60_000 }, async (t) => {
+    const bound = 300;
+    const { server, running, slow, requests, askedAt, claims } = await siblings(t, bound, { slowStartMs });
+    await running;
+    assert.equal(askedAt.length, 1, "one answer asked for: slow and note");
+    const answeredBy = askedAt[0];
+    const parked = await until(async () => {
+      const now = await server.runs.get("run-1");
+      return now.state === "parked" && now.runner === null && now;
+    }, "the run parked and its claim let go", 15_000);
+    const letGoAt = Date.now();
+    // A timer reads its own clock, so Date.now() may see it fire a millisecond or so early: SLACK allows for that.
+    assert.ok(letGoAt - answeredBy >= bound - SLACK, `the claim held for the bound while slow ran: ${letGoAt - answeredBy} ms`);
+    assert.ok(slow.cutAt !== undefined, "slow's signal was aborted: it was cut");
+    assert.ok(slow.cutAt - answeredBy >= bound - SLACK, `cut no sooner than the bound: ${slow.cutAt - answeredBy} ms`);
+    assert.equal(requests.length, 1, `nothing sent while it parks: ${JSON.stringify(parked)}`);
+    await leavesNoListener(claims, "passed its bound");
+    const callId = (await entriesOf(server)).find((entry) => entry.kind === "agentrun.ask")?.data.callId;
+    assert.ok(callId, "note was asked");
+    await server.command("run-1", { kind: "deny", body: { approval: callId } });
+    const ended = await until(async () => {
+      const now = await server.runs.get("run-1");
+      return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
+    }, "the run went on and ended", 30_000);
+    assert.equal(ended.state, "ended", JSON.stringify(ended));
+    const sent = resultsOf(requests.at(-1));
+    assert.match(sent.toolu_0_0 ?? "", /interrupted/, `the model reads slow cut: ${JSON.stringify(sent)}`);
+    assert.match(sent.toolu_0_1 ?? "", /den/i, `and note denied: ${JSON.stringify(sent)}`);
+    assert.equal(slow.starts, 1, "slow never ran again");
+  });
+}
 
 test("pi: a cancel while the park waits for the call beside it ends the run at once, in the cancel's words, that call cut and nothing more sent", { timeout: 60_000 }, async (t) => {
   const bound = 20_000;

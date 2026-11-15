@@ -2,7 +2,8 @@
 // the eval's grader agent, no key and no network.
 //
 // The package's agent follows its run's input, one step a request:
-// - `Call <tool> with <json>`, one line each: that call, in order (an MCP tool by its wire name, mcp__<server>__<tool>);
+// - `Call <tool> with <json>`, one line each: that call, in order (an MCP tool by its wire name, mcp__<server>__<tool>),
+//   each `{{env:<NAME>}}` in its json that environment variable's value (a secret the run's input never holds);
 // - `Write <path>: <text>`: the write tool, making that file in the run's work folder;
 // - `Page through the filed answer`: as a model that follows the words it is given would, the read tool on the file the
 //   last result says the whole answer is filed at (`in the run's files at <path>`), from the line that result names
@@ -70,7 +71,7 @@ function nextCall(input, said) {
         at++;
         continue;
       }
-      return call ? [call[1], JSON.parse(call[2])] : ["write", { path: write[1], content: `${write[2]}\n` }];
+      return call ? [call[1], JSON.parse(call[2].replace(/\{\{env:(\w+)\}\}/g, (_, name) => process.env[name] ?? ""))] : ["write", { path: write[1], content: `${write[2]}\n` }];
     }
     if (line !== "Page through the filed answer") continue;
     const path = FILED.exec(said[at - 1] ?? "")?.[1];
