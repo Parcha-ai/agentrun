@@ -1,3 +1,5 @@
+import { SCRUBBED_URL, trimmed } from "../text-urls.js";
+
 export type Obj = Record<string, unknown>;
 
 export const obj = (value: unknown): Obj | undefined =>
@@ -51,43 +53,20 @@ export function where(url: string): string {
 
 const ELIDED = "\u2026";
 // An apostrophe is part of a URL (a path's O'Reilly, a query's quoted word): a URL that stopped at one would leave the query
-// after it unscrubbed. One that closes a quote around the URL is in its tail, as a sentence's punctuation is (urlEnd).
-/** An http(s) URL written in text, to whitespace, a quote, an angle bracket, a backtick or a backslash: its tail
- *  (urlEnd) is not its own. A fetched page's links read the URLs its text writes out with it too (web-fetch-direct.ts). */
-export const TEXT_URL = /https?:\/\/[^\s"`<>\\]+/gi;
+// after it unscrubbed. One that closes a quote around the URL is in its tail, as a sentence's punctuation is (trimmed).
+// Where a URL ends and what tail is not its own are text-urls.ts's, the link check's and a fetched page's links' too.
 const SCHEME = /https?:\/\//gi;
 const URL_PARTS = /^(https?:\/\/)(?:[^@/?#]*@)?([^/?#]*)([^?#]*)(?:\?([^#]*))?/i;
 /** The userinfo of a URL run into another's host, path or query key. */
 const INNER_USERINFO = /(https?:\/\/)[^@/?#\s]*@/gi;
-/** What a URL TEXT_URL found may end with that is not its own (urlEnd). */
-export const URL_TAIL = ".,;:!?*)]}'";
-const OPENER: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
 const ALNUM = /[A-Za-z0-9]/;
-
-/**
- * Where a URL TEXT_URL found ends, less its tail: the punctuation a sentence ends a URL with, a closing quote's and an
- * emphasis's among it. A closing bracket stays where the URL opened as many as it closes (a wiki title's `Foo_(bar)`).
- * One count of the brackets, then one walk back, so a long run of them is linear.
- */
-export function urlEnd(raw: string): number {
-  const count: Record<string, number> = { "(": 0, ")": 0, "[": 0, "]": 0, "{": 0, "}": 0 };
-  for (const char of raw) if (char in count) count[char]! += 1;
-  let end = raw.length;
-  for (; end > 0 && URL_TAIL.includes(raw[end - 1]!); end--) {
-    const char = raw[end - 1]!;
-    const opener = OPENER[char];
-    if (opener && count[opener]! >= count[char]!) break;
-    if (opener) count[char]! -= 1;
-  }
-  return end;
-}
 
 /**
  * Every http(s) URL in `text` keeps its origin, its path and its query keys. Query values, the fragment and the
  * userinfo are dropped, the rule pi-browser applies to the URLs a model sees.
  */
 export function scrubUrls(text: string): string {
-  return text.replace(TEXT_URL, (raw) => {
+  return text.replace(SCRUBBED_URL, (raw) => {
     // A URL that starts after nothing but punctuation holding an apostrophe is the next of a compact quoted list
     // (`'https://a','https://b'`): each is scrubbed alone. Never one past a "?" or "#" of the URL before it: that one is
     // in its query or fragment (`?next='https://b/...'`), a value dropped with it. Each look back stops at a letter or a
@@ -111,7 +90,7 @@ export function scrubUrls(text: string): string {
  * (a closing quote's among it) is kept as it was, outside the URL.
  */
 export function scrubUrl(raw: string): string {
-  const end = urlEnd(raw);
+  const end = trimmed(raw).length;
   const parts = URL_PARTS.exec(raw.slice(0, end));
   if (!parts) return raw;
   // Another URL run into this one, in its host, its path or a query key with no "=" (after a comma or a quote, say),

@@ -129,11 +129,11 @@ test("an Atom feed lists its entries' links: an attribute's URL, and its escaped
   const { linksOf } = await import("../dist/web-fetch-direct.js");
   assert.deepEqual([...linksOf("<feed><link href='https://example.com/release'/><link href = 'https://example.com/a?x=1&amp;y=O&apos;Reilly'/></feed>")], ["https://example.com/release", "https://example.com/a?x=1&y=O%27Reilly"], "an apostrophe in a query, as the URL standard writes it");
   // An attribute named in any script is read so too.
-  assert.deepEqual([...linksOf("<feed xmlns:é='https://example.com/ns'/>")], ["https://example.com/ns"]);
+  assert.deepEqual([...linksOf("<feed><link é:href='https://example.com/ns'/></feed>")], ["https://example.com/ns"]);
   // A double-quoted attribute is left as it is, an "='" in its query too.
   assert.deepEqual([...linksOf(`<feed><link href="https://example.com/?q='hello'&amp;x=1"/></feed>`)], ["https://example.com/?q=%27hello%27&x=1"]);
-  // Every URL the body writes out: its namespace's and the one in its tag URI's id too, as the text holds them.
-  assert.deepEqual(page.links, ["http://www.w3.org/2005/Atom", "https://github.com/vitejs/vite/releases", "https://github.com/vitejs/vite/releases?q=v8&expanded=true", "https://github.com/vitejs/vite/releases/tag/v8.2.6", "https://github.com/vitejs/vite/blob/v8.2.6/CHANGELOG.md"]);
+  // Every URL the body writes out, the one in its tag URI's id too; its namespace's name is an identifier, not a link.
+  assert.deepEqual(page.links, ["https://github.com/vitejs/vite/releases", "https://github.com/vitejs/vite/releases?q=v8&expanded=true", "https://github.com/vitejs/vite/releases/tag/v8.2.6", "https://github.com/vitejs/vite/blob/v8.2.6/CHANGELOG.md"]);
 });
 
 test("a releases.atom entry's links are its <link href> and its escaped content's pull URL, exactly: no entity runs into a link", async () => {

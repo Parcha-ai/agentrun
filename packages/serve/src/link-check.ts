@@ -1,11 +1,12 @@
 // A template eval's link check (template-eval.ts graderInput): each http(s) link a run's answer cites, matched in code
-// against every url its web calls answered, so "every link the answer cites appears in the run's calls" is read from one
-// block, never judged as URL equality from a rubric's prose. A link matches a url when their canonical forms do
+// against every url its calls answered (its web calls', and the URLs any other call's result holds whole), so "every link
+// the answer cites appears in the run's calls" is read from one block, never judged as URL equality from a rubric's prose. A link matches a url when their canonical forms do
 // (canonicalUrl): no fragment, no trailing slash on the path, scheme and host lower-cased, query keys sorted; the two key
 // sets equal, and each value equal, except that a call's value read as "…" (a timeline read elides query values,
 // scrubUrls) matches any value for its key. Structural only: whether a cited item is in scope stays the rubric's call.
 import { lastJsonBlock } from "./answer-json.js";
-import { scrubUrl, TEXT_URL, URL_TAIL as TRAILING, urlEnd } from "./timeline/index.js";
+import { linksOf, targetEnd, TEXT_URL, TRAILING, trimmed, wholeUrl } from "./text-urls.js";
+import { scrubUrl } from "./timeline/index.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
 
@@ -57,31 +58,25 @@ function formsOf(raw: string): string[] {
   return forms;
 }
 
-/** Where a markdown link's target (the text after its "](") ends: at the ")" that closes it; -1 when none does. */
-function targetEnd(text: string): number {
-  let depth = 0;
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] === "(") depth += 1;
-    else if (text[i] === ")" && depth-- === 0) return i;
-  }
-  return -1;
-}
-
-/** Every http(s) URL in `text`, in order, each as the forms it may end at: a markdown link's target (`[text](url)`), which
- *  its closing bracket ends, as that one form; any other as formsOf gives it. A link's text and target read as two. */
+/** Every http(s) URL in `text` (TEXT_URL, text-urls.ts), in order, each as the forms it may end at: a markdown link's
+ *  target (`[text](url)`), which its closing bracket ends (targetEnd), as that one form; any other as formsOf gives it. A
+ *  link's text and target read as two. */
 function linksIn(text: string): string[][] {
   return [...text.matchAll(TEXT_URL)].flatMap((match) =>
     match[0].split("](").flatMap((part, i) => {
       if (!/^https?:\/\//i.test(part)) return [];
       const end = i > 0 || text.slice(Math.max(0, match.index - 2), match.index) === "](" ? targetEnd(part) : -1;
-      return [end >= 0 ? [part.slice(0, end)] : formsOf(part)];
+      return [end >= 0 && part[end] === ")" ? [part.slice(0, end)] : formsOf(part)];
     }),
   );
 }
 
-/** A JSON string's links: the string itself when it is one URL whole (a field holding a link means all of it), else
- *  those in its text. */
-const jsonLinks = (text: string): string[][] => (/^https?:\/\/\S+$/i.test(text.trim()) ? [[text.trim()]] : linksIn(text));
+/** A JSON string's links: the string itself when it is one URL whole (wholeUrl: a field holding a link means all of it),
+ *  else those in its text. */
+const jsonLinks = (text: string): string[][] => {
+  const whole = wholeUrl(text);
+  return whole === undefined ? linksIn(text) : [[whole]];
+};
 
 /** Every string in `value`, property names aside. */
 function stringsIn(value: unknown): string[] {
@@ -110,12 +105,14 @@ export function citedLinks(answer: string): string[][] {
   return [...new Map(found.map((forms) => [forms.join("\n"), forms])).values()];
 }
 
-/** A web call's urls for the check: a web_search's results', a web_fetch's asked url, final url and page links, with how
- *  many of that page's links its output lost to a cut (`links_cut`). None for any other call. */
-function sourceOf(call: CheckedCall): { urls: string[]; cut: number } | undefined {
+/** A call's urls for the check, and whether it is a web call: a web_search's results', a web_fetch's asked url, final url
+ *  and page links, with how many of that page's links its output lost to a cut (`links_cut`). Any other call's are the
+ *  URLs its result holds as it returned them (linksOf: a JSON string that is a URL whole counts whole), with no cut: a
+ *  skill cites only links a call returned whole. */
+function sourceOf(call: CheckedCall): { urls: string[]; cut: number; web: boolean } {
   const tool = call.name ?? call.tool;
-  if (tool !== WEB_SEARCH_TOOL && tool !== WEB_FETCH_TOOL) return undefined;
   const text = call.result ?? "";
+  if (tool !== WEB_SEARCH_TOOL && tool !== WEB_FETCH_TOOL) return { urls: [...linksOf(text)], cut: 0, web: false };
   const end = text.indexOf("\n");
   let read: unknown;
   try {
@@ -124,28 +121,30 @@ function sourceOf(call: CheckedCall): { urls: string[]; cut: number } | undefine
     read = undefined;
   }
   const out = isObj(read) ? read : {};
-  if (tool === WEB_SEARCH_TOOL) return { urls: Array.isArray(out.results) ? out.results.flatMap((hit) => (isObj(hit) && typeof hit.url === "string" ? [hit.url] : [])) : [], cut: 0 };
+  if (tool === WEB_SEARCH_TOOL) return { urls: Array.isArray(out.results) ? out.results.flatMap((hit) => (isObj(hit) && typeof hit.url === "string" ? [hit.url] : [])) : [], cut: 0, web: true };
   const asked = isObj(call.arguments) && typeof call.arguments.url === "string" ? [call.arguments.url] : [];
-  return { urls: [...asked, ...(typeof out.url === "string" ? [out.url] : []), ...strings(out.links)], cut: typeof out.links_cut === "number" ? out.links_cut : 0 };
+  return { urls: [...asked, ...(typeof out.url === "string" ? [out.url] : []), ...strings(out.links)], cut: typeof out.links_cut === "number" ? out.links_cut : 0, web: true };
 }
 
 const callsWord = (calls: readonly number[]) => (calls.length === 1 ? `call ${calls[0]}` : `calls ${calls.slice(0, -1).join(", ")} and ${calls.at(-1)}`);
 
-/** The link check's lines for a grader, or undefined when the run made no web_search or web_fetch call: one line per
- *  distinct link the answer cites, shown as a call's url is (scrubUrl: no query values, fragment or userinfo), saying the
- *  first call (numbered as the grader's list numbers them) one of whose urls it matches, or that none does, naming any
- *  fetched page whose links were cut, as that page could have held it. */
+/** The link check's lines for a grader, or undefined when there is nothing to check: the run made no web_search or
+ *  web_fetch call, and either the answer cites no link or no call returned a URL. One line per distinct link the answer
+ *  cites, shown as a call's url is (scrubUrl: no query values, fragment or userinfo), saying the first call (numbered as
+ *  the grader's list numbers them) one of whose urls it matches, or that none does, naming any fetched page whose links
+ *  were cut, as that page could have held it. */
 export function linkCheck(answer: string, calls: readonly CheckedCall[]): string | undefined {
   const sources = calls.map(sourceOf);
-  if (!sources.some(Boolean)) return undefined;
-  const called = sources.map((source) => source?.urls.flatMap((url) => canonicalUrl(url) ?? []) ?? []);
-  const cut = sources.flatMap((source, i) => (source?.cut ? [i + 1] : []));
+  const citations = citedLinks(answer);
+  if (!sources.some((source) => source.web) && !(citations.length && sources.some((source) => source.urls.length))) return undefined;
+  const called = sources.map((source) => source.urls.flatMap((url) => canonicalUrl(url) ?? []));
+  const cut = sources.flatMap((source, i) => (source.cut ? [i + 1] : []));
   const seen = new Set<string>();
   const lines: string[] = [];
   const matchOf = (cited: CanonicalUrl) => called.findIndex((urls) => urls.some((url) => urlMatches(cited, url)));
-  for (const forms of citedLinks(answer)) {
+  for (const forms of citations) {
     // The longest form that matches a call is the link; with none, a plain-text one less the punctuation around it.
-    let [link, at] = [forms.length > 1 ? forms[0]!.slice(0, urlEnd(forms[0]!)) : forms[0]!, -1];
+    let [link, at] = [forms.length > 1 ? trimmed(forms[0]!) : forms[0]!, -1];
     for (const form of forms) {
       const canonical = canonicalUrl(form);
       const i = canonical ? matchOf(canonical) : -1;
@@ -161,6 +160,6 @@ export function linkCheck(answer: string, calls: readonly CheckedCall[]): string
     lines.push(`${scrubUrl(link)} — ${at >= 0 ? `matches call ${at + 1}` : `no matching call${cut.length ? ` (${callsWord(cut)}'s links were cut)` : ""}`}`);
   }
   const intro =
-    "Each distinct http(s) link the answer cites, checked in code against every url its web calls answered (a web_search's results; a web_fetch's url, its final url and its page's links): a fragment, a trailing slash and the order of the query are ignored, the query's keys must be the same, and a query value shown as … matches any value for its key. Links are shown with their query values elided.";
+    "Each distinct http(s) link the answer cites, checked in code against every url its calls answered (a web_search's results; a web_fetch's url, its final url and its page's links; any other call's URLs as its result holds them): a fragment, a trailing slash and the order of the query are ignored, the query's keys must be the same, and a query value shown as … matches any value for its key. Links are shown with their query values elided.";
   return [intro, ...(lines.length ? lines : ["(the answer cites no http(s) link)"])].join("\n");
 }
