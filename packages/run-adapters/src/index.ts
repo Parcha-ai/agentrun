@@ -12,5 +12,5 @@ export { bookRequest, isConnectCode, isGatewayTimeout, rejectionCode } from "./b
 export type { Booked, Ended, Priced } from "./booking.js";
 export type {
   AdapterEvent, AdapterSession, AgentAdapter, AdapterFacts, GateAnswer, GateCall, SessionPort, Wire, HarnessEvent, HostTool, McpCallResult, McpTool, NestedCalls, NestedResult, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage, NoteRequest,
-  NodeRequest, SessionIO, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, ToolPermission, TurnStatus,
+  NodeRequest, OwnCalls, SessionIO, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, ToolPermission, TurnStatus,
 } from "./types.js";

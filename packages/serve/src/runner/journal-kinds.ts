@@ -210,6 +210,9 @@ export interface CallStartData {
   /** A tool that only nests calls (tools_call, codemode; HostTool.nests): its calls start after it, each its own, and it
    *  runs again whole after a crash, so a start a crash left open is never ended interrupted (adapter-loop.ts). */
   readonly nests?: true;
+  /** The call of the harness's own this one runs inside (Codex's code-mode `exec`, SessionIO.ownCalls): its rows sit under
+   *  that call's, as a call a host tool that `nests` made sits under it by its id (`<callId>/<key>`). */
+  readonly parent?: string;
   /** The harness's working directory (a CLI's), which an absolute path in `input` is built from: the run's rows name a
    *  path under it by its name in the workspace (store-reads/journal.ts runTimeline). */
   readonly cwd?: string;
