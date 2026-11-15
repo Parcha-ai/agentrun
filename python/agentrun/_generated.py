@@ -245,6 +245,7 @@ __all__ = [
     "GetHealthResponse",
     "GetHealthResponseChecks",
     "GetLearnedWorkflowReplayResponse",
+    "GetLearnedWorkflowReplayResponseOutcomes",
     "GetLearnedWorkflowReplayResponseScore",
     "GetLearningBatchResponse",
     "GetLearningBatchResponseLessons",
@@ -1433,7 +1434,6 @@ class _ListLearningPromotionsResponsePromotionsItemReplayRequired(TypedDict):
 class ListLearningPromotionsResponsePromotionsItemReplay(_ListLearningPromotionsResponsePromotionsItemReplayRequired, total=False):
     of: list[str]
     cost_usd: float | None
-    skipped_write: int
     skipped_tools: list[ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem]
     outcomes: ListLearningPromotionsResponsePromotionsItemReplayOutcomes
 
@@ -2462,11 +2462,7 @@ class _GetLearnedWorkflowReplayResponseRequired(TypedDict):
     digest: str
     status: Literal["running", "done", "failed"]
     inputs: int
-    answered: int
-    handed_back: int
-    failed: int
-    skipped_write: int
-    alone: int
+    outcomes: GetLearnedWorkflowReplayResponseOutcomes
     score: GetLearnedWorkflowReplayResponseScore
     cost_usd: float | None
 
@@ -2474,6 +2470,13 @@ class _GetLearnedWorkflowReplayResponseRequired(TypedDict):
 class GetLearnedWorkflowReplayResponse(_GetLearnedWorkflowReplayResponseRequired, total=False):
     decided: Literal["promote", "hold", "superseded"]
     reason: str
+
+
+class GetLearnedWorkflowReplayResponseOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
 
 
 class GetLearnedWorkflowReplayResponseScore(TypedDict):

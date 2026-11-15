@@ -1144,7 +1144,6 @@ export type ListLearningPromotionsResponse = {
       handed_back: number;
       of?: Array<string>;
       cost_usd?: number | null;
-      skipped_write?: number;
       skipped_tools?: Array<{
         tool: string;
         inputs: number;
@@ -1793,11 +1792,12 @@ export type GetLearnedWorkflowReplayResponse = {
   digest: string;
   status: "running" | "done" | "failed";
   inputs: number;
-  answered: number;
-  handed_back: number;
-  failed: number;
-  skipped_write: number;
-  alone: number;
+  outcomes: {
+    answered: number;
+    handed_back: number;
+    failed: number;
+    skipped_write: number;
+  };
   score: {
     n: number;
     agree: number;

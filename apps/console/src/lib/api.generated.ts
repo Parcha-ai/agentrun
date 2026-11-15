@@ -1861,11 +1861,12 @@ export interface operations {
       digest: string;
       status: "running" | "done" | "failed";
       inputs: number;
-      answered: number;
-      handed_back: number;
-      failed: number;
-      skipped_write: number;
-      alone: number;
+      outcomes: {
+        answered: number;
+        handed_back: number;
+        failed: number;
+        skipped_write: number;
+      };
       score: {
         n: number;
         agree: number;
@@ -3049,7 +3050,6 @@ export interface operations {
           handed_back: number;
           of?: string[];
           cost_usd?: number | null;
-          skipped_write?: number;
           skipped_tools?: {
             tool: string;
             inputs: number;
