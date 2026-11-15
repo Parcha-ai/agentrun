@@ -254,8 +254,9 @@ export interface MessageData {
   readonly at?: number;
 }
 
-/** What an approval costs, as main's card shows it (tool-gate.ts ApprovalPrice): dollars, or "not metered". */
-export type ApprovalPrice = number | "not metered";
+/** What an approval costs, as main's card shows it (tool-gate.ts ApprovalPrice): dollars, "not metered", or "priced by
+ *  usage" for a monid endpoint priced by usage. */
+export type ApprovalPrice = number | "not metered" | "priced by usage";
 
 /** A call the gate asked a person about: what main's approval card shows (tool-gate.ts ApprovalRequest). A parked call
  *  has no call.start yet, so its input is here. Optional for an ask written before these fields. */

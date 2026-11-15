@@ -11,7 +11,7 @@ import type { RevisionKind } from "./agent-rows.js";
 import { CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal } from "./cap.js";
 import type { Turns } from "./turns.js";
 import type { PendingAsk } from "./browser-person.js";
-import { APPROVAL_ROW, type PendingApproval, previewOf } from "./tool-gate.js";
+import { APPROVAL_ROW, type ApprovalPrice, type PendingApproval, previewOf } from "./tool-gate.js";
 import { ASK_TOOL } from "./tools.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { builtinHarness } from "./harness-table.js";
@@ -141,7 +141,7 @@ export type State = "working" | "waiting" | "idle";
 
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
-export type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; destructive?: true; resolved?: true };
+export type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: ApprovalPrice; destructive?: true; resolved?: true };
 /** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
 /** `by`: "message", a deny a person's message gave while the call waited (Runs.message); "setting", the allow or deny the tool's setting gave an ask that waited (the tool set to allow or deny since it asked). */
 /** `superseded`: the answer a stop or a cancel overrode before the run's process acted on it, or the person's allow a deny set since overrode, kept as it was given. */
@@ -158,7 +158,9 @@ export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decisio
 // command names the call), so the card's id is the call's id. ---
 
 /** An `agentrun.ask` entry's data: the tool call the gate parked for a person, as the runner wrote it. */
-type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: number | "not metered" | null; destructive?: true };
+type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: ApprovalPrice | null; destructive?: true };
+/** An ask's price as its card shows it (tool-gate.ts ApprovalPrice); undefined for none, or one of no known shape. */
+const priceOfAsk = (price: unknown): ApprovalPrice | undefined => (typeof price === "number" || price === "not metered" || price === "priced by usage" ? price : undefined);
 /** An `agentrun.answer` entry's data: the person's answer the runner wrote, or a withdrawal when the run was stopped or
  *  cancelled while the call waited. */
 type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn" | "canceled"; answeredAt?: string; note?: string; by?: "message" | "setting"; superseded?: { decision: string; answeredAt?: string } };
@@ -178,13 +180,14 @@ export function asksOf(entries: readonly JournalEntry[]): Map<string, Approval> 
     if (entry.kind !== KINDS.ask) continue;
     const d = dataOf<AskEntry>(entry);
     if (typeof d?.callId !== "string" || map.has(d.callId)) continue;
+    const price = priceOfAsk(d.price);
     map.set(d.callId, {
       id: d.callId,
       tool: d.tool,
       call_id: d.callId,
       args_json: JSON.stringify(d.args ?? {}) ?? "{}",
       requested_at: d.requestedAt,
-      ...(typeof d.price === "number" || d.price === "not metered" ? { price: d.price } : {}),
+      ...(price !== undefined ? { price } : {}),
       ...(d.destructive === true ? { destructive: true as const } : {}),
       ...(answered.has(d.callId) ? { resolved: true as const } : {}),
     });
