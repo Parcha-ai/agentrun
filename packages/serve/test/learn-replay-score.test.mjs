@@ -19,7 +19,10 @@ test("answers are the same as JSON values; a replay's answer takes the agent's g
   assert.equal(sameAnswer('{"a":1,"b":2}', ' {"b":2,"a":1} '), true);
   assert.equal(sameAnswer("5", "5\n"), true);
   assert.equal(sameAnswer("Paris", "paris"), false);
-  assert.equal(answerCorrect("5", { answer: "5", correct: true }), true);
+  assert.equal(sameAnswer('```\n{"mcc":"5812"}\n```', '{"mcc":"5812"}'), true, "JSON in an unlabelled whole-answer fence is the bare JSON");
+  assert.equal(sameAnswer('```\n{"mcc":"5814"}\n```', '{"mcc":"5812"}'), false, "an unlabelled fence around another value differs");
+  assert.equal(sameAnswer('Here you go.\n\n```json\n{"mcc":"5812"}\n```\n\nAnything else?', '{"mcc":"5812"}'), true, "the last json block in prose stays the same answer");
+  assert.equal(answerCorrect("5",{ answer: "5", correct: true }), true);
   assert.equal(answerCorrect("5", { answer: "5", correct: false }), false);
   assert.equal(answerCorrect("6", { answer: "5", correct: false }), false, "differs from a wrong answer: unknown, counted wrong");
   assert.equal(answerCorrect('{"mcc":"5812","why":"x"}', { answer: "zzz", correct: false, expected: { mcc: "5812" } }), true, "expected fields decide");

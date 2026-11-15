@@ -8,7 +8,7 @@ export {
   WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError, WorkflowCodeError, WorkflowStateError,
   WorkflowVerificationError, WorkflowDecisionRecordError, EffectFailure, EffectDeadlineExceededError,
   EffectOutcomeUnknownError, EscalationSignal, routesByValue, isItemFailure,
-  stepGuardOf, confidenceKey, SELF_CONFIDENCE_FIELD, GUARD_QUESTION_MAX,
+  stepGuardOf, confidenceKey, SELF_CONFIDENCE_FIELD, GUARD_QUESTION_MAX, softEscalates,
 } from "./workflow.js";
 export { defineJob } from "./job.js";
 export type { Job } from "./job.js";

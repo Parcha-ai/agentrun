@@ -1,0 +1,10 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-kernel, @parcha/agentrun-harness-codex, @parcha/agentrun-client
+kind: feature
+---
+A server with no model key can run codex and pi on a person's ChatGPT plan. The owner signs in under `/settings/chatgpt` (OpenAI's Sign in with ChatGPT through pi-ai's own flow, finished by the loopback callback or by pasting the address the sign-in tab ended on), and models named `chatgpt/<id>` go to OpenAI's Responses API on the plan's token, billed to the plan with no price here.
+- `GET /settings/chatgpt`, `POST /settings/chatgpt/sign-in`, `POST /settings/chatgpt/sign-in/finish` and `DELETE /settings/chatgpt` (owner session only). A bad or stale pasted address is a 400 in words. Sign-out revokes the session at OpenAI, then removes it.
+- The sign-in is sealed in one row and read per request by the server and every runner, in their own processes or containers. A token renews once across all of them, 5 minutes before it ends: one holder takes a lease on the row (a compare-and-set on its sealed bytes, `SealedKeys.replaceIf`), and the others adopt the pair it writes back, so a refresh token is never used twice. A renewal sent with no answer read holds the lease to its end, since its refresh token may be spent; a fault OpenAI answers gives it back. A sign-out during a renewal stays. A refused renewal marks the sign-in expired, and runs on it fail at once in words. A 401 from OpenAI, in a pi turn or a workflow's model node, renews the token on the next request when the row still holds it.
+- Capabilities say per harness whether it runs on the plan: pi and codex do, Claude Agent and OpenCode still need a key. Models list `source: "chatgpt"`.
+- On the plan, the Codex policy sends no `max_output_tokens` and none of the keys the plan does not take, refuses a system-role message in words, and names its originator. Its turns are booked with `billing: "plan"` and no cost.
+- Kernel: a model proxy's credential may throw `CredentialUnavailable` to refuse a request in the host's words (`code: "credential_unavailable"`), and `credentialRefused` tells the host the credential a provider answered 401 to.

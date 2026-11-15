@@ -52,10 +52,10 @@ describe("the Tools step's monid row", () => {
     expect(posts[0]!.body.definition.tools).toEqual(["read", "monid:keenable/v1/search"]);
   });
 
-  // The words the server answered on main (a local walk of #2765, saves only): a wildcard's left-out endpoint, and a
-  // named grant monid prices by usage.
-  const LEFT_OUT = "monid:exa/search is left out of monid:exa/*: monid:exa/search cannot be granted: monid prices it partly by usage (TIERED), so what one call costs is known only after it has run, and monid does not bound it (a run's maxCost checks only monid's estimate, which a call priced by usage can pass). A run's cap could not be kept: grant endpoints monid prices per call.";
-  const REFUSED = "monid:ahrefs/keywords-explorer/related-terms cannot be granted: monid prices it per result (PER_RESULT), so what one call costs is known only after it has run, and monid does not bound it (a run's maxCost checks only monid's estimate, which a call priced by usage can pass). A run's cap could not be kept: grant endpoints monid prices per call.";
+  // The server's words (monid.ts): a wildcard's endpoint monid prices by usage, granted with a warning, and a named grant
+  // monid does not list, refused.
+  const USAGE = "monid:exa/search is priced by usage: monid can't cap what it charges, so a call can cost more than its estimate and more than the run's cap allows.";
+  const REFUSED = "monid lists no endpoint keywords-explorer/nothing-here of a provider ahrefs.";
 
   /** An agent's edit page on a fake server: the agent with `tools`, and each PUT answered by `answer` (the saved agent by default). */
   const editPage = async (tools: string[], answer?: (body: { definition: { tools: string[] } }) => Response) => {
@@ -140,26 +140,26 @@ describe("the Tools step's monid row", () => {
   });
 
   it("after a save, shows the answer's warnings on the row and above the form, in the server's words", async () => {
-    const page = await editPage(["read"], (body) => json(200, { agent_id: "searcher", kind: "agentic", revision: "r2", revisions: 2, archived_at: null, definition: body.definition, warnings: [{ field: "definition.tools[1]", reason: "not_an_option", message: LEFT_OUT }] }, { etag: '"r2"' }));
+    const page = await editPage(["read"], (body) => json(200, { agent_id: "searcher", kind: "agentic", revision: "r2", revisions: 2, archived_at: null, definition: body.definition, warnings: [{ field: "definition.tools[1]", reason: "priced_by_usage", message: USAGE }] }, { etag: '"r2"' }));
     await page.grant("monid:exa/*");
     await page.save();
     expect(page.puts.at(-1)!.definition.tools).toEqual(["read", "monid:exa/*"]);
-    expect(page.row().querySelector('[aria-label="monid save warnings"]')?.textContent).toBe(LEFT_OUT);
+    expect(page.row().querySelector('[aria-label="monid save warnings"]')?.textContent).toBe(USAGE);
     const banner = page.host.querySelector('[aria-label="Save warnings"]')!;
-    expect(banner.textContent).toContain(LEFT_OUT);
+    expect(banner.textContent).toContain(USAGE);
     expect(banner.textContent).toContain("What the server said of its monid grants");
-    // An endpoint left out of a grant does not keep the revision from running.
+    // An endpoint priced by usage does not keep the revision from running.
     expect(banner.textContent).not.toContain("A run of this revision is refused");
   });
 
   it("a save the server refuses at a grant shows its words on the row, once", async () => {
     const page = await editPage(["read"], () => json(422, { error: { code: "input_invalid", message: REFUSED, retryable: false, fields: [{ field: "definition.tools[1]", reason: "not_an_option", message: REFUSED }] } }));
-    await page.grant("monid:ahrefs/keywords-explorer/related-terms");
+    await page.grant("monid:ahrefs/keywords-explorer/nothing-here");
     await page.save();
     expect(page.row().querySelector('[aria-label="monid grants refused"]')?.textContent).toBe(REFUSED);
     // On the row, and in the footer's line under Save; not again under the Tools field.
     expect(page.host.textContent!.split(REFUSED).length - 1).toBe(2);
-    expect(page.card("monid:ahrefs/keywords-explorer/related-terms")?.closest("label")?.textContent).toContain("The save was refused here");
+    expect(page.card("monid:ahrefs/keywords-explorer/nothing-here")?.closest("label")?.textContent).toContain("The save was refused here");
   });
 
   it("a create whose answer has warnings shows them on the agent's page it opens, in the server's words", async () => {
@@ -169,7 +169,7 @@ describe("the Tools step's monid row", () => {
       const path = String(url);
       if (init?.method === "POST" && path === "/v2/agents") {
         made = { agent_id: "wide", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: JSON.parse(String(init.body)).definition };
-        return json(201, { ...made, warnings: [{ field: "definition.tools[1]", reason: "not_an_option", message: LEFT_OUT }] });
+        return json(201, { ...made, warnings: [{ field: "definition.tools[1]", reason: "priced_by_usage", message: USAGE }] });
       }
       if (path === "/v2/agents/wide" && made) return json(200, made, { etag: '"r1"' });
       if (path.startsWith("/v2/agents/wide/runs")) return json(200, { runs: [], next_cursor: null });
@@ -182,7 +182,7 @@ describe("the Tools step's monid row", () => {
     act(() => root!.render(createElement(AgentPage, { v2, agentId: "wide", go: () => {} })));
     await settle();
     const said = host.querySelector('[aria-label="Save warnings"]');
-    expect(said?.textContent).toContain(LEFT_OUT);
+    expect(said?.textContent).toContain(USAGE);
     expect(said?.textContent).toContain("definition.tools[1]");
   });
 });

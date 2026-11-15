@@ -16,7 +16,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, type ConversationId, type ConversationRetryPolicy, type ConversationStreamOptions, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
+import { type Conversation, type ConversationId, type ConversationRetryPolicy, type ConversationStreamOptions, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, ToolTask, type Tx } from "@earendil-works/pi-durable";
 import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type Ended, type HostTool, type ModelBooking, type ModelUsage, modelPortFor, type NoteRequest, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf, type SessionWriter } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
@@ -52,7 +52,7 @@ import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutco
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
-import { approvalOf, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { approvalOf, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import { outputMiss, outputRetryWords } from "../answer-json.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
@@ -155,6 +155,9 @@ export interface AdapterRunSpec {
   /** How long a person's stop waits for the turn to settle before the run is failed in words (a tool call that ignores
    *  its abort). Default STOP_SETTLE_MS. */
   readonly stopSettleMs?: number;
+  /** How long a park waits for the calls pi started beside the parked one (siblingsSettled) before it seals. Default
+   *  PARK_SIBLINGS_MS. */
+  readonly parkSiblingsMs?: number;
   /** The run's agent: named to the end-of-run step (LoopDeps.endOfRun), which a spec without it cannot be asked. */
   readonly agentId?: string;
   /** The learned workflow the run starts on, before its agent's first turn (runner/workflow-first.ts workflowFirstOf):
@@ -498,6 +501,8 @@ export function bookingOfAnswer(records: readonly SessionRecord[], given: Readon
   return { turns, usd };
 }
 
+/** How often a park's wait for the calls beside it (siblingsSettled) reads whether they ended. */
+const SIBLINGS_POLL_MS = 50;
 /** A host check's refusal as the cap's rule reads it (AdapterRunSpec.cap.park). */
 const refusalOf = (refusal: Refusal) => ({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
 
@@ -852,6 +857,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   void stopping.then(() => stopAbort.abort(new Error("the run was stopped")));
   let parked: () => void = () => {};
   const parking = new Promise<void>((resolve) => (parked = resolve));
+  /** The claim is parking: it waits for the calls already running beside the parked one (siblingsSettled), and no call
+   *  starts meanwhile, nor is an answer taken (it waits for the next claim, as once the journal is sealed). */
+  let parkPending = false;
+  /** The calls this claim parked the run on (their ask landed with the run parked): what siblingsSettled waits beside. */
+  const parkedCalls = new Set<string>();
   let finished: Promise<LoopEnd> | undefined;
   let gate: Gate | undefined;
   let harness: Harness | undefined;
@@ -2561,10 +2571,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let waitingOn: string | undefined;
         if (alone) data = { state: "ended" };
         else for (;;) {
-          const end = await Promise.race([turn.then((ended) => (ended === "lapsed" ? ("lapsed" as const) : ("answered" as const))), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const), askCut.asked.then(() => "cut" as const)]);
+          let end = await Promise.race([turn.then((ended) => (ended === "lapsed" ? ("lapsed" as const) : ("answered" as const))), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const), askCut.asked.then(() => "cut" as const)]);
           // Parked on a call held at the gate (a CLI's at its tool bridge): the answer that made the call may still be
-          // streaming, and its booking lands before the claim goes (parkClaim).
-          if (end === "parked") return await parkClaim(harness, gate);
+          // streaming, and its booking lands before the claim goes (parkClaim). pi's calls already running beside it end
+          // first (siblingsSettled), so their results are on the journal for the resume. A person's stop or cancel while
+          // they do ends the run in its words, as it would have before the park.
+          if (end === "parked" && spec.record === "loop") return await parkClaim(harness, gate);
+          if (end === "parked") {
+            parkPending = true;
+            await siblingsSettled(harness, spec);
+            if (stopReason?.kind !== "command") return await parkClaim(harness, gate);
+            end = "stop";
+          }
           if (end === "closed" && fault && !stopReason && !deps.signal.aborted) {
             await closeSession();
             continue passes;
@@ -2834,6 +2852,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // A call a person was asked about and has not answered, its setting at allow now: the setting answers the ask
       // (allowedBySetting), and the call runs without asking the person again.
       const bySetting = decision === "allow" && !!spec.gate && (await askStands(call.callId));
+      // While pi's park waits for the calls already running beside it (siblingsSettled), no new one starts: it is held as the
+      // parked call is, its intent never stored, and asked again on the resume. A call a running tool makes is that tool's,
+      // let through.
+      if (decision === "allow" && !bySetting && parkPending && call.nested !== true) return { park: true };
       if (decision === "allow" && !bySetting) return "allow";
       // The card shows the call's input, and beside it what the gate says the call would do that the person approves too
       // (a learned workflow's MCP calls set to ask: askedFor).
@@ -2882,7 +2904,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const entryLands = (kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]) => landEntry(conversation, kind, data, staged);
     if (first === undefined) {
       // Asked and parked; or held as the parked call is, when another call of the round parked the run first.
-      if (await entryLands(KINDS.ask, ask, { run: { state: "parked" } })) parked();
+      if (await entryLands(KINDS.ask, ask, { run: { state: "parked" } })) {
+        parkedCalls.add(call.callId);
+        parked();
+      }
       return "park";
     }
     for (;;) {
@@ -2899,7 +2924,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // no waiting call and was refused): the call is asked again and the run parks on it, so it never waits here
       // holding the claim while it reads running.
       if (delivered || refusals > 0) {
-        if (await entryLands(KINDS.ask, ask, { run: { state: "parked" } })) parked();
+        if (await entryLands(KINDS.ask, ask, { run: { state: "parked" } })) {
+          parkedCalls.add(call.callId);
+          parked();
+        }
         return "park";
       }
       await new Promise<void>((resolve) => (wakeInbox = resolve));
@@ -2997,7 +3025,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (approval === undefined) return false;
     await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
     const [theGate, theHarness] = [gate, harness];
-    if (!theGate || !theHarness || theGate.sealed) return "later";
+    if (!theGate || !theHarness || theGate.sealed || parkPending) return "later";
     try {
       const conversation = await theHarness.root(context);
       const entries = await entriesOf(theGate.journal, conversation.id, context);
@@ -3366,6 +3394,74 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   async function parkAtCap(on: Harness, conversation: Conversation, theGate: Gate, data: BudgetData): Promise<LoopEnd> {
     await pauseAtCap(on, conversation, theGate, data);
     return parkClaim(on, theGate);
+  }
+
+  /** Waits, at most the spec's parkSiblingsMs (PARK_SIBLINGS_MS), until no call pi started beside a parked one is still
+   *  running: a model call of the same answer (its assistant entry) past its stored intent. Each one's result is then on the
+   *  journal before the park seals it, and the resume hands it to the model with the parked call's answer, never as a call
+   *  cut short. Not waited on: a call held before its intent (the parked one, any held with it), the parked call itself
+   *  when it was asked after its intent (a replay-safe rerun), and every call it is nested in (a script or a workflow node
+   *  waiting on it), nor any call of another answer. A stop, a lost claim or a closed Harness ends the wait at once. Past
+   *  the bound the seal cuts what still runs, as before, and the model reads it interrupted. pi's alone: a CLI's park
+   *  (spec.record "loop") lets its claim go at once, and its resume settles a call that ended (resumeUnstartedCalls). */
+  async function siblingsSettled(on: Harness, spec: AdapterRunSpec): Promise<void> {
+    const until = Date.now() + (spec.parkSiblingsMs ?? PARK_SIBLINGS_MS);
+    let over = false;
+    let end: () => void = () => {};
+    const ended = new Promise<void>((resolve) => (end = resolve)).then(() => {
+      over = true;
+    });
+    // Its own listener on the claim's signal, taken off on every way out (settled, past the bound, sealed): a loop leaves
+    // nothing on the signal it was lent. The stop and the Harness's close are promises, which hold nothing on it.
+    const onAbort = () => end();
+    if (deps.signal.aborted) end();
+    else deps.signal.addEventListener("abort", onAbort, { once: true });
+    void stopping.then(() => end());
+    void on.closed.then(() => end(), () => end());
+    try {
+      while (!over && !gate?.sealed && Date.now() < until) {
+        let tasks: Awaited<ReturnType<Harness["inspect"]>>["tasks"];
+        try {
+          ({ tasks } = await on.inspect(context));
+        } catch {
+          return;
+        }
+        if (siblingsRunning(tasks).length === 0) return;
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([ended, new Promise<void>((resolve) => (timer = setTimeout(resolve, Math.max(0, Math.min(SIBLINGS_POLL_MS, until - Date.now())))))]);
+        clearTimeout(timer);
+      }
+    } finally {
+      deps.signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /** siblingsSettled's read of the Harness's live tasks: the model calls past their intent that share an answer with a
+   *  call this claim parked on, less that call and every call it is nested in. */
+  function siblingsRunning(tasks: Awaited<ReturnType<Harness["inspect"]>>["tasks"]): readonly string[] {
+    type Input = { kind?: string; callId?: string; assistant?: string; parent?: string; call?: { id?: string } };
+    const calls = tasks.map((task) => task.record).filter((record) => record.kind === ToolTask.definition.name);
+    const byId = new Map(calls.map((record) => [String(record.id), record]));
+    const inputOf = (record: (typeof calls)[number]) => (record.input ?? {}) as Input;
+    const answers = new Set<string>();
+    const holding = new Set<string>();
+    for (const record of calls) {
+      const input = inputOf(record);
+      if (!parkedCalls.has((input.kind === "nested" ? input.call?.id : input.callId) ?? "")) continue;
+      // The parked call and each call it is nested in, up to the model's call that holds it, whose answer it shares.
+      for (let at: typeof record | undefined = record; at; at = byId.get(String(inputOf(at).parent ?? at.owner ?? ""))) {
+        holding.add(String(at.id));
+        const own = inputOf(at);
+        if (own.kind !== "nested" && own.assistant !== undefined) answers.add(own.assistant);
+      }
+    }
+    return calls
+      .filter((record) => {
+        const input = inputOf(record);
+        const phase = (record.state as { checkpoint?: { phase?: unknown } }).checkpoint?.phase;
+        return input.kind !== "nested" && input.assistant !== undefined && answers.has(input.assistant) && !holding.has(String(record.id)) && phase === "execute";
+      })
+      .map((record) => String(record.id));
   }
 
   /** A park's release of the claim, as the end's: the tool host let go first (a browser's release, booked under the live

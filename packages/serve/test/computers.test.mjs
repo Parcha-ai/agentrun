@@ -124,22 +124,25 @@ const DAYTONA_NO_DISK = "Daytona can't mount the owner's disk this server keeps 
 const MODE2_SANDBOX = (article, label, kind = "sandbox") =>
   `${article} ${label} ${kind} can't start in Mode 2 yet: it needs Archil's image in your ${label} account, and this server can't put it there yet. Set this agent's computer to none (Settings → Computers)`;
 
-test("Mode 2 today: no sandbox is ready. Docker's can't mount the owner's disk, nor can Daytona's (saying why); Modal's, E2B's and Agent37's need Archil's image in the owner's account, keys or not; a desktop, phone or browser is offered", async (t) => {
-  const env = { MODAL_TOKEN_ID: "good-id", MODAL_TOKEN_SECRET: "good-secret", E2B_API_KEY: "fake-test-key", AGENT37_API_KEY: "not-a-secret" };
+test("Mode 2: Docker's sandbox can't mount the owner's disk, nor can Daytona's (saying why); Modal's and E2B's need Archil's image in the owner's account, keys or not; Agent37's sandbox and desktop are ready with their keys (its prepareImage registers the box image); a desktop, phone or browser is offered", async (t) => {
+  const env = { MODAL_TOKEN_ID: "good-id", MODAL_TOKEN_SECRET: "good-secret", E2B_API_KEY: "fake-test-key", AGENT37_API_KEY: "not-a-secret", AGENT37_SSH_KEY: "not-a-secret-either" };
   const { routes } = await setup(t, { mode: "disk", env });
   const view = await routes.view();
   assert.match(providerOf(view, "sandbox", "docker").why, /Docker can't mount the owner's disk/);
   assert.equal(providerOf(view, "sandbox", "daytona").why, DAYTONA_NO_DISK);
-  for (const [id, article, label] of [["modal", "A", "Modal"], ["e2b", "An", "E2B"], ["agent37", "An", "Agent37"]]) {
+  for (const [id, article, label] of [["modal", "A", "Modal"], ["e2b", "An", "E2B"]]) {
     assert.deepEqual([providerOf(view, "sandbox", id).ready, providerOf(view, "sandbox", id).why], [false, MODE2_SANDBOX(article, label)], `${id}: its keys are saved, and still not ready`);
     assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: id }), MODE2_SANDBOX(article, label), `${id}: claimRefusal says the same`);
   }
-  assert.deepEqual([kindOf(view, "sandbox").offered, kindOf(view, "sandbox").why], [false, "no provider of a sandbox computer can reach this server's run folders"]);
+  assert.equal(kindOf(view, "sandbox").offered, true, "Agent37's sandbox mounts the owner's disk");
   assert.equal(providerOf(view, "desktop", "docker").ready, true, "a desktop holds no folder unless its provider mounts it");
-  // E2B's and Agent37's desktops would mount the disk (they have files and exec), so they need the same image.
-  for (const [id, label] of [["e2b", "E2B"], ["agent37", "Agent37"]]) {
-    assert.deepEqual([providerOf(view, "desktop", id).ready, providerOf(view, "desktop", id).why], [false, MODE2_SANDBOX("An", label, "desktop")], `${id}'s desktop: its keys are saved, and still not ready`);
-    assert.equal(await routes.claimRefusal({ kind: "desktop", provider: id }), MODE2_SANDBOX("An", label, "desktop"), `${id}'s desktop: claimRefusal says the same`);
+  // E2B's desktop would mount the disk (it has files and exec), so it needs the same image.
+  assert.deepEqual([providerOf(view, "desktop", "e2b").ready, providerOf(view, "desktop", "e2b").why], [false, MODE2_SANDBOX("An", "E2B", "desktop")], "e2b's desktop: its key is saved, and still not ready");
+  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "e2b" }), MODE2_SANDBOX("An", "E2B", "desktop"), "e2b's desktop: claimRefusal says the same");
+  // Agent37 prepares its image: ready means its keys are saved, and the first claim waits on the registration.
+  for (const kind of ["sandbox", "desktop"]) {
+    assert.deepEqual([providerOf(view, kind, "agent37").ready, providerOf(view, kind, "agent37").why], [true, undefined], `agent37's ${kind}: its keys are saved, so it is ready`);
+    assert.equal(await routes.claimRefusal({ kind, provider: "agent37" }), undefined, `agent37's ${kind}: claimRefusal lets it`);
   }
   assert.equal(providerOf(view, "desktop", "orgo").why, "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers", "Orgo's desktop mounts nothing: only its key");
   assert.equal(kindOf(view, "desktop").offered, true);

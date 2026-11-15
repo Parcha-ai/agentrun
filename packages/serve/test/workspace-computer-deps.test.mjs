@@ -329,6 +329,16 @@ test("a cloud phone under a list, the server's default or the operator's, or wit
   assert.deepEqual(provider.check({ ...spec(entryOf("phone-harness"), "phone", { networks, maxLifetimeMs }), network: { allow: [...DEFAULT_BOX_ALLOW] } }).map((one) => one.field), ["network"], "the list the spec asked before is refused");
 });
 
+test("a vendor that prepares its image (Agent37) names none in the spec, and the owner's Docker image and Docker's recipe are Docker's alone", () => {
+  const owned = computerSpecOf({ AGENTRUN_DOCKER_IMAGE: "owner/box:1" });
+  for (const spec of [owned, computerSpecOf({})]) {
+    for (const kind of ["sandbox", "desktop"]) assert.equal("image" in spec(entryOf("agent37"), kind, {}), false, `agent37 ${kind}: its prepareImage() answers it`);
+  }
+  assert.deepEqual([owned(entryOf("docker"), "sandbox", {}).image, owned(entryOf("docker"), "desktop", {}).image], ["owner/box:1", "owner/box:1"]);
+  assert.equal(computerSpecOf({})(entryOf("docker"), "sandbox", {}).image, DEFAULT_DOCKER_IMAGE);
+  assert.throws(() => computerSpecOf({})(entryOf("docker"), "desktop", {}), /A Docker desktop needs an image with an X server; set one for desktops\./);
+});
+
 test("the spec starts from the image the setting's configuration names, else the kind's default; one named skips a kind with no default", () => {
   const spec = computerSpecOf({});
   assert.equal(spec(entryOf("orgo"), "desktop", {}, "windows").image, "windows");

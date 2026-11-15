@@ -17,7 +17,7 @@ import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { BATCH_CELL_MAX, BATCH_ROWS_MAX } from "./learning-batch.js";
 import { CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
-import { FEEDBACK_ROUNDS } from "./runner/feedback-round.js";
+import { FEEDBACK_ROUNDS, FEEDBACK_STATUSES } from "./runner/feedback-round.js";
 import { EVAL_JOBS_MAX, EVAL_TEXT_MAX, EVALS_KEPT } from "./learning-evals.js";
 import { LOOP_COMPILES_MAX, LOOP_POINTS_MAX } from "./store-reads/loop.js";
 import { GRADE_SOURCES, GRADES_KEPT, LABEL_MAX, PROMOTE_BAR, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN } from "./learn/promote.js";
@@ -39,6 +39,7 @@ import { DEFINITION_FIELDS, EXTERNAL_NAME, MODEL_REF } from "./validate.js";
 import { CATEGORIES, COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS } from "./templates.js";
 import { MCP_SOURCES } from "./mcp-sources.js";
 import { NOT_SET_UP } from "./runnable.js";
+import { PRICED_BY_USAGE } from "./monid.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
 import { BROWSER_VENDOR_IDS, DECISION_PROVIDER_KEYS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS } from "./tool-plane.js";
 import { tableTools } from "./tool-list.js";
@@ -192,6 +193,17 @@ const VALIDATED = {
     ok: { type: "boolean" },
     issues: { type: "array", items: { type: "object", additionalProperties: false, required: ["path", "code", "message"], properties: { path: { type: "string", description: "A JSON Pointer into the workflow; empty for its root." }, code: { type: "string" }, message: { type: "string" } } } },
     warnings: { type: "array", items: { type: "string" } },
+  },
+};
+/** GET /settings/chatgpt's answer (chatgpt-plan.ts PlanView): the sign-in's state, never a token. */
+const CHATGPT_SIGN_IN = {
+  type: "object", additionalProperties: false, required: ["state"],
+  properties: {
+    state: { enum: ["signed_out", "pending", "signed_in", "expired"], description: "`pending`: a sign-in waits for its address (POST /settings/chatgpt/sign-in/finish); `expired`: OpenAI refused to renew it, so nothing runs on the plan until a sign-in again." },
+    email: { type: "string", description: "The ChatGPT account's email, for display." },
+    plan: { type: "string", description: "The account's ChatGPT plan (`plus`, `pro`, ...), for display." },
+    authorize_url: { type: "string", format: "uri", description: "With `pending`: the link that sign-in opens." },
+    models: { type: "array", items: { type: "string" }, description: "With `signed_in`: the plan's models, read from OpenAI at the sign-in, each named `chatgpt/<model-id>` in a revision." },
   },
 };
 /** GET /settings/tool-keys's answer (tool-keys.ts): each key's fields by name and where each is set, never a value. */
@@ -1081,6 +1093,18 @@ const TEMPLATE_APPLIED = closedWith({
   },
 });
 const TRIGGER_ERRORS = "The triggers are rows in the server's store, read as they are now. A store busy with another write answers 409 home_busy, retryable: send it again.";
+/** A run's grade (learn/promote.ts gradeView): what PUT /runs/{run_id}/grade answers (GRADE, with `expected`) and GET
+ *  /runs/{run_id}/learning reads back (`graded`, never `expected`). */
+const GRADE_FIELDS = {
+  run_id: { type: "string" },
+  correct: { type: "boolean", description: "Whether the run's answer was right." },
+  source: { enum: [...GRADE_SOURCES], description: "Who graded it: `feedback`, a person; `eval`, an eval's label." },
+  graded_at: DATE_TIME,
+  path: { enum: [...RUN_PATHS], description: "The path the run took, read from its record when it was graded." },
+  workflow: { ...NULL_STRING, description: "The learned workflow that served it, when one did." },
+  workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it was served first." },
+  feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run turn alone, learning spend): `revise`, a wrong grade of a run its learned workflow answered alone, a revision ask for that workflow with the job, its answer and the grade's words; `look_back`, a run the agent finished graded with a `label`, a look-back on it. null: nothing more (a right grade of a run its workflow answered alone costs $0), or a run that does not learn or that can't be opened again. Kept with the grade once the round opened, so a later read still says it." },
+};
 const RUN_LEARNING = {
   oneOf: [
     closedWith({
@@ -1107,7 +1131,7 @@ const RUN_LEARNING = {
       }, "What the run's job did with the learned skills and workflows it was offered, apart from `skills` and `workflows`, the ones it learned."),
     }, {
       ...LEARNING_NOTES,
-      graded: { ...closed({ correct: { type: "boolean", description: "Whether the grade said its answer was right." }, source: { enum: [...GRADE_SOURCES], description: "Who graded it: `feedback`, a person; `eval`, an eval's label." }, graded_at: DATE_TIME }), description: "The run's grade (PUT /runs/{run_id}/grade), as its agent keeps it: the newest, since a later grade replaces it. Absent when it has none kept." },
+      graded: { ...closedWith({ ...GRADE_FIELDS, feedback_status: { enum: [...FEEDBACK_STATUSES, null], description: "How the round the grade opened (`feedback`) stands, read from its run's journal and its steer's row (no clock compared): `running` until it settles; `ended`, its run took the grade's words and ended after them; `not_run`, its run ended before it took them (its claim refused, say), so the round never ran: grade it again to ask once more. null for a grade that opened none." } }, {}), description: "The run's grade (PUT /runs/{run_id}/grade), as its agent keeps it and the PUT answered it, never its `expected`: the newest, since a later grade replaces it, and how the round it opened stands. Absent when it has none kept." },
     }),
     { type: "null" },
   ],
@@ -1197,16 +1221,7 @@ const LEARNING_EVAL = closed({
   recorded_at: { type: "string", format: "date-time" },
 }, "One recorded held-out test of the agent: its counts as posted, and the accuracy and 95% Wilson interval the server computed from them.");
 /** PUT /runs/{run_id}/grade and GET /agents/{agent_id}/learning/promotions (learn/promote.ts, runner/promotion.ts). */
-const GRADE = closedWith({
-  run_id: { type: "string" },
-  correct: { type: "boolean", description: "Whether the run's answer was right." },
-  source: { enum: [...GRADE_SOURCES], description: "Who graded it: `feedback`, a person; `eval`, an eval's label." },
-  graded_at: DATE_TIME,
-  path: { enum: [...RUN_PATHS], description: "The path the run took, read from its record when it was graded." },
-  workflow: { ...NULL_STRING, description: "The learned workflow that served it, when one did." },
-  workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it was served first." },
-  feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run turn alone, learning spend): `revise`, a wrong grade of a run its learned workflow answered alone, a revision ask for that workflow with the job, its answer and the grade's words; `look_back`, a run the agent finished graded with a `label`, a look-back on it. null: nothing more (a right grade of a run its workflow answered alone costs $0), or a run that does not learn or that can't be opened again." },
-}, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
+const GRADE = closedWith(GRADE_FIELDS, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
 const REPLAY_SCORE = {
   n: { ...COUNT, description: "The graded inputs it was decided on." },
   agree: { ...COUNT, description: "How many of them the workflow answered alone with the agent's recorded answer." },
@@ -1980,6 +1995,47 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
   },
+  "/settings/chatgpt": {
+    get: {
+      operationId: "getChatGPTSignIn", tags: ["local"], summary: "This server's ChatGPT sign-in: its state, who and which plan, never a token",
+      description: "One sign-in per server, whose plan runs codex and pi with no key (`chatgpt/<model-id>`, capabilities' `models.source` `chatgpt` when no key is set). `expired`: OpenAI refused to renew it; sign in again. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(CHATGPT_SIGN_IN, "The sign-in's state."), ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "chatgpt/1",
+    },
+    delete: {
+      operationId: "signOutChatGPT", tags: ["local"], summary: "Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here",
+      description: "Cancels a sign-in that waits, revokes the session at OpenAI's documented revocation endpoint (one try, 5 s) and removes the sealed sign-in whatever that answered: when OpenAI did not confirm it, disconnect AgentRun in ChatGPT's settings too. A run on a plan model after it fails saying the server is not signed in. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "204": { description: "Signed out." }, ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "chatgpt/1",
+    },
+  },
+  "/settings/chatgpt/sign-in": {
+    post: {
+      operationId: "startChatGPTSignIn", tags: ["local"], summary: "Start signing in with ChatGPT: the link to open",
+      description: "Starts OpenAI's Sign in with ChatGPT for this server and answers the link a person opens. One waits at a time, for 10 minutes: a new start cancels the one waiting, whose address is then stale. On the machine the server runs on, the browser's return finishes it; elsewhere, paste the address the tab ended on (`127.0.0.1:1455/auth/callback?...`, the address OpenAI's sign-in returns to) to POST /settings/chatgpt/sign-in/finish. 400 in words when the sign-in can't start (another holds this machine's port 1455). A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: {
+        "200": json({ type: "object", additionalProperties: false, required: ["authorize_url", "expires_at"], properties: { authorize_url: { type: "string", format: "uri", description: "OpenAI's page to sign in on." }, expires_at: DATE_TIME } }, "The sign-in, waiting."),
+        ...errors(400, 401, 403, 429, 500),
+      },
+      "x-agentrun-serve": "chatgpt/1",
+    },
+  },
+  "/settings/chatgpt/sign-in/finish": {
+    post: {
+      operationId: "finishChatGPTSignIn", tags: ["local"], summary: "Finish signing in with ChatGPT with the address the sign-in tab ended on",
+      description: "Takes the whole address the browser tab ended on, pasted, and finishes the sign-in that waits: its plan's models are read from OpenAI, and the sign-in is sealed here. 400 in words for an address that is not that sign-in's end (another address, a cancelled sign-in's, one with no code: the sign-in keeps waiting), with no sign-in waiting, or when OpenAI refuses it (start again). A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["redirect_url"], properties: { redirect_url: { type: "string", minLength: 1, maxLength: 8192, "x-agentrun-secret": true, description: "The address the sign-in tab ended on, whole." } } } } } },
+      responses: { "200": json(CHATGPT_SIGN_IN, "Signed in."), ...errors(400, 401, 403, 415, 422, 429, 500) },
+      "x-agentrun-serve": "chatgpt/1",
+    },
+  },
   "/auth/session": {
     get: {
       operationId: "getAuthSession", tags: ["local"], summary: "Whether this browser has accounts, is signed in, and may save a secret",
@@ -2488,7 +2544,7 @@ const PENDING: Json = {
         call_id: { type: "string", description: "The call's id, as its tool_result row's tool_use_id." },
         args_preview: { type: "string", maxLength: ARGS_PREVIEW_BYTES, description: `The call's arguments as JSON, cut at ${ARGS_PREVIEW_BYTES} bytes.` },
         requested_at: { type: "string", format: "date-time" },
-        price: { oneOf: [{ type: "number", minimum: 0 }, { const: "not metered" }], description: "What the call costs, in USD, where its tool declares a price; \"not metered\" for an unpriced MCP call. Absent when the tool names none." },
+        price: { oneOf: [{ type: "number", minimum: 0 }, { const: "not metered" }, { const: "priced by usage" }], description: "What the call costs, in USD, where its tool declares a price; \"not metered\" for an unpriced MCP call; \"priced by usage\" for a monid endpoint priced by usage: monid estimates its cost only when the call runs, after the allow (the call is held at that estimate, and a charge above it stops the run), so nothing is sent to monid while it waits. Absent when the tool names none." },
         destructive: { const: true, description: `Present on an MCP tool's call that is destructive by the annotations the run pinned (destructiveHint true, readOnlyHint not true), and on a call whose allow lets such a tool run (a learned workflow's, its card naming the tool in \`mcp_calls\`): its allow needs \`confirm_destructive: true\`. Absent on every other call.`, "x-agentrun-serve": "allowreads/1" },
       },
       description: "A tool call set to ask waits for the owner's approval (status input_required, state waiting): POST /runs/{run_id}/approvals/{id} answers it.",
@@ -3338,7 +3394,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const sourcesAdded = MODEL_SOURCES.filter((value) => Array.isArray(modelsSource.enum) && !modelsSource.enum.includes(value));
   if (sourcesAdded.length) {
     modelsSource.enum = [...modelsSource.enum!, ...sourcesAdded];
-    modelsSource.description = "Where this server's models come from. `gateway`: every model through the OpenAI-compatible gateway at `AGENT_MODEL_BASE_URL`, its ids under `route_prefix`. `providers`: each model from its own provider, with that provider's key. `faux`: a scripted model, with no key and no network. `managed`, `chatgpt` and `env` are the hosted API's.";
+    modelsSource.description = "Where this server's models come from. `gateway`: every model through the OpenAI-compatible gateway at `AGENT_MODEL_BASE_URL`, its ids under `route_prefix`. `providers`: each model from its own provider, with that provider's key. `faux`: a scripted model, with no key and no network. `chatgpt`: no key, and a person's ChatGPT plan signed in here (GET /settings/chatgpt), which runs codex and pi on its models (`chatgpt/<model-id>`) and no other harness (each harness's `reason` says it needs a key). `managed` and `env` are the hosted API's.";
     modelsSource["x-agentrun-serve"] = "models/2";
     fields.push(...sourcesAdded.map((value) => `Capabilities.models.source.${value}`));
   }
@@ -3402,6 +3458,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     if (!Array.isArray(issueReason.enum) || issueReason.enum.includes(reason)) continue;
     issueReason.enum = [...issueReason.enum, reason];
     fields.push(`InputIssue.reason.${reason}`);
+  }
+  // A save's warning for each monid endpoint priced by usage it pins (monid.ts usageWords).
+  if (Array.isArray(issueReason.enum) && !issueReason.enum.includes(PRICED_BY_USAGE)) {
+    issueReason.enum = [...issueReason.enum, PRICED_BY_USAGE];
+    fields.push(`InputIssue.reason.${PRICED_BY_USAGE}`);
   }
   // A paid tool's charges (monid's) are a meter of their own on /usage, beside the model's tokens.
   const meter = schemas.Meter as Json & { enum?: string[] };
