@@ -420,6 +420,33 @@ test("a grader's prompt stays under its cap: the longest results lose their midd
   assert.ok(graderInput(grader, "task", faked).includes(`1. mcp__crm__lookup: ${JSON.stringify(mcp(1).arguments)}`));
 });
 
+test("a grader's prompt cut for room keeps every url a web call answered: snippets and page text give way first, url lists last, and the list says so", () => {
+  const grader = { file: "g.md", type: "llm", rubric: "Pass only if every item it reports has a link that appears in its search or fetch results." };
+  const hits = (q) => Array.from({ length: 10 }, (_, i) => ({ url: `https://vendor.example/${q}/story-${i + 1}`, title: `Story ${i + 1}`, snippet: `Story ${i + 1}: ${"the team closed its books faster ".repeat(94)}`, published: "2026-11-01" }));
+  const search = (q) => ({ tool: "web_search", name: "web_search", arguments: { query: q }, status: "success", result: `${JSON.stringify({ provider: "parallel", query: q, results: hits(q) })}\nCite the URL of each result you rely on.` });
+  const page = { ok: true, url: "https://vendor.example/blog/switched", status: 200, title: "Customers who switched", text: "Each team moved its cards over in a week. ".repeat(180), links: [] };
+  const fetch = { tool: "web_fetch", name: "web_fetch", arguments: { url: page.url }, status: "success", result: JSON.stringify(page) };
+  const bash = { tool: "bash", name: "bash", arguments: { command: "cat notes.md" }, status: "success", result: `HEAD-${"a".repeat(6000)}-TAIL` };
+  const run = { answer: "Story 9: https://vendor.example/a/story-9", calls: [search("a"), search("b"), fetch, bash], mcpCalls: [], files: [] };
+  const prompt = graderInput(grader, "task", run, 20_000);
+  assert.ok(prompt.length <= 20_000, String(prompt.length));
+  const calls = prompt.slice(prompt.indexOf("<tool-calls untrusted>"));
+  assert.match(calls, /^<tool-calls untrusted>\n\(Cut to keep this prompt under its cap: each long result keeps its head and tail, its middle cut where marked; a web_search keeps every result's url, title and date, and a web_fetch its url and title, their snippets and page text cut\.\)\n/);
+  for (const q of ["a", "b"]) for (let i = 1; i <= 10; i++) assert.ok(calls.includes(`"url":"https://vendor.example/${q}/story-${i}","title":"Story ${i}"`), `${q} ${i}`);
+  assert.ok(calls.includes(`"url":"${page.url}","status":200,"title":"${page.title}"`));
+  assert.match(calls, /4\. bash \{"command":"cat notes\.md"\} -> success: HEAD-a+ \[\.\.\. \d+ characters cut \.\.\.\] a+-TAIL/);
+  // Room for the url lists alone: every other result is left out, every url still shown, and the list says so.
+  const tight = graderInput(grader, "task", run, 3_500);
+  assert.ok(tight.length <= 3_500, String(tight.length));
+  for (const q of ["a", "b"]) for (let i = 1; i <= 10; i++) assert.ok(tight.includes(`https://vendor.example/${q}/story-${i}"`), `${q} ${i}`);
+  assert.ok(tight.includes(`"url":"${page.url}","status":200,"title":"${page.title}"`));
+  // So many searches that their url lists alone pass the room: those lose their middle, said on the list's first line.
+  const crowded = graderInput(grader, "task", { ...run, calls: Array.from({ length: 12 }, (_, i) => search(`q${i}`)) }, 6_000);
+  assert.ok(crowded.length <= 6_000, String(crowded.length));
+  assert.match(crowded, /<tool-calls untrusted>\n\(Cut to keep this prompt under its cap: the web calls' url lists alone pass it, so every other result is left out, and each url list keeps its head and tail, its middle cut where marked\.\)\n1\. web_search/);
+  assert.match(crowded, /\n12\. web_search \{"query":"q11"\} -> success: \{"provider":"parallel","query":"q11","results":\[\{"url":"https:\/\/vendor\.example\/q11\/story-1",[^\n]* \[\.\.\. \d+ characters cut \.\.\.\] [^\n]*\nCite the URL of each result you rely on\.\n<\/tool-calls>/);
+});
+
 test("the eval's exit code is 1 when any case failed, however many passed beside it, and 0 only when every case passed", () => {
   const of = (...passes) => exitCodeOf({ cases: passes.map((pass, i) => ({ name: `c${i}`, pass })) });
   assert.deepEqual([of(true), of(true, true), of(false), of(true, false), of(false, true, true)], [0, 0, 1, 1, 1]);
