@@ -88,20 +88,18 @@ function quotesAt(value: unknown, field: string | undefined): string[] {
 }
 
 /** quote_missing's reading of `value`: how many quotes it checked (each at least QUOTE_MIN_CHARS once normalised) and how
- *  many of them are in no page. A quote is found when its normalised text is in the pages' (joined, then normalised), or
- *  when its letters and digits are in theirs; the pages are only what `value` holds, the run's own state. Counts alone:
- *  no quote or page text leaves here. */
+ *  many of them are in no page. A quote is found when its normalised text is in one page string's (each string under the
+ *  pages read alone, so no quote runs from one into the next), or when its letters and digits are in that string's; the
+ *  pages are only what `value` holds, the run's own state. Counts alone: no quote or page text leaves here. */
 export function quoteCheck(predicate: QuoteMissingPredicate, value: unknown): { checked: number; missed: number } {
   const quotes = quotesAt(getPath(value, predicate.path), predicate.field).map(quoteText).filter((quote) => quote.length >= QUOTE_MIN_CHARS);
   if (!quotes.length) return { checked: 0, missed: 0 };
   const strings: string[] = [];
   for (const page of predicate.pages) pageStrings(getPath(value, page), strings);
-  const text = quoteText(strings.join("\n"));
-  const tokens = quoteTokens(text);
+  const texts = strings.map((string) => { const text = quoteText(string); return { text, tokens: quoteTokens(text) }; });
   const missed = quotes.filter((quote) => {
-    if (text.includes(quote)) return false;
     const loose = quoteTokens(quote);
-    return !(loose && tokens.includes(loose));
+    return !texts.some(({ text, tokens }) => text.includes(quote) || (loose !== "" && tokens.includes(loose)));
   }).length;
   return { checked: quotes.length, missed };
 }

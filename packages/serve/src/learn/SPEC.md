@@ -202,10 +202,15 @@ Over a cap is refused, never cut.
   it, percent or form encoded, in base64 or in hex. A skill's or a draft's folder name is read as its file's name is.
 - The quote check is code. A draft whose output schema has a `quote` or `quotes` property (its `#/definitions` refs,
   items and `anyOf`/`oneOf`/`allOf` read) and which fetches pages (a call step, under any chain, branch or body) must
-  have an escalate whose `when` is the DSL's `quote_missing` over the answer (its `path` at or under `output.path`),
-  and each of its `pages` must be a key a fetching step writes (a call's `as`, or a map's or composed workflow's with a
-  call under it): a model's summary of a page is no page. Without one the draft is refused, the detail naming the
-  predicate to write. A judge or an `ask` asked whether the quotes are verbatim is never the check: on H5, Jev's
+  check each place in its answer holding quotes with an escalate whose `when` is the DSL's `quote_missing` reading
+  them: its `path` and `field` the list and the field the schema puts them at (any `path` under `output.path` when no
+  one pair names them, as for quotes under two lists). The escalate is a step of the top-level chain after the last
+  step writing the answer's key, the one path every run takes: a check in one route branch, or before the answer is
+  written, misses the answer of another run. Each of its `pages` must be a key holding a page as fetched: a call's
+  `as`, a map's whose item result (its `resultPath`, else its body's `as`) is a call's, a composed workflow's whose
+  answer is a call's result. A model's summary of a page is no page. A composed workflow node writing the answer whose
+  own workflow passes this rule has checked it in its own state. Otherwise the draft is refused, the detail naming the
+  predicate to write. The predicate reads each page string alone, so no quote runs from one page into the next. A judge or an `ask` asked whether the quotes are verbatim is never the check: on H5, Jev's
   question flagged 149 of 170 answers while 416 of 429 quotes were in the fetched pages, and it could not tell the 8
   answers (4.7%) quoting text no page held from the rest. The predicate compares lowercased text with curly quotes
   straight, dashes as `-` and whitespace runs as one space, then letters and digits alone; quotes under 8 characters

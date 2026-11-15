@@ -583,7 +583,7 @@ const citedDraft = ({ check = { pages: ["page"] }, extra = [], answer = {} } = {
     ...(check ? [{ node: "escalate", label: "quotes", when: { predicate: "quote_missing", path: "answer.evidence", field: "quote", ...check }, kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" }] : []),
   ] },
 });
-const NO_QUOTE_CHECK = 'the answer carries quotes (Answer.evidence[].quote) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]} (pages: the state keys its call steps write), never a judge';
+const NO_QUOTE_CHECK = 'the answer carries quotes (Answer.evidence[].quote) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]} as a step of its top-level chain after the step that writes the answer (pages: the state keys its call steps write), never a judge';
 
 test("the quote check is code: a draft whose answer carries quotes and which fetches pages is refused without a quote_missing escalate on its answer, a judge's quote question in its place included; with one it passes", () => {
   const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl }).problems;
@@ -609,13 +609,57 @@ test("quoteCheckProblems: quotes anywhere in the answer's schema (by $ref, items
   assert.deepEqual(quoteCheckProblems(noFetch), [], "nothing fetched: no page to check against");
   // A list of quote strings, under anyOf: path names the list, no field.
   const listed = citedDraft({ check: null, answer: { properties: { refunds: { type: "boolean" }, cited: { anyOf: [{ type: "object", properties: { quotes: { type: "array", items: { type: "string" } } } }, { type: "null" }] } } } });
-  assert.deepEqual(quoteCheckProblems(listed), ['the answer carries quotes (Answer.cited.quotes[]) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": "answer.cited.quotes", "pages": ["page"]} (pages: the state keys its call steps write), never a judge']);
+  assert.deepEqual(quoteCheckProblems(listed), ['the answer carries quotes (Answer.cited.quotes[]) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": "answer.cited.quotes", "pages": ["page"]} as a step of its top-level chain after the step that writes the answer (pages: the state keys its call steps write), never a judge']);
   // Pages a map's body fetched are the map's `as`.
   const mapped = citedDraft({ check: { pages: ["page", "more"] } });
   mapped.root.steps.splice(1, 0, { node: "map", label: "each", itemsPath: "links", as: "more", body: { node: "call", label: "get", via: "tool", tool: "web_fetch", args: { url: "{item}" }, out: "Page", as: "got", deadline_s: 30 } });
   assert.deepEqual(quoteCheckProblems(mapped), []);
   assert.deepEqual(quoteCheckProblems(citedDraft({ check: null })), [NO_QUOTE_CHECK]);
   assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /An answer that quotes pages a call step fetched is checked in code: an escalate on `\{"predicate": "quote_missing"/);
+});
+
+test("quoteCheckProblems: a check reads the answer's quotes (path and field), after the answer is written, on the top-level chain every run passes, against pages as fetched; a composed workflow that checks its own answer passes", () => {
+  // It reads the quotes the schema declares: the records' list and the field holding each quote.
+  assert.deepEqual(quoteCheckProblems(citedDraft({ check: { field: undefined, pages: ["page"] } })), [NO_QUOTE_CHECK], "the records, no field: no quote read");
+  assert.deepEqual(quoteCheckProblems(citedDraft({ check: { path: "answer", pages: ["page"] } })), [NO_QUOTE_CHECK], "the answer itself is no list of records");
+  const twice = citedDraft({ answer: { properties: { refunds: { type: "boolean" }, evidence: { type: "array", items: { $ref: "#/definitions/Evidence" } }, quotes: { type: "array", items: { type: "string" } } } } });
+  assert.deepEqual(quoteCheckProblems(twice), ['the answer carries quotes (Answer.quotes[]) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": "answer.quotes", "pages": ["page"]} as a step of its top-level chain after the step that writes the answer (pages: the state keys its call steps write), never a judge'], "each place holding quotes needs its own check");
+  // A map's or a composed workflow's result is a page only when it is what a call fetched, not a model's summary of it.
+  const summary = (selected) => [
+    { node: "call", label: "get", via: "tool", tool: "web_fetch", args: { url: "{item}" }, out: "Page", as: "got", deadline_s: 30 },
+    { node: "extract", label: "gist", instructions: "Sum up {got}.", out: "Facts", as: "gist", tier: "fast" },
+  ].slice(0, selected === "got" ? 1 : 2);
+  const viaMap = (selected) => {
+    const doc = citedDraft({ check: { pages: ["page", "more"] } });
+    doc.root.steps.splice(1, 0, { node: "map", label: "each", itemsPath: "links", resultPath: selected, as: "more", body: { node: "chain", steps: summary(selected) } });
+    return doc;
+  };
+  const NOT_A_PAGE = (key) => `the quote_missing escalate "quotes" reads "${key}" as a page, which no call step fetched: its pages are the state keys its call steps write (page)`;
+  assert.deepEqual(quoteCheckProblems(viaMap("gist")), [NOT_A_PAGE("more")], "a map returning each page's summary");
+  assert.deepEqual(quoteCheckProblems(viaMap("got")), [], "a map returning each page");
+  const viaChild = (selected) => {
+    const doc = citedDraft({ check: { pages: ["page", "about"] } });
+    doc.root.steps.splice(1, 0, { node: "workflow", label: "about", as: "about", workflow: { v: 2, name: "about", schemas: citedDraft().schemas, input: { schemaId: "Store" }, output: { schemaId: "Facts", path: selected }, root: { node: "chain", steps: summary(selected) } } });
+    return doc;
+  };
+  assert.deepEqual(quoteCheckProblems(viaChild("gist")), [NOT_A_PAGE("about")], "a composed workflow answering with a summary");
+  assert.deepEqual(quoteCheckProblems(viaChild("got")), [], "a composed workflow answering with the page");
+  // Every run passes its check: not in one route branch, not before the answer is written, not before it is rewritten.
+  const [fetch, facts, answer, check] = citedDraft().root.steps;
+  const routed = citedDraft({ check: null });
+  routed.root.steps = [fetch, facts, { node: "route", label: "kind", branches: { quoted: { body: { node: "chain", steps: [answer, check] } }, plain: { body: answer } } }];
+  assert.deepEqual(quoteCheckProblems(routed), [NO_QUOTE_CHECK], "checked on one branch only");
+  routed.root.steps.push(check);
+  assert.deepEqual(quoteCheckProblems(routed), [], "checked after the route, on every branch's answer");
+  const early = citedDraft({ check: null });
+  early.root.steps = [fetch, check, facts, answer];
+  assert.deepEqual(quoteCheckProblems(early), [NO_QUOTE_CHECK], "checked before the answer is written");
+  early.root.steps = [fetch, answer, check, { ...answer, label: "again" }];
+  assert.deepEqual(quoteCheckProblems(early), [NO_QUOTE_CHECK], "the answer rewritten after its check");
+  // A composed workflow writing the answer checks it in its own state.
+  const parent = (child) => ({ ...citedDraft({ check: null }), root: { node: "chain", steps: [{ node: "workflow", label: "cite", as: "answer", workflow: child }] } });
+  assert.deepEqual(quoteCheckProblems(parent(citedDraft())), [], "the child checks its quotes against its pages");
+  assert.deepEqual(quoteCheckProblems(parent(citedDraft({ check: null }))), [`the composed workflow step "cite" writes the answer: ${NO_QUOTE_CHECK}`]);
 });
 
 // The agent's output schema: shown to the compile turn next to the language, and the dry run's answer held to it with

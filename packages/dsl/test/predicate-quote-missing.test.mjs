@@ -48,6 +48,15 @@ test('every string under each page path is page text; a quote list without a fie
   assert.equal(predicateMatches({ predicate: 'quote_missing', path: 'answer.quotes', pages: ['nowhere'] }, state), true, 'no page fetched: every quote is missing');
 });
 
+test('each page string is read alone: a quote running from the end of one into the start of the next is in no page', () => {
+  const state = (quotes) => ({ answer: { quotes }, home: { text: 'Hand-made wallets and belts. Our workshop' }, about: { text: 'opened in Porto in 2004, and moved to Lisbon.' } });
+  const missing = (quotes, pages = ['home', 'about']) => predicateMatches({ predicate: 'quote_missing', path: 'answer.quotes', pages }, state(quotes));
+  assert.equal(missing(['Our workshop opened in Porto']), true, 'across two pages');
+  assert.equal(missing(['our workshop, opened in porto']), true, 'the loose pass reads each page alone too');
+  assert.equal(missing(['Hand-made wallets', 'opened in Porto in 2004']), false, 'each in one page');
+  assert.equal(predicateMatches({ predicate: 'quote_missing', path: 'answer.quotes', pages: ['home'] }, { answer: { quotes: ['belts our workshop'] }, home: ['Hand-made wallets and belts', 'Our workshop'] }), true, 'two strings of one page');
+});
+
 test('not quote_missing holds when every quote is found', () => {
   assert.equal(predicateMatches({ predicate: 'not', of: check() }, { answer: { evidence: [{ quote: 'wallets and belts' }] }, page: { text: PAGE } }), true);
 });

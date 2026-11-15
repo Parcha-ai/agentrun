@@ -297,15 +297,14 @@ def quotesAt : Option Value → Option Path → List String
     | _ => []
   | _, _ => []
 
-/-- `quoteCheck(...).missed > 0`: a quote of 8 or more characters, normalised, is neither in the pages' joined text
-nor, read as letters and digits, in theirs. -/
+/-- `quoteCheck(...).missed > 0`: a quote of 8 or more characters, normalised, is in no single page string,
+neither as is nor, read as letters and digits, in its letters and digits: no quote runs from one string into the next. -/
 def quotesMissing (v : Value) (path : Path) (field : Option Path) (pages : List Path) : Bool :=
   let quotes := ((quotesAt (getPathP v path) field).map quoteNorm).filter fun q => decide (8 ≤ q.length)
-  let text := quoteNorm (String.intercalate "\n" (pages.flatMap fun p => match getPathP v p with
+  let texts := (pages.flatMap fun p => match getPathP v p with
     | some x => pageStrings x
-    | none => []))
-  let loose := quoteLoose text
-  quotes.any fun q => !(infixOf q text || (!(quoteLoose q).isEmpty && infixOf (quoteLoose q) loose))
+    | none => []).map quoteNorm
+  quotes.any fun q => !(texts.any fun t => infixOf q t || (!(quoteLoose q).isEmpty && infixOf (quoteLoose q) (quoteLoose t)))
 
 /-- `predicateMatches` for the mechanical predicates. -/
 def mechHolds (v : Value) : Pred → Bool
