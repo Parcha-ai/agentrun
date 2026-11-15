@@ -189,14 +189,29 @@ const recordsIn = (entries: readonly EntryLike[], conversation: number): Session
  *  effort the run ran at and, on a harness other than pi, the model its revision named. */
 export type RunMetricsStored = RunMetrics & { effort?: string; model?: string };
 
+/** `counted` with each tool `catalog` names (an MCP tool's hashed wire name: store-reads/journal.ts hashedMcpOf) counted
+ *  under its catalog name, `mcp:<server>/<tool>`, as the run's timeline names its calls; the analytics' top tools read
+ *  the name a run's metrics key a tool by. Every other tool keeps the name it was called by. */
+function catalogKeyed(counted: RunMetrics, catalog: ReadonlyMap<string, string> | undefined): RunMetrics {
+  if (!catalog?.size) return counted;
+  const tools: RunMetrics["tools"] = {};
+  for (const [name, each] of Object.entries(counted.tools)) {
+    const key = catalog.get(name) ?? name;
+    const had = tools[key];
+    tools[key] = had ? { calls: had.calls + each.calls, errors: had.errors + each.errors } : each;
+  }
+  return { ...counted, tools };
+}
+
 /** The run's metrics and cost from its journal `entries`. `decisions`: a workflow run's receipts (none for pi).
- *  `effort`/`model`: the enrichment the old storedMetrics added. `costUsd` is the usage row's cost: null when a
- *  response's cost is unknown, 0 before any request (costOf). */
+ *  `effort`/`model`: the enrichment the old storedMetrics added. `catalog`: the run's MCP tools called by a hashed wire
+ *  name, each counted under its catalog name (catalogKeyed). `costUsd` is the usage row's cost: null when a response's
+ *  cost is unknown, 0 before any request (costOf). */
 export function runMetrics(
   entries: readonly EntryLike[],
-  options: { readonly decisions?: readonly DecisionLike[]; readonly effort?: string; readonly model?: string } = {},
+  options: { readonly decisions?: readonly DecisionLike[]; readonly effort?: string; readonly model?: string; readonly catalog?: ReadonlyMap<string, string> } = {},
 ): { metrics: RunMetricsStored; costUsd: number | null } {
-  const counted = runMetricsWithDecisions(entries, options.decisions ?? []);
+  const counted = catalogKeyed(runMetricsWithDecisions(entries, options.decisions ?? []), options.catalog);
   // The run's cost from its usage row, as serve/src/runs.ts costOf reads it: the usage row's usd (null unknown, 0 before
   // any request). The usage row is the one the settled timeline appends from the run's request-cost marks.
   const usage = timelineOf(entries, { settled: true }).findLast((row) => row.kind === "usage");
@@ -228,7 +243,7 @@ function modelsOf(byModel: Readonly<Record<string, number>>, run: string): Recor
   return out;
 }
 
-export function cliRunMetrics(rootEntries: readonly EntryLike[], booked: BookedSpend, options: { readonly effort?: string; readonly model: string }): RunMetricsStored {
+export function cliRunMetrics(rootEntries: readonly EntryLike[], booked: BookedSpend, options: { readonly effort?: string; readonly model: string; readonly catalog?: ReadonlyMap<string, string> }): RunMetricsStored {
   const { metrics: counted } = runMetrics(rootEntries, options);
   const { tokens } = booked;
   return { ...counted, input: tokens.input, output: tokens.output, cacheRead: tokens.cacheRead, cacheWrite: tokens.cacheWrite, requests: booked.requests, unmetered: booked.unmetered, models: modelsOf(booked.models, options.model) };

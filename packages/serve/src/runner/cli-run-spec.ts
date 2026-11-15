@@ -64,6 +64,7 @@ import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { bookedSpend, cliModelWorked, cliRunMetrics, runEndCost } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
+import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid } from "./promotion.js";
 import { laidFor, pathMetrics, workflowFirstOf } from "./workflow-first.js";
 import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
@@ -674,7 +675,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // are the run's cost (runEndCost: unknown when any part is), as the pi spec's.
       const all = (await journalEntries(deps.journal(claim), context)) as never;
       const booked = bookedSpend(all, "model");
-      const metrics = cliRunMetrics(entries as never, booked, { ...(thinking ? { effort: thinking } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
+      // Its tools from its record read as pi's entries (piShaped: the CLI's calls and results are its own kinds, which no
+      // count reads as they are), an MCP tool called by a hashed wire name under its catalog name, as its timeline reads.
+      const metrics = cliRunMetrics(piShaped(entries as never), booked, { ...(thinking ? { effort: thinking } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}`, catalog: await hashedMcpOf(deps.store, claim.runId) });
       // A run whose model answered or called a tool with no request booked (its requests went past its model proxy) spent
       // what no booking read: unknown, never the $0 an empty booking sums to.
       const model = booked.requests === 0 && cliModelWorked(entries as never) ? null : booked.usd;

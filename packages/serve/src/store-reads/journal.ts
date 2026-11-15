@@ -229,10 +229,7 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   const catalog = await runCatalog(store, runId, first);
   // An MCP tool whose `mcp__<server>__<tool>` is too long is called by its hashed wire name, which reads as no tool's own:
   // the run's rows are rendered again with those names' catalog names, so each is labelled by its own.
-  const hashed = new Map([...(catalog ?? [])].filter(([wire, name]) => {
-    const mcp = mcpNameOf(name);
-    return mcp !== undefined && wire !== `mcp__${mcp.server}__${mcp.tool}`;
-  }));
+  const hashed = hashedMcp(catalog?.values() ?? []);
   const rendered = hashed.size ? render(hashed) : first;
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
   return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, catalogNamed(rows, catalog)), entries, options.redact), entries, options.redact));
@@ -243,10 +240,26 @@ export async function runTimeline(store: Store, runId: string, context: Context,
 async function runCatalog(store: Store, runId: string, rows: readonly TimelineEvent[]): Promise<ReadonlyMap<string, string> | undefined> {
   if (!rows.some((row) => row.tool_name !== null && /^(?:mcp|monid)_/.test(row.tool_name))) return undefined;
   const run = await store.runs.get(runId);
-  const pinned = Object.entries((await store.mcp.pin(runId))?.body ?? {}).flatMap(([server, one]) => ((one as { tools?: { name: string }[] }).tools ?? []).map((tool) => mcpToolName(server, tool.name)));
+  const pinned = await pinnedMcp(store, runId);
   const monid = Object.keys((run && (await store.agents.revision(run.revisionId)))?.monidPin ?? {});
   return new Map([...pinned, ...monid].map((name) => [wireName(name), name]));
 }
+
+/** The catalog names (`mcp:<server>/<tool>`) of the MCP tools the run pinned, from its pin. */
+const pinnedMcp = async (store: Store, runId: string): Promise<string[]> =>
+  Object.entries((await store.mcp.pin(runId))?.body ?? {}).flatMap(([server, one]) => ((one as { tools?: { name: string }[] }).tools ?? []).map((tool) => mcpToolName(server, tool.name)));
+
+/** Of `names` (catalog names), each MCP tool whose `mcp__<server>__<tool>` is too long, by the hashed wire name its harness
+ *  calls it (catalog.ts wireName): a name that reads as no tool of its own, so a reader names its calls by the catalog name. */
+const hashedMcp = (names: Iterable<string>): Map<string, string> =>
+  new Map([...names].flatMap((name): [string, string][] => {
+    const mcp = mcpNameOf(name);
+    return mcp !== undefined && wireName(name) !== `mcp__${mcp.server}__${mcp.tool}` ? [[wireName(name), name]] : [];
+  }));
+
+/** The run's MCP tools called by a hashed wire name, by that name (hashedMcp over its pin): what its end's metrics count
+ *  each one's calls under its catalog name by (runner/metrics.ts runMetrics's `catalog`), as its timeline names them. */
+export const hashedMcpOf = async (store: Store, runId: string): Promise<ReadonlyMap<string, string>> => hashedMcp(await pinnedMcp(store, runId));
 
 /** `rows` with each tool row of an MCP tool or a monid endpoint named as its settings and its notices name it, by catalog
  *  name (`mcp:<server>/<tool>`, from the run's `catalog`), never the wire name the harness called it by, so one call reads
