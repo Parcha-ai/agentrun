@@ -173,6 +173,21 @@ test("without the ui group: observe is the screen, read whole across screen.read
 	assert.equal(acted.value.changed, undefined);
 });
 
+test("without the ui group: a screen with no app in front lists the apps, and an app named to observe or act on is opened first", async () => {
+	const apps = [{ id: "org.xfce.mousepad", name: "Mousepad" }, { id: "xfce4-terminal", name: "Terminal" }];
+	const { surface, calls } = surfaceOf({ groups: ["screen", "input.pointer", "input.keys", "apps"], os: "linux", apps, foreground: null });
+	const empty = await surface.call("observe", {});
+	assert.match(empty.text, /^screen 1440×900 px · no app in front; name one as app to open it: org\.xfce\.mousepad, xfce4-terminal · this computer has no ui group/);
+	assert.equal(calls.some((call) => call.method === "apps.launch"), false, "a look that names no app opens none");
+	const seen = await surface.call("observe", { app: "org.xfce.mousepad" });
+	assert.deepEqual(calls.find((call) => call.method === "apps.launch"), { method: "apps.launch", params: { id: "org.xfce.mousepad" } });
+	assert.match(seen.text, /^screen 1440×900 px · org\.xfce\.mousepad in front · this computer has no ui group/);
+	calls.length = 0;
+	await surface.call("act", { app: "xfce4-terminal", steps: [{ type: "ls" }] });
+	assert.deepEqual(calls.map((call) => call.method), ["apps.launch", "input.actions"], "the act's app is in front before its input");
+	assert.deepEqual(calls[0].params, { id: "xfce4-terminal" });
+});
+
 test("without the ui group: a ref, an into or an expect is refused before anything runs", async () => {
 	const { surface, calls } = surfaceOf({ groups: ["screen", "input.pointer"] });
 	await assert.rejects(surface.call("act", { steps: [{ press: "@e3" }] }), (error) => error instanceof SurfaceError && error.kind === "unsupported" && /needs the ui group/.test(error.message));
@@ -281,6 +296,21 @@ test("shell and files: a string runs in sh -c, output decoded; a file written in
 	assert.equal((await surface.call("files.read", { path: "/tmp/a.txt" })).value, big);
 	assert.deepEqual((await surface.call("files.stat", { path: "/tmp/a.txt" })).value, { path: "/tmp/a.txt", type: "file", size: big.length, mtimeMs: 1 });
 	await assert.rejects(surface.call("files.read", { path: "/nope" }), (error) => error.kind === "not_found");
+});
+
+test("a surface given a folder starts the shell's and processes' programs there when a call names none; a call's own cwd wins", async () => {
+	const fake = fakeComputer({ os: "linux", groups: ["exec", "processes", "screen", "input.pointer", "input.keys"], display: ":0" });
+	const surface = createSurface(fake.client, fake.hello, { cwd: "/workspace" });
+	await surface.call("shell.run", { command: "pwd" });
+	assert.equal(fake.calls.at(-1).params.cwd, "/workspace");
+	await surface.call("shell.run", { command: "pwd", cwd: "/tmp" });
+	assert.equal(fake.calls.at(-1).params.cwd, "/tmp");
+	await surface.call("processes.start", { command: "mousepad" });
+	assert.equal(fake.calls.at(-1).params.cwd, "/workspace");
+	// With none given, the computer's own folder: no cwd is sent.
+	const { surface: plain, calls } = surfaceOf({ os: "linux", groups: ["exec"] });
+	await plain.call("shell.run", { command: "pwd" });
+	assert.equal("cwd" in calls.at(-1).params, false);
 });
 
 test("a Windows computer runs a string command in cmd", async () => {

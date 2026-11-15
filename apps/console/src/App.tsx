@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
+import { ChatGPTRow } from "@/components/ChatGPTSignIn";
 import { KeysPage } from "@/components/KeysPage";
 import { ConnectionProvider, Unreached, useLink, useResumed } from "@/components/Connection";
 import { Settings, type SettingsPage } from "@/components/Settings";
@@ -35,7 +36,9 @@ import { computerRefusal } from "@/lib/computerAsk";
 import { stepsBack, trackHistory } from "@/lib/back";
 import { holdsMove } from "@/lib/useUnsavedChangesGuard";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
+import { chatGPTView } from "@/lib/chatgpt";
 import { createConnection } from "@/lib/connection";
+import type { ChatGPTView } from "@/lib/v2";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
 import { waitingOf } from "@/lib/learning";
 import { asksPerson, FAILED_WINDOW_MS, failureCount, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
@@ -52,7 +55,7 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; template?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { section: Section; template?: string; install?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -69,6 +72,9 @@ export function route(h: string = location.hash): Where {
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
   if (h.startsWith("#/playground")) return { section: "playground" };
   // The server's templates: the list, and one template's Apply screen.
+  // A package on GitHub, read before it is installed (its source in `src`, as an "Add from URL" box or a link sends it).
+  m = h.match(/^#\/templates\/install\?(.*)$/);
+  if (m) return { section: "templates", install: new URLSearchParams(m[1]).get("src") ?? "" };
   m = h.match(/^#\/templates\/([^/?]+)$/);
   if (m) return { section: "templates", template: decodeURIComponent(m[1]) };
   if (h.startsWith("#/templates")) return { section: "templates" };
@@ -523,17 +529,15 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const answer = async (runId: string, text: string) => {
     try { await sendOnce(answerKeys(runId), runId, text, v2.sendMessage); later(); return null; } catch (e) { return problemOf(e); }
   };
-  // A run is started again with its own whole first message (read from its timeline: a run's read carries no input),
-  // its effort and its spend cap. Each start keeps its key until it lands, so a retry after a lost answer is the same
-  // start; the runs that started are said, so they're never offered again.
+  // A run is started again with the input and files its read serves (a list's run carries none), its effort and its
+  // spend cap. Each start keeps its key until it lands, so a retry after a lost answer is the same start; the runs that
+  // started are said, so they're never offered again.
   const againKeys = useRef(new Map<string, string>()).current;
   const runAgain = async (rs: readonly Run[]) => {
     const started: string[] = [];
     try {
       for (const r of rs) {
-        const first = r.kind === "workflow" ? undefined : (await v2.getTimeline(r.run_id)).rows.find((row) => row.kind === "user_message");
-        // A typed agent's run reads its typed fields back from that message (its agent's input_schema says it has some).
-        const start = rerunBody(r, first?.text, agents?.find((a) => a.agent_id === r.agent_id)?.definition.input_schema);
+        const start = rerunBody(r.kind === "workflow" ? r : await v2.getRun(r.run_id));
         if ("refusal" in start) throw new Error(start.refusal);
         const key = againKeys.get(r.run_id) ?? uuid();
         againKeys.set(r.run_id, key);
@@ -548,9 +552,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   };
   // An approval's answer is in the run's state at once (the server keeps it before its 204): the strip reads again now,
   // after a refusal too, which may mean the run moved on.
-  const approve = async (runId: string, approvalId: string, decision: "allow" | "deny", note?: string) => {
+  const approve = async (runId: string, approvalId: string, decision: "allow" | "deny", note?: string, confirmed?: true) => {
     let refused: string | null = null;
-    try { await v2.answerApproval(runId, approvalId, decision, note); } catch (e) { refused = approvalRefusal(e); }
+    try { await v2.answerApproval(runId, approvalId, decision, note, confirmed); } catch (e) { refused = approvalRefusal(e); }
     setNeedsTry((n) => n + 1);
     return refused;
   };
@@ -600,6 +604,23 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     window.addEventListener("focus", again);
     return () => { clearInterval(timer); window.removeEventListener("focus", again); };
   }, [v2, modelsReady]);
+  // The server's ChatGPT sign-in (chatgpt/1), read each time no model is ready: the first screen's card and the bar offer it
+  // first. Null before it is read and on a server without it.
+  const [plan, setPlan] = useState<ChatGPTView | null>(null);
+  useEffect(() => {
+    if (modelsReady !== false) return;
+    let live = true;
+    v2.chatGPT().then((body) => { if (live) setPlan(chatGPTView(body)); }, () => { if (live) setPlan(null); });
+    return () => { live = false; };
+  }, [v2, modelsReady]);
+  // The first screen's card stays from a sign-in's start until the person is done with OpenAI's words on usage, though the
+  // server has its model by then.
+  const [planShown, setPlanShown] = useState(false);
+  const onPlan = (v: ChatGPTView) => {
+    setPlan(v);
+    if (v.state === "pending" || v.state === "signed_in") setPlanShown(true);
+    if (v.state === "signed_in") void readCaps();
+  };
   return (
     <ScheduleNames.Provider value={scheduleNames}>
     <Shell active={where.section} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
@@ -618,24 +639,26 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
           {imported.state !== "running" && <Button type="button" size="xs" onClick={() => setImported(null)}>Dismiss</Button>}
         </p>
       )}
-      {caps?.models.ready === false && where.section !== "mission" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true} />}
+      {caps?.models.ready === false && where.section !== "mission" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />}
     </>}>
       {where.section === "playground" && startError
         ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={() => setRetry((n) => n + 1)}>Try again</Button>}><p className="font-mono">The agents could not be read: {startError}</p></Banner>
         : where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
-            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} onSaved={readCaps} onOpen={readCaps} />
-              : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} />
+            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!caps?.features?.mcp_client} onSaved={readCaps} onOpen={readCaps} />
+              : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} choices={choices} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
               : where.settings === "computers" ? <ComputersPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "workspace" ? <WorkspacePage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "webhook" ? <WebhookPage v2={v2} />
-              : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
+              : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} harnesses={editorCaps.harnesses}
+                  plan={<ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} />} />}
           </Settings>
         : where.section === "mission"
         // The first screen asks for a model key while the server says no agent that names no model runs here yet.
         ? <div className="flex h-full flex-col">
-            {caps?.models.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
+            {caps && (caps.models.ready === false || planShown) && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
+              plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} />}
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
@@ -646,7 +669,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             </div>
           </div>
         : where.section === "templates"
-        ? <TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} />
+        ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : where.template ?? ""} v2={v2} name={where.template} install={where.install} go={go} />
         : where.section === "triggers"
         ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} failuresToPause={caps?.features?.triggers?.failures_to_pause} />
         : where.section === "playground"

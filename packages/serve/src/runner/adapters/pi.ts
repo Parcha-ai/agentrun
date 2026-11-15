@@ -13,7 +13,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, type Cursor, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type HookApi, type JsonObject, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
+import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionPort, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
@@ -22,9 +22,8 @@ import { DEFAULT_HARNESS } from "../../harness.js";
 import { durableWait } from "../../workflow/pi-versions.js";
 import { HOSTED_SEARCH_ALLOWANCE_TOKENS } from "../../hosted-search.js";
 import { sessionProvider, tierProvider } from "../../port-models.js";
-import { KINDS } from "../journal-kinds.js";
+import { type CallStatus, KINDS } from "../journal-kinds.js";
 import { CALL_REFUSED } from "../../timeline/index.js";
-import { ConversationToolBudget, countCalls } from "../../tool-budget.js";
 import { type ComputerCallRecord, recordingCalls } from "../../computer-calls.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
@@ -43,13 +42,8 @@ export interface PreIntentCall {
   /** An earlier attempt of the call may have been sent (a CLI's kernel bridge, asking about a replay-safe call a crash
    *  cut: GateCall's `replayed`), so a refusal never says nothing was. */
   readonly replayed?: true;
-  /** The tool calls the call's conversation made before it, at most `upTo`, read from its committed entries (tool-budget.ts
-   *  countCalls), for the gate's tool-call budget: pi's model-issued calls only, never a nested call or a CLI's. */
-  readonly callsBefore?: (upTo: number) => Promise<number>;
-  /** The call's conversation's own tool-call budget (tool-budget.ts ConversationToolBudget, a subagent's), if it has one. */
-  readonly ownBudget?: () => Promise<number | undefined>;
   /** A call a running tool made (pi's nested call), part of a call already let through: the cap's wrap-up never refuses
-   *  one (tool-budget.ts), so a tool in flight is never cut short. */
+   *  one (wrap-up.ts), so a tool in flight is never cut short. */
   readonly nested?: true;
 }
 
@@ -66,6 +60,9 @@ export type PiSessionIO = SessionIO & {
    *  are kept): each run's pi-native tool (code mode's script among them) runs inside recordingCalls with it, so its row
    *  carries the calls it made as a host tool's does. */
   keepCalls?: (call: string, calls: readonly ComputerCallRecord[], dropped: number) => Promise<void>;
+  /** A nested call's end (a script's or tools_call's, its id `<callId>/<key>`), once pi has its outcome, run now or read
+   *  from its record: the host keeps it beside the call's start, which its gate wrote, so the call's rows show its result. */
+  nestedEnded?: (callId: string, status: CallStatus, output: string) => Promise<void>;
 };
 
 /** `extension` with each of its tools run inside recordingCalls, its calls kept by `keep` under the call's id. A call pi
@@ -89,11 +86,11 @@ export interface PiAdapterOptions {
    *  Messages or OpenAI's Responses) at `origin`, its credential, sent as `auth` says (Messages' default x-api-key;
    *  Responses' is always a bearer token). `api` is the one source of the session's wire: its policy, pi-ai's client and
    *  its port all read it. */
-  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key" };
+  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly plan?: boolean; readonly refused?: (credential: string) => Promise<void> };
   /** The model pi asks for. */
   readonly model: string;
   /** The catalog's entry for the model: whether it reasons, its window and its output ceiling, as pi-ai's model of it. */
-  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown };
+  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean };
   /** The price of a request's usage, for the proxy's booking. */
   readonly price?: (model: string, usage: never) => number | null;
   /** The proxy's upstream fetch (a test's scripted origin). */
@@ -192,6 +189,7 @@ async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: r
     model: route.model,
     origin: route.provider.origin,
     credential: async () => (await route.provider.credential()) ?? "",
+    ...(route.provider.refused ? { credentialRefused: route.provider.refused } : {}),
     ...(price ? { price: price as never } : {}),
     ...(route.provider.headers ? { headers: route.provider.headers } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
@@ -256,9 +254,11 @@ function searchesAllowed(body: Record<string, unknown>, isSearch: (tool: Record<
 export async function policyFor(provider: PiAdapterOptions["provider"], model: string, tools: readonly string[], webSearch = false): Promise<ProviderPolicy> {
   if (provider.api === "anthropic-messages") return piPolicy(model, tools, provider.auth, webSearch);
   // Loaded when a session of its wire opens, as the runner loads the codex harness.
-  const { codexPolicy, webSearchUsd } = (await import("@parcha/agentrun-harness-codex")) as { codexPolicy(options: { model: string; tools: readonly string[]; webSearch?: "live" }): ProviderPolicy; webSearchUsd(model: string): number | undefined };
-  if (!webSearch) return codexPolicy({ model, tools });
-  return searchOnce(codexPolicy({ model, tools, webSearch: "live" }), codexPolicy({ model, tools }), webSearchUsd(model));
+  const { codexPolicy, webSearchUsd } = (await import("@parcha/agentrun-harness-codex")) as { codexPolicy(options: { model: string; tools: readonly string[]; webSearch?: "live"; plan?: boolean }): ProviderPolicy; webSearchUsd(model: string): number | undefined };
+  // A ChatGPT plan's route keeps the plan's rules (codexPolicy's `plan`).
+  const plan = provider.plan ? { plan: true } : {};
+  if (!webSearch) return codexPolicy({ model, tools, ...plan });
+  return searchOnce(codexPolicy({ model, tools, webSearch: "live", ...plan }), codexPolicy({ model, tools, ...plan }), webSearchUsd(model));
 }
 
 /** Codex's live-search policy (`live`) as pi's session takes it. The Codex CLI offers its search on every request; pi
@@ -345,10 +345,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         beforeTool: async (call, api, hookContext: Context) => {
           touched.add(call.id);
           if (!io.gate) return undefined;
-          // A model-issued call's count, read only when the gate holds a budget: a nested call (one a tool made) is its
-          // parent's part, and is marked so (the cap's wrap-up lets it through).
-          const counted = call.parent === undefined ? { callsBefore: (upTo: number) => callsBefore(api, call.id, upTo, hookContext), ownBudget: async () => (await api.snapshot(ConversationToolBudget, api.conversationId, hookContext))?.toolCalls } : { nested: true as const };
-          const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown>, ...counted }, hookContext);
+          // A nested call (one a tool made) is marked so: the cap's wrap-up lets it through, as its parent's part.
+          const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown>, ...(call.parent === undefined ? {} : { nested: true as const }) }, hookContext);
           if (answer === "allow") {
             passed.add(call.id);
             return undefined;
@@ -368,7 +366,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         },
         // A call the gate refused: its result is main's words alone, an error, never pi's framing of a blocked call (its
         // diagnostic, which the model reads as "<harness>[error] Tool call blocked: ..."). Every other result is pi's.
-        afterTool: async (call, result) => refusals.resultOf(call.id, result) as never,
+        afterTool: async (call, result) => refusals.resultOf(call.id, result, call.parent !== undefined) as never,
       }),
       // An answer's cost is the runner's booking of its request, never pi's $0 for a model it has no price for: set on
       // the answer before pi stores it, so the answer, pi.usage and the live timeline carry it; unknown stays unknown.
@@ -493,34 +491,21 @@ export function refusalWords() {
     refuse(callId: string, text: string): void {
       words.set(callId, text);
     },
-    resultOf(callId: string, result: { readonly diagnostics?: readonly { readonly code?: string }[] }): { output: { type: "text"; text: string }[]; isError: true; details: { [CALL_REFUSED]: true } } | undefined {
+    resultOf(callId: string, result: { readonly diagnostics?: readonly { readonly code?: string }[] }, nested = false): { output: { type: "text"; text: string }[]; isError: true; details: { [CALL_REFUSED]: true }; diagnostics?: { severity: "error"; code: "blocked"; message: string }[] } | undefined {
       const text = words.get(callId);
       // Let go on every result: the call has its one result now, whatever it is.
       words.delete(callId);
       const blocked = result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked");
       if (text === undefined || !blocked) return undefined;
       // Marked refused in its details (which the model never reads): its Timeline rows say it was refused, never that it
-      // ran and failed.
-      return { output: [{ type: "text", text }], isError: true, details: { [CALL_REFUSED]: true } };
+      // ran and failed. A nested call's words ride its error diagnostic too, which a script's failed call reads (pi's code
+      // mode throws its message): never "Tool <name> failed".
+      return { output: [{ type: "text", text }], isError: true, details: { [CALL_REFUSED]: true }, ...(nested ? { diagnostics: [{ severity: "error" as const, code: "blocked" as const, message: text }] } : {}) };
     },
     get held(): number {
       return words.size;
     },
   };
-}
-
-/** The tool calls a hook's conversation made before `callId`, at most `upTo`: its committed entries read oldest first, a
- *  page at a time, only as far as the count needs (tool-budget.ts countCalls). */
-async function callsBefore(api: HookApi, callId: string, upTo: number, context: Context): Promise<number> {
-  let counted = { count: 0, done: upTo <= 0 };
-  let cursor: Cursor | undefined;
-  while (!counted.done) {
-    const page = await api.entries({ order: "ascending" }, 100, cursor, context);
-    counted = countCalls(page.items, callId, upTo, counted.count);
-    cursor = page.next;
-    if (cursor === undefined) break;
-  }
-  return counted.count;
 }
 
 /** pi's output limits for a host tool, from the host's result bound: a result within it holds at most that many
@@ -534,8 +519,9 @@ export const HOST_TOOL_OUTPUT = Object.freeze({ maxLines: HOST_RESULT_MAX_CHARS 
 /** pi's nested calls as a host tool's (NestedCalls): each the session's tool by its name, run as pi's own nested tool task
  *  (`executeTool`, its call id `<callId>/<key>`), whose ToolTask hooks ask the gate as the tool itself (`nested`), and
  *  whose rerun by the same key gets the recorded call back, finished or still running, never a second one. Fresh: asked
- *  at the gate or run in this session (`touched`). A refused one is the gate's words (CALL_REFUSED, from refusalWords). */
-function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<string>, refusals: ReadonlyMap<string, string>): NestedCalls {
+ *  at the gate or run in this session (`touched`). A refused one is the gate's words (CALL_REFUSED, from refusalWords).
+ *  Each one's end goes to the host (`ended`: PiSessionIO.nestedEnded), which keeps it on the run's record. */
+function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<string>, refusals: ReadonlyMap<string, string>, ended?: PiSessionIO["nestedEnded"]): NestedCalls {
   return {
     async call(name, args, key) {
       const result = await api.executeTool(name, args as JsonObject, context, { key });
@@ -553,6 +539,7 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
       // A refusal in the gate's words (this session's), or, answered from an earlier session's record, said so.
       const words = refused ? (refusals.get(callId) ?? `${name} was refused (the run's tool settings or a person's answer), and it did not run.`) : undefined;
       const text = words ?? (said || result.diagnostics.map((one) => one.message).join("\n"));
+      await ended?.(callId, refused ? "refused" : interrupted ? "interrupted" : result.isError ? "failed" : "done", text);
       return {
         text,
         ...(result.isError ? { isError: true } : {}),
@@ -581,6 +568,8 @@ function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => 
     // record by its key (executeTool), never run twice.
     replay: tool.replay === "safe" || tool.nests ? "safe" : "unsafe",
     outputLimits: HOST_TOOL_OUTPUT,
+    // A catalog tool the run defers: pi never offers it, and a nested call (tools_call, a script) runs it by its name.
+    ...(tool.deferred ? { deferred: true as const } : {}),
     execute: async (args: unknown, api, toolContext: Context) => {
       touched.add(api.callId);
       io.onEvent({ type: "tool_start", callId: api.callId, name: tool.name, args });
@@ -592,7 +581,7 @@ function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => 
         ...(model ? { model } : {}),
         output: (chunk: string) => api.output(chunk),
         ...(attempt === undefined ? {} : { attempt }),
-        ...(tool.nests ? { nested: piNested(api, toolContext, touched, nestedRefusals) } : {}),
+        ...(tool.nests ? { nested: piNested(api, toolContext, touched, nestedRefusals, io.nestedEnded) } : {}),
       });
       io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: answer.text });
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));

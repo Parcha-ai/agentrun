@@ -40,7 +40,7 @@ there and never print it.
 | --- | --- |
 | `TMPDIR`, `--data` | Use a fresh data dir and a temp dir of its own per run, so no earlier run's state is read. |
 | `XDG_CONFIG_HOME` | Point it at a QA dir so your own config directory is never touched. The seal key is `AGENTRUN_SEAL_KEY`, else `<data>/seal/seal.key`, made at the server's first start; nothing is kept under the config home. |
-| `AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Gateway for the pi and codex harnesses (OpenAI Responses). Point them at your gateway (its `/v1` base URL) and set `AGENT_MODEL` to a small, cheap model for smokes. |
+| `AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Gateway for the pi and codex harnesses (OpenAI Responses; pi sends a Claude model on Anthropic's Messages to the same gateway). Point them at your gateway (its `/v1` base URL) and set `AGENT_MODEL` to a small, cheap model for smokes. |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` | The claude-agent harness only, on Anthropic Messages. Your gateway may serve `/v1/messages` too. |
 | `AGENTRUN_MAX_RUNS` | The most runs a runner holds at once (the server's `--max-runs`, a runner process's `--loops`), and the `max_concurrent_runs` capabilities report. It does not refuse a start: a run past it waits `queued` until a runner has a free loop. |
 | `PARALLEL_API_KEY`, `BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID`, `TYPESAFE_API_KEY` | Optional. They unlock web_fetch via Parallel, the `browser` tool, and Jev decisions. Without a key, only the checks that need it are UNTESTED: web_fetch's direct fetch and its private-host refusal need none and always run. |
@@ -260,7 +260,7 @@ land (native and picked web search and tool settings, monid on every harness, th
 4. On claude-agent and codex, the host tools (`read`, `write`, `edit`, `web_fetch`, and
    `web_search` where it is not the harness's own) run and are journaled with their replay class; a `write` cut off by a
    crash comes back interrupted, never re-run.
-5. A `monid.run` is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
+5. A monid endpoint's call (`monid:<provider>/<endpoint>`) is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
    by name; an answer over 60,000 characters is filed under `work/evidence/monid/`.
 6. On pi with no native search, `web_search` searches through Parallel where the server holds a Parallel key (its fee a
    `Tool cost` line), else Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server, over IPv4;

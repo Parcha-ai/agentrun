@@ -437,29 +437,29 @@ test("cost: a tool's own request, marked with its label as a compaction is, is a
 
 test("cost: a paid tool's charge is summed with the requests and shown on a line of its own; an unknown one makes the cost unknown; it is no request", () => {
   const a = assistant([{ type: "text", text: "a" }], 0);
-  const charged = (usd) => custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", usd, call: "c1" });
+  const charged = (usd) => custom(TOOL_COST, { tool: "monid:faux/person/enrich", charged_by: "monid", usd, call: "c1" });
   const rows = timelineOf([a, charged(0.003)]);
   assert.deepEqual(rows.map((r) => [r.kind, r.summary, r.tool_name, r.tool_use_id]), [
     ["final_answer", "a", null, null],
-    ["phase", "Tool cost: monid charged $0.0030 for monid.run", "monid.run", "c1"],
+    ["phase", "Tool cost: monid charged $0.0030 for monid:faux/person/enrich", "monid:faux/person/enrich", "c1"],
     ["usage", "Cost so far: $0.0130 over 1 model request and 1 paid tool call", null, null],
   ]);
   assert.deepEqual(rows.at(-1).usage, { usd: 0.013, requests: 1 });
   assert.deepEqual(rows[1].usage, { usd: 0.003, requests: 0 }, "its line carries the charge alone, no request");
   const unknown = timelineOf([a, charged(null)]);
   assert.deepEqual(unknown.find((r) => r.kind === "phase").usage, { usd: null, requests: 0 });
-  assert.equal(unknown.find((r) => r.kind === "phase").summary, "Tool cost: monid charged an unknown amount for monid.run");
+  assert.equal(unknown.find((r) => r.kind === "phase").summary, "Tool cost: monid charged an unknown amount for monid:faux/person/enrich");
   assert.deepEqual(unknown.at(-1).usage, { usd: null, requests: 1, so_far_usd: 0.01, unpriced: 1 }, "never $0: the known part, and the charge with no price");
   assert.deepEqual(timelineOf([charged(0.003)]).at(-1).usage, { usd: 0.003, requests: 0 }, "a charge alone makes the row");
 });
 
 test("cost: a paid tool call marked before it is sent is in flight while the run is; settled unsettled, a crash cut it and the cost is unknown, never its held figure; its charge settles it", () => {
   const a = assistant([{ type: "text", text: "a" }], 0);
-  const marked = (heldUsd, call = "c1") => custom(TOOL_STARTED, { tool: "monid.run", charged_by: "monid", call, heldUsd });
-  const charged = (usd, call = "c1") => custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", call, usd });
+  const marked = (heldUsd, call = "c1") => custom(TOOL_STARTED, { tool: "monid:faux/person/enrich", charged_by: "monid", call, heldUsd });
+  const charged = (usd, call = "c1") => custom(TOOL_COST, { tool: "monid:faux/person/enrich", charged_by: "monid", call, usd });
   assert.deepEqual(timelineOf([a, marked(0.05)]).at(-1).usage, { usd: 0.01, requests: 1 }, "in flight: the sum so far");
   const cut = timelineOf([a, marked(1)], { settled: true }).at(-1);
-  assert.deepEqual([cut.usage, cut.summary], [{ usd: null, requests: 1, so_far_usd: 0.01, unpriced: 1 }, "Cost so far: $0.0100 known, 1 not priced, over 1 model request and 1 paid tool call"], "never 1.01: the allowance is no charge; the cut call is a charge with no price");
+  assert.deepEqual([cut.usage, cut.summary], [{ usd: null, requests: 1, so_far_usd: 0.01, unpriced: 1 }, "Cost so far: $0.0100 known, 1 not priced, over 1 model request and 1 paid tool call"], "never 1.01: the hold is no charge; the cut call is a charge with no price");
   assert.deepEqual(timelineOf([a, marked(1), charged(0.003)], { settled: true }).at(-1).usage, { usd: 0.013, requests: 1 }, "settled by its charge");
   assert.deepEqual(timelineOf([marked(0.05)], { settled: true }).at(-1).usage, { usd: null, requests: 0, so_far_usd: 0, unpriced: 1 });
 });
@@ -994,15 +994,17 @@ test("a computer call in words, as the run page and a movie's caption say it: th
     // selects all), and the record does not say which computer it was.
     call({ method: "ui.act", steps: [{ do: "key", keys: "ctrl+a" }, { do: "key", keys: "ctrl+s" }] }),
   ].map(callWords), [
-    "open TextEdit",
-    "open System Settings",
-    "look at Calendar",
-    "select all (⌘A); type into the text box “Pears: 41”; save (⌘S)",
-    "press “Save”; click the element; press a key; go back; press (refused: stale)",
-    "wait for Notes (not seen)",
-    "act (failed: denied)",
-    "take a screenshot",
-    "press Return; press ⌃⇧T; press ⇧Tab",
-    "press ⌃A; press ⌃S",
+    "Opened TextEdit",
+    "Opened System Settings",
+    "Looked at Calendar",
+    "Selected all (⌘A), typed into the text box “Pears: 41”, saved (⌘S)",
+    // The refused fifth step is said; the one between is counted.
+    "Pressed “Save”, clicked the element, pressed a key, +1 more, could not press an element",
+    "Waited for Notes (not seen)",
+    "Could not act on the computer",
+    "Took a screenshot",
+    "Pressed Return, pressed ⌃⇧T, pressed ⇧Tab",
+    "Pressed ⌃A, pressed ⌃S",
   ]);
+  assert.equal(callWords(call({ method: "ui.act", steps: [{ do: "nav", nav: "back" }, { do: "press", error: "stale" }] })), "Went back, could not press an element");
 });

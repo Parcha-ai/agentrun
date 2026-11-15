@@ -17,6 +17,7 @@ import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, client, follow, retried, scratch, serve } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const SDK = "@anthropic-ai/claude-agent-sdk";
 const PIN = "0.3.286";
@@ -102,6 +103,7 @@ async function fakeRegistry(t, { hold, holdMcp, ...given } = {}) {
   const hits = [];
   let ready = false;
   const server = createServer(async (req, res) => {
+    if (stranger(req, res)) return;
     hits.push(req.url);
     const path = decodeURIComponent(req.url.split("?")[0]).slice(1);
     const tgz = /^-\/(.+)\/(\d[^/]*)\.tgz$/.exec(path);

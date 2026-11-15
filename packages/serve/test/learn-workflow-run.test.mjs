@@ -409,7 +409,6 @@ test("learned_workflow is a tool the gate holds like any: its settings key is le
   const { settingsIssues, SERVE_OWN_TOOLS } = await import("../dist/tool-plane.js");
   assert.ok(SERVE_OWN_TOOLS.includes(LEARNED_WORKFLOW_TOOL), "the plane's own tools name it");
   for (const harness of ["pi", "claude-agent", "codex", "opencode"]) assert.equal(settingsKeyOf(harness, LEARNED_WORKFLOW_TOOL), LEARNED_WORKFLOW_TOOL, harness);
-  assert.equal(settingsKeyOf("claude-agent", `mcp__hands__${LEARNED_WORKFLOW_TOOL}`), LEARNED_WORKFLOW_TOOL, "claude-agent's host tool name");
   assert.equal(defaultPermission(LEARNED_WORKFLOW_TOOL), "allow");
   for (const permission of ["allow", "ask", "deny"]) assert.deepEqual(settingsIssues({ [LEARNED_WORKFLOW_TOOL]: { permission } }), [], permission);
 });

@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
-import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
+import { defersCatalog, type GateAnswer, type GateCall } from '@parcha/agentrun-kernel';
 import { type DriveContext, type Harness, type HostTool, type ReplayPolicy, Restart, type SessionState, type Submission, Unavailable } from './host/kernel.js';
 import {
   askGate,
@@ -175,6 +175,9 @@ export interface ClaudeCodeHarnessOptions {
    * none.
    */
   tools?: HostTool[];
+  /** The host's verdict on whether the catalog tools are deferred (SessionSpec.deferCatalog), which turns the CLI's own
+   *  tool search on or off; absent, the tools' names decide (claudeToolSearch). */
+  deferCatalog?: boolean;
   /**
    * Claude Code's own tools, in the VM, on `/workspace`. Default false
    * (tool-less: `tools` are the CLI's only tools). `true`: the pinned
@@ -288,6 +291,13 @@ export const TOOLS_NOTE = `Your only tools are this app's, the mcp__${MCP_SERVER
 /** `TOOLS_NOTE` with WebSearch on (`providerTools: ['web_search']`) and the other built-ins off. */
 export const WEB_SEARCH_NOTE = `Your only tools are this app's (the mcp__${MCP_SERVER}__ tools, if it has any) and WebSearch; you have no shell, file or fetch tools of your own.`;
 
+/**
+ * What follows the tools note when the session has skills. The notes above say the app's tools are the model's only ones,
+ * and Skill is not one of those: a model that reads them has no reason to reach for it. This names Skill as its tool and
+ * says when to use it, as the on-demand listing does for a harness that reads its skills' files (serve's ON_DEMAND).
+ */
+export const SKILLS_NOTE = `The Skill tool is also yours: it loads one of this app's skills, listed to you as agentrun:<name> with what each is for. When a skill fits the step you are on, or your instructions name one, load it with Skill before you act on that step, and follow it; read its other files with read_skill_file.`;
+
 /** `TOOLS_NOTE` for a session with no tools at all (built-ins off, no `tools`). */
 export const NO_TOOLS_NOTE = 'You have no tools in this session: no shell, file, search or web tools. Answer from the conversation.';
 
@@ -344,15 +354,16 @@ export const CLAUDE_BUILTINS = ['Bash', 'Read', 'Edit', 'Write', 'NotebookEdit',
 export const CLAUDE_SAFE_BUILTINS = ['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch', 'ToolSearch', 'Skill'];
 
 /**
- * ENABLE_TOOL_SEARCH for a session whose tools are `toolNames` (the host's names): with an MCP server's tools among them
- * (`mcp__<server>__<tool>`), `true`: the CLI's own tool search is on, its ToolSearch among its tools, and those tools are
+ * ENABLE_TOOL_SEARCH for a session whose tools are `toolNames` (the host's names): when the run's catalog tools are
+ * deferred (the kernel's defersCatalog: more than DEFER_CATALOG_OVER of them; the host's own tools_search and tools_call
+ * are never offered beside it), `true`: the CLI's own tool search is on, its ToolSearch among its tools, and those tools are
  * deferred (served through `hands`, the rest of the session's tools listed to load always: tool-server.ts listedTools),
  * each sent to the model once ToolSearch finds it. Without, `false`. The pinned CLI (2.1.286) leaves it off behind a
  * proxy unless told, and its `auto` defers only past a tenth of the model's context (on a 1M-token model, never in
  * practice); set either way, so a CLI that changes that default changes nothing here. The session's proxy admits what the
  * CLI sends with it on (anthropicPolicy `toolSearch`).
  */
-export const claudeToolSearch = (toolNames: readonly string[]): 'true' | 'false' => (toolNames.some((name) => name.startsWith('mcp__')) ? 'true' : 'false');
+export const claudeToolSearch = (toolNames: readonly string[], deferCatalog?: boolean): 'true' | 'false' => ((deferCatalog ?? defersCatalog(toolNames)) ? 'true' : 'false');
 /** The CLI's own tool that finds a deferred tool: it only reads the CLI's list of the session's tools. */
 export const CLAUDE_TOOL_SEARCH = 'ToolSearch';
 
@@ -440,7 +451,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
   const providerTools = options.providerTools ?? [];
   const webSearch = providerTools.includes('web_search');
   /** The CLI's own tool search is on: a run's MCP servers' tools deferred behind its ToolSearch (claudeToolSearch). */
-  const toolSearch = claudeToolSearch(tools.map((tool) => tool.name)) === 'true';
+  const toolSearch = claudeToolSearch(tools.map((tool) => tool.name), options.deferCatalog) === 'true';
   const log = options.log ?? (() => {});
   let sdk: Promise<ClaudeAgentSdk> | undefined;
   const loadSdk = (): Promise<ClaudeAgentSdk> => {
@@ -784,7 +795,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
+            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, skills ? SKILLS_NOTE : undefined, options.instructions, recovered].filter(Boolean).join('\n\n'),
             snapshot: !recovered,
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),

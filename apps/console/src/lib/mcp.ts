@@ -4,7 +4,15 @@ import type { Permission, SecretMeta } from "./v2";
 /** A tool as a remote MCP server lists it (`tools/list`, through the server's preview). */
 /** A tool as a server lists it; on a saved server's read, with its permission as this server applies it to an agent that
  *  sets none (`permission`, under the server's tool settings), the owner's default and those it may be set to. */
-export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[];
+/** What a tool does by its server's annotations (the server's read): read-only, destructive (marked destructiveHint),
+ *  or a write (any other, one its server says nothing about included). */
+export type ToolEffect = "read" | "write" | "destructive";
+export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[]; effect?: ToolEffect;
+  /** On a saved server's read: its permission is allow because of its server's Allow reads (the server's word). */
+  allow_reads?: true;
+  /** On a saved server's read: with no setting of its own, its server's Allow reads lets it run (the server's word), so
+   *  allow is its fallback, whatever its own setting says now. */
+  fallback_allow_reads?: true;
   /** A known meta tool (`grantable: false`, with the server's `reason`): never granted. */
   grantable?: false; reason?: string;
   /** Why a grant of it is refused where it would run, as the server says it (`*`: on every harness; else by harness id). */
@@ -13,12 +21,25 @@ export type McpAuthType = "none" | "bearer" | "headers" | "oauth" | "github_app"
 /** The one address a `github_app` server may have: GitHub's hosted MCP (the save refuses any other, so the App's tokens go to
  *  GitHub alone). */
 export const GITHUB_MCP_URL = "https://api.githubcopilot.com/mcp/";
-/** `#/settings/mcp?add=<name>&auth=github_app`: the add form opened for a server a template needs, its name (and, for GitHub's
- *  own, its address and credential) filled. Undefined when the query asks for none. */
-export function addOf(query: string | undefined): { name: string; auth?: "github_app" } | undefined {
+/** Where a saved server's tools come from, which a template's MCP need is matched on with its toolkit. */
+export type McpSource = "composio" | "github" | "url";
+export const SOURCE_LABEL: Record<McpSource, string> = { composio: "Composio", github: "GitHub", url: "URL" };
+const TOOLKIT = /^[a-z][a-z0-9-]{0,31}$/;
+/** What `#/settings/mcp?add=` opens, for a server a template needs: the add form with its name (for GitHub's own, its
+ *  address and credential; for a url server, its toolkit) filled, or, with `preset=composio`, the Composio form with its
+ *  toolkit and the actions to tick. */
+export type McpAdd = { name: string; auth?: "github_app"; preset?: "composio"; toolkit?: string; tools?: string[] };
+/** `#/settings/mcp?add=<name>[&auth=github_app | &preset=composio&toolkit=<toolkit>&tools=<A,B>]`. Undefined when the query
+ *  asks for none. */
+export function addOf(query: string | undefined): McpAdd | undefined {
   const q = new URLSearchParams(query ?? "");
   const name = q.get("add");
-  if (!name || !/^[a-z][a-z0-9-]{0,31}$/.test(name)) return undefined;
+  if (!name || !TOOLKIT.test(name)) return undefined;
+  const toolkit = q.get("toolkit") ?? "";
+  if (q.get("preset") === "composio" && TOOLKIT.test(toolkit)) {
+    const tools = (q.get("tools") ?? "").split(",").filter((t) => /^[A-Za-z0-9_-]{1,128}$/.test(t)).slice(0, 64);
+    return { name, preset: "composio", toolkit, ...(tools.length ? { tools } : {}) };
+  }
   return { name, ...(q.get("auth") === "github_app" ? { auth: "github_app" as const } : {}) };
 }
 /** A saved MCP server as GET /v2/settings/mcp-servers shows it: never a credential, only its state (`credential`: null
@@ -29,6 +50,8 @@ export type McpServer = {
   /** Its credential as every secret is read: set or not, how it came, when it last changed. Never a value. */
   secret?: SecretMeta;
   name: string; url: string; auth: { type: McpAuthType; headers?: string[] }; tools: McpTool[]; protocol?: string; listed_at?: string; updated_at?: string;
+  /** Where its tools come from and the toolkit they are (none: a url server its owner named no toolkit for). */
+  source: McpSource; toolkit: string | null;
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: { expires_at?: string; scopes: string[]; client: string; client_id?: string };
   prices?: Record<string, number>;
@@ -141,13 +164,12 @@ export function signInOf(query: string | undefined): { server: string; ok: boole
   return { server, ok: how === "ok", ...(how === "failed" ? { error: q.get("error") ?? "sign_in_failed" } : {}) };
 }
 
-/** An MCP server's tool as the harnesses call it, `mcp__<server>__<tool>`, read `<server> · <tool>` (the harness's own
- *  `hands` server is not one); null for any other name. */
 /** An MCP server's tool as a workflow's call node names it (`tool: "mcp:<server>/<tool>"`, the tool settings' key): its
  *  server and its tool, or null for any other tool. */
 export const mcpCallTool = grantOf;
 
+/** A row's MCP tool, `mcp:<server>/<tool>` (the name the server's rows carry), read `<server> · <tool>`; null for any other name. */
 export function mcpToolLabel(name: string): string | null {
-  const m = /^mcp__([a-z][a-z0-9-]{0,31})__(.+)$/.exec(name);
-  return m && m[1] !== "hands" ? `${m[1]} · ${m[2]}` : null;
+  const grant = grantOf(name);
+  return grant ? `${grant.server} · ${grant.tool}` : null;
 }

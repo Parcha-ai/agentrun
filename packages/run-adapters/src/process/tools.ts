@@ -2,7 +2,7 @@
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/tools.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
 // Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy, type ToolOutput } from '../kernel/index.js';
-import { type GateAnswer, type GateCall, HOST_RESULT_MAX_CHARS, type JsonValue, type NestedCalls, type ToolImage } from '../types.js';
+import { type GateAnswer, type GateCall, HOST_RESULT_MAX_CHARS, type HostTool as AdapterTool, type JsonValue, type NestedCalls, type ToolImage } from '../types.js';
 
 /**
  * The tool bridge: `HostTool`s as a harness-neutral list a port maps onto its
@@ -228,7 +228,8 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
   });
   const byName = new Map(bridged.map((t) => [t.name, t]));
   return {
-    tools: bridged,
+    // What is listed to the model: a deferred tool is run by name (a nested call, `get`, `call`) and never listed.
+    tools: bridged.filter((_, index) => !tools[index]!.deferred),
     get: (name) => byName.get(name),
     call: async (name, args, callId, signal) => {
       const tool = byName.get(name);
@@ -270,4 +271,50 @@ export function boundResult(text: string): { text: string; truncated?: true } {
 /** At most `max` characters, with a marker when cut. */
 export function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}… [${text.length - max} more characters]`;
+}
+
+/** What a harness adds to the one conversion of a host tool into the bridge's (`bridgeTool`): each is absent where it has none. */
+export interface BridgeHooks {
+  /** The name the harness gives the tool (Codex's `mcp_` form for an MCP tool); with `nestedName` its inverse for a nested call. */
+  name?: string;
+  description?: string;
+  /** A tool that nests calls names them by the host's names; the bridge holds them by the harness's: this maps one to the other. */
+  nestedName?(name: string): string;
+  /** Run once the call's intent is in the records, before the tool runs: the harness's live `tool_start`, its pause check. A throw is the call's error. */
+  start?(call: { callId: string; attempt: number; args: unknown }): void;
+  /** The problem with a result's images for this harness's model, or undefined: the call's error, by the tool's name and the image. */
+  imageProblems?(images: readonly ToolImage[]): string | undefined;
+  /** The tool parked the call for a person's approval: recorded so, before its answer. */
+  parked?(ctx: DriveContext, callId: string): Promise<unknown>;
+}
+
+/** A host tool (`call(args, context)`) as the bridge's tool (`execute(input, io)`), once for every harness: the same name,
+ *  schema, replay policy, `nests` and `deferred`; the call runs as a kernel effect, whose intent is durable in the session's
+ *  records before `execute` is entered, so a crash inside a `never` tool is always reported, never repeated. The effect's
+ *  step is `tool:<the harness's call id>#<attempt>`, so the host sees the harness's call id and the attempt (above 0 when
+ *  a crash cut an earlier one and the kernel runs the call again). A result that is an error is the call's failure; its
+ *  value and images are recorded with the outcome (a script's nested call is answered them). */
+export function bridgeTool(tool: AdapterTool, hooks: BridgeHooks = {}): HostTool {
+  return {
+    name: hooks.name ?? tool.name,
+    description: hooks.description ?? tool.description,
+    inputSchema: tool.inputSchema,
+    replay: tool.replay,
+    ...(tool.nests ? { nests: true as const } : {}),
+    ...(tool.deferred ? { deferred: true as const } : {}),
+    async execute(input, io) {
+      const callId = (io.stepId ?? '').replace(/^tool:/, '').replace(/#\d+$/, '');
+      const attempt = Number(/#(\d+)$/.exec(io.stepId ?? '')?.[1] ?? 0);
+      hooks.start?.({ callId, attempt, args: input });
+      const nested = io.nested && hooks.nestedName ? { call: (name: string, args: Record<string, unknown>, key: string) => io.nested!.call(hooks.nestedName!(name), args, key), memo: io.nested.memo } : io.nested;
+      const result = await tool.call(input, { callId, signal: io.signal, attempt, ...(nested ? { nested } : {}) });
+      if (result.parked && hooks.parked) await hooks.parked(io.ctx, callId);
+      if (result.isError) throw new Error(result.text);
+      const structured = result.structured !== undefined ? { structured: result.structured } : {};
+      if (!result.images?.length) return result.structured === undefined ? result.text : { text: result.text, ...structured };
+      const wrong = hooks.imageProblems?.(result.images);
+      if (wrong) throw new Error(wrong);
+      return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })), ...structured };
+    },
+  };
 }

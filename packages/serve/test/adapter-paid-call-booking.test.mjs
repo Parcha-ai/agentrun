@@ -89,10 +89,9 @@ test("a paid web_search's runner.request names who charges for it (charged_by: p
   assert.ok(typeof requests[0].call === "string" && requests[0].call !== "", "and the call it was booked under");
 });
 
-test("a paid monid run is admitted on the run's ledger naming monid as who charges for it", async () => {
+test("a paid monid endpoint's call is admitted on the run's ledger under its own name, naming monid as who charges for it", async () => {
   const { mkdtempSync: scratch } = await import("node:fs");
-  const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
-  const { monidRegistration } = await import("../dist/monid.js");
+  const { monidForClaim } = await import("../dist/runner/monid-run.js");
   const { bookedIn } = await import("../dist/paid-calls.js");
   const { localWorkspace } = await import("../dist/workspace/index.js");
   const { KEY } = await import("./fixtures/faux-monid.mjs");
@@ -100,14 +99,16 @@ test("a paid monid run is admitted on the run's ledger naming monid as who charg
   const work = scratch(join(process.env.TMPDIR ?? tmpdir(), "agentrun-monid-charged-by-"));
   const admitted = [];
   const paid = { admit: async (request) => void admitted.push(request), settle: async () => undefined };
-  const tool = monidRegistration("run", env, () => localWorkspace(work));
+  const pin = { "monid:faux/person/enrich": { description: "Enrich a person.", input: { type: "object" }, usd: 0.003 } };
+  const { tools: [tool] } = monidForClaim(pin, env, () => localWorkspace(work));
   try {
-    await bookedIn({ call: "call-1", paid }, () => tool.execute({ provider: "faux", endpoint: "/person/enrich", input: {} }, { callId: "call-1" }, ctx));
+    await bookedIn({ call: "call-1", paid }, () => tool.call({ body: { name: "Ada" } }, { callId: "call-1", signal: new AbortController().signal, attempt: 0 }));
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
   assert.equal(admitted.length, 1, `one paid step: ${JSON.stringify(admitted)}`);
   assert.equal(admitted[0].chargedBy, "monid", `monid charges for it, as main's charge row names it: ${JSON.stringify(admitted[0])}`);
+  assert.deepEqual([admitted[0].name, admitted[0].holdUsd], ["monid:faux/person/enrich", 0.003], `under its own name, held at its pinned price: ${JSON.stringify(admitted[0])}`);
 });
 
 test("a paid call on the adapter loop answered 200 is charged its price on the run's one ledger: the next request is asked with $0.001", async (t) => {

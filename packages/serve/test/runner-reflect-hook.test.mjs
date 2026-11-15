@@ -13,7 +13,7 @@ const AT = Date.UTC(2026, 10, 9, 5, 0, 0);
 const ANSWERED = { answered_at: new Date(AT).toISOString(), job_cost_usd: 0.01, look_back_usd: 0 };
 
 /** A hook over fake deps; `answer` is what the turn's ask resolves with. */
-function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n```" }, check, nothingNew } = {}) {
+function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n```" }, check, nothingNew, compileFacts, gradeCap } = {}) {
   const calls = { asked: [], checked: [] };
   const deps = {
     facts: async () => ({ learns: true, costUsd: 0.01, ...facts }),
@@ -26,6 +26,8 @@ function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n`
     newRunId: () => "run-learn-1",
     now: () => AT,
     ...(nothingNew ? { nothingNew } : {}),
+    ...(compileFacts ? { compileFacts } : {}),
+    ...(gradeCap ? { gradeCap } : {}),
   };
   const hook = createReflectHook(deps);
   const input = (outcome = "completed") => ({
@@ -66,12 +68,34 @@ test("a cancelled run, one its cap stopped, and one whose spend is unknown under
   for (const [facts, reason, detail] of [
     [{ cancelled: true }, "cancelled", said.stopped(STOPPED.cancelled)],
     [{ capReached: true }, "no_budget", said.noBudget],
-    [{ capUsd: 1, costUsd: null }, "unknown_cost", said.unknownCost],
+    [{ capUsd: 1, costUsd: null, spentUsd: null }, "unknown_cost", said.unknownCost],
   ]) {
     const { hook, input, calls } = hookWith({ facts });
     assert.deepEqual(await hook(input()), { also: [dropped(reason, detail)] }, reason);
     assert.deepEqual(calls.asked, [], `${reason}: nothing asked`);
   }
+});
+
+test("a capped run whose shown cost is unknown but whose spend under its cap is known (a request booked at its hold) is asked its look-back, never skipped as out of budget", async () => {
+  const { hook, input, calls } = hookWith({ facts: { capUsd: 5, costUsd: null, spentUsd: 2.1 } });
+  const [row] = (await hook(input())).also;
+  assert.equal(calls.asked.length, 1, "the look-back is asked: the cap's own read leaves room");
+  assert.equal(row.row.proposal.state, "proposed", JSON.stringify(row.row.proposal));
+});
+
+test("a capped run's grade, when the spend under its cap is unknown after the look-back, is not queued: dropped as unknown_cost in words that say so, never \"no room under the cap\"", async () => {
+  for (const gradeCap of [async () => null, async () => { throw new Error("the store is gone"); }]) {
+    const { hook, input } = hookWith({ facts: { capUsd: 5, costUsd: 1, spentUsd: 1 }, gradeCap });
+    const { also } = await hook(input());
+    assert.equal(also.length, 1, "no learning run is queued");
+    assert.deepEqual([also[0].table, also[0].row.proposal.state, also[0].row.proposal.reason, also[0].row.proposal.detail], ["learning_proposals", "dropped", "unknown_cost", said.gradeUnknownSpend]);
+    assert.doesNotMatch(also[0].row.proposal.detail, /no room/);
+  }
+  // A known room still queues the grade under it.
+  const { hook, input } = hookWith({ facts: { capUsd: 5, costUsd: 1, spentUsd: 1 }, gradeCap: async () => 4 });
+  const { also } = await hook(input());
+  assert.deepEqual(also.map((row) => row.table), ["learning_proposals", "learning_run"]);
+  assert.equal(also[1].row.capUsd, 4);
 });
 
 test("the turn is asked with the server's prompt, its origin reflect, within its deadline", async () => {
@@ -99,7 +123,7 @@ test("a turn an earlier claim asked first and this claim never asks (skipped, or
   const kept = { answered_at: "2026-11-09T04:00:00.000Z", job_cost_usd: 0.002 };
   const rounds = [];
   const keptOf = (round) => (rounds.push(round), kept);
-  const { hook, input, calls } = hookWith({ facts: { capUsd: 1, costUsd: null } });
+  const { hook, input, calls } = hookWith({ facts: { capUsd: 1, costUsd: null, spentUsd: null } });
   const [row] = (await hook({ ...input(), keptOf })).also;
   assert.deepEqual(calls.asked, [], "skipped: nothing asked");
   assert.deepEqual(row.row.proposal, { state: "dropped", reason: "unknown_cost", detail: said.unknownCost, answered_at: kept.answered_at, job_cost_usd: 0.002, look_back_usd: null });
@@ -111,7 +135,7 @@ test("a turn an earlier claim asked first and this claim never asks (skipped, or
     assert.deepEqual([one.row.proposal.reason, one.row.proposal.answered_at, one.row.proposal.job_cost_usd, one.row.proposal.look_back_usd], [reason, kept.answered_at, 0.002, 0.008], reason);
   }
   // A turn no claim asked before: the skip keeps no figures, as before.
-  const { hook: fresh, input: freshInput } = hookWith({ facts: { capUsd: 1, costUsd: null } });
+  const { hook: fresh, input: freshInput } = hookWith({ facts: { capUsd: 1, costUsd: null, spentUsd: null } });
   assert.deepEqual(await fresh({ ...freshInput(), keptOf: () => undefined }), { also: [dropped("unknown_cost", said.unknownCost)] });
 });
 
@@ -292,4 +316,49 @@ test("a run that only ran its learned workflows is not asked, and its look back 
     assert.deepEqual(calls.asked, [], "nothing asked");
     assert.deepEqual(kept, { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "empty", detail: said.onlyWorkflow, answered_at: new Date(AT).toISOString(), job_cost_usd: costUsd, look_back_usd: 0 } } }] }, `job cost ${costUsd}`);
   }
+});
+
+// #2641 review (class C): a held revision's compile turn is asked while its champion serves. A run its champion answered
+// alone gave nothing new to look back on, so it is asked the compile turn alone (no look-back), and the draft it keeps
+// is proposed as any compiled draft is; with no compile due it is asked nothing, as before.
+test("a run only its learned workflows answered, with a held revision due, is asked the compile turn alone and keeps its draft", async () => {
+  const flow = JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } });
+  const held = { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "r" };
+  const compileFacts = async () => ({ mode: "revise", workflow: "answer", current: flow, held, reference: "REF", notes: [], traces: [], tools: [], judges: false });
+  const answer = { ended: true, answer: `\`\`\`\`workflow answer\n---\ndescription: d\n---\n${flow}\n\`\`\`\`` };
+  const check = ({ turn }) => ({ state: "proposed", notes: 0, skills: 0, workflows: 1, proposal: { seed: "abc", files: [{ file: "workflows/answer/workflow.json", text: flow }], asked: turn.asked } });
+  const { hook, input, calls } = hookWith({ nothingNew: async () => true, compileFacts, answer, check });
+  const kept = await hook(input());
+  assert.deepEqual(calls.asked.map(({ opts }) => opts.step), ["compile-1"], "the compile turn alone: no look-back asked");
+  assert.match(calls.asked[0].prompt, /^One more turn: revise your learned workflow `answer`\./);
+  const proposal = kept.also.find((row) => row.table === "learning_proposals").row.proposal;
+  assert.equal(proposal.state, "proposed");
+  assert.deepEqual(proposal.compiled.workflow, "answer");
+  assert.ok(kept.also.some((row) => row.table === "learning_run"), "graded as any compiled draft");
+  // No compile due: nothing asked, dropped in said.onlyWorkflow's words at no cost.
+  const none = hookWith({ nothingNew: async () => true, compileFacts: async () => undefined });
+  assert.deepEqual(await none.hook(none.input()), { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "empty", detail: said.onlyWorkflow, ...ANSWERED } } }] });
+  assert.deepEqual(none.calls.asked, []);
+});
+
+// #2641 review r5 (P2): a run only its learned workflows answered asks its compile turn alone, with no look-back, so the
+// compile turn's first ask is the round's first: it keeps the job's cost and answer time with its prompt (the look-back's
+// own `keep`, #2668), and a claim that asks it again after a restart reads that ask's figures (`kept`). What the earlier
+// claim spent compiling is the learning's, never the job's.
+test("a compile-only turn keeps the job's figures with its first ask; asked again after a restart mid compile, the earlier ask's figures stand and the compile spend is the look-back's", async () => {
+  const flow = JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } });
+  const held = { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "r" };
+  const compileFacts = async () => ({ mode: "revise", workflow: "answer", current: flow, held, reference: "REF", notes: [], traces: [], tools: [], judges: false });
+  const block = `\`\`\`\`workflow answer\n---\ndescription: d\n---\n${flow}\n\`\`\`\``;
+  const check = ({ turn }) => ({ state: "proposed", notes: 0, skills: 0, workflows: 1, proposal: { seed: "abc", files: [{ file: "workflows/answer/workflow.json", text: flow }], asked: turn.asked } });
+  // This claim: the first to ask. Its compile ask keeps the job's cost and answer time.
+  const first = hookWith({ nothingNew: async () => true, compileFacts, answer: { ended: true, answer: block }, check });
+  await first.hook(first.input());
+  assert.deepEqual(first.calls.asked.map(({ opts }) => [opts.step, opts.keep]), [["compile-1", { answered_at: ANSWERED.answered_at, job_cost_usd: 0.01 }]]);
+  // A later claim: the earlier one answered the job at $0.002 and was lost mid compile; the run reads $0.01 now.
+  const kept = { answered_at: "2026-11-09T04:00:00.000Z", job_cost_usd: 0.002 };
+  const again = hookWith({ nothingNew: async () => true, compileFacts, answer: { ended: true, answer: block, kept }, check });
+  const rows = await again.hook(again.input());
+  const proposal = rows.also.find((row) => row.table === "learning_proposals").row.proposal;
+  assert.deepEqual([proposal.state, proposal.answered_at, proposal.job_cost_usd, proposal.look_back_usd], ["proposed", kept.answered_at, 0.002, 0.008], JSON.stringify(proposal));
 });

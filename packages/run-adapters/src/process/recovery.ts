@@ -90,12 +90,16 @@ export function recoveryNote(state: SessionState, options: RecoveryOptions = {})
  * The note as a harness carries it outside the user's turn (a system prompt, a developer item): from the harness, about the
  * turn before, in the harness's own words only. It names each call and says how it ended, and never quotes what a tool was
  * given or answered with (that is data the agent read, not something the harness may speak for), a prompt, or a pending message.
+ * `shown`: the calls whose result or error the conversation already carries, in the recovered output of the script that made
+ * them (Codex's code mode): for a completed or failed one the note says it is there, never that it is not shown. With none
+ * (every other harness), each call's output is not shown here, as it says.
  * `undefined` when no turn is open.
  */
-export function recoverySystemNote(state: SessionState): string | undefined {
+export function recoverySystemNote(state: SessionState, shown: ReadonlySet<string> = new Set()): string | undefined {
   const turn = openTurn(state);
   if (!turn) return undefined;
   const calls = turn.calls.map((e) => recoveryCall(e, 0));
+  const carried = (c: RecoveryCall) => shown.has(c.callId) && (c.status === 'completed' || c.status === 'failed');
   const lines: string[] = [
     'The harness, not the user, adds this about the turn before this one:',
     '[Recovery] Your previous turn was interrupted: the process running it stopped, and this session was resumed from its durable log.',
@@ -104,11 +108,18 @@ export function recoverySystemNote(state: SessionState): string | undefined {
   if (calls.length === 0) lines.push('No tool call had started in that turn.');
   else {
     lines.push('What the log records about the tool calls since that turn began (none was run again):');
-    for (const c of calls) lines.push(`- ${c.name}, call ${c.callId}: ${ended(c)}`);
-    lines.push('', 'The output of those calls is not shown here. Check the actual state before relying on it.');
+    for (const c of calls) lines.push(`- ${c.name}, call ${c.callId}: ${carried(c) ? endedShown(c) : ended(c)}`);
+    const unshown = calls.filter((c) => !carried(c)).length;
+    if (unshown === calls.length) lines.push('', 'The output of those calls is not shown here. Check the actual state before relying on it.');
+    else if (unshown > 0) lines.push('', 'The output of the other calls is not shown here. Check the actual state before relying on it.');
   }
   lines.push('', 'Check the actual state before repeating anything that may have taken effect, then carry on with the task.');
   return lines.join('\n');
+}
+
+/** How a call whose outcome the conversation carries ended (`shown`, recoverySystemNote): where that outcome is. */
+function endedShown(c: RecoveryCall): string {
+  return c.status === 'failed' ? 'failed. Its error is in the output of the script that made the call, above.' : 'completed. Its result is in the output of the script that made the call, above.';
 }
 
 function ended(c: RecoveryCall): string {

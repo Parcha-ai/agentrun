@@ -72,6 +72,11 @@ export const KINDS = {
    *  (adapter-loop.ts pauseFor), and a claim lost before that restores it from here (pendingPauseOf). No run patch, and
    *  neither a call nor a message, so the reader passes over it. */
   pausePending: "agentrun.pause.pending",
+  /** On the run's model session (resume log, never read as a call or a message): the session's recent requests as the
+   *  cap's expected pricing reads them (the kernel's RecentRequest list, recentAfter), written each time one answers.
+   *  A later claim or pass starts from the newest record, so its first request reads the cache a recent answer left warm
+   *  when it ended under CACHE_WARM_MS ago by the cap's clock, and uncached after that (adapter-loop.ts recentIn). */
+  capRecent: "agentrun.cap.recent",
   /** A workflow call node's effect, as it starts and as it ends (pause.ts NodeLine: its path, item, tool, label, input,
    *  then its status and output or error), on the run's node-log session (NODE_LOG_SESSION): the run's graph lists its
    *  effects from these. Written as the effect runs, never for one the driver answers from its receipt. */
@@ -81,10 +86,24 @@ export const KINDS = {
    *  same submission pi's adapter writes, so the step reads both alike. Neither a call nor a message: the reader passes
    *  over it, and the turn is never on the run's visible record. */
   endOfRunTurn: "agentrun.end-of-run.turn",
+  /** What an end-of-run turn kept as it was first asked (its `keep`, by its `requestId`), for a harness that keeps its own
+   *  record (pi; a CLI's record keeps it on its endOfRunTurn prompt): written once, before the turn's first request, so a
+   *  later claim that asks the same turn again reads the first ask's (the commit of main a compile turn was asked at among
+   *  them), never its own. Neither a call nor a message: the reader passes over it. */
+  endOfRunKept: "agentrun.end-of-run.kept",
+  /** How the run's job's own turn ended (JobEndData: the end it gives the run, a CLI's error answer), as the claim that
+   *  read it decided, written on the root before the end-of-run step asks its first turn. A claim that finds that turn
+   *  open ends the run on the newest one, never working the job's end out again. Neither a call nor a message. */
+  jobEnd: "agentrun.end-of-run.job",
   /** What a learning run's claim laid of its seed: the learned skills it was given (`skills`, by name) and the learned
    *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
    *  what the run was given. Neither a call nor a message. */
   learningLaid: "agentrun.learning.laid",
+  /** A grade's feedback round (runner/feedback-round.ts): the run opened again on a grade's words, asked no turn of the
+   *  job's; its next end's end-of-run turn reads them (`text`, the `round`, whether the grade said right, the workflow a
+   *  revision is asked of). Written on the root by the commit that takes the round's steer row. Neither a call nor a
+   *  message: pi never reads it, and the Timeline shows its words as the reviewer's. */
+  feedback: "agentrun.feedback",
   /** A workflow run's model node's execution, as the runner kept it before running it (workflow-spec.ts onModelNode):
    *  `{ path, tier?, model }`, its execution path, the tier it asked for (absent for none) and the model id the run's route
    *  sent it to. On the node log (NODE_LOG_SESSION), for GET /runs/{id}/graph's nodes' `model` (graph-view.ts). Neither a
@@ -190,6 +209,9 @@ export interface CallStartData {
    *  until its agentrun.call.sent mark (KINDS.callSent). The bridge holds the call and hands the CLI nothing while it waits,
    *  so no waiting result shows for it, as on pi. */
   readonly parked?: true;
+  /** A tool that only nests calls (tools_call, codemode; HostTool.nests): its calls start after it, each its own, and it
+   *  runs again whole after a crash, so a start a crash left open is never ended interrupted (adapter-loop.ts). */
+  readonly nests?: true;
   /** The harness's working directory (a CLI's), which an absolute path in `input` is built from: the run's rows name a
    *  path under it by its name in the workspace (store-reads/journal.ts runTimeline). */
   readonly cwd?: string;
@@ -236,8 +258,9 @@ export interface MessageData {
   readonly at?: number;
 }
 
-/** What an approval costs, as main's card shows it (tool-gate.ts ApprovalPrice): dollars, or "not metered". */
-export type ApprovalPrice = number | "not metered";
+/** What an approval costs, as main's card shows it (tool-gate.ts ApprovalPrice): dollars, "not metered", or "priced by
+ *  usage" for a monid endpoint priced by usage. */
+export type ApprovalPrice = number | "not metered" | "priced by usage";
 
 /** A call the gate asked a person about: what main's approval card shows (tool-gate.ts ApprovalRequest). A parked call
  *  has no call.start yet, so its input is here. Optional for an ask written before these fields. */
@@ -248,8 +271,10 @@ export interface AskData {
   readonly args?: unknown;
   /** When it was asked (ISO), from the loop's clock; a re-ask on a resume keeps the first. */
   readonly requestedAt?: string;
-  /** Its approval price (the spec's approvalPrice); null when it has none. */
+  /** Its approval price (a catalog tool's, the spec's mcp priceOf); null when it has none. */
   readonly price?: ApprovalPrice | null;
+  /** An MCP tool its run's pin marks destructive (tool-gate.ts toolEffect): an allow of it needs confirm_destructive. */
+  readonly destructive?: true;
 }
 
 /** How an ask was answered: approved, denied, withdrawn (a stop while the call waited) or canceled (a cancel). */
@@ -325,6 +350,13 @@ export interface EndData {
   readonly output?: unknown;
   /** An escalated workflow run's review (outcome escalated): why it waits for a person, as its escalate node said it. */
   readonly review?: EndReview;
+}
+
+/** How a run's job's own turn ended (KINDS.jobEnd): the end it gives the run (its summary cut of every secret the runner
+ *  holds), and a CLI's error answer the end writes as its error row (`failedWith`). */
+export interface JobEndData {
+  readonly end: EndData;
+  readonly failedWith?: string;
 }
 
 /** An escalated workflow run's review as its end keeps it: the escalation's kind, the escalate node's label (else the node

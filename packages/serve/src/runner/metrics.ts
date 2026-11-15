@@ -12,6 +12,7 @@ import { answeredUnpriced, RUNNER_RECORDS, type SessionRecord, sessionSpendOf } 
 import { DECISION_SESSION, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { KINDS, WORKFLOW_SESSION } from "./journal-kinds.js";
 import { anthropicModelId } from "../provider.js";
+import { WORKFLOW_FIRST, WORKFLOW_FIRST_CALL } from "./workflow-first.js";
 
 /** What a run's booking says one of its sessions spent: its requests (a hold given back unused is none), their known
  *  sum, how many have no known cost, their tokens, and how many of the requests have no known tokens (`unmetered`: booked
@@ -89,6 +90,22 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
   return { usd: unpriced ? null : known, known, unpriced, requests, unmetered, models, tokens };
 }
 
+/** The run's model requests billed to a ChatGPT plan (runner.turn `billing` "plan", booked at no price, chatgpt-plan.ts):
+ *  how many and their tokens (input, output and cache, as each booking reported them). Each is one of bookedSpend's
+ *  `unpriced` (and of a pi run's usage row's): a plan request has no price here, and none is owed here either. */
+export function planSpend(entries: readonly EntryLike[]): { readonly requests: number; readonly tokens: number } {
+  let requests = 0;
+  let tokens = 0;
+  for (const e of entries) {
+    if (e.kind !== RUNNER_RECORDS.turn) continue;
+    const d = (e.data ?? {}) as { billing?: unknown; givenBack?: unknown; unsent?: unknown; usage?: Record<string, unknown> };
+    if (d.billing !== "plan" || d.givenBack === true || d.unsent === true) continue;
+    requests += 1;
+    for (const key of ["input", "output", "cacheRead", "cacheWrite"]) if (typeof d.usage?.[key] === "number") tokens += d.usage[key] as number;
+  }
+  return { requests, tokens };
+}
+
 /** An agent run's cost as its end commit stores it: its model requests' (`model`), its paid tool calls' (`paid`, the
  *  run's ledger.paid) and its decisions' (`decisions`, a learned workflow's decision nodes, LS-07: bookedSpend over
  *  their own session's records, so one that reported no cost is unknown, never the cap's hold for it), summed; null (unknown) when any of them is. Never a known figure that leaves an unknown part out. */
@@ -100,9 +117,17 @@ export function runEndCost(parts: { readonly model: number | null; readonly paid
  *  its end-of-run turn's answer. Each took a model request, so a run that shows one and booked none (its requests went
  *  past its model proxy) spent what no booking read: its cost is unknown, never $0. */
 export function cliModelWorked(entries: readonly EntryLike[]): boolean {
-  return entries.some((e) => {
-    const role = (e.data as { role?: unknown } | undefined)?.role;
-    return e.kind === KINDS.callStart || ((e.kind === KINDS.message || e.kind === KINDS.endOfRunTurn) && role === "model");
+  // A run its learned workflow served first and answered (runner/workflow-first.ts, the loop's WORKFLOW_FIRST entry) keeps
+  // the step's call and the workflow's answer, as the model's message written with that entry (pi's too: adapter-loop.ts
+  // serveFirst): neither took a model request of the run's agent. Only that one message is passed over: a model message
+  // after it (a follow-up's answer, its look-back's) is the model at work, so with nothing booked its cost is unknown.
+  const roleOf = (e: EntryLike) => (e.data as { role?: unknown } | undefined)?.role;
+  const servedAt = entries.findLastIndex((e) => e.kind === WORKFLOW_FIRST && (e.data as { outcome?: unknown } | undefined)?.outcome === "answered");
+  const servedAnswer = servedAt < 0 ? -1 : entries.slice(0, servedAt).findLastIndex((e) => e.kind === KINDS.message && roleOf(e) === "model");
+  return entries.some((e, i) => {
+    if (e.kind === KINDS.callStart) return (e.data as { callId?: unknown } | undefined)?.callId !== WORKFLOW_FIRST_CALL;
+    if (e.kind === KINDS.message) return roleOf(e) === "model" && i !== servedAnswer;
+    return e.kind === KINDS.endOfRunTurn && roleOf(e) === "model";
   });
 }
 

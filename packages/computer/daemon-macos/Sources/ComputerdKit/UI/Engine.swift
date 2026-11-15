@@ -50,6 +50,10 @@ public actor UIEngine {
 	var takeOverArmed = false
 	/// The running step's mark (Marks), which only that step moves.
 	var stepMark: UInt64?
+	/// The apps whose changes the platform tells (Platform.changes), by id: the pid the engine watches.
+	var watched: [String: Int32] = [:]
+	/// The engine's latest read of a window whose app tells its changes, and the target it was asked for.
+	var latest: (asked: Target?, view: View)?
 
 	public init(platform: Platform, policy: Policy, timing: Timing = Timing()) {
 		self.platform = platform
@@ -89,10 +93,12 @@ public actor UIEngine {
 		if let app = target?.app { try policy.check(app) }
 		let resolved: ResolvedTarget
 		let snapshot: Snapshot
+		var at: Double?
 		switch (ax.feature, platform.capture.feature) {
 		case (.on, _):
 			var found = try ax.resolve(target)
 			try policy.check(found.app.id)
+			at = watch(found)
 			do {
 				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes, details: details)
 			} catch let gone as RPCError where gone.kind == .notFound && target?.window == nil {
@@ -100,6 +106,7 @@ public actor UIEngine {
 				// reading it (a first-run window giving way to the real one), the look follows the new main window.
 				found = try ax.resolve(target)
 				try policy.check(found.app.id)
+				at = watch(found)
 				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes, details: details)
 			}
 			resolved = found
@@ -110,8 +117,35 @@ public actor UIEngine {
 		case (.off(let tree), .off(let image)):
 			throw RPCError.denied("ui.tree is off here: \(tree); and ui.image is off: \(image). Without either, Computerd cannot see a window")
 		}
-		let view = View(target: resolved, nodes: snapshot.nodes, truncated: snapshot.truncated, frame: nil)
-		return framed || snapshot.nodes.isEmpty ? await self.framed(view) : view
+		let view = View(target: resolved, nodes: snapshot.nodes, truncated: snapshot.truncated, frame: nil, at: at)
+		let answer = framed || snapshot.nodes.isEmpty ? await self.framed(view) : view
+		latest = at == nil ? nil : (target, answer)
+		return answer
+	}
+
+	/// Watches the app's changes, where the platform tells them, before its window is read: the time the read begins,
+	/// after which every change is told. nil for an app that tells none.
+	func watch(_ found: ResolvedTarget) -> Double? {
+		guard let changes = platform.changes, changes.watch(found.pid) else {
+			watched[found.app.id] = nil
+			return nil
+		}
+		watched[found.app.id] = found.pid
+		return clock.now()
+	}
+
+	/// The app told a change at `time` or after; true where the platform tells none.
+	func told(_ pid: Int32, since time: Double) -> Bool {
+		guard let changes = platform.changes else { return true }
+		return (changes.lastChange(pid) ?? -.infinity) >= time
+	}
+
+	/// The engine's latest read of the window a target names, when it was asked for by the same target (one that names
+	/// its app) and the app told no change since the read began: what an observe just before an act read, for the act's
+	/// first look.
+	func unchanged(_ target: Target?) -> View? {
+		guard target?.app != nil, let (asked, view) = latest, asked == target, let at = view.at, !told(view.target.pid, since: at) else { return nil }
+		return view
 	}
 
 	/// The look with its image's hash, read now if it has none.
@@ -311,12 +345,19 @@ public actor UIEngine {
 		takeOver = TakeOverWatch(call: "act", unit: "step", platform: platform)
 		takeOverArmed = false
 		var spent: [String] = []
-		// A wait for a window may begin with none: its app's window not there yet is what it waits for, never not_found.
+		// The steps act on the window as the engine last read it, when its app told no change since (an observe just
+		// before): the settle after each step reads it again. A wait for a window may begin with none: its app's window
+		// not there yet is what it waits for, never not_found.
 		let first: View?
-		do {
-			first = try await look(target)
-		} catch let none as RPCError where none.kind == .notFound && waitsForWindow && params.steps.isEmpty {
-			first = nil
+		if !params.steps.isEmpty, let unchanged = unchanged(target) {
+			first = unchanged
+			spent.append("first look unchanged")
+		} else {
+			do {
+				first = try await look(target)
+			} catch let none as RPCError where none.kind == .notFound && waitsForWindow && params.steps.isEmpty {
+				first = nil
+			}
 		}
 		let app = target?.app ?? first?.target.app.id
 		let appName = first?.target.app.name ?? app ?? "the app"
@@ -887,9 +928,11 @@ public actor UIEngine {
 	/// Looks until two looks quietMs apart are the same, or settleMaxMs passed: the settled look. Apart is the time
 	/// between the end of one look and the start of the next, however long a look took: an app answers a look on the
 	/// thread it draws on, so the quiet is time it is left alone to draw. A settle starts from `first` when the act
-	/// already took that look and nothing ran since.
+	/// already took that look and nothing ran since. An app that tells its changes settles on them instead (settleTold).
 	func settle(_ target: Target?, from first: View? = nil) async throws -> View {
 		let until = clock.now() + timing.settleMaxMs
+		let pid: Int32? = if let first { first.at == nil ? nil : first.target.pid } else { target?.app.flatMap { watched[$0] } }
+		if let pid, timing.quietMs > 0 { return try await settleTold(target, from: first, pid: pid, until: until) }
 		var last: View
 		if let first { last = first } else { last = try await look(target) }
 		while timing.quietMs > 0 && clock.now() < until {
@@ -900,6 +943,34 @@ public actor UIEngine {
 			if quiet { break }
 		}
 		return last
+	}
+
+	/// The settle at an app that tells its changes (Platform.changes): it waits until the app told none for quietMs,
+	/// reads the window once, and reads it again only when the app told one after that read began. A read the same as
+	/// the one before settles too, as two looks do: an app may tell changes a person never sees (System Settings remakes
+	/// its sidebar's rows out of view each time its tree is read). The quiet counts from the read it starts from, else
+	/// from now, the step having just been sent. settleMaxMs bounds it as it does two looks.
+	func settleTold(_ target: Target?, from first: View?, pid: Int32, until: Double) async throws -> View {
+		var (pid, last, since) = (pid, first, first?.at ?? clock.now())
+		while true {
+			try await quiet(pid, since: since, until: until)
+			if let last, let at = last.at, !told(pid, since: at) || clock.now() >= until { return last }
+			let next = try await look(target)
+			guard let at = next.at else { return next }
+			if !told(next.target.pid, since: at) || next.fingerprint == last?.fingerprint || clock.now() >= until { return next }
+			(pid, last, since) = (next.target.pid, next, at)
+		}
+	}
+
+
+	/// Waits until the app told no change for quietMs, counted from `since` at the earliest, or until `until`.
+	func quiet(_ pid: Int32, since: Double, until: Double) async throws {
+		while true {
+			let last = max(since, platform.changes?.lastChange(pid) ?? since)
+			let left = min(last + timing.quietMs, until) - clock.now()
+			guard left > 0 else { return }
+			try await sleep(left)
+		}
 	}
 
 	/// The expect holds in this look. text: some node's name, value or desc holds it (never a secure field's value). ref:

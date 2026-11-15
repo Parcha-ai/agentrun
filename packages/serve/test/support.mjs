@@ -29,6 +29,7 @@ import { routeOf } from "../dist/runner/model-route.js";
 import { withoutFaux } from "../dist/model.js";
 import { runLine } from "../dist/print.js";
 import { bootSealKey } from "../dist/seal-key.js";
+import { stranger } from "./fixtures/stranger.mjs";
 
 // Every test process has a config home of its own, never this machine's ~/.config: a test writes nothing outside its own
 // directories (a server keeps its seal key in its data directory, seal-key.ts).
@@ -55,6 +56,9 @@ export const SECRET_WRITE_PATHS = [
   { methods: ["POST"], path: /^\/integrations\/github\/connect$/ },
   { methods: ["DELETE"], path: /^\/integrations\/github$/ },
   { methods: ["DELETE"], path: /^\/agents\/[^/]+\/sign-ins\/[^/]+$/ },
+  // The server's ChatGPT sign-in (chatgpt-plan.ts): its state, its start and finish, and its sign-out.
+  { methods: ["GET", "DELETE"], path: /^\/settings\/chatgpt$/ },
+  { methods: ["POST"], path: /^\/settings\/chatgpt\/sign-in(?:\/finish)?$/ },
 ];
 /** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
 export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });
@@ -781,6 +785,7 @@ export async function responsesEndpoint(t, text, tokens, { incomplete = false } 
   const models = [];
   const authorizations = [];
   const server = createServer((req, res) => {
+    if (stranger(req, res)) return;
     asked.push(`${req.method} ${req.url}`);
     if (req.method === "POST") authorizations.push(req.headers.authorization ?? null);
     const chunks = [];

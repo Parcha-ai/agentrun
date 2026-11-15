@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { agent, follow, scratch, scratchDir, serve } from "./support.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 /** The gateway's key in these tests: no real one. */
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
@@ -25,7 +26,7 @@ async function gateway(t, { text = () => "OpenCode answered.", held = Infinity }
   const gate = new Promise((resolve) => (release = resolve));
   t.after(() => release());
   const server = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     const i = seen.length;

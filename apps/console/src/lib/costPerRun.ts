@@ -8,6 +8,8 @@ export const PATHS: readonly { path: RunPath; label: string; fill: string; strok
   { path: "agent", label: "By the agent", fill: "fill-chart-agent", stroke: "stroke-chart-agent" },
   { path: "handed_back", label: "Handed back", fill: "fill-chart-handed-back", stroke: "stroke-chart-handed-back" },
   { path: "workflow", label: "Learned workflow", fill: "fill-chart-workflow", stroke: "stroke-chart-workflow" },
+  // A replay run: a learned workflow's new revision run alone on a graded input before it serves (its cost is learning's).
+  { path: "replay", label: "Replay", fill: "fill-muted-foreground", stroke: "stroke-muted-foreground" },
 ];
 export const pathOf = (path: RunPath) => PATHS.find((p) => p.path === path)!;
 
@@ -106,7 +108,8 @@ export function blocksOf(runs: readonly CostRun[], size: number): Block[] {
   const blocks: Block[] = [];
   for (let i = 0; i < runs.length; i += size) {
     const slice = runs.slice(i, i + size);
-    const counts = { agent: 0, handed_back: 0, workflow: 0 } as Record<RunPath, number>;
+    // Every path in the legend at 0, so a path's first run counts 1, never NaN.
+    const counts = Object.fromEntries(PATHS.map(({ path }) => [path, 0])) as Record<RunPath, number>;
     for (const r of slice) counts[r.path]++;
     blocks.push({ from: slice[0]!.n, to: slice.at(-1)!.n, runs: slice.length, counts });
   }

@@ -13,9 +13,9 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
 import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
-import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
+import { abortedOutcome, openDrive, SessionHalt, type Drive } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
-import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { markParked } from "./scripts.js";
 import { withCheckedBinary } from "./host/sandbox.js";
@@ -52,6 +52,10 @@ export interface CodexProvider {
   origin: string;
   /** The provider key, read per request in this process. It never reaches Codex's process. */
   credential: () => Promise<string> | string;
+  /** A person's ChatGPT plan (`credential` its access token), whose rules the proxy keeps (codexPolicy's `plan`). */
+  plan?: boolean;
+  /** Told the credential a request was sent with when the provider answered 401 to it (ModelProxyOptions.credentialRefused). */
+  refused?: (credential: string) => void | Promise<void>;
 }
 
 /** Codex's own web search, as a session may turn it on: `live` (it searches the web as it runs). */
@@ -89,42 +93,6 @@ export interface CodexAdapterOptions {
   binary?: { path: string; packageVersion?: string };
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
-}
-
-/** The kernel's tool for a host tool: the same name, schema and replay policy; a host's error result is the call's failure.
- *  The call runs as a kernel effect, whose intent is durable in the session's records before `execute` is entered, so a
- *  crash inside a `never` tool is always reported, never repeated. The copied harness's wait for Codex's own `function_call`
- *  line before it runs such a tool is a second guard (the transcript Codex resumes from), not the one that protects it. */
-export function kernelTool(tool: HostTool): KernelTool {
-  return {
-    name: codexToolName(tool.name),
-    // Codex strips some keywords from the schema its model is given: they are said in plain words in the description
-    // (the schema itself is the host's, and every call is checked against it).
-    description: describedDescription(tool.description, tool.inputSchema),
-    inputSchema: tool.inputSchema,
-    replay: tool.replay,
-    ...(tool.nests ? { nests: true as const } : {}),
-    async execute(input, io) {
-      // The effect's step is `tool:<Codex call id>#<attempt>`: the host sees Codex's call id.
-      const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
-      // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
-      const attempt = Number(/#(\d+)$/.exec(io.stepId ?? "")?.[1] ?? 0);
-      // A tool that nests calls (tools_call) names them by the host's names: the bridge holds them by Codex's.
-      const nested = io.nested && { call: (name: string, args: Record<string, unknown>, key: string) => io.nested!.call(codexToolName(name), args, key), memo: io.nested.memo };
-      const result = await tool.call(input, { callId, signal: io.signal, attempt, ...(nested ? { nested } : {}) });
-      // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
-      if (result.parked) await markParked(io.ctx, callId);
-      if (result.isError) throw new Error(result.text);
-      // A computer tool's value, recorded with the outcome: a script's nested call is answered it (code-mode.ts scriptAnswer).
-      const structured = result.structured !== undefined ? { structured: result.structured } : {};
-      if (!result.images?.length) return result.structured === undefined ? result.text : { text: result.text, ...structured };
-      // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
-      const wrong = toolImageProblems(tool.name, result.images);
-      if (wrong) throw new Error(wrong);
-      // With its images, recorded with the outcome: the answer to Codex carries them after the text (code-mode.ts withImages).
-      return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })), ...structured };
-    },
-  };
 }
 
 /** The adapter's event for a harness live event, if it has one: a tool's by the host's name for it (`hostName`). */
@@ -223,7 +191,21 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       // web_search setting allows it, read before each request (a deny or ask set mid-run drops it from the next one).
       const searchAllowed = options.webSearch && io.permission ? async () => (await io.permission!("web_search")) === "allow" : undefined;
       const harnessOptions: CodexHarnessOptions = {
-        tools: tools.map(kernelTool),
+        // The kernel's tool for each host tool (bridgeTool): the same schema and replay policy, a host's error result the
+        // call's failure. The call runs as a kernel effect, whose intent is durable before it is entered, so a crash inside
+        // a `never` tool is always reported, never repeated (the copied harness's wait for Codex's own `function_call` line
+        // before it runs such a tool is a second guard, not the one that protects it).
+        tools: tools.map((tool) => bridgeTool(tool, {
+          name: codexToolName(tool.name),
+          // Codex strips some keywords from the schema its model is given: they are said in plain words in the
+          // description (the schema itself is the host's, and every call is checked against it).
+          description: describedDescription(tool.description, tool.inputSchema),
+          // A tool that nests calls (tools_call) names them by the host's names: the bridge holds them by Codex's.
+          nestedName: codexToolName,
+          // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
+          parked: markParked,
+          imageProblems: (images) => toolImageProblems(tool.name, images),
+        })),
         // The host's gate, asked about each host-tool call before its intent is written.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!({ ...call, tool: hostName(call.tool) }) } : {}),
         builtins: false,
@@ -260,6 +242,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
               ...(options.log ? { log: options.log } : {}),
               ...(options.price ? { price: options.price } : {}),
               ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+              ...(options.provider.plan ? { plan: true } : {}),
+              ...(options.provider.refused ? { credentialRefused: options.provider.refused } : {}),
               ...(options.fetch ? { fetch: options.fetch } : {}),
             },
           }),
@@ -330,11 +314,12 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       // Started once the session's drive is open, the last step that can fail: an open that fails leaves no listener.
       const search = options.webSearch === "live";
       const hostPort = await startModelProxy({
-        policy: codexPolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), ...(search ? { webSearch: "live" as const, ...(searchAllowed ? { searchAllowed } : {}) } : {}) }),
+        policy: codexPolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), ...(options.provider.plan ? { plan: true } : {}), ...(search ? { webSearch: "live" as const, ...(searchAllowed ? { searchAllowed } : {}) } : {}) }),
         hooks: io.models,
         model: modelFor(spec),
         origin: options.provider.origin,
         credential: async () => (await options.provider.credential()) ?? "",
+        ...(options.provider.refused ? { credentialRefused: options.provider.refused } : {}),
         ...(options.price ? { price: search ? withWebSearches(options.price) : options.price } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.fetch ? { fetch: options.fetch } : {}),

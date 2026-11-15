@@ -17,6 +17,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, asOwner, follow, retried, runDir, runRecordOf, scratch, serve as serveOf, startInProcessRunner, storeBytes, withEnv } from "./support.mjs";
 import { openSqliteStore, sealMcpCredential } from "../dist/store/index.js";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 /** The fake server's bearer token: no real one. */
@@ -112,7 +113,7 @@ test("pi: an agent granted mcp:fake/add calls it with the server's bearer; the t
   assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(view.result?.final_answer, "The tool said: 5");
-  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp__fake__add");
+  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp:fake/add");
   assert.equal(call?.summary, "fake · add", JSON.stringify(rows.filter((row) => row.kind === "tool_use")));
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
   // The token is in no file under the data directory: a pi run on the runner writes no folder of its own, and keeps what
@@ -162,7 +163,7 @@ test("a tool whose schema the Claude CLI would drop (a root anyOf) is refused on
   await addFake(t, api, "fake", fake);
   const refused = await retried(api)("POST", "/agents",agent("claude-pick", { harness: "claude-agent", tools: ["mcp:fake/pick"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
-  assert.match(JSON.stringify(refused.body), /tool pick cannot be offered on claude-agent: \/anyOf: the Claude Agent CLI drops a tool whose root has anyOf/);
+  assert.match(JSON.stringify(refused.body), /The tool mcp:fake\/pick cannot be offered on claude-agent: \/anyOf: the Claude Agent CLI drops a tool whose root has anyOf/);
   assert.equal((await retried(api)("POST", "/agents",agent("pi-pick", { tools: ["mcp:fake/pick"] }))).status, 201, "pi takes the schema whole");
 });
 
@@ -176,7 +177,7 @@ test("a tool whose schema Codex would drop or retype (a not) is refused on codex
   assert.ok(listed?.input_schema?.properties?.name?.not, `the server listed the not: ${JSON.stringify(listed)}`);
   const refused = await retried(api)("POST", "/agents",agent("codex-greet", { harness: "codex", tools: ["mcp:fake/greet"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
-  assert.match(JSON.stringify(refused.body), /tool greet cannot be offered on codex: \/properties\/name\/not: not is not supported by Codex 0\.164\.0 \(it drops or retypes it\)/);
+  assert.match(JSON.stringify(refused.body), /The tool mcp:fake\/greet cannot be offered on codex: \/properties\/name\/not: not is not supported by Codex 0\.164\.0 \(it drops or retypes it\)/);
   assert.equal((await retried(api)("POST", "/agents",agent("pi-greet", { tools: ["mcp:fake/greet"] }))).status, 201, "pi takes the schema whole");
   // A nearby shape Codex takes: a bound it only strips (minLength) is no refusal; the server still checks it.
   fake.tools.name = { description: "Names anyone.", input: { type: "object", properties: { name: { type: "string", minLength: 2 } }, required: ["name"] }, run: ({ name }) => ({ content: [{ type: "text", text: `named ${name}` }] }) };
@@ -184,17 +185,24 @@ test("a tool whose schema Codex would drop or retype (a not) is refused on codex
   assert.equal((await retried(api)("POST", "/agents",agent("codex-name", { harness: "codex", tools: ["mcp:fake/name"] }))).status, 201, "codex takes a bound it only strips");
 });
 
-test("a tool whose header declaration a refresh made unsendable refuses the run in words, naming it, and nothing is sent", { timeout: 90_000 }, async (t) => {
+test("a tool whose header declaration the server made unsendable since: saving the agent again is refused in words, naming it, the revision keeps its pin, and nothing is sent", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
   const fake = await startFakeMcp({ token: TOKEN });
   fake.tools.tagged = { description: "Tagged.", input: { type: "object", properties: { region: { type: "string", "x-mcp-header": "Region" } } }, run: () => ({ content: [{ type: "text", text: "ok" }] }) };
   await addFake(t, api, "fake", fake);
   assert.equal((await retried(api)("POST", "/agents",agent("tagged", { tools: ["mcp:fake/tagged"], tool_settings: ALLOW_FAKE }))).status, 201);
+  const before = (await api("GET", "/agents/tagged")).body;
   fake.tools.tagged.input = { type: "object", properties: { region: { type: "object", "x-mcp-header": "Region" } } };
   assert.equal((await api("POST", "/settings/mcp-servers/fake/refresh")).status, 200);
-  const refused = await api("POST", "/agents/tagged/runs", { input: { content: 'Call mcp__fake__tagged with {"region":{}}' } });
-  assert.equal(refused.status, 409, JSON.stringify(refused.body));
-  assert.match(refused.body.error?.message ?? "", /tool tagged declares a header it cannot send: region: x-mcp-header is only allowed on a string, integer or boolean/);
+  const definition = { ...before.definition };
+  delete definition.version;
+  // The save lists the server again to re-pin it: the tool it lists now cannot be sent, so the save is refused.
+  const refused = await api("PUT", "/agents/tagged/definition", { definition });
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.match(JSON.stringify(refused.body), /tool tagged declares a header it cannot send: region: x-mcp-header is only allowed on a string, integer or boolean/);
+  const after = (await api("GET", "/agents/tagged")).body;
+  assert.deepEqual([after.revision, after.mcp_pin], [before.revision, before.mcp_pin], "the revision and its pin as saved");
+  assert.equal(after.mcp_pin.fake.tools[0].input_schema.properties.region.type, "string", "pinned as it was sendable");
   assert.equal(calls(fake).length, 0);
 });
 
@@ -235,7 +243,7 @@ test("pi: a run killed mid-call resumes with the call answered interrupted, and 
   t.after(() => closeSecond());
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
-  const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__slow_write");
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === "mcp:fake/slow_write");
   assert.match(`${result?.summary} ${result?.tool_result_preview}`, /interrupted/i, JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
   assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
 });
@@ -309,7 +317,7 @@ test("claude-agent: the Claude CLI calls mcp:fake/add as a host tool; the fake s
   assert.match(view.result?.final_answer ?? "", /^The tool said: 5\b/);
   assert.ok(anthropic.requests.some((request) => request.tools.includes("mcp__hands__mcp__fake__add")), "the model was offered the granted tool, as a host tool");
   assert.ok(!anthropic.requests.some((request) => request.tools.includes("mcp__fake__add")), "never through a client of the CLI's own");
-  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp__fake__add");
+  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp:fake/add");
   assert.equal(call?.summary, "fake · add", JSON.stringify(rows.filter((row) => row.kind === "tool_use")));
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
   // After the run's end (its runner let the claim go) and the CLI process's exit (no process works in the run's scratch any
@@ -361,7 +369,7 @@ test("claude-agent: a run killed mid-call resumes with the call reported interru
     await sleep(100);
   }
   // While the call runs, the Timeline has its row, as on codex.
-  const isCall = (row) => row.tool_name === "mcp__fake__slow_write";
+  const isCall = (row) => row.tool_name === "mcp:fake/slow_write";
   let running = [];
   for (let i = 0; i < 50 && !running.some((row) => row.kind === "tool_use" && isCall(row)); i++) {
     if (i) await sleep(100);
@@ -393,11 +401,12 @@ test("pi: a saved credential that can't be opened refuses the call before anythi
   const open = await startFakeMcp({});
   t.after(() => open.close());
   assert.equal((await api("PUT", "/settings/mcp-servers/open", { url: open.url, auth: { type: "none" } })).status, 200);
+  // Saved (and pinned) while the credential opens; damaged at rest after.
+  assert.equal((await retried(api)("POST", "/agents",agent("unopened", { tools: ["mcp:fake/add", "mcp:open/add"], tool_settings: { ...ALLOW_FAKE, "mcp:open/*": { permission: "allow" } } }))).status, 201);
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   t.after(() => store.close().catch(() => undefined));
   const row = await store.mcp.server("fake");
   await store.mcp.put({ name: row.name, url: row.url, auth: row.auth, protocol: row.protocol, tools: row.tools, serverInfo: row.serverInfo, instructions: row.instructions, sealed: sealMcpCredential(randomBytes(32), "fake", { type: "headers", headers: { authorization: `Bearer ${TOKEN}` } }, row.url) });
-  assert.equal((await retried(api)("POST", "/agents",agent("unopened", { tools: ["mcp:fake/add", "mcp:open/add"], tool_settings: { ...ALLOW_FAKE, "mcp:open/*": { permission: "allow" } } }))).status, 201);
   const before = fake.log.length;
   const runId = await runOf(api, "unopened", 'Call mcp__fake__add with {"a":2,"b":3}');
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
@@ -437,7 +446,7 @@ test("pi: a saved header named unopened is a header like any other: the call is 
 /** serve's gateway on loopback: each Responses request answered with the text it carries, and its usage. */
 async function echoGateway(t) {
   const server = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     const text = JSON.parse(body || "{}").input?.[0]?.content?.[0]?.text ?? "";
@@ -485,10 +494,10 @@ test("codex: an agent granted mcp:fake/add calls it as a host tool, mcp_fake__ad
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind.startsWith("tool"))));
   assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "mcp_fake__add returned: 5", "the stand-in answered with the tool's result");
-  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp__fake__add");
+  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp:fake/add");
   assert.equal(call?.summary, "fake · add", JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
   // The call is keyed by Codex's own id for it (its dynamicToolCall item's id), under the host's name for the tool.
-  const ids = rows.filter((row) => row.tool_name === "mcp__fake__add").map((row) => [row.kind, row.tool_use_id]);
+  const ids = rows.filter((row) => row.tool_name === "mcp:fake/add" && row.kind.startsWith("tool")).map((row) => [row.kind, row.tool_use_id]);
   assert.deepEqual(ids.map(([kind]) => kind), ["tool_use", "tool_result"], JSON.stringify(ids));
   assert.match(ids[0][1], /^call_[0-9a-f]{20}$/);
   assert.equal(ids[1][1], ids[0][1]);
@@ -515,7 +524,7 @@ test("codex: a run killed mid-call shows the call's row while it runs and its in
     await sleep(100);
   }
   // While the call runs, the Timeline has its row: the call's intent is in the session before it is sent.
-  const isCall = (row) => row.tool_name === "mcp__fake__slow_write";
+  const isCall = (row) => row.tool_name === "mcp:fake/slow_write";
   let running = [];
   for (let i = 0; i < 50 && !running.some((row) => row.kind === "tool_use" && isCall(row)); i++) {
     if (i) await sleep(100);
@@ -541,17 +550,17 @@ test("codex: a run killed mid-call shows the call's row while it runs and its in
 test("codex: a call refused before anything is sent lists its call row before its failed result, as a sent call does", { timeout: 90_000 }, async (t) => {
   const { api, data } = await codexServe(t);
   await addFake(t, api);
-  // The sealed bearer damaged at rest (the registry's store row, as one sealed under another seal key reads): the gateway
-  // refuses the call at once, unsent.
+  assert.equal((await retried(api)("POST", "/agents",agent("codex-refused", { harness: "codex", tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
+  // The sealed bearer damaged at rest after the save pinned the tool (the registry's store row, as one sealed under
+  // another seal key reads): the gateway refuses the call at once, unsent.
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   t.after(() => store.close().catch(() => undefined));
   const row = await store.mcp.server("fake");
   await store.mcp.put({ name: row.name, url: row.url, auth: row.auth, protocol: row.protocol, tools: row.tools, serverInfo: row.serverInfo, instructions: row.instructions, sealed: sealMcpCredential(randomBytes(32), "fake", { type: "headers", headers: { authorization: `Bearer ${TOKEN}` } }, row.url) });
-  assert.equal((await retried(api)("POST", "/agents",agent("codex-refused", { harness: "codex", tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
   const runId = await runOf(api, "codex-refused", 'call mcp_fake__add {"a":2,"b":3}');
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
-  const call = rows.filter((row) => row.tool_name === "mcp__fake__add").map((row) => [row.kind, row.seq]);
+  const call = rows.filter((row) => row.tool_name === "mcp:fake/add" && row.kind.startsWith("tool")).map((row) => [row.kind, row.seq]);
   assert.deepEqual(call.map(([kind]) => kind), ["tool_use", "tool_result"], JSON.stringify(call));
   assert.ok(call[0][1] < call[1][1], `the call row first: ${JSON.stringify(call)}`);
 });

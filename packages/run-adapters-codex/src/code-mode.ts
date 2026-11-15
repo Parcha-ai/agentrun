@@ -11,12 +11,12 @@
 //  - gives the model the harness's note about an interrupted turn as a developer message, once per interrupted turn.
 import type { DriveContext, SessionState } from "./host/kernel.js";
 import type { SessionMachine } from "./host/process.js";
-import { boundResult, openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
+import { boundResult, failureText, openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
 // cycle with harness.ts: read repairOutput only inside functions, never at module top level (pinned by "code mode and the harness
 // load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
 import { repairOutput } from "./harness.js";
 import { type RolloutSummary, summarizeRollout } from "./rollout.js";
-import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, type NestedFact, outputTextOf, parkedKey, recoveryFacts, Scripts, settle, UNWATCHED, waitResumedText } from "./scripts.js";
+import { callKey, completedNested, execRecovery, NESTED_CALL, type NestedFact, outputTextOf, parkedKey, recoveryFacts, Scripts, settle, UNWATCHED, waitResumed } from "./scripts.js";
 
 /** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec, since }` (`since`: the turn it ran in), written before the call runs. */
 export const NESTED_STREAM = "codex.nested";
@@ -25,6 +25,9 @@ export const RECOVERY_NOTE_STREAM = "codex.recovery-note";
 /** A yielded exec's nested call run on a resume (recoverItems), written before it runs: a later recovery of the same turn tells
  *  the model's `wait` its outcome from the session's record, never running it again. */
 export const RESUMED_STREAM = "codex.nested-resumed";
+/** The nested calls whose outcome a resume's recovered script output tells (recoverItems): `{ since, callIds }`, written before
+ *  that output is injected, so the turn's recovery note says the outcome is there, after a crash between the two as well. */
+export const SHOWN_STREAM = "codex.nested-shown";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -103,20 +106,23 @@ function sentOf(output: unknown): { sent: string } | Record<string, never> {
   return { sent: JSON.stringify(withImageData(kept.structured, kept.images ?? [])) };
 }
 
+/** A failed call's error as the bridge handed it (`failureText`: its message, or words saying it had none). */
+const failedText = (error: Parameters<typeof failureText>[0] | undefined): string => (error ? failureText(error) : "");
+
 function factOf(state: SessionState, rolled: ReturnType<typeof completedNested>, tie: { callId: string; tool?: string }, told: ReadonlyMap<string, NestedFact["told"]> = new Map()): NestedFact {
   const e = state.effects.get(toolKey(tie.callId));
   const status = told.get(tie.callId);
   return {
     callId: tie.callId,
     tool: e ? e.name.replace(/^tool\./, "") : (rolled.get(tie.callId)?.tool ?? tie.tool ?? "a tool"),
-    ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? (e.error?.message ?? "") : outputTextOf(e.output), ...(e.status === "completed" ? sentOf(e.output) : {}), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact["store"]> } : {}),
+    ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? failedText(e.error) : outputTextOf(e.output), ...(e.status === "completed" ? sentOf(e.output) : {}), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact["store"]> } : {}),
     ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
     ...(status ? { told: status } : {}),
     ...(state.effects.get(parkedKey(tie.callId))?.status === "completed" ? { parked: true as const } : {}),
   };
 }
 
-/** A recorded result that held images (kernelTool's `{ text, images }`) as its text and a line saying how many, which are not
+/** A recorded result that held images (bridgeTool's `{ text, images }`) as its text and a line saying how many, which are not
  *  shown again after the interruption; undefined for a result with none, whose repaired output stays as it is. */
 export function imagesNoted(output: unknown): string | undefined {
   const images = (output as { images?: unknown } | null)?.images;
@@ -293,7 +299,9 @@ export function codeMode(deps: CodeModeDeps) {
      *  any other call keeps its generic output, as an item of its own kind, and code mode's `wait` is told that it had started. `since`: the
      *  turn the dangling calls ran in: the interrupted one a recovery note resumes, or with none, the turn that ended last. Every output is then
      *  held to the host's bound as the tool bridge holds a call's result (`boundResult`): these come from the log, not through the bridge, and
-     *  both repairs (with a recovery note and without) inject what this leaves. `resume`: the open turn a recovery note resumes, whose
+     *  both repairs (with a recovery note and without) inject what this leaves. A recovered script's output (a cut-off exec's, a resumed
+     *  `wait`'s) quotes each finished call's result as the script was handed it and holds its whole to its own bound
+     *  (scripts.ts EXEC_RECOVERY_MAX_CHARS); on a resume, the calls it tells the outcome of are recorded for the note (SHOWN_STREAM). `resume`: the open turn a recovery note resumes, whose
      *  parked nested calls run now; the repair of an ended turn (repairUnnoted) only tells, and runs nothing. */
     async recoverItems(items: Record<string, unknown>[], dangling: readonly Dangling[], lines: readonly string[], since: number, resume = false): Promise<void> {
       const ties = (await journal.read<Tie>(NESTED_STREAM)).map((r) => r.data);
@@ -318,7 +326,7 @@ export function codeMode(deps: CodeModeDeps) {
         const done = ctx.state().effects.get(toolKey(tie.callId));
         // Run on an earlier recovery of this turn that stopped before the wait was answered: told from its record.
         if (yielded && ranBefore.has(tie.callId) && (done?.status === "completed" || done?.status === "failed") && !rolled.has(tie.callId)) {
-          resumed.set(tie.callId, { text: done.status === "failed" ? (done.error?.message ?? "") : outputTextOf(done.output), isError: done.status === "failed", ran: true });
+          resumed.set(tie.callId, { text: done.status === "failed" ? failedText(done.error) : outputTextOf(done.output), isError: done.status === "failed", ran: true });
           yieldedTies.push(tie);
           continue;
         }
@@ -337,23 +345,43 @@ export function codeMode(deps: CodeModeDeps) {
       // is listed once, apart, in the LAST cut-off exec's output, if it ran in this interrupted turn.
       const told = new Map((recoveryNote(state)?.calls ?? []).map((c) => [c.callId, c.status] as const));
       const listed = recoveryFacts(execs, ties, since, (tie) => ({ ...factOf(state, rolled, tie, told), ...(resumed.has(tie.callId) ? { resumed: resumed.get(tie.callId)! } : {}) }));
+      // The outputs built here hold their quoted results to their own bound (scripts.ts EXEC_RECOVERY_MAX_CHARS): every other is
+      // held to the host's below. The calls whose outcome they tell, for the turn's recovery note.
+      const built = new Set<number>();
+      const shown: string[] = [];
       dangling.forEach((c, i) => {
         if (!isExec(c)) {
           // Code mode's `wait` on a cell had started: the generic answer, that the call never started, would be false.
           const cell = waitedCell(c);
           const item = items[i] as { call_id?: unknown; output?: unknown };
-          // A completed call whose result held images (kernelTool records { text, images }): repairOutput gives the record
+          // A completed call whose result held images (bridgeTool records { text, images }): repairOutput gives the record
           // as JSON, so the model would read their base64 as text. Its text and a line on them instead; they are not sent.
           const done = state.effects.get(toolKey(c.callId));
           const pictured = cell === undefined && done?.status === "completed" ? imagesNoted(done.output) : undefined;
-          const waited = cell === undefined ? undefined : i === carrier && yieldedTies.length > 0 ? waitResumedText(cell, yieldedTies.map((tie) => ({ ...factOf(state, rolled, tie, told), resumed: resumed.get(tie.callId)! }))) : waitStoppedText(cell);
+          const answered = cell !== undefined && i === carrier && yieldedTies.length > 0 ? yieldedTies.map((tie) => ({ ...factOf(state, rolled, tie, told), resumed: resumed.get(tie.callId)! })) : undefined;
+          const recovered = answered && cell !== undefined ? waitResumed(cell, answered) : undefined;
+          const waited = cell === undefined ? undefined : recovered ? recovered.output : waitStoppedText(cell);
+          if (recovered) {
+            built.add(i);
+            shown.push(...recovered.shown);
+          }
           items[i] = withOutputKind(waited !== undefined ? { ...item, output: waited } : pictured !== undefined ? { ...item, output: pictured } : item, c);
           return;
         }
         const { own, loose } = listed.get(c.callId)!;
-        items[i] = { type: "custom_tool_call_output", call_id: c.callId, output: execRecoveryOutput(own, loose) };
+        // Only the calls the output still tells after its bound: a call cut from it is not said to be above.
+        const recovered = execRecovery(own, loose);
+        items[i] = { type: "custom_tool_call_output", call_id: c.callId, output: recovered.output };
+        built.add(i);
+        shown.push(...recovered.shown);
       });
-      for (const item of items) if (typeof item.output === "string") item.output = boundResult(item.output).text;
+      items.forEach((item, i) => {
+        if (!built.has(i) && typeof item.output === "string") item.output = boundResult(item.output).text;
+      });
+      if (resume && shown.length > 0) {
+        journal.append(SHOWN_STREAM, { since, callIds: shown });
+        await journal.flush();
+      }
     },
 
     /** With no recovery note, the calls the rollout has no output for get theirs from the log before any turn is sent: a turn that ended without
@@ -374,7 +402,9 @@ export function codeMode(deps: CodeModeDeps) {
      *  would repeat it). With no statuses-only note to give, nothing is injected: the full note carries tool outputs and goes in no slot of the model's. */
     async resumeTurn(note: { turn: { since: number }; pending: { text?: string }[] }, owed: { text?: string }[]): Promise<string> {
       await arm(note.turn.since);
-      const system = recoverySystemNote(ctx.state());
+      // The calls whose outcome a recovered script output of this turn tells: the note says it is there, not that it is not shown.
+      const shown = new Set((await journal.read<{ since: number; callIds: string[] }>(SHOWN_STREAM)).filter((r) => r.data.since === note.turn.since).flatMap((r) => r.data.callIds));
+      const system = recoverySystemNote(ctx.state(), shown);
       const noted = (await journal.read<{ since: number }>(RECOVERY_NOTE_STREAM)).some((r) => r.data.since === note.turn.since);
       if (system !== undefined && !noted) {
         await deps.guard(deps.rpc().request("thread/inject_items", { threadId: deps.threadId(), items: [{ type: "message", role: "developer", content: [{ type: "input_text", text: system }] }] }));

@@ -91,12 +91,12 @@ async function withProcessEnv(values, fn) {
 	}
 }
 
-test("an E2B desktop is kind desktop with daemon child, the desktop groups, network none read back, envd's port, and Hobby's 1 h cap", () => {
+test("an E2B desktop is kind desktop with daemon child, the desktop groups, network none probed from inside, envd's port, and Hobby's 1 h cap", () => {
 	const { provider } = setup();
 	const caps = provider.capabilities();
 	assert.deepEqual(
 		{ kind: caps.kind, os: caps.os, daemon: caps.daemon, lifetime: caps.lifetime, isolation: caps.isolation, network: caps.network, networkReadBack: caps.networkReadBack, release: caps.release, vendorAgentPorts: caps.vendorAgentPorts },
-		{ kind: "desktop", os: "linux", daemon: "child", lifetime: "vendor", isolation: "microvm", network: ["none"], networkReadBack: true, release: ["delete"], vendorAgentPorts: [49983] },
+		{ kind: "desktop", os: "linux", daemon: "child", lifetime: "vendor", isolation: "microvm", network: ["none"], networkReadBack: false, release: ["delete"], vendorAgentPorts: [49983] },
 	);
 	assert.deepEqual(caps.groups, DESKTOP_GROUPS);
 	assert.equal(caps.maxLifetimeMs, HOUR, "E2B Hobby caps a sandbox at 1 h");
@@ -131,7 +131,7 @@ test("maxLifetimeMs is Hobby's 1 h by default, Pro's 24 h at most, and check() r
 	assert.match(refused[0].message, /at most 1 h/);
 	const pro = setup({ maxLifetimeMs: 24 * HOUR }).provider;
 	assert.deepEqual(pro.check({ ...SPEC, lifetimeMs: 2 * HOUR }), []);
-	assert.throws(() => setup({ maxLifetimeMs: 24 * HOUR + 1 }), /24 h/);
+	assert.throws(() => setup({ maxLifetimeMs: 24 * HOUR + 1 }), /at most 86400000 ms, the longest E2B keeps a computer/);
 	assert.throws(() => setup({ maxLifetimeMs: 0 }), /maxLifetimeMs/);
 	assert.deepEqual(rec.calls, []);
 });
@@ -199,6 +199,7 @@ test("check() takes a template as the image, network none, and labels; it refuse
 	assert.match(provider.check({ ...SPEC, network: { allow: ["example.com"] } })[0].message, /allowlists wait for a proxy/);
 	assert.deepEqual(fields({ ...SPEC, cpus: 2 }), ["cpus"]);
 	assert.deepEqual(fields({ ...SPEC, memoryMb: 1024 }), ["memoryMb"]);
+	assert.match(provider.check({ ...SPEC, cpus: 2 })[0].message, /an E2B computer has the size of its template: name a template of the size you need, not cpus/, "E2B's own check: the adapter passes sizes on");
 	assert.deepEqual(fields({ ...SPEC, pids: 10 }), ["pids"]);
 	assert.deepEqual(fields({ ...SPEC, user: "0" }), ["user"]);
 	assert.deepEqual(fields({ ...SPEC, workdir: "/tmp" }), ["workdir"]);
@@ -424,7 +425,7 @@ test("the registry builds E2B from its options alone, and the conformance module
 	assert.equal(conformance.conformanceImage({ env: { COMPUTER_E2B_TEMPLATE: "my-desktop" } }), "my-desktop");
 	assert.ok(conformance.conformanceNotes.some((note) => /Hobby/.test(note)));
 	const host = await conformance.createHost({ env: { [ENV.key]: KEY }, Sandbox: rec.Sandbox });
-	assert.equal(host.id, "e2b");
+	assert.equal(host.descriptor.id, "e2b");
 	await assert.rejects(conformance.createHost({ env: { E2B_API_KEY: BARE }, Sandbox: rec.Sandbox }), /set COMPUTER_E2B_API_KEY/);
 	assert.deepEqual(rec.calls, []);
 });

@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
-import { type ConformanceModule, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
+import { type ConformanceModule, descriptorOf, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
 import { type ComputerSettingKind, type KindCapabilities, SETTING_KIND_NAMES } from "../kinds.js";
 import type { MachineHost } from "../host.js";
 import { browserCases, casesFor, conformanceCases } from "./cases/index.js";
@@ -180,10 +180,9 @@ const BARE = /^[A-Za-z][A-Za-z0-9-]*$/;
  */
 async function conformanceModule(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule>; declared?: readonly KindCapabilities[] }> {
 	const found = await moduleFor(name, cwd);
-	// What the provider file declares of itself (its CAPABILITIES; its descriptor once that lands), kept across the switch
-	// to its conformance module, for health.declared.
-	const declared = found.file.CAPABILITIES;
-	return { label: found.label, module: found.module, ...(Array.isArray(declared) ? { declared: declared as readonly KindCapabilities[] } : {}) };
+	// What a registry provider declares of itself, its descriptor's configurations, for health.declared.
+	const declared = isProviderId(name) ? descriptorOf(name)?.capabilities : undefined;
+	return { label: found.label, module: found.module, ...(declared === undefined ? {} : { declared }) };
 }
 
 async function moduleFor(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule>; file: Record<string, unknown> }> {
@@ -248,9 +247,10 @@ export function plantSecrets(names: readonly string[]): { values: string[]; secr
 
 /**
  * The provider a conformance module makes, its drifted twin and its run folders (mountFor) when it offers them, and what
- * it says of its run: conformanceImage(), the image when --image names none, and conformanceNotes, strings for the report.
+ * it says of its run: conformanceImage(), the image when --image names none (asked only then: a module's may make or
+ * register its image, so it is given the run's signal), and conformanceNotes, strings for the report.
  */
-async function load(label: string, module: Partial<ConformanceModule>, options: object, declared?: readonly KindCapabilities[]): Promise<Target> {
+async function load(label: string, module: Partial<ConformanceModule>, options: object, { imageNamed, signal }: { imageNamed: boolean; signal?: AbortSignal }, declared?: readonly KindCapabilities[]): Promise<Target> {
 	const { createProvider, createDriftedProvider, conformanceImage, mountFor } = module;
 	if (typeof createProvider !== "function") throw new Usage(`${label} does not export createProvider() or create()`);
 	const provider = (await createProvider(options)) as ComputerProvider;
@@ -273,8 +273,8 @@ async function load(label: string, module: Partial<ConformanceModule>, options: 
 		};
 	}
 	if (typeof mountFor === "function") target.mountFor = (kind) => mountFor(kind, options);
-	if (conformanceImage !== undefined) {
-		const image = typeof conformanceImage === "function" ? await conformanceImage(options) : undefined;
+	if (conformanceImage !== undefined && !imageNamed) {
+		const image = typeof conformanceImage === "function" ? await conformanceImage(options, signal ? { signal } : {}) : undefined;
 		if (typeof image !== "string" || image === "") throw new Usage(`${label}: conformanceImage() did not return an image`);
 		target.image = image;
 	}
@@ -340,7 +340,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 	let target: Target;
 	try {
 		const { label, module, declared } = await conformanceModule(args.provider, cwd);
-		target = await load(label, module, options, declared);
+		target = await load(label, module, options, { imageNamed: args.image !== undefined, ...(signal ? { signal } : {}) }, declared);
 	} catch (error) {
 		await write(stderr, `${(error as Error).message}\n`);
 		if (error instanceof Usage) {

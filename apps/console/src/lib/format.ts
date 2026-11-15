@@ -88,13 +88,33 @@ export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpric
  *  A client shows null as unknown, never as $0" (a request cut before its answer, a cost still pending, or a model with
  *  no price). When the server says what is known so far, that is said ("so far $0.0123 · 1 not priced"), never as the
  *  whole cost; a run that has ended (`ended`) says what is known without "so far" ("$0.0123 known · 1 not priced"), as its
- *  usage row says its cost. Never a billed amount, never an invented zero. */
+ *  usage row says its cost. Never a billed amount, never an invented zero. A run on the server's ChatGPT plan alone says
+ *  its tokens ("41.2K tokens · Using ChatGPT plan"), never "$0.00"; one that also spent dollars says them, then "+ ChatGPT
+ *  plan". */
 export function cost(c: Cost | null | undefined, { ended = false }: { ended?: boolean } = {}): string {
+  const plan = planOf(c);
+  if (plan && c?.usd === 0) return `${compact(plan.tokens)} tokens · Using ChatGPT plan`;
+  const words = dollarWords(c, ended);
+  return plan ? `${words} + ChatGPT plan` : words;
+}
+function dollarWords(c: Cost | null | undefined, ended: boolean): string {
   const known = soFar(c);
   const est = (x: Cost) => (isEstimate(x) ? " est." : "");
   if (known) return ended ? `${soFarDollars(known.so_far_usd)}${est(known)} known · ${known.unpriced} not priced` : `so far ${soFarDollars(known.so_far_usd)}${est(known)} · ${known.unpriced} not priced`;
   if (!c || c.usd === null) return "Unknown";
   return `${dollars(c.usd)}${est(c)}`;
+}
+
+/** What a run used on the server's ChatGPT plan (chatgpt/1 `cost.plan`): its requests there and their tokens, which cost
+ *  no dollars here; undefined for a run that made none. A run on the plan alone says its tokens, never "$0.00" (cost). */
+export const planOf = (c: Cost | null | undefined): { requests: number; tokens: number } | undefined =>
+  c?.plan && c.plan.requests > 0 ? c.plan : undefined;
+
+/** 1,284 / 12.9K / 4.2M. */
+export function compact(n: number): string {
+  if (n < 10_000) return n.toLocaleString("en-US");
+  const [v, unit] = n < 1e6 ? [n / 1e3, "K"] : n < 1e9 ? [n / 1e6, "M"] : [n / 1e9, "B"];
+  return `${v < 100 ? v.toFixed(1).replace(/\.0$/, "") : Math.round(v)}${unit}`;
 }
 
 /** A run's cost as its header says it, beside its spend cap when it has one (`cap`, the run's `cost.cap_usd`): "$0.0059
@@ -104,7 +124,7 @@ export function costOfCap(c: Cost | null | undefined, cap: number | null | undef
   const shown = text ?? cost(c, { ended });
   if (typeof cap !== "number") return shown;
   // One figure ("$0.0059 est.", "<$0.0001"): "of" the cap. A partial total ("$0.0188 + 2 unknown") or a word: the cap after.
-  const figure = text !== undefined ? ONE_FIGURE.test(text) : !soFar(c) && !!c && c.usd !== null;
+  const figure = text !== undefined ? ONE_FIGURE.test(text) : !soFar(c) && !planOf(c) && !!c && c.usd !== null;
   return figure ? `${shown} of ${capDollars(cap)}` : `${shown} · cap ${capDollars(cap)}`;
 }
 const ONE_FIGURE = /^<?\$[\d.,]+( est\.)?$/;

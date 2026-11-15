@@ -21,8 +21,8 @@ option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
 vendor's SDK is the host's: Modal's `modal` package is imported only when the Modal provider is built, and the package
-depends on nothing. A provider's mount kinds are its file's `MOUNT`, read with `(await providerModule(id)).MOUNT`,
-which loads that one provider's file and the protocol modules it uses, and no other provider.
+depends on nothing. A provider's mount kinds are its descriptor's `mounts`, read with `descriptorOf(id).mounts`,
+which loads no provider file at all.
 
 Every install carries all of `dist/`, whatever the host's architecture and whichever provider it uses: both daemons
 (a Docker host on either architecture and every remote provider use one of them, and the archive does not know which),
@@ -182,8 +182,8 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   kernel's release, `interfaces` (the network interfaces its network namespace holds: `["lo"]` alone under
   `--own-network`), `reached` (the targets that answered), `accepted` (the targets that accepted a TCP connection and
   sent nothing back) and `results`, each target's `protocol`, `outcome` (`refused`, `accepted` or `answered`), `bytes`
-  and `detail` in words. With `--sockets` it adds the isolation case's two listings: `sockets`, the unix sockets with a
-  path it can connect to, and `listeners`, the TCP and UDP sockets that listen in its own network namespace (TCP in
+  and `detail` in words. With `--sockets` it adds the isolation case's two listings: `sockets`, the unix sockets it can
+  connect to, by path or by abstract name (`@...`, which its network namespace holds), and `listeners`, the TCP and UDP sockets that listen in its own network namespace (TCP in
   LISTEN and UDP bound with no peer, read from `/proc/net/tcp`, `tcp6`, `udp` and `udp6`), each with its `protocol`,
   `address`, `port`, `uid`, the `owner` that holds it (`pid N (command)`, where `/proc` shows that process's
   descriptors) and `computerd` (that owner runs computerd's own program); each listing names in `incomplete` what it
@@ -430,7 +430,7 @@ in the kernel's tool registry, keyed by these groups.
   | --- | --- |
   | docker | none |
   | daytona | sandbox: `DAYTONA_DEFAULT_SNAPSHOT` ("default") |
-  | modal | sandbox: `MODAL_DEFAULT_IMAGE` ("debian:bookworm-slim") |
+  | modal | none: `prepareImage()` answers the box image (`boxImageRef()`) |
   | e2b | sandbox: `E2B_BASE_TEMPLATE` ("base"); desktop: `E2B_DESKTOP_TEMPLATE` ("desktop") |
   | orgo | desktop: `ORGO_BASE_IMAGE` ("linux") |
   | phone-harness | phone: `PHONE_IMAGE` ("android") |
@@ -448,9 +448,8 @@ in the kernel's tool registry, keyed by these groups.
   | kernel | Kernel | browser | `KERNEL_API_KEY` | none | yes |
   | local | Local Chrome | browser | none | none | no |
 
-- Each provider module exports `CAPABILITIES` beside `MOUNT` (the registry's contract, `ProviderModule`). A unit test
-  holds every registry provider's `CAPABILITIES` and `MOUNT` to its entry, and each provider built from the test fakes,
-  in each configuration, to its entry's capabilities. browserbase and kernel are data until their provider file joins
+- A provider's capabilities and mounts are its descriptor's, and nowhere else. A unit test holds each provider built
+  from the test fakes, in each configuration, to its entry's capabilities and mounts. browserbase and kernel are data until their provider file joins
   the registry; that test then holds each to its file.
 - `testConnection()` (optional on `ComputerProvider`) is Settings' test of a provider's keys: ONE account-level read
   that never creates a computer, so it never spends. Docker (one `docker ps`), Daytona and E2B (one listing page) count
@@ -500,7 +499,7 @@ provider declares, either way.
 
 | group | methods |
 | --- | --- |
-| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. `screen.watch({ after, waitMs?, maxWidth?, quality? })`: the live view's frames, paced by the caller's ack (`after`, the seq of the last frame it has whole; an older one gets the newest frame at once): the next frame once the screen or the pointer changed, else `changed: false` when `waitMs` (default 2000, at most 10000) is over. A frame is `{ seq, changed, format, frameWidth, frameHeight, width, height, cursor? }` and its bytes as a shot's (`data`, `id` and `screen.read`); `format` is `jpeg` from computerd (scaled to `maxWidth`, default 1280, at `quality`, default 60) and `png` from the phone client. One watch per connection. |
+| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. `screen.watch({ after, waitMs?, maxWidth?, quality? })`: the live view's frames, paced by the caller's ack (`after`, the seq of the last frame it has whole; an older one gets the newest frame at once; on a computer whose hello lists `screen.ahead`, one past the newest waits as the newest does, so two asks can be in flight): the next frame once the screen or the pointer changed, else `changed: false` when `waitMs` (default 2000, at most 10000) is over. Computerd on a desktop learns what changed from the X server's DAMAGE extension and gives at most 15 frames a second; on an X server without DAMAGE, `screen.watch` is refused, `unsupported`, in words. A frame is `{ seq, changed, format, frameWidth, frameHeight, width, height, cursor? }` and its bytes as a shot's (`data`, `id` and `screen.read`); `format` is `jpeg` from computerd (scaled to `maxWidth`, default 1280, at `quality`, default 60) and `png` from the phone client. One watch per connection. |
 | `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
@@ -520,7 +519,9 @@ provider declares, either way.
 `daemonWatch` is the one implementation behind every provider's `watch()` (Docker, Daytona, Modal, E2B, Orgo, the
 phone harness): a computer whose hello has no `screen` is refused as `unsupported`. It adapts the internal seam,
 `watchScreen(connection, options)`: pull-paced `frames` (each `next()` the ack), `act(actions)` and `close()`, whose
-failures are `ScreenWatchError`s. `toAction(event, kind)` maps the viewer's `ViewerEvent`s, in the screen's upright
+failures are `ScreenWatchError`s. On a computer that lists `screen.ahead` it keeps a second ask in flight, one frame
+ahead, so frames come at the screen's pace and not one each round trip; a frame bettered before `next()` asked for it
+is dropped. `toAction(event, kind)` maps the viewer's `ViewerEvent`s, in the screen's upright
 pixels, to input actions, or to a `Refusal` (`{ field, message }`) for what a kind cannot take:
 - a desktop takes the mouse (a move, and a button down or up at a point; with a modifier held, the up is one click
   with its keys and the down only moves; each up is one click, so a double-click is two and never a `count`), the
@@ -711,8 +712,7 @@ was deleted.
   `create` gives the daemon `DISPLAY` (`display`, default `:0`), then starts the X server through it with
   `process.start` (`server`, default `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`), as the computer's user and as any
   program: computerd stays PID 1 and starts nothing itself, and the server is one process in its table that ends with
-  the computer. A `windowManager` (an argv, default none) starts the same way once the display answers, with `DISPLAY`;
-  one that cannot start, or ends within 1 s of starting, fails create with its last words. `create` waits (`timeoutMs`, default 30 s) until hello declares the display, then runs the drift check;
+  the computer. It runs no window manager. `create` waits (`timeoutMs`, default 30 s) until hello declares the display, then runs the drift check;
   a server that ends first, with its last words on stderr, or a display that is not up in time deletes the computer in
   words.
 - `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (`checkLifetime`: at most
@@ -891,9 +891,9 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
 - `ComputerSpec.mount` is `{ kind: "bind", path }`, a folder on the provider's host bound in (the local Docker
   computer), or `{ kind: "archil", disk, region, folder, token }`, the run's folder (such as
   `agents/<a>/runs/<r>/work`) inside an Archil disk in its region, mounted in a remote computer.
-  `capabilities().mount` lists the kinds a provider takes; absent, it takes none. Each provider file also exports
-  `MOUNT` beside its `create`, the same kinds (Docker `["bind"]`; Modal and Daytona `[]` for now), so a caller tells which
-  provider binds a local folder from the registry (`providerModule(id)`) without building one.
+  `capabilities().mount` lists the kinds a provider takes; absent, it takes none. Each provider's descriptor declares
+  the same kinds as `mounts` (Docker `["bind"]`; Modal and E2B `["archil"]`; Daytona `[]` for now), so a caller tells
+  which provider binds a local folder from its descriptor (`descriptorOf(id)`) without building one.
 - `checkMount(mount, declared)` (`src/mount.ts`) is the one rule every provider's `check` runs, with no vendor call: a
   kind the provider does not declare is refused in words (`this provider does not take a mount of kind archil; it takes
   bind`); a bind's `path` is absolute, canonical (its own realpath, so what is read back is what is bound: Docker
@@ -1198,7 +1198,7 @@ returns the first state `done` accepts. Each read gets a signal that aborts at t
 read still pending then is not waited for, and one that throws is not done. Past the bound it returns a `timeout`, on
 the caller's abort an `aborted`, each naming `what` was waited for and the last state read (`describe`). It has no
 vendor's types: the shared adapter's release, a create that deletes its machine, and the one live sweep wait through it
-(`settleGone`, until a machine reads gone and is no longer listed), for every hosted vendor (Daytona's stop among them).
+(`settle`, until get answers none for a machine twice running; one read `gone` is still going), for every hosted vendor.
 
 ## Modal
 
@@ -1215,7 +1215,7 @@ const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600
 ```
 
 Modal runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/modal.ts` is Modal's `MachineHost`,
-its SDK slice (`ModalSdk`: apps, images, sandboxes and five methods of a sandbox) and the client it is made with, and
+the SDK's types (`import type`, erased at build) and the client it is made with, and
 `src/hosted/provider.ts` does everything below that is not Modal's own. `create` takes the caller's request id
 (`{ requestId }`, serve's is the run's claim): the computer's name is `computer-` and the first 12 hex digits of its
 sha256, and a retry of the same request finds the computer the first made instead of making a second. A Modal sandbox
@@ -1263,27 +1263,26 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
 - **Sizes are limits**, as in Docker: `cpus` (at least 0.25) becomes `cpuLimit` in physical cores (2 CPUs each) and
   `memoryMb` becomes `memoryLimitMiB`, each with Modal's default request (0.125 cores, 128 MiB) or less. `pids` and
   `workdir` are refused: Modal has no pids limit, and a computer works in `/work`, its home.
-- **Tags.** A sandbox's tags are the adapter's labels (`agentrun.computer`, its name, deadline, image and the most its
-  deadline may reach) and the caller's, so a computer takes at most 5 labels of its caller's (Modal's 10 tags). Modal
-  holds a sandbox's tags to 512 bytes, names and values together: `check()` counts them and refuses past it in words.
-  An Archil computer's mount label names its folder, `agents/<agent>/runs/<run>/work`, whose run is the `agentrun.run`
-  label's, so the tag records the agent alone and the host reads the folder back from it (`tagsOf`, `labelsOf`).
-  `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal still
+- **Tags.** A sandbox's tags are the adapter's labels (`agentrun.computer`, its name, deadline and image, and a GPU
+  computer's GPUs; no max-deadline, which only `extend` reads) and the caller's. Modal takes 10 tags, 512 bytes of them, names and
+  values together (the host's `labels`): the adapter's `check()` counts them as create gives them, its own at their
+  longest, and refuses past either in words with no call; create refuses the same words first. An Archil computer's mount label records the
+  folder's agent alone, as on every host: the folder's run is the `agentrun.run` label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal still
   lists after its terminate is polled and left out once `poll()` reads it finished.
-- **release** `delete` is `terminate()`, and the adapter waits until the sandbox reads gone and is no longer listed.
+- **release** `delete` is `terminate()`, and the adapter waits until get answers none (`poll()` reads it finished).
   `stop` is refused as `unsupported`: terminate is a sandbox's only end.
 - **GPU.** `capabilities().gpu` declares Modal's GPU types by its own names (guide/gpu): `T4`, `L4`, `A10`, `L40S`,
   `A100` (40 GB), `A100-40GB`, `A100-80GB`, `RTX-PRO-6000`, `H100`, `H200`, `B200`, `B300`, at most 8 to a computer.
   `spec.gpu: { type, count }` becomes the SDK's `gpu` (`"T4"`, `"A100-80GB:2"`), and since Modal offers GPUs on gVisor
   only, such a sandbox runs with `runtime: "gvisor"`; every other computer stays on the VM runtime. The probe's kernel
-  is held to it at create: gVisor's on a GPU computer, a VM's on any other. Modal reads no GPU back, so attach reports
-  none. `gpu.mounts` is `[]`: a GPU with an Archil mount is refused (checkGpu).
+  is held to it at create: gVisor's on a GPU computer, a VM's on any other. Modal reads no GPU back: the adapter's
+  `agentrun.computer.gpu` label records them, and attach and a retry read them there. `gpu.mounts` is `[]`: a GPU with an Archil mount is refused (checkGpu).
 - **The loopback fence on gVisor.** Modal's gVisor gives root no CAP_SYS_ADMIN, so init, given the same
   `--own-network`, makes its programs' network namespace inside a user namespace (the daemon's fallback, any vendor).
   Declared: `gpu.fence: "userns-netns"`; read back: hello's `fence`, and create notes it. Proven in Docker
   (`test/docker/pid1-commands.docker.test.mjs` and `loopback-block.docker.test.mjs`), not yet live on Modal.
-- **Settings' test** reads the app with `createIfMissing: false`, which makes nothing; an app not made yet is a
-  connection all the same.
+- **The app.** `list` (and so Settings' test, one listing) reads the app with `createIfMissing: false`, which makes
+  nothing: an app not made yet lists no sandboxes and is a connection all the same. Only `create` makes the app.
 
 ### What every Modal fact rests on
 
@@ -1380,15 +1379,14 @@ const made = await daytona.create({ image: "my-snapshot", lifetimeMs: 600_000, n
 A Daytona computer is a sandbox made through Daytona's v0 REST API with `fetch`: no SDK, and no package beyond this
 one. `fetch` and the WebSocket factory are options, so the tests hand them a recorder. The provider is a `MachineHost`
 on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): Daytona's own calls are here, and the lifecycle
-around them (the computer's name from the create's request id, the daemon's install and start, the read-back, the
-probe, the listing wait, release's wait for gone) is the adapter's, the same for every hosted vendor.
+around them (the computer's name from the create's request id, the daemon's install and start, the probe, the listing
+wait, release's wait for gone) is the adapter's, the same for every hosted vendor.
 The key is the caller's to pass: the provider never reads the environment, never sends the key over a redirect or to a
 toolbox URL that is not https, and never puts it in a computer. `image` is a Daytona snapshot, by id or name: the
 snapshot gives the sandbox its class and its size. `image: "default"` sends no snapshot field at all, and Daytona makes
 the sandbox from its default snapshot; the provider never guesses a snapshot's name. (A snapshot that is itself named
-`default` is reached by its id.) Daytona reports only the snapshot it resolved, by its own name, so create records the
-image it was asked for in the label `agentrun.computer.image`, beside the deadline's in the provider's own namespace,
-and attach reports that as `image` and the resolved snapshot apart, as `snapshot`.
+`default` is reached by its id.) Create records the image it was asked for in the label `agentrun.computer.image`,
+beside the deadline's in the provider's own namespace, and attach reports that as `image`.
 
 Daytona takes no mount of the run's folder: Archil's client hangs on its sandboxes (its FUSE session never answers a
 `statx` of the mountpoint), so `capabilities().mount` is `[]` and `check()` refuses an Archil mount up front, code
@@ -1396,8 +1394,8 @@ Daytona takes no mount of the run's folder: Archil's client hangs on its sandbox
 
 ### Lifetimes
 
-Every sandbox ends at its TTL (`ttlMinutes`, from `lifetimeMs`). Two options bound it further, each sent on every create
-and read back by the drift check:
+Every sandbox ends at its TTL (`ttlMinutes`, from `lifetimeMs`). Two options bound it further, each sent on every
+create:
 
 | Option | Daytona field | Meaning | Unset |
 | --- | --- | --- | --- |
@@ -1406,9 +1404,8 @@ and read back by the drift check:
 
 Each is a whole number, 0 or more; the constructor refuses anything else in words. Daytona's idle timer counts toolbox
 calls (the daemon's connections are toolbox calls) but not the daemon's own work, so a computer left with no connection
-for `autoStopMinutes` stops. With `autoDeleteMinutes: 0` a stop deletes: the provider then keeps no stopped computer,
-declares `stopDeletes: true`, `release(ref, "stop")` returns once the sandbox is gone, and `list()` never shows a
-stopped one.
+for `autoStopMinutes` stops. A stopped sandbox is still listed, as `stopped`, until Daytona deletes it or the janitor
+does. The provider itself never stops one: `release` takes `delete` alone and refuses `stop` as `unsupported`.
 
 ### How the daemon gets in, and how it is reached
 
@@ -1480,8 +1477,8 @@ from (the loopback block):
   isolation.vendor-agent probes it from a program of the computer's user, on both loopbacks. Init takes others' access
   off every socket under `/run`; Daytona's D-Bus session bus sits in `/tmp` (`/tmp/dbus-<10 characters>`, which a
   program of the computer's user could connect to in the live baseline), so create, as root and before init starts,
-  takes others' access off each socket `/tmp/dbus-*` names (the host's `vendorSockets`), and its notes name the ones
-  it closed. A runner whose root may
+  takes others' access off each socket `/tmp/dbus-*` names (as on every child host), and its notes name the ones it
+  closed. A runner whose root may
   not make a network namespace (no CAP_SYS_ADMIN: a container class on a runner that is not privileged) fails closed:
   init refuses to start, in words, and create deletes the sandbox.
 - The provider still installs and starts the daemon through that toolbox, as root or through passwordless `sudo`, and
@@ -1507,18 +1504,17 @@ the TTL.
 | --- | --- | --- |
 | `kind` | `linux` | a Linux shell with computerd: exec, files and processes |
 | `lifetime` | `vendor` | `ttlMinutes` destroys the sandbox in any state once it elapses; set to the lifetime in whole minutes, rounded up. Init also ends every process at the deadline itself. |
-| `network` | `none` | `networkBlockAll`, read back from the sandbox, and the daemon's own network namespace; open and allowlists wait for a proxy out of it (known gap) |
+| `network` | `none` | `networkBlockAll` at create, and the daemon's own network namespace; open and allowlists wait for a proxy out of it (known gap) |
 | `vendorAgentPorts` | `[2280]` | the toolbox's port, on every interface; isolation.vendor-agent checks a program of the computer's user reaches it on neither loopback |
-| `isolation` | `container`, or `vm` with `sandboxClass: "linux-vm"` | the class comes from the snapshot, and is read back |
+| `isolation` | `container`, or `vm` with `sandboxClass: "linux-vm"` | the class comes from the snapshot |
 | `os` | `linux` | Linux classes only; Windows and macOS are not offered here |
 | `daemon` | `child` | Daytona's toolbox daemon is the sandbox's first process, and init is started detached through a session command of it (above) |
-| `networkReadBack` | `true` | `networkBlockAll` and the allow lists are read back from the sandbox; the probe checks none from inside as well |
+| `networkReadBack` | `false` | the network is probed from inside, the same for every hosted vendor |
 | `groups` | `exec`, `files`, `processes` | the daemon's own, checked against its hello's `groups`, as is its `kind` |
 | `maxLifetimeMs` | 30 days | the cap `check` gives, through the shared `checkLifetime`; Daytona's TTL is whole minutes and documents no cap of its own |
 | `user` | none | the daemon runs as the provider's `daemonUser`; a spec cannot name a user |
-| `release` | `stop`, `delete` | `POST /sandbox/{id}/stop` and `DELETE /sandbox/{id}` |
-| `stopDeletes` | `true` with `autoDeleteMinutes: 0`, else `false` | `autoDeleteInterval` 0 deletes a sandbox as soon as it stops |
-| `gpu` | `H100`; at most 1 | daytona-gpu's own GPU (`DAYTONA_GPU_SNAPSHOT_GPU`, from GET /snapshots/daytona-gpu). A GPU computer is made from Daytona's GPU snapshot `daytona-gpu` (`DAYTONA_GPU_SNAPSHOT`: its default sandbox image, user `daytona` with passwordless sudo, plus the CUDA toolkit), sent as `snapshot`: its spec's image is `"daytona-gpu"` or `"default"`, and `check` refuses any other (a snapshot of box/Dockerfile among them) in words. A Daytona snapshot carries its own resources, so the create sends none (no `cpu`, `gpu`, `gpuType`, `memory` or `disk`: Daytona refuses them beside a snapshot, 400 "Cannot specify Sandbox resources when using a snapshot"), and the read-back's `snapshot`, `gpu` and `gpuType` must be the snapshot's. Another type or count needs a snapshot of its own, so `check` refuses it. A GPU computer's limits, declared on `capabilities().gpu`: `preemptible: true` (daytona.io/pricing lists its GPUs as "Preemptible GPU prices": a run on one can be cut short); `stopDeletes: true` (it is made with `autoDeleteInterval: 0`, whatever `autoDeleteMinutes` says. That is Daytona's ephemeral: its SDK's `ephemeral` sets it, and `CreateSandbox` has no `ephemeral` field, so none is sent. A GPU sandbox has no pause and no snapshot, so stopping it deletes it and nothing on it persists); `region: "earth"` (Daytona's one GPU region, sent as `target` in place of the provider's); `perGpu` 16 vCPU, 100 GiB memory and 400 GiB disk, the snapshot's; `mounts: []`, so a GPU computer with any mount is refused in words: Daytona's GPU host gives no `/dev/fuse`, even to root (live 11-11), and the archil client mounts through FUSE. In serve's Mode 2 the run's folder is an Archil mount, so a Daytona GPU sandbox is refused there, and Settings' `gpu.why` says so. The org needs GPU credits, or the create is refused in Daytona's words. Create notes who installed the daemon: daytona-gpu's `daytona` user through passwordless sudo, or root on a snapshot of box/Dockerfile. The `gpuSnapshot` option names our own GPU snapshot instead: box/Dockerfile as it is, built with one GPU by `box/build-daytona.py --gpu H100` (resources gpu 1 and gpuType H100, named `agentrun-archil-gpu-h100-<recipe hash>`, in region earth). Its user is root, its GPU is the one its name says, and its GPU computers take no mount either. It carries no CUDA toolkit: pip install torch brings its own CUDA runtime; the host gives the driver. A GPU spec's image is then `"default"` or that name. An Archil computer's preflight reads `/dev/fuse`, and one without it is refused in those words ("this computer has no /dev/fuse, so the Archil folder can't be mounted") before anything else |
+| `release` | `delete` | `DELETE /sandbox/{id}`; a stop is refused as `unsupported` |
+| `gpu` | `H100`; at most 1 | daytona-gpu's own GPU (`DAYTONA_GPU_SNAPSHOT_GPU`, from GET /snapshots/daytona-gpu). A GPU computer is made from Daytona's GPU snapshot `daytona-gpu` (`DAYTONA_GPU_SNAPSHOT`: its default sandbox image, user `daytona` with passwordless sudo, plus the CUDA toolkit), sent as `snapshot`: its spec's image is `"daytona-gpu"` or `"default"`, and `check` refuses any other (a snapshot of box/Dockerfile among them) in words. A Daytona snapshot carries its own resources, so the create sends none (no `cpu`, `gpu`, `gpuType`, `memory` or `disk`: Daytona refuses them beside a snapshot, 400 "Cannot specify Sandbox resources when using a snapshot"). Another type or count needs a snapshot of its own, so `check` refuses it. A GPU computer's limits, declared on `capabilities().gpu`: `preemptible: true` (daytona.io/pricing lists its GPUs as "Preemptible GPU prices": a run on one can be cut short); `stopDeletes: true` (it is made with `autoDeleteInterval: 0`, whatever `autoDeleteMinutes` says. That is Daytona's ephemeral: its SDK's `ephemeral` sets it, and `CreateSandbox` has no `ephemeral` field, so none is sent. A GPU sandbox has no pause and no snapshot, so stopping it deletes it and nothing on it persists); `region: "earth"` (Daytona's one GPU region, sent as `target` in place of the provider's); `perGpu` 16 vCPU, 100 GiB memory and 400 GiB disk, the snapshot's; `mounts: []`, so a GPU computer with any mount is refused in words: Daytona's GPU host gives no `/dev/fuse`, even to root (live 11-11), and the archil client mounts through FUSE. In serve's Mode 2 the run's folder is an Archil mount, so a Daytona GPU sandbox is refused there, and Settings' `gpu.why` says so. The org needs GPU credits, or the create is refused in Daytona's words. Create notes who installed the daemon: daytona-gpu's `daytona` user through passwordless sudo, or root on a snapshot of box/Dockerfile. The `gpuSnapshot` option names our own GPU snapshot instead: box/Dockerfile as it is, built with one GPU by `box/build-daytona.py --gpu H100` (resources gpu 1 and gpuType H100, named `agentrun-archil-gpu-h100-<recipe hash>`, in region earth). Its user is root, its GPU is the one its name says, and its GPU computers take no mount either. It carries no CUDA toolkit: pip install torch brings its own CUDA runtime; the host gives the driver. A GPU spec's image is then `"default"` or that name. An Archil computer's preflight reads `/dev/fuse`, and one without it is refused in those words ("this computer has no /dev/fuse, so the Archil folder can't be mounted") before anything else |
 
 ### What the provider does
 
@@ -1536,56 +1532,43 @@ the TTL.
   `autoDeleteInterval` (`autoDeleteMinutes`; unset, -1: a stop keeps the sandbox, which the TTL then ends). `POST
   /sandbox` is never retried; a name Daytona already holds (409) is `exists`. A create that fails without a 4xx
   answer, or is aborted, may still have made the sandbox, so the adapter deletes the name it chose. Then it waits for
-  `started` (polling `GET /sandbox/{id}`), runs the drift check on that read, pushes in and starts the daemon, checks
-  the daemon and probes its network none from inside, and waits until the label listing shows the new computer twice
-  running (Daytona's listing trails a create). Any failure, mismatch or abort after the sandbox exists deletes it, and
-  create never returns ok once its signal has aborted.
+  `started` (polling `GET /sandbox/{id}`), pushes in and starts the daemon, checks the daemon and probes its network
+  none from inside, and waits until the label listing shows the new computer twice running (Daytona's listing trails
+  a create). A sandbox that reads `error` or `build_failed` is gone, and create fails `vendor` with Daytona's
+  `errorReason`. Any failure or abort after the sandbox exists deletes it, and create never returns ok once its signal
+  has aborted.
 - `attach({ id })` takes a sandbox id (or a computer's name, which Daytona answers to as well); `attach({ labels })`
   must match exactly one computer. Only a sandbox with `agentrun.computer=1` and a computer's name label counts.
-  Attach holds the spec read back to `check` and, when it is started, the daemon; a computer that drifts is refused and
-  left as it is. It returns `spec`: `image`, the image create was asked for (`"default"` stays `"default"`), from its
-  label; `snapshot`, the snapshot Daytona reports; the daemon's user, the network, `/work`, the deadline and, with one,
-  the GPU.
-- `list(labels)` asks Daytona for `agentrun.computer=1` alone, every page, and filters the other labels itself. A
-  sandbox that is `destroying` or `destroyed`, or whose desired state is `destroyed`, is going and left out. `started`
-  is `running`; the states on the way to it are starting, and left out; `stopping` and `pausing` (on the way from it),
-  `stopped`, `archived` and `paused` are `stopped`. A listed sandbox with no network fields is read on its own.
-- `network(ref)` reads the network back; `network(ref, policy)` refuses any policy but the one the computer has, with
-  `refused` and no request.
+  Attach holds the daemon to the provider's, when the computer is started. It returns `spec`: `image`, the image
+  create was asked for (`"default"` stays `"default"`), from its label; the daemon's user, the network, `/work`, the
+  deadline and, with one, the GPU.
+- `list(labels)` asks Daytona for `agentrun.computer=1` alone, every page, for the ids; the adapter keeps those whose
+  `GET /sandbox/{id}` carries the other labels. A sandbox that is `destroying`, `destroyed`, `error` or `build_failed`,
+  or whose desired state is `destroyed`, is gone and left out: none of them starts again. `started` is `running`; the
+  states on the way to it are starting, and left out; every other state (`stopping`, `pausing`, `stopped`, `archived`,
+  `paused`) is `stopped`.
+- `network(ref)` is the adapter's probe from inside; `network(ref, policy)` refuses any policy but the one the
+  computer has, with `refused` and no request.
 - `release(ref, "delete")` deletes: retried on a 5xx, checked against the sandbox, with a forced stop before the last
-  attempt. `release(ref, "stop")` stops. Both are idempotent, and both refuse a sandbox that is
-  not this provider's.
-- Daytona is asynchronous: it answers a delete by setting the sandbox's desired state to `destroyed` and a stop by
-  setting it to `stopped`, and the sandbox gets there later, through `destroying` or `stopping`. Its listing trails
-  both. So release waits until Daytona reads the computer as release left it, twice running, by `GET /sandbox/{id}`
-  and by the label listing alike: after a delete, a 404 (or `destroyed`) and no listed computer; after a stop, a
-  `stopped` read and a computer listed `stopped`, or, when the stop deletes (`autoDeleteMinutes: 0`, or a GPU
-  sandbox), a 404 and no listed computer. A stop that is not under way is asked for again. It polls with pauses that
-  double from `pollMs` up to 5 s, bounded by the `goneMs` timeout (120 s unset) and by the signal
-  `release(ref, how, { signal })` takes. When the bound runs out, release fails in words naming the last state
-  Daytona read: it never reports a release it has not seen done. A create that deletes the sandbox it made (a
-  failure, a mismatch, an abort) waits the same way before it returns.
-- `connect(ref)` refuses a computer that is not `started`, and a daemon whose hello is not the provider's.
+  attempt. It is idempotent, and refuses a sandbox that is not this provider's. `release(ref, "stop")` is refused as
+  `unsupported`, with no request: a Daytona computer is deleted, never stopped and kept.
+- Daytona is asynchronous: it answers a delete by setting the sandbox's desired state to `destroyed`, and the sandbox
+  gets there later, through `destroying`. Its listing trails it. So release waits until `GET /sandbox/{id}` no longer
+  finds the computer, twice running: a 404 or `destroyed`. A sandbox still `destroying`, or with the desired state
+  alone, reads gone to every other caller but holds this wait. It polls with pauses that double from `pollMs` up to
+  5 s, bounded by the `goneMs` timeout (120 s unset)
+  and by the signal `release(ref, how, { signal })` takes. When the bound runs out, release fails in words naming the
+  last state Daytona read: it never reports a release it has not seen done. A create that deletes the sandbox it made
+  (a failure, an abort) waits the same way before it returns.
+- `connect(ref)` answers `gone` for a sandbox that is going (destroying, or asked to destroy), refuses one that is
+  not `started`, and a daemon whose hello is not the provider's.
 - Every call has its own timeout and takes the caller's signal; reads, the upload and deletes are retried (three tries,
   backoff from `timeouts.retryMs`, 500 ms unset); creates, session commands and input are not.
 
-### The drift check
+### The daemon check
 
-From Daytona's read of the sandbox:
-
-| Field | Must be |
-| --- | --- |
-| `snapshot` | the spec's image; for `"default"`, whatever Daytona names, unchecked |
-| `networkBlockAll`, `networkAllowList`, `domainAllowList`, `outboundProxyUrl` | the network declared; an outbound proxy, both lists, or block-all with a list is drift |
-| `labels` | `agentrun.computer=1`, the name, the deadline and the image as written, every label the spec asked for |
-| `autoStopInterval`, `autoDeleteInterval` | `autoStopMinutes` (0 unset), `autoDeleteMinutes` (-1 unset), exactly |
-| `autoDestroyAt` | set, and no later than the deadline plus the TTL's minute and 2 minutes of clock skew |
-| `state` | `started` |
-| `sandboxClass` | the provider's class |
-| `gpu`, `gpuType` | `spec.gpu`'s count (0 with none) and, with one, its type |
-| `public`, `kvm`, `volumes`, `linkedSandboxId` | false, not true, none, none |
-
-From the daemon, over one connection: hello (the provider's version, `linux`, the `arch` option, every daemon
+Daytona's create options are not read back: what create sent is what the sandbox has. A GPU computer's GPUs are the
+adapter's `agentrun.computer.gpu` label, as on every host. From the daemon, over one connection: hello (the provider's version, `linux`, the `arch` option, every daemon
 capability), `/proc/self/status` (Uid and Gid the daemon user's four times, no groups, `NoNewPrivs: 1`, `CapInh`,
 `CapPrm`, `CapEff`, `CapBnd` and `CapAmb` all zero), `/proc/self/cwd` (`/work`) and `/proc/self/exe`
 (`/opt/agentrun/computerd`); its own network (loopback alone), and the probe: no target answers a computer with
@@ -1607,10 +1590,9 @@ fallback: on a host that runs other Daytona work they may hold another organizat
 which serve passes in itself.
 
 Every sandbox of a run has a bounded life besides its TTL: the module always sets `autoStopMinutes: 30` and
-`autoDeleteMinutes: 0`, whatever the environment says. A stop therefore deletes, and the provider declares it
-(`stopDeletes: true`): Core `provider.stop` holds it to that and passes when the stopped computer is gone, neither
-listed nor attachable. Full `provider.janitor`, which needs a stopped computer kept, is skipped (the lifetime is
-`vendor`, and a stop keeps none). The module exports `conformanceImage()` and `conformanceNotes`; the CLI takes the
+`autoDeleteMinutes: 0`, whatever the environment says. The provider never stops a computer: Core `provider.stop`
+expects its refusal. Full `provider.janitor`, which needs a stopped computer kept, is skipped (the lifetime is
+`vendor`, and release keeps none). The module exports `conformanceImage()` and `conformanceNotes`; the CLI takes the
 image from it when `--image` names none, and prints the note above the verdict (`notes` in `--json`).
 
 ```sh
@@ -1720,7 +1702,7 @@ const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: 
 ```
 
 E2B runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/e2b.ts` is E2B's `MachineHost`, its
-SDK slice and the mapping of a sandbox to a machine, and `src/hosted/provider.ts` does everything below that is not
+SDK types (`import type`, erased at build) and the mapping of a sandbox to a machine, and `src/hosted/provider.ts` does everything below that is not
 E2B's own. `create` takes the caller's request id (`{ requestId }`, serve's is the run's claim): the computer's name is
 `computer-` and the first 12 hex digits of its sha256, and a retry of the same request finds the computer the first
 made instead of making a second.
@@ -1729,8 +1711,8 @@ An E2B computer is a sandbox made from an E2B template, by default `desktop`, E2
 Xfce, x11vnc and noVNC, e2b-dev/desktop `template/template.py:3-65`). It is kind `desktop`: computerd starts the X
 server itself, as on a Docker desktop, and its X11 shim drives it. With `kind: "linux"` it is kind `linux`
 on any template, `base` by default, with no display: the same provider, minus the X server, so it costs nothing to
-offer. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, of which `src/e2b.ts` names
-only the slice it calls (`E2BSandboxClass`) and imports nothing at load; the package is the host's to install, as
+offer. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, whose types `src/e2b.ts` imports
+as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import; the package is the host's to install, as
 Modal's is. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
 and with no bound or abort (`@e2b/desktop@2.5.0` `dist/index.mjs:387-415`), and the provider needs none of its other
 calls.
@@ -1762,7 +1744,7 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    cancelled: one that lands after create gave up is killed by its id, one whose answer never comes by its name label.
    The listing shows a new sandbox a moment late, so the name is listed again until it shows or `listedMs` (15 s)
    passes, and the sandbox found is killed and read back gone, as release waits for one.
-2. `getInfo` reads the sandbox back (below).
+2. `getInfo` reads the sandbox's state until it runs.
 3. `files.write` uploads the daemon as root to `/tmp/agentrun-computerd-<random>` (`index.mjs:2332-2435`), and the
    same install command as Daytona's (`src/hosted/scripts.ts`) moves it to `/opt/agentrun/computerd`, root-owned, and
    prints its sha256, which must be the uploaded one's, and who installed it (a create note).
@@ -1775,7 +1757,8 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    (`index.mjs:1896-1900`), envd's keepalive every 50 s, and no deadline on the stream (timeout 0, which the Connect
    transport reads as none), because envd kills a command whose timeout passes (envd `process/start.go:39-44`); the
    SDK's default would end it after 60 s (`index.mjs:4978`). Only the start is bounded.
-5. `connect()` starts `computerd stdio` the same way, as root, with `stdin: true`. Its stdout is the bytes each data
+5. `connect()` starts `computerd stdio` the same way, as root; every exec has stdin open (`stdin: true`), and `end()`
+   is `closeStdin`. Its stdout is the bytes each data
    event carries, passed on as they come: `commands.run` would hand them to `onStdout` as text, decoded as UTF-8
    (`index.mjs:2702`, `2860`), which turns every byte that is not UTF-8 into U+FFFD, so `exec` reads the stream
    itself. Requests go in with `sendStdin`, one call after another. `close()` kills the bridge (SIGKILL,
@@ -1783,10 +1766,17 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    whose start answers after the call gave up on it (its bound passed, or the caller aborted) is killed as it lands.
 6. A desktop's X server, `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`, starts through the daemon with
    `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
-   shared with Docker). Then xfwm4, which the template has, starts the same way on it (`dbus-run-session -- xfwm4
-   --compositor=off --sm-client-disable`, `WINDOW_MANAGER`: xfwm4 reads its settings over a session bus and exits
-   without one), so the apps an agent opens are framed and focused. The template has no passwd entry for 2510, and a
-   session bus closes every connection of a uid it cannot look up, so a desktop's init, still root, first names the
+   shared with Docker). Then xfwm4, which the template has, starts the same way on it (`xfwm4 --compositor=off
+   --sm-client-disable`, `WINDOW_MANAGER`), so the apps an agent opens are framed and focused. xfwm4 reads its
+   settings over a session bus and exits without one. So it runs under `dbus-run-session`, in a user namespace (the
+   same uid) and a network namespace of its own (`unshare --user --map-current-user --net`), and its bus listens on an
+   abstract name there, which a program of the computer's user cannot connect to. One that joins those namespaces
+   (nsenter) can, as the same uid can ptrace xfwm4. xfwm4 reaches the display by its path. It and every app `apps.launch` opens get `NO_AT_BRIDGE=1`: the template has at-spi2-core, so GTK's
+   accessibility bridge would start an at-spi bus, a socket of the user's at `/work/.cache/at-spi/bus_0` that nothing
+   of ours uses. An app also gets no session bus (`DBUS_SESSION_BUS_ADDRESS=disabled:`). Given none, it would start
+   one with the template's dbus-launch, and that bus starts gnome-keyring-daemon, a socket of the user's at
+   `/work/.cache/keyring-*/control`. The template has no passwd entry
+   for 2510, and a session bus closes every connection of a uid it cannot look up, so a desktop's init, still root, first names the
    user `agentrun-tool` (home the computer's, shell `/bin/sh`), as the box image does (`daemon.NameUser`). A window
    manager that ends within a second of its start fails create with its last words. Hello re-checks the
    display on every call, so `connect()` refuses a desktop whose X server has gone (it reads back kind `linux`).
@@ -1806,9 +1796,9 @@ would hold an empty process table).
 | --- | --- | --- |
 | `kind` | `desktop` (default) or `linux` | `options.kind`; a desktop's X server is computerd's own |
 | `lifetime` | `vendor` | E2B kills the sandbox at its timeout, set to the lifetime; init ends every process at the deadline too |
-| `network` | `none` | `allowInternetAccess` false, read back by `getInfo` with `network.denyOut` and `allowPublicTraffic`, and the daemon's own network namespace; `open` waits for a proxy out of it (known gap) |
+| `network` | `none` | `allowInternetAccess` false and `allowPublicTraffic` false at create, and the daemon's own network namespace; `open` waits for a proxy out of it (known gap) |
 | `vendorAgentPorts` | `[49983]` | envd's port; isolation.vendor-agent checks a program of the computer's user reaches it on neither loopback |
-| `networkReadBack` | `true` | `getInfo` reports `allowInternetAccess` and `network` (`index.mjs:5432-5458`) |
+| `networkReadBack` | `false` | the network is probed from inside, the same for every hosted vendor |
 | `isolation` | `microvm` | Firecracker |
 | `daemon` | `child` | envd is the first process; init is a background command it runs |
 | `groups` | `exec`, `files`, `processes`, and on a desktop `screen`, `input.pointer`, `input.keys` | checked against hello on every connect |
@@ -1871,10 +1861,12 @@ timer is never pulled under it. When init's move fails after E2B's, the error sa
 and init's did not: the programs end at the old deadline, earlier than asked, never later. A provider runs one extend
 of a computer at a time, each reading the deadline the one before it left, so a slow, shorter extend never pulls E2B's
 timer under a longer one's (two providers extending one computer at once are not ordered). E2B has no call that
-changes metadata, so the deadline label stays as create wrote it, and `list()` and `attach()` report E2B's own end, up
-to the cap, once it is more than 2 s past where create set it (its start plus the timeout create gave, by E2B's clock,
-to the second E2B rounds to); extend never leaves E2B's end inside those 2 s, moving it at least 3 s past create's end,
-so an extend however short reads back.
+changes metadata, so the deadline label stays as create wrote it, and the host reads E2B's own end in its place, up to
+the cap, once it is more than 2 s past where create set it (its start plus the timeout create gave, by E2B's clock, to
+the second E2B rounds to). `getInfo` reads the moved end; `Sandbox.list` may still show create's (read live 11-14),
+so `list()` and `attach()` report the end from `get`, as the adapter reads every listed machine.
+Extend never leaves E2B's end inside those 2 s, moving it at least 3 s past create's end, so an extend however short
+reads back.
 
 There is no `stream()`: a screen is streamed through agentrun, never through a vendor URL. A URL into an E2B sandbox
 that a browser could open needs public traffic, since a private sandbox's URL needs the `e2b-traffic-access-token`
@@ -1887,27 +1879,23 @@ words, whatever its value, and every sandbox is made with public traffic off.
 - `check(spec)` refuses in words, with no call: no template, a lifetime past the cap (the shared `checkLifetime`), a
   network that is not none (open and an allowlist alike), a label in the provider's namespace,
   `cpus`, `memoryMb` or `pids` (a template's size is its own), `user`, `workdir` and any other field.
-- `create` reads the sandbox back with `getInfo` and refuses any drift: the template (its id, or its alias when E2B
-  reports one), every label, the network (above), `lifecycle.onTimeout` other than `kill`, `autoResume`, a state that
-  is not `running`, and an end that is not E2B's start plus the timeout create gave. Then the daemon: hello (version,
+- `create` waits for the sandbox to run; E2B's create options are not read back. Then the daemon: hello (version,
   `linux`, `amd64`, kind and groups), `/proc/self/status` (uid and gid 1000, no groups, `NoNewPrivs` 1, every
   capability set zero), `/proc/self/cwd` (`/work`), `/proc/self/exe`; and for none, the probe. It waits until the label
   listing shows the new computer. A failure, mismatch or abort at any step kills the sandbox and waits for it to go;
   create never returns ok once its signal has aborted.
-- `attach({ id })` or `attach({ labels })` reads the spec back from E2B and, for a running computer, the daemon, as at
-  create; one that drifts is refused and left as it is. `image` is the template create was asked for, from its label,
-  and `snapshot` the id E2B reports.
+- `attach({ id })` or `attach({ labels })` reads the computer from E2B and, for a running computer, the daemon, as at
+  create. `image` is the template create was asked for, from its label.
 - `list(labels)` asks E2B for the labels with `agentrun.computer=1` (`Sandbox.list`, running and paused sandboxes,
-  `index.d.mts:10289`), every page, and reads each one back with `getInfo` for its network; paused is `stopped`. One
-  deadline, `listMs` (60 s) from the call, bounds every page and every read-back, each read's own request bound
-  included; past it, `list()` is a timeout in words.
+  `index.d.mts:10289`), every page, for the ids: the adapter reads each one by `getInfo`, since the listing may still
+  show a killed sandbox or an end from before a timer moved; paused is `stopped`. One deadline, `listMs` (60 s) from
+  the call, bounds every page; past it, `list()` is a timeout in words.
 - `connect(ref)` refuses a paused computer without connecting, since E2B's connect resumes one; it gives E2B a timeout
   a little under what is left, and E2B moves a running sandbox's timer only to a longer one (`index.d.mts:10250`), so
   connecting never moves the end.
 - `release(ref, "delete")` reads the sandbox back to check it is this provider's, then kills it (`index.mjs:5398-5410`;
   a sandbox E2B no longer has is done), both never signalled, so a release whose signal aborted first still kills;
-  then it waits through `waitUntil` until `getInfo` answers not found (`index.mjs:5431`) and the label listing no
-  longer shows it, twice running, with pauses doubling from `pollMs` to 5 s, within `goneMs` (120 s) and the caller's
+  then it waits through `waitUntil` until `getInfo` answers not found (`index.mjs:5431`), twice running, with pauses doubling from `pollMs` to 5 s, within `goneMs` (120 s) and the caller's
   signal, which ends only this wait.
   `release(ref, "stop")` is refused in words.
 - Every SDK call has its own bound and takes the caller's signal; the paginator takes it per page (`Sandbox.list`
@@ -1945,10 +1933,6 @@ One live E2B run has been made, the network diagnostic of 2026-11-07 (one sandbo
 other fact above is read from the SDK, envd and the desktop template's source, and the unit tests run against a fake.
 A live run must show:
 
-- that `getInfo` reports `allowInternetAccess` or `denyOut`, and `network.allowPublicTraffic: false`, for a sandbox
-  made with them: the provider refuses a computer whose read-back lacks them, so a missing field fails every create;
-- that `getInfo` reports a template asked for by alias with that alias, or its id (the drift check skips an alias E2B
-  does not report);
 - that a sandbox with no internet access gets no answer from any probe target, IPv6 included (the one diagnostic read
   the IPv6 target refused and every IPv4 one accepted with 0 bytes), and what else `denyOut 0.0.0.0/0` lets through;
 - that envd keeps init running once create disconnects, and how long `getInfo` takes to answer not found after a kill;
@@ -1978,8 +1962,8 @@ Agent37 runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): 
 start, the stdio bridge, the probe, the janitor's extend, idempotent create by the request's name label). An Agent37
 computer is an instance made from a workspace template, by default `agent37-base`, Agent37's plain Debian 12. It is
 kind `linux`, on type `vm` (a VM with its own kernel, the default) or `default` (Agent37's gVisor sandbox). With
-`kind: "desktop"` it is a Linux desktop on `agentrun-box`, our box image as a template of the key's workspace
-([below](#the-desktop-agentrun-box)).
+`kind: "desktop"` it is a Linux desktop on `agentrun-box-<recipe hash>`, our public box image registered as a template
+of the key's workspace on its first run ([below](#the-desktop-agentrun-box)).
 
 ### Two keys
 
@@ -1999,10 +1983,10 @@ names the API key by its sha256 prefix alone.
 | `get` | `GET /v1/instances/{id}`; 404 is none |
 | `list` | `GET /v1/instances`, the whole workspace in one answer (`{ data }`, no paging keys, seen live), matched on the labels here. An answer that says it has more is refused, never read as all |
 | `delete` | `DELETE /v1/instances/{id}`, never signalled; a repeat's 404 is done |
-| `setLabels` | `GET`, then `PATCH` of the whole `metadata`, which a PATCH replaces |
+| `extend` | `GET`, then `PATCH` of the whole `metadata` with the new deadline label, since a PATCH replaces it |
 | `exec` | SSH as root over a binary WebSocket to `wss://{id}-22022.agent37.app/`, one channel per process on the instance's shared connection (below) |
 | `errorCode` | the envelope's `error.code` (or a flat `error` string), then the HTTP status; ssh2's `client-authentication` is `denied` |
-| `check` | a template name with an optional `@version`; one of Agent37's four shapes; at most 4 CPUs; metadata within 4096 bytes with the provider's own labels |
+| `check` | a template name with an optional `@version`; one of Agent37's four shapes; at most 4 CPUs; metadata within 4096 bytes with the provider's own labels (the host's `labels.bytes`; create holds the JSON, quotes and commas too, to it) |
 
 Agent37 has no request id and no unique name, so a retried POST makes a second instance: the adapter lists the name
 label and keeps the oldest by `created` (whole seconds; ties go to the lowest id), as it does for every vendor.
@@ -2012,8 +1996,8 @@ label and keeps the oldest by `created` (whole seconds; ties go to the lowest id
 Agent37 has no SSH port on the internet: the instance's sshd answers on 22022 inside it, and the edge carries the SSH
 stream as binary WebSocket frames. `exec` opens a WebSocket (Node's global one takes `headers`), wraps it as a Duplex
 for ssh2's `Client.connect({ sock })`, and runs argv as `sh -c` under a wrapper that writes the shell's pid to
-`/tmp/.agentrun-exec-<random>` and removes it when the command ends. stdout and stderr are the channel's, piped; with no
-stdin, end of file is sent at once. `wait()` answers at the channel's close with the exit-status, or -1 for an exit by
+`/tmp/.agentrun-exec-<random>` and removes it when the command ends. stdout and stderr are the channel's, piped; stdin
+is open until `end()`, which the adapter calls at once for a command it gives no input. `wait()` answers at the channel's close with the exit-status, or -1 for an exit by
 signal or none; its listeners go on inside ssh2's callback, since one read off the tunnel can hold the open, the exit
 and the close together (seen live: a listener added after an `await` missed the exit). `kill()` runs a second command
 on the same connection that kills the pid's process group (the sshd starts each command as a session and group leader,
@@ -2041,15 +2025,15 @@ at most that late. `delete` ends every connection to the instance at once, a ret
 | `isolation` | `vm` or `gvisor` | `options.type`: `vm` (default) or `default` |
 | `lifetime` | `janitor` | Agent37 never ends an instance on its own; init's deadline and the deadline label do, and the run's sweep is the backstop |
 | `maxLifetimeMs` | 24 h | the janitor's cap; `options.maxLifetimeMs` sets less |
-| `network` | `none` | `deny-all`, read back, and the daemon's own network namespace |
-| `networkReadBack` | `true` | `GET` reports `network` and `public_ports`; any public port reads `other` |
+| `network` | `none` | `deny-all` at create, and the daemon's own network namespace |
+| `networkReadBack` | `false` | the network is probed from inside, the same for every hosted vendor |
 | `vendorAgentPorts` | `[22022, 7681]` | the platform's sshd (root for whoever holds the key) and its web terminal (ttyd), both seen listening on every VM |
 | `mount` | `archil` | the run's folder on an Archil disk; `/dev/fuse` is there on both types (live), and the mount needs the box template |
 | `release` | `delete` | `DELETE`; no release maps to Agent37's stop here |
-| `specFields` | `cpus`, `memoryMb` | 2/4, 4/8, 4/16 or 4/32 (CPUs/GB); more than 4 CPUs is refused, since Agent37 gives 4 without saying so |
+| sizes | `cpus`, `memoryMb` | 2/4, 4/8, 4/16 or 4/32 (CPUs/GB); more than 4 CPUs is refused, since Agent37 gives 4 without saying so |
 
-Every instance is made with `auto_sleep: false`: a VM that sleeps wakes cold, its daemon gone. A read-back with
-`auto_sleep` on, another type, region or template is drift, and the adapter refuses the computer.
+Every instance is made with `auto_sleep: false`: a VM that sleeps wakes cold, its daemon gone. What create sent is not
+read back.
 
 ### Conformance on Agent37
 
@@ -2061,7 +2045,7 @@ AGENTRUN_COMPUTER_LIVE_AGENT37=1 COMPUTER_AGENT37_API_KEY=... COMPUTER_AGENT37_S
 The conformance module, `dist/conformance/agent37.js`, checks `AGENTRUN_COMPUTER_LIVE_AGENT37=1` first, then reads
 `COMPUTER_AGENT37_API_KEY` (`apiKey`, required), `COMPUTER_AGENT37_SSH_KEY` (`sshKey`, required, the key's contents),
 `COMPUTER_AGENT37_KIND` (`linux`, the default, or `desktop`), `COMPUTER_AGENT37_TEMPLATE` (the run's image, default
-`agent37-base`, or `agentrun-box` for kind `desktop`), `COMPUTER_AGENT37_TYPE`, `COMPUTER_AGENT37_REGION`,
+`agent37-base`, or for kind `desktop` the box template `prepareImage()` registers), `COMPUTER_AGENT37_TYPE`, `COMPUTER_AGENT37_REGION`,
 `COMPUTER_AGENT37_API_URL`, `COMPUTER_AGENT37_DAEMON` (`daemonPath`), `COMPUTER_AGENT37_MAX_LIFETIME_MS` and
 `COMPUTER_AGENT37_USER` (`daemonUser`), never `AGENT37_API_KEY`. Every computer of a run lives at most 30 minutes.
 `createDriftedProvider()` uploads a daemon built as `<version>-drift`. The live sweep is the shared one,
@@ -2084,23 +2068,22 @@ kernel `4.19.0-gvisor`): root has no `CAP_SYS_ADMIN`, and init made its namespac
 `create({ kind: "desktop", ... })` (serve builds the descriptor's desktop configuration so) makes a desktop: the
 adapter gives init `DISPLAY` and starts `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp` through the daemon as the tool
 user (`src/desktop.ts`), as on E2B, so the X server is one process in init's table, in its own network namespace, and
-ends with the computer; xfwm4 starts the same way once the display answers. Its default image is `agentrun-box`
-(`AGENT37_BOX_TEMPLATE`): `box/Dockerfile` (the archil client, the helper, the tool user, FUSE, no sudo) plus Xvfb,
-xfwm4, and the apps E2B Desktop has that are cheap to carry (Xfce's terminal and Mousepad, Firefox ESR, xdotool),
-which the `apps` group lists and opens, built as a template of the key's own workspace by `box/build-agent37.mjs`:
+ends with the computer; xfwm4 starts the same way once the display answers, its session bus out of the user's reach, as
+on E2B. It starts from the box image the release publishes, `ghcr.io/parcha-ai/agentrun-box:<recipe hash>`
+(`box/Dockerfile`: the archil client, the helper, the tool user, FUSE, no sudo, plus Xvfb, xfwm4, and the apps E2B
+Desktop has that are cheap to carry, which the `apps` group lists and opens), as a template of the key's own workspace
+named `agentrun-box-<recipe hash>`. A sandbox that mounts an Archil disk starts from the same template.
 
-```sh
-AGENT37_API_KEY=... node packages/computer/box/build-agent37.mjs   # prints template=agentrun-box
-```
-
-Agent37 keeps a template's revisions under one name, so the name is fixed and the recipe's hash (the Dockerfile, the
-helper and the desktop's lines in the script) is in the template's description: a workspace whose template names the
-hash already is built nothing, and a changed recipe publishes a new revision, which every instance made after it starts
-from. The script's calls: `GET /v1/templates/agentrun-box`, then `POST /v1/template-builds` (`name`, `size_bytes`,
-`description`), a `PUT` of the gzipped context (the Dockerfile and the helper at its root) to the presigned
-`upload_url` with no Agent37 key, `POST .../{id}/start`, and `GET .../{id}/logs?offset=N` until `succeeded` or `failed`.
-Builds are free, at most three at once per workspace and 45 minutes each (docs: templates, "Build an image in the
-cloud"). A workspace template is the workspace's own, so each workspace that runs desktops builds it once first.
+The descriptor says `prepareImage`, so the provider makes that template itself: `prepareImage()` reads
+`GET /v1/templates/agentrun-box-<hash>`, and on a 404 registers the public image under that name
+(`POST /v1/templates` with `name` and `image_ref`, no build), reporting the wait to `onWait` as a pull. Agent37's POST
+answers once the template is usable, which for an image this size takes minutes, so it is bounded at 15 minutes. A 409
+is another registration of the same name in flight, and the provider reads the template until it is there. A template
+the workspace already has is used as it is, so only a workspace's first run waits. The name carries the recipe's hash
+because Agent37 keeps a template's revisions under one name: a changed recipe is a new template, never a new revision
+under a run's feet. A refusal (an image Agent37 can't pull, a key it refuses) is the run's error, in Agent37's words.
+The hash is `box/recipe.mjs`'s, read from the `box/` folder this package ships, so a server asks for the image its own
+release published.
 
 Why not Agent37's own `agent37-ubuntu`, which ships a desktop: its image (`ghcr.io/agent37-platform/ubuntu:2026.10.13c`,
 entrypoint `images/vm/ubuntu/entrypoint.sh` of agent37-platform/templates) runs `Xtigervnc :1 ... -ac` as root, with
@@ -2230,7 +2213,7 @@ and are never in a ref, a list, an error's words or a report. `client` stays a `
 | a computer is | a session (`POST /v1/sessions`, `keepAlive: true`) | a browser (`POST /browsers`) |
 | labels ride | the session's `userMetadata`, each key's dots written as `_` (Browserbase refuses a dot in a metadata key), so a label key is letters, digits and dots | the browser's `tags` |
 | lifetime | the session's `timeout`, 60 s to 6 h, wall clock | `timeout_seconds`, 10 s to 72 h, an idle timeout: no wall clock, so list reads no deadline |
-| groups (`CAPABILITIES`) | `cdp`, `stream` | `cdp`, `stream` |
+| groups (the descriptor's `capabilities`) | `cdp`, `stream` | `cdp`, `stream` |
 | test connection | one `GET /v1/sessions?status=RUNNING` | one `GET /browsers?status=active` page |
 | release | `REQUEST_RELEASE`, then read back until it is no longer `RUNNING` or `PENDING` | `DELETE`, then read back until 404 or `deleted_at` |
 | options | `apiKey`, `projectId`, `apiUrl`, `fetch` | `apiKey`, `apiUrl`, `fetch` |
@@ -2859,7 +2842,6 @@ refuses an id it does not hold, naming the ones it does. The provider file, `src
 `ProviderModule` is:
 
 - the provider class, which implements `ComputerProvider` and reports the registry id as its `id`;
-- `MOUNT`, the mount kinds its computers take;
 - `create(options)`, the provider built from its options alone, its key included, and refused in words when one is
   missing or wrong, never echoing a key. It reads no environment (see [Settings](#settings)), and exports no names of
   variables;
@@ -2903,9 +2885,9 @@ npm test -w @parcha/agentrun-computer               # unit tests: no Go, no Dock
 cd packages/computer/daemon && go vet ./... && go test ./...
 AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
 AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... [COMPUTER_DAYTONA_SNAPSHOT=<snapshot>] npm run test:daytona -w @parcha/agentrun-computer
-AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, a key the lead OKed
-AGENTRUN_COMPUTER_LIVE_E2B=1 npm run test:e2b -w @parcha/agentrun-computer       # also needs COMPUTER_E2B_API_KEY, a key the lead OKed, and the e2b package
-AGENTRUN_COMPUTER_LIVE_BOXD=1 npm run test:boxd -w @parcha/agentrun-computer     # also needs COMPUTER_BOXD_API_KEY, a key the lead OKed, and the @boxd-sh/sdk package
+AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, for an account you can bill
+AGENTRUN_COMPUTER_LIVE_E2B=1 npm run test:e2b -w @parcha/agentrun-computer       # also needs COMPUTER_E2B_API_KEY, for an account you can bill, and the e2b package
+AGENTRUN_COMPUTER_LIVE_BOXD=1 npm run test:boxd -w @parcha/agentrun-computer     # also needs COMPUTER_BOXD_API_KEY, for an account you can bill, and the @boxd-sh/sdk package
 ```
 
 `npm test` also runs `test/local-chrome-live.test.mjs` on a real Chrome where one is on PATH (or `CHROME_PATH` names

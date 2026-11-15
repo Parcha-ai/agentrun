@@ -1,14 +1,24 @@
-// mini-demos.py's movie captions for an agent's computer calls: each call on a tool_result row's computer_calls (serve's
-// record of it) as the line a person reads, from serve's own timeline helpers (packages/serve/src/timeline/computer.ts),
-// so a movie says what the console's run page says. Reads the calls as a JSON array on stdin, writes their lines as a
-// JSON array on stdout.
+// mini-demos.py's movie captions for computer calls, in the one voice the console's run page reads them in: serve's own
+// words (packages/serve/src/timeline/computer.ts callWords) for serve's record of each call. A scripted demo's call comes
+// raw, `{method, params, answer}` (answer `{ok, value}` or `{ok: false, error}`), and is recorded here as serve records
+// an agent's (computer-calls.ts callRecordOf), each step's ref by the name the run's earlier looks gave it (RefNames); an
+// agent's call comes as serve's record already (a tool_result row's computer_calls). Reads one call as JSON a line on
+// stdin and writes its words as a JSON string a line on stdout, flushed per line, so one process serves a whole run.
 //
-//   node call-words.mjs < calls.json
-import { readFileSync } from "node:fs";
+//   printf '%s\n' '{"method":"apps.launch","params":{"id":"com.apple.TextEdit"},"answer":{"ok":true}}' | node call-words.mjs
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const built = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "serve", "dist", "timeline", "computer.js");
-const { callWords } = await import(pathToFileURL(built).href);
-const calls = JSON.parse(readFileSync(0, "utf8"));
-process.stdout.write(JSON.stringify(calls.map((call) => callWords(call))));
+const built = (name) => pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "serve", "dist", name)).href;
+const { callWords } = await import(built("timeline/computer.js"));
+const { callRecordOf, RefNames } = await import(built("computer-calls.js"));
+
+const names = new RefNames();
+for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
+  if (!line.trim()) continue;
+  const call = JSON.parse(line);
+  if ("answer" in call && call.method === "ui.observe") names.learn(call.answer);
+  const record = "answer" in call ? callRecordOf(call.method, call.params, call.answer, 0, 0, names.of) : call;
+  process.stdout.write(`${JSON.stringify(callWords(record))}\n`);
+}

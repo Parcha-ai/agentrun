@@ -56,6 +56,6 @@ test("the registry holds orgo, and its Settings entry: the desktop kind, the ORG
 	assert.deepEqual(entry.keys, [{ name: "ORGO_API_KEY", option: "apiKey", required: true }, { name: "ORGO_WORKSPACE_ID", option: "workspaceId", required: false, picked: true }]);
 	assert.deepEqual(entry.mounts, []);
 	assert.equal(entry.metered, true);
-	const orgo = await import("../dist/orgo.js");
-	assert.deepEqual(entry.capabilities, orgo.CAPABILITIES);
+	const { ORGO } = await import("../dist/descriptors/orgo.js");
+	assert.deepEqual(entry.capabilities, ORGO.capabilities);
 });

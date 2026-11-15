@@ -71,16 +71,18 @@ test("an agent's ask refused at the cap parks the run at its next request with t
 test("an answer that passed the cap, then an ask refused at it: the run ends spend_cap_reached in the cap's words, never parked for a raise", async (t) => {
   // Each answer is booked at $0.02 (its model's hold was $0: free to the cap before it left), past the $0.01 cap; its ask
   // is then refused, which would pause the run at its next request. Passing the cap ends it first. The answer took the
-  // run past its share of the cap (tool-budget.ts wrappingUp), so the ask's call is refused in the wrap-up's words before
+  // run past its share of the cap (wrap-up.ts wrappingUp), so the ask's call is refused in the wrap-up's words before
   // it runs, and never reaches the cap's check of the ask itself.
   const { row, answered } = await askRun(t, true, { price: () => 0.02 });
   assert.deepEqual(answered, [], `the ask never ran: the wrap-up refused its call first: ${JSON.stringify(answered)}`);
   assert.deepEqual([row.state, row.summary], ["failed", "spend_cap_reached: The run cost $0.02, $0.01 over its cap of $0.01."], `the run ended over its cap, never parked: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
 });
 
-test("an end-of-run answer that passes the cap ends the run spend_cap_reached in the cap's words, never completed", async (t) => {
+test("an end-of-run answer that passes the cap fails that turn in the cap's words; the run keeps its job's end, completed, its spend booked", async (t) => {
   // The job's answer is free and fits; the end-of-run turn's answer, asked after it, is booked at $0.02 (its model's hold
-  // was $0, so it was sent), past the $0.01 cap. The run's end reads its spend again after that turn.
+  // was $0, so it was sent), past the $0.01 cap. The turn's ask reads the run's spend once it settled: past the cap, the
+  // step is told the turn failed in the cap's words (its learning dropped for the cap), and the run's status is how its
+  // job's own turn ended.
   const script = [{ say: "the job's answer" }, { say: "a note" }];
   let answers = 0;
   const price = () => (++answers === 1 ? 0 : 0.02);
@@ -92,9 +94,10 @@ test("an end-of-run answer that passes the cap ends the run spend_cap_reached in
   };
   let capUsd = CAP;
   const runCap = { get capUsd() { return capUsd; }, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
-  const { row } = await capRun(t, { script, specOf, cap: runCap, runCap: { capUsd: () => capUsd, modelOf: () => FREE }, endOfRun });
-  assert.deepEqual(asked, [{ ended: true, answer: "a note" }], "the end-of-run turn was asked once and answered");
-  assert.deepEqual([row.state, row.summary], ["failed", "spend_cap_reached: The run cost $0.02, $0.01 over its cap of $0.01."], `the run ended over its cap: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+  const { row, sent } = await capRun(t, { script, specOf, cap: runCap, runCap: { capUsd: () => capUsd, modelOf: () => FREE }, endOfRun });
+  assert.deepEqual(asked, [{ failed: { code: "refused", message: "spend_cap_reached: The run cost $0.02, $0.01 over its cap of $0.01." } }], "the end-of-run turn was asked once; past the cap, it failed in the cap's words");
+  assert.equal(row.state, "ended", `the run ends completed on its job's answer, never failed for the end-of-run turn's spend: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+  assert.equal(sent.length, 2, `both turns were sent: ${sent.length} requests`);
 });
 
 test("a person's take-over refused at the cap never pauses the run: the agent goes on and the run ends", async (t) => {

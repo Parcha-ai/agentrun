@@ -11,6 +11,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
 import type { JournalPage } from "./journal/storage.js";
+import type { MonidPinBody } from "./agent-body.js";
 
 /** A run's state. queued: a row, no runner yet. running: a runner holds the claim. parked: waiting for a person (an
  *  approval, a raised cap) with no claim held; a command row or its wake_at makes it claimable again. ended, stopped and
@@ -67,14 +68,13 @@ export interface AgentRow {
   readonly externalRef: string | null;
 }
 
-/** A template's package, kept on the revision made from it. */
+/** The template package an agent was applied from, kept on the revision the apply made (its first): the package's id
+ *  (a bundled one's name, an imported one's `github:<owner>/<repo>[/<path>]`), its SemVer version, and the commit SHA it
+ *  was imported at (null for a bundled one, which is the server's own build). */
 export interface TemplatePackage {
-  readonly name: string;
+  readonly id: string;
   readonly version: string;
-  readonly source: "builtin" | "git";
-  readonly ref?: string;
-  readonly sha?: string;
-  readonly parameters?: unknown;
+  readonly sha: string | null;
 }
 
 export interface NewRevision {
@@ -89,6 +89,11 @@ export interface NewRevision {
   readonly package?: TemplatePackage;
   /** The version this revision maps in an externally owned agent, set only on an inline-agent run's revision. */
   readonly externalVersion?: string;
+  /** The MCP tools the revision grants, pinned as their servers listed them when it was saved (mcp-gateway.ts McpPin), which
+   *  every run of it calls; none when it grants none. */
+  readonly mcpPin?: unknown;
+  /** Its monid endpoints, pinned as monid listed them when it was saved (agent-body.ts MonidPinBody); none for none. */
+  readonly monidPin?: MonidPinBody;
 }
 
 export interface RevisionRow {
@@ -107,6 +112,10 @@ export interface RevisionRow {
   readonly createdAt: number;
   /** The version this revision maps in the agent's owning system (one revision per version), or null for one committed here. */
   readonly externalVersion: string | null;
+  /** Its MCP pin as its save made it (NewRevision.mcpPin), or null for a revision that grants no MCP tool. */
+  readonly mcpPin: unknown;
+  /** Its monid pin as its save made it (NewRevision.monidPin), or null for a revision that grants no monid endpoint. */
+  readonly monidPin: MonidPinBody | null;
 }
 
 /** How a run ended, beside its state. An ended run (state 'ended'): 'escalated' (it finished its work and waits for a
@@ -571,6 +580,8 @@ export interface Agents {
   byExternal(ref: string): Promise<AgentRow | undefined>;
   /** Whether the agent already has the revision that maps `version` of its owning system (one row looked up, no bodies read). */
   hasExternalVersion(agentId: string, version: string): Promise<boolean>;
+  /** The revision that maps `version` of its owning system, or undefined before that version's first run. */
+  externalRevision(agentId: string, version: string): Promise<RevisionRow | undefined>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
@@ -586,6 +597,10 @@ export interface Agents {
   setCurrent(agentId: string, revisionId: string): Promise<void>;
   revision(id: string): Promise<RevisionRow | undefined>;
   revisions(agentId: string): Promise<RevisionRow[]>;
+  /** Pins a revision saved with no MCP pin (before pins were made at save) at its first run: `pin` is written only while
+   *  the revision still has none, and the pin it has then is the answer, so two first runs at once agree on one. Null when
+   *  there is no such revision. */
+  pinOnce(revisionId: string, pin: unknown): Promise<unknown>;
 }
 
 export interface Templates {
@@ -670,7 +685,7 @@ export interface Runs {
    *  revision's `note` is kept by its first use, as an edit's note is; it is not part of its body. */
   createInline(input: {
     agent: { id: string; name: string; description?: string | null; ref: string };
-    revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown; note?: string };
+    revision: { id: string; version: string; kind: string; body: unknown; skills?: unknown; note?: string; mcpPin?: unknown; monidPin?: MonidPinBody };
     run: { id: string; origin?: RunOrigin };
     launch: RunLaunchInput;
   }): Promise<RunRow>;
@@ -809,7 +824,8 @@ export interface McpServerStamp {
   readonly tokenUntil: number | null;
 }
 
-/** A run's MCP pin: what it may call, per granted server (url, tools, prices), written once at its first claim. */
+/** A run's MCP pin: what it may call, per granted server (url, tools, prices), as its revision's save pinned it
+ *  (RevisionRow.mcpPin); `pinnedAt` is when that revision was saved. */
 export interface McpPinRow {
   readonly runId: string;
   readonly body: unknown;
@@ -868,12 +884,8 @@ export interface Mcp {
    *  (runner/mcp-claim.ts) to see its credential removed, replaced or moved, or its access token near its end. Undefined
    *  when it is no longer saved. */
   stamp(name: string): Promise<McpServerStamp | undefined>;
-  /** The run's pin, or none (a run that grants no MCP tool has none). */
+  /** The run's pin: its revision's, as the revision's save made it; none for a run whose revision grants no MCP tool. */
   pin(runId: string): Promise<McpPinRow | undefined>;
-  /** Writes the run's pin under `claim` unless it has one, in one transaction with the claim's epoch fence, and answers the
-   *  pin as stored: never rewritten, so a second call (or a later claim's) reads the first. Fenced, writing nothing, on a
-   *  stale claim. */
-  pinOnce(claim: Claim, body: unknown): Promise<McpPinRow>;
   /** One refresh at a time per server (a provider that rotates refresh tokens spends the old one at each refresh): the lease
    *  is granted to `holder` for `ms` (MCP_REFRESH_LEASE_MS by default) only while the credential is still the one it read
    *  (`seen`: the sealed bytes, null for none) and no live lease is held. Not granted: the current row comes back, and the
@@ -951,8 +963,19 @@ export interface SealedKeys {
   get(name: string): Promise<Uint8Array | undefined>;
   /** Saves `sealed` under `name`, inserted or replaced in place. */
   put(name: string, sealed: Uint8Array): Promise<void>;
+  /** Saves `sealed` under `name` only while its row still holds `was` (the bytes as get read them), in one statement: a
+   *  compare-and-set, so of two writers that read one row only one replaces it. Each seal is fresh bytes, so a row any
+   *  writer saved since reads as changed. True when it was replaced; false, writing nothing, when it changed or is gone. */
+  replaceIf(name: string, was: Uint8Array, sealed: Uint8Array): Promise<boolean>;
   /** The key's row goes. */
   remove(name: string): Promise<void>;
+  /** The key's row goes only while it still holds `was` (the bytes as get read them), in one statement: true when it
+   *  went; false, removing nothing, when it changed since or is gone. */
+  removeIf(name: string, was: Uint8Array): Promise<boolean>;
+  /** The deadlines' clock now, in ms: the database's on Postgres, the store's own on SQLite (fence.ts storeNow). A lease
+   *  kept inside a sealed key's bytes (the ChatGPT sign-in's renewal) is stamped and judged by it, so every process
+   *  sharing the store judges it by one clock, whatever its own says. */
+  clock(): Promise<number>;
   /** Every saved key, by name (its bytes never opened here). */
   all(): Promise<SealedKeyRow[]>;
 }
@@ -1038,6 +1061,29 @@ export interface PairedComputers {
   seen(id: string, hello: Readonly<Record<string, unknown>>): Promise<void>;
   /** Removes the computer: its token dials no more. False when it was not paired (unknown, or removed already). */
   revoke(id: string): Promise<boolean>;
+}
+
+/** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
+ *  (`github:<owner>/<repo>[/<path>]`), its source as given, the commit SHA read, its publisher (the GitHub account), and
+ *  its files as they were read, by path, base64. The server checks them again (templates.ts readPackage) as it loads them
+ *  at its start, so a package this build no longer takes is never served. */
+export interface ImportedTemplateRow {
+  readonly id: string;
+  readonly source: string;
+  readonly sha: string;
+  readonly publisher: string;
+  readonly files: Readonly<Record<string, string>>;
+  /** When it was last imported (stamped by the store). */
+  readonly importedAt: number;
+}
+
+export interface ImportedTemplates {
+  /** Every imported package, by id. */
+  list(): Promise<ImportedTemplateRow[]>;
+  /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it). */
+  put(row: Omit<ImportedTemplateRow, "importedAt">): Promise<void>;
+  /** Removes the package: false when none had that id. */
+  remove(id: string): Promise<boolean>;
 }
 
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one
@@ -1220,6 +1266,8 @@ export interface Store {
   readonly computerLedger: ComputerLedger;
   /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
   readonly pairedComputers: PairedComputers;
+  /** The template packages imported from GitHub, their files kept as read. */
+  readonly importedTemplates: ImportedTemplates;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */
   readonly triggerSettings: TriggerSettings;
   /** The outbox of a channel the server sends itself, its tries and what it told each run. */

@@ -89,6 +89,10 @@ export interface WorkflowProvider {
   readonly capModel: CapModel;
   /** The proxy's upstream fetch (a test's scripted origin). */
   readonly fetch?: typeof fetch;
+  /** A ChatGPT plan's route: its policy keeps the plan's rules (pi.ts policyFor). */
+  readonly plan?: boolean;
+  /** Told the credential an upstream 401 refused, so the next one is renewed (a ChatGPT plan's route). */
+  readonly refused?: (credential: string) => Promise<void>;
 }
 
 /** A tier's provider from the runner's model route (model-route.ts routeOf), the one way the runner resolves a model
@@ -116,6 +120,8 @@ export async function providerFromRoute(route: ModelRoute): Promise<WorkflowProv
     price: (route.price ?? (() => null)) as (model: string, usage: ProxyUsage) => number | null,
     capModel: { id: route.model, api: route.provider.api, price: route.cost ?? null, outputCeiling: route.outputCeiling ?? null },
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    ...(route.provider.plan ? { plan: true } : {}),
+    ...(route.provider.refused ? { refused: route.provider.refused } : {}),
   };
 }
 
@@ -196,7 +202,7 @@ function capRuleOf(capUsd: () => number): WorkflowCapRule {
 
 /** The claim-time builder: `specOf(claim)` the loop calls. Reads the run's launch and revision, resolves each tier's
  *  provider, and returns the spec. The model proxies and the booking are started per claim (release closes them). */
-export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string }, run?: WorkflowSpecRun) => Promise<WorkflowRunSpec> {
+export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string; runner?: string }, run?: WorkflowSpecRun) => Promise<WorkflowRunSpec> {
   const now = deps.now ?? Date.now;
   // The proxies a claim started: closed by the spec's release once the claim is done, or here when the claim fails before
   // its spec is returned (the loop then has no spec to release), so a failed claim leaves no proxy listening.
@@ -209,7 +215,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       throw error;
     }
   };
-  async function claimSpec(claim: { runId: string }, run: WorkflowSpecRun | undefined, proxies: ModelProxy[]): Promise<WorkflowRunSpec> {
+  async function claimSpec(claim: { runId: string; runner?: string }, run: WorkflowSpecRun | undefined, proxies: ModelProxy[]): Promise<WorkflowRunSpec> {
     /** The keys a claim opens, held by the runner's one redactor (run.redact) before a decision can echo one. */
     const holding = async (opening: Promise<NodeJS.ProcessEnv>): Promise<NodeJS.ProcessEnv> => {
       const opened = await opening;
@@ -261,7 +267,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const offered = nodeOffer(claimed.workflow);
     for (const [tier, provider] of providers) {
       const proxy = await startModelProxy({
-        policy: await policyFor({ api: provider.api, origin: provider.origin, credential: provider.credential, ...(provider.headers ? { headers: provider.headers } : {}) }, provider.modelId, offered),
+        policy: await policyFor({ api: provider.api, origin: provider.origin, credential: provider.credential, ...(provider.headers ? { headers: provider.headers } : {}), ...(provider.plan ? { plan: true } : {}) }, provider.modelId, offered),
         hooks: hooks.port,
         model: provider.modelId,
         origin: provider.origin,
@@ -269,6 +275,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         price: provider.price as never,
         ...(provider.headers ? { headers: provider.headers } : {}),
         ...(provider.fetch ? { fetch: provider.fetch } : {}),
+        ...(provider.refused ? { credentialRefused: provider.refused } : {}),
       }, randomBytes(32).toString("base64url"));
       proxies.push(proxy);
       // pi-ai's client of the provider's wire at its proxy (port-models.ts sessionProvider), as pi's session reaches its own.
@@ -387,7 +394,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         // The run's ONE cap over the journal's sessions: its model requests and its decisions admit by the one rule and
         // book on one ledger (runCap's runBooking over the sessions), so each is judged on the run's whole spend and a
         // refusal's figures are the run's. Wired now the Harness is open; the proxies' hooks forward to the model booking.
-        const sessions = journalSessions(harness, context, { flush: () => deps.store.flush() });
+        const sessions = journalSessions(harness, context, { flush: () => deps.store.flush(), ...(claim.runner === undefined ? {} : { claim: { runId: claim.runId, runner: claim.runner } }) });
         const writer = await sessions.open(SESSION);
         const run = runCap({ sessions: sessions as unknown as RunSessions, capUsd: () => effectiveCapUsd, mode: claimed.mode, now, modelOf: capModelOf });
         booking = await modelPortFor(writer, {
@@ -397,6 +404,10 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           beforeRequest: parkOnRefusal(run.before, hooks, flight, steps),
           onEvent: async (event) => { if (event.type === "request_start") await deps.store.flush(); },
         });
+        // An earlier claim's requests, before the workflow sends anything: one this runner's lost claim saw answer, its
+        // record refused, is booked at what it reported (waiting, bounded, for one still in flight); one a dead runner left
+        // is booked cut (the kernel's bookCut). Read as before for the cap: cut or open, a request counts at its hold and bound.
+        await booking.bookCut();
         // The run's decisions book on the same cap, under their own session (DECISION_SESSION); created now the Harness is
         // open, so a decision node (which runs after this) reaches it through the deferred reference. The flush makes each
         // decision's hold durable before it is sent, as a model request's is.

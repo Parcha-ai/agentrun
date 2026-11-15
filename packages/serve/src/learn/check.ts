@@ -4,7 +4,7 @@
 // here with its bytes; nothing the checker refuses is ever written to git. Every problem it reports is printable: its
 // path and detail are cut of the host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
 import { hiddenCharacter } from "./invisible.js";
-import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile, ruleOf } from "./notes.js";
+import { compiledLineBytes, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile, ruleOf } from "./notes.js";
 import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
 import { type DraftAsk, type DraftDecisions, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
@@ -12,9 +12,15 @@ import { type DraftAsk, type DraftDecisions, type DraftDryRun, draftProblems, ty
  *  each (notes.ts mergedNote). */
 const HOST_LINES = Buffer.byteLength("origin: you\nstatus: pending\n");
 
+/** A note's bytes as the note cap counts them: all of `text` but the `compiled_into` line the host adds when a learned
+ *  workflow is compiled from it (notes.ts compiledLineBytes). A note at the cap stays one once marked: it retires,
+ *  restores, and a later note supersedes it through the grader, each checked against `note`. A run never sets the line
+ *  (checkProposal refuses it), so a run's note is counted whole. */
+export const noteBytes = (text: string): number => Buffer.byteLength(text) - compiledLineBytes(text);
+
 /** Byte caps (UTF-8) and counts. Over a cap is refused, never cut. */
 export const CAPS = Object.freeze({
-  /** One note's file. */
+  /** One note's file, as noteBytes counts it: the host's `compiled_into` line on top. */
   note: 4096,
   /** One note a run proposes: the note cap less HOST_LINES, so a run's note stays within `note` once the host merges
    *  it, and a person can still retire it and a later run supersede it, each read and checked against `note`. */
@@ -139,6 +145,8 @@ function nameChecked(path: string, refused: (text: string) => boolean, add: Add,
  *  values, its front matter in shape. The note when it is. */
 function textChecked(path: string, size: number, bytes: Uint8Array | undefined, refused: (text: string) => boolean, add: Add, run = false): ProposedNote | undefined {
   const cap = run ? CAPS.runNote : CAPS.note;
+  // A person's note (or one main holds) is counted without the host's compiled_into line; a run's whole (it may not set it).
+  if (!run && bytes) size -= compiledLineBytes(Buffer.from(bytes).toString("utf8"));
   if (size > cap) return void add("too_large", `${size} bytes; the cap is ${cap}${run ? " for a run's note" : ""}`, path);
   const text = textOf(path, bytes, refused, add);
   if (text === undefined) return undefined;
@@ -300,7 +308,7 @@ export function checkProposal(input: CheckInput): ProposalCheck {
     if (base.has(path)) return add("exists", "the folder has a note by this name", path);
     const note = textChecked(path, change.size ?? change.bytes?.length ?? 0, change.bytes, refused, add, true);
     if (!note) return;
-    if (["status", "superseded_by", "retired_from", "origin"].some((key) => note.keys.includes(key))) return add("status", "a run never sets status, superseded_by, retired_from or origin: the host does, when it merges the note, a later one supersedes it or a person retires it", path);
+    if (["status", "superseded_by", "retired_from", "origin", "compiled_into"].some((key) => note.keys.includes(key))) return add("status", "a run never sets status, superseded_by, retired_from, origin or compiled_into: the host does, when it merges the note, a later one supersedes it, a learned workflow is compiled from it or a person retires it", path);
     candidates.push(note);
   };
   for (const change of changes) one(change);

@@ -151,9 +151,11 @@ Docker socket, so each run's Docker sandbox is a container beside the server's, 
 volume ([in the published image](#in-the-published-image)). It takes Docker Engine 26 or later, which mounts a
 volume's subpath.
 
-1. Start it (below).
+1. Start it (below). It needs no model key.
 2. Open the console and set your password.
-3. Sign in with it on any browser; the token in the log stays for scripts and the CLI.
+3. Continue with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or add a model key
+   there instead ([on a ChatGPT plan](#on-a-chatgpt-plan)).
+4. Sign in with your password on any browser; the token in the log stays for scripts and the CLI.
 
 On a fresh server with no `AGENTRUN_PUBLIC_URL`, whoever reaches the console first sets the password, so set it right after
 the start, before the port is reachable by anyone else. With `AGENTRUN_PUBLIC_URL` set, the setup code the server
@@ -163,11 +165,16 @@ On a Linux host with Docker Engine 26 or later, with no checkout:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
-export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
 echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
 echo "AGENTRUN_SEAL_KEY=$(openssl rand -base64 32)" >> .env && chmod 600 .env   # once; keep it
 docker compose up -d
 docker compose logs agentrun | grep Open
+```
+
+For a model key as well, save it in the console, or export it before `docker compose up`:
+
+```sh
+export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
 ```
 
 The `.env` beside `compose.yaml` keeps the socket's group (`DOCKER_GID`) for every later `docker compose` command, in any
@@ -357,7 +364,7 @@ link, and write through a temporary file renamed over the old one, keeping its m
 says so and names the box's path; `bash`, in the container, can still reach the file. Where this server reaches
 directories by path (no `/proc/self/fd`, as on macOS), or a box binds nothing, all four run in the container, made on
 the first of them.
-`web_fetch`, `web_search` and the `monid.*` tools stay on this server, and so do
+`web_fetch`, `web_search` and monid's endpoints stay on this server, and so do
 the run's loop, its log, its model calls and every key. What the server itself files in `work/` (monid's long answers,
 the browser's evidence) never goes through a link a box's command planted there: each directory is held open on the
 way (`/proc/self/fd`). On a host without it (macOS), where a link swapped in mid-walk could still turn a write, a sandbox run's `work/` gets none of
@@ -739,9 +746,16 @@ passes the binding's conformance cases (below) needs no change here.
   region and that region's S3 URL (and an exec image pinned by digest, if you want one other than serve's default);
   `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
   because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
-  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Modal, E2B or Agent37 sandbox mounts
-  the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
-  it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes. A boxd sandbox takes no
+  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Modal, E2B or Agent37 sandbox
+  mounts the run's folder from its disk, which needs Archil's image in your own vendor account. Agent37 puts it there
+  itself: its descriptor says `prepareImage`, so a run's first claim registers our public box image as a template of the
+  key's workspace (`agentrun-box-<recipe hash>`) and waits once, saying it is pulling. Its sandbox and desktop are
+  ready once the keys work. Modal's descriptor says `prepareImage` too, and it answers our public box image by its
+  registry tag, which Modal pulls at a computer's first create in a workspace, so a Modal sandbox is ready once the keys
+  work. This server can't put the image in an E2B account yet, so Settings shows E2B not ready, an agent's save warns,
+  and a run's start refuses it (409) before any computer is made. An E2B desktop mounts
+  the folder as well (it has files and exec), so it is refused in the same words. Docker's sandbox is refused, since it
+  cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes. A boxd sandbox takes no
   mount yet, so it is refused in both modes; a boxd desktop runs in either.
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
@@ -810,9 +824,11 @@ DAYTONA_API_KEY=... python3 packages/computer/box/build-daytona.py   # prints sn
 A Daytona computer takes no Archil mount, so this server never holds a run's folder on one (see Mode 2 above). A
 Daytona [box](#sandbox) never reads it.
 
-A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
-it: a sandbox always, and a desktop whose provider mounts the mode's folder (Docker's in Mode 1, E2B's in Mode 2). A
-phone and a browser never mount it.
+A desktop, a phone and a browser run in either mode, except E2B's desktop in Mode 2, which would mount the owner's disk
+and needs Archil's image in your vendor account first (see Mode 2 above). The run's folder is at
+`/workspace` in every computer that mounts it: a sandbox always, and a desktop whose provider mounts the mode's folder
+(Docker's in Mode 1, Agent37's in Mode 2). A phone and a browser never mount it. On a desktop that mounts it, the
+`shell` group's commands and the programs `processes.start` opens start in `/workspace` too, as `bash` does.
 
 **Where `bash` runs.** It follows the mount:
 
@@ -873,19 +889,23 @@ its provider's capable everyday model, not its dearest ($2 in and $10 out per mi
 another. claude-agent takes only the Anthropic one and codex only the OpenAI one. A workflow revision names no model: each model node names a tier (`fast`, `default`
 or `strong`), and the host maps it, `fast` to `AGENT_MODEL_FAST` and `strong` to `AGENT_MODEL_STRONG`, each falling back
 to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_prefix, fast, default, strong}`):
-`source` is `gateway`, `providers` or `faux` (the published document marks these as `models/2`, beyond the contract's
-`managed`, `chatgpt`, `env` and `faux`), and `route_prefix` is the routing prefix this server puts before a gateway's
+`source` is `gateway`, `providers`, `chatgpt` or `faux` (the published document marks `gateway` and `providers` as
+`models/2`, beyond the contract's `managed`, `chatgpt`, `env` and `faux`), and `route_prefix` is the routing prefix this server puts before a gateway's
 model ids (`agent-model`), which a client takes off to show the gateway's own id, and null with any other source.
 `models` also says `ready`, whether a revision that names no model runs here, and when it does not, `needs`: `key` (no
-model provider's key, or none for the default's provider) or `model` (`AGENT_MODEL` names one this server does not
+model provider's key and no [ChatGPT sign-in](#on-a-chatgpt-plan), or none for the default's provider) or `model` (`AGENT_MODEL` names one this server does not
 know); and `priced`, whether that model has a price here, which a run's `max_cost_usd` needs (false for a gateway
 model with no price set that the catalog does not list in any form; null while `ready` is false, with no model to price). Where the models come from:
 
 - `--faux MODULE`: every model is the module's (below), with no key and no network: `faux-1`, or for a tier the model
   id its variable names.
-- `AGENT_MODEL_BASE_URL`: every model id goes to that one OpenAI Responses endpoint, a gateway, at `<base>/v1/responses`
-  with one trailing `/v1` taken off the base first, as for every harness (OpenRouter's is `https://openrouter.ai/api` or
-  `https://openrouter.ai/api/v1`): a revision's `provider/model-id` is sent whole, as a gateway like OpenRouter names its
+- `AGENT_MODEL_BASE_URL`: every model id goes to that one gateway, with one trailing `/v1` taken off the base first, as
+  for every harness (OpenRouter's is `https://openrouter.ai/api` or `https://openrouter.ai/api/v1`): a Claude model on
+  Anthropic's Messages API at `<base>/v1/messages`, where pi marks its prompt for Anthropic's cache (the Responses API
+  carries no cache mark, so a gateway's bridge from it reads none), and every other model on OpenAI's Responses API at
+  `<base>/v1/responses`. A model is Claude's when its id names Anthropic as its vendor (`anthropic/claude-sonnet-5.5`)
+  or names none and pi-ai's catalog lists it under Anthropic (`claude-opus-5-5`); the gateway serves both APIs, as
+  LiteLLM's proxy and OpenRouter do, with `AGENT_MODEL_API_KEY` as a bearer token on either. A revision's `provider/model-id` is sent whole, as a gateway like OpenRouter names its
   models `vendor/model`, and `AGENT_MODEL`, `AGENT_MODEL_FAST` and `AGENT_MODEL_STRONG` are sent as they are. For a
   gateway that wants the id alone, `AGENT_MODEL_GATEWAY_IDS=bare` sends a revision's model without its provider. `AGENT_MODEL_API_KEY` is its key when it needs one. `AGENT_MODEL_PRICE` is `input,output,cacheRead[,cacheWrite]`
   in USD per million tokens, so a run's cost estimate has a price; `AGENT_MODEL_FAST_PRICE` and `AGENT_MODEL_STRONG_PRICE`
@@ -904,6 +924,8 @@ model with no price set that the catalog does not list in any form; null while `
   gets that as a warning. One
   without a cap runs, on every harness, with each request's cost unknown: codex's and opencode's proxy books it unknown,
   never $0, so the run's `cost.usd` is `null` and `/usage` counts it in `unpriced_runs`.
+- A ChatGPT plan signed in here ([below](#on-a-chatgpt-plan)), with no provider's key: `source` is `chatgpt`, and pi
+  and codex run on the plan's models (`chatgpt/<model-id>`) with no key.
 - Otherwise pi-ai's providers serve them, each with its key from the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
   `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, Bedrock's `AWS_*` keys, ...), and its catalog prices the run. The `AGENT_MODEL`
   variables are then `provider/model-id` too. The launcher holds every key pi-ai reads, as it holds the rest, and a run's
@@ -938,6 +960,52 @@ above the harness's highest runs at that highest (Codex and OpenCode stop at `xh
 (`src/effort-guidance.ts`): `low` answers directly, `medium` plans briefly and checks once, `high` plans each part, fills
 the gaps and reviews. A run with no level, or one above `high`, gets no note.
 
+### On a ChatGPT plan
+
+A server needs no model key to start, on any of its deploys. With none, capabilities say `models.ready: false` and
+`needs: "key"`, and each harness's `reason` names the keys it takes. Codex's and pi's add "or sign in with ChatGPT
+(Settings → Model keys) to run it on your ChatGPT plan" (after an expiry: "your ChatGPT sign-in expired: sign in again
+(Settings → Model keys)"), and their entries say `needs: ["key", "chatgpt"]`; Claude Agent's and OpenCode's say
+`needs: ["key"]`. The console's first screen then offers **Continue with ChatGPT** beside **Add a key** (also under
+Settings → Model keys), and its "What runs here" reads `needs`: Codex and pi "run after Continue with ChatGPT". The owner
+signs in with their ChatGPT plan, and pi and codex run on it with no key. Claude Agent, OpenCode, Jev decisions and paid
+tools still need their own keys.
+
+The sign-in is the owner's alone, over the owner's signed-in session (the API token gets `403`, as for every secret):
+
+- `POST /v2/settings/chatgpt/sign-in` answers `authorize_url`, OpenAI's sign-in page, and `expires_at`: one sign-in
+  waits at a time, for 10 minutes, and starting again replaces it. Where the browser and the server share a computer
+  (`npx @parcha/agentrun`), it finishes by itself. On a server that isn't this computer (Render, a container), the
+  sign-in tab ends on a page that won't load: copy its whole address into the console, which sends it as
+  `POST /v2/settings/chatgpt/sign-in/finish` `{"redirect_url": "..."}`.
+- `GET /v2/settings/chatgpt` says `state`: `signed_out`, `pending` (with `authorize_url` and `expires_at`), `signed_in`
+  (with `email`, `plan` and the plan's `models`) or `expired`.
+- `DELETE /v2/settings/chatgpt` signs out: it removes the sign-in here and revokes it at OpenAI, and answers
+  `{"revoked": true}` when OpenAI confirmed it (or nothing was signed in, as when it only cancels a waiting sign-in).
+  When OpenAI didn't confirm it, the answer is `{"revoked": false, "message": "Signed out here. OpenAI didn't confirm
+  the revocation: remove AgentRun in your ChatGPT settings."}`. Signing in again revokes the sign-in it replaces, and a
+  renewal that finishes after a sign-out revokes the tokens it got.
+
+A curl call with the owner's session (the console's cookie: `__Host-agentrun-session` on https) sends this server's own
+`origin` and `content-type: application/json` on every write, a `DELETE` with no body too: without them the cookie
+does not count, and the server answers `401` ([the console](#the-console)).
+
+```sh
+S=(-H "cookie: __Host-agentrun-session=$SESSION" -H "origin: $BASE" -H 'content-type: application/json')
+curl -X POST "$BASE/v2/settings/chatgpt/sign-in" "${S[@]}"
+curl -X POST "$BASE/v2/settings/chatgpt/sign-in/finish" "${S[@]}" -d '{"redirect_url":"<the address the sign-in tab ended on>"}'
+curl "$BASE/v2/settings/chatgpt" "${S[@]}"
+curl -X DELETE "$BASE/v2/settings/chatgpt" "${S[@]}"   # 200 {"revoked": true}, or {"revoked": false, "message": "..."}
+```
+
+The sign-in is sealed in the store under the seal key, like a saved key. Any process that holds the store and the seal
+key (the server, each runner) renews the sign-in, so it is as trusted as the server; the seal key already opens every
+sealed key. Signed in, with no provider's key, capabilities
+say `models.source: "chatgpt"` and a revision that names no model runs on `chatgpt/gpt-6.1-sol` where the plan lists it.
+A run on the plan books its tokens and no dollars (`cost.plan`). Eligible usage in this app uses your ChatGPT plan.
+Manage usage in your ChatGPT settings. A sign-in is for the person who runs this server: don't share it or let others
+run agents on it.
+
 ## Tools
 
 A revision names its tools from one closed table (`src/tools.ts`): each name is how the run's process binds it and the
@@ -963,12 +1031,10 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
-| `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
-| `monid.inspect` | One monid endpoint before it runs: `{provider, endpoint}` in, the JSON Schemas of its input (`pathParams`, `queryParams`, `body`), its price, notes and documentation out | `MONID_API_KEY` | no, no |
-| `monid.run` | Run one monid endpoint, paid per call from the monid wallet: `{provider, endpoint, input}` in, the run's `output`, `price` and `cost` out | `MONID_API_KEY` | no, no |
+| `monid:<provider>/<endpoint>`, `monid:<provider>/*` | One monid endpoint, or every endpoint monid lists for a provider (at most 50), each pinned at the save and run as a tool of its own, paid per call from the monid wallet: `{body?, queryParams?, pathParams?}` in, the run's `output`, `price` and `cost` out ([monid](#monid)) | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`; a tier the state fills in, such as `"{requestedTier}"`, may be any of the three, and a tier with no model fails the call), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
-| `subagent` | pi only: `{prompt, tools?, model?, max_tool_calls?, effort?}` in, the child's last text out, bounded like a host tool's result. Runs a fresh conversation whose whole task is `prompt`, with `tools` a subset of the agent's own (by catalog or session name, MCP tools and `bash` included; absent, none), on the agent's own model or the tier `model` names (`fast` or `strong`: the definition's `model_tiers`, else `AGENT_MODEL_FAST` / `AGENT_MODEL_STRONG`, else the agent's own model) ([subagents](#subagents)) | a pi run | no, no |
+| `subagent` | pi only: `{prompt, tools?, model?, effort?}` in, the child's last text out, bounded like a host tool's result. Runs a fresh conversation whose whole task is `prompt`, with `tools` a subset of the agent's own (by catalog or session name, MCP tools and `bash` included; absent, none), on the agent's own model or the tier `model` names (`fast` or `strong`: the definition's `model_tiers`, else `AGENT_MODEL_FAST` / `AGENT_MODEL_STRONG`, else the agent's own model) ([subagents](#subagents)) | a pi run | no, no |
 
 `bash` and the background tools run only in a box: a runner agent, and a workflow, get no shell on this machine (see [Safety](#safety)). In a
 sandbox place `read`, `write` and `edit` run in the box too.
@@ -1013,17 +1079,29 @@ would cut one past 2,000 lines or 51,200 bytes and save the rest to a file the s
 
 ### Finding and calling the run's tools
 
-Every agentic run on every harness also has three tools over its own tools (`src/runner/meta-tools.ts`). Codex has the
-first two and keeps its own code mode. None of them goes around the run's tool settings:
+A run lists every tool to the model in full until its catalog tools (an MCP server's, a monid one) pass 20
+(`DEFER_CATALOG_OVER`, `defersCatalog` in the kernel). Then they are deferred: not listed, found with `tools_search` and
+run with `tools_call` (built-ins and pi's own tools are always listed). Under 20, there is no search or call: they
+would find tools the model already has, at about 640 tokens on every request. Claude Code defers MCP tools itself (its
+ToolSearch), so it is offered neither of the two; Codex has them and keeps its own code mode. The server makes one
+decision for every harness (`SessionSpec.deferCatalog`: past 20, with both `tools_search` and `tools_call` allowed), and
+Claude Code's adapter turns its ToolSearch on exactly then (`ENABLE_TOOL_SEARCH`, `claudeToolSearch`). `codemode` is
+offered on every run (not Codex). Each of the three has a tool-settings key of its own, allow by default: set to `deny`,
+it is not offered at all, and a call to it is refused. A deny of `tools_search` or `tools_call` therefore lists every
+tool in full, on Claude Code too, where its ToolSearch is off. Settings → Tools lists the three (in
+`capabilities.tools` with `meta: true`), each allow or deny; no agent grants them, so the agent editor does not offer
+them. None of them goes around the run's tool settings:
 
 - `tools_search {query, limit?}` ranks the run's tools by what they do and answers each match's name, description and
   input schema (8 by default, at most 25). It finds only tools the run may call: never one set to deny, and never these
   three.
 - `tools_call {name, args}` calls one of the run's tools by name. The call is the tool's own: it is asked about at the
-  gate by that tool's name, and recorded and booked under `<callId>/call`. An ask parks the run, a deny refuses it in the gate's words, and a name the run has no tool by (or one of these three)
-  is refused in words with nothing run.
+  gate by that tool's name, and recorded and booked under `<callId>/call`. An ask parks the run, a deny refuses it in
+  the gate's words, and a name the run has no tool by (or one of these three) is refused in words with nothing run.
 - `codemode {script}` runs a JavaScript script (the body of an async function) in a QuickJS sandbox. Its
-  `await tools.<name>(args)` calls are each the tool's own call, under `<callId>/s<n>`, answered one at a time. The
+  `await tools.<name>(args)` calls are each the tool's own call, under `<callId>/s<n>`, answered one at a time. A tool is
+  named as `ALL_TOOLS` gives it; the description shows the first three (`tools.<name>`) and says to leave off the prefix
+  a harness shows in the model's own tool list (`hands_`, `mcp__hands__`). The
   sandbox has the tools and nothing else of the run: no environment, key, file, network or timer. A script runs at most
   10 minutes in 256 MiB. A call that needs approval parks the run, and the script follows Codex's rule. Once a person
   answers, the script runs again from its start, and the calls it already made answer from their records. The parked
@@ -1043,10 +1121,8 @@ given `subagent` or `ask_person`), and at most 4 children of a run work at once;
 child under its call, and the run's cost counts every child's requests. How to split work and merge answers is the
 agent's own instructions, never the engine's.
 
-A call may set its child's `max_tool_calls` and `effort`. `max_tool_calls` narrows the agent's own budget (its definition's
-`max_tool_calls`, which holds each conversation) for that child and never widens it; with no budget of the agent's, the
-call's holds. `effort` (`low`, `medium` or `high`) is the child's thinking level; absent, the child thinks as the agent
-does. So one template can run wide reviewers at `medium` with 30 calls and deep ones at `high` with 90.
+A call may set its child's `effort` (`low`, `medium` or `high`), its thinking level; absent, the child thinks as the agent
+does. So one template can run wide reviewers at `medium` and deep ones at `high`. The run's cap bounds every child's work.
 
 A child is a conversation in the run's own journal, owned by its call, so it lives and ends with the run:
 
@@ -1140,7 +1216,7 @@ A workflow's tools are those its revision lists and those its model and call nod
 
 Upgrading to the tool gate: a workflow whose call node's tool is set to ask, by a setting or a default, now refuses its
 run (`409` with `details.asks`); set that tool to allow for the agent (`definition.tool_settings`). Built-in tools are
-allowed by default; catalog (`monid.*`) and MCP tools, which ask by default, are no call node's tools here.
+allowed by default; catalog (`monid:<provider>/<endpoint>`) and MCP tools, which ask by default, are no call node's tools here.
 
 Upgrading: a server holding `PARALLEL_API_KEY` used to read every `web_fetch` page through Parallel's extract on its own.
 Now `web_fetch` is the guarded direct fetch unless Parallel is picked; to keep the old behaviour, set
@@ -1401,36 +1477,60 @@ picks which one a run gets, never the model.
   sign-in a forget finds. It is kept only so a later server still cuts it from what a run that was handed it said: one
   that ended before the forget, or one opened again since on a new sign-in. Archiving an agent keeps its sign-ins; this server has no route that deletes an agent.
 
-`monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
-endpoints on one key, `MONID_API_KEY`: it finds an endpoint in plain words, reads its input schemas and price, and runs
-it. Each run is paid per call from the monid workspace's wallet, and is sent once, never retried. An async provider's
+<a id="monid"></a>
+An agent is granted [monid](https://monid.ai)'s data endpoints on one key, `MONID_API_KEY`, by name:
+`monid:<provider>/<endpoint>` (one, such as `monid:apollo/people/match`) or `monid:<provider>/*` (every endpoint monid
+lists for the provider, at most 50). Each grant is read against monid's listing when the agent is saved, and pinned on
+that revision with the endpoint's description, its input schema (`pathParams`, `queryParams`, `body`) and its price; a
+provider or endpoint monid does not list, or a grant saved with no monid key, is refused at the save in words. An
+endpoint monid prices by usage (per result, per unit, metered, or a matrix or tier with a usage part) is pinned too,
+named or from a wildcard, and the save's `warnings` name each one (`reason` `priced_by_usage`): "monid:<provider>/<endpoint>
+is priced by usage: monid can't cap what it charges, so a call can cost more than its estimate and more than the run's
+cap allows." What one such call costs is known only after it has run, and monid's `maxCost` checks only its estimate,
+which such a call can pass. Which endpoints an agent may call is the control: grant them by name or by provider, and
+set each to deny or ask in tool settings. An edit pins again. A workflow's nodes do not bind monid endpoints yet. Each pinned endpoint is a tool of its own on every
+harness, named on the wire with `__` for `:` and `/` (`monid__apollo__people__match`), asked about by default, and set by
+its own name or its provider's wildcard in tool settings.
+Each run is paid per call from the monid workspace's wallet, and is sent once, never retried. An async provider's
 run is read until it ends, about two minutes at most, and asked to stop at monid when the run stops or it outlasts that.
 A refusal comes back as `{error, status?}` in words: the wallet too low (402), a workspace control such as its budget
 (`BLOCKED`), `FAILED`, `TIMED_OUT`, the provider's own error (not charged). The model reads each answer as JSON cut at
 60,000 characters, the whole of it then filed under the run's `work/evidence/monid/`. An answer carries what monid
 charged (`cost`, in dollars), and that charge is the run's spend: booked once in the run's own records as a tool cost
-(`agentrun.tool_cost`: `tool` `monid.run`, `charged_by` `"monid"`, `usd`), shown in its timeline on a line of its own
-(`Tool cost: monid charged $0.0030 for monid.run`) and summed into its cost, the total its [spend cap](#spend-cap)
-reads, and `/usage` grouped by meter shows it as its own meter, `tools`, apart from `tokens`. Each run is marked in the
-run's records before it is sent, held at the price an earlier `monid.inspect` of the run quoted for that endpoint, else
-at an allowance of $1; its charge settles the mark. A mark a crash left unsettled leaves the run's cost unknown, as a
+(`agentrun.tool_cost`: `tool` the endpoint's name, `charged_by` `"monid"`, `usd`), shown in its timeline on a line of its
+own (`Tool cost: monid charged $0.0260 for monid:apollo/people/match`) and summed into its cost, the total its
+[spend cap](#spend-cap) reads, and `/usage` grouped by meter shows it as its own meter, `tools`, apart from `tokens`.
+Each run is marked in the run's records before it is sent, held at its pinned price (a per-call price; the dearest
+variant of a matrix; a tiered price's default and every tier), and its approval card shows that hold; its charge
+settles the mark. It is sent with that hold as monid's `maxCost`, so an endpoint monid prices higher now than when the
+agent was saved is refused by monid unrun and uncharged, never booked past its hold. Once the cap lets it go, its
+price is read again from monid (an inspect, which monid does not charge). One monid has moved to usage pricing since
+the save is still held and sent at its pinned price, so monid runs it only at an estimate within it; its charge can
+pass it (below). A call of an endpoint pinned as priced by usage is held at monid's estimate for the call's own input
+instead. Its approval card reads "Priced by usage: monid estimates the cost when the call runs, and can charge more."
+(`pending.price` `"priced by usage"`), and monid is sent nothing while the call waits. Once the call may run (after
+the person's allow, or at once when it needs no ask), the call is first sent with `maxCost` 0, which monid refuses unrun
+and uncharged, naming its estimate; that estimate is the hold, and the call is sent with it as `maxCost`. That read is
+itself a paid step of the call, marked at $0 on the run's ledger before it is sent (a crash while monid holds it leaves
+its charge unknown, as any cut call's) and given back when monid refused it unrun; a read monid ran (an estimate of $0,
+which `maxCost` 0 lets through) is the call, settled at its charge. Under a cap, a read that ends with its charge unknown
+(no answer, or `FAILED` with no cost) stops the run at once, "monid may have charged for <name> and did not say how
+much, so this run's cap can't be kept; the run stopped": its $0 hold bounds nothing. Its charge can pass the estimate: then it is booked
+as charged, and the run stops at once, failed, in the words "monid charged $X, more than the $Y held; the run stopped".
+A run's spend cap is a hard stop for everything but that one charge. A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
 never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as
 a crash-cut mark does, so the run goes on while its cap allows, in its process and in one opened again from its store;
 one monid says it did not charge (refused as sent, `BLOCKED`, `STOPPED`, the provider's error) books nothing. Under a
-cap, each `monid.run` is held as a model request is: unless what the run has spent plus what the run is held at (the
-price an inspect quoted, else the $1 allowance) fits its `max_cost_usd`, or when the spend is unknown, the call is
-refused with a `spend_cap_reached` error the model reads, naming its price and the cap (and, when the allowance was
-used, that `monid.inspect` gives a quote), and monid is never called. Runs go one at a time under a cap, and on
+cap, each endpoint's call is held as a model request is: unless what the run has spent plus what the call is held at
+fits its `max_cost_usd`, or when the spend is unknown, the call is refused with a `spend_cap_reached` error the model
+reads, naming the endpoint, its hold and the cap, the run pauses on its cap, and the call is never sent (one priced by usage has had only its estimate read). Runs go one at a time under a cap, and on
 claude-agent and codex the check holds each model request still in flight at its worst case. A run sent holds its
 figure until its charge is in, on every harness: a model request checked meanwhile counts it beside what the run has
-spent, and a run that fails without an answer counts at it. `discover` and `inspect`
-cost nothing and are never refused. They run on every harness: pi binds them, and claude-agent and codex call them as
-host tools in the run's process, where a `monid.run` call a crash cut off is answered interrupted, never sent again
-(`discover` and `inspect` may run again). On each, the model, the call's journal and the run's timeline name them
-`monid_discover`, `monid_inspect` and `monid_run`: a model API takes no dot in a tool's name. The key is a secret like
-the model keys: a run's process gets it over its pipe, never in its environment.
+spent, and a run that fails without an answer counts at it. Every harness calls an endpoint as a host tool in the run's
+process, where a call a crash cut off is answered interrupted, never sent again. The key is a secret like the model
+keys: a run's process gets it over its pipe, never in its environment.
 
 ## Tool keys
 
@@ -1538,7 +1638,7 @@ out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the ans
 action the saved server doesn't list. Both routes are the owner's
 session alone, and a saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are,
 "not metered" until you price them. Composio's own meta tools stay refused, and the helper actions that connect an
-account are left off the server's address.
+account are left off the server's address. Deleting the server in Settings deletes the Composio MCP server it made too, with the saved key (Composio's "already gone" is fine); if Composio refuses or does not answer, the server is still forgotten here, and the `DELETE` answers `200 {deleted: true, composio: {removed: false, note}}` saying what to remove in Composio yourself, which the console shows.
 [Connect Composio tools and triggers](../../docs/tutorials/composio.md) walks through the preset and a Composio
 trigger in the console, with each step's API call.
 
@@ -1563,6 +1663,14 @@ letter, at most 32, with no underscores, so `mcp__<server>__<tool>` splits one w
 data directory's store, which holds no value in the clear. The server does not start without its seal key. A `PUT` that
 sends no `token` (or no `headers`) keeps the sealed credential, as long as the auth type and the URL's origin stay the
 same: a saved credential never goes to another origin unless you send it again.
+
+Each saved server records where its tools come from, `source` and `toolkit`, which a template's `mcp` needs are matched
+on at apply ([templates](templates/README.md#agentmd)). The source is what made the server, recorded when it is saved
+and never read off its address or its name: the Composio preset records `composio` and its toolkit, a `github_app`
+server is `github`/`github`, and any other is `url` with no toolkit until you set one (`toolkit` in the `PUT`, in
+`POST .../oauth/start` for a server you sign in to, or Settings → MCP servers). A `PUT` with no `toolkit` keeps the
+record, and `DELETE` removes it with the server. A record counts only for the server it was saved with: a server saved
+again under the same name after a `DELETE` starts afresh.
 
 `GET /v2/settings/mcp-servers` and `GET .../{name}` show each server with `credential`: `sealed`, `unreadable` (sealed
 under another key, or damaged: a `PUT` with the credential seals it again) or `expired` (an OAuth sign-in whose refresh
@@ -1662,8 +1770,10 @@ method, tool and whether an `Authorization` header came, never its value.
 ### Agents call a server's tools
 
 An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`, in `definition.tools`
-(`"tools": ["mcp:github/list_issues"]`). A save checks each one against the server's saved tools: a server that is not
-saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
+(`"tools": ["mcp:github/list_issues"]`). A save lists each server it grants a tool of, once, and checks each grant
+against that listing: a server that is not saved, or can't be listed right now, is `422` naming it ("save again once it
+answers"; an edit that grants nothing new from it keeps the agent's current pin for it instead), a tool it does not list
+is `422` naming the server's tools, and so is a name whose wire name,
 `mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
 property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi, claude-agent and codex run them (`features.mcp_client.harnesses`); on
 another harness the save warns that they are not bound there yet, and a run is refused. On claude-agent, a run with MCP
@@ -1686,9 +1796,12 @@ A saved server's read also gives each tool its `grant_problems` when a grant of 
 save's `422` says: under `*` for every harness (its wire name `mcp__<server>__<tool>` is past the 52 characters every harness's
 tool names share), or under a harness id when that harness's own MCP client would drop or retype its schema.
 
-- **Pinned.** A run's first launch keeps each granted tool as the server listed it when you saved it (its description
-  and schema) and the server's URL then, in the run's directory (`mcp-tools.json`). A refresh or a new save never
-  changes a running agent's tools. If the server's URL has changed since, that run's calls answer "the server's
+- **Pinned.** The save keeps each granted tool on the new revision as the server listed it then (its name,
+  description, input schema, annotations and price) with the server's URL then, shown as the agent's `mcp_pin` (never
+  the URL); each run of that revision calls those tools, and no run lists the server. A refresh never changes a
+  revision's tools; saving the agent again re-pins (an unchanged definition whose server changed a granted
+  tool is a new revision). A server that keeps no credential of its own (`per_run`), or an OAuth server, that refuses the
+  save's listing for its credential is pinned as its last save or refresh listed it. If the server's URL has changed since, that run's calls answer "the server's
   address changed since this run started" and nothing is sent, the new credential least of all.
 - **The credential.** A run whose revision grants a server's tool is handed that server's credential at each launch
   (so a new one counts at the next), over its secrets pipe, never its environment; a run that grants none of a
@@ -1732,7 +1845,17 @@ tool names share), or under a harness id when that harness's own MCP client woul
   list of 1 to 16 of them, the argument one of the list, compared strictly:
   `{"mcp:slack/slack_send_message": {"permission": "allow", "pin": {"channel_id": "C0123"}}}`,
   `{"mcp:github/pull_request_review_write": {"pin": {"event": [null, "COMMENT"], "method": ["create", "delete_pending", "submit_pending"]}}}`
-  (the `code-review` template's pin). The gate checks a pinned
+  (the `code-review` template's pin). An object argument may be pinned to its keys instead: `{"keys": [...]}`, 1 to 16
+  key names, holds a call whose argument, when given, is an object of those keys alone, any values (left out or `null`
+  holds too), so `{"mcp:hubspot/HUBSPOT_UPDATE_CONTACT": {"pin": {"properties": {"keys": ["hs_lead_score"]}}}}` lets a
+  write set that one field and no other, and refuses one that sets another with "properties keys in (hs_lead_score)".
+  Two layers' keys pins of one argument hold as the keys in both. A pinned tool takes only its listed arguments: a
+  call of a tool with a pin in either layer may carry only the top-level arguments its listing declares under its
+  inputSchema's `properties` (the listing the run pinned when it started, the one its model is offered), beside the
+  pinned ones. So an alias a server takes for a pinned argument, one its listing does not declare (Gmail's `to` for
+  `recipient_email`, Slack's `channel_id` for `channel`), is refused with "`to` is not an argument of
+  GMAIL_SEND_EMAIL; a pinned tool takes only its listed arguments (recipient_email is pinned)", and a pin need not
+  null aliases by hand. A listing with no `properties` object closes nothing, and a tool with no pin is not closed. The gate checks a pinned
   tool's call before it runs or asks anyone, whatever the permission (an allow, an ask, a grant): a call whose arguments
   are not as pinned is refused, never sent and never asked about, and the model reads "mcp:slack/slack_send_message may
   only be called with channel_id = C0123: its destination is fixed by the agent's settings". The run's process logs a
@@ -2130,7 +2253,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0, and `cap_mode`, how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)), `max_tool_calls` (agentic only, on pi): the tool calls each conversation of a run may make ([tool-call budget](#tool-call-budget)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a trigger starts is handed that trigger's last completed `result.output` after its message. `checkout` (agentic only): `pull_request` has the server check out, before each run's first turn, the pull request the run's GitHub event names, in `repo/` at its head with its base and merge base, using a read-only token of its GitHub App that the agent never holds ([GitHub triggers](#github-triggers-connect-github)); `none` clears it, and an edit that leaves it out keeps it. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0, and `cap_mode`, how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a trigger starts is handed that trigger's last completed `result.output` after its message. `checkout` (agentic only): `pull_request` has the server check out, before each run's first turn, the pull request the run's GitHub event names, in `repo/` at its head with its base and merge base, using a read-only token of its GitHub App that the agent never holds ([GitHub triggers](#github-triggers-connect-github)); `none` clears it, and an edit that leaves it out keeps it. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -2306,7 +2429,8 @@ model). A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's
-`reason` says what is missing. `claude-agent` and `codex` install themselves on first use: AgentRun never ships the
+`reason` says what is missing. With a ChatGPT plan signed in, pi and codex need no key
+([on a ChatGPT plan](#on-a-chatgpt-plan)); claude-agent and opencode still do. `claude-agent` and `codex` install themselves on first use: AgentRun never ships the
 Claude Agent SDK or the Codex CLI, and the first run on each (or the first agent saved on it) installs the version AgentRun
 pins (`@anthropic-ai/claude-agent-sdk@0.3.286`, `@openai/codex@0.164.0`) from npm into `<data>/harnesses/claude-agent`
 or `<data>/harnesses/codex`, with the npm that runs the server, once. Each install is pinned by the lock the server
@@ -2947,7 +3071,9 @@ leaves the field out keeps the agent's default, as it keeps its harness and plac
 spend limit. A workflow definition keeps one the same way. The cap is checked in the run's own process
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 what each request still in flight is held at, plus what this request is expected to cost must stay within it, or the
-request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). A request costs its input, plus the output it
+request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). The cap is a hard stop for everything but
+the charge of a monid call priced by usage, which can pass the estimate it was held at: when it does, the run stops at
+once ([monid](#monid)). A request costs its input, plus the output it
 is sent with at the output price, plus any fee its tokens do not show (below). How its input is priced is the run's
 `cap_mode`: the run's own (`POST /agents/{id}/runs` with `cap_mode`), else its agent's (a definition's `cap_mode`, kept by
 an edit that leaves it out), else `expected`; only a run with a cap takes one (`422 not_allowed` otherwise).
@@ -3012,7 +3138,13 @@ where thinking takes one (Anthropic's, 1,024, the budget squeezed to it at the l
 budget, since its reasoning then shares the limit (minimal 1,024, low 2,048, medium 8,192, high 16,384). The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
 a token of less than one byte), each image counted at what its model's provider bills it by its size in place of its
 base64's bytes, plus what the provider adds server-side (a tool-use prompt), from the same table the model proxy of
-claude-agent, codex and opencode uses; there the proxy measures each request's body. On a route straight to Anthropic
+claude-agent, codex and opencode uses; there the proxy measures each request's body. On codex and opencode (the
+Responses API) the text the model reads as it is (a message, a call's arguments, a tool's output, a reasoning summary)
+counts at its own bytes, not the JSON escapes around it (`\"`, `\n`), which no token is billed for; tool definitions and
+encrypted reasoning keep every byte. On a route straight to OpenAI (`https://api.openai.com`, codex and opencode), each
+answer request is also counted by OpenAI's own token count (`POST /v1/responses/input_tokens`, with only the credential
+and account headers, and never through a gateway or any other base), and its bound is that count when it is below the
+byte bound. On a route straight to Anthropic
 (`https://api.anthropic.com`, on pi and claude-agent), each answer request is also counted by Anthropic's own free
 token count (`POST /v1/messages/count_tokens`, with only the credential and version headers, and never through a
 gateway or any other base), and its bound is that count plus the tool-use prompt when that is below its bytes. A count
@@ -3021,24 +3153,22 @@ that fails or takes over 3 seconds leaves the byte bound; the request is never h
 **The smallest cap that works.** The byte bound reads text as about two to three times the tokens it is billed as, and a
 step is sent only when the run's spend plus that step's least (its input bound, priced by the cap mode, and a 1,024-token
 answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet ($3 / $15,
-cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (with the host's
-`tools_search`, `tools_call` and `codemode`: about 2,000 bytes, 639 tokens by Anthropic's count), five requests (four
+cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools, five requests (four
 screenshots, then the answer), spending about $0.04 in all:
 
 | Cap mode | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- | --- |
-| `strict` | Through a gateway (OpenRouter): the byte bound | $0.07 | $0.13 | about $0.013 |
-| `strict` | Straight to Anthropic: Anthropic's count | $0.04 | $0.09 | about $0.012 |
-| `expected` (the default) | Through a gateway | as `strict` | $0.07 | about $0.007 |
-| `expected` (the default) | Straight to Anthropic | as `strict` | $0.06 | about $0.007 |
+| `strict` | Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
+| `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
+| `expected` (the default) | Either | as `strict` | $0.06 | about $0.007 |
 
-In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs $0.06 straight to Anthropic and $0.07 through a gateway (whose first request alone needs $0.064), and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
-CLI's measured 6,926 bytes with five tools, about 8,900 with the host's three: $0.05 for its first request through a gateway). A cap below these pauses at
+In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs about $0.06 by either route, and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
+CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
 once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. (In `strict` mode through a gateway, a run a cent under the five-step figure is not parked before its last step: the cap's wrap-up refuses its last screenshot, and the run answers from what it has.)
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
-survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself
-refused once the spend reaches the cap; see [monid](#tools)).
+survives a restart, plus each response since, and with them each charge a paid tool booked (a monid endpoint's call, which is itself
+refused once the spend reaches the cap; see [monid](#monid)).
 
 The `browser` tool's session time is held the same way, before it runs, so no browser minute passes the cap. Its next
 stretch is the most a session can run before the run can check again: the provider's minimum (what its release may top
@@ -3219,15 +3349,6 @@ agentic run's is, when a model one of its nodes or `llm` calls runs on has no pr
 OpenRouter Decisions model the catalog lists no price for: `409 agent_not_runnable`, each in `error.fields` with the
 node's label and its fix. A step no cap fixes all the same (a spend no one knows) ends the run `failed`,
 `spend_cap_reached`, in the cap's words, after the node's label.
-
-## Tool-call budget
-
-An agentic definition's `max_tool_calls: N` gives each conversation of its runs on pi N tool calls: the run's own, and
-each conversation a tool opens, counted apart. Past N the run's tool gate refuses every call before it runs, before
-any setting or approval is read, with one fixed text: the budget is spent, don't call another tool, answer now from
-what you have. That refusal is not counted and never ends the run, so the model's next answer is the turn's. The count
-is read from the conversation's committed journal, so a restart or a claim moved to another runner keeps it. Above 0
-sets the budget, 0 clears it, an edit that leaves it out keeps it; a workflow's, or one on another harness, is `422`.
 
 ## The faux model
 

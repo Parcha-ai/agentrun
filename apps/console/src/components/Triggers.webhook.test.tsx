@@ -225,7 +225,7 @@ describe("Triggers: schedules and webhooks", () => {
     expect(row).not.toContain("On each signed request");
     act(() => root?.unmount()); document.body.innerHTML = "";
     const page = await open(server({ triggers: [FILTERED] }).v2, { trigger: "trg_f" });
-    expect(page.text()).toContain("deploy.finished (succeeded) where /env is one of \"prod\" and /ref starts with \"refs/tags/\"");
+    expect(page.text()).toContain("deploy.finished (succeeded) where /env is one of prod and /ref starts with \"refs/tags/\"");
     expect(page.text()).not.toContain("on each signed request");
   });
 });

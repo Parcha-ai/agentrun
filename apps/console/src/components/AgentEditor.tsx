@@ -2,6 +2,7 @@ import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Monitor,
 import { useEffect, useRef, useState } from "react";
 import { LearningField } from "@/components/LearningSwitch";
 import { McpToolPicker } from "@/components/McpToolPicker";
+import { MonidGrants } from "@/components/MonidGrants";
 import { ComputerSetting } from "@/components/ComputerSetting";
 import { PlaceSetting } from "@/components/PlaceSetting";
 import { Button } from "@/components/ui/button";
@@ -17,7 +18,9 @@ import { markdown, when } from "@/lib/format";
 import { harnessDefault, harnessModels, modelLabel, NO_DEFAULT } from "@/lib/models";
 import { type PickerOption, Picker } from "@/components/ui/picker";
 import { SpendCapMinimum } from "@/lib/spendCap";
+import { CAP_NOTE, isPlanModel } from "@/lib/chatgpt";
 import type { McpServer } from "@/lib/mcp";
+import { isMonidName, monidFieldsOf, splitMonidWarnings } from "@/lib/monid";
 import { computerOfPlace, newAgentPlace, placeOf } from "@/lib/place";
 import { placeOfComputer } from "@/lib/computers";
 import type { ComputerKindView } from "@/lib/v2";
@@ -159,17 +162,27 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     setF(follow); setBase(follow);
   }, [toolsKey, placeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState("");
+  // Every monid grant this form has shown: the agent's, and each one granted here since. The monid row lists them, ticked or
+  // not, so one unticked stays to tick again through a save (the saved revision no longer names it) and a step change (the
+  // row is drawn anew). A reload opens the form anew, with the agent's.
+  const [monidSeen, setMonidSeen] = useState<string[]>(() => (d?.tools ?? []).filter(isMonidName));
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<SaveProblem | null>(initialProblem);
   // A workflow agent's past revision, opened from History as its read-only graph.
   const [viewing, setViewing] = useState<Revision | null>(null);
   const goTo = (s: Step) => { setViewing(null); setStep(s); };
+  // The tools the last save sent: a refusal points at a grant by its place in them (`definition.tools[2]`).
+  const sentTools = useRef<string[] | null>(null);
+  // A refusal at a monid grant, in the server's words: the monid row shows it, beside the grant, not the Tools field.
+  const monidAt = monidFieldsOf(sentTools.current ?? f.tools ?? []);
+  const monidRefused = problem?.kind === "invalid" ? Object.entries(problem.fields).flatMap(([k, message]) => { const grant = monidAt.get(k); return grant ? [{ grant, message }] : []; }) : [];
   // A refusal at the field, or at a part of it (`tools` takes `definition.tools[1]`), as its warnings are matched.
-  const fieldError = (field: string) => (problem?.kind === "invalid" ? Object.entries(problem.fields).filter(([k]) => k === `definition.${field}` || k.startsWith(`definition.${field}[`) || k.startsWith(`definition.${field}.`)).map(([, m]) => m).join(" ") || undefined : undefined);
-  // What the save's answer said this host lacks to run the revision: all of it above the form, and each beside the field
-  // it names (one the form does not show, such as a place, only above).
-  const warnings = agent?.warnings ?? [];
+  const fieldError = (field: string) => (problem?.kind === "invalid" ? Object.entries(problem.fields).filter(([k]) => !monidAt.has(k) && (k === `definition.${field}` || k.startsWith(`definition.${field}[`) || k.startsWith(`definition.${field}.`))).map(([, m]) => m).join(" ") || undefined : undefined);
+  // What the save's answer said: of a monid grant (the endpoints a wildcard left out, monid's pricing in the server's
+  // words), on the monid row and above the form; else what this host lacks to run the revision, all of it above the form,
+  // and each beside the field it names (one the form does not show, such as a place, only above).
+  const { monid: monidWarnings, rest: warnings } = splitMonidWarnings(agent?.warnings ?? [], d?.tools ?? []);
   const fieldWarning = (field: string) => warningsFor(warnings, field).map((w) => w.message).join(" ") || undefined;
   // While a new agent's Create is under way its form takes no change (its fields are disabled too), so it stays what was sent.
   const set = (patch: AgentFields) => { if (creating && saving) return; setF((x) => ({ ...x, ...patch })); };
@@ -211,6 +224,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     if (!onSave) return;
     // The form this save sends: once saved, it is the form as saved.
     const sent = f;
+    sentTools.current = f.tools ?? [];
     setSaving(true);
     // A workflow agent's edit is sent as its parsed JSON; text that does not parse is not sent at all.
     let fields: AgentFields = { ...f, workflowText: undefined, maxCostText: undefined };
@@ -252,6 +266,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const offered = harnessModels(f.harness ?? "pi", caps.harnesses);
   const customModel = customPicked || (f.model !== undefined && !offered.includes(f.model));
   const modelOptions: PickerOption[] = [{ value: "", label: modelDefault ? `Server default (${modelDefault.text})` : "Server default" }, ...offered.map((id) => ({ value: id, label: modelLabel(id, caps.routePrefix).text })), { value: CUSTOM_MODEL, label: "Custom..." }];
+  // A server signed in to a ChatGPT plan (a harness offers its models): the cap says it counts dollars, which the plan's
+  // requests are not.
+  const onPlan = caps.harnesses.some((h) => isPlanModel(h.default_model) || h.models?.some(isPlanModel));
   // The tools that reach the web which this agent's harness runs here, for the Tools step's hint when it has none of them.
   const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
 
@@ -277,16 +294,23 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         </div>
       )}
       {notice && <p className="border-b bg-card px-5 py-3 font-mono text-body text-warning-text md:px-8" role="alert">{notice}</p>}
-      {warnings.length > 0 && (
-        <div className="border-b bg-card px-5 py-3 md:px-8" role="status" aria-label="Save warnings">
-          <p className="flex items-center gap-2 font-mono text-body text-warning-text"><TriangleAlert className="size-4 shrink-0" aria-hidden /> Saved. A run of this revision is refused until the server has what each line names:</p>
-          <ul className="mt-2 space-y-1 font-mono text-small">
-            {warnings.map((w, i) => {
-              // The step a line's field is on, as a link to it (the raw field on hover); a field no step shows, as is.
-              const at = steps.find((s) => s.id === stepOfField(w.field));
-              return <li key={`${w.field}:${i}`}>{at ? <button type="button" title={w.field} onClick={() => goTo(at.id)} className="text-muted-foreground underline underline-offset-2 hover:text-foreground">{at.label}</button> : <span className="text-muted-foreground">{w.field}</span>} {w.message}</li>;
-            })}
-          </ul>
+      {(warnings.length > 0 || monidWarnings.length > 0) && (
+        <div className="space-y-3 border-b bg-card px-5 py-3 md:px-8" role="status" aria-label="Save warnings">
+          {[
+            { lines: warnings, head: "Saved. A run of this revision is refused until the server has what each line names:" },
+            { lines: monidWarnings.map((m) => m.warning), head: "Saved. What the server said of its monid grants:" },
+          ].filter((g) => g.lines.length).map((g) => (
+            <div key={g.head}>
+              <p className="flex items-center gap-2 font-mono text-body text-warning-text"><TriangleAlert className="size-4 shrink-0" aria-hidden /> {g.head}</p>
+              <ul className="mt-2 space-y-1 font-mono text-small">
+                {g.lines.map((w, i) => {
+                  // The step a line's field is on, as a link to it (the raw field on hover); a field no step shows, as is.
+                  const at = steps.find((s) => s.id === stepOfField(w.field));
+                  return <li key={`${w.field}:${i}`}>{at ? <button type="button" title={w.field} onClick={() => goTo(at.id)} className="text-muted-foreground underline underline-offset-2 hover:text-foreground">{at.label}</button> : <span className="text-muted-foreground">{w.field}</span>} {w.message}</li>;
+                })}
+              </ul>
+            </div>
+          ))}
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
@@ -398,6 +422,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     );
                   })}
                   {caps.mcp && !workflow && <li className="sm:col-span-2"><McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
+                  {/* monid's endpoints, granted by name (a workflow's nodes bind none): each grant the agent has, and a field for another. */}
+                  {!workflow && <li className="sm:col-span-2"><MonidGrants tools={f.tools ?? []} listed={monidSeen} notes={monidWarnings.map(({ grant, warning }) => ({ grant, message: warning.message }))} refused={monidRefused} onChange={(tools) => { setMonidSeen((seen) => [...new Set([...seen, ...tools.filter(isMonidName)])]); setToolsTouched(true); set({ tools }); }} /></li>}
                 </ul>
                 {/* Quiet, here only: an agent can be given no web tool on purpose (one that works on files). */}
                 {!workflow && !reachesWeb(f.tools ?? []) && (
@@ -497,7 +523,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 </Field>
               )}
               {!starting && (
-                <Field label="Default spend cap per run, $" id="agent-max-cost" optional note="A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none." hint={<SpendCapMinimum />} error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
+                <Field label="Default spend cap per run, $" id="agent-max-cost" optional note={<>A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none.{onPlan && <span className="mt-1 block">{CAP_NOTE}</span>}</>} hint={<SpendCapMinimum />} error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
                   <Input id="agent-max-cost" inputMode="decimal" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" />
                 </Field>
               )}

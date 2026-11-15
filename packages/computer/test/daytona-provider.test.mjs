@@ -109,7 +109,7 @@ function sandbox(fields = {}) {
 	};
 }
 
-test("capabilities: a linux computer with init a child of Daytona's toolbox, a vendor lifetime up to 30 days, network none read back, a container, stop and delete, no mount, and the toolbox's port", () => {
+test("capabilities: a linux computer with init a child of Daytona's toolbox, a vendor lifetime up to 30 days, network none probed from inside, a container, delete only, no mount, and the toolbox's port", () => {
 	const { provider, rec } = setup();
 	assert.equal(provider.id, "daytona");
 	assert.equal(provider.version, VERSION);
@@ -117,14 +117,13 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 		kind: "linux",
 		lifetime: "vendor",
 		network: ["none"],
-		networkReadBack: true,
+		networkReadBack: false,
 		isolation: "container",
 		os: "linux",
 		daemon: "child",
 		groups: ["exec", "files", "processes"],
 		maxLifetimeMs: 30 * 24 * 3600 * 1000,
-		release: ["stop", "delete"],
-		stopDeletes: false,
+		release: ["delete"],
 		mount: [],
 		vendorAgentPorts: [2280],
 		// daytona-gpu's one H100 and its limits: its stop deletes it, it runs in region earth, its size is the snapshot's, and
@@ -135,15 +134,13 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 	assert.equal(provider.extend, undefined, "no extend(): Daytona's TTL is set once, at create");
 	assert.equal(provider.stream, undefined, "no stream()");
 	assert.equal(setup({}, { sandboxClass: "linux-vm" }).provider.capabilities().isolation, "vm");
-	assert.equal(setup({}, { autoDeleteMinutes: 0 }).provider.capabilities().stopDeletes, true, "autoDeleteMinutes 0: Daytona deletes a sandbox as it stops");
-	assert.equal(setup({}, { autoDeleteMinutes: 30 }).provider.capabilities().stopDeletes, false, "a stopped computer is kept for 30 minutes");
 	assert.deepEqual(setup({}, { gpuSnapshot: "agentrun-archil-gpu-h100-0123456789ab" }).provider.capabilities().gpu.types, ["H100"]);
 	assert.equal(rec.requests.length, 0);
 });
 
 test("the constructor refuses what it cannot run with, in words", () => {
 	const make = (options) => () => new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: async () => assert.fail("no request"), ...options });
-	assert.throws(make({ apiKey: "" }), /API key is required/);
+	assert.throws(make({ apiKey: "" }), /the Daytona API key, is required/);
 	assert.throws(() => create({ daemonPath: DAEMON }), /options\.apiKey/);
 	assert.throws(make({ apiUrl: "http://api.daytona.test/api" }), /must be https/);
 	assert.throws(make({ daemonUser: "0:0" }), /root/);
@@ -173,7 +170,8 @@ test("check() refuses in words, field by field, before any request", () => {
 	}
 	assert.match(words({ ...SPEC, lifetimeMs: 30 * 24 * 3600 * 1000 + 1 }), /at most 30 days \(2592000000 ms\)/);
 	for (const network of ["wifi", "open", { allow: [] }, { allow: ["example.com"] }, { allow: ["208.80.154.232/32"] }]) assert.deepEqual(refused({ ...SPEC, network }), ["network"], JSON.stringify(network));
-	for (const field of ["cpus", "memoryMb", "pids"]) assert.match(words({ ...SPEC, [field]: 2 }), /size of its image/);
+	for (const field of ["cpus", "memoryMb"]) assert.match(words({ ...SPEC, [field]: 2 }), new RegExp(`a Daytona computer has the size of its snapshot: name a snapshot of the size you need, not ${field}`));
+	assert.match(words({ ...SPEC, pids: 2 }), /size of its image/);
 	assert.match(words({ ...SPEC, user: "0" }), /daemon user \(2510:2510\)/);
 	assert.match(words({ ...SPEC, workdir: "/data" }), /works in \/work/);
 	assert.match(words({ ...SPEC, gpu: 1 }), /gpu is \{ type, count \}/);
@@ -273,85 +271,78 @@ test("a name Daytona already holds (409) is exists, and makes and deletes nothin
 	assert.equal(rec.requests.filter((r) => r.method === "DELETE").length, 0);
 });
 
-test("the read-back: the idle stop and auto-delete Daytona keeps, its TTL, the class, no public port, no KVM, the snapshot and the GPUs, each held to what was asked", async () => {
-	const read = async (fields, options = {}) => {
-		const sb = sandbox(fields);
-		const { provider } = setup({ [`GET /api/sandbox/${sb.id}`]: { body: sb } }, options);
-		return (await provider.host.get(sb.id, { timeoutMs: 1_000 })).value;
-	};
-	const clean = await read();
-	assert.equal(clean.drift, undefined, JSON.stringify(clean.drift));
-	assert.equal(clean.state, "running");
-	assert.equal(clean.network, "none");
-	assert.deepEqual(clean.image, { resolved: "agentrun-debian" });
-	assert.deepEqual(clean.size, { cpus: 1, memoryMb: 1024 });
-	const drift = async (fields, pattern, options) => {
-		const machine = await read(fields, options);
-		assert.ok(machine.drift?.some((line) => pattern.test(line)), `${JSON.stringify(fields)}: ${JSON.stringify(machine.drift)}`);
-	};
-	// Money backstops: an idle stop or an auto-delete Daytona did not keep, and a TTL past the deadline.
-	await drift({ autoStopInterval: 60 }, /^autoStopInterval: declared 15, read back 60$/, { autoStopMinutes: 15 });
-	await drift({ autoDeleteInterval: -1 }, /^autoDeleteInterval: declared 0, read back -1$/, { autoDeleteMinutes: 0 });
-	await drift({ autoDestroyAt: new Date(Date.now() + 3_600_000).toISOString() }, /^autoDestroyAt: .* is past the deadline/);
-	await drift({ autoDestroyAt: undefined }, /Daytona would not end the computer/);
-	await drift({ sandboxClass: "linux-vm" }, /^sandboxClass: declared "container", read back "linux-vm"$/);
-	await drift({ public: true }, /^public: declared false, read back true$/);
-	await drift({ kvm: true }, /^kvm: declared false, read back true$/);
-	await drift({ snapshot: "someone-else" }, /^snapshot: declared "agentrun-debian", read back "someone-else"$/);
-	await drift({ volumes: [{ volumeId: "v" }] }, /^volumes:/);
-	await drift({ linkedSandboxId: "sb-9" }, /^linkedSandboxId:/);
-	// A computer of Daytona's default snapshot is not held to a name: Daytona names its default as it likes.
-	const byDefault = await read({ snapshot: "daytona-default-v3", labels: { ...sandbox().labels, [`${COMPUTER}.image`]: "default" } });
-	assert.equal(byDefault.drift, undefined, JSON.stringify(byDefault.drift));
-	// A GPU computer it reports is held to the GPU snapshot's GPU and its ephemeral stop.
-	const gpu = await read({ snapshot: "daytona-gpu", gpu: 1, gpuType: "H100", autoDeleteInterval: 0, labels: { ...sandbox().labels, [`${COMPUTER}.image`]: "default" } });
-	assert.equal(gpu.drift, undefined, JSON.stringify(gpu.drift));
-	assert.deepEqual(gpu.gpu, GPU);
-	await drift({ snapshot: "daytona-gpu", gpu: 1, gpuType: "A100", autoDeleteInterval: 0 }, /^gpuType: declared "H100", read back "A100"$/);
-});
-
-test("the read-back: Daytona's states as the adapter's, its network in words, and a destroyed sandbox gone", async () => {
+test("the read-back: Daytona's states as the adapter's, its end, its GPUs and its words for a failure; a destroyed sandbox is none", async () => {
 	const read = async (fields) => {
 		const sb = sandbox(fields);
 		const { provider } = setup({ [`GET /api/sandbox/${sb.id}`]: { body: sb } });
-		return (await provider.host.get(sb.id, { timeoutMs: 1_000 })).value;
+		return await provider.host.get(sb.id, { timeoutMs: 1_000 });
 	};
+	const autoDestroyAt = "2026-01-02T03:04:05.000Z";
+	const clean = await read({ autoDestroyAt });
+	assert.deepEqual(Object.keys(clean).sort(), ["endsAt", "id", "labels", "state"], "no drift, network, size or image: Daytona's create options are not read back");
+	assert.equal(clean.state, "running");
+	assert.equal(clean.endsAt.toISOString(), autoDestroyAt);
 	for (const [state, want] of [
 		["started", "running"],
 		["creating", "starting"],
 		["pulling_snapshot", "starting"],
 		["stopping", "stopped"],
+		["pausing", "stopped"],
 		["stopped", "stopped"],
 		["archived", "stopped"],
-		["destroying", "going"],
-		["error", "failed"],
+		["destroying", "gone"],
+		["error", "gone"],
 	]) {
 		assert.equal((await read({ state })).state, want, state);
 	}
-	assert.equal((await read({ state: "started", desiredState: "destroyed" })).state, "going");
+	// A sandbox being destroyed cannot start again: it reads gone, while the wait after a delete waits for Daytona's 404.
+	assert.equal((await read({ state: "started", desiredState: "destroyed" })).state, "gone", "asked to destroy, still started: going");
 	assert.equal((await read({ state: "error", errorReason: "no capacity" })).why, "no capacity");
+	assert.equal((await read({ state: "build_failed" })).why, "Daytona reads the sandbox build_failed, with no reason given", "a failed sandbox with no reason still carries a why");
+	assert.equal((await read({ state: "destroying" })).why, undefined);
 	assert.equal(await read({ state: "destroyed" }), undefined, "a destroyed sandbox is one Daytona no longer has");
-	assert.deepEqual((await read({ networkBlockAll: false })).network, "open");
-	assert.deepEqual((await read({ networkBlockAll: false, domainAllowList: "example.com" })).network, { allow: ["example.com"] });
-	assert.deepEqual((await read({ outboundProxyUrl: "http://proxy" })).network, { other: "an outbound proxy is set on it" });
-	assert.deepEqual((await read({ networkBlockAll: undefined })).network, { other: "Daytona did not report networkBlockAll" });
+	assert.equal(Object.hasOwn(await read({ snapshot: "daytona-gpu", gpu: 1, gpuType: "H100", autoDeleteInterval: 0 }), "gpu"), false, "a GPU is the adapter's label, not a read-back");
 	const { provider } = setup({ [`GET /api/sandbox/${REF.id}`]: { status: 404, body: { statusCode: 404, message: "not found" } } });
-	assert.deepEqual(await provider.host.get(REF.id, { timeoutMs: 1_000 }), { ok: true, value: undefined });
+	assert.equal(await provider.host.get(REF.id, { timeoutMs: 1_000 }), undefined);
 });
 
-test("list: the adapter's label alone is asked for, every page followed, the rest filtered here; one whose listing leaves the network out is read back", async () => {
-	const mine = sandbox({ id: "sb-1", networkBlockAll: undefined, labels: { ...sandbox().labels, team: "a" } });
+test("list: the adapter's label alone is asked for, every page followed, destroyed ones left out; the adapter keeps the rest by labels and reads each by get", async () => {
+	const mine = sandbox({ id: "sb-1", labels: { ...sandbox().labels, team: "a" } });
 	const other = sandbox({ id: "sb-2", labels: { ...sandbox().labels, team: "b" } });
 	const destroyed = sandbox({ id: "sb-3", state: "destroyed", labels: { ...sandbox().labels, team: "a" } });
 	const { rec, provider } = setup({
 		"GET /api/sandbox": (request) => (request.query.get("cursor") === null ? { body: { items: [mine, destroyed], nextCursor: "page-2" } } : { body: { items: [other] } }),
-		"GET /api/sandbox/sb-1": { body: { ...mine, networkBlockAll: true } },
+		"GET /api/sandbox/sb-1": { body: mine },
 	});
 	const listed = await provider.host.list({ team: "a" }, { timeoutMs: 1_000 });
-	assert.deepEqual(listed.value.map((m) => [m.id, m.network]), [["sb-1", "none"]]);
+	assert.deepEqual(listed.map((m) => [m.id, m.state]), [["sb-1", "running"], ["sb-2", "running"]], "the listing as it reads");
 	const pages = rec.requests.filter((r) => r.path === "/api/sandbox");
 	assert.equal(pages.length, 2);
 	for (const page of pages) assert.deepEqual(JSON.parse(page.query.get("labels")), { [COMPUTER]: "1" });
+	const infos = await provider.list({ team: "a" });
+	assert.deepEqual(infos.value.map((info) => [info.ref.id, info.network]), [["sb-1", "none"]]);
+	assert.equal(rec.requests.filter((r) => r.path === "/api/sandbox/sb-1").length, 1, "one get of the listed computer kept: the listing finds, get answers");
+});
+
+test("a sandbox Daytona is destroying is gone: connect answers gone and list leaves it out; release still waits for Daytona's 404", async () => {
+	const going = sandbox({ state: "destroying", desiredState: "destroyed" });
+	const { provider } = setup({ "GET /api/sandbox": { body: { items: [going] } }, [`GET /api/sandbox/${REF.id}`]: { body: going } });
+	const connected = await provider.connect(REF);
+	assert.equal(connected.error?.code, "gone", JSON.stringify(connected));
+	assert.match(connected.error.message, /is going/);
+	assert.deepEqual((await provider.list({})).value, [], "a going sandbox is not listed, stopped or otherwise");
+
+	let deleted = false;
+	let destroying = 3;
+	const released = setup({
+		[`GET /api/sandbox/${REF.id}`]: () => (!deleted ? { body: sandbox() } : destroying-- > 0 ? { body: going } : { status: 404, body: { statusCode: 404, message: "not found" } }),
+		[`DELETE /api/sandbox/${REF.id}`]: () => {
+			deleted = true;
+			return { status: 200 };
+		},
+	});
+	assert.deepEqual(await released.provider.release(REF, "delete"), { ok: true, value: undefined });
+	assert.ok(destroying < 0, "release ended only once Daytona answered 404, not while it read the sandbox destroying");
 });
 
 test("every request carries the key passed in, the source header and no redirect, whatever DAYTONA_ or COMPUTER_DAYTONA_ names hold; a refused key is never echoed", async () => {
@@ -398,7 +389,7 @@ test("a redirect is never followed, and a toolbox URL that is not https is refus
 	assert.deepEqual([...new Set(rec.requests.map((r) => r.host))], ["api.daytona.test"], "nothing went to the toolbox");
 });
 
-test("network(): reads none back, and refuses any change, with refused and no request: a Daytona computer's network is fixed at create", async () => {
+test("network(): refuses any change, with refused and no request: a Daytona computer's network is fixed at create (the read is the adapter's probe from inside)", async () => {
 	const { rec, provider } = setup({ [`GET /api/sandbox/${REF.id}`]: { body: sandbox() } });
 	for (const policy of ["open", { allow: ["example.com"] }, { allow: ["198.51.100.0/24"] }, "wifi"]) {
 		const changed = await provider.network(REF, policy);
@@ -406,9 +397,6 @@ test("network(): reads none back, and refuses any change, with refused and no re
 		assert.match(changed.error.message, /fixed at create/);
 	}
 	assert.deepEqual(rec.requests, [], "a refused change asks Daytona nothing");
-	assert.deepEqual(await provider.network(REF), { ok: true, value: "none" });
-	assert.deepEqual(await provider.network(REF, "none"), { ok: true, value: "none" });
-	assert.ok(rec.requests.every((r) => r.method === "GET"), "and never POST network-settings");
 });
 
 /** A toolbox that takes a session and records the command each exec is given, then refuses the command (400). */
@@ -466,17 +454,16 @@ async function writeOnce(replies) {
 		pauses.push(ms);
 	};
 	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch, webSocket: openSocket, pause, timeouts: TIMEOUTS });
-	const started = await provider.host.exec(REF.id, ["computerd", "stdio"], { stdin: true }, { timeoutMs: 1_000 });
-	assert.equal(started.ok, true, started.ok ? "" : started.error.message);
+	const started = await provider.host.exec(REF.id, ["computerd", "stdio"], { timeoutMs: 1_000 });
 	const line = '{"jsonrpc":"2.0","id":1,"method":"hello","params":{}}\n';
 	let settled;
 	try {
-		await started.value.write(new TextEncoder().encode(line));
+		await started.write(new TextEncoder().encode(line));
 		settled = "ok";
 	} catch (error) {
 		settled = error.message;
 	}
-	await started.value.kill();
+	await started.kill();
 	return { settled, inputs, pauses, line };
 }
 
@@ -557,8 +544,7 @@ test("exec is a session command of its own: argv as one shell line, async, no in
 	const run = async (argv) => {
 		const tb = toolboxRecorder();
 		const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: tb.fetch, timeouts: TIMEOUTS });
-		const ran = await provider.host.exec(REF.id, argv, { stdin: true }, { timeoutMs: 1_000 });
-		assert.equal(ran.ok, false);
+		await assert.rejects(provider.host.exec(REF.id, argv, { timeoutMs: 1_000 }), /400 .*refused/);
 		assert.equal(tb.commands.length, 1);
 		assert.equal(tb.commands[0].runAsync, true);
 		assert.equal(tb.commands[0].suppressInputEcho, true);
@@ -575,14 +561,6 @@ test("the loopback block: network none only, the toolbox's port declared, and op
 	assert.deepEqual(network, ["none"]);
 	assert.deepEqual(vendorAgentPorts, [2280]);
 	for (const policy of ["open", { allow: ["example.com"] }]) assert.match(provider.check({ ...SPEC, network: policy }).map((r) => r.message).join(" "), /network of their own/);
-});
-
-test("the socket block: Daytona's D-Bus session bus in /tmp, which no network namespace cuts, is among the sockets create closes to the tool user, and nothing more", async () => {
-	const { provider } = setup();
-	assert.deepEqual(provider.host.facts.vendorSockets, ["/tmp/dbus-*"]);
-	const { hostedCommands } = await import("../dist/hosted/scripts.js");
-	const { sockets } = hostedCommands({ vendorSockets: provider.host.facts.vendorSockets });
-	assert.deepEqual(sockets.slice(4), ["/tmp/dbus-*"], "the pattern reaches the sockets script, which matches the live run's /tmp/dbus-Y8OW6E3FDx");
 });
 
 test("the provider writes nowhere but its results, and reads no environment: its source has no console, no stdio and no process.env", () => {

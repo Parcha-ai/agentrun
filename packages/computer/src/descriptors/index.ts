@@ -15,11 +15,10 @@ import { PHONE_HARNESS } from "./phone-harness.js";
 export const DESCRIPTORS = [DOCKER, DAYTONA, MODAL, E2B, AGENT37, ORGO, PHONE_HARNESS, BROWSERBASE, KERNEL, LOCAL, BOXD] as const;
 
 export { AGENT37, BOXD, BROWSERBASE, DAYTONA, DOCKER, E2B, KERNEL, LOCAL, MODAL, ORGO, PHONE_HARNESS };
-export { AGENT37_BASE_TEMPLATE, AGENT37_BOX_TEMPLATE } from "./agent37.js";
+export { AGENT37_BASE_TEMPLATE } from "./agent37.js";
 export { BOXD_DEFAULT_IMAGE } from "./boxd.js";
 export { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./daytona.js";
 export { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./e2b.js";
-export { MODAL_DEFAULT_IMAGE } from "./modal.js";
 export { ORGO_BASE_IMAGE } from "./orgo.js";
 export { PHONE_GROUPS, PHONE_IMAGE } from "./phone-harness.js";
 export { BROWSER_IMAGE, LINUX_DESKTOP, SANDBOX } from "./shared.js";

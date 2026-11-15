@@ -1,4 +1,4 @@
-import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, refusedLabel, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
+import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, refusedLabel, savedPaths, saysFailure, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, saidSummary, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
 import type { ComputerCallRow } from "./computer.js";
@@ -61,7 +61,7 @@ export type TimelineEvent = {
    *  row. `so_far_usd` and `unpriced` (costsofar/1): while `usd` is null, the sum of every charge whose cost is known, and how
    *  many charges have no known cost (model requests cut, stopped, still pending or with no price, and paid tool calls
    *  charged an unknown amount or cut). Absent when `usd` is known. */
-  usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number; not_metered?: number };
+  usage?: { usd: number | null; requests: number | null; so_far_usd?: number; unpriced?: number; not_metered?: number };
   /** On a learned workflow call's `tool_result` row (learned_workflow): each of the workflow's nodes that ran, as the
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
   learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
@@ -72,15 +72,25 @@ export type TimelineEvent = {
    *  counts the calls past the record's bound. This projector writes none (store-reads/journal.ts withComputerCalls). */
   computer_calls?: readonly ComputerCallRow[];
   computer_calls_dropped?: number;
+  /** On a `tool_use` row of a timeline read with `calls` (TimelineOptions): the call's arguments, each string as `redact`
+   *  makes it where the call is first seen, cut at CAPS.text. */
+  tool_input?: Obj;
+  /** On a `tool_result` row of a timeline read with `calls`: the head of the call's output, to `calls.result` characters,
+   *  as `calls.redact` makes it, its URLs' query values elided as the preview's are. */
+  tool_result_text?: string | null;
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
-export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown };
+export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown; /** A call the loop's record kept, shaped as a model's answer (store-reads/journal.ts piShaped): shown as one, never a model request. */ recordedCall?: true };
 /** A pi `AgentEvent`, as `watchEvents` yields it and `GET /events` serves it. */
 export type AgentEventLike = { type: string; [key: string]: unknown };
 
 /** Grep's caps, so a row is the same on both sides. `thinking` cuts the first sentence of a thinking summary. */
 export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
+/** The most of a call's output a read for a grader shows (`calls`, tool_result_text): a search's first rows (web_search
+ *  answers up to 10 results, each snippet at most 3,000 characters, most far shorter) or a fetched page's first screens,
+ *  and still one redaction pass of the size an answer's pieces take (key-refusal.ts ANSWER_PIECE). */
+export const CALL_RESULT_CHARS = 8000;
 
 /** A host's marks of a model request: as it leaves (written before it does), and as its stream ends aborted. A request
  *  that answered or failed has a `pi.assistant` entry; one aborted before its first content has none; a start with no
@@ -225,6 +235,12 @@ export type TimelineOptions = {
    *  this for the full protection: a key a stream wraps with only part of its tail streamed is covered by a held-back
    *  tail as long as a key, not by the word holdback. */
   redactLive?: (text: string) => string;
+  /** For a reader that grades the run (a template eval): each `tool_use` row carries its call's arguments whole
+   *  (`tool_input`), and each `tool_result` row the head of its output to `result` characters (`tool_result_text`),
+   *  made safe by `redact`, a redactor that reads that far (the rows' own `redact` stops at the head a row shows).
+   *  Without `redact`, the rows' own. `held`: whether a number in the arguments shows a held value (a key that is all
+   *  digits); such a number is shown as "[redacted]". */
+  calls?: { result: number; redact?: (text: string) => string; held?: (value: number | bigint) => boolean };
 };
 
 /** A tool's calls in a run, and how many failed. */
@@ -339,10 +355,13 @@ function createMeter() {
   };
   const models = new Map<string, number>();
 
-  function push(entry: EntryLike): "answer" | "continued" | "refusal" | "mark" | "charge" | "unmetered" | undefined {
+  function push(entry: EntryLike): "answer" | "call" | "continued" | "refusal" | "mark" | "charge" | "unmetered" | undefined {
     const message = entry.model?.[0];
     const data = obj(entry.data);
-    if (entry.kind === REQUEST_REFUSED) {
+    if (entry.kind === "pi.assistant" && entry.recordedCall && message) {
+      // A call the loop's record kept (a CLI's, or one a tool of pi's nested): shown as an answer's call, never a request.
+      return "call";
+    } else if (entry.kind === REQUEST_REFUSED) {
       refused += 1;
     } else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") {
       // pi's answer to a request that never left: nothing to count or show.
@@ -486,6 +505,18 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
   blocksOf(message).filter((block) => block.type === type).map((block) => str(block[field]) ?? "").join("\n").trim();
 /** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
+/** A call's arguments as `tool_input` carries them, their values already redacted (argsOf): each string cut at `max`, and
+ *  each property name through `redact` too, as only this field shows them, and each number `held` names as
+ *  "[redacted]". An object two of whose names come out the same is withheld whole, as "[redacted]", never one value
+ *  merged over the other. */
+const inputShown = (value: unknown, max: number, redact: (text: string) => string = (text) => text, held: (value: number | bigint) => boolean = () => false): unknown => {
+  if (typeof value === "string") return cut(value, max);
+  if (typeof value === "number" || typeof value === "bigint") return held(value) ? "[redacted]" : value;
+  if (Array.isArray(value)) return value.map((item) => inputShown(item, max, redact, held));
+  if (!value || typeof value !== "object") return value;
+  const entries = Object.entries(value).map(([key, item]) => [redact(key), inputShown(item, max, redact, held)] as const);
+  return new Set(entries.map(([key]) => key)).size === entries.length ? Object.fromEntries(entries) : "[redacted]";
+};
 /** The rows that show words as a person or the agent wrote them: cut, never scrubbed. */
 const WHOLE: ReadonlySet<TimelineKind> = new Set(["user_message", "text_block", "final_answer"]);
 /** An error's whole text as the host's `redact` makes it, before its first line becomes a summary or either is cut, so
@@ -646,7 +677,15 @@ function createProjector(options: TimelineOptions) {
   const nameFor = (tool: string, args: Obj, view: ToolResultView, result: ToolResultView) => (refused(view) ? refusedLabel(tool, shown(args)) : label(tool, args, result));
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
-    make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...fields });
+    make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...inputOf(args), ...fields });
+  /** A `calls` read's `tool_input` (inputShown); none when the arguments themselves are withheld. */
+  const inputOf = (args: Obj): { tool_input?: Obj } => {
+    const shown = options.calls ? obj(inputShown(args, caps.text, options.redact, options.calls.held)) : undefined;
+    return shown ? { tool_input: shown } : {};
+  };
+  /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own. */
+  const wholeRedact = options.calls?.redact ?? options.redact;
+  const resultText = (text: string): string | null => (text ? cut(scrubUrls(wholeRedact ? wholeRedact(text) : text), options.calls!.result) : null);
   /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */
   /** A call that returned but whose result says it did not do its work (a refused fetch) reads as that, failed. Its
    *  outcome is read once, for the summary and the status both. */
@@ -662,12 +701,14 @@ function createProjector(options: TimelineOptions) {
     // is still read from the output as it came: one whose redacted output gives no words reads failed with no detail, never
     // ok, and never the detail as it came.
     const worded = shown.text === view.text ? outcome : outcomeOf(tool.name, { ...view, text: shown.text });
-    // A call refused before it ran is named refused already (refusedLabel): its row says why, never that it failed.
-    const failedSummary = refused(view) ? `${named}: ${failure(shown.text)}` : `${named} failed: ${failure(shown.text)}`;
+    // A call refused before it ran is named refused already (refusedLabel), and a computer step's label says it could not
+    // (saysFailure): its row says why, never that it failed.
+    const failedSummary = refused(view) || saysFailure(tool.name) ? `${named}: ${failure(shown.text)}` : `${named} failed: ${failure(shown.text)}`;
     return make("tool_result", conv, rowId, {
       summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : worded ? `${named}: ${saidOf(worded.text)}` : outcome?.failed ? `${named}: failed` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
       tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent, ...(refused(view) ? { refused: true as const } : {}),
+      ...(options.calls ? { tool_result_text: resultText(view.text) } : {}),
     });
   };
 
@@ -758,12 +799,17 @@ function createProjector(options: TimelineOptions) {
       const data = obj(entry.data);
       const tool = str(data?.tool) ?? "a tool";
       add(make("phase", conv, base, { summary: `Not metered: ${tool} has no price set, so it is outside the run's cost`, tool_name: tool, tool_use_id: str(data?.call) ?? null }));
-    } else if ((metered === "answer" || metered === "continued") && message) {
+    } else if ((metered === "answer" || metered === "call" || metered === "continued") && message) {
       const round = metered === "continued" && answers.has(conv) ? answers.get(conv) : entry.id;
-      if (metered === "answer") answers.set(conv, entry.id);
+      if (metered !== "continued") answers.set(conv, entry.id);
       if (message.stopReason === "error") {
         const why = redactedWhy(str(message.errorMessage) ?? "unknown error");
-        add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}`, text: why }));
+        // One with no price of its own (a provider's refusal sends none) is a cost unknown, never $0: the provider may
+        // still bill it (run-adapters answeredUnpriced). Its row says so, as the usage row counts it "not priced".
+        const priced = Number.isFinite(obj(obj(message.usage)?.cost)?.total);
+        // The note is ours, so it stays whole: only the provider's words give way when the summary's cap (make) would cut it.
+        const [head, note] = ["Model request failed: ", priced ? "" : UNPRICED_FAILURE];
+        add(make("error", conv, base, { summary: `${head}${cut(firstLine(why), Math.max(0, caps.summary - head.length - note.length))}${note}`, text: why }));
       } else if (message.stopReason !== "aborted") {
         const blocks = blocksOf(message);
         const settled = provisional.get(conv);
@@ -983,7 +1029,7 @@ function createProjector(options: TimelineOptions) {
     const counted = meter.usage(options.settled === true || nothingInFlight);
     if (!counted || root === undefined) return undefined;
     const { usd, requests, charges, so_far_usd, unpriced, not_metered } = counted;
-    const paid = `${charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : ""}${not_metered ? `; ${not_metered} tool call${not_metered === 1 ? "" : "s"} not metered` : ""}`;
+    const paid = toolCallWords(charges, not_metered);
     const spent = usd !== null ? dollars(usd) : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
       // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
@@ -1010,6 +1056,12 @@ function createProjector(options: TimelineOptions) {
 export const COST_SO_FAR = "Cost so far";
 export const COST_ENDED = "Cost";
 export const costLabel = (ended: boolean): string => (ended ? COST_ENDED : COST_SO_FAR);
+/** What a failed model request's row adds when no price came back for it. */
+const UNPRICED_FAILURE = " (its cost is unknown: the provider sent no price and may still bill it)";
+/** The usage row's words after its model requests: its paid tool calls (`charges`) and its tool calls with no price
+ *  (`notMetered`), each said only when there is one, the same on every harness (store-reads/journal.ts bookedUsage). */
+export const toolCallWords = (charges: number, notMetered = 0): string =>
+  `${charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : ""}${notMetered ? `; ${notMetered} tool call${notMetered === 1 ? "" : "s"} not metered` : ""}`;
 /** `row` as an ended run's: a usage row made while it ran ("Cost so far: …") says its cost ("Cost: …"); any other row as
  *  it is. For a host that keeps rows read before the run ended. */
 export function endedUsage<T extends { kind: string; summary?: string | null }>(row: T): T {
@@ -1080,7 +1132,7 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
     }
     const message = entry.model?.[0];
     const metered = meter.push(entry);
-    if ((metered === "answer" || metered === "continued") && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
+    if ((metered === "answer" || metered === "call" || metered === "continued") && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
       for (const block of blocksOf(message)) {
         const [id, name] = [str(block.id), str(block.name)];
         if (block.type !== "toolCall" || !id || !name) continue;

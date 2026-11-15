@@ -95,3 +95,20 @@ test("a computer: the Workspace attached through the mount check given; the fold
   await run.sweep();
   assert.deepEqual(readdirSync(join(root, ".agentrun")), []);
 });
+
+test("a desktop that mounts the run's folder starts its shell's programs in /workspace, as bash does; one that mounts none, where the computer starts them", async () => {
+  const hello = { version: "0", os: "linux", kind: "desktop", arch: "amd64", display: ":0", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] };
+  const root = scratch();
+  const computer = fakeComputer(root);
+  const mounted = await runHands(localWorkspace(root), { kind: "desktop", computer, hello, check: { readBackOf } }, { mode: 1, context: ctx });
+  assert.equal(mounted.cwd, "/workspace");
+  computer.clear();
+  await mounted.hands.computer.call("shell.run", { command: "pwd" });
+  await mounted.hands.computer.call("processes.start", { command: "mousepad" });
+  assert.deepEqual(computer.calls.filter(([method]) => method === "exec.run" || method === "process.start").map(([method, params]) => [method, params.cwd]), [["exec.run", "/workspace"], ["process.start", "/workspace"]]);
+  // No check: the desktop mounts no folder, so its programs start where the computer starts them.
+  const bare = fakeComputer(scratch());
+  const unmounted = await runHands(localWorkspace(scratch()), { kind: "desktop", computer: bare, hello }, { mode: 1, context: ctx });
+  await unmounted.hands.computer.call("shell.run", { command: "pwd" });
+  assert.equal("cwd" in bare.calls.find(([method]) => method === "exec.run")[1], false);
+});

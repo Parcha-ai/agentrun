@@ -1,12 +1,16 @@
-// The image a remote computer with an Archil mount starts from (box/Dockerfile, built by box/build-daytona.py and
-// box/build-modal.py), read as text: no network, no docker, no provider. It installs the root helper where the provider
+// The image a remote computer with an Archil mount starts from (box/Dockerfile, built by box/build-daytona.py,
+// box/build-modal.py and box/build-e2b.mjs, published by release.yml's box job, and registered by Agent37's prepareImage), read as
+// text: no network, no docker, no provider. It installs the root helper where the provider
 // runs it as root, the tool user computerd runs every tool as, and the archil client pinned by version and sha256. It
 // has no sudo and no sudoers file: the provider's own exec is root (the image's user is root), and the tool user has no
 // way to root at all.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { test } from "node:test";
-import { gunzipSync } from "node:zlib";
+import { fileURLToPath } from "node:url";
 import { ARCHIL_HELPER, ARCHIL_SYNC_SOCKET, ARCHIL_TOOL_USER, ARCHIL_TOOL_UID, DAEMON_IN_COMPUTER } from "../dist/index.js";
 
 const box = (name) => new URL(`../box/${name}`, import.meta.url);
@@ -52,7 +56,9 @@ test("the tool user is agentrun-tool, uid and gid 2510, and the helper's serve n
 });
 
 test("no sudo: the image installs none and has no sudoers file, its user is root, and the build checks that the tool user has no way to root", () => {
-  assert.ok(!/\bsudo\b/.test(INSTRUCTIONS.filter((line) => line.startsWith("RUN") && line.includes("apt-get install")).join(" ")), "no sudo package");
+  const installed = INSTRUCTIONS.flatMap((line) => [...line.matchAll(/apt-get install -y -qq --no-install-recommends (.*?) >\/dev\/null/g)].map((match) => match[1]));
+  assert.ok(installed.length >= 2, "the base's packages and the desktop's");
+  assert.ok(!/\bsudo\b/.test(installed.join(" ")), "no sudo package");
   assert.ok(!INSTRUCTIONS.some((line) => line.startsWith("COPY") && line.includes("sudoers")), "no sudoers file is copied");
   assert.ok(!/\bdaytona\b/.test(INSTRUCTIONS.join("\n")), "no daytona user, and nothing granted to one");
   const users = INSTRUCTIONS.filter((line) => line.startsWith("USER "));
@@ -109,109 +115,242 @@ test("the E2B build makes a template from the same Dockerfile, with the workspac
   assert.match(e2b, /fromDockerfile\(/);
   assert.match(e2b, /Template\.build\(/);
   assert.ok(e2b.includes("console.log(`template=${name}`)"), "it prints the template's name, as the other builds print theirs");
-  assert.ok(e2b.includes('"agentrun-archil-"'), "named agentrun-archil-<hash>, as the Daytona snapshot is");
-  const copied = INSTRUCTIONS.filter((line) => line.startsWith("COPY ")).map((line) => line.split(/\s+/)[1]);
-  const hashed = e2b.match(/const RECIPE = \[([^\]]*)\]/)?.[1].split(",").map((name) => name.trim().replace(/^"|"$/g, "")).filter(Boolean);
-  assert.deepEqual(hashed?.sort(), ["Dockerfile", ...copied].sort());
-  assert.ok(!/process\.env\.\w*KEY/.test(e2b) || e2b.includes("E2B_API_KEY"), "the key comes from E2B_API_KEY, the SDK's own, set by the caller for this one command");
+  assert.ok(e2b.includes('const name = "agentrun-archil-" + hash;') && e2b.includes("const hash = recipeHash(here);"), "named agentrun-archil-<the recipe's hash>, as the Daytona snapshot is");
+  assert.ok(!/process\.env\.\w*KEY/.test(e2b.replace(/process\.env\.E2B_API_KEY/g, "")), "the key comes from E2B_API_KEY, the SDK's own, set by the caller for this one command");
 });
 
-// --- the Agent37 build (build-agent37.mjs), on a fake Agent37 ---
+/** How release.yml's box job reads the recipe's hash, at the repository's root. */
+const RELEASE_RECIPE = "import { recipeHash } from './packages/computer/box/recipe.mjs'; console.log(recipeHash())";
 
-const agent37Build = await import("../box/build-agent37.mjs");
-const AGENT37_KEY = "sk_live_fake_build_key_0123456789";
-const UPLOAD = "https://uploads.agent37.test/context?signed=1";
+test("the recipe is the Dockerfile and every file it copies, and its hash is the one the Daytona snapshot is named by", async () => {
+  const { RECIPE, recipeHash } = await import("../box/recipe.mjs");
+  const copied = INSTRUCTIONS.filter((line) => line.startsWith("COPY ")).map((line) => line.split(/\s+/)[1]);
+  assert.deepEqual([...RECIPE].sort(), ["Dockerfile", ...copied].sort());
+  // build-daytona.py hashes the same files the same way: sha256 of their bytes in RECIPE's order, its first 12 hex.
+  const daytona = read("build-daytona.py");
+  assert.ok(daytona.includes(`for name in (${RECIPE.map((name) => `"${name}"`).join(", ")})`), "the Daytona build hashes RECIPE, in its order");
+  assert.ok(daytona.includes("hashlib.sha256(recipe).hexdigest()[:12]"));
+  const hash = recipeHash();
+  assert.equal(hash, createHash("sha256").update(Buffer.concat(RECIPE.map((name) => readFileSync(box(name))))).digest("hex").slice(0, 12));
+  // What release.yml's box job runs, at the repository's root: the hash alone.
+  const printed = execFileSync(process.execPath, ["--input-type=module", "-e", RELEASE_RECIPE], { encoding: "utf8", cwd: fileURLToPath(new URL("../../../", import.meta.url)) });
+  assert.equal(printed, `${hash}\n`);
+});
 
-/** The files of a gzipped ustar archive, by name: mode and body. */
-function untar(gz) {
-  const tar = gunzipSync(gz);
-  const files = {};
-  for (let at = 0; at + 512 <= tar.length; ) {
-    const block = tar.subarray(at, at + 512);
-    if (block.every((byte) => byte === 0)) break;
-    const field = (from, length) => block.subarray(from, from + length).toString("utf8").replace(/\0.*$/s, "").trim();
-    const size = Number.parseInt(field(124, 12), 8);
-    files[field(0, 100)] = { mode: Number.parseInt(field(100, 8), 8), body: tar.subarray(at + 512, at + 512 + size).toString("utf8") };
-    at += 512 + Math.ceil(size / 512) * 512;
+test("on the published image, the E2B template runs the Dockerfile's sudo guard again, as root, and keeps its USER and CMD; a tag that is not the recipe's is refused", async () => {
+  const { onImage, recipeHash } = await import("../box/recipe.mjs");
+  const image = `ghcr.io/parcha-ai/agentrun-box:${recipeHash()}`;
+  const dockerfile = onImage(image);
+  const lines = dockerfile.replace(/\\\n/g, " ").split("\n").filter(Boolean);
+  assert.equal(lines[0], `FROM ${image}`);
+  const guard = INSTRUCTIONS.find((line) => line.startsWith("RUN ") && line.includes("dpkg -s sudo"));
+  assert.deepEqual(lines.slice(1), [guard, "USER root", 'CMD ["sleep", "infinity"]'], "the guard as the Dockerfile has it, then root, then the same first process");
+  assert.ok(guard.includes("rm -rf /etc/sudoers /etc/sudoers.d") && guard.includes("! command -v sudo"), "the guard takes sudo away and checks it gone");
+  // Refused before the SDK or the key is read, so this runs with neither.
+  const script = fileURLToPath(box("build-e2b.mjs"));
+  const run = (args) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8", env: { PATH: process.env.PATH } });
+  const other = run(["--image", "ghcr.io/parcha-ai/agentrun-box:000000000000"]);
+  assert.equal(other.status, 2);
+  assert.match(other.stderr, new RegExp(`is not this recipe's image: its tag must be the recipe's hash, ${recipeHash()}`));
+  const keyless = run(["--image", image, "--public"]);
+  assert.equal(keyless.status, 2);
+  assert.match(keyless.stderr, /set E2B_API_KEY/);
+});
+
+/** A fake e2b package: records the template, the build and the PATCH in FAKE_E2B_LOG; FAKE_E2B_PATCH=fail refuses the PATCH. */
+const FAKE_E2B = `import { appendFileSync } from "node:fs";
+const log = (entry) => appendFileSync(process.env.FAKE_E2B_LOG, JSON.stringify(entry) + "\\n");
+export function Template(options) {
+  return { fromDockerfile(dockerfile) { log({ template: options, dockerfile }); return this; } };
+}
+Template.build = async (template, name, options) => { log({ build: name, cpuCount: options.cpuCount, memoryMB: options.memoryMB }); return { templateId: "tpl_0123", buildId: "b_1", name }; };
+export class ConnectionConfig { constructor(options) { this.apiKey = options.apiKey; } }
+export class ApiClient {
+  constructor(config) {
+    this.api = { PATCH: async (path, init) => {
+      log({ patch: path, init, apiKey: config.apiKey });
+      if (process.env.FAKE_E2B_PATCH === "fail") return { error: { message: "template not found" }, response: { status: 404 } };
+      return { data: { names: ["parcha/" + "agentrun-archil-x", "agentrun-archil-x"] }, response: { status: 200 } };
+    } };
   }
-  return files;
 }
+`;
 
-/** Agent37's template and build API as a fetch: the template's description (none: 404), and a build that succeeds after two log reads. */
-function fakeBuilds({ description, fail } = {}) {
-  const calls = [];
-  const fetch = async (url, init = {}) => {
-    const method = init.method ?? "GET";
-    const { pathname, search } = new URL(url);
-    calls.push({ method, url, path: pathname + search, auth: init.headers?.Authorization, body: init.body });
-    const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-    if (url === UPLOAD) return new Response(null, { status: 200 });
-    if (init.headers?.Authorization !== `Bearer ${AGENT37_KEY}`) return json(401, { error: { code: "invalid_api_key", message: "Invalid API key" } });
-    if (pathname === "/v1/templates/agentrun-box") return description === undefined ? json(404, { error: { code: "not_found", message: "No such template" } }) : json(200, { name: "agentrun-box", revision: 3, description, image_digest: "sha256:old" });
-    if (pathname === "/v1/template-builds" && method === "POST") return json(201, { id: "tb_0123456789abcdef0123", status: "created", upload_url: UPLOAD });
-    if (pathname.endsWith("/start")) return json(200, { id: "tb_0123456789abcdef0123", status: "building" });
-    if (pathname.endsWith("/logs")) {
-      const reads = calls.filter((call) => call.path.includes("/logs")).length;
-      if (fail) return json(200, { status: "failed", error: { code: "build_failed", message: "step 3 exited 100" }, data: "E: no xvfb\n", offset: 11 });
-      if (reads === 1) return json(200, { status: "building", data: "step 1\n", offset: 7 });
-      return json(200, { status: "succeeded", data: "step 2\n", offset: 14, template: { name: "agentrun-box", revision: 4, image_digest: "sha256:new" } });
-    }
-    return json(404, { error: { code: "not_found", message: "No such route" } });
+test("build-e2b.mjs --image --public builds from the image, makes the template public by its id, prints the names E2B gives, and fails in E2B's words when the PATCH is refused", async (t) => {
+  const { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { recipeHash, onImage } = await import("../box/recipe.mjs");
+  // A copy of box/ beside a fake e2b package, which the script finds by its name, as it finds the root's.
+  const dir = mkdtempSync(join(tmpdir(), "box-e2b-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  for (const name of ["Dockerfile", "agentrun-archil", "build-e2b.mjs", "recipe.mjs"]) copyFileSync(box(name), join(dir, name));
+  mkdirSync(join(dir, "node_modules", "e2b"), { recursive: true });
+  writeFileSync(join(dir, "node_modules", "e2b", "package.json"), JSON.stringify({ name: "e2b", type: "module", exports: "./index.js" }));
+  writeFileSync(join(dir, "node_modules", "e2b", "index.js"), FAKE_E2B);
+  const image = `ghcr.io/parcha-ai/agentrun-box:${recipeHash()}`;
+  const run = (log, env = {}) => spawnSync(process.execPath, [join(dir, "build-e2b.mjs"), "--image", image, "--public"], { encoding: "utf8", env: { PATH: process.env.PATH, E2B_API_KEY: "fake-test-key", FAKE_E2B_LOG: join(dir, log), ...env } });
+  const entries = (log) => readFileSync(join(dir, log), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+
+  const ok = run("ok.log");
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.stdout, `public=parcha/agentrun-archil-x,agentrun-archil-x\ntemplate=agentrun-archil-${recipeHash()}\n`);
+  const [template, build, patch] = entries("ok.log");
+  assert.equal(template.dockerfile, onImage(image), "the template is the image with the Dockerfile's guard, USER and CMD");
+  assert.deepEqual(build, { build: `agentrun-archil-${recipeHash()}`, cpuCount: 2, memoryMB: 4096 });
+  assert.deepEqual(patch, { patch: "/v2/templates/{templateID}", init: { params: { path: { templateID: "tpl_0123" } }, body: { public: true } }, apiKey: "fake-test-key" });
+  assert.ok(!ok.stderr.includes("fake-test-key") && !ok.stdout.includes("fake-test-key"), "the key is never printed");
+
+  const refused = run("refused.log", { FAKE_E2B_PATCH: "fail" });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, new RegExp(`making agentrun-archil-${recipeHash()} public failed: 404 template not found`));
+  assert.doesNotMatch(refused.stdout, /public=|template=/, "a template that is not public is not reported as made");
+});
+
+test("the box job builds only on the registry's not found: a published recipe is tagged, and any other failed read stops the job", async (t) => {
+  const { mkdtempSync, writeFileSync, rmSync, chmodSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { parse } = await import("yaml");
+  const workflow = parse(readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"));
+  const step = workflow.jobs.box.steps.find((step) => step.id === "published");
+  const dir = mkdtempSync(join(tmpdir(), "box-published-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // A fake docker whose imagetools inspect prints what FAKE_DOCKER says, as buildx does, and exits with its code.
+  writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$FAKE_DOCKER_OUT" >&2\nexit "$FAKE_DOCKER_EXIT"\n');
+  chmodSync(join(dir, "docker"), 0o755);
+  const run = (exit, out) => {
+    const output = join(dir, `output-${exit}-${out.length}`);
+    writeFileSync(output, "");
+    const result = spawnSync("bash", ["-e", "-c", step.run], { encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH}`, GITHUB_OUTPUT: output, IMAGE: "ghcr.io/parcha-ai/agentrun-box", RECIPE: "0123456789ab", RELEASE_TAG: "v0.1.0-beta.1", FAKE_DOCKER_EXIT: String(exit), FAKE_DOCKER_OUT: out } });
+    return { ...result, output: readFileSync(output, "utf8") };
   };
-  return { fetch, calls };
-}
+  const published = run(0, "");
+  assert.equal(published.status, 0);
+  assert.equal(published.output, "published=true\n");
+  const absent = run(1, "ERROR: ghcr.io/parcha-ai/agentrun-box:0123456789ab: not found");
+  assert.equal(absent.status, 0);
+  assert.equal(absent.output, "published=false\n");
+  const flaky = run(1, "ERROR: failed to do request: Head \"https://ghcr.io/v2/parcha-ai/agentrun-box/manifests/0123456789ab\": dial tcp: i/o timeout");
+  assert.equal(flaky.status, 1, "a read that fails otherwise stops the job: no rebuild under a tag that may exist");
+  assert.equal(flaky.output, "");
+  assert.match(flaky.stderr, /::error::reading ghcr\.io\/parcha-ai\/agentrun-box:0123456789ab failed, so whether it is published is unknown: ERROR: failed to do request/);
+});
 
-test("the Agent37 build's recipe is box/Dockerfile plus Xvfb, xfwm4 and the apps, named agentrun-box, its hash over every copied file and the desktop's lines", async () => {
-  const { AGENT37_BOX_TEMPLATE } = await import("../dist/index.js");
+// --- what a build of box/ can take in: no key, credential or build secret ---
+
+/** Every file under box/, by its path there. */
+const BOX_FILES = readdirSync(fileURLToPath(box("")), { recursive: true, withFileTypes: true })
+  .filter((entry) => entry.isFile())
+  .map((entry) => relative(fileURLToPath(box("")), join(entry.parentPath, entry.name)));
+/** Names a key or a credential goes by. */
+const CREDENTIAL_NAME = /(^|\/)(\.env(\..*)?|\.npmrc|\.netrc|\.pypirc|\.git-credentials|\.dockercfg|config\.json|credentials(\..*)?|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|.*\.(pem|key|p12|pfx|jks|keystore|crt|asc|gpg|kdbx)|.*(secret|token|passw|apikey|api_key|private).*)$/i;
+/** Key material in a file's text: a private key block, or a token in a vendor's own shape. */
+const KEY_MATERIAL = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}/,
+  /\bgithub_pat_[A-Za-z0-9_]{30,}/,
+  /\bsk-(ant-|proj-)?[A-Za-z0-9_-]{20,}/,
+  /\bsk_live_[A-Za-z0-9]{16,}/,
+  /\be2b_[0-9a-f]{20,}/,
+  /\bxox[abpr]-[A-Za-z0-9-]{10,}/,
+];
+
+test("a build's context is box/, the files the npm package ships there, and the image takes the helper alone from it", () => {
+  const copied = INSTRUCTIONS.filter((line) => /^(COPY|ADD) /.test(line)).map((line) => line.split(/\s+/).slice(1, -1));
+  assert.deepEqual(copied, [["agentrun-archil"]], "one COPY, of the helper, with no flags (no --from, no remote ADD)");
+  // No .dockerignore: everything here is public already (the package ships box/ whole), and the image copies the helper
+  // alone. A new file here is read for what it is before this list takes it.
+  assert.deepEqual(BOX_FILES.sort(), ["Dockerfile", "README.md", "agentrun-archil", "build-daytona.py", "build-e2b.mjs", "build-modal.py", "recipe.d.mts", "recipe.mjs"]);
+});
+
+test("box/ holds no file named like a key or a credential and no key material, and the Dockerfile takes no secret", () => {
+  for (const file of BOX_FILES) {
+    assert.doesNotMatch(file, CREDENTIAL_NAME, `${file} is named like a key or a credential`);
+    const text = readFileSync(box(file), "utf8");
+    for (const pattern of KEY_MATERIAL) assert.doesNotMatch(text, pattern, `${file} holds key material`);
+  }
+  assert.doesNotMatch(DOCKERFILE, /--mount=[^\s]*type=(secret|ssh)/, "no build secret and no ssh agent");
+  for (const line of INSTRUCTIONS.filter((line) => /^(ARG|ENV) /.test(line))) {
+    assert.doesNotMatch(line.split(/\s+/)[1].split("=")[0], /KEY|TOKEN|SECRET|PASS|CRED|AUTH|PRIVATE/i, `${line}: a build argument or variable named like a secret`);
+  }
+  assert.deepEqual(INSTRUCTIONS.filter((line) => line.startsWith("ARG ")).map((line) => line.slice(4).split("=")[0]), ["ARCHIL_VERSION", "ARCHIL_SHA256_AMD64", "ARCHIL_SHA256_ARM64"]);
+  // The patterns catch what they are for.
+  assert.match("id_ed25519", CREDENTIAL_NAME);
+  assert.match("deploy.pem", CREDENTIAL_NAME);
+  assert.match("e2b-token.txt", CREDENTIAL_NAME);
+  assert.ok(KEY_MATERIAL.some((pattern) => pattern.test(["-----BEGIN OPENSSH", "PRIVATE KEY-----"].join(" "))));
+});
+
+// --- the release's box job and its E2B template (.github/workflows/release.yml) ---
+
+test("the release publishes the box image beside agentrun-server, amd64, by the recipe's hash, and builds the public E2B template from it under the release's approval", async () => {
+  const { parse } = await import("yaml");
+  const workflow = parse(readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"));
+  const { box: job, "box-e2b": e2b, image, publish } = workflow.jobs;
+  assert.equal(job.needs, "publish");
+  assert.equal(job.if, publish.if);
+  assert.deepEqual(job.permissions, image.permissions, "the image job's: read, and write packages");
+  assert.equal(job.environment, undefined, "no environment and no secret: this run's GITHUB_TOKEN alone");
+  const pinned = (steps) => {
+    for (const step of steps.filter((step) => step.uses)) assert.match(step.uses, /@[0-9a-f]{40}$/, `${step.uses} is pinned by commit`);
+  };
+  pinned(job.steps);
+  pinned(e2b.steps);
+  const buildx = job.steps.find((step) => /^docker\/setup-buildx-action@/.test(step.uses ?? ""));
+  assert.deepEqual(buildx, image.steps.find((step) => /^docker\/setup-buildx-action@/.test(step.uses ?? "")), "BuildKit by digest, as the image job runs it");
+  assert.match(buildx.with["driver-opts"], /@sha256:[0-9a-f]{64}$/);
+  const recipe = job.steps.find((step) => step.id === "recipe");
+  assert.ok(recipe.run.includes(`hash="$(node --input-type=module -e "${RELEASE_RECIPE}")"`), "the hash recipe.mjs gives, not one of the workflow's own");
+  assert.equal(job.outputs.recipe, "${{ steps.recipe.outputs.hash }}");
+  const build = job.steps.find((step) => /^docker\/build-push-action@/.test(step.uses ?? ""));
+  assert.equal(build.uses, image.steps.find((step) => /^docker\/build-push-action@/.test(step.uses ?? "")).uses);
+  assert.equal(build.with.context, "packages/computer/box");
+  assert.equal(build.with.file, "packages/computer/box/Dockerfile");
+  assert.equal(build.with.platforms, "linux/amd64");
+  assert.equal(build.with.provenance, "mode=max");
+  assert.equal(build.with.sbom, true);
+  assert.equal(build.with.push, true);
+  assert.equal(build.with["build-args"], undefined);
+  assert.equal(build.with.secrets, undefined);
+  assert.deepEqual(build.with.tags.trim().split("\n"), ["${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}", "${{ env.IMAGE }}:${{ inputs.tag }}"]);
+  assert.equal(job.env.IMAGE, "ghcr.io/parcha-ai/agentrun-box");
+  assert.equal(build.if, "steps.published.outputs.published != 'true'", "built once per recipe");
+  assert.match(job.steps.find((step) => step.if === "steps.published.outputs.published == 'true'").run, /imagetools create --tag "\$IMAGE:\$RELEASE_TAG" "\$IMAGE:\$RECIPE"/, "a published recipe is tagged with the release");
+
+  assert.equal(e2b.needs, "box");
+  assert.equal(e2b.if, publish.if);
+  assert.equal(e2b.environment, "npm-release", "under the release's own approval");
+  assert.deepEqual(e2b.permissions, { contents: "read" });
+  assert.equal(e2b.env.BOX_IMAGE, "ghcr.io/parcha-ai/agentrun-box:${{ needs.box.outputs.recipe }}");
+  const secrets = JSON.stringify(e2b).match(/secrets\.\w+/g);
+  assert.deepEqual([...new Set(secrets)], ["secrets.E2B_API_KEY"], "the E2B key is the one secret it reads");
+  assert.match(e2b.steps[0].run, /\[ -n "\$E2B_API_KEY" \] \|\| \{ echo "::error::needs secret E2B_API_KEY in the npm-release environment/, "first, a missing key stops it in words");
+  const at = (pattern) => e2b.steps.findIndex((step) => pattern.test(step.run ?? ""));
+  assert.ok(at(/manifests/) > 0 && at(/manifests/) < at(/build-e2b\.mjs/), "the image is checked public before E2B is asked to pull it");
+  assert.equal(e2b.steps[at(/build-e2b\.mjs/)].run, 'node packages/computer/box/build-e2b.mjs --image "$BOX_IMAGE" --public');
+});
+
+test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, each checked, with no sudo", async () => {
   const { WINDOW_MANAGER } = await import("../dist/desktop.js");
   const { DESKTOP_APPS } = await import("../dist/conformance/cases/apps.js");
-  assert.equal(agent37Build.NAME, AGENT37_BOX_TEMPLATE, "the descriptor's desktop image is the template this builds");
-  const copied = INSTRUCTIONS.filter((line) => line.startsWith("COPY ")).map((line) => line.split(/\s+/)[1]);
-  assert.deepEqual([...agent37Build.RECIPE].sort(), ["Dockerfile", ...copied].sort());
-  assert.ok(agent37Build.DESKTOP.includes(`apt-get install -y -qq --no-install-recommends ${agent37Build.DESKTOP_PACKAGES.join(" ")} >/dev/null`));
-  for (const name of ["xvfb", "xfwm4", "xfce4-terminal", "mousepad", "firefox-esr", "xdotool"]) assert.ok(agent37Build.DESKTOP_PACKAGES.includes(name), name);
-  const programs = agent37Build.DESKTOP.match(/for x in ([^;]*); do command -v "\$x"/)?.[1].split(" ") ?? [];
+  const desktop = INSTRUCTIONS.find((line) => line.startsWith("RUN ") && line.includes("xvfb"));
+  assert.ok(desktop, "the Dockerfile installs the desktop");
+  const packages = desktop.match(/apt-get install -y -qq --no-install-recommends (.*?) >\/dev\/null;/)?.[1].trim().split(/\s+/) ?? [];
+  for (const name of ["xvfb", "xfwm4", "x11-xserver-utils", "xfce4-terminal", "mousepad", "firefox-esr", "xdotool"]) assert.ok(packages.includes(name), name);
+  assert.ok(!packages.some((name) => /vnc|sudo/.test(name)), "no VNC server and no sudo");
+  assert.ok(!INSTRUCTIONS.some((line) => /^(CMD|ENTRYPOINT) /.test(line) && /Xvfb|xfwm4/.test(line)), "nothing of the desktop starts with the image");
+  assert.ok(INSTRUCTIONS.indexOf(desktop) < INSTRUCTIONS.findIndex((line) => line.startsWith("RUN ") && line.includes("dpkg -s sudo")), "the sudo guard runs after the desktop's packages");
+  const programs = desktop.match(/for x in ([^;]*); do command -v "\$x"/)?.[1].split(" ") ?? [];
   assert.ok(programs.includes("Xvfb"), "the build checks the X server is there");
-  for (const program of WINDOW_MANAGER.filter((arg) => !arg.startsWith("-"))) assert.ok(programs.includes(program), `the build checks the window manager's ${program} is there`);
-  const checked = agent37Build.DESKTOP.match(/for app in ([^;]*); do/)?.[1].split(" ") ?? [];
+  // The window manager's programs beyond Debian's essential ones (unshare, util-linux's, and sh).
+  assert.equal(WINDOW_MANAGER[0], "unshare");
+  // xsetroot paints the desktop's background before xfwm4 starts, so a desktop with no window open is not a black screen.
+  for (const program of ["dbus-run-session", "xfwm4", "xsetroot"]) {
+    assert.ok(WINDOW_MANAGER.some((arg) => arg.includes(`${program} `)), `the window manager runs ${program}`);
+    assert.ok(programs.includes(program), `the build checks the window manager's ${program} is there`);
+  }
+  const checked = desktop.match(/for app in ([^;]*); do/)?.[1].split(" ") ?? [];
   assert.ok(checked.some((app) => DESKTOP_APPS.includes(app)), "the build checks a desktop file the conformance apps case opens");
-  assert.match(agent37Build.DESKTOP, /! command -v sudo/, "the desktop's packages bring no sudo, checked");
-  const recipe = agent37Build.recipeOf();
-  assert.match(recipe.hash, /^[0-9a-f]{12}$/);
-  const context = untar(agent37Build.contextOf(recipe));
-  assert.deepEqual(Object.keys(context).sort(), ["Dockerfile", "agentrun-archil"]);
-  assert.equal(context.Dockerfile.body, DOCKERFILE + agent37Build.DESKTOP, "the context's Dockerfile is box/Dockerfile, then the desktop's lines");
-  assert.equal(context.Dockerfile.mode, 0o644);
-  assert.equal(context["agentrun-archil"].body, HELPER);
-  assert.equal(context["agentrun-archil"].mode, 0o755);
-  assert.match(agent37Build.descriptionOf(recipe.hash), new RegExp(`recipe ${recipe.hash}$`));
-});
-
-test("the Agent37 build creates the build, uploads the context without the key, starts it and reads its log until the template is published", async () => {
-  const { fetch, calls } = fakeBuilds();
-  const logged = [];
-  const built = await agent37Build.build({ apiKey: AGENT37_KEY, fetch, apiUrl: "https://api.agent37.test", log: (text) => logged.push(text), pollMs: 1 });
-  assert.deepEqual(built, { name: "agentrun-box", revision: 4, digest: "sha256:new" });
-  assert.deepEqual(
-    calls.map(({ method, path }) => `${method} ${path}`),
-    ["GET /v1/templates/agentrun-box", "POST /v1/template-builds", "PUT /context?signed=1", "POST /v1/template-builds/tb_0123456789abcdef0123/start", "GET /v1/template-builds/tb_0123456789abcdef0123/logs?offset=0", "GET /v1/template-builds/tb_0123456789abcdef0123/logs?offset=7"],
-  );
-  const made = JSON.parse(calls[1].body);
-  assert.equal(made.name, "agentrun-box");
-  assert.equal(made.description, agent37Build.descriptionOf(agent37Build.recipeOf().hash));
-  assert.equal(made.size_bytes, calls[2].body.length, "size_bytes is the uploaded context's");
-  assert.equal(calls[2].auth, undefined, "the presigned upload gets no Agent37 key");
-  assert.ok(logged.join("").includes("step 1\nstep 2\n"), "the build's log, as it comes");
-});
-
-test("the Agent37 build builds nothing when the template already names this recipe, and a failed build fails in Agent37's words with no key", async () => {
-  const current = fakeBuilds({ description: agent37Build.descriptionOf(agent37Build.recipeOf().hash) });
-  assert.deepEqual(await agent37Build.build({ apiKey: AGENT37_KEY, fetch: current.fetch, apiUrl: "https://api.agent37.test", log: () => {} }), { name: "agentrun-box", revision: 3, digest: "sha256:old" });
-  assert.deepEqual(current.calls.map(({ method, path }) => `${method} ${path}`), ["GET /v1/templates/agentrun-box"]);
-  const stale = fakeBuilds({ description: agent37Build.descriptionOf("000000000000") });
-  assert.equal((await agent37Build.build({ apiKey: AGENT37_KEY, fetch: stale.fetch, apiUrl: "https://api.agent37.test", log: () => {}, pollMs: 1 })).revision, 4, "another recipe's template is built again");
-  const failing = fakeBuilds({ fail: true });
-  await assert.rejects(agent37Build.build({ apiKey: AGENT37_KEY, fetch: failing.fetch, apiUrl: "https://api.agent37.test", log: () => {}, pollMs: 1 }), /failed: build_failed: step 3 exited 100/);
-  await assert.rejects(agent37Build.build({ apiKey: "fake-test-key", fetch: failing.fetch, apiUrl: "https://api.agent37.test", log: () => {} }), (error) => /401 invalid_api_key/.test(error.message) && !error.message.includes("fake-test-key"));
-  await assert.rejects(agent37Build.build({ apiKey: "", fetch: failing.fetch }), /set AGENT37_API_KEY/);
+  // E2B's builder adds sudo before the recipe's steps: a sudo check here would refuse its build before the guard takes it away.
+  assert.doesNotMatch(desktop, /command -v sudo/, "the desktop's no-sudo check is the guard's, after it");
 });

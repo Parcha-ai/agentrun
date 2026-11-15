@@ -1,5 +1,5 @@
 // E2B for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider e2b [--image <template>]`.
-// It makes real sandboxes, so it runs only with AGENTRUN_COMPUTER_LIVE_E2B=1 and a key the lead has OKed, under
+// It makes real sandboxes, so it runs only with AGENTRUN_COMPUTER_LIVE_E2B=1 and a key for an account you can bill, under
 // COMPUTER_E2B_API_KEY. The provider reads no environment: this module reads its own COMPUTER_E2B_* names (never
 // E2B_API_KEY, which may hold another team's key) and passes each to create() as its option; the provider gives the SDK
 // the key, domain and API URL explicitly, and refuses an ambient E2B_SANDBOX_URL (see create in ../e2b.ts). The live
@@ -96,7 +96,7 @@ export interface E2BModuleOptions extends Pick<E2BOptions, "Sandbox" | "daemonPa
 
 function live(env: Record<string, string | undefined>): void {
 	if (env[E2B_ENV.live] !== "1") {
-		throw new Error(`the E2B conformance module makes real sandboxes: set ${E2B_ENV.live}=1, with a key the lead has OKed, to run it`);
+		throw new Error(`the E2B conformance module makes real sandboxes: set ${E2B_ENV.live}=1, with a key for an account you can bill, to run it`);
 	}
 }
 

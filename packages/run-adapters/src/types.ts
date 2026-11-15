@@ -59,6 +59,9 @@ export interface HostTool {
    *  no intent or outcome of its own. A harness runs it again after a crash, its recorded nested calls answered from their
    *  records, never run twice. */
   nests?: true;
+  /** Registered and callable (by the gate, and by a nested call: tools_call, a script), but not listed to the model: a
+   *  catalog tool of a run whose catalog is deferred (tool-deferral.ts), which the model finds with tools_search. */
+  deferred?: true;
 }
 
 /**
@@ -124,6 +127,12 @@ export interface SessionStore {
 /** The one holder that may write a session. */
 export interface SessionWriter {
   readonly key: string;
+  /** The session's identity across the claims of one holder (a runner's name and a run's id beside the key), for a store
+   *  whose claims a holder can lose and take again. A booking of the session whose cost write is refused (its claim lost
+   *  as its request answered) hands that booking to the next booking of the same scope in this process, which writes it
+   *  before it books any request cut (ModelBooking.bookCut). Absent: nothing is handed on, and such a request is booked
+   *  cut. Never shared by two holders: another runner, as one that died, takes nothing of it. */
+  readonly scope?: string;
   read(): Promise<SessionRecord[]>;
   /** Resolves once the records are durable, in order. Rejects with `SessionFenced`, writing none of them, once a newer
    *  `open` of the key has resolved. */
@@ -144,6 +153,10 @@ export interface SessionSpec {
   /** Exactly these tools (a run's remote MCP tools among them, as host tools); the harness's own stay off. */
   tools: HostTool[];
   context: "fresh" | "fork";
+  /** The host's one verdict on whether the run's catalog tools are deferred (tool-deferral.ts defersCatalog, and both
+   *  tools_search and tools_call allowed). A harness with a tool search of its own (`ownToolSearch`) turns it on exactly
+   *  when this is true; absent, it decides by the names alone. */
+  deferCatalog?: boolean;
   tier?: NodeRequest["tier"];
   effort?: NodeRequest["effort"];
   thinking?: NodeRequest["thinking"];
@@ -179,7 +192,7 @@ export interface ModelRequest {
    *  host's own request beside the harness's (`host`). */
   side?: true;
   /** On the session's model but no answer of the turn (a title, a summary, a child's request): booked as any request, but
-   *  never the session's previous request for the cap's expected pricing, read or replaced. */
+   *  never one of the session's recent requests for the cap's expected pricing, read or kept. */
   unanswered?: true;
   /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
    *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
@@ -206,6 +219,8 @@ export interface ModelUsage {
   estimated?: boolean;
   /** Beside the provider's own figure, what the host's price table makes of the same usage: kept to audit the table. */
   tableUsd?: number | null;
+  /** `plan`: billed to a person's subscription plan (a ChatGPT plan's token), not by the token: `usd` is null. */
+  billing?: "plan";
   /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
    *  price is null; the provider may have billed it. */
   cut?: boolean;
@@ -419,6 +434,9 @@ export interface AdapterFacts {
   /** It runs the model's scripts itself (Codex's code mode, its nested calls the host's tools): the host offers no
    *  `codemode` of its own beside it. Absent: the host's codemode is offered. */
   readonly ownCodemode?: true;
+  /** It defers a run's MCP tools behind a tool search of its own (Claude Code's ToolSearch), so the host offers no
+   *  `tools_search` or `tools_call` beside it. Absent: the host's are offered when a run's catalog tools are deferred. */
+  readonly ownToolSearch?: true;
   /** The model as the harness names it (Anthropic's id has no dot). */
   normalizeModel(model: { provider: string; modelId: string }): { provider: string; modelId: string };
   /** How it is installed and pinned: the line that installs it into a project, the package it pins, and the codes its
@@ -428,8 +446,10 @@ export interface AdapterFacts {
    *  shapes it drops or retypes, measured on its pinned build, so a grant of an MCP tool would offer the model another
    *  tool than the one granted. None: it takes any schema the kernel's check does. */
   schemaProblems?(tool: string, schema: Record<string, unknown>): string[];
-  /** A name its client calls a session's MCP tool by beside `mcp__<server>__<tool>` (OpenCode's `<server>_<tool>`). */
-  readonly toolAlias?: RegExp;
+  /** The host's name for a host tool the model names its own way on this harness's tool channel (Claude's
+   *  `mcp__hands__<name>`, OpenCode's `hands_<name>`, Codex's `mcp_<server>__<tool>`). Absent: the model's name is the
+   *  host's (pi's). A name already the host's comes back as it is. */
+  readonly hostName?: (given: string) => string;
   /** Its CLI's own tools, by the name a call reaches the host by, each with the host's table tool it is (Claude's
    *  `Bash` is `bash`): a host holds such a call to that tool's setting. None: its CLI calls only the host's tools. */
   readonly nativeTools?: Readonly<Record<string, string>>;

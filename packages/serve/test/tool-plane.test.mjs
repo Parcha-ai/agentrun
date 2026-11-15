@@ -32,7 +32,7 @@ test("a vendor picked without its key: capabilities' why names Settings → Tool
 test("the capabilities a grant may name are tools the table binds, the call-only tools not among them; web_search and web_fetch each offer their providers, the default first", () => {
   assert.deepEqual([...CAPABILITIES], ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"]);
   for (const name of CAPABILITIES) assert.ok(BOUND_TOOLS.includes(name), name);
-  for (const name of ["pdf_pages", "llm", "monid.discover"]) assert.ok(!CAPABILITIES.includes(name), name);
+  for (const name of ["pdf_pages", "llm", "monid:faux/person/enrich"]) assert.ok(!CAPABILITIES.includes(name), name);
   assert.deepEqual(PROVIDERS, { web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"], browser: ["auto", "browserbase", "kernel", "chrome"] });
 });
 
@@ -206,7 +206,7 @@ test("settings are checked before anything is kept: an unknown tool, a provider 
   // The background tools follow bash's setting (tool-gate.ts SHELL_FAMILY): none is a name of the table's settings.
   const { SHELL_FAMILY } = await import("../dist/tool-gate.js");
   const heldToAnother = (name) => Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name;
-  assert.deepEqual(tableTools().sort(), [...Object.keys(TOOLS).filter((name) => !name.startsWith("monid.") && !heldToAnother(name))].sort(), "tool-plane's names of the table are tools.ts's, but those held to bash's setting");
+  assert.deepEqual(tableTools().sort(), [...Object.keys(TOOLS).filter((name) => !heldToAnother(name))].sort(), "tool-plane's names of the table are tools.ts's, but those held to bash's setting");
   assert.deepEqual(settingsIssues({ web_search: "parallel" }).map((i) => i.reason), ["wrong_type"]);
   assert.deepEqual(settingsIssues([]).map((i) => [i.field, i.reason]), [["body", "wrong_type"]]);
 });

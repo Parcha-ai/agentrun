@@ -12,6 +12,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const { HarnessInstall, HarnessNotInstalled, HARNESS_INSTALLS, claimInstallsStopped, claimSettled, installDirOf, installForClaim, installMarkOf, installSettled, releaseHold, takeHold } = await import("../dist/harness-install.js");
 const { CODEX_STANDIN_ENV, claudePins, codexPins } = await import("../dist/adapters.js");
@@ -283,7 +284,7 @@ const codex = {
 /** A loopback gateway answering OpenAI's Responses API with `text` (SSE). */
 async function responsesGateway(t, text) {
   const server = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     for await (const _chunk of req) void _chunk;
     const events = [{ type: "response.output_text.delta", delta: text }, { type: "response.completed", response: { usage: { input_tokens: 1000, output_tokens: 100 } } }];
     res.writeHead(200, { "content-type": "text/event-stream" });

@@ -27,6 +27,8 @@ const reviewed = new Map([
   ['packages/serve/test/launcher-worker.test.mjs', childScript],
   ['spec/lean/sweep/capture-dsl.mjs', label],
   ['packages/serve/test/store-target.mjs', label],
+  ['packages/serve/test/native-fixtures/cli.mjs', 'reads argv[1] only to label the native CLI fixture and select its canned protocol; it never decides whether this module is the command'],
+  ['packages/serve/test/native-fixtures/feedback-cli.mjs', 'reads argv[1] only to label the native CLI fixture and select its canned protocol; it never decides whether this module is the command'],
 ]);
 
 const suspect = (source) => source.includes('process.argv[1]');
@@ -69,7 +71,6 @@ const bare = new Map([
   ['examples/run-support-answer.mjs', copiedOut],
   ['packages/dsl/test/fixtures/graph/generate.mjs', ownPackage],
   ['packages/dsl/test/fixtures/graph/record.mjs', ownPackage],
-  ['packages/computer/box/build-agent37.mjs', ownPackage],
 ]);
 const readsMain = (source) => source.includes('import.meta.main');
 const unasked = (sources) => sources.filter(([file, source]) => readsMain(source) && !bare.has(file)).map(([file]) => file);

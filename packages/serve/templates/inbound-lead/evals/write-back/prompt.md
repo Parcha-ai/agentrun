@@ -1,5 +1,5 @@
 ---
-description: 'A HubSpot workflow webhook for an existing contact: the agent writes one note on the contact and sets its score property, once each, with the fake HubSpot MCP server. Pass: 3 of 3.'
+description: 'A HubSpot workflow webhook for an existing contact: the agent writes one note on the contact, the fit score in its text, once, with the fake HubSpot MCP server. Pass: 3 of 3.'
 runs: 3
 max_cost_usd: 0.40
 ---

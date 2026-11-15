@@ -11,7 +11,7 @@ import type { RevisionKind } from "./agent-rows.js";
 import { CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal } from "./cap.js";
 import type { Turns } from "./turns.js";
 import type { PendingAsk } from "./browser-person.js";
-import { APPROVAL_ROW, type PendingApproval, previewOf } from "./tool-gate.js";
+import { APPROVAL_ROW, type ApprovalPrice, type PendingApproval, previewOf } from "./tool-gate.js";
 import { ASK_TOOL } from "./tools.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { builtinHarness } from "./harness-table.js";
@@ -141,10 +141,10 @@ export type State = "working" | "waiting" | "idle";
 
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
-export type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; resolved?: true };
+export type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: ApprovalPrice; destructive?: true; resolved?: true };
 /** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
-/** `by`: "message", a deny a person's message gave while the call waited (Runs.message); "setting", the allow the tool's setting gave an ask that waited (the person flipped the tool to allow). */
-/** `superseded`: the answer a stop or a cancel overrode before the run's process acted on it, kept as it was given. */
+/** `by`: "message", a deny a person's message gave while the call waited (Runs.message); "setting", the allow or deny the tool's setting gave an ask that waited (the tool set to allow or deny since it asked). */
+/** `superseded`: the answer a stop or a cancel overrode before the run's process acted on it, or the person's allow a deny set since overrode, kept as it was given. */
 /** `ended`: a withdrawal by a run that ended (completed or failed) with the call waiting, which nobody stopped. */
 export type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string; by?: "message" | "setting"; superseded?: { decision: string; answered_at: string; note?: string; by?: "message" | "setting" }; ended?: true };
 /** A call withdrawn with its run (a cancel, or a stop while it waited): never run, and an answer after is 409. */
@@ -158,7 +158,9 @@ export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decisio
 // command names the call), so the card's id is the call's id. ---
 
 /** An `agentrun.ask` entry's data: the tool call the gate parked for a person, as the runner wrote it. */
-type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: number | "not metered" | null };
+type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: ApprovalPrice | null; destructive?: true };
+/** An ask's price as its card shows it (tool-gate.ts ApprovalPrice); undefined for none, or one of no known shape. */
+const priceOfAsk = (price: unknown): ApprovalPrice | undefined => (typeof price === "number" || price === "not metered" || price === "priced by usage" ? price : undefined);
 /** An `agentrun.answer` entry's data: the person's answer the runner wrote, or a withdrawal when the run was stopped or
  *  cancelled while the call waited. */
 type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn" | "canceled"; answeredAt?: string; note?: string; by?: "message" | "setting"; superseded?: { decision: string; answeredAt?: string } };
@@ -178,13 +180,15 @@ export function asksOf(entries: readonly JournalEntry[]): Map<string, Approval> 
     if (entry.kind !== KINDS.ask) continue;
     const d = dataOf<AskEntry>(entry);
     if (typeof d?.callId !== "string" || map.has(d.callId)) continue;
+    const price = priceOfAsk(d.price);
     map.set(d.callId, {
       id: d.callId,
       tool: d.tool,
       call_id: d.callId,
       args_json: JSON.stringify(d.args ?? {}) ?? "{}",
       requested_at: d.requestedAt,
-      ...(typeof d.price === "number" || d.price === "not metered" ? { price: d.price } : {}),
+      ...(price !== undefined ? { price } : {}),
+      ...(d.destructive === true ? { destructive: true as const } : {}),
       ...(answered.has(d.callId) ? { resolved: true as const } : {}),
     });
   }
@@ -212,9 +216,12 @@ export function answersOf(entries: readonly JournalEntry[], { final }: { final?:
     if (decision === undefined) continue;
     const given = out[d.callId];
     if (given && !((decision === "withdrawn" || decision === "canceled") && d.superseded)) continue;
-    const superseded = given ? { superseded: { decision: given.decision, answered_at: given.answered_at, ...(given.note !== undefined ? { note: given.note } : {}), ...(given.by ? { by: given.by } : {}) } } : {};
-    // A deny a person's message gave keeps that it was (`by`): its row reads "Declined by your message".
-    out[d.callId] = { decision, ...(d.note !== undefined ? { note: d.note } : {}), answered_at: d.answeredAt ?? "", ...(decision === "deny" && d.by === "message" ? { by: "message" as const } : decision === "allow" && d.by === "setting" ? { by: "setting" as const } : {}), ...superseded };
+    // The answer it overrode: one given before it, or, for a deny its tool's setting gave over a person's allow taken with
+    // it (adapter-loop.ts deniedBySetting), the allow its entry keeps.
+    const superseded = given ? { superseded: { decision: given.decision, answered_at: given.answered_at, ...(given.note !== undefined ? { note: given.note } : {}), ...(given.by ? { by: given.by } : {}) } } : d.superseded ? { superseded: { decision: d.superseded.decision, answered_at: d.superseded.answeredAt ?? "" } } : {};
+    // A deny a person's message gave keeps that it was (`by`): its row reads "Declined by your message"; so does an answer
+    // the tool's setting gave (an allow, or a deny set since the call asked).
+    out[d.callId] = { decision, ...(d.note !== undefined ? { note: d.note } : {}), answered_at: d.answeredAt ?? "", ...(decision === "deny" && d.by === "message" ? { by: "message" as const } : (decision === "allow" || decision === "deny") && d.by === "setting" ? { by: "setting" as const } : {}), ...superseded };
   }
   // How the run ended after each entry: the state of the first agentrun.end at or after it, else the final row's.
   let endedAs: string | undefined = final;
@@ -466,7 +473,7 @@ export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
 /** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
 export const approvalOf = (run: Pick<RunView, "approvals" | "meta">, redact: (text: string) => string): PendingApproval | undefined => {
   const waiting = waitingApproval(run);
-  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
+  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}), ...(waiting.destructive ? { destructive: true as const } : {}) } : undefined;
 };
 /** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
  *  done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so
@@ -574,6 +581,8 @@ export interface RunMoment {
   readonly waitingApprovalId?: string;
   /** The tool calls this run has or had waiting for approval, by id (for the not-found refusal). */
   readonly approvalIds?: ReadonlySet<string>;
+  /** Those of them its pin marks destructive: an allow of one needs confirm_destructive (runs-over-store.ts approve). */
+  readonly destructiveIds?: ReadonlySet<string>;
   /** What is archived of it, when anything is: its agent, else the run itself. Archiving closes a run: it takes no message
    *  (runs-over-store.ts message). Absent when neither is. */
   readonly archived?: "run" | "agent";
@@ -616,7 +625,7 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
     // counted but not shown), or a question its turn ended on.
     waitsOnPerson: run.kind === "agentic" && (waiting !== undefined || pausedAt(run, { inFlight: false }) !== undefined || (status === "input_required" && state === "waiting")),
     ...(waiting ? { waitingApprovalId: waiting.id } : {}),
-    ...(run.approvals ? { approvalIds: new Set(run.approvals.keys()) } : {}),
+    ...(run.approvals ? { approvalIds: new Set(run.approvals.keys()), destructiveIds: new Set([...run.approvals.values()].filter((one) => one.destructive).map((one) => one.id)) } : {}),
     ...(answered ? { answeredApprovals: Object.fromEntries(Object.entries(answered).map(([id, a]) => [id, { decision: a.decision, ...(a.ended ? { ended: true as const } : {}) }])) } : {}),
   };
 }
@@ -701,8 +710,9 @@ export async function rowShown(deps: { serverSecrets: () => string[]; signIns: S
   return (text) => withoutLoopback(redacted(text, values));
 }
 
-/** A call that waited for approval, once its outcome shows below its approval: its own rows (the call's, its result's) say
- *  only that it was held. A client folds them into the call's step, at the call's place above the approval row. */
+/** A call that waited for approval and was declined, once its outcome shows below its approval: its own rows (the call's,
+ *  its result's) say only that it was held. A client folds them into the call's step, at the call's place above the
+ *  approval row. (One allowed reads as any call that ran, once it ran.) */
 export const HELD = "Held for your approval";
 /** At most this many code points of a person's note on a row's summary; the record keeps it whole. */
 export const NOTE_CHARS = 200;
@@ -721,8 +731,9 @@ export function noteShown(note: string | undefined, redact: (text: string) => st
 /** What came of an approval, as its outcome row's summary says it. A deny: "You declined <tool>: <note>" (one colon), or
  *  "You declined <tool>." with none; a declining message adds nothing (it shows as the person's own row). An allow: that it
  *  ran and where its result went, or that it failed; a note sent with an allow is shown nowhere, as on main. */
-export function outcomeSays(tool: string, answer: { decision: string; by?: string; note?: string }, failed: boolean, redact: (text: string) => string): string {
+export function outcomeSays(tool: string, answer: { decision: string; by?: string; note?: string; superseded?: { decision: string } }, failed: boolean, redact: (text: string) => string): string {
   if (answer.decision === "deny") {
+    if (answer.by === "setting") return `AgentRun: ${deniedSince(tool, answer)}`;
     if (answer.by === "message") return `AgentRun: Your message declined ${tool}.`;
     const note = noteShown(answer.note, redact);
     return note ? `AgentRun: You declined ${tool}: ${note}` : `AgentRun: You declined ${tool}.`;
@@ -732,11 +743,20 @@ export function outcomeSays(tool: string, answer: { decision: string; by?: strin
 }
 /** What a person reads when they open the outcome row: the outcome, then the call's result (`rest`), or the refusal's words.
  *  An empty result says so: "Its result: (no output)", never "Its result:" and nothing. */
-export function outcomeShows(tool: string, answer: { decision: string; by?: string }, rest: string, failed: boolean): string {
-  if (answer.decision === "deny") return `${answer.by === "message" ? `Your message declined ${tool}.` : `You declined ${tool}.`}${rest.trim() ? `\n${rest.trim()}` : ""}`;
+export function outcomeShows(tool: string, answer: { decision: string; by?: string; superseded?: { decision: string } }, rest: string, failed: boolean): string {
+  if (answer.decision === "deny") return `${answer.by === "setting" ? `${deniedSince(tool, answer)}.` : answer.by === "message" ? `Your message declined ${tool}.` : `You declined ${tool}.`}${rest.trim() ? `\n${rest.trim()}` : ""}`;
   const head = `${tool} ${answer.by === "setting" ? "ran, as its setting allows it" : "ran once you allowed it"}${failed ? ", and failed" : ""}.`;
   return rest.trim() ? `${head} Its result:\n${rest}` : `${head} Its result: (no output)`;
 }
+
+/** A call refused by a deny its tool's setting gained while it waited (adapter-loop.ts deniedBySetting), as its outcome
+ *  says it: that the person allowed it first, when they did (the allow the deny overrode). */
+const deniedSince = (tool: string, answer: { superseded?: { decision: string } }): string =>
+  answer.superseded?.decision === "allow" ? `You allowed ${tool}, but it is now set to deny on this server, so it was not run` : `${tool} was not run: it is now set to deny on this server`;
+/** The own rows of a call refused so. */
+const DENIED_SINCE = "Not run: its tool is now set to deny on this server";
+/** How an allowed call came to run, as its own result row says it beside its outcome. */
+const ranAs = (answer: { by?: string }): string => (answer.by === "setting" ? "ran, as its setting allows it" : "ran once you allowed it");
 
 /** A call's own rows (its call's, its result's) before its outcome shows: what came of the approval so far. */
 function callSays(answer: ApprovalAnswer | undefined): string {
@@ -756,8 +776,9 @@ const approvalRowId = (callId: string) => `approval:${callId}`;
 
 /** The rows of a run whose calls waited for approval, as the runner writes it (store-view.ts): the gate's ask
  *  (agentrun.ask, `asks`) and the person's answer (agentrun.answer, `answers`) are journal entries, and an allowed call runs
- *  in place, so its result row is its real result; a denied one's is the refusal. Each such call reads in order: its own
- *  rows, then the approval row, then, once there is one, the outcome row; its own rows say only that it was held once the
+ *  in place, so its result row is its real result; a denied one's is the refusal. Each such call reads in order: its call,
+ *  then the approval row at the ask's time, then its result, then, once there is one, the outcome row (before a result is
+ *  in, the approval row and any outcome follow its own rows); its own rows say only that it was held once the
  *  outcome shows below, and before that what came of the approval so far. Arguments and notes go through `redact`, the
  *  run's redactor, before any cut. The rows this function makes are dropped first, so a pass over its own output gives the
  *  same rows. */
@@ -779,17 +800,31 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     const answer = answers[approval.id];
     const result = given.find((other) => other.kind === "tool_result" && other.tool_use_id === approval.call_id);
     // The outcome shows once there is one: a deny's at once, an allow's when its call's result is in.
-    const outcome = answer?.decision === "deny" || (answer?.decision === "allow" && result !== undefined);
-    const own: TimelineEvent = { ...row, summary: outcome ? HELD : callSays(answer), tool_status: null };
-    if (lastOf.get(approval.call_id) !== row.id) return [own];
+    const ran = answer?.decision === "allow" && result !== undefined;
+    const outcome = answer?.decision === "deny" || ran;
+    // An allowed call that ran reads as any call (its summary, its status), its result row saying too how it came to run;
+    // one a deny set since refused says so; any other only that it was held, or what came of its approval so far.
+    // Said once: a pass over its own output keeps the words it added.
+    const said = ran ? `(${ranAs(answer!)})` : "";
+    const own: TimelineEvent = ran ? (row.kind === "tool_result" && !row.summary?.endsWith(said) ? { ...row, summary: row.summary ? `${row.summary} ${said}` : said } : row)
+      : answer?.decision === "deny" && answer.by === "setting" ? { ...row, summary: DENIED_SINCE }
+      : { ...row, summary: outcome ? HELD : callSays(answer), tool_status: null };
+    // The approval row sits above the call's result once there is one (the ask came before the call ran), else below its
+    // last own row; the outcome rows below its last own row.
+    const askHere = row.id === (result?.id ?? lastOf.get(approval.call_id));
+    const last = lastOf.get(approval.call_id) === row.id;
+    if (!askHere && !last) return [own];
     const args = shownArgs(approval, redact);
-    // A served row keeps the place it was first served at (rows.ts). The call's result comes in after the answer (the park
-    // writes none), so the approval and outcome rows take a new id once it is there: served anew below the result, the
-    // call's own rows, then its approval, then what came of it, as a person reads it.
+    // A served row keeps the place it was first served at (rows.ts). The approval row is served while the call waits, above
+    // the result yet to come, so it keeps its id. The call's result comes in after the answer (the park writes none), so the
+    // outcome rows take a new id once it is there: served anew below the result, as a person reads it.
     const at = result ? `${approvalRowId(approval.call_id)}:after` : approvalRowId(approval.call_id);
-    const head = !answer ? "Waiting for your approval" : answer.decision === "canceled" ? "Withdrawn when the run was cancelled" : answer.decision === "withdrawn" ? (answer.ended ? "Withdrawn when the run ended" : "Withdrawn when the run was stopped") : answer.by === "message" ? "Declined by your message" : answer.by === "setting" ? "Allowed by the tool's setting" : "Asked your approval";
-    const asked: TimelineEvent = { ...unrefused(row), id: at, kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
-    if (!outcome) return [own, asked];
+    const head = !answer ? "Waiting for your approval" : answer.decision === "canceled" ? "Withdrawn when the run was cancelled" : answer.decision === "withdrawn" ? (answer.ended ? "Withdrawn when the run ended" : "Withdrawn when the run was stopped") : answer.by === "message" ? "Declined by your message" : answer.by === "setting" ? (answer.decision === "deny" ? "Denied by the tool's setting on this server" : "Allowed by the tool's setting") : "Asked your approval";
+    // Its time is the ask's (the gate's requestedAt), never the row it was made from.
+    const when = approval.requested_at ? { timestamp: approval.requested_at, created_at: approval.requested_at } : {};
+    const asked: TimelineEvent = { ...unrefused(row), ...when, id: approvalRowId(approval.call_id), kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
+    const placed = !askHere ? [own] : result ? [asked, own] : [own, asked];
+    if (!last || !outcome) return placed;
     const failed = answer!.decision === "allow" && result?.tool_status === "failed";
     // The result's words: a tool_result row keeps them as its preview (the renderer's, redacted and cut), its text empty.
     const told: TimelineEvent = { ...unrefused(result ?? row), id: `${at}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
@@ -799,8 +834,8 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
       const words = redact(answer!.note);
       const { origin: _origin, ...base } = unrefused(result ?? row);
       const theirs: TimelineEvent = { ...base, id: `${at}:message`, kind: "user_message", summary: clip(`You: ${words.split("\n", 1)[0]}`, 500), text: words, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
-      return [own, asked, theirs, told];
+      return [...placed, theirs, told];
     }
-    return [own, asked, told];
+    return [...placed, told];
   });
 }

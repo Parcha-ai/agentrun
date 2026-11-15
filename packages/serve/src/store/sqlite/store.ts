@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, SCHEMA_VERSION } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, SCHEMA_VERSION } from "../schema.js";
 import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -20,6 +20,7 @@ import {
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
+  type ImportedTemplates,
 } from "../store.js";
 
 /** The seq a run-change cursor names (Runs.changedSince): only a cursor this store handed back, a whole number. */
@@ -55,7 +56,7 @@ export type SqliteStoreOptions = (
 };
 
 type AgentRecord = { id: string; name: string; description: string | null; current_revision: string | null; created_at: number; archived_at: number | null; external_ref: string | null };
-type RevisionRecord = { id: string; agent_id: string; parent_id: string | null; kind: string; body: string; skills: string | null; note: string | null; package: string | null; created_at: number; external_version: string | null };
+type RevisionRecord = { id: string; agent_id: string; parent_id: string | null; kind: string; body: string; skills: string | null; note: string | null; package: string | null; created_at: number; external_version: string | null; mcp_pin: string | null; monid_pin: string | null };
 type CommandRecord = { id: number; run_id: string; kind: string; body: string; created_at: number; taken_at: number | null; refused: string | null; tries: number };
 type TriggerRecord = {
   id: string; agent_id: string; name: string; enabled: number; source: string; target: string; next_at: number | null; last_run_id: string | null;
@@ -93,7 +94,7 @@ function triggerSet(patch: TriggerPatch, at: number): { set: string; params: Sql
 }
 
 const AGENT_COLUMNS = "id, name, description, current_revision, created_at, archived_at, external_ref";
-const REVISION_COLUMNS = "id, agent_id, parent_id, kind, body, skills, note, package, created_at, external_version";
+const REVISION_COLUMNS = "id, agent_id, parent_id, kind, body, skills, note, package, created_at, external_version, mcp_pin, monid_pin";
 const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused, tries";
 const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id, catchup_window_s, failures_in_a_row, disabled, max_active_runs, created_at, updated_at";
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
@@ -137,6 +138,7 @@ const agentOf = (r: AgentRecord): AgentRow => ({ id: r.id, name: r.name, descrip
 const revisionOf = (r: RevisionRecord): RevisionRow => ({
   id: r.id, agentId: r.agent_id, parent: r.parent_id, kind: r.kind, body: JSON.parse(r.body), skills: r.skills === null ? null : JSON.parse(r.skills),
   note: r.note, package: r.package === null ? null : (JSON.parse(r.package) as TemplatePackage), createdAt: r.created_at, externalVersion: r.external_version,
+  mcpPin: r.mcp_pin === null ? null : JSON.parse(r.mcp_pin), monidPin: r.monid_pin === null ? null : JSON.parse(r.monid_pin),
 });
 const commandOf = (r: CommandRecord): Command => ({ id: r.id, runId: r.run_id, kind: r.kind, body: JSON.parse(r.body), createdAt: r.created_at, takenAt: r.taken_at, refused: r.refused, tries: r.tries });
 const triggerOf = (r: TriggerRecord): TriggerRow => ({
@@ -145,13 +147,15 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
   createdAt: r.created_at, updatedAt: r.updated_at,
 });
 const json = (value: unknown): string => JSON.stringify(value ?? null);
+/** A revision's MCP pin as its column keeps it: JSON, or null for none. */
+const pinText = (pin: unknown): string | null => (pin === undefined || pin === null ? null : JSON.stringify(pin));
 
 type McpServerRecord = {
   name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; server_info: string | null; instructions: string | null; sealed: Uint8Array | null;
   refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number; listed_at: number | null; credential_changed_at: number | null; token_until: number | null;
 };
 const removedOf = (r: { url: string; sealed: Uint8Array | null } | undefined): McpRemoved | undefined => r && { url: r.url, sealed: r.sealed === null ? null : Uint8Array.from(r.sealed) };
-type McpPinRecord = { run_id: string; body: string; pinned_at: number };
+type McpPinRecord = { run_id: string; mcp_pin: string; created_at: number };
 const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, server_info, instructions, sealed, refresh_holder, refresh_until, created_at, updated_at, listed_at, credential_changed_at, token_until";
 /** The columns of an MCP server row read at the deadlines' clock `n` (fence.ts storeNow) in the same statement: `read_at`,
  *  the clock the row's refresh lease and token end are judged by (mcpServerOf). Binds `n`'s parameters. */
@@ -168,7 +172,7 @@ const mcpServerOf = (r: McpServerRecord, at: number = Number((r as McpServerReco
   tokenUntil: r.token_until === null ? null : Number(r.token_until),
   createdAt: r.created_at, updatedAt: r.updated_at, listedAt: r.listed_at, credentialChangedAt: r.credential_changed_at,
 });
-const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });
+const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.mcp_pin), pinnedAt: Number(r.created_at) });
 
 type SettingRecord = { key: string; value: string; updated_at: number };
 const settingOf = (r: SettingRecord): SettingRow => ({ key: r.key, value: JSON.parse(r.value), updatedAt: r.updated_at });
@@ -176,6 +180,7 @@ type SealedKeyRecord = { name: string; sealed: Uint8Array; updated_at: number };
 const sealedKeyOf = (r: SealedKeyRecord): SealedKeyRow => ({ name: r.name, sealed: Uint8Array.from(r.sealed), updatedAt: r.updated_at });
 type ComputerLedgerRecord = { provider: string; session_id: string; labels: string; detail: string; updated_at: number };
 const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider: r.provider, sessionId: r.session_id, labels: JSON.parse(r.labels), detail: JSON.parse(r.detail), updatedAt: r.updated_at });
+type ImportedTemplateRecord = { id: string; source: string; sha: string; publisher: string; files: string; imported_at: number };
 type PairedRecord = { id: string; name: string; hello: string; driver: string; labels: string; pairing_id: string; created_at: number; seen_at: number | null; revoked_at: number | null };
 const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), pairingId: r.pairing_id, createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
@@ -283,18 +288,29 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       found = await versionOf(connection);
     }
     if (found !== SCHEMA_VERSION) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
+    const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
+    if (role === "runner" && (!columns.has("mcp_pin") || !columns.has("monid_pin"))) throw new Error("Start the AgentRun server to install MCP and Monid revision metadata before opening a runner. The runner does not upgrade this store.");
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
     // An earlier build of this version made no one-answer index on commands (schema.ts COMMANDS_ONE_ANSWER), or one that
     // counted refused answers: the server rebuilds it, so a second answer to one approval is refused on every store. A
     // store such a build left may hold two unrefused answers to one approval: the earliest stands (the one the runner
     // acted on) and each later one is refused in the same write, before the index, so the store opens. None is deleted.
+    // An earlier build of this version pinned each run's MCP tools at its first claim (mcp_pins) and kept no pin on a
+    // revision: the server adds revisions.mcp_pin (schema.ts REVISIONS_MCP_PIN) and drops mcp_pins. A revision saved
+    // before has no MCP pin until its first managed run here pins it (Agents.pinOnce); no run's pin moves to a revision.
+    // Monid pins are also nullable revision metadata; adding the column infers no pin from a historical body.
     if (role === "server") {
       await connection.write([
+        ...(columns.has("mcp_pin") ? [] : [{ sql: REVISIONS_MCP_PIN }]),
+        ...(columns.has("monid_pin") ? [] : [{ sql: REVISIONS_MONID_PIN }]),
+        { sql: "DROP TABLE IF EXISTS mcp_pins" },
         { sql: "DROP TABLE IF EXISTS browser_viewers" },
         { sql: SECOND_ANSWERS_REFUSED, params: [(options.now ?? Date.now)()] },
         { sql: "DROP INDEX IF EXISTS commands_one_answer" },
         { sql: COMMANDS_ONE_ANSWER },
+        // An earlier build of this version kept no imported template packages (schema.ts IMPORTED_TEMPLATES).
+        { sql: IMPORTED_TEMPLATES },
       ], { full: true });
     }
   } catch (error) {
@@ -384,6 +400,7 @@ class SqliteStore implements Store {
   readonly sealedKeys: SealedKeys;
   readonly computerLedger: ComputerLedger;
   readonly pairedComputers: PairedComputers;
+  readonly importedTemplates: ImportedTemplates;
   readonly triggerSettings: TriggerSettings;
   readonly channels: Channels;
   readonly mcpOauth: McpOauth;
@@ -426,10 +443,10 @@ class SqliteStore implements Store {
       const agent = await tx.get<{ current_revision: string | null }>("SELECT current_revision FROM agents WHERE id = ?", agentId);
       if (!agent) throw new StoreConstraint(`no agent ${agentId}`);
       if (ifCurrent !== undefined && agent.current_revision !== ifCurrent) throw new RevisionMoved(agentId, agent.current_revision);
-      await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, created_at, mcp_pin, monid_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         revision.id, agentId, agent.current_revision, revision.kind, json(revision.body),
         revision.skills === undefined || revision.skills === null ? null : json(revision.skills),
-        revision.note ?? null, revision.package === undefined ? null : json(revision.package), at);
+        revision.note ?? null, revision.package === undefined ? null : json(revision.package), at, pinText(revision.mcpPin), pinText(revision.monidPin));
       await tx.run("UPDATE agents SET current_revision = ? WHERE id = ?", revision.id, agentId);
     };
     const writeScopes = async (tx: SqliteExecutor, triggerId: string, scopes: readonly TriggerScope[]) => {
@@ -501,6 +518,10 @@ class SqliteStore implements Store {
         return row && agentOf(row);
       },
       hasExternalVersion: async (agentId, version) => (await db.get<{ id: string }>("SELECT id FROM revisions WHERE agent_id = ? AND external_version = ?", agentId, version)) !== undefined,
+      externalRevision: async (agentId, version) => {
+        const row = await db.get<RevisionRecord>(`SELECT ${REVISION_COLUMNS} FROM revisions WHERE agent_id = ? AND external_version = ?`, agentId, version);
+        return row && revisionOf(row);
+      },
       list: async ({ archived = false } = {}) =>
         (await db.all<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE archived_at IS ${archived ? "NOT NULL" : "NULL"} ORDER BY created_at, id`)).map(agentOf),
       archive: async (id, archived, why) =>
@@ -531,6 +552,15 @@ class SqliteStore implements Store {
         return row && revisionOf(row);
       },
       revisions: async (agentId) => (await db.all<RevisionRecord>(`SELECT ${REVISION_COLUMNS} FROM revisions WHERE agent_id = ? ORDER BY created_at, id`, agentId)).map(revisionOf),
+      // Written only while the revision has none (the one place a revision changes after its save), then read back in the
+      // same transaction: the pin that stood, this one or another first run's.
+      pinOnce: async (revisionId, pin) => {
+        const row = await db.transaction(async (tx) => {
+          await tx.run("UPDATE revisions SET mcp_pin = ? WHERE id = ? AND mcp_pin IS NULL", pinText(pin), revisionId);
+          return tx.get<{ mcp_pin: string | null }>("SELECT mcp_pin FROM revisions WHERE id = ?", revisionId);
+        });
+        return row?.mcp_pin == null ? null : JSON.parse(row.mcp_pin);
+      },
     };
 
     this.templates = {
@@ -837,9 +867,9 @@ class SqliteStore implements Store {
             revisionId = existing.id;
           } else {
             revisionId = revision.id;
-            await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, external_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, external_version, created_at, mcp_pin, monid_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
               revisionId, mapped.id, mapped.current_revision, revision.kind, json(revision.body),
-              revision.skills === undefined || revision.skills === null ? null : json(revision.skills), revision.note ?? null, null, revision.version, at);
+              revision.skills === undefined || revision.skills === null ? null : json(revision.skills), revision.note ?? null, null, revision.version, at, pinText(revision.mcpPin), pinText(revision.monidPin));
             await tx.run("UPDATE agents SET current_revision = ?, name = ?, description = ? WHERE id = ?", revisionId, agent.name, agent.description ?? null, mapped.id);
           }
           // The run, its origin and its launch, in the same transaction as the agent and the revision.
@@ -1052,17 +1082,11 @@ class SqliteStore implements Store {
         const row = await db.get<{ url: string; auth: string; credential_changed_at: number | null; token_until: number | null; read_at: number }>(`SELECT url, auth, credential_changed_at, token_until, ${at.sql} AS read_at FROM mcp_servers WHERE name = ?`, ...at.params, name);
         return row && { url: row.url, auth: row.auth, credentialChangedAt: row.credential_changed_at === null ? null : Number(row.credential_changed_at), tokenLeftMs: row.token_until === null ? null : Number(row.token_until) - Number(row.read_at), tokenUntil: row.token_until === null ? null : Number(row.token_until) };
       },
+      // The run's revision's, as its save pinned it: one row read, by the run's revision.
       pin: async (runId) => {
-        const row = await db.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", runId);
+        const row = await db.get<McpPinRecord>("SELECT runs.id AS run_id, revisions.mcp_pin, revisions.created_at FROM runs JOIN revisions ON revisions.id = runs.revision_id WHERE runs.id = ? AND revisions.mcp_pin IS NOT NULL", runId);
         return row && mcpPinOf(row);
       },
-      pinOnce: (claim, body) =>
-        db.transaction(async (tx) => {
-          // Under the claim's epoch and its lease: a runner paused past its lease pins nothing.
-          await underClaim(tx, claim, now);
-          await tx.run("INSERT INTO mcp_pins (run_id, body, pinned_at) VALUES (?, ?, ?) ON CONFLICT (run_id) DO NOTHING", claim.runId, json(body), now());
-          return mcpPinOf((await tx.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", claim.runId))!);
-        }),
       // The credential as read is compared by its bytes (`sealed IS ?`, NULL included): updated_at can repeat within a ms.
       leaseRefresh: async (name, { seen, holder, ms = MCP_REFRESH_LEASE_MS }) => {
         if (!(Number.isFinite(ms) && ms > MCP_REFRESH_CALL_MS)) {
@@ -1279,9 +1303,20 @@ class SqliteStore implements Store {
       put: async (name, sealed) => {
         await db.write([{ sql: "INSERT INTO sealed_keys (name, sealed, updated_at) VALUES (?, ?, ?) ON CONFLICT (name) DO UPDATE SET sealed = excluded.sealed, updated_at = excluded.updated_at", params: [name, sealed, now()] }]);
       },
+      replaceIf: async (name, was, sealed) => {
+        const [result] = await db.write([{ sql: "UPDATE sealed_keys SET sealed = ?, updated_at = ? WHERE name = ? AND sealed = ?", params: [sealed, now(), name, was] }]);
+        return result!.changes === 1;
+      },
       remove: async (name) => {
         await db.write([{ sql: "DELETE FROM sealed_keys WHERE name = ?", params: [name] }]);
       },
+      removeIf: async (name, was) => {
+        const [result] = await db.write([{ sql: "DELETE FROM sealed_keys WHERE name = ? AND sealed = ?", params: [name, was] }]);
+        return result!.changes === 1;
+      },
+      // The deadlines' clock (fence.ts storeNow): read from the database where the dialect names its clock (Postgres),
+      // else the store's own.
+      clock: async () => (d.nowSql ? Number((await db.get<{ now: string | number }>(`SELECT ${d.nowSql} AS now`))!.now) : now()),
       all: async () => (await db.all<SealedKeyRecord>("SELECT name, sealed, updated_at FROM sealed_keys ORDER BY name")).map(sealedKeyOf),
     };
 
@@ -1345,6 +1380,22 @@ class SqliteStore implements Store {
       },
       revoke: async (id) => {
         const [result] = await db.write([{ sql: "UPDATE paired_computers SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", params: [now(), id] }]);
+        return (result?.changes ?? 0) === 1;
+      },
+    };
+
+    this.importedTemplates = {
+      list: async () => (await db.all<ImportedTemplateRecord>("SELECT id, source, sha, publisher, files, imported_at FROM imported_templates ORDER BY id")).map((row) => ({
+        id: row.id, source: row.source, sha: row.sha, publisher: row.publisher, files: JSON.parse(row.files) as Record<string, string>, importedAt: row.imported_at,
+      })),
+      put: async ({ id, source, sha, publisher, files }) => {
+        await db.write([{
+          sql: "INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET source = excluded.source, sha = excluded.sha, publisher = excluded.publisher, files = excluded.files, imported_at = excluded.imported_at",
+          params: [id, source, sha, publisher, JSON.stringify(files), now()],
+        }]);
+      },
+      remove: async (id) => {
+        const [result] = await db.write([{ sql: "DELETE FROM imported_templates WHERE id = ?", params: [id] }]);
         return (result?.changes ?? 0) === 1;
       },
     };

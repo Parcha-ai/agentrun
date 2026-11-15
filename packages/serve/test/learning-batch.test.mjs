@@ -3,11 +3,16 @@
 // a cancel, and a cap on its runs (grades booked, uncapped, as on every run). The faux model answers "Job answer." and learns the note its instructions plan.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { runEntries } from "../dist/store-reads/journal.js";
+import { KINDS } from "../dist/runner/journal-kinds.js";
 import { answerValue, BATCH_ROWS_MAX, checkBatchBody, contentOf, LearningBatches, matches, reviewText, RUN_CAP_MIN_USD } from "../dist/learning-batch.js";
 import { secretsShown } from "../dist/learning.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { LEARN, learner, made, sleep } from "./learn-support.mjs";
-import { follow, serve } from "./support.mjs";
+import { follow, serve, startInProcessRunner } from "./support.mjs";
+import { holdRow } from "./fixtures/faux-learn-shutdown.mjs";
+const HELD_LEARN = new URL("./fixtures/faux-learn-shutdown.mjs", import.meta.url).pathname;
 
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts came in cents and in dollars.\n");
 const rowsOf = (references) => references.map((reference, i) => ({ name: `Shop ${i + 1}`, site: `shop${i + 1}.example`, truth: reference }));
@@ -85,18 +90,24 @@ test("POST /agents/{id}/learning/batches: each row's run, in order, with learnin
   assert.deepEqual(end.lessons.notes, ["Check units", "What the reviewer said"], "the first run's note, then the note its review taught, each once");
   assert.ok(end.rows[0].merged, "the merge of the first run's learning");
   assert.deepEqual(end.rows[0].learned.notes, ["Check units", "What the reviewer said"], "every round's");
-  // What a row's learning cost is every round's: each round's look-back and each round's grade (the review opens round 2).
+  // What a row's learning cost is every round's (the review opens round 2): all its run spent after its job answered (the
+  // review's turn, feedback the run was given, and each round's look-back: store-reads/learning.ts roundsLooked) and each
+  // round's grade. The job is round 1's alone.
   let graded = 0;
   for (const row of end.rows) {
-    let look = 0, grade = 0;
+    let look = 0, grade = 0, job;
     for (const round of [1, 2]) {
       const kept = await store.learning.proposal(row.run_id, round);
       assert.ok(kept, `row ${row.n} kept round ${round}`);
       look += kept.proposal?.look_back_usd ?? 0;
+      job ??= kept.proposal?.job_cost_usd;
       grade += kept.learningRunId ? ((await store.runs.get(kept.learningRunId))?.costUsd ?? 0) : 0;
     }
     graded += grade;
-    assert.equal(row.learning_usd, money(look + grade), `row ${row.n}: every round's look-back and grade`);
+    const rowUsd = (await store.runs.get(row.run_id)).costUsd;
+    assert.equal(typeof job, "number", `row ${row.n}: round 1 kept its job's cost`);
+    assert.ok(Math.abs(row.learning_usd - (rowUsd - job + grade)) < 2e-6, `row ${row.n}: all its run spent after the job, and every round's grade: ${row.learning_usd} vs ${rowUsd - job + grade}`);
+    assert.ok(row.learning_usd >= money(look + grade), `row ${row.n}: every round's look-back and grade are in it, the review's turn beside them`);
   }
   assert.ok(graded > 0, "the rows' grades cost something");
 
@@ -147,8 +158,11 @@ test("a batch refused: a body that is not whole is 422 by field; an agent that d
   await api("POST", `/agents/${id}/learning/batches/${first.body.id}/cancel`, {});
 });
 
-test("a reload reads the batch from the server: the same figures mid-run and after, and a server that stops mid-batch and starts again takes it up at its first unfinished row, never running a row twice", { timeout: 300_000 }, async (t) => {
-  const first = await serve(t, { learning: "on", faux: LEARN, batchPollMs: 50 });
+test("a graceful server and runner shutdown drains the in-flight batch request and a restart continues without repeating a row", { timeout: 300_000 }, async (t) => {
+  // Its runner drains at the stop as the CLI's runner beside the server does (beside.ts DRAIN_TIMEOUT): a turn in flight
+  // finishes and is booked. A stop that cut a model request instead would leave that request's cost unknown for good
+  // (metrics.ts bookedSpend: the provider may bill what it streamed), and the batch stops `cost_unknown` on that row.
+  const first = await serve(t, { learning: "on", faux: LEARN, batchPollMs: 50, runnerTiming: { drainMs: 30_000 } });
   const id = "csv-reload";
   await made(first.api, learner(id));
   const refs = ["Job answer.", "Job answer.", "x", "Job answer.", "y"];
@@ -162,7 +176,8 @@ test("a reload reads the batch from the server: the same figures mid-run and aft
   assert.ok(reread.finished >= mid.finished && reread.total === 5);
   assert.deepEqual(reread.rows.slice(0, mid.finished).map((r) => r.run_id), mid.rows.slice(0, mid.finished).map((r) => r.run_id));
   const done = mid.rows.filter((r) => r.state === "done").map((r) => r.run_id);
-  // The whole start stopped, then a new one on the same data: the batch is still running there.
+  // The whole start stopped (the runner drained, then the server), then a new one on the same data: the batch is still
+  // running there.
   await first.stop();
   const second = await serve(t, { learning: "on", faux: LEARN, batchPollMs: 50, data: first.data });
   const end = await until(second.api, id, created.body.id, finished);
@@ -171,6 +186,99 @@ test("a reload reads the batch from the server: the same figures mid-run and aft
   assert.deepEqual(end.rows.filter((r) => done.includes(r.run_id)).map((r) => r.run_id), done, "the rows done before the stop are the same runs");
   const all = (await second.api("GET", `/agents/${id}/runs?limit=50`)).body.runs;
   assert.equal(all.length, 5, "one run a row: none was run twice");
+});
+
+
+test("a server-only restart reads the persisted unfinished batch row while its separately owned runner stays alive", { timeout: 300_000 }, async (t) => {
+  const held = holdRow(3);
+  let closeRunner;
+  t.after(() => held.release());
+  t.after(async () => closeRunner?.());
+  // The batch belongs to the server. Keep its separately owned runner alive across this server restart;
+  // interrupting a paid request instead has an honestly unknown charge, covered by the next case.
+  const first = await serve(t, { runner: false, learning: "on", faux: HELD_LEARN, batchPollMs: 50 });
+  closeRunner = await startInProcessRunner(first.data, { learning: "on", faux: HELD_LEARN });
+  const id = "csv-reload";
+  await made(first.api, learner(id));
+  const refs = ["Job answer.", "Job answer.", "x", "Job answer.", "y"];
+  const created = await first.api("POST", `/agents/${id}/learning/batches`, body(refs));
+  assert.equal(created.status, 202);
+  const mid = await until(first.api, id, created.body.id, (b) => b.finished >= 2 && b.status === "running");
+  // The cost now is the rows booked and the row in flight as it will be booked (a run still going counts its live cost).
+  assert.ok(typeof mid.cost_usd === "number" && mid.cost_usd >= mid.spent_usd, `cost now ${mid.cost_usd}, booked ${mid.spent_usd}`);
+  // A second read, as a reloaded page makes, is the same progress.
+  const reread = (await first.api("GET", `/agents/${id}/learning/batches/${created.body.id}`)).body;
+  assert.ok(reread.finished >= mid.finished && reread.total === 5);
+  assert.deepEqual(reread.rows.slice(0, mid.finished).map((r) => r.run_id), mid.rows.slice(0, mid.finished).map((r) => r.run_id));
+  const done = mid.rows.filter((r) => r.state === "done").map((r) => r.run_id);
+  // Stop exactly while row three is unfinished, then resume the persisted batch on the new server.
+  await held.started;
+  await first.stop();
+  const second = await serve(t, { runner: false, learning: "on", faux: HELD_LEARN, batchPollMs: 50, data: first.data });
+  const resumed = (await second.api("GET", `/agents/${id}/learning/batches/${created.body.id}`)).body;
+  assert.deepEqual([resumed.status, resumed.finished, resumed.current], ["running", 2, 3]);
+  held.release();
+  const end = await until(second.api, id, created.body.id, finished);
+  assert.equal(end.status, "completed", JSON.stringify(end));
+  assert.deepEqual([end.finished, end.right, end.wrong, end.failed], [5, 3, 2, 0]);
+  assert.deepEqual(end.rows.filter((r) => done.includes(r.run_id)).map((r) => r.run_id), done, "the rows done before the stop are the same runs");
+  const all = (await second.api("GET", `/agents/${id}/runs?limit=50`)).body.runs;
+  assert.equal(all.length, 5, "one run a row: none was run twice");
+});
+
+test("a runner cut during a paid batch request keeps its charge unknown after restart and starts no later row", { timeout: 120_000 }, async t => {
+  const held = holdRow(3);
+  t.after(() => held.release());
+  const first = await serve(t, { learning: "on", faux: HELD_LEARN, batchPollMs: 50 });
+  const id = "csv-cut";
+  await made(first.api, learner(id));
+  const created = await first.api("POST", `/agents/${id}/learning/batches`, body(["Job answer.", "Job answer.", "x", "Job answer.", "y"]));
+  assert.equal(created.status, 202);
+  await held.started;
+  const mid = (await first.api("GET", `/agents/${id}/learning/batches/${created.body.id}`)).body;
+  assert.deepEqual([mid.finished, mid.current], [2, 3]);
+  const prior = mid.rows.slice(0, 3).map(row => row.run_id);
+  assert.equal(await first.store.learning.proposal(prior[2]), undefined, "the held request is the initial task, before any answered learning snapshot");
+  await first.stop();
+  await held.aborted;
+  const second = await serve(t, { learning: "on", faux: HELD_LEARN, batchPollMs: 50, data: first.data });
+  const end = await until(second.api, id, created.body.id, finished);
+  assert.deepEqual([end.status, end.stopped, end.finished, end.unknown_cost_rows], ["stopped", "cost_unknown", 3, 1]);
+  assert.deepEqual([end.cost_usd, end.remaining_usd, end.rows[2].cost_usd, end.rows[2].total_usd], [null, null, null, null]);
+  const firstRound = await second.store.learning.proposal(prior[2], 1);
+  assert.equal(firstRound?.proposal?.job_cost_usd ?? null, null, "a priced retry cannot price the task attempt cut before it");
+  assert.deepEqual(end.rows.slice(0, 3).map(row => row.run_id), prior, "a restart resumes existing rows, never recreates them");
+  assert.deepEqual(end.rows.slice(3).map(row => [row.state, row.run_id]), [["pending", undefined], ["pending", undefined]]);
+  assert.equal((await second.api("GET", `/agents/${id}/runs?limit=50`)).body.runs.length, 3, "unknown spending cannot dispatch more rows");
+});
+
+
+test("a runner cut during the look-back keeps its already recorded task charge known and starts no later row", { timeout: 120_000 }, async t => {
+  const held = holdRow(3, { phase: "reflection" });
+  t.after(() => held.release());
+  const first = await serve(t, { learning: "on", faux: HELD_LEARN, batchPollMs: 50 });
+  const id = "csv-look-back-cut";
+  await made(first.api, learner(id));
+  const created = await first.api("POST", `/agents/${id}/learning/batches`, body(["Job answer.", "Job answer.", "x", "Job answer.", "y"]));
+  assert.equal(created.status, 202);
+  await held.started;
+  const mid = (await first.api("GET", `/agents/${id}/learning/batches/${created.body.id}`)).body;
+  assert.deepEqual([mid.finished, mid.current], [2, 3]);
+  const runId = mid.rows[2].run_id;
+  const entries = await runEntries(first.store, runId, BACKGROUND_CONTEXT);
+  const firstAsk = entries.find(e => e.kind === KINDS.endOfRunKept && e.data?.kept?.answered_at);
+  const taskUsd = firstAsk?.data.kept.job_cost_usd;
+  assert.ok(typeof taskUsd === "number" && taskUsd > 0, "the task answered and its exact charge was kept before the interrupted learning ask");
+  await first.stop();
+  await held.aborted;
+  const second = await serve(t, { learning: "on", faux: HELD_LEARN, batchPollMs: 50, data: first.data });
+  const end = await until(second.api, id, created.body.id, finished);
+  assert.deepEqual([end.status, end.stopped, end.finished, end.unknown_cost_rows], ["stopped", "cost_unknown", 3, 1]);
+  assert.deepEqual([end.cost_usd, end.remaining_usd, end.rows[2].cost_usd, end.rows[2].learning_usd, end.rows[2].total_usd], [null, null, taskUsd, null, null], "the unknown request was learning, never part of the already priced task");
+  assert.equal((await second.store.learning.proposal(runId, 1)).proposal.job_cost_usd, taskUsd, "recovery preserves the first ask's exact task snapshot");
+  assert.equal(end.rows[2].run_id, runId);
+  assert.deepEqual(end.rows.slice(3).map(row => [row.state, row.run_id]), [["pending", undefined], ["pending", undefined]]);
+  assert.equal((await second.api("GET", `/agents/${id}/runs?limit=50`)).body.runs.length, 3);
 });
 
 test("cancel ends the loop, cancels the run in flight and keeps the rows done; a batch cancelled stays cancelled", { timeout: 240_000 }, async (t) => {

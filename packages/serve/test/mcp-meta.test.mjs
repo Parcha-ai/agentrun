@@ -5,14 +5,17 @@
 // tool the list does not know stays an MCP tool like any other, asked by default. Through the API against the fake MCP
 // server: the server's tools read the meta tool grantable false with the reason; a grant of it is 422 in those words, and
 // a direct tool of the same server is granted; Klavis's generic execute_action on a host that is not Klavis's is not
-// refused. A grant saved before the rule is refused at the launch, when the run's tools are pinned.
+// refused. A revision pinned before the rule, holding a meta tool, is refused at its run's launch, nothing sent.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { after, before, test } from "node:test";
 import { mcpGateway, mcpPinOf } from "../dist/mcp-gateway.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, answerFlow, flowAgent, follow, retried, serve as serveOf, startInProcessRunner, withEnv } from "./support.mjs";
+import { DatabaseSync } from "node:sqlite";
+import { join } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
+import { STORE_FILE } from "../dist/store/sqlite/store.js";
 
 const TOKEN = `not-a-secret-${"mcp-meta-bearer-0123"}`;
 const REASON = "it runs other actions by name, so a grant can't name the real action. Use the server's direct tools instead.";
@@ -77,7 +80,7 @@ test("a saved server's read says why a grant of a tool is refused (grant_problem
     const byName = Object.fromEntries(view.tools.map((tool) => [tool.name, tool]));
     assert.deepEqual(byName[long].grant_problems, { "*": `mcp:wide/${long} is too long: mcp__wide__${long} must be at most 52 characters, the budget every harness's tool names share.` });
     assert.deepEqual(Object.keys(byName.pick.grant_problems), ["claude-agent"], "only the harness whose own client drops the shape");
-    assert.match(byName.pick.grant_problems["claude-agent"], /^The MCP server wide's tool pick cannot be offered on claude-agent: .*root has anyOf/);
+    assert.match(byName.pick.grant_problems["claude-agent"], /^The tool mcp:wide\/pick cannot be offered on claude-agent: .*root has anyOf/);
     assert.equal(byName.plain.grant_problems, undefined);
   }
   const refused = await retried(api)("POST", "/agents", agent("wide-long", { tools: [`mcp:wide/${long}`] }));
@@ -163,9 +166,9 @@ test("a grant of a meta tool is 422 in the same words on every harness: pi, clau
   assert.equal(new Set(words).size, 1, "one refusal, word for word, on every harness");
 });
 
-test("a run's pin made before the rule, holding a meta tool, refuses its next launch in words; the gateway never sends a pinned meta tool", { timeout: 120_000 }, async (t) => {
-  // Ported to the one store and the runner (the switch): the run's pin is its store row, made before the rule as an earlier
-  // claim would have made it, and the runner's claim step re-checks it at the claim (runner/mcp-claim.ts).
+test("a revision's pin made before the rule, holding a meta tool, refuses its run's launch in words; the gateway never sends a pinned meta tool", { timeout: 120_000 }, async (t) => {
+  // The run's pin is its revision's, made at the agent's save; here made before the rule, as an earlier save would have
+  // made it, and the runner's claim step re-checks it at the claim (runner/mcp-claim.ts).
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { api, data } = await serveOf(t, { runner: false });
   await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
@@ -177,10 +180,12 @@ test("a run's pin made before the rule, holding a meta tool, refuses its next la
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   t.after(() => store.close().catch(() => undefined));
   const server = await store.mcp.server("composio");
-  const claim = await store.claim(runId, "earlier", { leaseMs: 60_000 });
   const listed = (name) => server.tools.find((tool) => tool.name === name);
-  await store.mcp.pinOnce(claim, { composio: { url: server.url, tools: ["GMAIL_SEND_EMAIL", "COMPOSIO_MULTI_EXECUTE_TOOL"].map((name) => ({ name, inputSchema: listed(name)?.input_schema ?? object })) } });
-  await store.release(claim);
+  const earlier = { composio: { url: server.url, tools: ["GMAIL_SEND_EMAIL", "COMPOSIO_MULTI_EXECUTE_TOOL"].map((name) => ({ name, inputSchema: listed(name)?.input_schema ?? object })) } };
+  assert.deepEqual((await store.mcp.pin(runId)).body.composio.tools.map((tool) => tool.name), ["GMAIL_SEND_EMAIL"], "the save pinned the direct tool alone");
+  const db = new DatabaseSync(join(data, STORE_FILE));
+  db.prepare("UPDATE revisions SET mcp_pin = ? WHERE id = (SELECT revision_id FROM runs WHERE id = ?)").run(JSON.stringify(earlier), runId);
+  db.close();
   // Its launch on a runner is refused at the claim: the run fails in words, and nothing is sent.
   const close = await startInProcessRunner(data);
   t.after(() => close());

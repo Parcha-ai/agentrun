@@ -49,7 +49,7 @@ import { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, shellEnv } from "./
 import { policyEnv, policyPrelude } from "../bash-read-only.js";
 import { COMPUTER_ROOT, realOf, workspaceRelative } from "./paths.js";
 import { bashTool, fileTools, OUTPUT_DIR, piEnv, readAnywhereInComputer } from "./pi-env.js";
-import { type ClaimBrowser, type ShellPlace, shellPlaceOf } from "./resolve-computer.js";
+import { type ClaimBrowser, noPrograms, type ShellPlace, shellPlaceOf } from "./resolve-computer.js";
 import type { Workspace } from "./workspace.js";
 
 /**
@@ -83,7 +83,7 @@ const PROGRAM_GROUPS: ReadonlySet<string> = new Set(["exec", "processes"]);
 
 /** `computer` as its agent may use it: with `exec: false`, its hello without the groups that run programs. */
 function agentsOwn(computer: RunComputer | undefined): RunComputer | undefined {
-  if ((computer?.kind !== "desktop" && computer?.kind !== "phone") || computer.exec !== false) return computer;
+  if (!noPrograms(computer)) return computer;
   return { ...computer, hello: { ...computer.hello, groups: computer.hello.groups.filter((group) => !PROGRAM_GROUPS.has(group)) } };
 }
 
@@ -111,10 +111,11 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
 
 /** A desktop's or a phone's port, over its surface, the kind whose tools the run gets, its groups, and the script's
  *  executor for its card; none for any other computer. */
-async function portsOf(computer: RunComputer | undefined, guard: ScriptGuard): Promise<{ readonly ports: Pick<Hands, "computer">; readonly kinds: readonly CapabilityKind[]; readonly groups: readonly string[]; readonly script?: Executor; readonly card?: Card; readonly prelude?: string }> {
+async function portsOf(computer: RunComputer | undefined, guard: ScriptGuard, mounted: boolean): Promise<{ readonly ports: Pick<Hands, "computer">; readonly kinds: readonly CapabilityKind[]; readonly groups: readonly string[]; readonly script?: Executor; readonly card?: Card; readonly prelude?: string }> {
   if (computer?.kind !== "desktop" && computer?.kind !== "phone") return { ports: {}, kinds: [], groups: [] };
-  const surface = createSurface(computer.computer.client, computer.hello);
-  const prelude = scriptPreludeOf(surface.card, computer.exec === false ? { exec: false } : {});
+  // A desktop that mounts the run's folder starts its shell's programs there, as bash does, not in the computer's home.
+  const surface = createSurface(computer.computer.client, computer.hello, mounted ? { cwd: COMPUTER_ROOT } : {});
+  const prelude = scriptPreludeOf(surface.card, noPrograms(computer) ? { exec: false } : {});
   return { ports: { computer: portOf(surface) }, kinds: [computer.kind], groups: surface.card.groups, script: computerScriptExecutor(prelude, guard), card: surface.card, prelude };
 }
 
@@ -168,9 +169,8 @@ export async function runHands(workspace: Workspace, claimed: RunComputer | unde
   // The computer as its agent may use it: one with exec off has no group that runs a program, so nothing mounts the
   // folder in it, and the run has no shell at all (no bash family, not even Archil's exec).
   const computer = agentsOwn(claimed);
-  const noPrograms = (computer?.kind === "desktop" || computer?.kind === "phone") && computer.exec === false;
   const mounted = mountedIn(computer);
-  const shell = noPrograms ? "none" : shellPlaceOf(mounted !== undefined, options.mode);
+  const shell = noPrograms(computer) ? "none" : shellPlaceOf(mounted !== undefined, options.mode);
   const attached = mounted === undefined ? workspace : await workspace.attach(mounted.computer, mounted.check);
   // The folder's name: /workspace in a computer (and on Archil's exec, which has no path of this machine), its own path here.
   const cwd = mounted === undefined && here !== undefined ? here : COMPUTER_ROOT;
@@ -188,7 +188,7 @@ export async function runHands(workspace: Workspace, claimed: RunComputer | unde
   const read = mounted === undefined ? tools.read! : readAnywhereInComputer(tools.read!, attached, names, env);
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
   const guard = new ScriptGuard({ env: policyEnv(options.bashPolicy), prelude }, computer?.kind);
-  const own = await portsOf(computer, guard);
+  const own = await portsOf(computer, guard, mounted !== undefined);
   const { ports, kinds, groups, script, card, prelude: scriptPrelude } = options.hold !== undefined && own.ports.computer ? { ...own, ports: options.hold(own.ports) } : own;
   return {
     workspace: attached,

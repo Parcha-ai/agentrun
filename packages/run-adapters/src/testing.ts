@@ -17,8 +17,10 @@ export { SCHEMA_CHECK_CASES, type SchemaCheckCase } from "./schema-check-cases.j
 export { inputTokensMaxOf, matchRoute, parseStrict, reportedCostOf } from "./host/proxy.js";
 
 /** A session store in memory: what one run's store holds, across the processes a test plays. Each `open` of a key
- *  counts one more holder at once, and a writer appends only while its count is the newest. */
-export function memorySessionStore(): SessionStore & { keys(): string[] } {
+ *  counts one more holder at once, and a writer appends only while its count is the newest. `scope`: the run's identity
+ *  in this process, for a test that plays a claim lost and taken again in one process (SessionWriter.scope); without it,
+ *  each open plays a process of its own, which hands nothing on. */
+export function memorySessionStore(options: { scope?: string } = {}): SessionStore & { keys(): string[] } {
   const sessions = new Map<string, SessionRecord[]>();
   const holders = new Map<string, number>();
   const read = async (key: string) => structuredClone(sessions.get(key) ?? []);
@@ -29,6 +31,7 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
       holders.set(key, holder);
       return {
         key,
+        ...(options.scope === undefined ? {} : { scope: `${options.scope}\n${key}` }),
         read: () => read(key),
         async append(records) {
           if (holders.get(key) !== holder) throw new SessionFenced(key);

@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, follow, scratch, serve } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const CLAUDE_MODEL = "claude-haiku-5-5";
 
@@ -16,8 +17,8 @@ const CLAUDE_MODEL = "claude-haiku-5-5";
 async function gateway(t) {
   const seen = [];
   const server = createServer(async (req, res) => {
-    // Only the API's own paths count: a host's loopback prober (a keyless GET /) is not a request of the run's.
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    // Only the API's own paths count (fixtures/stranger.mjs).
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     seen.push(req.url);

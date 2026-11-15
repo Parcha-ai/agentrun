@@ -85,7 +85,7 @@ export function scriptedOrigin(script, requests = []) {
 export function hostTools(tools) {
   return Object.values(tools).map((tool) => ({
     name: tool.name,
-    description: `The suite's ${tool.name} tool.`,
+    description: tool.description ?? `The suite's ${tool.name} tool.`,
     inputSchema: { type: "object", properties: {} },
     replay: tool.replaySafe ? "safe" : "never",
     call: async (args, context) => ({ text: String(await tool.run(args ?? {}, context.signal)), ...(tool.images ? { images: tool.images } : {}), ...(tool.structured !== undefined ? { structured: tool.structured } : {}) }),

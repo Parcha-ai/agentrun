@@ -19,8 +19,9 @@ export type ApiError = Omit<components["ErrorBody"], "code"> & { code: component
  *  it (approvals/1). */
 export type Permission = AgentTool["permission"];
 /** One tool's setting, read by any settings key: a provider where the tool has a choice (web_search, web_fetch, browser),
- *  and a permission. */
-export type ToolSetting = { provider?: NonNullable<Body<"putToolSettings">["web_search" | "web_fetch" | "browser"]>["provider"]; permission?: Permission; pin?: ToolPin; pin_broken?: true };
+ *  and a permission; on an MCP server's wildcard in the server's settings, `allow_reads` (its read-only tools run with no
+ *  one asked). */
+export type ToolSetting = { provider?: NonNullable<Body<"putToolSettings">["web_search" | "web_fetch" | "browser"]>["provider"]; permission?: Permission; pin?: ToolPin; pin_broken?: true; allow_reads?: true };
 /** A tool setting that can carry a pin (an MCP tool's): the server's read gives `pin_broken` for one that doesn't read. */
 type PinnedSetting = Extract<NonNullable<Body<"putToolSettings">[string]>, { pin?: unknown }>;
 /** A tool's pin: each argument fixed to one value, or one of a list (null: left out). A call outside it is refused. */
@@ -53,6 +54,8 @@ export type TemplateView = Answer<"listTemplates">["templates"][number];
 export type TemplateApply = Body<"applyTemplate">;
 /** What an apply made: the agent, its triggers, and its warnings. */
 export type TemplateApplied = Answer<"applyTemplate">;
+/** A package read from GitHub (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
+export type TemplateImported = Answer<"importTemplate">;
 
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null. */
 export type Cost = components["Cost"];
@@ -94,7 +97,7 @@ export type LearningCost = Answer<"getLearningCost">;
 export type LearningEvals = Answer<"listLearningEvals">;
 export type LearningEval = LearningEvals["evals"][number];
 /** One run of that series. `path`: `workflow` a learned workflow finished it alone, `handed_back` one ran and the agent
- *  went on, `agent` none ran. */
+ *  went on, `agent` none ran, `replay` a replay run deciding whether a learned workflow's new revision serves. */
 /** A learning batch (learn from rows): GET /v2/agents/{id}/learning/batches/{batch_id}'s answer, its list's headers, a start's body and a row. */
 export type LearningBatch = Answer<"getLearningBatch">;
 export type LearningBatchHead = Answer<"listLearningBatches">["batches"][number];
@@ -106,6 +109,15 @@ export type RunPath = CostRun["path"];
  *  workflow.json, oldest first, each with the text it had then. */
 export type WorkflowRevisions = Answer<"listLearnedWorkflowRevisions">;
 export type WorkflowRevision = WorkflowRevisions["revisions"][number];
+/** GET /v2/agents/{id}/learning/promotions: each learned workflow revision's promotion records, oldest first. */
+export type Promotions = Answer<"listLearningPromotions">;
+export type Promotion = Promotions["promotions"][number];
+/** What a learned workflow serves: its champion's digest (null: none, the agent takes its runs) and a newer revision replaying. */
+export type Serving = Promotions["serving"][number];
+/** GET /v2/agents/{id}/learning/loop: the agent's compile turns (newest first) and its learned workflows' guarded steps. */
+export type LearningLoop = Answer<"getLearningLoop">;
+export type LoopCompile = LearningLoop["compiles"][number];
+export type LoopGuard = LearningLoop["guards"][number];
 /** What the run's job did with the learned skills and workflows it was offered (`used`): each skill and whether its job
  *  read it, each learned workflow it called, how many times and how many of those failed. */
 export type LearnedUse = NonNullable<RunLearningRead>["used"];
@@ -148,6 +160,14 @@ export type ToolKeysReenter = NonNullable<ToolKeys["reenter"]>;
 /** `capabilities.features.tool_keys`. */
 export type ToolKeysFeature = NonNullable<components["Features"]["tool_keys"]>;
 
+/** This server's ChatGPT sign-in (GET /v2/settings/chatgpt, a serve extension): its state, who and which plan, never a
+ *  token. */
+export type ChatGPTView = Answer<"getChatGPTSignIn">;
+/** POST /v2/settings/chatgpt/sign-in's answer: OpenAI's page to open, and until when the sign-in waits. */
+export type ChatGPTStart = Answer<"startChatGPTSignIn">;
+/** DELETE /v2/settings/chatgpt's answer: whether OpenAI confirmed the revocation, and with `revoked` false, what to do. */
+export type ChatGPTSignOut = Answer<"signOutChatGPT">;
+
 /** The webhook (GET /v2/settings/webhook, a serve extension). Never the secret. */
 export type Webhook = Answer<"getWebhook">;
 /** A PUT's answer: the webhook, and its secret the first time (201), shown this once. */
@@ -168,6 +188,14 @@ export type GitHubDisconnected = Answer<"disconnectGitHub">;
 
 /** PATCH /v2/runs/{id} {max_cost_usd}'s answer: the cap now. */
 export type RaiseAnswer = Answer<"raiseRunCap">;
+/** PUT /v2/runs/{id}/grade: right or wrong, the reviewer's words (`label`), and the fields a right answer holds
+ *  (`expected`). Its answer says the feedback round the run opened again on (`feedback`), if any. */
+export type GradeBody = Body<"gradeRun">;
+export type GradeAnswer = Answer<"gradeRun">;
+/** A run's grade as GET /v2/runs/{id}/learning reads it back (`graded`): the newest, as the PUT answered it without
+ *  `expected`, with the round it opened (`feedback`) and how that round stands (`feedback_status`: running, ended, or
+ *  not run when its run ended before it took the grade's words). */
+export type RunGraded = NonNullable<NonNullable<RunLearningRead>["graded"]>;
 
 /** A recorded response (src/fixtures): what the server answered, exactly. The console's own, not a wire type. */
 export type Recorded<T> = { request: { method: string; path: string }; status: number; headers?: Record<string, string>; body: T };

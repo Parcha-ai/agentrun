@@ -16,7 +16,7 @@
 // `input_tokens`; they are booked apart. The watch reads each `function_call` item of an answer before OpenCode has it:
 // its call id, name and arguments, which tie the MCP call OpenCode makes next (it carries no call id) to the model's own.
 import type { IncomingHttpHeaders } from "node:http";
-import { providerInputOverhead, ProxyRefusal, responsesImagesIn, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { lastObjectOf, OPENAI_INPUT_COUNTER, ProxyRefusal, responsesInputOverhead, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix OpenCode gives the adapter's MCP tools: the server is `hands`. */
 export const TOOL_PREFIX = "hands_";
@@ -195,8 +195,8 @@ function startOfResponse(data: string): Record<string, unknown> | undefined {
 }
 
 /** The usage of the response an answer ends with: its `response.completed` (or `response.incomplete`) event, each `data:`
- *  line parsed on its own, or a whole JSON body's; for a line the proxy's 64 KiB window cut, the last `"usage":{` object
- *  in the text. Undefined, an unknown cost, when there is none. */
+ *  line parsed on its own, or a whole JSON body's; for a line the proxy's 64 KiB window cut, the last `"usage": {` object
+ *  in the text, whatever its spacing (the kernel's `lastObjectOf`). Undefined, an unknown cost, when there is none. */
 export function usageOf(text: string): ProxyUsage | undefined {
   let found: unknown;
   let ended = false;
@@ -223,30 +223,7 @@ export function usageOf(text: string): ProxyUsage | undefined {
       if (isPlain(body) && body.object === "response") return usageFrom(body.usage);
     } catch {}
   }
-  const mark = "\"usage\":{";
-  const at = text.lastIndexOf(mark);
-  if (at < 0) return undefined;
-  const json = objectAt(text, at + mark.length - 1);
-  if (json === undefined) return undefined;
-  try {
-    return usageFrom(JSON.parse(json));
-  } catch {
-    return undefined;
-  }
-}
-
-/** The items of `type` in `value`, at any depth. */
-function itemsIn(value: unknown, type: string): number {
-  if (Array.isArray(value)) return value.reduce((n: number, item) => n + itemsIn(item, type), 0);
-  if (!isPlain(value)) return 0;
-  return (value.type === type ? 1 : 0) + Object.values(value).reduce((n: number, item) => n + itemsIn(item, type), 0);
-}
-
-/** The input tokens the provider bills for `body` that it does not carry (codex's figure: the same Responses API). A file
- *  input has no stated bound, so a body with one cannot be measured. */
-export function responsesServerInputOverhead(body: Record<string, unknown>): number {
-  if (itemsIn(body.input, "input_file") > 0) throw new Error("a file input's billed size has no stated bound");
-  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: responsesImagesIn(body.input), ...(typeof body.model === "string" ? { model: body.model } : {}) }) as number;
+  return usageFrom(lastObjectOf(text, "usage"));
 }
 
 /** An event that is not whole by this many characters is not read. */
@@ -427,7 +404,10 @@ export function openCodePolicy(options: OpenCodePolicyOptions): ProviderPolicy {
     outputAsked: responsesOutputAsked,
     outputLeast: responsesOutputLeast,
     limitOutput: limitResponsesOutput,
-    serverInputOverhead: responsesServerInputOverhead,
+    // Its bytes less the escapes in the text it carries (codex's figure: the same Responses API), and on a route straight
+    // to OpenAI, OpenAI's own count when that is lower.
+    serverInputOverhead: responsesInputOverhead,
+    countInput: OPENAI_INPUT_COUNTER,
     // A stop counts the content it streamed, not the wire, and the part of its reasoning budget that did not stream.
     reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),
     reasoningBytesOf: responsesReasoningBytes,

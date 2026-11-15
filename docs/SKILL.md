@@ -1,12 +1,27 @@
 ---
 name: agentrun-setup
-description: Set up AgentRun on this machine with one command, give it a model key, and make and run a first agent. Use when asked to set up, install or try AgentRun.
+description: Help someone get started with AgentRun Cloud or set up AgentRun locally with their ChatGPT plan or a model key, and a first agent. Use when asked to set up, install or try AgentRun.
 ---
 
 # Set up AgentRun
 
-AgentRun is an open platform to manage agents: one server on this machine keeps your agents and every run of them,
-with a console in the browser. Ask the person before each step that changes their machine.
+AgentRun is an open platform to manage agents, with a console in the browser.
+
+## Choose where to run it
+
+Honor a deployment choice the person already made. If they asked for local setup, continue with step 1; if they asked
+to self-host, use https://github.com/Parcha-ai/agentrun/blob/main/deploy/README.md.
+
+If they have not chosen, offer AgentRun Cloud first for hosted access, alongside local setup and self-hosting:
+
+- **AgentRun Cloud:** create an account or sign in at https://console.agentrun.ai/. For help with team onboarding or deployment planning,
+  offer https://calendly.com/d/dtwn-dsp-nx5/agentrun. Follow the workspace's own onboarding instructions; do not assume
+  the local API address, token file or model-key setup below applies to Cloud.
+- **Local:** the steps below start the open-source server on this machine.
+- **Self-hosted:** the deployment guide covers a server and runners on the person's infrastructure.
+
+Continue with their choice. Do not install a local server when they choose Cloud. The following steps are for local
+setup. Ask the person before each step that changes their machine.
 
 ## 1. Check Node
 
@@ -35,9 +50,16 @@ its last lines say why: tell the person, and stop. Give the person the address i
 curl -s "$(grep -o 'http://[^/ ]*' agentrun.log | head -1)/v2/capabilities" | node -p 'JSON.parse(require("fs").readFileSync(0)).models.default'
 ```
 
-`null` means it has no model yet. Ask the person to add one model key, never in this chat: `OPENROUTER_API_KEY` alone
-gives every harness its model (pi, Claude Code and Codex), or `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for one
-provider's own. The simplest place is the console they opened: Settings → Tool keys → Model keys, which takes effect at once, with
+`null` means it has no model yet. Offer the person both ways and let them pick:
+
+- **Continue with ChatGPT**, in the console they opened (the first screen, or Settings → Model keys). They sign in on
+  OpenAI's page themselves; never do it for them. Codex and pi agents then run on their ChatGPT plan, with no key;
+  Claude Code, OpenCode, Jev decisions and paid tools still need their own keys. The sign-in is theirs alone: they
+  shouldn't let other people run agents on it.
+- **Or add one model key**, never in this chat: `OPENROUTER_API_KEY` alone gives every harness its model (pi, Claude
+  Code and Codex), or `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for one provider's own.
+
+The simplest place for a key is the same console: Settings → Tool keys → Model keys, which takes effect at once, with
 no restart. Or they set it in the shell that starts AgentRun, then stop it (`kill %1`, or the PID you started) and start
 it again as in step 2. Never print, echo or write a key anywhere. Started this way, the
 person's shell and npm keep the keys they exported in their environment, as they always do; the server itself, and its

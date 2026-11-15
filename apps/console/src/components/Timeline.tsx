@@ -3,6 +3,7 @@ import { type ReactNode, useState } from "react";
 import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { callWords, type ComputerCallRow } from "@timeline/computer";
 import { nameOf } from "@timeline/labels";
+import { isFeedbackRow } from "@timeline/origin";
 import { Chip } from "@/components/ui/chip";
 import { Spinner } from "@/components/ui/spinner";
 import { chargeWords, clock, markdown, openLinkedFile } from "@/lib/format";
@@ -91,16 +92,16 @@ const TOOL = new Map<string, string>(Object.entries({
   ask_person: "Question", submit: "Answer", codemode: "Script", todowrite: "To-dos", task: "Subagent", skill: "Skill",
 }));
 function toolWords(id: string): string {
-  const bare = id.replace(/^mcp__.+?__/, "");
-  const known = TOOL.get(bare.toLowerCase());
+  const known = TOOL.get(id.toLowerCase());
   if (known) return known;
-  const words = bare.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim().toLowerCase();
+  const words = id.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim().toLowerCase();
   return words ? words[0]!.toUpperCase() + words.slice(1) : id;
 }
 /** A tool's name as the label says it: an MCP server's tool as `<server> · <tool>`, a browser tool by its name, any
  *  other in words. */
 const toolName = (tool: string | null | undefined) => (tool ? (mcpToolLabel(tool) ?? (BROWSER.has(tool) ? nameOf(tool) : toolWords(tool))) : tool);
-const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : fromTrigger(row) ? (triggerParts(row).who ?? "Trigger") :
+// A grade's words (a feedback round's first row) are the reviewer's, never a message the job's turn took.
+const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : fromTrigger(row) ? (triggerParts(row).who ?? "Trigger") : isFeedbackRow(row) ? "Your grade" :
   ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval", learning: "Learning" } as Partial<Record<string, string>>)[row.kind] ?? row.kind;
 
 /** A waiting row's chip, by what the run waits on now (its `pending.kind`, the run page's to pass: a row carries no kind
@@ -170,8 +171,9 @@ function Row({ step, last, ended, waitingChip, files, onOpen }: { step: Step; la
 
 /** A tool call's computer calls (its result row's `computer_calls`: a code-mode script's many, a computer tool's one):
  *  closed, a line that says how many and how many failed; open, each call in the order it was made, how long after the
- *  first it started, what it did in words (callWords: "open TextEdit", "select all (⌘A); type into the text box") and how
- *  long it took. Never what was typed: the server keeps none of it. */
+ *  first it started, what it did in the words its step's row and a movie's caption use (callWords: "Opened TextEdit",
+ *  "Selected all (⌘A), typed into the text box"), a failed call's code, and how long it took. Never what was typed: the
+ *  server keeps none of it. */
 function ComputerCalls({ calls, dropped }: { calls: readonly ComputerCallRow[]; dropped: number }) {
   const [open, setOpen] = useState(false);
   const failed = calls.filter((call) => !call.ok).length;
@@ -190,6 +192,7 @@ function ComputerCalls({ calls, dropped }: { calls: readonly ComputerCallRow[]; 
             <li key={i} className="flex items-center gap-3 px-3 py-1.5">
               <span className="w-14 shrink-0 font-mono text-label text-muted-foreground">+{took(Math.max(0, Date.parse(call.started_at) - first))}</span>
               <span className={cn("min-w-0 flex-1 truncate text-body", !call.ok && "text-destructive-text")} title={callWords(call)}>{callWords(call)}</span>
+              {!call.ok && call.code && <span className="shrink-0 font-mono text-label text-destructive-text">{call.code}</span>}
               <span className="w-14 text-right font-mono text-label text-muted-foreground">{took(call.ms)}</span>
             </li>
           ))}
