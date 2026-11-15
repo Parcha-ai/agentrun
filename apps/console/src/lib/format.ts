@@ -76,6 +76,11 @@ export const soFarNote = (c: { unpriced: number }, { ended = false }: { ended?: 
 const ENDED_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
 export const runEnded = (status: string | undefined | null): boolean => typeof status === "string" && ENDED_STATUSES.has(status);
 
+/** A known $0 that is a free model's (the server's `free`, freemodel/1): every model request went to a model whose known
+ *  price is $0 for every token. Said as the server's usage row says it. */
+export const FREE_COST = "$0 · free model";
+const freeCost = (c: { usd: number | null; free?: boolean }) => c.usd === 0 && c.free === true;
+
 /** A charge on a timeline row, in words: "$0.0018", or what is known so far ("so far $0.001, 1 not priced") when one of its
  *  charges has no price; on a run that has ended (`ended`), what is known without "so far" ("$0.001 known, 1 not priced"),
  *  as cost says the run's. */
@@ -90,7 +95,8 @@ export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpric
  *  whole cost; a run that has ended (`ended`) says what is known without "so far" ("$0.0123 known · 1 not priced"), as its
  *  usage row says its cost. Never a billed amount, never an invented zero. A run on the server's ChatGPT plan alone says
  *  its tokens ("41.2K tokens · Using ChatGPT plan"), never "$0.00"; one that also spent dollars says them, then "+ ChatGPT
- *  plan". */
+ *  plan". A run whose every model request went to a free model (`free`: its known price is $0 for every token) says why
+ *  its cost is $0 (FREE_COST). */
 export function cost(c: Cost | null | undefined, { ended = false }: { ended?: boolean } = {}): string {
   const plan = planOf(c);
   if (plan && c?.usd === 0) return `${compact(plan.tokens)} tokens · Using ChatGPT plan`;
@@ -102,6 +108,7 @@ function dollarWords(c: Cost | null | undefined, ended: boolean): string {
   const est = (x: Cost) => (isEstimate(x) ? " est." : "");
   if (known) return ended ? `${soFarDollars(known.so_far_usd)}${est(known)} known · ${known.unpriced} not priced` : `so far ${soFarDollars(known.so_far_usd)}${est(known)} · ${known.unpriced} not priced`;
   if (!c || c.usd === null) return "Unknown";
+  if (freeCost(c)) return FREE_COST;
   return `${dollars(c.usd)}${est(c)}`;
 }
 
@@ -124,7 +131,7 @@ export function costOfCap(c: Cost | null | undefined, cap: number | null | undef
   const shown = text ?? cost(c, { ended });
   if (typeof cap !== "number") return shown;
   // One figure ("$0.0059 est.", "<$0.0001"): "of" the cap. A partial total ("$0.0188 + 2 unknown") or a word: the cap after.
-  const figure = text !== undefined ? ONE_FIGURE.test(text) : !soFar(c) && !planOf(c) && !!c && c.usd !== null;
+  const figure = text !== undefined ? ONE_FIGURE.test(text) : !soFar(c) && !planOf(c) && !!c && c.usd !== null && !freeCost(c);
   return figure ? `${shown} of ${capDollars(cap)}` : `${shown} · cap ${capDollars(cap)}`;
 }
 const ONE_FIGURE = /^<?\$[\d.,]+( est\.)?$/;

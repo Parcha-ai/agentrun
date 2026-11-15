@@ -13,6 +13,7 @@ import type { Settings } from "../store/store.js";
 import { answerJson } from "../answer-json.js";
 import { workflowNodes } from "./workflow-nodes.js";
 import type { Skipped } from "./replay-calls.js";
+import type { ReplayOutcome } from "../runner/workflow-first.js";
 
 /** How many of the agent's newest graded inputs a replay runs on. */
 export const REPLAY_INPUTS = 20;
@@ -74,6 +75,9 @@ export interface ReplayScore {
   readonly handed_back: number;
 }
 
+/** The ReplayScore fields of `x` alone (a scoreRows or refitGuards result, or a record's `replay`): the one pick of them. */
+export const scoreOf = (x: ReplayScore): ReplayScore => ({ n: x.n, agree: x.agree, agent_acc: x.agent_acc, wf_acc: x.wf_acc, delta: x.delta, handed_back: x.handed_back });
+
 /** Whether a replay or refit answered alone on at least one of its inputs: one that hands back every input would never
  *  serve. The one spelling of it (clears, settle's hold, the compile's held line); the count is n - handed_back. */
 export const answersAlone = (score: Pick<ReplayScore, "n" | "handed_back">): boolean => score.handed_back < score.n;
@@ -84,15 +88,15 @@ export const answersAlone = (score: Pick<ReplayScore, "n" | "handed_back">): boo
  *  while it replayed: one challenger at a time, so its replay runs were cancelled and it never serves). `source`: `replay` (decided on its replay), `dry_run` (fewer than REPLAY_MIN graded inputs: promoted on
  *  its passing dry run), `refit` (a threshold refit wrote this revision, decided on the rows it was fit on), `graded` (a
  *  serving revision's graded runs fell below the bar: held). `replay`: the numbers it was decided on, with the graded runs
- *  replayed (`of`), what its replay runs cost (`cost_usd`, null when one's is unknown) and how many of its inputs were
- *  skipped (`skipped_write`: each needed a write the graded run's recording does not have, learn/replay-calls.ts; never
- *  run, never scored) and at which tools (`skipped_tools`, SkippedTool), and its runs' outcomes (`outcomes`,
- *  ReplayOutcomes). `refit`: the guards a refit
+ *  replayed (`of`), what its replay runs cost (`cost_usd`, null when one's is unknown), its runs' outcomes (`outcomes`,
+ *  ReplayOutcomes: the one count of them, its `skipped_write` the inputs that needed a write the graded run's recording
+ *  does not have, learn/replay-calls.ts, never run, never scored) and the tools that stopped those (`skipped_tools`,
+ *  SkippedTool). `refit`: the guards a refit
  *  changed. `checked`: the newest grade (its seq) the last refit check read (refits run once per REFIT_EVERY more graded runs
  *  it served, counted by seq: a count of the grades kept stalls once the GRADES_KEPT trim holds it). `since`: on a replay's
  *  promote, the agent's newest grade (its seq) when this promotion began: which promotion of the digest it is (a run it
  *  serves keeps it, Grade.promotion, and its checks count only those runs' grades). `held_on`: the
- *  served runs graded wrong a revision was held on, owed by its next replay (heldOn). */
+ *  served runs graded wrong a revision was held on, owed by its next replay (runner/promotion.ts heldOn). */
 export interface PromotionRecord {
   readonly workflow: string;
   readonly digest: string;
@@ -100,7 +104,7 @@ export interface PromotionRecord {
   readonly decided: "promote" | "hold" | "replaying" | "superseded";
   readonly source: "replay" | "dry_run" | "refit" | "graded";
   readonly reason: string;
-  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_write?: number; readonly skipped_tools?: readonly SkippedTool[]; readonly outcomes?: ReplayOutcomes };
+  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_tools?: readonly SkippedTool[]; readonly outcomes?: ReplayOutcomes };
   readonly runs?: readonly string[];
   /** A replaying record's graded runs, one per `runs` entry in order: the input each reserved replay run replays, so a
    *  launch interrupted after the reservation is finished by a later claim (runner/promotion.ts relaunch). */
@@ -127,7 +131,7 @@ export interface PromotionRecord {
   /** The runs a revision served that were graded wrong when its graded check held it (newest first, at most REPLAY_INPUTS),
    *  kept on that hold, on the replay of it its owner starts (those of them still graded and fitting it, each one of its
    *  inputs), and on a replay's hold: a replay of the revision promotes it only once it answered (or handed back) on every
-   *  one (heldOn). */
+   *  one (runner/promotion.ts heldOn). */
   readonly held_on?: readonly string[];
   /** A superseded revision's newer one: the digest whose claim cancelled its replay. */
   readonly superseded_by?: string;
@@ -143,11 +147,6 @@ export interface ReplayLaunch {
   readonly body: unknown;
   readonly handed_from?: string;
 }
-
-/** What a replay of a revision owes before it may promote it: the served runs graded wrong it was held on
- *  (PromotionRecord.held_on), none when `record` owes none. The one reading of it: the owner's replay puts each among its
- *  inputs (runner/promotion.ts askReplay), and its settle holds a replay that did not answer or hand back on each. */
-export const heldOn = (record: PromotionRecord | undefined): readonly string[] => record?.held_on ?? [];
 
 /** A tool that stopped a replay's inputs (each a skipped_write row): its catalog name, how many inputs it stopped, and
  *  whether it is an MCP tool its server listed with no readOnlyHint (`no_read_only_hint`: replay may only lack the hint,
@@ -369,7 +368,7 @@ export function trimPromotions(items: readonly PromotionRecord[]): PromotionReco
 export interface ReplayRow {
   readonly of: string;
   readonly recorded: { readonly answer: string | null; readonly correct: boolean; readonly path: RunPath; readonly expected?: Readonly<Record<string, unknown>> };
-  readonly outcome: "answered" | "handed_back" | "failed" | "skipped_write";
+  readonly outcome: ReplayOutcome;
   readonly skipped?: Skipped;
   readonly answer: string | null;
   readonly guards: readonly GuardRow[];
@@ -378,7 +377,7 @@ export interface ReplayRow {
 /** How many of a replay's own runs ended each way (a run not ended past its deadline is failed): what each run did,
  *  never the serving thresholds' reading of it (a run that answered below its guard's threshold is answered here, handed
  *  back in its score). A replay record keeps them as it was decided on. */
-export type ReplayOutcomes = Readonly<Record<ReplayRow["outcome"], number>>;
+export type ReplayOutcomes = Readonly<Record<ReplayOutcome, number>>;
 
 /** The text inside an answer that is one unlabelled fence and nothing else, or undefined. */
 const WHOLE_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*\r?\n([\s\S]*?)\r?\n {0,3}\1[`~]*[ \t]*$/;

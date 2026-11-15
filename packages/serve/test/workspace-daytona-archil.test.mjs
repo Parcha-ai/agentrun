@@ -77,8 +77,8 @@ async function archilSandbox(t, provider = "modal", { existing = [] } = {}) {
     connect: async () => ({ ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] }, close: async () => {} } }),
     attach: async () => ({ ok: true, value: { id: "d1", name: "d1", spec: { image: "i", user: "1000:1000", network: "none" } } }),
     release: async (ref, how) => (record.released.push([ref.id, how]), { ok: true, value: undefined }),
-    // Modal's descriptor declares prepareImage (its computers start from the box image); E2B's doesn't.
-    ...(provider === "modal" ? { prepareImage: async () => ({ ok: true, value: PREPARED_IMAGE }) } : {}),
+    // Modal's and E2B's descriptors declare prepareImage: their computers start from the box image (E2B's public template).
+    ...(provider === "modal" || provider === "e2b" ? { prepareImage: async () => ({ ok: true, value: PREPARED_IMAGE }) } : {}),
   };
   const providers = computerProviderMakers({ load: async (id, options) => (record.loaded.push([id, options]), stand) });
   const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider } }, store, {
@@ -113,7 +113,7 @@ async function fullArchilPath(t, provider) {
   assert.deepEqual(spec.labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" });
   assert.ok(!Object.hasOwn(spec.labels, "agentrun.mount"), "agentrun.mount is the provider's own label");
   assert.equal(spec.env, undefined, "the box is given no environment of ours");
-  assert.equal(spec.image, provider === "modal" ? PREPARED_IMAGE : "agentrun/computer:test", "Modal starts from the image its prepareImage() answers");
+  assert.equal(spec.image, PREPARED_IMAGE, `${provider} starts from the image its prepareImage() answers`);
   const outsideMount = JSON.stringify({ ...spec, mount: undefined });
   assert.ok(!outsideMount.includes("fake-minted-token-1"), "the token is in the mount alone: not in labels, env or anything else");
   const text = JSON.stringify(spec);

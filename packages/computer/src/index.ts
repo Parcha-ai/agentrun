@@ -131,8 +131,6 @@ export {
 	daytonaGpuSnapshot,
 	DOCKER,
 	E2B,
-	E2B_BASE_TEMPLATE,
-	E2B_DESKTOP_TEMPLATE,
 	KERNEL,
 	LOCAL,
 	MODAL,

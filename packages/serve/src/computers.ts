@@ -212,7 +212,7 @@ export const COMPUTER_UNAVAILABLE = "computer_unavailable";
  *  local Docker bind). A desktop, phone or browser holds no folder unless its provider mounts it, so either mode takes
  *  it. A sandbox that mounts the disk can't start yet either, nor can a desktop that would mount it (resolve-computer.ts
  *  mode2ArchilWhy), unless its provider prepares its image (prepareImage: Agent37 registers the box image, which has
- *  Archil's client, in the owner's workspace). */
+ *  Archil's client, in the owner's workspace; Modal pulls it; E2B starts its public template). */
 export function modeRefusal(kind: ComputerKind, provider: ProviderEntry, mode: FolderMode): string | undefined {
   // A desktop with files and exec on a provider that mounts the disk would mount it in Mode 2, so it needs the image too.
   if (kind === "desktop") return mode === "disk" && provider.mounts.includes("archil") && !provider.prepareImage && provider.capabilities.some((one) => one.kind === "desktop" && one.groups.includes("files") && one.groups.includes("exec")) ? mode2ArchilWhy(provider.label, "desktop") : undefined;
