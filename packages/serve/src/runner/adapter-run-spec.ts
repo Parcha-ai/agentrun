@@ -70,7 +70,7 @@ import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
-import type { ComputerSetting } from "../computer-setting.js";
+import { settingOfDefinition } from "../computer-setting.js";
 import { type claimComputer, type ComputerDeps, computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import { hadComputer, type RunComputerHold } from "./computer-journal.js";
@@ -259,6 +259,9 @@ type RevisionBody = {
   readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>;
   /** The JSON Schema its final answer's last json block meets (definition.output_schema), absent for none. */
   readonly outputSchema?: unknown;
+  /** The agent's computer setting, or its place (computer-setting.ts settingOfDefinition): the run's computer kind. */
+  readonly computer?: unknown;
+  readonly place?: unknown;
 };
 
 /** What the runner routes a claimed run on: the launch's model as its start pinned it, sent as pinned, with the
@@ -434,7 +437,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // when the computer cannot be had: the run fails in its words.
   const claimSignal = run.stopped ?? run.signal;
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place },
     deps.store,
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent. What
@@ -587,8 +590,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const start = learningStartOf(launch);
   // The revision's own skills are laid in the run's .agents/skills/ before they are read (main's server start laid them;
   // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
-  // folder not there yet, never over a learned skill or an earlier claim's.
-  await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });
+  // folder not there yet, never over a learned skill or an earlier claim's. A desktop or a phone (the revision's computer
+  // setting, the one computerForClaim starts) brings its kind's skill, named in the prompt beside the revision's own.
+  const kindSkills = await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: settingOfDefinition(body)?.computer.kind });
   // A learning run's seed, read once from its learning folder where the run's place keeps it: its notes in .learning/
   // and its learned skills beside the revision's own (runner/learning-seed.ts), cut of the server's secrets, the learned
   // skills then in the skill list the prompt names, its learned workflows the ones its learned_workflow tool runs. Laid
@@ -683,7 +687,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The one path for every harness.
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section, start.use === true) : (body.instructions ?? "");
-  const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
+  const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...kindSkills, ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   // The run's clock: a template eval case's (clockOf), else the real one.
   const now = deps.clockOf?.(runRow.agentId);
@@ -823,6 +827,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // credential with it, and the run's timeline is told so.
     ...(computer.keeps ? { keptWords: computerKeptWords(computer.keeps) } : {}),
     release: (how) => holds.release(how),
+    endCheckout: () => holds.endCheckout(),
   };
 }
 

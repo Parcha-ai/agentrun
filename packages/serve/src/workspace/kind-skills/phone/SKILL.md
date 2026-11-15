@@ -34,12 +34,12 @@ layout, images, colours. Without the `ui` group, observe is the screenshot.
 | `{click: "@e9"}` or `{click: [x, y]}` | A tap; `button: "right"` is a long press. |
 | `{type: "text", into?: "@e3"}` | Types, into the element when named, else into the field in focus. |
 | `{nav: "back"}`, `{nav: "home"}`, `{nav: "app_switch"}` | The system's own navigation. |
-| `{scroll: "@e1", dy: 600}` | Scrolls the element by points: `dy` above 0 shows what is below. |
+| `{scroll: [180, 420], dy: 600}`, with `foreground: true` on the call | Swipes from that point: `dy` above 0 shows what is below. A swipe is the phone's own input, refused unless the call passes `foreground: true`. |
 | `{drag: [[x1, y1], [x2, y2]], ms?}` | One finger along the path. |
 | `{key: "enter"}` | A key, where the phone has keys. |
 
 Each step answers its route and whether a readback verified it; the answer ends with whether the screen changed and its
-new state. `expect: {text: "Android version"}` waits after the steps until that text shows (`gone: true`: until it is
+new state. `expect: {text: "Device name"}` waits after the steps until that text shows (`gone: true`: until it is
 gone). `observe: true` adds the new outline: one call instead of two. The first refused step stops the rest.
 
 Prefer refs. A step at a point is read against a state and refused as **stale** once the screen moved under it:
@@ -56,10 +56,16 @@ own, asked about and recorded like the tools'.
 await computer.apps.open("com.android.settings");
 const settings = computer.app("com.android.settings");
 await settings.observe();
+for (let i = 0; i < 4 && !settings.find({ text: "About phone" })[0]; i++) {
+  await settings.scroll([180, 420], { dy: 600 }, { foreground: true });
+  await settings.observe();
+}
 const about = settings.find({ text: "About phone" })[0];
-const page = await settings.press(about.ref, { expect: { text: "Android version" }, observe: true });
-return { met: page.expect, lines: page.after.outline.split("\n").filter((line) => /version/i.test(line)) };
+const page = await settings.press(about.ref, { expect: { text: "Device name" }, observe: true });
+return { met: page.expect, lines: page.after.outline.split("\n").filter((line) => /name/i.test(line)) };
 ```
+
+An `expect` is met only by what shows on the screen: a row below the fold is not there until you scroll to it.
 
 App ids come from `computer.apps.list()`: call it before `computer.apps.open`. The tools are there too, as
 `tools.computer_observe(...)` and `tools.computer_act(...)`.
