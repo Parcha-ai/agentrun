@@ -1771,9 +1771,12 @@ An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`
 (`"tools": ["mcp:github/list_issues"]`). A save lists each server it grants a tool of, once, and checks each grant
 against that listing: a server that is not saved, or can't be listed right now, is `422` naming it ("save again once it
 answers"; an edit that grants nothing new from it keeps the agent's current pin for it instead), a tool it does not list
-is `422` naming the server's tools, and so is a name whose wire name,
-`mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
-property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi, claude-agent and codex run them (`features.mcp_client.harnesses`); on
+is `422` naming the server's tools, and so is a tool whose `x-mcp-header` declaration cannot be sent (on a
+property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice).
+A harness calls a tool `mcp__<server>__<tool>`; one whose name is past the 52 characters every harness's tool names
+share (Composio's `SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION` on a server `slack`) is called by that name cut to
+fit with a hash of its catalog name after it, and its rows, settings and approvals still name it `mcp:<server>/<tool>`.
+Two grants that would be called by one such name are `422`, naming both. pi, claude-agent and codex run them (`features.mcp_client.harnesses`); on
 another harness the save warns that they are not bound there yet, and a run is refused. On claude-agent, a run with MCP
 tools has the Claude CLI's own tool search on: the server's tools reach the model only once its ToolSearch finds them,
 and the run's other tools load as they always do. A workflow's nodes bind no MCP
@@ -1791,8 +1794,7 @@ action it runs and deny could target none. Reads mark it `grantable: false` with
 each of these providers has a direct mode. The list is closed: a meta tool it doesn't know is an MCP tool like any other,
 asked by default.
 A saved server's read also gives each tool its `grant_problems` when a grant of it is refused where it would run, in the words the
-save's `422` says: under `*` for every harness (its wire name `mcp__<server>__<tool>` is past the 52 characters every harness's
-tool names share), or under a harness id when that harness's own MCP client would drop or retype its schema.
+save's `422` says, under a harness id when that harness's own MCP client would drop or retype its schema.
 
 - **Pinned.** The save keeps each granted tool on the new revision as the server listed it then (its name,
   description, input schema, annotations and price) with the server's URL then, shown as the agent's `mcp_pin` (never

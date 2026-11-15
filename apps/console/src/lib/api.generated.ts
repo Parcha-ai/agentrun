@@ -135,6 +135,10 @@ export interface components {
     harnesses?: {
       id: "pi" | "claude-agent" | "codex" | "opencode";
       available: boolean;
+      free_models: {
+        id: string;
+        context_window: number;
+      }[];
       models: string[];
       run_memory_mib: number;
       max_concurrent_runs: number;
