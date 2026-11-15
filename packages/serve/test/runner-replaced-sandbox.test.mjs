@@ -229,9 +229,13 @@ test("a sandbox run parked on bash's ask and approved within 10 minutes goes on 
     const row = await run.server.runs.get(RUN);
     return row.state === "ended" && row.runner === null;
   }, "the run's row reads released");
-  assert.equal(run.docker.held.size, 1, "the row reads released with the sandbox still held");
-  assert.equal(await run.isSettled(["ended"]), false, "not settled while the claim still holds its sandbox");
-  letGo();
+  // Let go whatever the checks say, so a failed one never leaves the runner's close waiting on the held release.
+  try {
+    assert.equal(run.docker.held.size, 1, "the row reads released with the sandbox still held");
+    assert.equal(await run.isSettled(["ended"]), false, "not settled while the claim still holds its sandbox");
+  } finally {
+    letGo();
+  }
   await run.settled(["ended"]);
   assert.deepEqual(run.docker.made, ["c1"], "no create at the resume");
   assert.match(JSON.stringify(requests.at(-1)), /left before the park/, "the approved bash read the file on the same sandbox");
@@ -258,9 +262,13 @@ test("a sandbox run approved after 10 minutes goes on on a new sandbox: the kept
     const row = await run.server.runs.get(RUN);
     return row.state === "ended" && row.runner === null;
   }, "the run's row reads released");
-  assert.deepEqual([...run.docker.held.keys()], ["c2"], "the kept one went at the resume; the new one is still held");
-  assert.equal(await run.isSettled(["ended"]), false, "not settled while the claim still holds its sandbox");
-  letGo();
+  // Let go whatever the checks say, so a failed one never leaves the runner's close waiting on the held release.
+  try {
+    assert.deepEqual([...run.docker.held.keys()], ["c2"], "the kept one went at the resume; the new one is still held");
+    assert.equal(await run.isSettled(["ended"]), false, "not settled while the claim still holds its sandbox");
+  } finally {
+    letGo();
+  }
   await run.settled(["ended"]);
   assert.deepEqual(run.docker.made, ["c1", "c2"], "a new sandbox");
   assert.doesNotMatch(JSON.stringify(requests.slice(first)), /left before the park/, "the file went with the kept one");
