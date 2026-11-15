@@ -141,6 +141,36 @@ test("a changed UIDVALIDITY replays nothing and says so; what comes after it fir
   await follow(api, fired.run_id, ["completed"]);
 });
 
+test("a saved account swapped for another replays none of the other's mail, though its INBOX has the same UIDVALIDITY, and says so; what comes to the new one after fires", { timeout: 150_000 }, async (t) => {
+  const clock = fakeClock(T0);
+  const { api } = await serve(t, { triggerClock: clock });
+  const a = await mailbox(t);
+  await saved(api, a);
+  await made(api, "mail");
+  const { id } = await trigger(api, emailTrigger("mail", { every_s: 60 }));
+  clock.to(minute(1));
+  await checked(api, id, minute(1));
+  await firings(api, id, 1);
+  const one = a.seed({ from: "a@example.com", subject: "One on A" });
+  clock.to(minute(2));
+  const [fired] = await firings(api, id, 2);
+  assert.deepEqual([fired.status, fired.key], ["started", keyOf("email", id, one.messageId)]);
+  await follow(api, fired.run_id, ["completed"]);
+  // Another account: its INBOX the same UIDVALIDITY as A's (both fakes number it alike), and more UIDs than A's cursor.
+  const b = await mailbox(t);
+  for (const n of [1, 2, 3]) b.seed({ from: "b@example.com", subject: `Old on B ${n}` });
+  await saved(api, b);
+  clock.to(minute(3));
+  const [changed] = await firings(api, id, 3);
+  assert.deepEqual([changed.status, changed.run_id], ["skipped", null], JSON.stringify(changed));
+  assert.equal(changed.reason, "The email account changed: watching INBOX from now; the 3 messages there won't start runs.");
+  const next = b.seed({ from: "b@example.com", subject: "New on B" });
+  clock.to(minute(4));
+  const [fresh] = await firings(api, id, 4);
+  assert.deepEqual([fresh.status, fresh.key], ["started", keyOf("email", id, next.messageId)]);
+  await follow(api, fresh.run_id, ["completed"]);
+});
+
 test("25 new messages: a poll takes the oldest 20, the next poll the other 5; a message this server sent is left, and said; accept takes one and ignores the rest", { timeout: 150_000 }, async (t) => {
   const clock = fakeClock(T0);
   const { api, store } = await serve(t, { triggerClock: clock });

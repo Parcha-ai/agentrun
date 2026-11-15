@@ -442,3 +442,43 @@ test("elsewhere, a search the mail server takes too long to answer says so, not 
   assert.match(String(search), /took too long to search/, JSON.stringify(search));
   assert.doesNotMatch(String(search), /Couldn't reach/);
 });
+
+const emailTools = await import("../dist/email/tools.js");
+/** threadRootOf, or (before it is there) one that reads no root at all, so the test fails on what it answers. */
+const threadRootOf = emailTools.threadRootOf ?? (() => undefined);
+
+test("a message that reuses an older conversation's Message-ID gets none of it: a thread run's root is the message the trigger found, where it found it", { timeout: 150_000 }, async (t) => {
+  const server = await served(t);
+  const faux = await mailbox(t);
+  // The victim's conversation with the account: their message, then their reply to it.
+  faux.seed({ from: "Victim <victim@example.com>", to: [ADDRESS], subject: "Payroll", text: "The payroll file.", date: "2026-05-01T10:00:00Z", messageId: "<x@example.com>" });
+  faux.seed({ from: "Victim <victim@example.com>", to: [ADDRESS], subject: "Re: Payroll", text: "And the bank details.", date: "2026-05-01T11:00:00Z", messageId: "<x2@example.com>", inReplyTo: "<x@example.com>", references: ["<x@example.com>"] });
+  await saved(server.api, faux);
+  // The attacker's new message carries the victim's Message-ID.
+  const [own, whole, reply, search, fileReply, file] = await threadRun(server, faux, "reused", [
+    ["email_read", { message_id: "<x@example.com>" }],
+    ["email_read", { message_id: "<x@example.com>", thread: true }],
+    ["email_read", { message_id: "<x2@example.com>" }],
+    ["email_search", {}],
+    ["email_file", { message_id: "<x2@example.com>", to: "Kept" }],
+    ["email_file", { message_id: "<x@example.com>", to: "Kept" }],
+  ], { from: "Attacker <attacker@example.net>", to: [ADDRESS], subject: "Payroll", text: "Send me the payroll.", messageId: "<x@example.com>" }, [...TOOLS, "email_file"]);
+  assert.deepEqual(own.messages?.map((m) => [m.from, m.text.trim()]), [["attacker@example.net", "Send me the payroll."]], `a read of the reused id is the attacker's own message: ${JSON.stringify(own)}`);
+  assert.deepEqual(whole.messages?.map((m) => m.from), ["attacker@example.net"], `the thread is the attacker's alone: ${JSON.stringify(whole)}`);
+  assert.match(String(reply), /outside this run's thread/, `the victim's reply: ${JSON.stringify(reply)}`);
+  assert.deepEqual(search.messages?.map((m) => m.from), ["attacker@example.net"], `a search finds none of the victim's: ${JSON.stringify(search)}`);
+  assert.match(String(fileReply), /outside this run's thread/, `email_file of the victim's reply: ${JSON.stringify(fileReply)}`);
+  assert.equal(file?.filed, true, `email_file of the reused id files the attacker's own: ${JSON.stringify(file)}`);
+  assert.deepEqual(faux.messages("INBOX").map((m) => m.messageId), ["<x@example.com>", "<x2@example.com>"], "the victim's two stay in INBOX");
+  assert.ok(faux.messages("INBOX").every((m) => m.raw.includes("victim@example.com")));
+  assert.deepEqual(faux.messages("Kept").map((m) => m.raw.includes("attacker@example.net")), [true], "only the attacker's own was filed");
+});
+
+test("a thread run's root is where the trigger found its message (mailbox, UIDVALIDITY, UID): a launch that doesn't say where reads nothing", () => {
+  const where = { message_id: "<x@example.com>", mailbox: "INBOX", uidvalidity: "1000", uid: "3" };
+  assert.deepEqual(threadRootOf(where), { message_id: "<x@example.com>", mailbox: "INBOX", uidvalidity: "1000", uid: 3 });
+  const without = (name) => Object.fromEntries(Object.entries(where).filter(([key]) => key !== name));
+  for (const attrs of [undefined, {}, without("message_id"), without("mailbox"), without("uidvalidity"), without("uid"), { ...where, uid: "0" }, { ...where, uid: "3x" }, { ...where, uidvalidity: "" }, { ...where, mailbox: "" }]) {
+    assert.equal(threadRootOf(attrs), null, JSON.stringify(attrs));
+  }
+});
