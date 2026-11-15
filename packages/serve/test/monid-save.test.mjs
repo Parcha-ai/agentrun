@@ -109,6 +109,24 @@ test("an edit that leaves the monid grants as they were reads nothing of monid's
   assert.deepEqual(Object.keys(await pinOf(store, "kept")), [...Object.keys(pinned), "monid:metered/rows"].sort());
 });
 
+test("an endpoint already pinned under a kept grant is not read again when a wildcard or named grant over it is added", async (t) => {
+  const log = join(await scratch(t), "monid-calls.ndjson");
+  withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const { api, store } = await serve(t, { fauxMonid: FAUX_MONID });
+  const reads = async () => (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const named = "monid:apollo/people/match";
+  assert.equal((await api("POST", "/agents", agent("over", { tools: [named] }))).status, 201);
+  const pinned = (await pinOf(store, "over"))[named];
+  const before = (await reads()).length;
+  assert.equal((await api("PUT", "/agents/over/definition", { definition: { instructions: "Answer.", tools: [named, "monid:apollo/*"] } })).status, 200);
+  assert.ok(!(await reads()).slice(before).some((call) => call.endpoint === "/people/match"), "the kept endpoint is not inspected again");
+  assert.deepEqual((await pinOf(store, "over"))[named], pinned, "its pin as saved");
+  assert.equal((await api("POST", "/agents", agent("over2", { tools: ["monid:apollo/*"] }))).status, 201);
+  const wild = (await reads()).length;
+  assert.equal((await api("PUT", "/agents/over2/definition", { definition: { instructions: "Answer.", tools: ["monid:apollo/*", named] } })).status, 200);
+  assert.deepEqual((await reads()).slice(wild), [], "a named grant of an endpoint its kept wildcard pinned reads nothing");
+});
+
 test("a monid grant saved with no monid key is refused: it cannot be pinned", async (t) => {
   withEnv(t, {}, ["MONID_API_KEY"]);
   const { api } = await serve(t, { fauxMonid: FAUX_MONID });
