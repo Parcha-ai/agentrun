@@ -156,7 +156,7 @@ export function createSdkLoop(
                   ? [
                       {
                         kind: KINDS.learningLaid,
-                        data: { skills: supplied.learning_skills?.map((skill) => skill.name) ?? [] },
+                        data: { skills: supplied.learning_skills?.map((skill) => skill.name) ?? [], workflows: supplied.learning_workflows?.map((flow) => flow.name) ?? [] },
                       },
                     ]
                   : []),
@@ -186,7 +186,9 @@ export function createSdkLoop(
                       liveTools.set(event.id, { callId: event.id, name: event.name, args: event.input });
                       entries.push({
                         kind: KINDS.callStart,
-                        data: { callId: event.id, tool: event.name, input: event.input ?? {}, replaySafe: false },
+                        data: { callId: event.id, tool: event.name, input: event.input ?? {}, replaySafe: false,
+                          ...(event.parent_tool_use_id ? { parentCallId: event.parent_tool_use_id } : {}),
+                        },
                       });
                     } else {
                       liveTools.delete(event.id);
@@ -278,6 +280,9 @@ export function createSdkLoop(
                 const evidence = JSON.stringify({
                   application_instructions: launch.sdk!.instructions,
                   supplied_skills: inbox.learning_skills ?? [],
+                  supplied_workflows: inbox.learning_workflows ?? [],
+                  workflow_tools: launch.sdk!.workflow_tools ?? [],
+                  workflow_adapters: launch.sdk!.workflow_adapters ?? [],
                   user_input: (launch.input as { content: string }).content,
                   tool_events: inbox.batches.flatMap((batch) => batch.events.filter((event) => event.type === "tool")),
                   final_answer: result.answer,

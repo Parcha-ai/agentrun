@@ -73,7 +73,7 @@ import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../por
  *  grades), which every gate of the run reads with its sessions' spend (runBooking's sessions.beside, overCap, the
  *  wrap-ups). None: nothing is. */
 export type RunCapConfig = Omit<RunCapOptions, "sessions"> & { beside?(): Promise<number | null> };
-import { bookedIn } from "../paid-calls.js";
+import { bookedIn, type PaidBooking } from "../paid-calls.js";
 import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { CODEMODE, defersCatalog, isCatalogWire, TOOLS_CALL, TOOLS_SEARCH } from "@parcha/agentrun-kernel";
@@ -1521,11 +1521,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (!specNow?.runCap) throw new Error("the run's spec gives no cap (AdapterRunSpec.runCap)");
           // The cap each admission reads is the run's now (capNow): a raise taken on this claim or an earlier one.
           const { beside: _beside, ...config } = specNow.runCap;
+          // runCap tells `judged` only the verdict a request goes by: a refusal that waits is asked again, told then, so a
+          // request admitted after waiting sets freeMade from the count it was admitted at.
           const judged: RunCapOptions["judged"] = (request, answer) => {
             config.judged?.(request, answer);
             if (request.freeRequestsMade !== undefined) freeMade = request.freeRequestsMade + (answer && !("refuse" in answer) && answer.freeRequest === true ? 1 : 0);
           };
-          return (capBuilt ??= runCap({ sessions, keepBackUsd: (request, asked) => keepBackOf?.(request, asked), ...config, judged, capUsd: capNow }));
+          // A step waiting for room leaves once the run has a pause (pendingPause, below): nothing more is sent until a
+          // raise, and it is refused in the pause's words (beforeRequest). It leaves at the run's stop too, unsent.
+          return (capBuilt ??= runCap({ sessions, keepBackUsd: (request, asked) => keepBackOf?.(request, asked), parked: () => pendingPause !== undefined, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), ...config, judged, capUsd: capNow }));
         };
         const flushed = { flush: () => deps.flush() };
         const earlierDecisions = sessionSpendOf(await sessions.read(DECISION_SESSION)).spentUsd;
@@ -1641,6 +1645,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // outside any) and its decisions (ledger.decisions). Its last refusal is kept: a turn it ended ends the run in its
         // words.
         const paid = ledger.paid;
+        // A host tool call's paid requests name the session the call runs in (RunTools.admit `under`): a request of it still
+        // in flight may be the one that asked for the call (Claude Code books its cost after its calls; Codex starts a call
+        // with its response open), so the call is judged beside it and never waits on it. pi's request has answered by then.
+        const paidUnder: PaidBooking = { admit: (request) => paid.admit({ ...request, under: spec.session.key }), settle: (id, usd, options) => paid.settle(id, usd, options) };
         let refused: Refusal | undefined;
         /** The pause a refusal for room journaled before pi heard of it (pauseAtCap), the run parked with it. */
         let pausedAtRefusal = false;
@@ -1700,7 +1708,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // Fits now: dropped for good, on the root too, so a later claim never revives the old refusal.
             if (pendingPause === undefined) await keepPending(null);
           }
-          const answer = over ? { refuse: over, forGood: true } : (pendingPause ?? (await theCap().before(request)));
+          let answer = over ? { refuse: over, forGood: true } : (pendingPause ?? (await theCap().before(request)));
+          // A request that waited for room while the run parked (the cap let it leave the line): refused in the pause's
+          // words, as any request after the pause is.
+          if (!over && answer && "refuse" in answer && pendingPause !== undefined) answer = pendingPause;
           if (answer && "refuse" in answer && reflecting) learningRefused ??= answer;
           else if (answer && "refuse" in answer) {
             refused = answer;
@@ -2055,7 +2066,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
                 // refused for room pauses the run (Ledger.pause, the run's pause), as main's paidCall does.
                 // The computer protocol calls it makes, kept beside it on the run's root (COMPUTER_CALLS) for its result
                 // row's computer_calls, before its result is written.
-                route: () => bookedIn({ call: toolContext.callId, paid, pause: ledger.pause }, () => recordingCalls(
+                route: () => bookedIn({ call: toolContext.callId, paid: paidUnder, pause: ledger.pause }, () => recordingCalls(
                   () => tool.call(args, { ...toolContext, signal: toolContext.signal ? AbortSignal.any([toolContext.signal, stopAbort.signal]) : stopAbort.signal }),
                   (calls, dropped) => keepCalls(toolContext.callId, calls, dropped),
                 )),

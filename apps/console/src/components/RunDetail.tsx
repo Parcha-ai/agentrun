@@ -88,9 +88,11 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
   // Paused at its spend cap: what it spent of its cap, from the served figures (without them, said without them).
   if (run.status === "input_required" && run.pending?.kind === "budget") {
     // Each figure only as served: a pause sent with its kind alone says so without an amount, as its banner does.
-    const { cap_usd: cap, spent_usd: spent } = run.pending;
+    // What it holds for steps still running is said beside what it spent, never as spend: each settles at what it cost.
+    const { cap_usd: cap, spent_usd: spent, held_usd: held } = run.pending;
     const capped = typeof cap === "number" && Number.isFinite(cap);
-    const words = capped && typeof spent === "number" ? `It has spent ${capWords(spent)} of its ${capWords(cap)} cap.` : capped ? `Its ${capWords(cap)} cap is reached.` : "Its spend cap is reached.";
+    const holding = typeof held === "number" && held > 0 ? `, and holds ${capWords(held)} for steps still running` : "";
+    const words = capped && typeof spent === "number" ? `It has spent ${capWords(spent)} of its ${capWords(cap)} cap${holding}.` : capped ? `Its ${capWords(cap)} cap is reached.` : "Its spend cap is reached.";
     return { title: "Paused at its spend cap", note: `${words} Raise the cap above to continue.`, spin: false };
   }
   // A tool call waiting on the owner's approval: the card above answers it, and a message below declines it.
