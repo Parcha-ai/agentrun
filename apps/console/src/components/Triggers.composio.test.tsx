@@ -59,7 +59,8 @@ function server({ triggers = [NIGHTLY, ISSUES], servers = SERVERS, create, updat
     calls.push(call);
     if (call.path === "/v2/agents") return json(200, { agents: AGENTS, next_cursor: null });
     if (call.path === "/v2/settings/mcp-servers") return json(200, { servers });
-    if (call.path === "/v2/settings/mcp-servers/gh/composio/events") return json(200, { server: "gh", toolkit: "github", events: [ISSUE_ADDED, STAR_ADDED] });
+    const events = /^\/v2\/settings\/mcp-servers\/([^/]+)\/composio\/events$/.exec(call.path);
+    if (events) return json(200, { server: events[1], toolkit: "github", events: [ISSUE_ADDED, STAR_ADDED] });
     if (call.path === "/v2/settings/mcp-servers/gh/composio/triggers") return json(200, { triggers: triggers.filter((t) => t.source.kind === "composio").map((t) => ({ id: t.id, name: t.name, enabled: t.enabled, event: (t.source as { event: string }).event, instance_id: (t.source as { instance_id: string }).instance_id, on_composio: onComposio })), subscription: { ours: true, webhook_url: ISSUES.hook_url } });
     if (call.path === "/v2/triggers" && call.method === "GET") return json(200, { triggers });
     if (call.path === "/v2/triggers" && call.method === "POST") return create ? create(call, ++creates) : json(201, { ...ISSUES, ...(call.body as object), id: "trg_new" });
@@ -204,6 +205,32 @@ describe("Triggers: from an app (Composio)", () => {
     expect(moved!.body).toEqual({ ...BODY, source: { ...BODY.source, move_subscription: true } });
     expect(moved!.key).not.toBe(s.posts()[0]!.key);
     expect(t.went).toEqual(["#/triggers/trg_new"]);
+  });
+
+  it("a move asked about one create is withdrawn once the server, event or config changes: Move it here never sends another", async () => {
+    const OTHER = { ...SERVERS[1], name: "gh-other", url: "https://backend.composio.test/v3/mcp/srv_2/mcp?user_id=agentrun-qa" };
+    const elsewhere = () => refusal(409, "composio_subscription_elsewhere", `Sends its events to ${ELSEWHERE}.`, { details: { webhook_url: ELSEWHERE } });
+    const s = server({ servers: [...SERVERS, OTHER], create: elsewhere });
+    const t = await open(s.v2, { trigger: null, kind: "composio" });
+    const asked = () => t.host.querySelector('[role="alertdialog"][aria-label="Move the subscription here?"]');
+    await t.fill();
+    await t.click(/^Create trigger$/);
+    expect(asked()).not.toBeNull();
+    // Another server: another project, whose subscription nobody asked about.
+    await t.choose("Composio server", "gh-other");
+    expect(asked()).toBeNull();
+    expect(t.button(/^Move it here$/)).toBeUndefined();
+    // Another config of the same server: the confirmation was for the create as it was refused.
+    await t.choose("Composio server", "gh");
+    await t.choose("Event", "GITHUB_ISSUE_ADDED_EVENT");
+    await t.set("config-owner", "many-drop");
+    await t.set("config-repo", "agentrun-scratch");
+    await t.click(/^Create trigger$/);
+    expect(asked()).not.toBeNull();
+    await t.set("config-repo", "another-repo");
+    expect(asked()).toBeNull();
+    expect(s.posts()).toHaveLength(2);
+    expect(s.posts().every((p) => (p.body as { source: Record<string, unknown> }).source.move_subscription === undefined)).toBe(true);
   });
 
   it("Keep it there sends nothing more, and the form stays", async () => {

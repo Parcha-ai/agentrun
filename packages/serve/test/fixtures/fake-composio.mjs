@@ -7,12 +7,15 @@
 // call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config, id?, created_at? }` (an ACTIVE one under another
 // config, say); as the real one, `auth_config_ids` narrows the list to those under it. `noTools`: its MCP endpoint serves no tool at all. `listStatus`: its MCP endpoint answers every request after the first handshake with that HTTP status (an outage, not an answer "no"). `fail`: `{ path, status, method? }`
 // makes the call whose path ends in `path` (or for which `path`, a function, holds) answer that status; a list of them
-// fails each.
+// fails each. With `times`, only that many such calls fail (the rest are answered as usual); with `wait`, a promise, the
+// failure is answered only once it settles (a slow refusal, for two calls at once).
 // Triggers (composio-triggers.ts): the project's one webhook subscription (`subscription`: one it already has, `{ webhook_url,
 // secret? }`; a second create answers 409, as the real one does), its secret in every answer and new at each rotation;
+// `madeSecret`: the secret a subscription it makes gets (a new one each, else).
 // `triggerTypes`: by toolkit slug, the trigger types it lists (`pageSize` pages the list); and the trigger instances an
 // upsert makes, one per slug, account and config (the same again answers the same id and turns it on again, as the real
-// one does), each listed by GET /trigger_instances/active (a disabled one only with show_disabled=true), turned on and off
+// one does), each listed by GET /trigger_instances/active (a disabled one only with show_disabled=true; `instancePage` pages
+// it at most that many a page, by `cursor` and `next_cursor`, as `limit` does), turned on and off
 // by PATCH and deleted by DELETE /trigger_instances/manage/{id}. An upsert for an account that is not ACTIVE, or whose
 // config misses a required field, is refused 400. Connected accounts carry their id (`ca_fake_<toolkit>`) and user_id.
 // Its base URL carries a path of its own, new each start, and its MCP server's id is new each start too: a request on its
@@ -64,7 +67,7 @@ export const STAR_ADDED = {
 /** When an account was made, as Composio lists it, for one that names no other. */
 const ACCOUNT_MADE = "2026-11-13T20:26:18.916Z";
 
-export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize } = {}) {
+export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize, instancePage, madeSecret } = {}) {
   const calls = [];
   const strays = [];
   const mcpKeys = [];
@@ -97,8 +100,12 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     calls.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), body, keyOk: req.headers["x-api-key"] === apiKey });
     const reply = (status, value) => (res.writeHead(status, { "content-type": "application/json" }), res.end(JSON.stringify(value)));
     if (req.headers["x-api-key"] !== apiKey) return reply(401, { error: { message: "Invalid API key" } });
-    const failing = fails.find((f) => (!f.method || f.method === req.method) && (typeof f.path === "function" ? f.path(url.pathname) : url.pathname.endsWith(f.path)));
-    if (failing) return reply(failing.status, { error: { message: `Composio refused ${url.pathname}` } });
+    const failing = fails.find((f) => (f.times === undefined || (f.used ?? 0) < f.times) && (!f.method || f.method === req.method) && (typeof f.path === "function" ? f.path(url.pathname) : url.pathname.endsWith(f.path)));
+    if (failing) {
+      failing.used = (failing.used ?? 0) + 1;
+      if (failing.wait) await failing.wait;
+      return reply(failing.status, { error: { message: `Composio refused ${url.pathname}` } });
+    }
     const slug = url.searchParams.get("toolkit_slug");
     if (req.method === "GET" && url.pathname === "/api/v3/tools") {
       const known = toolkits[slug];
@@ -125,7 +132,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
       if (req.method === "POST") {
         if (subscriptions.length) return reply(409, { error: { message: "A webhook subscription already exists for this project. Only one subscription is allowed per project.", code: 409, slug: "WebhookSubscription_AlreadyExists", status: 409 } });
         if (typeof body?.webhook_url !== "string" || !Array.isArray(body.enabled_events)) return reply(400, { error: { message: "webhook_url and enabled_events are required" } });
-        const sub = { id: `ws_fake_${++madeSubs}`, webhook_url: body.webhook_url, version: body.version ?? "V3", enabled_events: body.enabled_events, secret: secretOf(), created_at: at(), updated_at: at() };
+        const sub = { id: `ws_fake_${++madeSubs}`, webhook_url: body.webhook_url, version: body.version ?? "V3", enabled_events: body.enabled_events, secret: madeSecret ?? secretOf(), created_at: at(), updated_at: at() };
         subscriptions.push(sub);
         return reply(201, sub);
       }
@@ -165,7 +172,9 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     if (req.method === "GET" && url.pathname === "/api/v3/trigger_instances/active") {
       const ids = url.searchParams.get("trigger_ids")?.split(",");
       const listed = [...instances.values()].filter((i) => (!ids || ids.includes(i.id)) && (i.disabled_at === null || url.searchParams.get("show_disabled") === "true"));
-      return reply(200, { items: listed.map(instanceView), next_cursor: null, total_pages: 1, current_page: 1, total_items: listed.length });
+      const from = Number(url.searchParams.get("cursor") ?? 0);
+      const size = Math.min(Number(url.searchParams.get("limit") ?? listed.length) || listed.length, instancePage ?? listed.length);
+      return reply(200, { items: listed.slice(from, from + size).map(instanceView), next_cursor: from + size < listed.length ? String(from + size) : null, total_pages: Math.max(1, Math.ceil(listed.length / Math.max(size, 1))), current_page: Math.floor(from / Math.max(size, 1)) + 1, total_items: listed.length });
     }
     const manage = /^\/api\/v3\/trigger_instances\/manage\/([^/]+)$/.exec(url.pathname);
     if (manage) {

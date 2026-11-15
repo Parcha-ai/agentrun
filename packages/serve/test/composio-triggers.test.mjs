@@ -251,6 +251,64 @@ test("a Composio failure on pause or delete is said, with what to do by hand; th
   assert.equal((await s.api("GET", `/triggers/${one.id}`)).status, 404, "gone here");
 });
 
+test("deleting the last trigger on while a paused one still holds the instance turns it off on Composio, and keeps it", async (t) => {
+  const s = await setup(t);
+  const on = (await s.api("POST", "/triggers", issueTrigger())).body;
+  const paused = (await s.api("POST", "/triggers", issueTrigger(undefined, { enabled: false }))).body;
+  const shared = on.source.instance_id;
+  assert.equal(paused.source.instance_id, shared);
+  assert.equal(s.composio.instances.get(shared).disabled_at, null, "on: a trigger that holds it is on");
+  const deleted = await s.api("DELETE", `/triggers/${on.id}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.ok(s.composio.instances.has(shared), "kept: the paused trigger still holds it");
+  assert.ok(s.composio.instances.get(shared).disabled_at, "off: no trigger left that holds it is on, so Composio stops polling");
+});
+
+test("two creates at once on one project: the first one's failure undoes only what it alone made, and the second keeps its subscription, secret and instance", async (t) => {
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  // The first upsert fails, slowly: the second create runs meanwhile.
+  const s = await setup(t, { composio: { fail: { path: "/upsert", method: "POST", status: 500, times: 1, wait: held } } });
+  const upserts = () => s.composio.calls.filter((c) => c.method === "POST" && c.path.endsWith("/upsert")).length;
+  const first = s.api("POST", "/triggers", issueTrigger({ owner: "many-drop", repo: "a" }));
+  for (let i = 0; i < 200 && upserts() < 1; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(upserts(), 1, "the first create is at its upsert");
+  const second = s.api("POST", "/triggers", issueTrigger({ owner: "many-drop", repo: "b" }));
+  // The second is made before the first answers, or waits for it: either way, the first's failure answers after.
+  await Promise.race([second, new Promise((r) => setTimeout(r, 1500))]);
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.status, 424, JSON.stringify(a.body));
+  assert.equal(b.status, 201, JSON.stringify(b.body));
+  assert.equal(s.composio.subscriptions.length, 1, "the subscription the second uses is at Composio");
+  assert.equal(hookOf(s), b.body.source.hook, "at the second's hook");
+  assert.ok(s.composio.instances.has(b.body.source.instance_id), "the second's instance is kept");
+  const fired = await deliver(s.baseUrl, b.body.source.hook, delivery(b.body.source.instance_id), s.composio.subscriptions[0].secret);
+  assert.equal(fired.status, 202, `the secret is kept here: ${JSON.stringify(fired.body)}`);
+  assert.equal((await s.api("GET", "/triggers")).body.triggers.filter((x) => x.source.kind === "composio").length, 1);
+});
+
+test("a subscription whose secret can't be kept here is deleted at Composio again: nothing is left there", async (t) => {
+  // A secret this server won't keep (under 8 bytes): the local write fails after Composio made the subscription.
+  const s = await setup(t, { composio: { madeSecret: "short" } });
+  const res = await s.api("POST", "/triggers", issueTrigger());
+  assert.notEqual(res.status, 201, JSON.stringify(res.body));
+  assert.equal(s.composio.to("/api/v3/webhook_subscriptions", "POST").length, 1, "Composio made it");
+  assert.equal(s.composio.subscriptions.length, 0, "and deleted it again");
+  assert.equal(s.composio.instances.size, 0);
+  assert.equal((await s.api("GET", "/triggers")).body.triggers.filter((x) => x.source.kind === "composio").length, 0);
+});
+
+test("a saved server's triggers read each instance's state on Composio past its first page", async (t) => {
+  const s = await setup(t, { composio: { instancePage: 2 } });
+  for (const repo of ["a", "b", "c"]) assert.equal((await s.api("POST", "/triggers", issueTrigger({ owner: "many-drop", repo }))).status, 201);
+  assert.equal(s.composio.instances.size, 3);
+  const listed = await s.api("GET", "/settings/mcp-servers/gh/composio/triggers");
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.equal(listed.body.triggers.length, 3);
+  assert.deepEqual(listed.body.triggers.map((x) => x.on_composio), ["on", "on", "on"], JSON.stringify(listed.body.triggers));
+});
+
 test("a trigger the server turns off itself (its agent archived, a failure streak) is off on Composio too, as a pause is", async (t) => {
   const s = await setup(t);
   await made(s.api, "other");
