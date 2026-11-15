@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { ComposioTriggers } from "../dist/composio-triggers.js";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { secretWritePath, serve } from "./support.mjs";
-import { firings, made } from "./trigger-support.mjs";
+import { firings, made, until } from "./trigger-support.mjs";
 
 secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
 secretWritePath(["POST"], /^\/settings\/mcp-servers\/[^/]+\/composio\/rotate-secret$/);
@@ -431,7 +431,9 @@ test("a trigger the server turns off itself (its agent archived, a failure strea
     assert.equal(last.status, "failed", JSON.stringify(last));
   }
   assert.equal((await s.api("GET", `/triggers/${flaky.id}`)).body.disabled?.reason, "auto_paused");
-  assert.ok(s.composio.instances.get(flaky.source.instance_id).disabled_at, "the paused trigger's instance is off on Composio");
+  // Composio is told after the pause holds here, as an owner's pause is, and nothing the test awaits waits for it (an
+  // archive's answer does: the asserts above read it at once).
+  assert.ok(await until(() => s.composio.instances.get(flaky.source.instance_id).disabled_at), "the paused trigger's instance is off on Composio");
 });
 
 test("a Composio failure turning off a trigger the server turned off itself is said, with what to turn off by hand", async (t) => {
