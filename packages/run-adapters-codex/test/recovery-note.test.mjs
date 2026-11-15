@@ -52,7 +52,7 @@ test("a cut-off call's output says what the recovery note of the same turn says 
 });
 
 test("a completed call that returned images, its answer not yet recorded by Codex, is repaired as its text and a line on its images: never their data as JSON", async () => {
-  // The kernel tool records a result with images as { text, images } (adapter.ts kernelTool); a crash before Codex wrote
+  // The kernel tool records a result with images as { text, images } (kernel process/tools.ts bridgeTool); a crash before Codex wrote
   // the call's output leaves it dangling, and the repair must not hand the model the images' base64 as text. What Codex
   // is handed is the item after code mode's recoverItems, which both repairs (with a recovery note and without) run on
   // repairOutput's items before they are injected: that is what is checked.

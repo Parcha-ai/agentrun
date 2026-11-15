@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { FAUX_ENV } from "../dist/model.js";
-import { chargeOf, CLIP, FAUX_MONID_ENV, heldOf, MONID_KEY_ENV, monidClient, monidText, pinMonid } from "../dist/monid.js";
+import { chargeOf, CLIP, FAUX_MONID_ENV, fixedUsd, MONID_KEY_ENV, monidClient, monidText, pinMonid } from "../dist/monid.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { monidForClaim } from "../dist/runner/monid-run.js";
 import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
@@ -141,11 +141,11 @@ test("what a run charged: its cost; nothing when monid charged nothing; unknown,
 
 test("what one call is held at: a per-call price; a matrix's dearest variant; a tiered price's default and every tier; nothing for a price by usage", () => {
   const usd = (value) => ({ value, currency: "USD" });
-  assert.equal(heldOf({ type: "PER_CALL", amount: usd(0.026) }), 0.026);
-  assert.equal(heldOf({ type: "PER_UNIT_MATRIX", variants: [{ price: { type: "PER_CALL", amount: usd(0.01) } }, { price: { type: "PER_CALL", amount: usd(0.04) } }] }), 0.04);
-  assert.equal(heldOf({ type: "TIERED", default: { type: "PER_CALL", amount: usd(0.01) }, tiers: [{ price: { type: "PER_CALL", amount: usd(0.02) } }] }), 0.03);
+  assert.equal(fixedUsd({ type: "PER_CALL", amount: usd(0.026) }), 0.026);
+  assert.equal(fixedUsd({ type: "PER_UNIT_MATRIX", variants: [{ price: { type: "PER_CALL", amount: usd(0.01) } }, { price: { type: "PER_CALL", amount: usd(0.04) } }] }), 0.04);
+  assert.equal(fixedUsd({ type: "TIERED", default: { type: "PER_CALL", amount: usd(0.01) }, tiers: [{ price: { type: "PER_CALL", amount: usd(0.02) } }] }), 0.03);
   for (const price of [{ type: "PER_RESULT", amount: usd(0.001) }, { type: "PER_UNIT", amount: usd(0.5), per: 1, unit: "credit" }, { type: "METERED", amount: usd(0.1), per: { unit: "MINUTE", count: 1 } }, { type: "PER_CALL", amount: { value: 1, currency: "EUR" } }, { type: "TIERED", default: { type: "PER_RESULT", amount: usd(0.1) }, tiers: [] }, { type: "PER_UNIT_MATRIX", variants: [{ price: { type: "PER_CALL", amount: usd(0.01) } }, { price: { type: "PER_RESULT", amount: usd(0.001) } }] }, undefined]) {
-    assert.equal(heldOf(price), undefined, JSON.stringify(price));
+    assert.equal(fixedUsd(price), undefined, JSON.stringify(price));
   }
 });
 

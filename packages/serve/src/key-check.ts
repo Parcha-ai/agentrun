@@ -23,16 +23,15 @@ export type KeyCheck = { state: "accepted"; at: string } | { state: "not_checked
 /** A check's outcome: a KeyCheck to keep with the key, or the provider's refusal, in its words, when it is not kept. */
 export type CheckOutcome = KeyCheck | { state: "refused"; message: string };
 
-type Call = { url: string; method?: "POST"; headers: Record<string, string>; body?: string };
+type Call = { url: string; headers: Record<string, string> };
 const base = (set: string | undefined, fallback: string) => (set?.trim() || fallback).replace(/\/+$/, "");
 
 /** Each provider's check, by key id (tool-keys.ts' TOOL_KEYS, and a model provider's key where the server keeps one),
  *  made with the key and the server's environment, at the base this server sends that provider's calls to. */
 export const KEY_CHECKS: Record<string, (key: string, env: NodeJS.ProcessEnv) => Call> = {
-  // A discover of one result, as every monid tool call starts. That discover costs nothing is read from monid's pricing
-  // page, not stated there: it prices running an endpoint, and shows that price in discover's results
-  // (https://docs.monid.ai/guide/pricing.html, https://docs.monid.ai/api/discover.html).
-  monid: (key) => ({ url: `${MONID_API}/v1/discover`, method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ query: "company data", limit: 1 }) }),
+  // One endpoint of monid's listing, the read a save pins grants from (monid.ts pinMonid): monid prices running an
+  // endpoint, never its listing (https://docs.monid.ai/guide/pricing.html).
+  monid: (key) => ({ url: `${MONID_API}/v1/endpoints?limit=1`, headers: { authorization: `Bearer ${key}` } }),
   // A list of the key's monitors: Parallel prices searches, extracts, decisions, task runs and a monitor's executions,
   // never a list (https://docs.parallel.ai/api-reference/monitor/list-monitors, https://docs.parallel.ai/getting-started/pricing).
   parallel: (key) => ({ url: "https://api.parallel.ai/v1/monitors?limit=1", headers: { "x-api-key": key } }),

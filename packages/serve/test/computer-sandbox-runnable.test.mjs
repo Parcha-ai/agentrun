@@ -74,25 +74,31 @@ async function saveAndStart(api, id, setting) {
   };
 }
 
-for (const [provider, keys] of [["e2b", { E2B_API_KEY: "fake-test-key" }], ["modal", { MODAL_TOKEN_ID: "fake-test-id", MODAL_TOKEN_SECRET: "fake-test-key" }]]) {
-  test(`an agent whose computer is a ${provider} sandbox, its key saved in Settings → Computers, is never refused for its place in Mode 2 (AGENTRUN_BOXES unset); it is not ready, needing Archil's image in the owner's account`, async (t) => {
-    const api = await server(t, { archil: true });
-    const saved = await api("PUT", `/computers/${provider}/keys`, keys);
-    assert.equal(saved.status, 200, JSON.stringify(saved.body));
-    assert.deepEqual([saved.body.ready, /needs Archil's image in your (E2B|Modal) account/.test(saved.body.why ?? "")], [false, true], `${provider} is not ready with its key saved: ${JSON.stringify(saved.body)}`);
+test("an agent whose computer is an e2b sandbox, its key saved in Settings → Computers, is never refused for its place in Mode 2 (AGENTRUN_BOXES unset); it is not ready, needing Archil's image in the owner's account", async (t) => {
+  const api = await server(t, { archil: true });
+  const saved = await api("PUT", "/computers/e2b/keys", { E2B_API_KEY: "fake-test-key" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual([saved.body.ready, /needs Archil's image in your E2B account/.test(saved.body.why ?? "")], [false, true], `e2b is not ready with its key saved: ${JSON.stringify(saved.body)}`);
 
-    // Its computer, not its place: a warning at the save, and the run refused at its start (409) before any computer is
-    // made, in the words Settings says.
-    const said = await saveAndStart(api, `remote-${provider}`, { computer: { kind: "sandbox", provider } });
-    const words = /^An? (E2B|Modal) sandbox can't start in Mode 2 yet: it needs Archil's image in your \1 account, and this server can't put it there yet\. Set this agent's computer to none \(Settings → Computers\)\.$/;
-    for (const [field, reason, message] of [...said.saved, ...said.refused]) {
-      assert.deepEqual([field, reason], ["definition.computer", "not_set_up_here"], JSON.stringify(said));
-      assert.match(message, words);
-    }
-    assert.deepEqual([said.saved.length, said.refused.length, said.started[0], said.started[1]], [1, 1, 409, "agent_not_runnable"], JSON.stringify(said));
-    assert.doesNotMatch(said.started[2] ?? "", PLACE_WORDS, `the run is refused for its place: ${JSON.stringify(said)}`);
-  });
-}
+  // Its computer, not its place: a warning at the save, and the run refused at its start (409) before any computer is
+  // made, in the words Settings says.
+  const said = await saveAndStart(api, "remote-e2b", { computer: { kind: "sandbox", provider: "e2b" } });
+  const words = "An E2B sandbox can't start in Mode 2 yet: it needs Archil's image in your E2B account, and this server can't put it there yet. Set this agent's computer to none (Settings → Computers).";
+  assert.deepEqual([...said.saved, ...said.refused], [["definition.computer", "not_set_up_here", words], ["definition.computer", "not_set_up_here", words]], JSON.stringify(said));
+  assert.deepEqual(said.started.slice(0, 2), [409, "agent_not_runnable"], JSON.stringify(said));
+  assert.doesNotMatch(said.started[2] ?? "", PLACE_WORDS, `the run is refused for its place: ${JSON.stringify(said)}`);
+});
+
+test("Mode 2: an agent whose computer is a Modal sandbox, its keys saved, is ready, warned of nothing at its save and never refused for its computer at its run's start: Modal starts from the box image its prepareImage() answers", async (t) => {
+  const api = await server(t, { archil: true });
+  const saved = await api("PUT", "/computers/modal/keys", { MODAL_TOKEN_ID: "fake-test-id", MODAL_TOKEN_SECRET: "fake-test-key" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual([saved.body.ready, saved.body.why], [true, undefined], JSON.stringify(saved.body));
+  const said = await saveAndStart(api, "remote-modal", { computer: { kind: "sandbox", provider: "modal" } });
+  assert.deepEqual([said.saved, said.refused], [[], []], JSON.stringify(said));
+  assert.doesNotMatch(said.started[2] ?? "", /Modal sandbox can't/, JSON.stringify(said));
+  assert.doesNotMatch(said.started[2] ?? "", PLACE_WORDS, JSON.stringify(said));
+});
 
 test("Mode 2: an agent whose computer is an E2B desktop, its key saved, is warned at the save and refused at its run's start (409) before any computer is made: the desktop would mount the disk, and needs Archil's image", async (t) => {
   const api = await server(t, { archil: true });

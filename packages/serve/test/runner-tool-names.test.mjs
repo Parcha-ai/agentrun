@@ -11,7 +11,7 @@ import { specFor, toolNames } from "./runner-spec-support.mjs";
 
 test("the dispatch lists the web tools and monid by their wire names, beside the hands", async (t) => {
   const monidPin = { "monid:faux/person/enrich": { description: "Enrich a person.", input: { type: "object", properties: {} }, usd: 0.003 } };
-  const { spec } = await specFor(t, { body: { tools: ["read", "write", "web_fetch", "web_search", "monid:faux/*"], monidPin } });
+  const { spec } = await specFor(t, { body: { tools: ["read", "write", "web_fetch", "web_search", "monid:faux/*"] }, monidPin });
   const names = toolNames(spec);
   for (const name of ["web_fetch", "web_search"]) assert.ok(names.includes(name), `lists ${name}: ${JSON.stringify(names)}`);
   // A monid endpoint rides the loop's catalog seam (spec.mcp, as an MCP server's tools do): listed by its wire name, read
