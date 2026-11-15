@@ -534,6 +534,10 @@ test("on Codex, a computer_op answers its script one text item: an op that ran i
   const words = refused.content_items[0].text;
   assert.ok(words.startsWith(DENIED_OPENING), `a refused op's answer opens with the gate's words: ${words}`);
   assert.throws(() => JSON.parse(words), "a refused op's answer is words, never JSON");
+  // Its row names the op it refused, never the tool's name alone, nor what it would have written.
+  const rows = await runTimeline(server, "run-1", ctx);
+  const row = rows.find((one) => one.kind === "tool_result" && one.tool_name === "computer_op" && one.tool_status === "failed");
+  assert.match(row?.summary ?? "", /^Refused: files\.write: Permission denied: /, rowsSeen(rows));
   // The kind skills name every opening a refused op's answer starts with, from the one copy the gate writes them from.
   for (const kind of ["desktop", "phone"]) {
     const skill = readFileSync(new URL(`../src/workspace/kind-skills/${kind}/SKILL.md`, import.meta.url), "utf8").replace(/\s+/g, " ");
