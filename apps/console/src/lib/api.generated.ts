@@ -255,6 +255,7 @@ export interface components {
     free?: true;
     so_far_usd?: number;
     unpriced?: number;
+    upper_bound?: true;
     plan?: {
       requests: number;
       tokens: number;
@@ -1236,6 +1237,7 @@ export interface components {
     free?: true;
     so_far_usd?: number;
     unpriced?: number;
+    upper_bound?: true;
     not_metered?: number;
   };
   Timestamp: string;

@@ -87,6 +87,8 @@ test("a call node's effect cut by a lapsed claim: the next claim reads it unknow
   assert.ok(text.includes("FROZEN_EFFECT_UNKNOWN"), "in the engine's own words: the effect is unknown and will not be repeated");
   assert.equal(sent, 1, "the call was sent once, never repeated by the next claim");
   // Its request was sent and its answer lost with A's claim: it counts at its hold (the model's output ceiling at its
-  // price), as a sent request whose outcome is unknown does, never $0 and never twice.
-  assert.equal(eight(row.costUsd ?? 0), eight(REQUEST_HOLD), `booked once, at the lost request's hold: ${row.costUsd}`);
+  // price), as a sent request whose outcome is unknown does, never $0 and never twice. A hold is the most the run can
+  // have cost, never its cost: costUsd reads null and costAtMostUsd carries the hold.
+  assert.equal(row.costUsd, null, `a hold is never read as the run's cost: ${row.costUsd}`);
+  assert.equal(eight(row.costAtMostUsd ?? 0), eight(REQUEST_HOLD), `booked once, at the lost request's hold: ${row.costAtMostUsd}`);
 });

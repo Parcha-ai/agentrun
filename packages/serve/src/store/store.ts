@@ -162,7 +162,13 @@ export interface RunRow {
   readonly wakeAt: number | null;
   /** A parked run's backoff after a failed resume: its untaken commands wait for it, a stop and its wake_at do not. */
   readonly backoffUntil: number | null;
+  /** What the run cost, exactly: null when that is unknown, and null when its stored cost is only the most it can have
+   *  cost (`costAtMostUsd`). Every reader that sums, compares or shows spend reads this, so a bound never reads as spend. */
   readonly costUsd: number | null;
+  /** The most the run can have cost, set only when that is all its stored cost says (runs.cost_upper_bound): it counts a
+   *  request cut with no answer at what its cap held for it (runner.ts CUT_AT_HOLD). Read only where a figure can be said
+   *  "at most" (the run's view, the runs list); null otherwise, `costUsd` then the stored figure or null. */
+  readonly costAtMostUsd: number | null;
   readonly metrics: unknown;
   readonly summary: string | null;
   /** How the run ended beside its state (RunOutcome), null for a plain completion, a failure, or a run not ended. */
@@ -182,6 +188,9 @@ export interface RunRow {
 export interface RunPatch {
   readonly state?: RunState;
   readonly costUsd?: number | null;
+  /** Whether `costUsd` is the most the run can have cost (stored as runs.cost_upper_bound, read back as
+   *  RunRow.costAtMostUsd): read only with `costUsd`, which always writes it (absent: false). */
+  readonly costUpperBound?: boolean;
   readonly metrics?: unknown;
   readonly summary?: string | null;
   /** How the run ended (RunOutcome), set in its end commit; null clears it. */

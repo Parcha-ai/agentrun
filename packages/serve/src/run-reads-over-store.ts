@@ -11,7 +11,7 @@ import { ApiError } from "./errors.js";
 import { GRAPH_CACHE_BYTES, PartCache, servedGraphView } from "./graph-served.js";
 import { runGraph } from "./graph-view.js";
 import { checkedPath, decodedPath } from "./home-path.js";
-import { costOf, WITHHELD_SIGN_IN } from "./run-view.js";
+import { usageWordsOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { listFiles, sendFile, type FileView } from "./run-files.js";
 import { readLaunchBody } from "./run-launch.js";
@@ -136,7 +136,9 @@ export async function runGraphView(store: Store, runId: string, deps: RunReadsDe
     // No run directory now: the store and a context carry the journal the graph reads.
     root: "",
     input: launch?.input ?? {},
-    modelCost: ended ? costOf(rows) : 0,
+    // Its usage row's cost in its own words (a bound with its exact part), for the graph's join; none before it ended or
+    // before any request (nothing spent), unknown for a row that says nothing.
+    modelCost: ended ? usageWordsOf(rows) : undefined,
     llmRead: booked ? Number.MAX_SAFE_INTEGER : 0,
     store,
     context: deps.context,

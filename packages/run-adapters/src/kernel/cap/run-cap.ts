@@ -124,8 +124,10 @@ export function runCap(options: RunCapOptions): RunCap {
   // dollar rule; one within it goes to the rule, and its admission says it counts (`freeRequest`, written on its
   // runner.request, so the next count holds it in any process). A paid tool call and a decision book under their own
   // sessions and never count; nor does a ChatGPT plan's request (no free model). A free model's request is also admitted
-  // `free`: the runner books it a known $0 however it ends (runner.ts Admitted), never unknown. One the rule refused stays
-  // refused.
+  // `free`: the runner books it a known $0 however it ends (runner.ts Admitted), never unknown. One on a person's plan
+  // (CapModel.plan) is admitted `plan`: $0 to the run however it ends, cut by a crash included. A request is never both:
+  // freeModel refuses a plan model (its listing's price is no price), so `free` is false for every plan request, and the
+  // plan mark is returned before the free one is looked at. One the rule refused stays refused.
   const limit = options.freeRequests;
   const judge: BeforeRequest = async (request) => {
     const free = freeRequest(request, pricing.modelOf);
@@ -133,6 +135,7 @@ export function runCap(options: RunCapOptions): RunCap {
     if (counted && limit !== undefined && (request.freeRequestsMade ?? 0) >= limit) return { refuse: freeCeilingEnd(limit), forGood: true, code: SPEND_CAP_REACHED };
     const answer = await rule(request);
     if (answer && "refuse" in answer) return await roomOf(request, answer);
+    if (!request.paid && pricing.modelOf(request.model, request.route)?.plan) return { ...answer, plan: true };
     if (!free) return answer;
     return { ...(answer ?? {}), ...(counted ? { freeRequest: true as const } : {}), free: true as const };
   };
