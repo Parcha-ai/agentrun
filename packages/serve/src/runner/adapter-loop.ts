@@ -2437,7 +2437,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (stopAbort.signal.aborted) return undefined;
           answer = taken(answer);
           const outcome = answer.isError ? "handed_back" : "answered";
-          const data: WorkflowFirstData = { workflow: first.name, digest: first.digest, revision: first.revision, call: WORKFLOW_FIRST_CALL, outcome };
+          const data: WorkflowFirstData = { workflow: first.name, digest: first.digest, ...(first.promotion !== undefined ? { promotion: first.promotion } : {}), revision: first.revision, call: WORKFLOW_FIRST_CALL, outcome };
           await on.commit(async (tx) => {
             if (outcome === "answered") await tx.appendEntry(theRoot.id, { kind: KINDS.message, data: { role: "model", text: answer.text, at: now() } as unknown as JsonValue });
             await tx.appendEntry(theRoot.id, { kind: WORKFLOW_FIRST, data: data as unknown as JsonValue });

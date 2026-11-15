@@ -37,7 +37,7 @@ async function storeOf({ text, served, byHand = 10, byHandWrong = 0, threshold =
   const logs = [];
   const gate = promotionGate({ store, agentId: "a", runId: "now", revisionId: "rev", launch: { input: {}, title: "", place: { mode: "runner" } }, context: ctx, log: (line) => logs.push(line), commit: async (files, reason, id) => (commits.push({ files, reason, id }), `commit-${commits.length}`) });
   // The gate answers the workflow that serves: this one, or none (the agent takes the run).
-  const serves = async (workflow, at) => { const got = await gate(workflow, at); assert.ok(got === undefined || got === workflow, "no champion here: the laid workflow or none"); return got === workflow; };
+  const serves = async (workflow, at) => { const got = (await gate(workflow, at))?.workflow; assert.ok(got === undefined || got === workflow, "no champion here: the laid workflow or none"); return got === workflow; };
   return { gate: serves, settings, digest, commits, logs };
 }
 
@@ -135,8 +135,9 @@ const { StoreConstraint } = await import("../dist/store/store.js");
 const LEARNING = { given: [], seed: "s", section: "" };
 
 /** A store of `graded` graded agent runs the workflow fits (each with its launch), runs created and commands sent kept, and
- *  `replaying`: a promotion record already replaying with its runs (rows given). For the challenger and deadline checks. */
-async function replayStoreOf({ graded = 6, rows: given = [], records = [], newest, raced = [], creating } = {}) {
+ *  `replaying`: a promotion record already replaying with its runs (rows given). For the challenger and deadline checks.
+ *  `path`: the path each graded run took (`agent`, or `workflow`: one a learned workflow answered alone). */
+async function replayStoreOf({ graded = 6, rows: given = [], records = [], newest, raced = [], creating, path = "agent" } = {}) {
   const kv = new Map();
   const settings = {
     get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
@@ -147,9 +148,9 @@ async function replayStoreOf({ graded = 6, rows: given = [], records = [], newes
   const launches = new Map(given.filter((row) => row.launch).map((row) => [row.id, row.launch]));
   for (let i = 0; i < graded; i++) {
     const id = `graded-${i}`;
-    rows.set(id, { id, state: "ended", metrics: { path: "agent" }, archivedAt: null });
+    rows.set(id, { id, state: "ended", metrics: { path }, archivedAt: null });
     launches.set(id, { input: { question: `Question ${i}` }, title: `Question ${i}`, place: { mode: "runner" }, learning: LEARNING });
-    await putGrade(settings, "a", { run: id, correct: true, expected: { question: `Question ${i}` }, source: "eval", at: `t${i}`, path: "agent" });
+    await putGrade(settings, "a", { run: id, correct: true, expected: { question: `Question ${i}` }, source: "eval", at: `t${i}`, path });
   }
   for (const record of records) await recordPromotion(settings, "a", record, () => true);
   const created = [];
@@ -193,6 +194,20 @@ test("two revisions claimed at once: one challenger reserved, one set of replay 
   assert.equal(replaying.length, 1, `one challenger: ${JSON.stringify(await promotionsOf(settings, "a"))}\n${logs.join("\n")}`);
   assert.equal(created.length, 6, "only the reserved challenger's replay runs start");
   assert.deepEqual([...created].sort(), [...replaying[0].runs].sort(), "the runs started are the ones its record reserved");
+});
+
+// A graded run a learned workflow answered alone (path workflow) has a recorded answer and a grade as an agent's run does:
+// it is a replay input, never left out for the path it took.
+test("graded runs a workflow answered alone are replayed: a new revision reserves a replay run on each", async () => {
+  const text = flowOf(undefined);
+  const digest = workflowDigest({ workflow: text });
+  const { settings, created, logs, gateOf } = await replayStoreOf({ path: "workflow" });
+  assert.equal(await gateOf()({ name: "answer", workflow: text }, digest), undefined, "it does not serve while it replays");
+  const record = (await promotionsOf(settings, "a")).at(-1);
+  assert.deepEqual([record.decided, record.source], ["replaying", "replay"], `replayed, never promoted on its dry run: ${JSON.stringify(record)}\n${logs.join("\n")}`);
+  assert.deepEqual([...record.inputs].sort(), Array.from({ length: 6 }, (_, i) => `graded-${i}`), "every path-workflow graded run is an input");
+  assert.deepEqual([...created].sort(), [...record.runs].sort());
+  assert.match(record.replay_id, /^[0-9a-f-]{36}$/, "the reservation mints the replay's id");
 });
 
 // Review on #2644 (expired replays): a replay decided past REPLAY_DEADLINE_MS with a run still at work cancels that run as
@@ -241,7 +256,9 @@ async function reservedOf({ made = 0, raced = [] } = {}) {
   const ids = Array.from({ length: 6 }, (_, i) => `replay-${i}`);
   const given = ids.slice(0, made).map((id, i) => ({ id, state: "ended", metrics: { path: "replay", replay: { of: `graded-${i}`, outcome: "answered" } }, archivedAt: null, costUsd: 0.01,
     launch: { input: { question: `Question ${i}` }, title: "", place: { mode: "runner" }, learning: LEARNING, replay: { of: `graded-${i}`, workflow: "answer", digest } } }));
-  const record = { workflow: "answer", digest, at: new Date(0).toISOString(), decided: "replaying", source: "replay", reason: "replaying", runs: ids, inputs: ids.map((_, i) => `graded-${i}`), commit: "s" };
+  // Its launch, chosen when it was reserved (PromotionRecord.launch): what a later claim creates its missing runs from.
+  const launch = { revision: "rev", body: { input: null, title: "", place: { mode: "runner" }, learning: LEARNING } };
+  const record = { workflow: "answer", digest, at: new Date(0).toISOString(), decided: "replaying", source: "replay", reason: "replaying", runs: ids, inputs: ids.map((_, i) => `graded-${i}`), launch, commit: "s" };
   return { text, digest, ids, ...(await replayStoreOf({ rows: given, records: [record], raced })) };
 }
 
@@ -293,8 +310,8 @@ async function twoChampionsOf({ held = false, kept } = {}) {
 test("A promoted, then B: a run queued on A and claimed now is served by B, the champion", async () => {
   const { gate, a, b, da, logs } = await twoChampionsOf();
   const got = await gate(a, da);
-  assert.equal(got?.workflow, b.workflow, `B serves, never A's old promote record: ${logs.join("\n")}`);
-  assert.equal(await gate.champion(a, da), b, "the champion alone, for a revision that does not take the input: B too");
+  assert.equal(got?.workflow.workflow, b.workflow, `B serves, never A's old promote record: ${logs.join("\n")}`);
+  assert.equal((await gate.champion(a, da))?.workflow, b, "the champion alone, for a revision that does not take the input: B too");
 });
 
 test("A promoted, then B, then B held: a run queued on A is the agent's, never A's", async () => {
@@ -306,9 +323,9 @@ test("A promoted, then B, then B held: a run queued on A is the agent's, never A
 test("a run already executing on A (an earlier claim of it served A) keeps A after B is promoted, and after B is held", async () => {
   for (const held of [false, true]) {
     const { gate, a, da, logs } = await twoChampionsOf({ held, kept: { workflow: "answer", digest: workflowDigest({ workflow: flowOf(undefined) }), outcome: "answered" } });
-    assert.equal(await gate(a, da), a, `it keeps the revision it started on: ${logs.join("\n")}`);
+    assert.equal((await gate(a, da))?.workflow, a, `it keeps the revision it started on: ${logs.join("\n")}`);
   }
   // Executing on B (it served B's text in place of a laid A), re-claimed once B is held: still B.
   const { gate, a, b, da, db, logs } = await twoChampionsOf({ held: true, kept: { workflow: "answer", digest: workflowDigest({ workflow: flowOf(undefined).replace("Answer.", "Answer, revision B.") }), outcome: "handed_back" } });
-  assert.equal((await gate(a, da))?.workflow, b.workflow, `${db}: ${logs.join("\n")}`);
+  assert.equal((await gate(a, da))?.workflow.workflow, b.workflow, `${db}: ${logs.join("\n")}`);
 });

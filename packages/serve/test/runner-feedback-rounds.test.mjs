@@ -133,7 +133,7 @@ async function world(t, { wrong = new Set(), calls = new Set(), outputSchema, re
     const kept = await keepGrade(store, "agent-1", graded, label);
     return { round: kept.feedback, kept, row: kept.feedback ? await ended(row.id, row.endedAt ?? 0) : await server.runs.get(row.id) };
   };
-  return { server, gw, start, grade };
+  return { server, gw, start, ended, grade };
 }
 
 test("a 20-run labelled stream: right served runs cost $0 learning and stay workflow; the wrong one gets a revision ask; every round's look-back is counted", { timeout: 300_000 }, async (t) => {
@@ -361,6 +361,33 @@ test("a grade of an archived run, or of a run of an archived agent, is kept and 
   const two = await grade(ofArchived, false, LABEL(2));
   assert.equal(two.round, null, "a run of an archived agent opens no round");
   assert.equal(two.row.endedAt, ofArchived.endedAt, "the run of the archived agent was never opened again");
+});
+
+// A served run graded wrong with no words opens a revision round; its steer's words (feedbackWords) are what a right
+// answer holds, else "(no words)", never the verdict again: the runner's look-back ask (feedbackAsk) and the compile turn's
+// revision ask each say it once, as the model is sent them.
+test("a no-label wrong grade's round says the verdict once in each ask: its words are what a right answer holds, else '(no words)'", { timeout: 120_000 }, async (t) => {
+  const { server, gw, start, ended } = await world(t);
+  const agentRequests = () => gw.requests.filter((request) => !isNode(request));
+  const verdicts = (text) => text.match(/graded .*wrong/g) ?? [];
+  for (const [n, expected, words] of [[4, { answer: 42 }, /A right answer holds: \{"answer":42\}/], [5, undefined, /\(no words\)/]]) {
+    const first = await start(`run-no-label-${n}`, n);
+    const m = first.metrics ?? {};
+    assert.equal(m.path, "workflow", `run ${n} served: ${JSON.stringify(m)}`);
+    const before = agentRequests().length;
+    const kept = await keepGrade(server, "agent-1", { run: first.id, correct: false, ...(expected ? { expected } : {}), source: "eval", at: new Date().toISOString(), path: m.path, workflow: m.workflow, ...(m.workflow_digest ? { digest: m.workflow_digest } : {}) }, undefined);
+    assert.equal(kept.feedback, "revise", `a wrong served run with no words asks a revision: ${JSON.stringify(kept)}`);
+    await ended(first.id, first.endedAt ?? 0);
+    const asked = agentRequests().slice(before).map((request) => lastText(request.body));
+    const look = asked.find((text) => /The task is done\. Before the run ends/.test(text));
+    assert.ok(look, `the look-back was asked: ${asked.map((text) => text.slice(0, 80)).join(" | ")}`);
+    assert.match(look, words, "the steer's words");
+    assert.equal(verdicts(look).length, 1, `the look-back ask says the verdict once: ${look}`);
+    const compile = asked.find((text) => text.trimStart().startsWith("One more turn: revise your learned workflow `answer`."));
+    assert.ok(compile, `the compile turn asked for the revision: ${asked.map((text) => text.slice(0, 80)).join(" | ")}`);
+    assert.match(compile, words, "the steer's words, as the reviewer's");
+    assert.equal(verdicts(compile).length, 1, `the compile ask says the verdict once: ${compile}`);
+  }
 });
 
 // The kept grade names the round it opened only once the round opened (keepGrade: the grade first, then the reopen, then

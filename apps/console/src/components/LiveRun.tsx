@@ -105,18 +105,15 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   };
   // A raise is taken from its answer only by reading the run again (the pause gives way), and the timeline is followed
   // anew; a refusal goes back to the raise control, which says it there.
-  const raiseCap = async (usd: number) => {
-    const answer = await v2.raiseCap(runId, usd);
+  const thenReread = async <A,>(call: () => Promise<A>) => {
+    const answer = await call();
     await refresh(); setFollows((n) => n + 1);
     return answer;
   };
+  const raiseCap = (usd: number) => thenReread(() => v2.raiseCap(runId, usd));
   // A grade's answer goes back to the Grade control (what round it opened, or the refusal it throws); the run and its
   // timeline are read again after it, since a round opens the run again.
-  const grade = async (body: GradeBody) => {
-    const answer = await v2.gradeRun(runId, body);
-    await refresh(); setFollows((n) => n + 1);
-    return answer;
-  };
+  const grade = (body: GradeBody) => thenReread(() => v2.gradeRun(runId, body));
   const message = async (text: string) => {
     let ok = true;
     // The same text sent again after a lost or refused answer goes under the same key: the server never takes it twice.
