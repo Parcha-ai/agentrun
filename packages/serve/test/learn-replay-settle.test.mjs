@@ -502,3 +502,21 @@ test("a revision held on 20 served runs graded wrong that hands each back to the
   const half = await ownersReplay(w, (of) => (Number(of.split("-")[1]) < 15 ? "handed_back" : "answered"), () => SAID);
   assert.deepEqual([half.view.decided, half.view.score.wf_acc, half.view.score.agent_acc, half.view.score.handed_back], ["hold", 0.75, 1, 15], JSON.stringify(half.view));
 });
+
+// Greptile P1 on #2877: gains on other inputs never pay for the runs it was held on. Held on X and Y (served, graded wrong),
+// its replay answers the five agent inputs right by their expected answer (the agent's were wrong) and says 41 again on X
+// and Y: 5/7 against the agent's 2/7 overall, yet each run it was held on is as wrong as before. The runs it was held on
+// are scored on their own too, and must be within the bar.
+test("a revision held on runs it served wrong never re-promotes on gains elsewhere while it repeats their wrong answers", async (t) => {
+  const { w, settings, older } = await heldOnServed(t);
+  for (const run of older) await putGrade(settings, "agent-1", { run, correct: false, expected: { answer: 42 }, source: "eval", at: "t", path: "agent" });
+  const held = (await w.records()).at(-1).held_on;
+  const mixed = await ownersReplay(w, () => "answered", (of) => (held.includes(of) ? SAID : "42"));
+  assert.deepEqual([mixed.view.score.wf_acc, mixed.view.score.agent_acc], [0.7143, 0.2857], `overall it clears: ${JSON.stringify(mixed.view)}`);
+  assert.deepEqual([mixed.view.status, mixed.view.decided], ["done", "hold"], JSON.stringify(mixed.view));
+  assert.match(mixed.view.reason, /on the 2 graded runs it was held on/);
+  assert.deepEqual([...(await w.records()).at(-1).held_on].sort(), ["graded-5", "graded-6"], "still owed by its next replay");
+  // Right on them too: promoted.
+  const fixed = await ownersReplay(w, () => "answered", FIXED);
+  assert.deepEqual([fixed.view.status, fixed.view.decided], ["done", "promote"], JSON.stringify(fixed.view));
+});
