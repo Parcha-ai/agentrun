@@ -693,6 +693,40 @@ test("quoteCheckProblems: a key a model step writes over the page a call fetched
   assert.match(quoteCheckProblems(citedDraft({ answer: { properties: { refunds: { type: "boolean" }, deep } } })).join("\n"), /nests past 16 keys/);
 });
 
+test("quoteCheckProblems: a quote key whose schema is a union is read branch by branch, each shape needing a check that reads it, and a shape no check reads is refused", () => {
+  const RECORDS = { type: "array", items: { type: "object", properties: { quote: { type: "string" }, url: { type: "string" } } } };
+  const unionDraft = (quotes, checks) => citedDraft({
+    answer: { properties: { refunds: { type: "boolean" }, quotes } },
+    extra: checks.slice(1).map((check, i) => ({ node: "escalate", label: `quotes_${i}`, when: { predicate: "quote_missing", pages: ["page"], ...check }, kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" })),
+    check: checks[0] && { pages: ["page"], field: undefined, ...checks[0] },
+  });
+  const STRING_READ = { path: "answer.quotes" };
+  const RECORD_READ = { path: "answer.quotes", field: "quote" };
+  const missing = (place, field) => `the answer carries quotes (Answer.${place}) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": "answer.quotes"${field ? `, "field": ${JSON.stringify(field)}` : ""}, "pages": ["page"]} as a step of its top-level chain after the step that writes the answer (pages: the state keys its call steps write), never a judge`;
+  for (const [name, quotes] of [
+    ["anyOf", { anyOf: [{ type: "string" }, RECORDS] }],
+    ["oneOf", { oneOf: [{ type: "string" }, RECORDS] }],
+    ["a type list", { type: ["string", "array"], items: RECORDS.items }],
+  ]) {
+    assert.deepEqual(quoteCheckProblems(unionDraft(quotes, [STRING_READ])), [missing("quotes[].quote", "quote")], `${name}: the string read leaves the records unread`);
+    assert.deepEqual(quoteCheckProblems(unionDraft(quotes, [RECORD_READ])), [missing("quotes")], `${name}: the records' read leaves the string unread`);
+    assert.deepEqual(quoteCheckProblems(unionDraft(quotes, [STRING_READ, RECORD_READ])), [], `${name}: a check reading each shape`);
+  }
+  // A list whose items are either quotes or records holding one: the same two reads of the list.
+  const mixed = { type: "array", items: { anyOf: [{ type: "string" }, RECORDS.items] } };
+  assert.deepEqual(quoteCheckProblems(unionDraft(mixed, [STRING_READ])), [missing("quotes[].quote", "quote")]);
+  assert.deepEqual(quoteCheckProblems(unionDraft(mixed, [STRING_READ, RECORD_READ])), []);
+  // A branch that holds no quotes (null) asks for no check.
+  assert.deepEqual(quoteCheckProblems(unionDraft({ anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }] }, [STRING_READ])), []);
+  // Quotes no one path and field reads (records whose quotes are a list, a branch of records holding no quote field) are
+  // refused, whatever checks read the answer: quote_missing would read none of them.
+  const unread = (place) => `the answer carries quotes (Answer.${place}) in a shape no quote_missing check reads, and the workflow fetches pages: give them one it reads, a quote, a list of quotes or a list of records each holding its quote at one field`;
+  const nested = { type: "array", items: { type: "object", properties: { quotes: { type: "array", items: { type: "string" } } } } };
+  assert.deepEqual(quoteCheckProblems(unionDraft(nested, [STRING_READ, { path: "answer.quotes", field: "quotes" }])), [unread("quotes[].quotes[]")]);
+  const textOnly = { anyOf: [{ type: "string" }, { type: "array", items: { type: "object", properties: { text: { type: "string" } } } }] };
+  assert.deepEqual(quoteCheckProblems(unionDraft(textOnly, [STRING_READ, { path: "answer.quotes", field: "text" }])), [unread("quotes[]*")]);
+});
+
 // The agent's output schema: shown to the compile turn next to the language, and the dry run's answer held to it with
 // answer-json.ts answerAsServed, the function a run serving the workflow shapes its answer with.
 const SHAPE = { type: "object", additionalProperties: false, required: ["mcc", "description", "confidence"], properties: { mcc: { type: "string" }, description: { type: "string" }, confidence: { type: "number" } } };
