@@ -769,7 +769,6 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: Literal[True, False, "notes"]
     checkout: Literal["pull_request", "none"]
-    cap_mode: Literal["expected", "strict"]
 
 
 Id: TypeAlias = "str"
@@ -956,7 +955,6 @@ class Definition(_DefinitionRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: Literal[True, False, "notes"]
     checkout: Literal["pull_request", "none"]
-    cap_mode: Literal["expected", "strict"]
 
 
 class DefinitionModelTiers(TypedDict, total=False):
@@ -1506,7 +1504,6 @@ class Cost(_CostRequired, total=False):
     cap_usd: float | None
     so_far_usd: float
     unpriced: int
-    overshoot_bound_usd: float
 
 
 Effort: TypeAlias = "Literal[\"low\", \"medium\", \"high\"]"
@@ -1643,7 +1640,6 @@ class RunSummaryPending3(_RunSummaryPending3Required, total=False):
     needs_usd: float
     least_cap_usd: float
     suggested_cap_usd: float
-    overshoot_bound_usd: float
     node: str | None
 
 
@@ -3398,7 +3394,6 @@ class RunCreateInline(_RunCreateInlineRequired, total=False):
     max_cost_usd: float
     quote_id: str
     mcp_auth: dict[str, RunCreateInlineMcpAuthValue]
-    cap_mode: Literal["expected", "strict"]
     workflow_first: bool
     learning: Literal["use"]
     repo: str
@@ -3450,7 +3445,6 @@ class Run(_RunRequired, total=False):
     effort: Effort
     console_url: str
     approvals: Literal["ask", "never"]
-    cap_mode: Literal["expected", "strict"] | None
     last_progress_at: str | None
     input: dict[str, Any] | None
     file_ids: list[str]
@@ -3602,7 +3596,6 @@ class RunPending3(_RunPending3Required, total=False):
     needs_usd: float
     least_cap_usd: float
     suggested_cap_usd: float
-    overshoot_bound_usd: float
     node: str | None
 
 
@@ -4028,7 +4021,6 @@ class RunCreate(_RunCreateRequired, total=False):
     max_cost_usd: float
     quote_id: str
     mcp_auth: dict[str, RunCreateMcpAuthValue]
-    cap_mode: Literal["expected", "strict"]
     workflow_first: bool
     learning: Literal["use"]
     repo: str

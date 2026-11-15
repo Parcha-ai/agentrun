@@ -381,7 +381,6 @@ async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, diges
     ...(launch.model ? { model: launch.model } : {}),
     ...(launch.effort !== undefined ? { effort: launch.effort } : {}),
     ...(launch.maxCostUsd !== undefined ? { maxCostUsd: launch.maxCostUsd } : {}),
-    ...(launch.capMode !== undefined ? { capMode: launch.capMode } : {}),
     ...(launch.plane ? { plane: launch.plane } : {}),
     ...(launch.approvers !== undefined ? { approvers: launch.approvers } : {}),
     ...(launch.documents !== undefined ? { documents: launch.documents } : {}),

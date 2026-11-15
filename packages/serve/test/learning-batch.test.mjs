@@ -280,7 +280,9 @@ test("the cap's rule on its own: with $0.40 a row and $1.20, a third row is star
   assert.deepEqual([end.status, end.stopped, end.finished, end.spent_usd], ["stopped", "cap", 3, 1.2]);
   assert.deepEqual(end.rows.map((r) => r.state), ["done", "done", "done", "pending", "pending", "pending"]);
   assert.equal(host.runs.get("run-3").b.max_cost_usd, 0.4, "a run's own cap is what the batch has left");
-  assert.deepEqual([...host.runs.values()].map((r) => r.b.cap_mode), ["strict", "strict", "strict"], "a row's run is capped strict: every input token priced uncached, so no request (a cache miss included) passes what the batch has left");
+  // One cap mode, the worst case (every input token priced uncached), so no request of a row's run passes what the batch
+  // has left, a cache miss included; the batch sends no cap_mode, which a run start would refuse.
+  assert.deepEqual([...host.runs.values()].map((r) => "cap_mode" in r.b), [false, false, false]);
   assert.ok([...host.runs.values()].every((r) => r.messages.length === 1 && /^Review: the reference answer is "A"; you answered "A"\.$/.test(r.messages[0])));
 });
 

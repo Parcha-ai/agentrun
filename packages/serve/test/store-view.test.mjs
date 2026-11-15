@@ -72,7 +72,6 @@ test("a completed run's view reads the whole answer, cost and shape from the sto
     review: null,
     pending: null,
     cost: { usd: 0.25, basis: "estimate", charge_state: null, cap_usd: null },
-    cap_mode: null,
     approvals: "ask",
     archived_at: null,
     imported_from: null,
@@ -82,7 +81,7 @@ test("a completed run's view reads the whole answer, cost and shape from the sto
     last_progress_at: null,
   });
 
-  // The list summary is the view's subset: no result, place, updated_at, cap_mode, poll_after_ms or last_progress_at.
+  // The list summary is the view's subset: no result, place, updated_at, poll_after_ms or last_progress_at.
   const summary = await summaryOverStore(store, "run-1", deps);
   assert.deepEqual(summary, {
     run_id: "run-1", agent_id: "agent-1", agent_version: 1, console_url: `${ORIGIN}/#/runs/run-1`, revision: "rev-1", kind: "agentic",
@@ -111,7 +110,7 @@ test("a queued run (created, not yet claimed) reads queued and working, its cost
     created_at: iso(T0), updated_at: iso(T0), ended_at: null,
     result: null, error: null, review: null, pending: null,
     cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: null },
-    cap_mode: null, approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 1000, last_progress_at: null,
+    approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 1000, last_progress_at: null,
   });
   const moment = await momentOverStore(store, "run-1");
   assert.equal(moment.terminal, false);
@@ -143,7 +142,7 @@ test("a working run reads working/working and live, its updated_at and last_prog
     created_at: iso(T0), updated_at: iso(T0 + 10_000), ended_at: null,
     result: null, error: null, review: null, pending: null,
     cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: null },
-    cap_mode: null, approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 1000, last_progress_at: iso(T0 + 10_000),
+    approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 1000, last_progress_at: iso(T0 + 10_000),
   });
   const moment = await momentOverStore(store, "run-1", liveDeps);
   assert.equal(moment.working, true);
@@ -287,6 +286,7 @@ const budgetEntry = (id, { cap_usd = 0.5, spent_usd = 0.3, needs_usd = 1, least_
 test("a run parked at its cap reads input_required with the budget pending card", async (t) => {
   const { store } = await storeOn(t);
   await agent(store);
+  // A launch stored before the one cap mode, still holding cap_mode: read as if it had none.
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Do the big thing." }, title: "Capped run", place: { mode: "runner" }, max_cost_usd: 0.5, cap_mode: "expected" } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const journal = store.journal(claim);
@@ -299,10 +299,10 @@ test("a run parked at its cap reads input_required with the budget pending card"
   const view = await viewOverStore(store, "run-1", deps);
   assert.equal(view.status, "input_required");
   assert.equal(view.state, "waiting");
-  // overshoot_bound_usd is microUp(0), which is 0, never -0, when the cap kept no cache-miss bound.
-  assert.deepEqual(view.pending, { kind: "budget", cap_usd: 0.5, spent_usd: 0.3, needs_usd: 1, least_cap_usd: 1.3, suggested_cap_usd: 11, overshoot_bound_usd: 0, said: "Out of budget. Raise the cap to at least $1.30 to continue.", at: iso(T0 + 1_000) });
-  assert.deepEqual(view.cost, { usd: 0, basis: "estimate", charge_state: null, cap_usd: 0.5, overshoot_bound_usd: 0 });
-  assert.equal(view.cap_mode, "expected");
+  // One cap mode, the worst case: no overshoot bound on the card or the cost, and no cap_mode on the run.
+  assert.deepEqual(view.pending, { kind: "budget", cap_usd: 0.5, spent_usd: 0.3, needs_usd: 1, least_cap_usd: 1.3, suggested_cap_usd: 11, said: "Out of budget. Raise the cap to at least $1.30 to continue.", at: iso(T0 + 1_000) });
+  assert.deepEqual(view.cost, { usd: 0, basis: "estimate", charge_state: null, cap_usd: 0.5 });
+  assert.equal("cap_mode" in view, false);
   assert.equal(view.result, null);
   assert.equal(view.error, null);
   const moment = await momentOverStore(store, "run-1");
@@ -313,7 +313,7 @@ test("a run parked at its cap reads input_required with the budget pending card"
 test("a run raised from its pause shows the raised cap in its cost.cap_usd, never its launch's; the next raise is checked against it", async (t) => {
   const { store } = await storeOn(t);
   await agent(store);
-  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Do the big thing." }, title: "Capped run", place: { mode: "runner" }, max_cost_usd: 0.05, cap_mode: "expected" } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Do the big thing." }, title: "Capped run", place: { mode: "runner" }, max_cost_usd: 0.05 } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const journal = store.journal(claim);
   const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Do the big thing.", timestamp: T0 + 1_000 }] };
@@ -333,7 +333,7 @@ test("a run raised from its pause shows the raised cap in its cost.cap_usd, neve
 test("a workflow run parked at its cap reads input_required with the budget pending card", async (t) => {
   const { store } = await storeOn(t);
   await agent(store, { kind: "workflow" });
-  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: {}, title: "Capped workflow", place: { mode: "runner" }, max_cost_usd: 0.5, cap_mode: "expected" } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: {}, title: "Capped workflow", place: { mode: "runner" }, max_cost_usd: 0.5 } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const journal = store.journal(claim);
   const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Run the workflow.", timestamp: T0 + 1_000 }] };
@@ -353,7 +353,7 @@ test("a workflow run parked at its cap reads input_required with the budget pend
 test("a run whose cap was raised is no longer parked: the budget card clears and it reads working", async (t) => {
   const { store, clock } = await storeOn(t);
   await agent(store);
-  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Do the big thing." }, title: "Raised run", place: { mode: "runner" }, max_cost_usd: 11, cap_mode: "expected" } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Do the big thing." }, title: "Raised run", place: { mode: "runner" }, max_cost_usd: 11 } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const journal = store.journal(claim);
   const userId = await journal.mintId();
@@ -405,7 +405,7 @@ test("a workflow run paused in its process reads paused, and a resume after the 
 test("the moment of a run parked at its cap reads paused with the pause words, so raiseCap resumes it as main does", async (t) => {
   const { store } = await storeOn(t);
   await agent(store);
-  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Do the big thing." }, title: "Capped run", place: { mode: "runner" }, max_cost_usd: 0.5, cap_mode: "expected" } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Do the big thing." }, title: "Capped run", place: { mode: "runner" }, max_cost_usd: 0.5 } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const journal = store.journal(claim);
   const u = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Do the big thing.", timestamp: T0 + 1_000 }] };
@@ -493,7 +493,7 @@ test("a failed run's view serves its error from the row, with an unknown cost", 
     created_at: iso(T0), updated_at: iso(T0 + 3_000), ended_at: iso(T0 + 3_000),
     result: null, error: { code: "run_failed", message: "The model refused.", retryable: false }, review: null, pending: null,
     cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null },
-    cap_mode: null, approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 0, last_progress_at: null,
+    approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 0, last_progress_at: null,
   });
   const moment = await momentOverStore(store, "run-1");
   assert.equal(moment.terminalKind, "failed");

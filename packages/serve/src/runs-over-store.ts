@@ -375,9 +375,9 @@ export function uuidv7(now = Date.now()): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/** The revision's body fields a start reads: its default cap and cap mode, its place, and (agentic) its tools, for the
- *  place fallback. Read with the shapes the old start read them with. */
-type StartBody = { readonly maxCostUsd?: number; readonly capMode?: string; readonly place?: unknown; readonly tools?: readonly unknown[]; readonly learning?: boolean | "notes"; readonly thinking?: unknown };
+/** The revision's body fields a start reads: its default cap, its place, and (agentic) its tools, for the place
+ *  fallback. Read with the shapes the old start read them with. */
+type StartBody = { readonly maxCostUsd?: number; readonly place?: unknown; readonly tools?: readonly unknown[]; readonly learning?: boolean | "notes"; readonly thinking?: unknown };
 
 /** The pieces a start needs that live in the server's request layer, not here: the leaf validators (the create body's field
  *  issues, the revision a run pins, a run's input against its schema, the hint told from the revision, a revision this host
@@ -638,9 +638,6 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // The run's own cap, else the agent's default: the caller chose its own.
   const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : rbody.maxCostUsd;
   if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
-  // How its cap prices a request: the run's own, else the agent's, else expected (cap.ts). Only a run with a cap has one.
-  if (body.cap_mode !== undefined && cap === undefined) throw invalid([{ field: "cap_mode", reason: "not_allowed", message: "cap_mode says how a run's cap prices its requests, and this run has no cap: give it a max_cost_usd, or set the agent's." }]);
-  const capMode = cap === undefined ? undefined : typeof body.cap_mode === "string" ? body.cap_mode : rbody.capMode;
   const place = resolvePlace(rbody.place as Place | undefined, deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
   // Checked as pinned: an earlier revision with no pin is pinned now, once (StartDeps.pinFirst); one that could not be, as
   // its server could not be listed, is refused with the rest (runnable).
@@ -690,7 +687,6 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
     harness: harnessOfBody(revision.body),
     ...(effort !== undefined ? { effort } : {}),
     ...(cap !== undefined ? { maxCostUsd: cap } : {}),
-    ...(capMode !== undefined ? { capMode } : {}),
     ...(Object.keys(plane).length ? { plane } : {}),
     ...(deps.approvers !== undefined ? { approvers: deps.approvers } : {}),
     ...(deps.documents !== undefined ? { documents: deps.documents } : {}),

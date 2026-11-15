@@ -563,7 +563,6 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       const tierRoute = tierRoutes.get(by);
       return tierRoute && tierRoute.model === id ? capModelOf(tierRoute) : undefined;
     },
-    ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
     // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
     ...(besideOf ? { beside: besideOf } : {}),
   };

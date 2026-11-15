@@ -67,16 +67,16 @@ test("straight to OpenAI, an OpenCode request is counted by OpenAI with the cred
   const byteBound = inputTokensMaxOf(policy, body, JSON.stringify(body));
   const direct = await proxyOn(t, "https://api.openai.com", async () => Response.json({ object: "response.input_tokens", input_tokens: 900 }));
   assert.equal((await send(direct.p.url, RECORDED)).status, 200);
-  assert.deepEqual([direct.asked[0].inputTokensMax, direct.asked[0].inputTokensCounted], [900, true]);
+  assert.equal(direct.asked[0].inputTokensMax, 900);
   assert.equal(direct.counts[0].url, "https://api.openai.com/v1/responses/input_tokens");
   assert.deepEqual(Object.keys(direct.counts[0].headers).map((n) => n.toLowerCase()).sort(), ["authorization", "content-type"]);
   assert.deepEqual(Object.keys(direct.counts[0].body).sort(), ["input", "model", "tool_choice", "tools"]);
 
   const failed = await proxyOn(t, "https://api.openai.com", async () => new Response("no", { status: 503 }));
   assert.equal((await send(failed.p.url, RECORDED)).status, 200);
-  assert.deepEqual([failed.asked[0].inputTokensMax, failed.asked[0].inputTokensCounted], [byteBound, undefined]);
+  assert.equal(failed.asked[0].inputTokensMax, byteBound);
 
   const gateway = await proxyOn(t, "https://openrouter.ai/api", async () => Response.json({ object: "response.input_tokens", input_tokens: 1 }));
   assert.equal((await send(gateway.p.url, RECORDED)).status, 200);
-  assert.deepEqual([gateway.counts.length, gateway.asked[0].inputTokensMax, gateway.asked[0].inputTokensCounted], [0, byteBound, undefined]);
+  assert.deepEqual([gateway.counts.length, gateway.asked[0].inputTokensMax], [0, byteBound]);
 });

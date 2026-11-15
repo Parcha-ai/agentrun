@@ -61,14 +61,14 @@ export type ModelTiers = Partial<Record<"fast" | "strong", string>>;
  *  Stamped by the save's check (server.ts saveable), never read from a definition nor shown in one. `usd` is its fixed
  *  price, null for one priced by usage (each call held at monid's estimate for its input). */
 export type MonidPinBody = Readonly<Record<string, { readonly description: string; readonly input: Record<string, unknown>; readonly usd: number | null }>>;
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request"; monidPin?: MonidPinBody };
-export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request"; monidPin?: MonidPinBody };
+export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already
  *  checked and canonical (agents-store.ts via tool-plane's one copy); this validator keeps it as given. */
 export type RevisionBodyInput =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" }
-  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; computer?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" }
+  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; computer?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never" };
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
 function placeOf(place: unknown): RevisionPlace {
@@ -131,10 +131,9 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
     ...(toolSettings ? { toolSettings } : {}),
   };
 
-  // A default spend cap, and how it prices a request, for a revision of either kind.
+  // A default spend cap, for a revision of either kind.
   if (input.maxCostUsd !== undefined && !(typeof input.maxCostUsd === "number" && Number.isFinite(input.maxCostUsd) && input.maxCostUsd > 0)) invalid("the maxCostUsd is not a number above 0");
-  if (input.capMode !== undefined && (typeof input.capMode !== "string" || input.capMode === "")) invalid("the capMode is not a non-empty string");
-  const capped = { ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}), ...(input.capMode !== undefined ? { capMode: input.capMode } : {}) };
+  const capped = input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {};
 
   // Whether the agent runs unattended (its definition.approvals): "never" lets an ask run without a person, for a revision
   // of either kind. "ask" (the default, as an agent read says it) is taken and kept as no value, so the default stays

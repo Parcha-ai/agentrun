@@ -511,16 +511,12 @@ export interface ProxyRequest {
    *  summary), or the host's own request beside the harness's (`host`). */
   side?: true;
   /** On the session's model but no answer of the turn (the policy's `answers` reads it so: a title, a summary, a child's
-   *  request). Still the turn's to book, but a conversation of its own: the cap never prices the session's next request
-   *  from it, nor it from the session's. */
+   *  request). Still the turn's to book, but no answer the host keeps its wrap-up's reserve back for. */
   unanswered?: true;
   /** It carries the host's note (`ModelProxyHooks.note`), placed in its body: the host's to record once it is admitted. */
   noted?: true;
   /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
   host?: string;
-  /** Its `inputTokensMax` is its provider's count (ProviderPolicy.countInput), not its bytes: a host that compares one
-   *  request's bound with another's (how far a conversation grew) pairs a counted bound only with a counted one. */
-  inputTokensCounted?: true;
 }
 
 export interface ModelProxyHooks {
@@ -1125,13 +1121,11 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // admitted or booked, until the harness opens its next turn.
     if (answering && !route.free && stopTold !== undefined) return refuse(res, refusedStatus, `refused: the turn's answer was ${stopTold}, and the turn ends there`, req);
     // An answer request on an upstream that is its provider's own (policy.countInput): its input bound is the provider's
-    // exact count when that is below its bytes, so a small cap admits a first turn its bytes would not. Each answer request
-    // is counted, not only the first: the cap prices a step by the last one's tokens plus how far its bound grew, so a
-    // counted bound beside a byte bound would read the bytes as growth. A count that fails or times out leaves the byte
-    // bound, and never holds the request up for long. A noted request is counted with its note, which bounds it without
-    // the note too (the note only adds).
+    // exact count when that is below its bytes, so a small cap admits a turn its bytes would not: the cap holds each
+    // request at its whole input uncached, and the count is that input to the token. A count that fails or times out
+    // leaves the byte bound, and never holds the request up for long. A noted request is counted with its note, which
+    // bounds it without the note too (the note only adds).
     // Only a bound that is a number is lowered: an unmeasured one (a fee with no bound, a hosted tool's reads) stays so.
-    let inputTokensCounted = false;
     if (answering && !route.free && host === undefined && inputTokensMax !== undefined && policy.countInput) {
       // A client that goes while its request is counted is gone before anything is admitted: the count is cut, and the
       // request is neither admitted nor sent (nothing is booked, and no paid answer starts for no one).
@@ -1147,7 +1141,6 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       if (gone.signal.aborted || res.destroyed) return;
       if (counted !== undefined && inputTokensMax !== undefined && counted < inputTokensMax) {
         inputTokensMax = counted;
-        inputTokensCounted = true;
         if (inputTokensMaxWithoutNote !== undefined) inputTokensMaxWithoutNote = Math.min(inputTokensMaxWithoutNote, counted);
       }
     }
@@ -1159,14 +1152,13 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       if (!route.free) ticket = await hooks.beforeRequest({
         // A side call: on another model than the session's, or the host's own (it counts toward no typical request). One on
         // the session's model that is no answer of the turn (a title, a summary, a child's: `answering`, the policy's
-        // answers) is `unanswered`: booked as any request, but a conversation of its own to the cap's expected pricing.
+        // answers) is `unanswered`: booked as any request, but no answer the host keeps its reserve back for.
         model: asked, inputTokensMax, ...(asked !== model || host !== undefined ? { side: true as const } : {}), ...(!answering && host === undefined ? { unanswered: true as const } : {}),
         ...(noted ? { noted: true as const, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}),
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
         ...(feeUsd > 0 ? { feeUsd } : {}),
         ...(host === undefined ? {} : { host }),
-        ...(inputTokensCounted ? { inputTokensCounted: true as const } : {}),
         ...(options.route === undefined ? {} : { route: options.route }),
       });
     } catch (error) {

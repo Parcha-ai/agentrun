@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { CapRefused, checkRaise, followUpOf, parkOf, takeRaises } from "../dist/kernel/cap/index.js";
 import { capOn, modelRequest, SONNET } from "./kernel-cap-support.mjs";
 
-const refusedFor = async (capUsd, spentUsd = 0) => capOn(capUsd, { mode: "strict", spentUsd }).cap.admit(modelRequest(SONNET, 10_000, 4_096)).catch((error) => error);
+const refusedFor = async (capUsd, spentUsd = 0) => capOn(capUsd, { spentUsd }).cap.admit(modelRequest(SONNET, 10_000, 4_096)).catch((error) => error);
 
 test("a refusal for room parks the run unsent, with pending (least, raise) in the refusal's words and no error", async () => {
   const refusal = await refusedFor(0.05, 0.01);
@@ -15,17 +15,15 @@ test("a refusal for room parks the run unsent, with pending (least, raise) in th
   const park = parkOf(refusal, 0.05);
   assert.equal(park.outcome, "parked");
   assert.equal(park.error, undefined);
-  assert.deepEqual(park.pending, { kind: "budget", cap_usd: 0.05, spent_usd: 0.01, needs_usd: 0.05286, least_cap_usd: 0.07, suggested_cap_usd: 1, bound_usd: microUp(refusal.figures.boundUsd ?? 0) });
+  assert.deepEqual(park.pending, { kind: "budget", cap_usd: 0.05, spent_usd: 0.01, needs_usd: 0.05286, least_cap_usd: 0.07, suggested_cap_usd: 1 });
   assert.equal(park.words, refusal.message.replace(/^spend_cap_reached \(out of budget\): /, ""));
 });
 
-const microUp = (usd) => Math.ceil(usd * 1e6 - 1e-9) / 1e6 + 0;
-
-test("a park's pending names the refused step's bound (bound_usd), to a millionth rounded up; 0 when the refusal names none", () => {
-  const withBound = new CapRefused("spend_cap_reached (out of budget): Not sent: the next step needs more", { forGood: false, spentUsd: 0.1, figures: { spentUsd: 0.1, needsUsd: 0.2, leastCapUsd: 0.31, boundUsd: 0.0123451 } });
-  assert.equal(parkOf(withBound, 0.25).pending.bound_usd, 0.012346, "the refusal's boundUsd, rounded up to a millionth");
-  const without = new CapRefused("spend_cap_reached (out of budget): Not sent: the next step needs more", { forGood: false, spentUsd: 0.1, figures: { spentUsd: 0.1, needsUsd: 0.2, leastCapUsd: 0.31 } });
-  assert.equal(parkOf(without, 0.25).pending.bound_usd, 0, "none named: 0");
+test("a park's pending names no bound: a refused step's need is its worst case, so nothing could pass it", () => {
+  const refusal = new CapRefused("spend_cap_reached (out of budget): Not sent: the next step needs more", { forGood: false, spentUsd: 0.1, figures: { spentUsd: 0.1, needsUsd: 0.2, leastCapUsd: 0.31 } });
+  const pending = parkOf(refusal, 0.25).pending;
+  assert.equal("bound_usd" in pending, false, JSON.stringify(pending));
+  assert.deepEqual([pending.needs_usd, pending.least_cap_usd], [0.2, 0.31]);
 });
 
 test("a park emits the refusal as a pause event, not an error", async () => {
@@ -36,7 +34,7 @@ test("a park emits the refusal as a pause event, not an error", async () => {
 
 test("a parked run's next step stays refused until the cap is raised, then goes", async () => {
   let capUsd = 0.05;
-  const { cap } = capOn(() => capUsd, { mode: "strict" });
+  const { cap } = capOn(() => capUsd);
   await assert.rejects(cap.admit(modelRequest(SONNET, 10_000, 4_096)), CapRefused);
   await assert.rejects(cap.admit(modelRequest(SONNET, 10_000, 4_096)), CapRefused, "no message moves it");
   capUsd = 0.1;

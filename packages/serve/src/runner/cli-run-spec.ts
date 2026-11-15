@@ -488,7 +488,6 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const tierRoute = tierRoutes.get(by as Tier);
       return tierRoute && tierRoute.model === id ? capModelOfRoute(tierRoute) : undefined;
     },
-    ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
     // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
     ...(besideOf ? { beside: besideOf } : {}),
   };

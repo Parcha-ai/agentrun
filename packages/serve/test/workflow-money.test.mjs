@@ -385,9 +385,9 @@ test("a person's stop whose request is still being booked when the node ends: th
 });
 
 // The same stop, the provider's side never ending: the run's end waits for the stopped request's booking only so long
-// (CLOSE_MS), then is written anyway. The request, never booked, counts at its hold and bound, the most it can have cost
-// (never less), and a line names it.
-test("a person's stop whose request is never booked: the run still ends, the request counts at its hold and bound, and a line says so", async (t) => {
+// (CLOSE_MS), then is written anyway. The request, never booked, counts at its hold, the most it can have cost (never
+// less), and a line names it.
+test("a person's stop whose request is never booked: the run still ends, the request counts at its hold, and a line says so", async (t) => {
   const origin = stallingOrigin("Half of one.md", new Promise(() => {}));
   const warned = [];
   t.mock.method(console, "warn", (line) => void warned.push(String(line)));
@@ -402,7 +402,7 @@ test("a person's stop whose request is never booked: the run still ends, the req
   assert.equal(row.state, "stopped", `the run still ends: ${JSON.stringify(row)}`);
   const [asked] = (await sessionRecords(store)).requests;
   assert.ok(asked?.heldUsd > 0.5, `the request was held at most of the cap: ${JSON.stringify(asked)}`);
-  assert.equal(await spendFromRecords(store), eight(asked.heldUsd + (asked.boundUsd ?? 0)), "unbooked, it counts at its hold and bound, never less");
+  assert.equal(await spendFromRecords(store), eight(asked.heldUsd), "unbooked, it counts at its hold, its worst case, never less");
   assert.ok(warned.some((line) => /run-1: 1 model request\(s\) still unbooked/.test(line)), `a line names it: ${JSON.stringify(warned)}`);
 });
 

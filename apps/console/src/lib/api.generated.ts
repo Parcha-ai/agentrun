@@ -215,7 +215,6 @@ export interface components {
     cap_usd?: number | null;
     so_far_usd?: number;
     unpriced?: number;
-    overshoot_bound_usd?: number;
   };
   Definition: unknown & components["DefinitionInput"];
   DefinitionInput: {
@@ -335,7 +334,6 @@ export interface components {
     approvals?: "ask" | "never";
     learning?: true | false | "notes";
     checkout?: "pull_request" | "none";
-    cap_mode?: "expected" | "strict";
   };
   Effort: "low" | "medium" | "high";
   Error: {
@@ -660,7 +658,6 @@ export interface components {
     kind: "agentic" | "workflow";
     archived_at: string | null;
     approvals?: "ask" | "never";
-    cap_mode?: "expected" | "strict" | null;
     last_progress_at?: string | null;
     input?: Record<string, unknown> | null;
     file_ids?: string[];
@@ -746,7 +743,6 @@ export interface components {
       needs_usd?: number;
       least_cap_usd?: number;
       suggested_cap_usd?: number;
-      overshoot_bound_usd?: number;
       said: string;
       at: string;
       node?: string | null;
@@ -782,7 +778,6 @@ export interface components {
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
-    cap_mode?: "expected" | "strict";
     workflow_first?: boolean;
     learning?: "use";
     repo?: string;
@@ -805,7 +800,6 @@ export interface components {
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
-    cap_mode?: "expected" | "strict";
     workflow_first?: boolean;
     learning?: "use";
     repo?: string;
@@ -924,7 +918,6 @@ export interface components {
       needs_usd?: number;
       least_cap_usd?: number;
       suggested_cap_usd?: number;
-      overshoot_bound_usd?: number;
       said: string;
       at: string;
       node?: string | null;
