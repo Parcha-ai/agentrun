@@ -1494,11 +1494,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         /** What the run keeps back beside a request of its own session while it streams (RunCapOptions.keepBackUsd), set
          *  once the wrap-up's reserve is known (below): a tool call it makes mid-stream finds room for the steps after it. */
         let keepBackOf: RunCapOptions["keepBackUsd"];
+        /** The run's requests counted toward the free limit (free.ts freeRequestsIn) as of its last admission, in every
+         *  session: read from its records at the claim (below), then taken from each admission the cap judges, the count it
+         *  was judged with (runBooking's freeRequestsMade) and itself when it counts. Never a read of the run's records
+         *  between a request's admission and its leaving: that wait let a cancel close the session before the request was
+         *  booked, its cost left unknown. */
+        let freeMade = 0;
         const theCap = (): RunCap => {
           if (!specNow?.runCap) throw new Error("the run's spec gives no cap (AdapterRunSpec.runCap)");
           // The cap each admission reads is the run's now (capNow): a raise taken on this claim or an earlier one.
           const { beside: _beside, ...config } = specNow.runCap;
-          return (capBuilt ??= runCap({ sessions, keepBackUsd: (request, asked) => keepBackOf?.(request, asked), ...config, capUsd: capNow }));
+          const judged: RunCapOptions["judged"] = (request, answer) => {
+            config.judged?.(request, answer);
+            if (request.freeRequestsMade !== undefined) freeMade = request.freeRequestsMade + (answer && !("refuse" in answer) && answer.freeRequest === true ? 1 : 0);
+          };
+          return (capBuilt ??= runCap({ sessions, keepBackUsd: (request, asked) => keepBackOf?.(request, asked), ...config, judged, capUsd: capNow }));
         };
         const flushed = { flush: () => deps.flush() };
         const earlierDecisions = sessionSpendOf(await sessions.read(DECISION_SESSION)).spentUsd;
@@ -1776,15 +1786,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const data = (record.data ?? {}) as { turn?: unknown; side?: unknown };
           if (record.kind === RUNNER_RECORDS.request && data.side === true && typeof data.turn === "number") notOwn.add(data.turn);
         }
-        /** The run's requests counted toward the free limit so far, in every session (free.ts freeRequestsIn), as of the last
-         *  admission: read at the claim and after each request is admitted, as the rest is. */
-        const freeMadeOf = async (): Promise<number> => {
-          let made = 0;
-          for (const key of await sessions.keys()) made += freeRequestsIn(await sessions.read(key));
-          return made;
-        };
-        const capNote: { costs: number[]; restUsd: number | null; freeMade: number; offered?: { words: string; leftUsd: number; capUsd: number; freeLimit?: number; at: number }; live?: true; lastFigures?: RequestFigures } = {
-          freeMade: await freeMadeOf(),
+        // The free requests the run made before this claim, in every session (freeMade: each admission's from here on).
+        let madeBefore = 0;
+        for (const key of await sessions.keys()) madeBefore += freeRequestsIn(await sessions.read(key));
+        freeMade = madeBefore;
+        const capNote: { costs: number[]; restUsd: number | null; offered?: { words: string; leftUsd: number; capUsd: number; freeLimit?: number; at: number }; live?: true; lastFigures?: RequestFigures } = {
           costs: claimRecords.flatMap((record) => {
             if (record.kind !== RUNNER_RECORDS.turn) return [];
             const data = (record.data ?? {}) as { turn?: number; usd?: unknown; cut?: unknown; unsent?: unknown; givenBack?: unknown; estimated?: unknown; stopped?: unknown; rule?: unknown };
@@ -1853,7 +1859,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const freeNote = (): string | undefined => {
             const limit = config.freeRequests;
             if (limit === undefined || toldFreeLimits.has(limit) || !freeModel(capModel)) return undefined;
-            const due = freeWrapUpDue(limit, capNote.freeMade);
+            const due = freeWrapUpDue(limit, freeMade);
             if (!due) return undefined;
             const words = freeWrapUpWords(due.left);
             capNote.offered = { words, leftUsd: 0, capUsd: 0, freeLimit: limit, at: Date.now() };
@@ -2149,12 +2155,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               console.warn(`[runner] the run's other sessions' spend was not read; no wrap-up until it is: ${said(error)}`);
             }
             // Told once a request carrying it is admitted with it (never one that went without the note's bytes): the server's
-            // row, once per cap, made durable before the request leaves, so a machine lost after it never tells that cap twice.
-            try {
-              capNote.freeMade = await freeMadeOf();
-            } catch (error) {
-              console.warn(`[runner] the run's free requests were not counted; no free-limit wrap-up until they are: ${said(error)}`);
-            }
+            // row, once per cap (or free limit), made durable before the request leaves, so a machine lost after it never tells
+            // it twice. The free count is the admission's own (freeMade, set as the cap judged it), read from no records here.
             if (offer?.freeLimit !== undefined && ticket && !(ticket as { noteDropped?: true }).noteDropped && !toldFreeLimits.has(offer.freeLimit)) {
               const { words, freeLimit } = offer;
               toldFreeLimits.add(freeLimit);
